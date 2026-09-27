@@ -202,10 +202,12 @@ without TLS.
 
 Recorded as [ADR-0008](../../../docs/adr/0008-catalog-property-schema-subset.md).
 
-- **Meta-validation** of blueprint definitions uses a strict Zod
-  discriminated union on `type` (`.strict()` everywhere, so unknown keywords
+- **Meta-validation** of blueprint definitions uses a strict parser that
+  discriminates on `type` and rejects every key outside the subset (so unknown keywords
   such as `$ref`, `$id`, `$defs`, `if`, and nested object schemas fail with a
   JSON-Pointer path). The same module is exported for 003's form generator.
+  (Implementation note: it is hand-written rather than Zod, because a direct
+  parser reports the exact JSON-Pointer issue paths the spec requires.)
 - **Entity validation** uses Ajv (draft 2020-12) with `strict: true`,
   `allErrors: true`, and `code.regExp` set to an **RE2** adapter over `re2js`,
   a pure-JS linear-time engine that needs no native build. The Ajv schema is

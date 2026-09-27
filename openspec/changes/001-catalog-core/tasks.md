@@ -148,7 +148,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   characters. Verify: `pattern.test.ts` covers "Catastrophic-backtracking
   pattern is rejected", backreference and lookaround rejection, a
   513-character pattern, and a valid pattern that is accepted.
-- [ ] 3.4 Cross-field rules. A `default` must be valid against its own
+- [x] 3.4 Cross-field rules. A `default` must be valid against its own
   definition. `required` may only name declared properties. Identifiers must
   be unique across `schema`, `statusSchema` and `relations`. Verify:
   `blueprint-definition.test.ts` covers "Invalid default is rejected",
@@ -161,7 +161,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   Verify: `reserved.test.ts` rejects the `user`, `agent` and `integration`
   actors for both blueprint and entity writes, allows `system`, and always
   allows reads.
-- [ ] 3.7 Blueprint-level count limits (properties and relations). Verify:
+- [x] 3.7 Blueprint-level count limits (properties and relations). Verify:
   `blueprint-definition.test.ts` accepts 200 properties, rejects 201 with
   `CATALOG_LIMIT_EXCEEDED`, and applies the same bounds to relations
   (50 and 51).
