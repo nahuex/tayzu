@@ -153,7 +153,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   be unique across `schema`, `statusSchema` and `relations`. Verify:
   `blueprint-definition.test.ts` covers "Invalid default is rejected",
   "Required names an undeclared property", and the collision cases.
-- [ ] 3.5 Relation definition shape, including defaults for `many` and
+- [x] 3.5 Relation definition shape, including defaults for `many` and
   `required`. Verify: `relation-definition.test.ts` covers "Required many
   relation is rejected" and checks that the defaults are applied.
 - [ ] 3.6 The reserved `_` prefix rule as a pure function of the blueprint
