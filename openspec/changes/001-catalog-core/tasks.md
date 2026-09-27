@@ -42,12 +42,12 @@ live next to the code as `*.test.ts`. Integration tests are named
   artifacts, TDD cycle, Checkpoints 1-3, no network exposure before 002) and
   one `CLAUDE.md` per package with its local conventions. Verify: the files
   exist, and the root one is under 150 lines (stable and cacheable).
-- [ ] 1.4 Telemetry test harness in `@tayzu/observability`:
+- [x] 1.4 Telemetry test harness in `@tayzu/observability`:
   `createTelemetryTestHarness()` returns in-memory span, metric and log
   exporters registered on global providers, with `reset()` and `shutdown()`.
   Verify: `harness.test.ts` emits a span, a counter and a log record through
   the OTel **API** and asserts all three are captured.
-- [ ] 1.5 Postgres harness in `@tayzu/db`:
+- [x] 1.5 Postgres harness in `@tayzu/db`:
   - `createPool(url)` and `runMigrations(pool)`.
   - A test helper `getTestDatabase()` that applies migrations once per run
     and throws an explicit error when `DATABASE_URL` is unset. Outside the test
