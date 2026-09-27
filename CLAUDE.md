@@ -137,6 +137,9 @@ defines them.
 
 ## Observability and docs
 
+- References (project.md §22): read your change's row in
+  `docs/references/platform-engineering/README.md` before proposing it.
+
 - Every `design.md` declares its telemetry contract (spans, metrics, log
   events) before implementation. Code uses only the declared names, and
   `otel-smoke-check` enforces them. Libraries depend on the OTel API only.

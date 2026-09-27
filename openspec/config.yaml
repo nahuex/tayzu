@@ -6,6 +6,9 @@ context: |
   Tayzu — Agentic SDLC Platform. The complete, fixed project rules live in
   openspec/project.md: read it in full before generating any artifact.
   All artifacts are written in English; the conversation with the human is in Spanish.
+  Before proposing a change, read its row in the roadmap relevance matrix of
+  docs/references/platform-engineering/README.md (Platform Engineering reference
+  reports) and cite file + line range in design.md when a decision relies on one.
 
 rules:
   design:
