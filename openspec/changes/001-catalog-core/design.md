@@ -200,6 +200,8 @@ without TLS.
 
 ### D6. Property schema subset and validation engine
 
+Recorded as [ADR-0008](../../../docs/adr/0008-catalog-property-schema-subset.md).
+
 - **Meta-validation** of blueprint definitions uses a strict Zod
   discriminated union on `type` (`.strict()` everywhere, so unknown keywords
   such as `$ref`, `$id`, `$defs`, `if`, and nested object schemas fail with a

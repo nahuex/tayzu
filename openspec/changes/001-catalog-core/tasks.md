@@ -165,7 +165,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   `blueprint-definition.test.ts` accepts 200 properties, rejects 201 with
   `CATALOG_LIMIT_EXCEEDED`, and applies the same bounds to relations
   (50 and 51).
-- [ ] 3.8 Write ADR `docs/adr/0008-catalog-property-schema-subset.md`
+- [x] 3.8 Write ADR `docs/adr/0008-catalog-property-schema-subset.md`
   (design D6). Verify: the ADR exists with Context, Decision, Alternatives
   and Consequences sections, and the design D6 links to it.
 
