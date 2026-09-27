@@ -126,7 +126,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   table and that an invalid override (for example a negative value) is
   rejected.
 
-- [ ] 2.6 Safe input parsing. Rebuild all input objects as null-prototype
+- [x] 2.6 Safe input parsing. Rebuild all input objects as null-prototype
   objects and reject `__proto__`, `constructor` and `prototype` at every
   depth, including locale keys and keys inside `object` values. Enforce the
   nesting-depth limit. Verify: `safe-parse.test.ts` covers "Unsafe keys are
