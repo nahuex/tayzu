@@ -156,7 +156,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [x] 3.5 Relation definition shape, including defaults for `many` and
   `required`. Verify: `relation-definition.test.ts` covers "Required many
   relation is rejected" and checks that the defaults are applied.
-- [ ] 3.6 The reserved `_` prefix rule as a pure function of the blueprint
+- [x] 3.6 The reserved `_` prefix rule as a pure function of the blueprint
   identifier, the operation (blueprint write or entity write) and the actor.
   Verify: `reserved.test.ts` rejects the `user`, `agent` and `integration`
   actors for both blueprint and entity writes, allows `system`, and always
