@@ -62,8 +62,10 @@ su postgres -c "psql -v ON_ERROR_STOP=1 -q" <<'SQL'
 DO $do$
 BEGIN
    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'tayzu') THEN
-      CREATE ROLE tayzu LOGIN PASSWORD 'tayzu';
+      CREATE ROLE tayzu LOGIN PASSWORD 'tayzu' CREATEDB;
    END IF;
+   -- The integration tests create and drop private scratch databases.
+   ALTER ROLE tayzu CREATEDB;
 END
 $do$;
 
