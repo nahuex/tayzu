@@ -344,3 +344,14 @@ Decisión del humano (2026-09-27), aplicada por todo agente que trabaje en el re
 - **Checkpoint 3:** todo PR que incluya una migración de schema o un cambio de policy de Cerbos se frena antes de la tarea que lo aplica, y el SQL o la policy se presentan en el chat para una aprobación separada. No lleva auto-merge.
 - **Protección de `master`:** ruleset con PR obligatorio (0 aprobaciones, porque el agente actúa con la cuenta del humano y GitHub no permite aprobar un PR propio), checks de CI obligatorios, bloqueo de force-push y de borrado. Lo configura el humano en Settings → Rules; el agente no puede cambiar settings del repo.
 - **Después del merge:** el agente corre `openspec archive` para el change y la rama no se reutiliza. El trabajo nuevo empieza en una rama nueva desde `master`.
+
+---
+
+## 22. Biblioteca de referencias de Platform Engineering
+
+Reportes de platformengineering.org / Weave Intelligence (arquitecturas de referencia de un IDP en Azure, AWS y GCP; State of Platform Engineering Vol. 4; IDP soberano; observabilidad; gestión de vulnerabilidades; ciclo de vida de Kubernetes; CDEs), guardados textuales en `docs/references/platform-engineering/`. El índice (`README.md` de esa carpeta) trae el catálogo, una **matriz de relevancia por change del roadmap** con rangos de líneas y los takeaways para Tayzu.
+
+- **Antes de proponer un change**, el paso de `spec-writer` lee la fila de ese change en la matriz y los rangos que cita, junto con las fuentes de Port de §19.
+- **Cuando un `design.md` se apoya en un reporte**, cita archivo y rango de líneas, y aclara si el reporte lo dice o si es una inferencia.
+- **Precedencia**: los reportes nunca reemplazan este documento, los ADRs ni un design aprobado. Si un reporte contradice una decisión, se pregunta al humano en el chat según §20.
+- Las estadísticas de los reportes mayormente no tienen fuente; no se citan como hechos. Los reportes no se editan nunca (las citas por línea tienen que seguir siendo válidas).

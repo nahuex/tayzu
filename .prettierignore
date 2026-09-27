@@ -4,3 +4,6 @@ openspec/
 .agents/
 .claude/
 .github/
+# Third-party reference reports, kept verbatim
+docs/references/**/*.md
+!docs/references/**/README.md
