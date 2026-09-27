@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build, cache and test output
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# Environment files and secrets (SEC09/SEC10): configuration comes from the
+# environment only. No exceptions, not even examples.
+.env*
+
+# Logs and OS noise
+*.log
+.DS_Store

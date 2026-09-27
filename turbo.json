@@ -1,0 +1,43 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": ["tsconfig.base.json", "vitest.shared.ts", "vitest.int.setup.ts"],
+  "tasks": {
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
+    "build": {
+      "dependsOn": ["transit"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["transit"],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["transit"],
+      "env": ["DATABASE_URL"],
+      "outputs": []
+    },
+    "test:unit": {
+      "dependsOn": ["transit"],
+      "outputs": []
+    },
+    "contract:generate": {
+      "dependsOn": ["transit"],
+      "cache": false
+    },
+    "contract:check": {
+      "dependsOn": ["transit"],
+      "outputs": []
+    },
+    "otel-smoke-check": {
+      "dependsOn": ["transit"],
+      "env": ["DATABASE_URL"],
+      "outputs": []
+    },
+    "db:migrate": {
+      "env": ["DATABASE_URL"],
+      "cache": false
+    }
+  }
+}

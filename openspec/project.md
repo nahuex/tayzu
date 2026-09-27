@@ -325,3 +325,9 @@ Esta sección reemplaza a una lista plana de fuentes por una organizada por tare
 ### Fuentes adicionales de infraestructura de desarrollo (no de Port)
 
 `platform.claude.com/docs` (entorno de nube de Claude Code) · `openspec.dev` · `github.com/microsoft/mcp` (Azure MCP) · `github.com/microsoft/playwright-mcp` · `typesafe.ai/blog` (Jev)
+
+---
+
+## 20. Regla de preguntas abiertas (Human-in-the-Loop)
+
+Toda pregunta abierta que solo el humano puede responder (Open Questions de un `design.md`, ítems `HUMAN` del agente VCDM, ambigüedades de alcance) **se pregunta siempre en el chat**, nunca queda solo escrita en un archivo. Cada pregunta viene con 2 a 4 opciones concretas, la recomendada marcada como tal y el porqué. Nada se da por aprobado hasta que el humano responda. Después, la respuesta se incorpora a los artefactos (el `design.md` pasa la pregunta a "Resolved decisions").

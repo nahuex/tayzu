@@ -1,0 +1,8 @@
+packages:
+  - packages/*
+
+# pnpm 10 blocks dependency lifecycle scripts by default, and we keep it that
+# way (SEC07): every entry here is an explicit decision. esbuild's postinstall
+# only verifies its platform binary, which esbuild also resolves at runtime.
+allowBuilds:
+  esbuild: false

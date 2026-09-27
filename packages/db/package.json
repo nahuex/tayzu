@@ -1,0 +1,24 @@
+{
+  "name": "@tayzu/db",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PostgreSQL pool, tenant transaction seam, migration runner and migrations for Tayzu.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --project \"*unit*\""
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.3",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
+  }
+}
