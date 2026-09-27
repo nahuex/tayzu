@@ -331,3 +331,16 @@ Esta sección reemplaza a una lista plana de fuentes por una organizada por tare
 ## 20. Regla de preguntas abiertas (Human-in-the-Loop)
 
 Toda pregunta abierta que solo el humano puede responder (Open Questions de un `design.md`, ítems `HUMAN` del agente VCDM, ambigüedades de alcance) **se pregunta siempre en el chat**, nunca queda solo escrita en un archivo. Cada pregunta viene con 2 a 4 opciones concretas, la recomendada marcada como tal y el porqué. Nada se da por aprobado hasta que el humano responda. Después, la respuesta se incorpora a los artefactos (el `design.md` pasa la pregunta a "Resolved decisions").
+
+---
+
+## 21. Modo de trabajo con GitHub (PR automático por change)
+
+Decisión del humano (2026-09-27), aplicada por todo agente que trabaje en el repo:
+
+- **Una rama por `openspec change`.** Nunca se commitea directo a `master`. Si la sesión de Claude Code asigna una rama, se usa esa; si no, `change/<id-del-change>` (por ejemplo `change/002-auth-and-rbac`), creada desde el `master` actualizado.
+- **PR automático, sin intervención humana para abrirlo.** Al primer commit del change se abre el PR contra `master`, en **draft** mientras se implementa. El agente se suscribe a los eventos del PR (CI, reviews, comentarios) y los atiende solo: arregla el CI en rojo, responde o aplica los comentarios, y mantiene la rama al día con `master` mediante merge (nunca rebase ni force-push sobre historia compartida).
+- **Checkpoint 2:** cuando el change está completo y el CI en verde, el PR pasa a **ready for review** con el resumen del change, la evidencia (CI, pre-evaluación VCDM, `/security-review`) y el checklist de `tasks.md`. El humano revisa y responde "merge" en el chat; recién ahí el agente mergea. El agente nunca mergea sin ese OK explícito.
+- **Checkpoint 3:** todo PR que incluya una migración de schema o un cambio de policy de Cerbos se frena antes de la tarea que lo aplica, y el SQL o la policy se presentan en el chat para una aprobación separada. No lleva auto-merge.
+- **Protección de `master`:** ruleset con PR obligatorio (0 aprobaciones, porque el agente actúa con la cuenta del humano y GitHub no permite aprobar un PR propio), checks de CI obligatorios, bloqueo de force-push y de borrado. Lo configura el humano en Settings → Rules; el agente no puede cambiar settings del repo.
+- **Después del merge:** el agente corre `openspec archive` para el change y la rama no se reutiliza. El trabajo nuevo empieza en una rama nueva desde `master`.
