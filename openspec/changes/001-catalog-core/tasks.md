@@ -56,7 +56,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   - Verify: `harness.int.test.ts` runs `select 1`, and `harness.test.ts`
     asserts the explicit error message when the URL is missing, and that a
     non-TLS URL is refused outside test mode.
-- [ ] 1.6 *(setup)* Add the SessionStart hook `.claude/hooks/session-start.sh`
+- [x] 1.6 *(setup)* Add the SessionStart hook `.claude/hooks/session-start.sh`
   and register it in `.claude/settings.json`. The hook starts the local
   PostgreSQL 16 cluster in the cloud sandbox, creates the `tayzu_test`
   database and exports `DATABASE_URL`, and it is idempotent. Verify: running
