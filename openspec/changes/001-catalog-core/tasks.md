@@ -68,13 +68,21 @@ live next to the code as `*.test.ts`. Integration tests are named
   - test, with a `postgres:16` service
   - `contract:check`
   - `otel-smoke-check`
-  - `pnpm audit --prod --audit-level=high`
+    - `pnpm audit --prod --audit-level=high`
   - gitleaks
+  - Semgrep OSS SAST (pinned version, blocking on high severity)
+  - a Syft SBOM of the pnpm dependency tree, uploaded as a non-blocking
+    workflow artifact
+
 
   The workflow sets `permissions: contents: read` and pins actions by SHA.
   Also add `.github/dependabot.yml` (npm + github-actions, weekly) and
   `docs/security/dependencies.md` (critical fixes within 7 days, high within
-  30 days, quarterly EOL review). Verify:
+  30 days, quarterly EOL review, a license check before adopting a
+  dependency with an allowlist of OSI-approved licenses, and an audited
+  waiver path for `pnpm audit`: the advisory ID goes in `auditConfig`, and
+  its justification, owner and expiry go in the document, changed only by
+  PR). Verify:
   `pnpm ci:local` runs the same steps locally and succeeds, and the workflow
   passes on the PR.
 
@@ -224,16 +232,19 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [ ] 5.4 Change-event appender with a per-tenant gap-free `seq`. Verify:
   `change-events.int.test.ts` shows that the sequence increments per tenant
   independently, that a rolled-back transaction leaves no event and no sequence
-  gap, and it covers "Change events cannot be altered" (raw `UPDATE`,
-  `DELETE` and `TRUNCATE` all raise).
+  gap, that the event stores the `snapshot` it is given, and it covers
+  "Change events cannot be altered" (raw `UPDATE`, `DELETE` and `TRUNCATE`
+  all raise).
 - [ ] 5.5 Write ADR `docs/adr/0009-relations-as-edges.md` (design D4).
   Verify: the file exists and is linked from design D4.
 
 ## 6. Operation pipeline and telemetry primitives (`@tayzu/catalog/src/service`, `src/telemetry`)
 
-- [ ] 6.1 `telemetry/contract.ts` mirrors the design's Observability contract
-  (span names, metric names and units, allowed attribute keys, log event
-  names). Verify: `contract.test.ts` snapshot-asserts every name in the
+- [ ] 6.1 `@tayzu/observability/semconv` defines the shared attribute keys,
+  and `telemetry/contract.ts` imports them and mirrors the design's
+  Observability contract (span names, metric names and units, allowed
+  attribute keys, log event names, the SLI definitions and the list of
+  sampling-exempt signals). Verify: `contract.test.ts` snapshot-asserts every name in the
   design tables, and the `observability-auditor` review compares the two.
 - [ ] 6.2 `defineCatalogOperation`: context validation, operation span with
   the common attributes, the `operation.duration` histogram with an outcome
@@ -332,7 +343,8 @@ live next to the code as `*.test.ts`. Integration tests are named
   deterministically with explicit lock ordering using a barrier.
 - [ ] 8.10 Actor parity and the audit trail. Verify: `actor-parity.int.test.ts`
   covers "Agent and human writes are attributed identically", "Every
-  mutation behaves the same for every actor type" (the full matrix),
+  mutation behaves the same for every actor type" (the full matrix), "Change
+  events record resulting values",
   "Delegated agent write records the principal" (in `updatedBy`, the change
   event and the audit log) and "Failed mutation appends nothing".
 
@@ -343,7 +355,8 @@ live next to the code as `*.test.ts`. Integration tests are named
   bound to the services. Verify: `router.int.test.ts` calls every procedure
   once on the happy path through `createRouterClient`, checks that an
   identifier containing `/` round-trips, and checks that the three
-  high-risk procedures carry `x-tayzu-risk: high`.
+  high-risk procedures carry `x-tayzu-risk: high`. It also covers "Blueprint
+  definitions round-trip".
 - [ ] 9.2 Error mapping to HTTP status codes, and sanitization of internal
   errors. Verify: `errors.int.test.ts` covers "Internal errors are not
   leaked", using a simulated database failure (no SQL or stack trace in the

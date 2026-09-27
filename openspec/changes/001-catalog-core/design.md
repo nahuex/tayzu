@@ -149,7 +149,7 @@ The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 | `catalog_relation_definition` | `id`, `tenant_id`, `source_blueprint_id`, `identifier`, `title jsonb`, `target_blueprint_id`, `many bool`, `required bool` | `UNIQUE (tenant_id, source_blueprint_id, identifier)`; FKs `(tenant_id, source_blueprint_id)` → blueprint `ON DELETE CASCADE` and `(tenant_id, target_blueprint_id)` → blueprint `ON DELETE RESTRICT`; `CHECK (NOT (many AND required))` |
 | `catalog_entity` | `id`, `tenant_id`, `blueprint_id`, `identifier`, `title`, `icon`, `spec_properties jsonb`, `status_properties jsonb NULL`, `status_observed_generation int NULL`, `status_observed_at`, `status_source`, `generation int`, `version int`, audit columns | `UNIQUE (tenant_id, blueprint_id, identifier)`, `UNIQUE (tenant_id, id)`; FK `(tenant_id, blueprint_id)` → blueprint `RESTRICT` |
 | `catalog_entity_relation` | `tenant_id`, `source_entity_id`, `relation_definition_id`, `scope` (`spec`\|`status`), `target_entity_id`, `position int` | PK `(tenant_id, source_entity_id, relation_definition_id, scope, target_entity_id)`; `CHECK (scope IN ('spec','status'))`; FK source `CASCADE`, target `RESTRICT`, definition `RESTRICT`, all composite with `tenant_id`; index `(tenant_id, target_entity_id)` for backward traversal |
-| `catalog_change_event` | `tenant_id`, `seq bigint`, `occurred_at`, `actor_type`, `actor_id`, `on_behalf_of_type NULL`, `on_behalf_of_id NULL`, `action`, `resource_kind`, `blueprint_identifier`, `resource_identifier`, `version`, `changed_fields text[]`, `trace_id NULL` | PK `(tenant_id, seq)`; trigger `catalog_change_event_append_only` (`BEFORE UPDATE OR DELETE` row-level, plus `BEFORE TRUNCATE` statement-level) raises an exception |
+| `catalog_change_event` | `tenant_id`, `seq bigint`, `occurred_at`, `actor_type`, `actor_id`, `on_behalf_of_type NULL`, `on_behalf_of_id NULL`, `action`, `resource_kind`, `blueprint_identifier`, `resource_identifier`, `version`, `changed_fields text[]`, `snapshot jsonb`, `trace_id NULL` | PK `(tenant_id, seq)`; trigger `catalog_change_event_append_only` (`BEFORE UPDATE OR DELETE` row-level, plus `BEFORE TRUNCATE` statement-level) raises an exception |
 | `catalog_tenant_sequence` | `tenant_id` PK, `last_seq bigint` | per-tenant counter for `seq` |
 
 - **Relations are stored only as edges**, never also inside `spec` or
@@ -458,7 +458,7 @@ recorded. The same configuration applies in the test harness.
 
 | Instrument | Type, unit | Attributes (the complete allowed set) | Purpose |
 |---|---|---|---|
-| `tayzu.catalog.operation.duration` | Histogram, `s` (buckets 0.005…10) | `tayzu.catalog.operation`, `tayzu.catalog.outcome` (`success`\|`client_error`\|`server_error`), `error.type` (on error), `tayzu.tenant.id` | Latency, throughput, and error rate per operation (RED) |
+| `tayzu.catalog.operation.duration` | Histogram, `s` (buckets 0.005…10) | `tayzu.catalog.operation`, `tayzu.catalog.outcome` (`success`\|`client_error`\|`server_error`), `error.type` (on error), `tayzu.tenant.id`, `tayzu.actor.type` | Latency, throughput, and error rate per operation (RED) |
 | `tayzu.catalog.entity.mutations` | Counter, `{mutation}` | `tayzu.tenant.id`, `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.mutation` (`created`\|`updated`\|`status_updated`\|`deleted`\|`detached`), `tayzu.actor.type` | Write volume by blueprint and actor type (human vs agent vs integration) |
 | `tayzu.catalog.blueprint.mutations` | Counter, `{mutation}` | `tayzu.tenant.id`, `tayzu.catalog.mutation` (`created`\|`updated`\|`deleted`), `tayzu.actor.type` | Schema churn |
 | `tayzu.catalog.validation.failures` | Counter, `{failure}` | `tayzu.tenant.id`, `tayzu.catalog.operation`, `error.type` (`CATALOG_VALIDATION_FAILED`\|`CATALOG_REFERENCE_VIOLATION`\|`CATALOG_SCHEMA_INCOMPATIBLE`\|`CATALOG_LIMIT_EXCEEDED`\|`CATALOG_RESERVED_IDENTIFIER`) | Client-quality and misuse signal (SEC06) |
@@ -471,6 +471,37 @@ recorded. The same configuration applies in the test harness.
   `tayzu.catalog.blueprint.identifier` has at most 200 per tenant. Entity
   identifiers and actor IDs are **never** metric attributes. The cardinality
   guard in the otel-smoke-check enforces this.
+
+### Shared attribute keys
+
+The cross-capability keys (`tayzu.tenant.id`, `tayzu.actor.type`,
+`tayzu.actor.id`, `tayzu.actor.on_behalf_of.type`,
+`tayzu.actor.on_behalf_of.id`) are defined once in
+`@tayzu/observability/semconv`. The catalog's `contract.ts` imports them and
+defines only the `tayzu.catalog.*` keys. Later capabilities (002, 004, 008)
+reuse the same module, so all of Tayzu shares one vocabulary.
+
+### SLIs
+
+These SLIs need no new instruments; they are derived from
+`tayzu.catalog.operation.duration`, per `tayzu.catalog.operation` and
+`tayzu.tenant.id`:
+
+- **Availability**: the share of operations whose `tayzu.catalog.outcome` is
+  not `server_error`. `client_error` counts as available, because it is the
+  catalog correctly rejecting bad input.
+- **Latency**: p99 of `tayzu.catalog.operation.duration` for successful
+  operations.
+
+SLO targets and error-budget alerts are set in 010, together with T5b.
+
+### Sampling exemption
+
+The `catalog.audit.mutation` and `catalog.security.*` log events, and the
+counters that T5b alerts on (`tayzu.catalog.context.rejections`,
+`tayzu.catalog.validation.failures`), MUST be exempt from sampling and from
+filter or drop rules in any downstream telemetry pipeline. 010 inherits this
+as a constraint on its Collector or exporter configuration.
 
 ### Log events (OTel Logs API, structured)
 
@@ -528,9 +559,9 @@ Per-section posture:
 | SEC04 / SEC08 / SEC11 / SEC15 | N/A | No passwords, no uploads, no messaging, PaaS only. |
 | SEC05 Crypto | Partial | TLS to the database outside tests. No other cryptography. IDs are not secrets. |
 | SEC06 Misuse | Yes | Parameterized SQL (`sql.raw` banned). RE2. No `$ref`. Limits checked before work. Unsafe keys rejected. URL schemes restricted. Agents take the same path. 003 must sanitize markdown and URLs on render. |
-| SEC07 Dependencies | Yes | Lockfile, `pnpm audit`, Dependabot, pure-JS `re2js`. Dependency SLA and quarterly EOL review (R7). |
+| SEC07 Dependencies | Yes | Lockfile, `pnpm audit`, Dependabot, pure-JS `re2js`. Dependency SLA and quarterly EOL review (R7). License review, audited waivers and an SBOM artifact (R14). |
 | SEC09 / SEC10 Secrets | Yes / Partial | Env-only `DATABASE_URL`, `.env*` ignored, gitleaks. Push protection enabled by the human (R5). Key Vault in 002/010. |
-| SEC12 Testing | Yes | Every control above has a test in `tasks.md`. Q1: security tests + VCDM + `/security-review` + DAST from 002 (R9). Q2: trained (R10). Q3: nonexistent, ticket T5b (R11). |
+| SEC12 Testing | Yes | Every control above has a test in `tasks.md`. Q1: security tests + VCDM + `/security-review` + Semgrep SAST in CI (R14) + DAST from 002 (R9). Q2: trained (R10). Q3: nonexistent, ticket T5b (R11). |
 | SEC13 Deployment | Partial | Managed GitHub Actions, SHA-pinned, `contents: read`. |
 | SEC14 Infra permissions | Partial | Trigger in 001. Roles, `REVOKE` and `FORCE RLS` in 002 (T3). |
 | SEC16 Logging | Yes | Durable append-only change log plus centralized OTel audit and security events. Retention 12 months + archive to 24 (R8). 24-hour log delivery (R12). |
@@ -626,5 +657,10 @@ human with options. The answers:
 | R10 | SEC12 Q2 training | Yes, the team is trained. |
 | R11 | SEC12 Q3 post-launch monitoring | Nonexistent today (nothing deployed). Ticket T5b for 010. |
 | R12 | SEC16 Q4 time to deliver logs | 24 hours, backed by a KQL export runbook in 010 (T5). |
+
+| R13 | Value-level history of catalog state (raised by the Platform Engineering references, `RA-AZ` L178, `SPE4` L366) | Every change event stores a `snapshot jsonb` of the resulting state (the last state for a delete). This gives point-in-time views and diffs without revision tables. |
+| R14 | Extra CI supply-chain controls (`RA-AZ` L426-L430, `VULN` L190-L196, L224, `SOV` L266-L302) | Semgrep OSS SAST (pinned, blocking on high severity); a Syft SBOM as a non-blocking artifact; a license review and an audited waiver path for `pnpm audit` in `docs/security/dependencies.md`. |
+| R15 | Observability contract additions (`RA-AZ` L190, `SPE4` L238-L250, L818-L826, `OBS` L100-L102, L216, L224) | SLIs on `operation.duration`; `tayzu.actor.type` on that histogram; shared attribute keys in `@tayzu/observability/semconv`; audit and security signals exempt from sampling. |
+| R16 | Blueprint definitions as code (`SOV` L709-L711, `RA-AZ` L174) | A contract test: blueprint read output, minus server-managed fields, is accepted unchanged by create and update. |
 
 No open questions remain for this change.
