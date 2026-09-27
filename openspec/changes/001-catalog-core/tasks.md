@@ -50,9 +50,12 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [ ] 1.5 Postgres harness in `@tayzu/db`:
   - `createPool(url)` and `runMigrations(pool)`.
   - A test helper `getTestDatabase()` that applies migrations once per run
-    and throws an explicit error when `DATABASE_URL` is unset.
+    and throws an explicit error when `DATABASE_URL` is unset. Outside the test
+    harness, `createPool` refuses a connection string without
+    `sslmode=verify-full`.
   - Verify: `harness.int.test.ts` runs `select 1`, and `harness.test.ts`
-    asserts the explicit error message when the URL is missing.
+    asserts the explicit error message when the URL is missing, and that a
+    non-TLS URL is refused outside test mode.
 - [ ] 1.6 *(setup)* Add the SessionStart hook `.claude/hooks/session-start.sh`
   and register it in `.claude/settings.json`. The hook starts the local
   PostgreSQL 16 cluster in the cloud sandbox, creates the `tayzu_test`
@@ -79,24 +82,36 @@ live next to the code as `*.test.ts`. Integration tests are named
   and `details`, plus the `isCatalogError` guard. Verify: `errors.test.ts`
   checks that each code is constructible, that `issues` is preserved, and
   that the code list matches the spec's Conventions list exactly.
-- [ ] 2.2 `parseCatalogContext` fails closed. Verify: `context.test.ts` covers
-  "Operation without tenant context is rejected" and "Unknown actor type is
-  rejected", plus empty `actor.id` and a `tenantId` longer than 64
-  characters, and asserts the rejection reason (`missing_tenant` or
-  `invalid_actor`).
+- [ ] 2.2 `parseCatalogContext` fails closed, enforcing the `tenantId`
+  pattern, the opaque `actor.id` pattern and the optional `onBehalfOf`.
+  Verify: `context.test.ts` covers "Operation without tenant context is
+  rejected", "Unknown actor type is rejected" and "Malformed tenant or actor
+  ID is rejected", plus an empty `actor.id`, a 65-character `tenantId` and an
+  invalid `onBehalfOf`. It also asserts the rejection reason
+  (`missing_tenant` or `invalid_actor`).
 - [ ] 2.3 Identifier validators (blueprint, property and relation
   identifiers, and entity identifiers). Verify: `identifiers.test.ts`
   covers "Invalid identifier", the boundary lengths (64 and 256), and the
   rejection of `__proto__`, spaces, and a leading digit. It also checks
-  that an entity identifier accepts `org/repo`.
+  that an entity identifier accepts `org/repo` and rejects `a/../b`, `./a`,
+  `/a`, `a/` and `a//b`.
 - [ ] 2.4 `LocalizedText` schema. Verify: `localized-text.test.ts` covers
   "Missing English title is rejected" and "Unsupported locale is
   rejected", and checks the per-locale length limits (256 for titles,
   4096 for descriptions).
-- [ ] 2.5 `CatalogLimits` with the spec defaults and a validated overrides
+- [ ] 2.5 `CatalogLimits` with every spec default (including the blueprint
+  size, `enum` entries, nesting depth, icon, formatted-string, detach and
+  cursor limits) and a validated overrides
   merge. Verify: `limits.test.ts` asserts every default from the spec
   table and that an invalid override (for example a negative value) is
   rejected.
+
+- [ ] 2.6 Safe input parsing. Rebuild all input objects as null-prototype
+  objects and reject `__proto__`, `constructor` and `prototype` at every
+  depth, including locale keys and keys inside `object` values. Enforce the
+  nesting-depth limit. Verify: `safe-parse.test.ts` covers "Unsafe keys are
+  rejected", checks that `Object.prototype` is untouched after parsing a
+  malicious payload, and rejects depth 17.
 
 ## 3. Blueprint definition meta-validation (pure)
 
@@ -121,9 +136,11 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [ ] 3.5 Relation definition shape, including defaults for `many` and
   `required`. Verify: `relation-definition.test.ts` covers "Required many
   relation is rejected" and checks that the defaults are applied.
-- [ ] 3.6 The reserved `_` prefix rule as a pure function of identifier and
-  actor. Verify: `reserved.test.ts` rejects the `user`, `agent` and
-  `integration` actors and allows `system`.
+- [ ] 3.6 The reserved `_` prefix rule as a pure function of the blueprint
+  identifier, the operation (blueprint write or entity write) and the actor.
+  Verify: `reserved.test.ts` rejects the `user`, `agent` and `integration`
+  actors for both blueprint and entity writes, allows `system`, and always
+  allows reads.
 - [ ] 3.7 Blueprint-level count limits (properties and relations). Verify:
   `blueprint-definition.test.ts` accepts 200 properties, rejects 201 with
   `CATALOG_LIMIT_EXCEEDED`, and applies the same bounds to relations
@@ -138,7 +155,10 @@ live next to the code as `*.test.ts`. Integration tests are named
   `additionalProperties: false`, the RE2 `regExp` adapter and restricted
   formats. Verify: `entity-validator.test.ts` covers "Spec violating the
   schema is rejected" and "Undeclared property is rejected", with the exact
-  paths `/spec/properties/<name>`.
+  paths `/spec/properties/<name>`. It also covers "Non-HTTP URL value is
+  rejected" (`javascript:`, `data:`, `ftp:`) and the 2048-character cap on
+  formatted strings, which is checked before the format itself (ajv-formats
+  in `fast` mode).
 - [ ] 4.2 Apply defaults on write. Verify: `entity-validator.test.ts`
   covers "Default is applied" and checks that an explicitly given value
   wins over the default.
@@ -175,7 +195,8 @@ live next to the code as `*.test.ts`. Integration tests are named
   `drizzle-kit generate`. Verify: `schema.int.test.ts` applies the migration
   to an empty database and asserts through `information_schema`/`pg_catalog`
   that the tables, unique constraints, FKs (with their `ON DELETE` actions)
-  and the check constraint exist. **Stop for Checkpoint 3 approval of the SQL
+  the check constraint, and the append-only trigger on
+  `catalog_change_event` exist. **Stop for Checkpoint 3 approval of the SQL
   before continuing.**
 - [ ] 5.2 `withTenantTransaction(ctx, fn)` sets `app.tenant_id` through
   `set_config($1, true)` and sets `statement_timeout`. Verify:
@@ -188,8 +209,9 @@ live next to the code as `*.test.ts`. Integration tests are named
   defense in depth independent of the service layer.
 - [ ] 5.4 Change-event appender with a per-tenant gap-free `seq`. Verify:
   `change-events.int.test.ts` shows that the sequence increments per tenant
-  independently, and that a rolled-back transaction leaves no event and no
-  sequence gap.
+  independently, that a rolled-back transaction leaves no event and no sequence
+  gap, and it covers "Change events cannot be altered" (raw `UPDATE`,
+  `DELETE` and `TRUNCATE` all raise).
 - [ ] 5.5 Write ADR `docs/adr/0009-relations-as-edges.md` (design D4).
   Verify: the file exists and is linked from design D4.
 
@@ -201,8 +223,10 @@ live next to the code as `*.test.ts`. Integration tests are named
   design tables, and the `observability-auditor` review compares the two.
 - [ ] 6.2 `defineCatalogOperation`: context validation, operation span with
   the common attributes, the `operation.duration` histogram with an outcome
-  class, and error mapping in which an unknown error becomes `INTERNAL` with
-  `recordException`, while a `CATALOG_*` error gets no exception event. On
+  class, and error mapping in which an unknown error becomes `INTERNAL` with a
+  **sanitized** exception (type, SQLSTATE and constraint only, and the
+  stack without its message line), while a `CATALOG_*` error gets no
+  exception event. On
   context failure it also records `context.rejections` and the
   `catalog.security.context_rejected` log. Verify: `pipeline.int.test.ts`
   uses a dummy operation and the telemetry harness.
@@ -250,7 +274,11 @@ live next to the code as `*.test.ts`. Integration tests are named
   `version` 1, `status` null, and a change event. Verify:
   `entities.int.test.ts` covers "Create an entity", "Entity of a missing
   blueprint" and "Create on existing identifier" (a unique violation mapped
-  to `CATALOG_ALREADY_EXISTS`).
+  to `CATALOG_ALREADY_EXISTS` by constraint name). It also covers
+  "Tenant cannot write entities of a reserved blueprint", and checks that a
+  forced FK violation (`23503`) on a known constraint maps to
+  `CATALOG_REFERENCE_VIOLATION` while an unknown constraint maps to
+  `INTERNAL`.
 - [ ] 8.2 Relation resolution and referential integrity on write, with the
   `catalog.relations.resolve` span. Verify: `entity-relations.int.test.ts`
   covers "Valid single relation", "Missing relation target" and "Many
@@ -262,16 +290,18 @@ live next to the code as `*.test.ts`. Integration tests are named
   changes do not touch status", and checks the `entity.mutations` counter.
 - [ ] 8.4 `entities.writeStatus`. Verify: `entity-status.int.test.ts` covers
   "Integration reports status" and "Observed generation from the future is
-  rejected", and checks that a blueprint without a `statusSchema` rejects a
-  non-empty status.
+  rejected", checks that a
+  blueprint without a `statusSchema` rejects a non-empty status, and checks
+  that a `source` of `Git Hub!` is rejected.
 - [ ] 8.5 `entities.get` and `entities.list` with keyset pagination. Verify:
   `entities.int.test.ts` covers pagination, and checks that the list never
   includes entities of another blueprint.
 - [ ] 8.6 `entities.delete` with `detachReferences`. Verify:
   `entities-delete.int.test.ts` covers "Delete an unreferenced entity",
   "Delete a referenced entity is rejected by default", "Detach optional
-  references on delete", "Required references block detach" and "Detach on
-  delete records every affected entity".
+  references on delete", "Required references block detach" "Detach on
+  delete records every affected entity", and the 1000-referrer limit
+  (`CATALOG_LIMIT_EXCEEDED`).
 - [ ] 8.7 `entities.listRelated` in the forward and backward directions,
   with pagination. Verify: `entity-related.int.test.ts` covers "Forward and
   backward relations".
@@ -283,16 +313,19 @@ live next to the code as `*.test.ts`. Integration tests are named
   never persist an invalid entity. Verify: `concurrency.int.test.ts`, run
   deterministically with explicit lock ordering using a barrier.
 - [ ] 8.10 Actor parity and the audit trail. Verify: `actor-parity.int.test.ts`
-  covers "Agent and human writes are attributed identically" and "Failed
-  mutation appends nothing".
+  covers "Agent and human writes are attributed identically", "Every
+  mutation behaves the same for every actor type" (the full matrix),
+  "Delegated agent write records the principal" (in `updatedBy`, the change
+  event and the audit log) and "Failed mutation appends nothing".
 
 ## 9. API contract (`@tayzu/catalog/src/api`)
 
 - [ ] 9.1 oRPC contract with Zod input and output for all 12 procedures, the
   routes from design D11 (percent-encoded entity identifiers), and a router
   bound to the services. Verify: `router.int.test.ts` calls every procedure
-  once on the happy path through `createRouterClient`, and checks that an
-  identifier containing `/` round-trips.
+  once on the happy path through `createRouterClient`, checks that an
+  identifier containing `/` round-trips, and checks that the three
+  high-risk procedures carry `x-tayzu-risk: high`.
 - [ ] 9.2 Error mapping to HTTP status codes, and sanitization of internal
   errors. Verify: `errors.int.test.ts` covers "Internal errors are not
   leaked", using a simulated database failure (no SQL or stack trace in the
@@ -301,7 +334,8 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [ ] 9.3 `contract:generate` and `contract:check` scripts, with the
   committed `openapi/catalog.openapi.json`. Verify: `contract-check.test.ts`
   covers "Contract drift fails CI" by mutating a copy of an input schema and
-  asserting the check exits non-zero, and the committed document passes.
+  asserting the check exits non-zero, covers "Contract cannot carry the tenant", and the committed document
+  passes.
 - [ ] 9.4 Write ADR `docs/adr/0011-api-not-exposed-before-auth.md` (design
   D2) and the API section of `docs/catalog/catalog-core.md` (routes, error
   codes, examples). Verify: the docs build is not configured yet, so run
@@ -320,7 +354,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   metric attribute makes it fail.
 - [ ] 10.3 Marker-leak test. Verify: `otel-smoke-check` covers "Property
   values never reach telemetry" across spans (including `pg` spans),
-  metrics and logs.
+  metrics and logs, including after a forced database constraint error.
 - [ ] 10.4 Document the telemetry reference in `docs/catalog/catalog-core.md`
   (signals, attributes, and example queries against the Application Insights
   schema). Verify: markdownlint passes, and every name in the doc exists in

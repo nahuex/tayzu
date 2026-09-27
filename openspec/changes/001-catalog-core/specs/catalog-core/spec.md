@@ -16,8 +16,22 @@ entity keeps its desired state (`spec`) separate from its observed state
   it. They are recommendations or permitted latitude, and tests MUST NOT assert
   against behavior a MAY clause permits.
 - **Catalog context**: every operation runs with a catalog context
-  `{ tenantId, actor: { type, id } }`. `actor.type` is one of `user`, `agent`,
-  `integration`, `system`.
+  `{ tenantId, actor: { type, id, onBehalfOf? } }`.
+  - `tenantId` matches `^[A-Za-z0-9_-]{1,64}$`.
+  - `actor.type` is one of `user`, `agent`, `integration`, `system`.
+  - `actor.id` is an opaque identifier matching `^[A-Za-z0-9_.:-]{1,128}$`.
+    It is never an email or display name.
+  - The optional `actor.onBehalfOf` `{ type, id }` follows the same rules and
+    names the principal an `agent` or `integration` acts for.
+  - The context MUST be supplied only by the trusted host, meaning an
+    in-process caller or, from 002, the authentication middleware. No
+    procedure input, path, query or body MAY carry `tenantId` or `actor`.
+    The `system` actor type MUST NOT be derivable from any external
+    credential.
+- **Unsafe keys**: the keys `__proto__`, `constructor` and `prototype` are
+  rejected with `CATALOG_VALIDATION_FAILED` in every key position of catalog
+  input. This includes identifiers, property and relation keys, locale keys,
+  and keys nested inside `object`-typed values.
 - **Error codes**: operations fail with one of the stable codes
   `CATALOG_CONTEXT_REQUIRED`, `CATALOG_VALIDATION_FAILED`, `CATALOG_NOT_FOUND`,
   `CATALOG_ALREADY_EXISTS`, `CATALOG_VERSION_CONFLICT`,
@@ -29,7 +43,7 @@ entity keeps its desired state (`spec`) separate from its observed state
   | Limit | Default |
   |---|---|
   | Blueprint, property and relation identifier | `^[A-Za-z][A-Za-z0-9_-]{0,63}$` |
-  | Entity identifier | `^[A-Za-z0-9@_.:/=-]{1,256}$` |
+  | Entity identifier | `^[A-Za-z0-9@_.:/=-]{1,256}$`, with no `.` or `..` path segment and no leading, trailing or repeated `/` |
   | Localized text, per locale | 256 characters (titles), 4096 (descriptions) |
   | Properties per blueprint (spec + status) | 200 |
   | Relation definitions per blueprint | 50 |
@@ -37,13 +51,21 @@ entity keeps its desired state (`spec`) separate from its observed state
   | Serialized `spec` or `status` of one entity | 256 KiB |
   | `pattern` keyword length | 512 characters |
   | List page size | default 50, max 500 |
+| Serialized blueprint definition | 256 KiB |
+| `enum` entries per property | 500 |
+| Nesting depth of `object` values | 16 |
+| Blueprint and entity `icon` | 64 characters |
+| String values with a `format` | 2048 characters |
+| Status `source` label | blueprint identifier pattern |
+| Referrers detached by one delete | 1000 |
+| Pagination cursor | 512 characters |
 
 ## ADDED Requirements
 
 ### Requirement: Tenant context is mandatory and fails closed
-Every catalog operation MUST require a catalog context with a non-empty
-`tenantId` (at most 64 characters) and an actor whose `type` is one of the four
-allowed values and whose `id` is non-empty. An operation invoked without a valid
+Every catalog operation MUST require a catalog context that satisfies the
+Conventions rules (`tenantId` pattern, allowed actor type, opaque actor ID, and
+the same rules for an optional `onBehalfOf`). An operation invoked without a valid
 context MUST fail with `CATALOG_CONTEXT_REQUIRED`. It MUST NOT read or write any
 data and MUST NOT fall back to a default tenant.
 
@@ -55,6 +77,10 @@ data and MUST NOT fall back to a default tenant.
 
 #### Scenario: Unknown actor type is rejected
 - **WHEN** an operation is invoked with actor `{ type: "robot", id: "x" }`
+- **THEN** it fails with `CATALOG_CONTEXT_REQUIRED`
+
+#### Scenario: Malformed tenant or actor ID is rejected
+- **WHEN** an operation is invoked with `tenantId` `x'; --` or with actor ID `alice@example.com`
 - **THEN** it fails with `CATALOG_CONTEXT_REQUIRED`
 
 ### Requirement: Tenant data isolation
@@ -132,11 +158,19 @@ other than `en` required.
 Blueprint identifiers starting with `_` are reserved for platform-defined
 blueprints, such as the future `_workflow`. Create, update, and delete requests
 from any actor other than `system` for a blueprint whose identifier starts with
-`_` MUST fail with `CATALOG_RESERVED_IDENTIFIER`. Reading reserved blueprints
+`_` MUST fail with `CATALOG_RESERVED_IDENTIFIER`. Entity create, upsert, status
+write and delete on such a blueprint MUST also fail with
+`CATALOG_RESERVED_IDENTIFIER` for non-`system` actors, until the change that
+owns that blueprint defines its write path. Reading reserved blueprints
 and their entities MUST follow the same rules as any other blueprint.
 
 #### Scenario: Tenant cannot create a reserved blueprint
 - **WHEN** an actor of type `user` creates blueprint `_workflow`
+- **THEN** it fails with `CATALOG_RESERVED_IDENTIFIER`
+
+#### Scenario: Tenant cannot write entities of a reserved blueprint
+- **GIVEN** a `system` actor created blueprint `_workflow` for tenant `t1`
+- **WHEN** an actor of type `agent` upserts an entity of `_workflow`
 - **THEN** it fails with `CATALOG_RESERVED_IDENTIFIER`
 
 #### Scenario: System actor can create a reserved blueprint
@@ -156,7 +190,8 @@ required `title` (localized text) and one of the following types.
 - `object`, a free-form JSON object. Its keys and values are not validated
   beyond the size limit.
 
-Definitions using any other type, format, or keyword MUST be rejected with
+Values of format `url` MUST be absolute URLs with the `http` or `https`
+scheme. Definitions using any other type, format, or keyword MUST be rejected with
 `CATALOG_VALIDATION_FAILED`. This explicitly includes `$ref`, `$id`, `$defs`,
 `if`/`then`/`else`, and nested object schemas. A `pattern` MUST be validated at
 definition time as a linear-time (RE2-compatible) regular expression of at most
@@ -164,6 +199,10 @@ definition time as a linear-time (RE2-compatible) regular expression of at most
 `default` MUST itself be valid against its property definition. Every name in
 `required` MUST be a declared property. Property identifiers MUST be unique
 across `schema` and `statusSchema` of the same blueprint.
+
+#### Scenario: Unsafe keys are rejected
+- **WHEN** a blueprint title uses locale key `__proto__`, or an entity is written with `spec.properties` containing `constructor`, or an `object` value contains a nested `__proto__` key
+- **THEN** each write fails with `CATALOG_VALIDATION_FAILED`
 
 #### Scenario: Supported property types are accepted
 - **WHEN** a blueprint declares properties of type string (format `url`), integer (minimum 0), boolean, array of strings, and object
@@ -177,6 +216,11 @@ across `schema` and `statusSchema` of the same blueprint.
 #### Scenario: Catastrophic-backtracking pattern is rejected
 - **WHEN** a string property declares `"pattern": "(a+)+\\1"`
 - **THEN** the blueprint is rejected with `CATALOG_VALIDATION_FAILED` with an issue at that property's `/pattern`
+
+#### Scenario: Non-HTTP URL value is rejected
+- **GIVEN** property `docs` of type string with format `url`
+- **WHEN** an entity is written with `docs` = `"javascript:alert(1)"`
+- **THEN** it fails with `CATALOG_VALIDATION_FAILED` with an issue at `/spec/properties/docs`
 
 #### Scenario: Invalid default is rejected
 - **WHEN** an integer property declares `"minimum": 1, "default": 0`
@@ -374,7 +418,8 @@ it MUST be the only way to change `status`. The following rules apply.
   `statusSchema`. A blueprint without a `statusSchema` rejects any non-empty
   status with `CATALOG_VALIDATION_FAILED`.
 - The operation MUST set `observedAt` to the server's current UTC time.
-- It MUST set `source` to the caller-supplied source label (1-128 characters).
+- It MUST set `source` to the caller-supplied source label, which MUST match
+  the blueprint identifier pattern (for example `github`).
 - It MUST set `observedGeneration` to the caller-supplied generation the
   observation corresponds to. That value MUST be ≤ the entity's current
   `generation`, otherwise the operation fails with `CATALOG_VALIDATION_FAILED`.
@@ -457,7 +502,8 @@ blueprints or tenants.
 
 Deleting an entity that is the target of any relation MUST fail with
 `CATALOG_REFERENCE_VIOLATION`, listing up to 10 referring entities, unless the
-request sets `detachReferences: true`. In that case, the entity is removed from
+request sets `detachReferences: true` (at most 1000 referrers; more fails with
+`CATALOG_LIMIT_EXCEEDED`). In that case, the entity is removed from
 every optional relation that references it, in the same transaction, and each
 modified referrer gets a new `version` and `generation`. The delete MUST still
 fail if any referrer holds it in a `required` relation.
@@ -484,7 +530,8 @@ fail if any referrer holds it in a `required` relation.
 
 ### Requirement: Actor attribution and change events
 Every successful mutation MUST do the following.
-- Record the context actor as `updatedBy`, and as `createdBy` on creation.
+- Record the context actor, including `onBehalfOf` when present, as
+  `updatedBy`, and as `createdBy` on creation.
   This applies to blueprint create, update, and delete, and to entity create,
   upsert (except `unchanged`), status write, and delete (including referrers
   detached by a delete).
@@ -493,19 +540,32 @@ Every successful mutation MUST do the following.
   tenant, `tenantId`, `occurredAt` (UTC), the actor, the action (`created`,
   `updated`, `status_updated`, `deleted`), the resource kind (`blueprint` or
   `entity`), the blueprint identifier, the resource identifier, the resulting
-  `version`, the list of changed top-level fields, and the current trace ID
-  when one exists.
+  `version`, the list of changed top-level fields, the `onBehalfOf` principal
+  when present, and the current trace ID when one exists.
 
 The same code path MUST be used for every actor type. There MUST NOT be any
 operation variant that skips validation, attribution, or event recording for a
-particular actor type. Change events MUST be append-only through the catalog.
-No catalog operation updates or deletes them. A mutation that fails MUST NOT
+particular actor type. Change events MUST be append-only. No catalog operation
+updates or deletes them, and the database MUST reject `UPDATE`, `DELETE` and
+`TRUNCATE` on the change-event log. A mutation that fails MUST NOT
 append any event.
 
 #### Scenario: Agent and human writes are attributed identically
 - **WHEN** a `user` actor `u1` upserts entity `a`, and an `agent` actor `ag1` upserts entity `b`, with identical payload shapes
 - **THEN** both entities pass the same validation, `a.updatedBy` is `{ user, u1 }`, `b.updatedBy` is `{ agent, ag1 }`
 - **AND** each write appended one change event naming its actor
+
+#### Scenario: Every mutation behaves the same for every actor type
+- **WHEN** each mutation (blueprint create, update and delete; entity create, upsert, status write and delete) is executed once successfully and once with a validation error, by each of the actor types `user`, `agent` and `integration`
+- **THEN** the outcomes, error codes, attribution fields and change events differ only in the recorded actor
+
+#### Scenario: Delegated agent write records the principal
+- **WHEN** actor `{ type: "agent", id: "ag1", onBehalfOf: { type: "user", id: "u1" } }` upserts an entity
+- **THEN** `updatedBy` and the change event both record `ag1` acting on behalf of `u1`
+
+#### Scenario: Change events cannot be altered
+- **WHEN** a direct SQL `UPDATE` or `DELETE` is issued against the change-event log
+- **THEN** the database rejects it
 
 #### Scenario: Failed mutation appends nothing
 - **WHEN** an entity write fails with `CATALOG_VALIDATION_FAILED`
@@ -543,18 +603,26 @@ MUST NOT apply or store any time-zone conversion.
 The catalog operations MUST be described by a machine-readable OpenAPI 3.1
 document that is committed to the repository. CI MUST fail when the
 implementation's generated document differs from the committed one. Error
-responses MUST expose the stable error code and validation issues, and MUST NOT
-expose stack traces, SQL, or other internal details.
+responses MUST expose the stable error code and validation issues, and MUST NOT expose stack traces, SQL, or other internal details. Internal
+errors MUST be recorded only as their error type, SQLSTATE and constraint name.
+The error message, database `detail` and `where` fields, and bind parameters
+MUST be dropped, because database messages embed row values. No procedure input
+MAY declare a `tenantId` or `actor` field. The contract check MUST fail if the
+document contains one.
 
 #### Scenario: Contract drift fails CI
 - **GIVEN** the committed OpenAPI document
 - **WHEN** a procedure's input schema changes without regenerating the document
 - **THEN** the contract-check step fails
 
+#### Scenario: Contract cannot carry the tenant
+- **WHEN** a procedure input declares a field named `tenantId`
+- **THEN** the contract-check step fails
+
 #### Scenario: Internal errors are not leaked
 - **WHEN** an unexpected database error occurs during an operation
 - **THEN** the caller receives a generic internal error with no SQL text or stack trace
-- **AND** the full error is recorded on the operation's span
+- **AND** the operation's span records the error type and SQLSTATE, but not the database message
 
 ### Requirement: Telemetry contract
 Every catalog operation MUST emit the spans, metrics, and security log events
@@ -570,3 +638,4 @@ enumerated values are permitted.
 #### Scenario: Property values never reach telemetry
 - **WHEN** an entity is created with a property value `"secret-marker-123"` and title `"Title-marker-456"`
 - **THEN** neither marker appears in any exported span, metric, or log attribute
+- **AND** the same holds when a later write of that entity fails with a forced database constraint error

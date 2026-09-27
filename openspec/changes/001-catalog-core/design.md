@@ -28,9 +28,15 @@
 **Goals:**
 - A domain layer (validation, schema compatibility, merge semantics) that is
   pure, I/O-free, and exhaustively unit-testable.
-- Tenant isolation enforced in three layers from day one: service scoping,
-  composite foreign keys, and a per-transaction `app.tenant_id` seam that
-  002's RLS policies can plug into without touching catalog code.
+- Tenant isolation from day one. Two layers are active in 001:
+  - explicit `tenant_id` scoping in every query;
+  - composite `tenant_id` foreign keys, which protect writes and references
+    but not reads.
+
+  A third layer is prepared: a per-transaction `app.tenant_id` seam that
+  002's RLS policies plug into without touching catalog code. That layer only
+  takes effect once 002 adds a non-owner runtime role and
+  `FORCE ROW LEVEL SECURITY`.
 - A single operation pipeline, so every operation gets context checks, the
   tenant transaction, error mapping, and telemetry the same way. This is the
   structural guarantee behind "same path for humans and agents".
@@ -97,8 +103,17 @@ until 002 puts authentication and Cerbos in front.
 
 ```ts
 type ActorType = 'user' | 'agent' | 'integration' | 'system';
-interface CatalogContext { tenantId: string; actor: { type: ActorType; id: string } }
+interface Principal { type: ActorType; id: string }            // id: opaque, ^[A-Za-z0-9_.:-]{1,128}$
+interface CatalogContext { tenantId: string; actor: Principal & { onBehalfOf?: Principal } }
 ```
+
+The context is a **host-supplied** argument (`createRouterClient(router, {
+context })` in 001; the auth middleware in 002). It is never part of a
+procedure's input schema, and `contract:check` rejects any `tenantId` or
+`actor` field in the OpenAPI document. `onBehalfOf` exists so that an agent's
+write can be traced to the human or run that triggered it. The Tayzu
+principle "same audit trail" needs the delegation chain, not only the last
+hop.
 
 Every service operation is declared through one function,
 `defineCatalogOperation(name, handler)`. The runtime flow is:
@@ -116,9 +131,11 @@ Every service operation is declared through one function,
 
 There is **no** second entry point. Actor type only ever appears as data
 (attribution, the reserved-identifier rule). It never selects a code path.
-The actor-parity test and a lint rule (`no-restricted-syntax` banning
-`actor.type ===` outside `domain/reserved.ts` and `service/pipeline.ts`) guard
-this.
+The main guard is the actor-parity test **matrix**: every mutation × every
+actor type × success and failure. A lint rule (`no-restricted-syntax` on
+`actor.type` member access outside `domain/reserved.ts` and
+`service/pipeline.ts`) is a secondary aid only. It can be bypassed, for
+example by destructuring, so it is not relied on.
 
 ### D4. Data model (first migration)
 
@@ -132,7 +149,7 @@ The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 | `catalog_relation_definition` | `id`, `tenant_id`, `source_blueprint_id`, `identifier`, `title jsonb`, `target_blueprint_id`, `many bool`, `required bool` | `UNIQUE (tenant_id, source_blueprint_id, identifier)`; FKs `(tenant_id, source_blueprint_id)` → blueprint `ON DELETE CASCADE` and `(tenant_id, target_blueprint_id)` → blueprint `ON DELETE RESTRICT`; `CHECK (NOT (many AND required))` |
 | `catalog_entity` | `id`, `tenant_id`, `blueprint_id`, `identifier`, `title`, `icon`, `spec_properties jsonb`, `status_properties jsonb NULL`, `status_observed_generation int NULL`, `status_observed_at`, `status_source`, `generation int`, `version int`, audit columns | `UNIQUE (tenant_id, blueprint_id, identifier)`, `UNIQUE (tenant_id, id)`; FK `(tenant_id, blueprint_id)` → blueprint `RESTRICT` |
 | `catalog_entity_relation` | `tenant_id`, `source_entity_id`, `relation_definition_id`, `target_entity_id`, `position int` | PK `(tenant_id, source_entity_id, relation_definition_id, target_entity_id)`; FK source `CASCADE`, target `RESTRICT`, definition `RESTRICT`, all composite with `tenant_id`; index `(tenant_id, target_entity_id)` for backward traversal |
-| `catalog_change_event` | `tenant_id`, `seq bigint`, `occurred_at`, `actor_type`, `actor_id`, `action`, `resource_kind`, `blueprint_identifier`, `resource_identifier`, `version`, `changed_fields text[]`, `trace_id NULL` | PK `(tenant_id, seq)` |
+| `catalog_change_event` | `tenant_id`, `seq bigint`, `occurred_at`, `actor_type`, `actor_id`, `on_behalf_of_type NULL`, `on_behalf_of_id NULL`, `action`, `resource_kind`, `blueprint_identifier`, `resource_identifier`, `version`, `changed_fields text[]`, `trace_id NULL` | PK `(tenant_id, seq)`; trigger `catalog_change_event_append_only` (`BEFORE UPDATE OR DELETE` row-level, plus `BEFORE TRUNCATE` statement-level) raises an exception |
 | `catalog_tenant_sequence` | `tenant_id` PK, `last_seq bigint` | per-tenant counter for `seq` |
 
 - **Relations are stored only as edges**, never also inside `spec` JSON.
@@ -149,6 +166,10 @@ The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 - The **`spec`/`status` split** is expressed as separate columns rather than
   one document. This lets the status write be a narrow `UPDATE` that
   physically cannot touch spec columns.
+- The **append-only trigger** makes the change-event log tamper-resistant
+  in 001 without needing database roles. In 002 it is complemented by
+  `REVOKE UPDATE, DELETE, TRUNCATE` for the runtime role. The trigger stays
+  as a second layer, because a table owner can still disable it.
 - No GIN indexes on jsonb yet. 003 adds them together with filtering.
 
 ### D5. Tenant transaction seam for RLS
@@ -156,16 +177,26 @@ The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 `withTenantTransaction(ctx, fn)` opens a transaction and runs:
 
 ```sql
-SET LOCAL app.tenant_id = $1
-SET LOCAL statement_timeout = $2
+SELECT set_config('app.tenant_id', $1, true),
+       set_config('statement_timeout', $2, true)
 ```
+
+`SET LOCAL` cannot take bind parameters, so `set_config(..., true)` (which is
+transaction-local) is the only allowed form.
 
 `$2` defaults to 5 s. Repositories still filter by `tenant_id` explicitly in
 every query. In 002, RLS policies such as
 `USING (tenant_id = current_setting('app.tenant_id'))` are added under a
 non-owner app role. Catalog code does not change, and the existing isolation
 tests become RLS tests with no rewrite. The value is always passed as a bind
-parameter (`set_config('app.tenant_id', $1, true)`), never interpolated.
+parameter, never interpolated. It has also already been validated against
+`^[A-Za-z0-9_-]{1,64}$`. The RLS tests only carry over to 002 unchanged if
+002 runs them as the non-owner role with `FORCE ROW LEVEL SECURITY` (recorded
+as a 002 requirement).
+
+Outside tests, `createPool` requires TLS (`sslmode=verify-full`) and refuses
+to start otherwise. Only the test harness may connect to a local database
+without TLS.
 
 ### D6. Property schema subset and validation engine
 
@@ -177,8 +208,12 @@ parameter (`set_config('app.tenant_id', $1, true)`), never interpolated.
   `allErrors: true`, and `code.regExp` set to an **RE2** adapter over `re2js`,
   a pure-JS linear-time engine that needs no native build. The Ajv schema is
   *derived* from the meta-validated definition, so Ajv never sees user JSON
-  directly. Formats come from `ajv-formats`, limited to `date-time`, `email`,
-  and `uri` (exposed as `url`). `markdown` and `yaml` are presentation hints
+  directly. Formats come from `ajv-formats` in `mode: 'fast'`, limited to
+  `date-time`, `email`, and `uri` (exposed as `url`). A `url` additionally
+  passes a custom keyword that allows only the `http` and `https` schemes,
+  which blocks `javascript:` and `data:`. Format regexes are not RE2, so every
+  formatted string is capped at 2048 characters before any format check
+  runs. `markdown` and `yaml` are presentation hints
   validated as plain strings. They are **never parsed server-side**, which
   avoids YAML bombs.
 - `pattern` is compiled with RE2 at definition time. Compile errors
@@ -231,6 +266,11 @@ Nothing expensive runs on oversized input.
 
 ### D9. Write semantics
 
+- **Unsafe keys**: all input objects are rebuilt as null-prototype objects
+  (`Object.create(null)`) during parsing, and `applyWrite` merges into them.
+  It never uses `Object.assign` or spread onto `{}`. `__proto__`,
+  `constructor` and `prototype` are rejected at every depth during parsing
+  (spec Conventions).
 - **Upsert** loads the current row `FOR UPDATE`, computes the next spec (a
   pure `applyWrite(current, input, mode)` function), applies defaults, and
   validates. It then compares canonical JSON (sorted keys, relation order
@@ -239,8 +279,14 @@ Nothing expensive runs on oversized input.
   the change event.
 - `generation` increments only when `spec` changes. `version` increments on
   any change.
-- **Create** relies on the unique constraint: a `23505` error maps to
-  `CATALOG_ALREADY_EXISTS`. There is no read-then-insert race.
+- **Create** relies on the unique constraint. There is no read-then-insert
+  race. Database errors are mapped by **constraint name**, never by SQLSTATE
+  alone:
+  - `23505` on `catalog_entity_tenant_blueprint_identifier_uq` (and the
+    equivalent blueprint constraint) → `CATALOG_ALREADY_EXISTS`;
+  - `23503` on the edge target, blueprint or relation-definition FKs →
+    `CATALOG_REFERENCE_VIOLATION`;
+  - anything else → `INTERNAL`.
 - **Delete with `detachReferences`** does the following in one transaction:
   1. Find the referrers.
   2. Fail if any referrer uses a required relation.
@@ -292,9 +338,17 @@ path segment.
 | `CATALOG_REFERENCE_VIOLATION`, `CATALOG_LIMIT_EXCEEDED` | 422 |
 | any other error | 500 `INTERNAL` |
 
+High-risk procedures (`blueprints.update`, `blueprints.delete`,
+`entities.delete`) carry `x-tayzu-risk: high` in the OpenAPI document. 002
+(Cerbos) and 014 (human-in-the-loop for agents) consume that marker.
+
 The error body is `{ code, message, issues? , details? }`. Unknown errors
-become a generic `INTERNAL` with no message detail. The original error goes
-to the span (`recordException`) and to the `catalog.internal_error` log only.
+become a generic `INTERNAL` with no message detail. The internal error is
+recorded on the span and in the `catalog.internal_error` log in **sanitized**
+form only: `exception.type`, SQLSTATE and constraint name. The Postgres
+message, `detail` and `where` fields, and bind parameters all embed row
+values, so they are dropped. The stack trace is kept with its first line (the
+message) removed.
 
 `pnpm contract:generate` writes `openapi/catalog.openapi.json` with the oRPC
 `OpenAPIGenerator`, using stable key order. `pnpm contract:check` regenerates
@@ -386,7 +440,8 @@ recorded. The same configuration applies in the test harness.
 - **Errors**: span status `ERROR`, with `error.type` set to the catalog error
   code, or to `internal`. Expected errors (`CATALOG_*`) do **not** record an
   exception event, only `error.type` and, for validation, the issue count.
-  `internal` errors call `recordException`.
+  `internal` errors
+  record a sanitized exception event (see D11): no message, no `detail`.
 - **Forbidden on any signal**: property values, entity or blueprint titles and
   descriptions, validation messages, and SQL bind values.
 
@@ -412,10 +467,10 @@ recorded. The same configuration applies in the test harness.
 
 | Event name | Severity | Attributes | Purpose |
 |---|---|---|---|
-| `catalog.audit.mutation` | INFO | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.catalog.mutation`, `tayzu.catalog.resource.kind`, `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.resource.identifier`, `tayzu.catalog.version`, `tayzu.catalog.change_event.seq` | Security audit trail shipped to centralized logging, separate from the app database (SEC16 integrity) |
+| `catalog.audit.mutation` | INFO | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.actor.on_behalf_of.type`, `tayzu.actor.on_behalf_of.id` (when present), `tayzu.catalog.mutation`, `tayzu.catalog.resource.kind`, `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.resource.identifier`, `tayzu.catalog.version`, `tayzu.catalog.change_event.seq` | Best-effort copy of the audit trail to centralized logging. It is emitted after commit, so a crash can lose it, and it has no exporter until the host app wires one. The durable audit record is `catalog_change_event` (append-only trigger). |
 | `catalog.security.context_rejected` | WARN | `tayzu.catalog.operation`, `tayzu.catalog.context.reason` | Detect callers that bypass context wiring |
 | `catalog.security.reserved_identifier_denied` | WARN | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.catalog.blueprint.identifier` | Detect attempts to tamper with platform blueprints |
-| `catalog.internal_error` | ERROR | `tayzu.catalog.operation`, `exception.type`, `exception.message`, `exception.stacktrace` | Diagnose 500s without leaking them to callers |
+| `catalog.internal_error` | ERROR | `tayzu.catalog.operation`, `exception.type`, `db.response.status_code` (SQLSTATE), `tayzu.db.constraint`, `exception.stacktrace` (with the message line removed) | Diagnose 500s without leaking them to callers |
 
 Every log record carries the active `trace_id` and `span_id`, which the OTel
 Logs API does automatically. Every `catalog_change_event` row stores the same
@@ -424,26 +479,65 @@ joined.
 
 ## Security considerations (SSA pre-assessment)
 
-A pre-assessment against SSA SEC01-SEC16 was run with the
-`vcdm-ssa-validator` agent (`.claude/agents/vcdm-ssa-validator.md`, skill
-`.agents/skills/ssa-validator/`). Items that only a human can confirm are
-listed in Open Questions. They are not answered here.
+The `vcdm-ssa-validator` agent pre-assessed this change against SSA
+SEC01-SEC16 in Mode A (`.claude/agents/vcdm-ssa-validator.md`, skill
+`.agents/skills/ssa-validator/`) before Checkpoint 1. The first run found
+**8 blocking gaps (B1-B8)** and 11 non-blocking ones (N1-N11). All of them
+are folded into the spec and this design, as the table shows. Items only a
+human can answer are listed in Open Questions. The pre-assessment runs again
+against the code in task 11.2.
 
-| Section | Applies | How this change addresses it |
+| Finding | Resolution |
+|---|---|
+| B1 `SET LOCAL` cannot take bind parameters, so the tenant value would be interpolated | D5 uses `set_config($1, true)`. `tenantId` has a strict pattern (spec Conventions). There is an injection test. |
+| B2 Where the context comes from was undefined, and anyone could claim `system` | The context is host-supplied only and never part of procedure input. `contract:check` forbids `tenantId` and `actor` fields (D3, D11). |
+| B3 Entities of reserved `_` blueprints were writable by any actor | Entity writes on `_` blueprints are reserved to `system` (spec "Reserved system identifiers"). |
+| B4 Postgres error messages (row values) could reach spans and logs | Errors are sanitized to type, SQLSTATE and constraint (D11), and the marker-leak test covers forced database errors. |
+| B5 Free text in `status.source` and `actor.id` could reach telemetry | Both have strict patterns. `actor.id` is an opaque ID, never an email. |
+| B6 An agent's delegating principal was not recorded | `actor.onBehalfOf` is stored in attribution, change events and the audit log. |
+| B7 Prototype pollution: `constructor`/`prototype` matched the identifier pattern | Unsafe keys are rejected at every depth, and null-prototype objects are used in merges (D9). |
+| B8 The change log was mutable, and the OTel audit log was treated as durable | Append-only trigger (D4). The DB table is the durable record; the OTel copy is best-effort. |
+| N1 `url` format accepted `javascript:` and `data:` | Only `http` and `https` are allowed (D6). |
+| N2 Several inputs had no limit | Limits added for blueprint size, `enum` entries, nesting depth, icon, detach referrers and cursor length. |
+| N3 `.`/`..` segments in entity identifiers could confuse routing | Forbidden by the entity identifier pattern rule. |
+| N4 The parity test was too narrow, and the lint rule could be bypassed | Parity matrix over every mutation × actor type × outcome. The lint rule is secondary (D3). |
+| N5 SQLSTATE-only error mapping | Errors are mapped by constraint name (D9). |
+| N6 No marker for high-risk operations | `x-tayzu-risk: high` in OpenAPI (D11). |
+| N7 The claim of SHA-pinned actions was false for the existing Copilot workflow | Only the new `ci.yml` is pinned. The Copilot workflow is follow-up T6. |
+| N8 Database connections could be non-TLS | `sslmode=verify-full` is required outside tests (D5). |
+| N9 Missing tests for these controls | Covered in `tasks.md`. |
+| N10 The "three layers" isolation claim was overstated | Goals corrected: two layers active, RLS seam prepared. |
+| N11 ajv-formats regexes do not go through RE2 | `mode: 'fast'`, plus a 2048-character cap on formatted strings (D6). |
+
+Per-section posture:
+
+| Section | Applies | Posture after resolution |
 |---|---|---|
-| SEC01 System diagram | Partial | No new network component. The catalog data store is added to the product diagram when the first diagram is drawn (HUMAN). |
-| SEC02 Attack surfaces | Partial | **No new attack surface**: the API is not served (D2). The future `/v1` catalog surface is recorded for 002. |
-| SEC03 Access control | Yes | Deny by default: no context → `CATALOG_CONTEXT_REQUIRED`. Tenant isolation in three layers (D3–D5). Cross-tenant access returns not found (no existence oracle). Status write is a separate operation so it can be authorized separately. Reserved `_` blueprints. Authorization (Cerbos) is explicitly 002, which is why the API is not exposed. Access control lives in one place, the pipeline (anti-pattern "scattered access control" avoided). |
-| SEC05 Crypto | N/A | No cryptography. UUIDv7 IDs are **not** relied on for secrecy (IDOR protection comes from tenant scoping, not unguessable IDs). |
-| SEC06 Misuse | Yes | SQL injection: Drizzle parameterized queries only, `sql` template tags with bind parameters, a lint ban on `sql.raw`. ReDoS: RE2-only patterns (D6). SSRF: no `$ref` or remote schemas. DoS: size and count limits before any work, plus `statement_timeout`. Prototype pollution: identifiers must start with a letter (no `__proto__`), and undeclared keys are rejected before merge. AI misuse: `agent` actors take the identical validation path and are treated as untrusted input. Markdown is stored raw; **003 must sanitize on render (XSS)**, which is recorded as a requirement for 003. |
-| SEC07 Dependencies | Yes | Lockfile committed, `pnpm audit --prod --audit-level=high` in CI, Dependabot for npm and GitHub Actions. `re2js` chosen over native `re2` (no prebuilt binaries to trust). |
-| SEC09 Secrets in code | Yes | `DATABASE_URL` only from the environment. `.env*` git-ignored. `gitleaks` step in CI. The CI Postgres service uses ephemeral credentials that are not secrets. |
-| SEC10 Secret management | Partial | No production secrets in 001. The production DB credential and managed identity are defined in 002 or 010 (Key Vault). |
-| SEC12 Testing & QA | Yes | Security behaviors are first-class tests: tenant isolation, fail-closed context, reserved identifiers, ReDoS, `$ref`, limits, error sanitization, and telemetry leak. |
-| SEC13 Secure deployment | Partial | GitHub Actions (managed). Actions pinned by commit SHA. Minimal `permissions: contents: read`. No deployment in 001. |
-| SEC14 Infra permissions | Partial | Migration role vs runtime role separation, and `REVOKE UPDATE, DELETE` on `catalog_change_event` for the runtime role, **land in 002** together with RLS, because they need the app role. Recorded as a 002 requirement. |
-| SEC16 Security logging | Yes | Audit and security log events above. They are centralized through OTel, not only in the app database. Retention of at least 12 months is configured with the Azure Monitor workspace (HUMAN, 010). |
-| SEC04, SEC08, SEC11, SEC15 | N/A | No passwords (Better Auth, 002), no file upload, no outbound messaging, PaaS only. |
+| SEC01 Diagram | Partial | HUMAN: the diagram owner must add the catalog store and the agent and integration actors. |
+| SEC02 Attack surfaces | Partial | No network surface in 001 (D2). |
+| SEC03 Access control | Yes | Deny by default. Host-supplied context. Cross-tenant access returns not found. Composite FKs. Reserved blueprints. A single pipeline. Cerbos in 002. |
+| SEC04 / SEC08 / SEC11 / SEC15 | N/A | No passwords, no uploads, no messaging, PaaS only. |
+| SEC05 Crypto | Partial | TLS to the database outside tests. No other cryptography. IDs are not secrets. |
+| SEC06 Misuse | Yes | Parameterized SQL (`sql.raw` banned). RE2. No `$ref`. Limits checked before work. Unsafe keys rejected. URL schemes restricted. Agents take the same path. 003 must sanitize markdown and URLs on render. |
+| SEC07 Dependencies | Yes | Lockfile, `pnpm audit`, Dependabot, pure-JS `re2js`. HUMAN: the update and end-of-life process. |
+| SEC09 / SEC10 Secrets | Yes / Partial | Env-only `DATABASE_URL`, `.env*` ignored, gitleaks. HUMAN: push protection. Key Vault in 002/010. |
+| SEC12 Testing | Yes | Every control above has a test in `tasks.md`. HUMAN: Q1-Q3. |
+| SEC13 Deployment | Partial | Managed GitHub Actions, SHA-pinned, `contents: read`. |
+| SEC14 Infra permissions | Partial | Trigger in 001. Roles, `REVOKE` and `FORCE RLS` in 002 (T3). |
+| SEC16 Logging | Yes | Durable append-only change log plus centralized OTel audit and security events. HUMAN: retention and time to deliver logs. |
+
+**Follow-ups outside this change** (to be carried into the named change's
+proposal):
+
+- T3 → 002: runtime and migration roles; `REVOKE UPDATE, DELETE, TRUNCATE`
+  on `catalog_change_event`; `FORCE ROW LEVEL SECURITY`; RLS tests run as
+  the non-owner role; `system` never mapped from an external credential.
+- T4 → 003: sanitize markdown and URL values on render; strict CSP.
+- T5 → 010: Azure Monitor retention of at least 12 months; export of the
+  audit log.
+- T6: pin `.github/workflows/copilot-setup-steps.yml` (`actions/checkout`
+  SHA and the `@fission-ai/openspec` version).
+- T7: backfill ADR-0001 to ADR-0007 in `docs/adr/`.
 
 ## Divergences from Port (deliberate)
 
@@ -503,10 +597,22 @@ These can safely wait. None of them changes the specs or the task breakdown.
 - Will 008 need relations in `status` (observed relations), or will
   integrations write `spec` relations? Adding status relations would be
   additive.
-- For the human, from the SSA pre-assessment:
-  - Is GitHub secret scanning with push protection enabled on `nahuex/tayzu`?
-  - Who owns the product system diagram (SEC01)?
-  - Is there a target retention period beyond 12 months for security logs
-    (SEC16)?
-- Should `list` sort by `updatedAt` as an alternative ordering? That is a
-  003 concern, and it is additive.
+- For the human (from the SSA pre-assessment):
+  1. Who owns the product system diagram (SEC01)?
+  2. Is GitHub secret scanning with push protection enabled on
+     `nahuex/tayzu` (SEC09)?
+  3. What is the process for fixing vulnerable dependencies and replacing
+     end-of-life ones (SEC07 Q5/Q6)?
+  4. Entity identifiers can contain `@`, so an email address could become an
+     identifier and appear on spans. The proposal is to keep them on spans
+     (never on metrics). Confirm, or require hashing.
+  5. Should reads and listings be audit-logged too? That would apply to every
+     actor type, to keep parity. The proposal is no for 001; revisit in 014.
+  6. In 002, may `CATALOG_SCHEMA_INCOMPATIBLE` and
+     `CATALOG_REFERENCE_VIOLATION` list entities the caller is not allowed to
+     read? The proposal is to redact them to a count in 002.
+  7. SEC12 Q1-Q3 (security testing, training, post-launch monitoring), the
+     retention period for security logs, and how many hours it takes to hand
+     logs over to security on-call (SEC16).
+- Should `list` also support sorting by `updatedAt`? That is additive, and a
+  003 concern.
