@@ -62,7 +62,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   database and exports `DATABASE_URL`, and it is idempotent. Verify: running
   the script twice leaves `pg_isready` succeeding and
   `pnpm --filter @tayzu/db test` green.
-- [ ] 1.7 *(setup)* Add `.github/workflows/ci.yml` with these jobs:
+- [x] 1.7 *(setup)* Add `.github/workflows/ci.yml` with these jobs:
   - install
   - lint + typecheck
   - test, with a `postgres:16` service
