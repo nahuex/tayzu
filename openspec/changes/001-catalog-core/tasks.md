@@ -144,7 +144,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   keywords, each reported with its JSON-Pointer path. Verify:
   `property-schema.test.ts` covers "Remote reference is rejected", and a
   spy asserts that no network or `fetch` call is made.
-- [ ] 3.3 RE2 pattern validation through `re2js`, with a maximum of 512
+- [x] 3.3 RE2 pattern validation through `re2js`, with a maximum of 512
   characters. Verify: `pattern.test.ts` covers "Catastrophic-backtracking
   pattern is rejected", backreference and lookaround rejection, a
   513-character pattern, and a valid pattern that is accepted.
