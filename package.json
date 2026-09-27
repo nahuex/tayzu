@@ -1,0 +1,42 @@
+{
+  "name": "tayzu",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tayzu, an Agentic SDLC Platform (IDP to ADP).",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:unit": "turbo run test:unit",
+    "test:projects": "vitest run",
+    "typecheck": "tsc -p tsconfig.json && turbo run typecheck",
+    "lint": "eslint . && pnpm lint:md",
+    "lint:md": "markdownlint-cli2",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "contract:generate": "turbo run contract:generate",
+    "contract:check": "turbo run contract:check",
+    "otel-smoke-check": "turbo run otel-smoke-check",
+    "db:migrate": "turbo run db:migrate",
+    "ci:local": "pnpm lint && pnpm typecheck && pnpm test && pnpm contract:check && pnpm otel-smoke-check"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.4",
+    "@vitest/coverage-v8": "^5.0.2",
+    "eslint": "^10.11.0",
+    "markdownlint-cli2": "^0.23.3",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.4",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
+}

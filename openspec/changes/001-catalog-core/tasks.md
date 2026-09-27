@@ -21,7 +21,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 1. Workspace foundation
 
-- [ ] 1.1 *(setup)* Create the root workspace:
+- [x] 1.1 *(setup)* Create the root workspace:
   - `package.json` (private, `packageManager: pnpm@10`, scripts `build`,
     `test`, `lint`, `lint:md` (markdownlint-cli2), `typecheck`,
     `contract:generate`, `contract:check`,
@@ -34,11 +34,11 @@ live next to the code as `*.test.ts`. Integration tests are named
     `.gitignore` that covers `.env*`.
   - Verify: `pnpm install && pnpm lint && pnpm typecheck` succeed on the
     empty packages.
-- [ ] 1.2 *(setup)* Scaffold empty `packages/observability`, `packages/db` and
+- [x] 1.2 *(setup)* Scaffold empty `packages/observability`, `packages/db` and
   `packages/catalog` (each with `package.json`, `tsconfig.json`, `src/index.ts`)
   plus a trivial `smoke.test.ts` each. Verify: `pnpm test` runs 3 passing
   smoke tests through Turborepo.
-- [ ] 1.3 *(setup)* Write a root `CLAUDE.md` (global conventions: English-only
+- [x] 1.3 *(setup)* Write a root `CLAUDE.md` (global conventions: English-only
   artifacts, TDD cycle, Checkpoints 1-3, no network exposure before 002) and
   one `CLAUDE.md` per package with its local conventions. Verify: the files
   exist, and the root one is under 150 lines (stable and cacheable).
@@ -78,7 +78,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   `pnpm ci:local` runs the same steps locally and succeeds, and the workflow
   passes on the PR.
 
-- [ ] 1.8 *(setup)* Create `docs/architecture/system-diagram.md` as a Mermaid
+- [x] 1.8 *(setup)* Create `docs/architecture/system-diagram.md` as a Mermaid
   flowchart. It shows the product boundary, the current components
   (`@tayzu/catalog`, `@tayzu/db`, PostgreSQL, the CI pipeline), the planned
   ones as dashed nodes (API server, workers, Redis, Azure Monitor, Key

@@ -1,0 +1,12 @@
+{
+  // Markdown lint scope: product and architecture docs plus every CLAUDE.md.
+  // openspec/ artifacts are validated by `openspec validate`, not here.
+  "globs": ["docs/**/*.md", "**/CLAUDE.md"],
+  "ignores": ["**/node_modules/**"],
+  "gitignore": true,
+  "config": {
+    "default": true,
+    // Line length is not enforced: prose wraps freely and tables stay readable.
+    "MD013": false,
+  },
+}
