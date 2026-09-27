@@ -135,11 +135,11 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 3. Blueprint definition meta-validation (pure)
 
-- [ ] 3.1 Property definition subset for every allowed type, format and
+- [x] 3.1 Property definition subset for every allowed type, format and
   keyword (Zod, `.strict()`). Verify: `property-schema.test.ts` covers
   "Supported property types are accepted", with one case per type and
   format.
-- [ ] 3.2 Reject disallowed constructs: `$ref`, `$id`, `$defs`,
+- [x] 3.2 Reject disallowed constructs: `$ref`, `$id`, `$defs`,
   `if`/`then`/`else`, nested object schemas, and unknown formats and
   keywords, each reported with its JSON-Pointer path. Verify:
   `property-schema.test.ts` covers "Remote reference is rejected", and a
