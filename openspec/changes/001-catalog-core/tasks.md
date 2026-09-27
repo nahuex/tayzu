@@ -102,7 +102,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   and `details`, plus the `isCatalogError` guard. Verify: `errors.test.ts`
   checks that each code is constructible, that `issues` is preserved, and
   that the code list matches the spec's Conventions list exactly.
-- [ ] 2.2 `parseCatalogContext` fails closed, enforcing the `tenantId`
+- [x] 2.2 `parseCatalogContext` fails closed, enforcing the `tenantId`
   pattern, the opaque `actor.id` pattern and the optional `onBehalfOf`.
   Verify: `context.test.ts` covers "Operation without tenant context is
   rejected", "Unknown actor type is rejected" and "Malformed tenant or actor
