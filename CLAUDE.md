@@ -129,7 +129,7 @@ defines them.
   when `DATABASE_URL` is missing. Export it first, for example
   `export DATABASE_URL=postgres://<user>:<password>@localhost:5432/tayzu_test`.
   Cloud sandbox: cluster `16 main` on `localhost:5432`. Laptop: `docker compose
-  up -d --wait db`. Both are described in `docs/dev-environment/README.md`.
+up -d --wait db`. Both are described in `docs/dev-environment/README.md`.
 - Isolation is tenant-per-test: each test uses a fresh random `tenantId`, so
   tests run in parallel without truncating tables.
 - Turborepo caches passing runs (`DATABASE_URL` is part of the `test` hash).

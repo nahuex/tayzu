@@ -14,11 +14,11 @@ services:
       POSTGRES_DB: tayzu_test
     ports:
       # Bound to loopback only: the database is never reachable from the LAN.
-      - "127.0.0.1:${TAYZU_DB_PORT:-5432}:5432"
+      - '127.0.0.1:${TAYZU_DB_PORT:-5432}:5432'
     volumes:
       - tayzu-pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tayzu -d tayzu_test"]
+      test: ['CMD-SHELL', 'pg_isready -U tayzu -d tayzu_test']
       interval: 2s
       timeout: 3s
       retries: 30
