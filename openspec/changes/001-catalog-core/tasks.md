@@ -119,7 +119,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   "Missing English title is rejected" and "Unsupported locale is
   rejected", and checks the per-locale length limits (256 for titles,
   4096 for descriptions).
-- [ ] 2.5 `CatalogLimits` with every spec default (including the blueprint
+- [x] 2.5 `CatalogLimits` with every spec default (including the blueprint
   size, `enum` entries, nesting depth, icon, formatted-string, detach and
   cursor limits) and a validated overrides
   merge. Verify: `limits.test.ts` asserts every default from the spec
