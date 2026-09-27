@@ -115,7 +115,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   rejection of `__proto__`, spaces, and a leading digit. It also checks
   that an entity identifier accepts `org/repo` and rejects `a/../b`, `./a`,
   `/a`, `a/` and `a//b`.
-- [ ] 2.4 `LocalizedText` schema. Verify: `localized-text.test.ts` covers
+- [x] 2.4 `LocalizedText` schema. Verify: `localized-text.test.ts` covers
   "Missing English title is rejected" and "Unsupported locale is
   rejected", and checks the per-locale length limits (256 for titles,
   4096 for descriptions).
