@@ -2,6 +2,19 @@ schema: spec-driven
 githubCopilot:
   cloudAgent: true
 
+context: |
+  Tayzu — Agentic SDLC Platform. The complete, fixed project rules live in
+  openspec/project.md: read it in full before generating any artifact.
+  All artifacts are written in English; the conversation with the human is in Spanish.
+
+rules:
+  design:
+    - Include an observability contract (OpenTelemetry span, metric and log names with attributes).
+    - Every Open Question must be asked to the human in chat with options and a recommendation before tasks.md is finalized.
+  tasks:
+    - Each task is one self-contained red-green-refactor TDD cycle and names the test that verifies it.
+    - Include a task to update docs/architecture/system-diagram.md (Mermaid) when the change adds or alters a component, actor or network interaction.
+
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.

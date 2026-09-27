@@ -148,13 +148,13 @@ The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 | `catalog_blueprint` | `id`, `tenant_id`, `identifier`, `title jsonb`, `description jsonb`, `icon`, `schema jsonb`, `status_schema jsonb NULL`, `version int`, `created_at/by_type/by_id`, `updated_*` | `UNIQUE (tenant_id, identifier)`, `UNIQUE (tenant_id, id)` (FK target) |
 | `catalog_relation_definition` | `id`, `tenant_id`, `source_blueprint_id`, `identifier`, `title jsonb`, `target_blueprint_id`, `many bool`, `required bool` | `UNIQUE (tenant_id, source_blueprint_id, identifier)`; FKs `(tenant_id, source_blueprint_id)` → blueprint `ON DELETE CASCADE` and `(tenant_id, target_blueprint_id)` → blueprint `ON DELETE RESTRICT`; `CHECK (NOT (many AND required))` |
 | `catalog_entity` | `id`, `tenant_id`, `blueprint_id`, `identifier`, `title`, `icon`, `spec_properties jsonb`, `status_properties jsonb NULL`, `status_observed_generation int NULL`, `status_observed_at`, `status_source`, `generation int`, `version int`, audit columns | `UNIQUE (tenant_id, blueprint_id, identifier)`, `UNIQUE (tenant_id, id)`; FK `(tenant_id, blueprint_id)` → blueprint `RESTRICT` |
-| `catalog_entity_relation` | `tenant_id`, `source_entity_id`, `relation_definition_id`, `target_entity_id`, `position int` | PK `(tenant_id, source_entity_id, relation_definition_id, target_entity_id)`; FK source `CASCADE`, target `RESTRICT`, definition `RESTRICT`, all composite with `tenant_id`; index `(tenant_id, target_entity_id)` for backward traversal |
+| `catalog_entity_relation` | `tenant_id`, `source_entity_id`, `relation_definition_id`, `scope` (`spec`\|`status`), `target_entity_id`, `position int` | PK `(tenant_id, source_entity_id, relation_definition_id, scope, target_entity_id)`; `CHECK (scope IN ('spec','status'))`; FK source `CASCADE`, target `RESTRICT`, definition `RESTRICT`, all composite with `tenant_id`; index `(tenant_id, target_entity_id)` for backward traversal |
 | `catalog_change_event` | `tenant_id`, `seq bigint`, `occurred_at`, `actor_type`, `actor_id`, `on_behalf_of_type NULL`, `on_behalf_of_id NULL`, `action`, `resource_kind`, `blueprint_identifier`, `resource_identifier`, `version`, `changed_fields text[]`, `trace_id NULL` | PK `(tenant_id, seq)`; trigger `catalog_change_event_append_only` (`BEFORE UPDATE OR DELETE` row-level, plus `BEFORE TRUNCATE` statement-level) raises an exception |
 | `catalog_tenant_sequence` | `tenant_id` PK, `last_seq bigint` | per-tenant counter for `seq` |
 
-- **Relations are stored only as edges**, never also inside `spec` JSON.
-  `spec.relations` in API responses is assembled from the edges, ordered by
-  `position`. There is a single source of truth, the database enforces
+- **Relations are stored only as edges**, never also inside `spec` or
+  `status` JSON. `spec.relations` and `status.relations` in API responses are
+  assembled from the edges with the matching `scope`, ordered by `position`. There is a single source of truth, the database enforces
   referential integrity (`RESTRICT` gives "cannot delete a referenced entity"
   for free, with no race window), and backward traversal is an index lookup.
   - *Alternative:* keeping relations in `spec` jsonb and validating them in
@@ -287,6 +287,13 @@ Nothing expensive runs on oversized input.
   - `23503` on the edge target, blueprint or relation-definition FKs →
     `CATALOG_REFERENCE_VIOLATION`;
   - anything else → `INTERNAL`.
+- **Status write** replaces the observed snapshot: it updates the
+  `status_*` columns and deletes and re-inserts the `scope = 'status'` edges.
+  The `spec` columns and edges are never touched (a narrow `UPDATE`, plus
+  deletes filtered by `scope`).
+- **Delete** always removes the `scope = 'status'` edges pointing to the
+  deleted entity first. Observed links never block a delete. Each affected
+  referrer gets a `version` bump and a `status_updated` event.
 - **Delete with `detachReferences`** does the following in one transaction:
   1. Find the referrers.
   2. Fail if any referrer uses a required relation.
@@ -323,7 +330,7 @@ within the caller's own data.
 | `entities.upsert` | `PUT /v1/blueprints/{blueprint}/entities/{entity}` (body `mode: replace\|merge`) |
 | `entities.delete` | `DELETE /v1/blueprints/{blueprint}/entities/{entity}?detachReferences=` |
 | `entities.writeStatus` | `PUT /v1/blueprints/{blueprint}/entities/{entity}/status` |
-| `entities.listRelated` | `GET /v1/blueprints/{blueprint}/entities/{entity}/related?direction=forward\|backward` |
+| `entities.listRelated` | `GET /v1/blueprints/{blueprint}/entities/{entity}/related?direction=forward\|backward&scope=spec\|status` |
 
 Entity identifiers may contain `/`, so they are percent-encoded as a single
 path segment.
@@ -382,7 +389,9 @@ This change writes the following ADRs in `docs/adr/`:
 - `0010-safe-schema-evolution.md` (D7)
 - `0011-api-not-exposed-before-auth.md` (D2)
 
-It also writes the capability doc `docs/catalog/catalog-core.md`: the concepts,
+It also creates the system diagram `docs/architecture/system-diagram.md`
+(Mermaid, R6) and the dependency policy `docs/security/dependencies.md` (R7),
+and writes the capability doc `docs/catalog/catalog-core.md`: the concepts,
 the error codes, and the telemetry reference. ADR-0001 to ADR-0007 from the
 master prompt are not in the repository yet. Backfilling them is proposed
 separately and is not part of this change.
@@ -427,8 +436,8 @@ recorded. The same configuration applies in the test harness.
 | `catalog.entity.get` | op | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier` | — |
 | `catalog.entity.list` | op | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.page.size` | `tayzu.catalog.result.count` |
 | `catalog.entity.delete` | op | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.detach_references` | `tayzu.catalog.detached.count` |
-| `catalog.entity.status.write` | op | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.status.source` | — |
-| `catalog.entity.related.list` | op | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.related.direction` | `tayzu.catalog.result.count` |
+| `catalog.entity.status.write` | op | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.status.source` | `tayzu.catalog.relation.target.count` |
+| `catalog.entity.related.list` | op | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.related.direction`, `tayzu.catalog.related.scope` | `tayzu.catalog.result.count` |
 | `catalog.schema.compile` | child, validator cache miss | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.blueprint.version` | — |
 | `catalog.blueprint.compatibility_check` | child of update | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.compatibility.entities_checked` | `tayzu.catalog.compatibility.violation.count` |
 | `catalog.entity.validate` | child of entity writes | `tayzu.catalog.blueprint.identifier` | `tayzu.catalog.validation.issue.count` |
@@ -484,7 +493,7 @@ SEC01-SEC16 in Mode A (`.claude/agents/vcdm-ssa-validator.md`, skill
 `.agents/skills/ssa-validator/`) before Checkpoint 1. The first run found
 **8 blocking gaps (B1-B8)** and 11 non-blocking ones (N1-N11). All of them
 are folded into the spec and this design, as the table shows. Items only a
-human can answer are listed in Open Questions. The pre-assessment runs again
+human could answer were asked in chat and are recorded in Resolved decisions. The pre-assessment runs again
 against the code in task 11.2.
 
 | Finding | Resolution |
@@ -513,18 +522,18 @@ Per-section posture:
 
 | Section | Applies | Posture after resolution |
 |---|---|---|
-| SEC01 Diagram | Partial | HUMAN: the diagram owner must add the catalog store and the agent and integration actors. |
+| SEC01 Diagram | Partial | Mermaid diagram in `docs/architecture/system-diagram.md`, maintained by every change (R6, task 1.8). |
 | SEC02 Attack surfaces | Partial | No network surface in 001 (D2). |
 | SEC03 Access control | Yes | Deny by default. Host-supplied context. Cross-tenant access returns not found. Composite FKs. Reserved blueprints. A single pipeline. Cerbos in 002. |
 | SEC04 / SEC08 / SEC11 / SEC15 | N/A | No passwords, no uploads, no messaging, PaaS only. |
 | SEC05 Crypto | Partial | TLS to the database outside tests. No other cryptography. IDs are not secrets. |
 | SEC06 Misuse | Yes | Parameterized SQL (`sql.raw` banned). RE2. No `$ref`. Limits checked before work. Unsafe keys rejected. URL schemes restricted. Agents take the same path. 003 must sanitize markdown and URLs on render. |
-| SEC07 Dependencies | Yes | Lockfile, `pnpm audit`, Dependabot, pure-JS `re2js`. HUMAN: the update and end-of-life process. |
-| SEC09 / SEC10 Secrets | Yes / Partial | Env-only `DATABASE_URL`, `.env*` ignored, gitleaks. HUMAN: push protection. Key Vault in 002/010. |
-| SEC12 Testing | Yes | Every control above has a test in `tasks.md`. HUMAN: Q1-Q3. |
+| SEC07 Dependencies | Yes | Lockfile, `pnpm audit`, Dependabot, pure-JS `re2js`. Dependency SLA and quarterly EOL review (R7). |
+| SEC09 / SEC10 Secrets | Yes / Partial | Env-only `DATABASE_URL`, `.env*` ignored, gitleaks. Push protection enabled by the human (R5). Key Vault in 002/010. |
+| SEC12 Testing | Yes | Every control above has a test in `tasks.md`. Q1: security tests + VCDM + `/security-review` + DAST from 002 (R9). Q2: trained (R10). Q3: nonexistent, ticket T5b (R11). |
 | SEC13 Deployment | Partial | Managed GitHub Actions, SHA-pinned, `contents: read`. |
 | SEC14 Infra permissions | Partial | Trigger in 001. Roles, `REVOKE` and `FORCE RLS` in 002 (T3). |
-| SEC16 Logging | Yes | Durable append-only change log plus centralized OTel audit and security events. HUMAN: retention and time to deliver logs. |
+| SEC16 Logging | Yes | Durable append-only change log plus centralized OTel audit and security events. Retention 12 months + archive to 24 (R8). 24-hour log delivery (R12). |
 
 **Follow-ups outside this change** (to be carried into the named change's
 proposal):
@@ -532,9 +541,16 @@ proposal):
 - T3 → 002: runtime and migration roles; `REVOKE UPDATE, DELETE, TRUNCATE`
   on `catalog_change_event`; `FORCE ROW LEVEL SECURITY`; RLS tests run as
   the non-owner role; `system` never mapped from an external credential.
+- T3 (addendum) → 002: redact entity identifiers the caller cannot read
+  from `CATALOG_SCHEMA_INCOMPATIBLE` and `CATALOG_REFERENCE_VIOLATION` to a
+  count (R3). Add an OWASP ZAP baseline DAST job once the API is served (R9).
 - T4 → 003: sanitize markdown and URL values on render; strict CSP.
-- T5 → 010: Azure Monitor retention of at least 12 months; export of the
-  audit log.
+- T5 → 010: Log Analytics retention of 12 months interactive plus archive
+  to 24 (R8); a KQL export runbook in `docs/security/incident-log-export.md`
+  that meets the 24-hour target (R12).
+- T5b → 010: Azure Monitor alerts on `tayzu.catalog.context.rejections`,
+  `catalog.security.reserved_identifier_denied`, spikes in
+  `tayzu.catalog.validation.failures`, and `server_error` outcomes (R11).
 - T6: pin `.github/workflows/copilot-setup-steps.yml` (`actions/checkout`
   SHA and the `@fission-ai/openspec` version).
 - T7: backfill ADR-0001 to ADR-0007 in `docs/adr/`.
@@ -570,9 +586,10 @@ proposal):
   choice. Schema updates are rare and admin-driven.
 - [The Ajv code generation cache grows with blueprints × versions] → LRU
   bound (500), and the compile-duration metric is observed.
-- [Freezing the `spec`/`status` contract before 008 has been designed] →
-  Status holds only properties now. Adding status relations later is
-  additive. Recorded as an open question.
+- [Freezing the `spec`/`status` contract, including `status.relations`,
+  before 008 has been designed] → Status relations reuse the relation
+  definitions and the same edge table (with a `scope` column), so 008 only
+  adds writers, not a new model.
 - [Tests depend on a real Postgres] → The fast-fail message explains how to
   start it. The domain layer (most tests) needs no database.
 
@@ -590,29 +607,24 @@ proposal):
    tables. A generated `down` script is kept next to the migration for
    completeness.
 
-## Open Questions
+## Resolved decisions (asked and approved in chat, 2026-09-27)
 
-These can safely wait. None of them changes the specs or the task breakdown.
+Following `openspec/project.md` §20, every open question was asked to the
+human with options. The answers:
 
-- Will 008 need relations in `status` (observed relations), or will
-  integrations write `spec` relations? Adding status relations would be
-  additive.
-- For the human (from the SSA pre-assessment):
-  1. Who owns the product system diagram (SEC01)?
-  2. Is GitHub secret scanning with push protection enabled on
-     `nahuex/tayzu` (SEC09)?
-  3. What is the process for fixing vulnerable dependencies and replacing
-     end-of-life ones (SEC07 Q5/Q6)?
-  4. Entity identifiers can contain `@`, so an email address could become an
-     identifier and appear on spans. The proposal is to keep them on spans
-     (never on metrics). Confirm, or require hashing.
-  5. Should reads and listings be audit-logged too? That would apply to every
-     actor type, to keep parity. The proposal is no for 001; revisit in 014.
-  6. In 002, may `CATALOG_SCHEMA_INCOMPATIBLE` and
-     `CATALOG_REFERENCE_VIOLATION` list entities the caller is not allowed to
-     read? The proposal is to redact them to a count in 002.
-  7. SEC12 Q1-Q3 (security testing, training, post-launch monitoring), the
-     retention period for security logs, and how many hours it takes to hand
-     logs over to security on-call (SEC16).
-- Should `list` also support sorting by `updatedAt`? That is additive, and a
-  003 concern.
+| # | Question | Decision |
+|---|---|---|
+| R1 | Entity identifiers (which may contain `@`) in telemetry | Kept on **spans**, never on metrics (as designed). |
+| R2 | Audit reads as well as writes? | No in 001, mutations only. Revisit for every actor type in 014. |
+| R3 | Conflict errors listing entities the caller cannot read (002) | **Redact to a count** ("+N not visible") once Cerbos exists. Carried as follow-up T3. |
+| R4 | Observed relations in `status` | **Added in 001**: `status.relations`, stored as `scope = 'status'` edges (D4, D9, spec). |
+| R5 | SEC09 push protection | The human enables Secret Protection + push protection on `nahuex/tayzu`. gitleaks in CI stays as a second layer. |
+| R6 | SEC01 system diagram | Claude maintains it as **Mermaid** docs-as-code in `docs/architecture/system-diagram.md`, ready for Docusaurus (`@docusaurus/theme-mermaid`). Every change updates it (task 1.8). |
+| R7 | SEC07 dependency process | Dependabot weekly (npm + Actions). Fix SLA: critical 7 days, high 30 days. `pnpm audit` blocks CI on high. Quarterly EOL review. Documented in `docs/security/dependencies.md` (task 1.7). |
+| R8 | SEC16 security-log retention | 12 months interactive in Log Analytics, archive to 24 months (010, as IaC). The Postgres change log does not expire. |
+| R9 | SEC12 Q1 security testing | Security tests per control, VCDM pre-assessment at Checkpoints 1 and 2, `/security-review` on every PR, plus **DAST** (OWASP ZAP baseline, later Escape in 009) once an API is served (002). |
+| R10 | SEC12 Q2 training | Yes, the team is trained. |
+| R11 | SEC12 Q3 post-launch monitoring | Nonexistent today (nothing deployed). Ticket T5b for 010. |
+| R12 | SEC16 Q4 time to deliver logs | 24 hours, backed by a KQL export runbook in 010 (T5). |
+
+No open questions remain for this change.

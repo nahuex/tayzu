@@ -25,7 +25,9 @@ exist. So the catalog core comes first, before auth, UI, or workflows.
   - **Entity**: an instance of a blueprint. It separates **`spec`** (desired
     state, written by humans and agents) from **`status`** (observed state,
     written by integrations through a separate operation), in the Kubernetes
-    style. Entities carry `generation` and `observedGeneration`.
+    style. Both sides hold properties **and** relations: `spec.relations` are the
+    desired links, and `status.relations` are the links an integration
+    observed. Entities carry `generation` and `observedGeneration`.
   - **Relation**: a typed, directed link between entities. It is declared on
     the source blueprint, is single or many, and is optional or required.
     Referential integrity holds within one tenant, and relations can be

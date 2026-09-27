@@ -72,9 +72,21 @@ live next to the code as `*.test.ts`. Integration tests are named
   - gitleaks
 
   The workflow sets `permissions: contents: read` and pins actions by SHA.
-  Also add `.github/dependabot.yml` (npm + github-actions). Verify:
+    Also add `.github/dependabot.yml` (npm + github-actions, weekly) and
+  `docs/security/dependencies.md` (critical fixes within 7 days, high within
+  30 days, quarterly EOL review). Verify:
   `pnpm ci:local` runs the same steps locally and succeeds, and the workflow
   passes on the PR.
+
+- [ ] 1.8 *(setup)* Create `docs/architecture/system-diagram.md` as a Mermaid
+  flowchart. It shows the product boundary, the current components
+  (`@tayzu/catalog`, `@tayzu/db`, PostgreSQL, the CI pipeline), the planned
+  ones as dashed nodes (API server, workers, Redis, Azure Monitor, Key
+  Vault), and every actor type (user, agent, integration, system, developer,
+  CI), with arrows from initiator to target labeled with their protocol.
+  Verify: markdownlint passes, the Mermaid block renders with
+  `npx -y @mermaid-js/mermaid-cli -i docs/architecture/system-diagram.md -o /tmp/d.svg`,
+  and every attack-surface name used in the design appears in the diagram.
 
 ## 2. Domain primitives (pure, `@tayzu/catalog/src/domain`)
 
@@ -164,7 +176,8 @@ live next to the code as `*.test.ts`. Integration tests are named
   wins over the default.
 - [ ] 4.3 Relation value shape validation: cardinality, the required
   relation, undeclared keys, uniqueness within `many`, and a maximum of 1000
-  targets. Verify: `relation-values.test.ts` covers "Missing required
+  targets. The validator is parameterized by scope: `required` is enforced
+  for `spec` and ignored for `status`. Verify: `relation-values.test.ts` covers "Missing required
   relation", "Wrong cardinality" and "Too many relation targets" (the pure
   part), and rejects duplicate targets.
 - [ ] 4.4 `applyWrite(current, input, mode)` for the `replace` and `merge`
@@ -190,7 +203,8 @@ live next to the code as `*.test.ts`. Integration tests are named
 ## 5. Persistence (`@tayzu/catalog/src/persistence`, `@tayzu/db`), ⛔ Checkpoint 3
 
 - [ ] 5.1 Drizzle table definitions for the 6 tables in design D4, including
-  composite tenant FKs, the `CHECK (NOT (many AND required))` constraint and
+  composite tenant FKs, the `scope` column on the edge table (with its check
+  and its place in the PK), the `CHECK (NOT (many AND required))` constraint and
   the indexes. Generate `0000_catalog_core.sql` (and its down script) with
   `drizzle-kit generate`. Verify: `schema.int.test.ts` applies the migration
   to an empty database and asserts through `information_schema`/`pg_catalog`
@@ -288,9 +302,11 @@ live next to the code as `*.test.ts`. Integration tests are named
   `entities-upsert.int.test.ts` covers "Upsert creates then replaces",
   "Idempotent upsert is unchanged" (no event, no version bump) and "Spec
   changes do not touch status", and checks the `entity.mutations` counter.
-- [ ] 8.4 `entities.writeStatus`. Verify: `entity-status.int.test.ts` covers
-  "Integration reports status" and "Observed generation from the future is
-  rejected", checks that a
+- [ ] 8.4 `entities.writeStatus` with properties and relations, replacing the
+  whole snapshot. Verify: `entity-status.int.test.ts` covers "Integration
+  reports status", "Integration reports observed relations", "Observed
+  relation to a missing target is rejected", "Status write replaces the
+  snapshot" and "Observed generation from the future is rejected", checks that a
   blueprint without a `statusSchema` rejects a non-empty status, and checks
   that a `source` of `Git Hub!` is rejected.
 - [ ] 8.5 `entities.get` and `entities.list` with keyset pagination. Verify:
@@ -300,11 +316,13 @@ live next to the code as `*.test.ts`. Integration tests are named
   `entities-delete.int.test.ts` covers "Delete an unreferenced entity",
   "Delete a referenced entity is rejected by default", "Detach optional
   references on delete", "Required references block detach" "Detach on
-  delete records every affected entity", and the 1000-referrer limit
+  delete records every affected entity", "Observed references never block
+  delete", and the 1000-referrer limit
   (`CATALOG_LIMIT_EXCEEDED`).
 - [ ] 8.7 `entities.listRelated` in the forward and backward directions,
-  with pagination. Verify: `entity-related.int.test.ts` covers "Forward and
-  backward relations".
+  with the `scope` filter and pagination. Verify: `entity-related.int.test.ts`
+  covers "Forward and backward relations" and "Traversal distinguishes
+  desired and observed".
 - [ ] 8.8 Entity tenant isolation. Verify: `isolation.int.test.ts` covers
   "Cross-tenant read looks like not found", "Cross-tenant relation target
   is rejected" and "Listing never leaks other tenants' data".
@@ -368,7 +386,11 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [ ] 11.2 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against
   the implemented code, and resolve or explicitly defer every blocking GAP.
   Verify: the report is attached to the PR, with zero open blocking GAPs.
-- [ ] 11.3 `openspec validate 001-catalog-core --strict` passes, and the
+- [ ] 11.3 Run `/security-review` on the branch and fix or justify every
+  finding, then update `docs/architecture/system-diagram.md` if the
+  implementation changed any component or arrow. Verify: the review output
+  and the diagram diff are attached to the PR.
+- [ ] 11.4 `openspec validate 001-catalog-core --strict` passes, and the
   design, spec and code agree (update the design only if an implementation
   finding forced a change, and note it in the PR). Verify: the command
   output is attached to the PR.

@@ -276,11 +276,12 @@ A blueprint update MUST replace its mutable fields (`title`, `description`,
 `icon`, `schema`, `statusSchema`, `relations`) and increment `version` by 1.
 Before committing, the system MUST validate every existing entity of the
 blueprint against the proposed definition. This covers spec properties, status
-properties, and relation cardinality and requiredness. If any entity would
+properties, spec and status relations, and relation cardinality and
+requiredness (requiredness applies to spec relations only). If any entity would
 become invalid, the update MUST fail with `CATALOG_SCHEMA_INCOMPATIBLE`, list up
 to 10 offending entity identifiers with their issues, and leave the blueprint
 unchanged. Changing an existing relation's `target` MUST be rejected with
-`CATALOG_SCHEMA_INCOMPATIBLE` while any entity has a value for that relation.
+`CATALOG_SCHEMA_INCOMPATIBLE` while any entity has a spec or status value for that relation.
 Clients SHOULD send `expectedVersion`. When provided and different from the
 current version, the update MUST fail with `CATALOG_VERSION_CONFLICT`.
 
@@ -336,7 +337,7 @@ An entity MUST have the following fields.
   are not localized.
 - `icon`: optional.
 - `spec`: `{ properties, relations }`, the desired state.
-- `status`: `{ properties, observedGeneration, observedAt, source }` or `null`,
+- `status`: `{ properties, relations, observedGeneration, observedAt, source }` or `null`,
   the observed state.
 - `generation`: an integer that starts at 1 and increments only when `spec`
   changes.
@@ -412,11 +413,17 @@ Upsert MUST never modify `status`.
 - **THEN** it fails with `CATALOG_ALREADY_EXISTS`
 
 ### Requirement: Status is written only through the status operation
-The system MUST provide a status operation that writes `status.properties`, and
-it MUST be the only way to change `status`. The following rules apply.
+The system MUST provide a status operation that writes `status.properties` and
+`status.relations`, and it MUST be the only way to change `status`. Each status
+write replaces the whole observed snapshot: properties and relations that are
+not given are cleared. The following rules apply.
 - `status.properties` MUST be validated against the blueprint's
   `statusSchema`. A blueprint without a `statusSchema` rejects any non-empty
-  status with `CATALOG_VALIDATION_FAILED`.
+    status properties with `CATALOG_VALIDATION_FAILED`.
+- `status.relations` MUST use the relation definitions of the blueprint, with
+  the same shape, cardinality, limit and referential-integrity rules as
+  `spec.relations`, except that `required` does not apply (an observation may
+  lack a relation).
 - The operation MUST set `observedAt` to the server's current UTC time.
 - It MUST set `source` to the caller-supplied source label, which MUST match
   the blueprint identifier pattern (for example `github`).
@@ -434,6 +441,20 @@ authorize it separately.
 - **WHEN** an `integration` actor writes status `{ "lastDeployAt": "2026-09-01T10:00:00Z" }` with `observedGeneration` 2 and source `github`
 - **THEN** `status.properties.lastDeployAt` is stored, `status.source` is `github`, and `spec` and `generation` are unchanged
 
+#### Scenario: Integration reports observed relations
+- **GIVEN** blueprint `service` has relation `dependsOn` (`many: true`) targeting `service`, and entities `ledger` and `auth` exist
+- **WHEN** an `integration` actor writes status with `relations` `{ "dependsOn": ["ledger"] }`
+- **THEN** `status.relations.dependsOn` is `["ledger"]` and `spec.relations` is unchanged
+
+#### Scenario: Observed relation to a missing target is rejected
+- **WHEN** status is written with `relations` `{ "dependsOn": ["ghost"] }`
+- **THEN** it fails with `CATALOG_REFERENCE_VIOLATION`
+
+#### Scenario: Status write replaces the snapshot
+- **GIVEN** entity `payments` with status relations `{ "dependsOn": ["ledger"] }`
+- **WHEN** status is written with properties only and no `relations`
+- **THEN** `status.relations` is empty
+
 #### Scenario: Observed generation from the future is rejected
 - **GIVEN** entity `payments` at `generation` 2
 - **WHEN** status is written with `observedGeneration` 3
@@ -445,7 +466,7 @@ authorize it separately.
 - **THEN** its `status` is identical to before and `generation` increments
 
 ### Requirement: Entity relations and referential integrity
-`spec.relations` MUST map relation identifiers to a single target entity
+`spec.relations` (and, per the status requirement, `status.relations`) MUST map relation identifiers to a single target entity
 identifier (for `many: false`) or an array of unique identifiers (for
 `many: true`, at most 1000). Every target MUST be an existing entity of the
 relation's target blueprint in the same tenant. Otherwise the write fails with
@@ -484,6 +505,10 @@ both directions.
 - **Backward**: the entities whose relations target it, grouped by source
   blueprint and relation.
 
+Every result item MUST state its `scope`, `spec` (desired) or `status`
+(observed). The operation MUST accept an optional `scope` filter (`spec`,
+`status` or both, defaulting to both).
+
 Both lists are limited to depth 1 and use cursor pagination. Traversal MUST
 never cross tenants.
 
@@ -491,7 +516,12 @@ never cross tenants.
 - **GIVEN** `payments` and `billing` both have `owner` = `team-a`
 - **WHEN** related entities of `team-a` are listed in the backward direction
 - **THEN** the result contains `payments` and `billing` under source blueprint `service`, relation `owner`
-- **AND** listing `payments` in the forward direction returns `team-a` under relation `owner`
+- **AND** listing `payments` in the forward direction returns `team-a` under relation `owner` with scope `spec`
+
+#### Scenario: Traversal distinguishes desired and observed
+- **GIVEN** `payments` has `spec.relations.dependsOn` = `["ledger"]` and `status.relations.dependsOn` = `["auth"]`
+- **WHEN** related entities of `payments` are listed forward with `scope` = `status`
+- **THEN** only `auth` is returned, with scope `status`
 
 ### Requirement: Entity read, list and delete
 The system MUST get an entity by blueprint and identifier, or fail with
@@ -500,13 +530,16 @@ identifier ascending, with cursor pagination. The list operation MAY accept
 additional filters in later changes, but it MUST NOT return entities of other
 blueprints or tenants.
 
-Deleting an entity that is the target of any relation MUST fail with
+Deleting an entity that is the target of any **spec** relation MUST fail with
 `CATALOG_REFERENCE_VIOLATION`, listing up to 10 referring entities, unless the
 request sets `detachReferences: true` (at most 1000 referrers; more fails with
 `CATALOG_LIMIT_EXCEEDED`). In that case, the entity is removed from
 every optional relation that references it, in the same transaction, and each
 modified referrer gets a new `version` and `generation`. The delete MUST still
-fail if any referrer holds it in a `required` relation.
+fail if any referrer holds it in a `required` relation. Observed (**status**)
+relations never block a delete. They are always removed in the same
+transaction, and each affected referrer gets a new `version` (not
+`generation`) and a `status_updated` change event.
 
 #### Scenario: Delete an unreferenced entity
 - **GIVEN** entity `sandbox-svc` is not the target of any relation
@@ -522,6 +555,11 @@ fail if any referrer holds it in a `required` relation.
 - **GIVEN** optional relation `dependsOn` on `payments` = `["ledger", "auth"]`
 - **WHEN** `ledger` is deleted with `detachReferences: true`
 - **THEN** `ledger` is deleted and `payments.spec.relations.dependsOn` becomes `["auth"]`
+
+#### Scenario: Observed references never block delete
+- **GIVEN** only `status.relations.dependsOn` of `payments` references `ledger`
+- **WHEN** `ledger` is deleted without `detachReferences`
+- **THEN** `ledger` is deleted and `payments.status.relations.dependsOn` no longer contains it
 
 #### Scenario: Required references block detach
 - **GIVEN** required relation `owner` on `payments` = `team-a`
