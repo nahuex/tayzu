@@ -98,7 +98,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 2. Domain primitives (pure, `@tayzu/catalog/src/domain`)
 
-- [ ] 2.1 `CatalogError` with the stable codes, `issues` (JSON Pointer paths)
+- [x] 2.1 `CatalogError` with the stable codes, `issues` (JSON Pointer paths)
   and `details`, plus the `isCatalogError` guard. Verify: `errors.test.ts`
   checks that each code is constructible, that `issues` is preserved, and
   that the code list matches the spec's Conventions list exactly.
