@@ -46,7 +46,7 @@ flowchart TB
 
         system(["System<br/>internal actor: Tayzu's own automation"])
 
-        subgraph core["Catalog core (001)"]
+        subgraph core["Catalog core (001): No network attack surface, in-process only"]
             catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
             db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
             obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
@@ -63,6 +63,7 @@ flowchart TB
 
     subgraph external["Supporting systems (external)"]
         llm["LLM API: Anthropic Claude<br/>via DecisionProvider (004/006/014)"]
+        toolApis["Integration tool APIs<br/>GitHub, Jira Cloud, Azure DevOps, Aikido, Escape"]
     end
 
     subgraph legend["Legend"]
@@ -78,6 +79,7 @@ flowchart TB
 
     %% Current interactions (001)
     dev -->|"HTTPS (git push, pull request)"| gh
+    dev -->|"in-process call (local Vitest run)"| catalog
     ci -->|"HTTPS (job pickup on push and pull_request,<br/>git checkout)"| gh
     ci -->|"HTTPS (pnpm install, pnpm audit)"| npm
     ci -->|"in-process call (Vitest test run)"| catalog
@@ -90,7 +92,8 @@ flowchart TB
     user -.->|"HTTPS (browser)"| api
     agent -.->|"HTTPS (/v1 catalog API)"| api
     agent -.->|"MCP Streamable HTTP over HTTPS"| mcp
-    integ <-.->|"HTTPS (inbound webhooks,<br/>outbound API polling)"| intg
+    integ -.->|"HTTPS (inbound webhooks)"| intg
+    intg -.->|"HTTPS (API polling from ACA Jobs)"| toolApis
     api -.->|"in-process call"| authn
     api -.->|"gRPC (Cerbos PDP API)"| cerbos
     authn -.->|"in-process call (Drizzle adapter)"| db
@@ -102,7 +105,7 @@ flowchart TB
     workers -.->|"HTTPS"| llm
     intg -.->|"in-process call (status writes)"| catalog
     system -.->|"in-process call (actor type system)"| catalog
-    obs -.->|"HTTPS (OpenTelemetry exporter)"| monitor
+    obs -.->|"OTLP/HTTPS (OTel SDK exporter in the host apps;<br/>or the Azure Monitor exporter over HTTPS, chosen in 010)"| monitor
     acaEnv -.->|"HTTPS (secret references, managed identity)"| kv
     acaEnv -.->|"HTTPS (image pull, managed identity)"| acr
     ci -.->|"HTTPS (image push)"| acr
@@ -117,7 +120,7 @@ flowchart TB
     class catalog,db,obs,pg,lgCurrent,lgStore current
     class api,authn,cerbos,mcp,workers,intg,redis,kv,monitor,acr,lgPlanned planned
     class user,agent,integ,dev,ci,system,lgActor actor
-    class gh,npm,llm,lgExternal externalSys
+    class gh,npm,llm,toolApis,lgExternal externalSys
 
     style tayzu fill:#fbfdff,stroke:#1f5f99,stroke-width:3px
     style acaEnv fill:#fafafa,stroke:#777777,stroke-dasharray:6 4
@@ -158,14 +161,14 @@ flowchart TB
 
 ## Actors
 
-| Actor       | Catalog actor type | How it reaches Tayzu                                                                                                                                            |
-| ----------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| End user    | `user`             | Planned: browser to the `Web UI` and the `/v1 catalog API` (002, 003).                                                                                          |
-| AI agent    | `agent`            | Planned: the `/v1 catalog API` (002) and the `MCP endpoint` (013). Tayzu's own agents (014) run inside the boundary and take the same path.                     |
-| Integration | `integration`      | Planned: `Integration webhook endpoints`, and polling by the integration adapters (008/009).                                                                    |
-| System      | `system`           | Internal only: Tayzu's own automation (reserved `_` blueprints, schedules, the workflow engine). It is never mapped from an external credential (follow-up T3). |
-| Developer   | none               | Pushes code and reviews pull requests on GitHub. Planned: Azure access with Entra ID (010).                                                                     |
-| CI          | none               | Runs tests and migrations against ephemeral databases on the runner. Planned: pushes images and deploys (010).                                                  |
+| Actor       | Catalog actor type | How it reaches Tayzu                                                                                                                                                     |
+| ----------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| End user    | `user`             | Planned: browser to the `Web UI` and the `/v1 catalog API` (002, 003).                                                                                                   |
+| AI agent    | `agent`            | Planned: the `/v1 catalog API` (002) and the `MCP endpoint` (013). Tayzu's own agents (014) run inside the boundary and take the same path.                              |
+| Integration | `integration`      | Planned: pushes to the `Integration webhook endpoints` (008/009). The adapters' pollers call the `Integration tool APIs` outbound, so polling is not an inbound surface. |
+| System      | `system`           | Internal only: Tayzu's own automation (reserved `_` blueprints, schedules, the workflow engine). It is never mapped from an external credential (follow-up T3).          |
+| Developer   | none               | Pushes code and reviews pull requests on GitHub, and runs the tests in-process locally. Planned: Azure access with Entra ID (010).                                       |
+| CI          | none               | Runs tests and migrations against ephemeral databases on the runner. Planned: pushes images and deploys (010).                                                           |
 
 ## Attack surfaces
 
@@ -176,10 +179,11 @@ the change that introduces it lands.
 
 **No network attack surface.** No component listens on a network port and
 there is no HTTP listener (design D2). The only databases are ephemeral test
-instances bound to localhost. The arrows from `GitHub Actions CI` into the
-boundary are test runs and migrations on the ephemeral runner, not traffic to
-a deployed system. The pipeline is guarded as a supply-chain control (SEC07,
-SEC13): `permissions: contents: read`, actions pinned by SHA, `pnpm audit` and
+instances bound to localhost. The arrows from `GitHub Actions CI` and the
+`Developer` into the boundary are in-process test runs and migrations on the
+ephemeral runner or the developer machine, not traffic to a deployed system.
+The pipeline is guarded as a supply-chain control (SEC07, SEC13):
+`permissions: contents: read`, actions pinned by SHA, `pnpm audit` and
 gitleaks.
 
 ### Planned
