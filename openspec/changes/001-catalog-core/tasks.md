@@ -72,7 +72,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   - gitleaks
 
   The workflow sets `permissions: contents: read` and pins actions by SHA.
-    Also add `.github/dependabot.yml` (npm + github-actions, weekly) and
+  Also add `.github/dependabot.yml` (npm + github-actions, weekly) and
   `docs/security/dependencies.md` (critical fixes within 7 days, high within
   30 days, quarterly EOL review). Verify:
   `pnpm ci:local` runs the same steps locally and succeeds, and the workflow
