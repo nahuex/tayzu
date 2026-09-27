@@ -109,7 +109,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   ID is rejected", plus an empty `actor.id`, a 65-character `tenantId` and an
   invalid `onBehalfOf`. It also asserts the rejection reason
   (`missing_tenant` or `invalid_actor`).
-- [ ] 2.3 Identifier validators (blueprint, property and relation
+- [x] 2.3 Identifier validators (blueprint, property and relation
   identifiers, and entity identifiers). Verify: `identifiers.test.ts`
   covers "Invalid identifier", the boundary lengths (64 and 256), and the
   rejection of `__proto__`, spaces, and a leading digit. It also checks
