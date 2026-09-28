@@ -192,7 +192,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   modes, where `null` removes a key. Verify: `apply-write.test.ts` covers
   "Merge keeps unspecified keys" and "Merge with null removes a value", and
   checks that `replace` drops keys that are not given.
-- [ ] 4.5 Canonical equality (sorted keys, relation order preserved) for
+- [x] 4.5 Canonical equality (sorted keys, relation order preserved) for
   detecting `unchanged` writes. Verify: `canonical.test.ts` treats key order
   as irrelevant and `many` relation order as significant.
 - [ ] 4.6 Size limits evaluated before validation or compilation. Verify:
