@@ -446,3 +446,14 @@ dependency chain, not its position in the table.
   renumbering), because it sends an emailed link with its own token and
   enumeration risks and `043` is already at 65 tasks. It reuses `043`'s
   email sender and executes right after `043`.
+- **D11. Visma Connect SSO moves into `002`: approved (2026-09-28).** Visma
+  Connect (OIDC) is Tayzu's own primary human IdP and is added to
+  `002-auth-and-rbac`'s scope directly, rather than waiting for
+  `025-sso-and-identity-federation`: local email+password and Visma Connect
+  SSO both ship in `002`, chosen by the user at sign-in, with explicit
+  `sub`-keyed account linking, SSO-aware step-up, and back-channel logout
+  (`002`'s `design.md` D22-D26). `025-sso-and-identity-federation` is
+  unchanged in scope by this move: it still owns *per-organization* SSO — a
+  customer's own SAML/OIDC identity provider, per-tenant enforcement of
+  which sign-in methods are allowed, group-sync, and SCIM provisioning —
+  none of which this decision adds to `002`.

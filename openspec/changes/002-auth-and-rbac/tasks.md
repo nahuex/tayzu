@@ -415,6 +415,19 @@ policy diff shown in chat, separately from the rest of the PR.
   script in `docs/catalog/auth-and-rbac.md` produces one exported trace
   spanning an inbound HTTP request through to its Postgres span.
 
+- [ ] 13.5 Extend `packages/authz/src/telemetry/contract.ts` with the SSO,
+  account-linking, and back-channel-logout spans, metrics, and log events
+  (design D23-D26: `auth.sso.callback`, `auth.backchannel_logout.received`,
+  `tayzu.auth.sso.events`, `tayzu.auth.account_link.events`,
+  `tayzu.auth.backchannel_logout.events`,
+  `auth.security.sso_sign_in_failed`, `auth.security.account_linked`,
+  `auth.security.account_unlinked`, `auth.security.step_up_insufficient`,
+  `auth.security.backchannel_logout_received`). Verify: `contract.test.ts`
+  (extended) snapshot-asserts every new name, and `otel-smoke-check`
+  (extended) exercises `auth.sso.callback`, `auth.backchannel_logout.
+  received`, and the step-up-insufficient path once each, asserting the
+  Visma Connect `sub`/`sid`/tokens/email/IP never appear on any of them.
+
 ## 14. Secrets and Key Vault seam
 
 - [ ] 14.1 Runtime/migration DB role passwords, `BETTER_AUTH_SECRET`, and the
@@ -442,8 +455,11 @@ policy diff shown in chat, separately from the rest of the PR.
   design D5/D6 link to them.
 - [ ] 16.2 Update `docs/architecture/system-diagram.md`: add the Fastify
   listener (now live, not dashed), the Cerbos sidecar (no external arrow),
-  and Key Vault (an external actor feeding the deployment pipeline and the
-  running container). Verify: markdownlint passes, the Mermaid block
+  Key Vault (an external actor feeding the deployment pipeline and the
+  running container), and Visma Connect (a new external actor with an
+  outbound/inbound sign-in-and-callback arrow pair from `apps/api`, and a
+  separate inbound-only arrow for the back-channel logout endpoint it calls,
+  design D17/D23/D26). Verify: markdownlint passes, the Mermaid block
   renders, and every new attack-surface name in this design appears in the
   diagram.
 - [ ] 16.3 Write `docs/catalog/auth-and-rbac.md` (resource kinds, the
@@ -452,11 +468,25 @@ policy diff shown in chat, separately from the rest of the PR.
   `packages/authz/src/telemetry/contract.ts` (checked by `contract.test.ts`,
   task 13.1).
 - [ ] 16.4 Write `docs/security/attack-surfaces.md`: every Better Auth
-  allowlisted route, every catalog route, `/v1/auth/token`, each with its
-  actor category, authentication mechanism, and Cerbos/authorization check
-  (VCDM pre-assessment, ticket 6). Verify: `pnpm lint:md` passes, and every
-  route in the design's D13/D18 tables and `specs/auth-and-rbac/spec.md`
-  appears in the doc.
+  allowlisted route, every catalog route, `/v1/auth/token`, the Visma
+  Connect sign-in/callback/link/unlink routes, and the public back-channel
+  logout endpoint, each with its actor category, authentication mechanism,
+  and Cerbos/authorization check (VCDM pre-assessment, ticket 6; design
+  D18/D23-D26). Verify: `pnpm lint:md` passes, and every route in the
+  design's D13/D18/D23/D26 tables and `specs/auth-and-rbac/spec.md` appears
+  in the doc.
+- [ ] 16.5 Write ADR `docs/adr/0021-visma-connect-as-primary-idp.md`. Verify:
+  the file exists with Context, Decision, Alternatives and Consequences
+  sections, and design D23-D26 link to it.
+- [ ] 16.6 *(setup)* Write `docs/references/visma-connect/README.md`: a
+  concise summary of what Tayzu's implementation uses from the Visma Connect
+  docs (server-side web applications, ID token, UserID/email, re
+  -authentication and step-up, session management, single sign-out, security
+  considerations, usage of state for redirects, userinfo endpoint, token
+  revocation), each with its source URL under `docs.connect.visma.com`.
+  Verify: `pnpm lint:md` passes, and every citation in design D23-D26 (`docs/
+  references/visma-connect/README.md`) resolves to a section that exists in
+  the file.
 
 ## 17. Integration checks before the PR (Checkpoint 2 readiness)
 
@@ -475,3 +505,160 @@ policy diff shown in chat, separately from the rest of the PR.
   design, specs and code agree (update the design only if an implementation
   finding forced a change, and note it in the PR). Verify: the command
   output is attached to the PR.
+
+## 18. Public self sign-up disabled; admin and bootstrap user creation
+
+- [ ] 18.1 A test-only helper (e.g. `createAdminUser`/`bootstrapTestTenant`)
+  in the test harness that creates users through the admin-creation path
+  instead of Better Auth sign-up, and migrate every existing fixture that
+  called sign-up (groups 2-4's integration tests) to use it (design D22).
+  Verify: `auth-instance.test.ts` (extended) asserts
+  `auth.options.emailAndPassword.disableSignUp === true`, initially failing
+  since the flag is not yet set (green in 18.2); the migrated fixtures in
+  `auth-flow.int.test.ts`, `mfa.int.test.ts`, `step-up.int.test.ts`,
+  `session-policy.int.test.ts`, `context-resolver.int.test.ts`,
+  `active-org.int.test.ts`, and `enumeration-resistance.int.test.ts` keep
+  passing unchanged in behavior.
+- [ ] 18.2 `emailAndPassword.disableSignUp: true` on the Better Auth
+  instance; the sign-up route is not added to D18's allowlist (design D22).
+  Verify: `signup-disabled.int.test.ts` covers "Self sign-up is not
+  available" (a plain `404`, identical to an unknown route) and "In-process
+  sign-up is refused".
+- [ ] 18.3 `identity.users.create`: a Cerbos-gated oRPC procedure (`admin`
+  role, `user.yaml` resource policy) calling `auth.api.createUser`
+  in-process, fixing the created user's initial role and returning a
+  system-generated temporary password once, in the creation response only
+  (design D22). Verify: `admin-user-creation.int.test.ts` covers "An org
+  admin can create a user" and "A member cannot create a user"
+  (`AUTH_FORBIDDEN`).
+- [ ] 18.4 `packages/auth/scripts/bootstrap-admin.ts`: an idempotent,
+  non-HTTP-reachable script creating an organization and its first `admin`
+  -role user, via the same `auth.api.createUser` call as 18.3 (design D22).
+  Verify: `bootstrap.int.test.ts` covers "Bootstrapping an organization's
+  first admin is idempotent" (running it twice creates no duplicate
+  organization or user).
+- [ ] 18.5 Wire `identity.users.create` and the bootstrap script to upsert
+  the matching `_user` entity through the `system` actor path, replacing the
+  sign-up-triggered hook task group 12 assumed (design D22, spec "User and
+  Team system blueprints"). Verify: `user-sync.int.test.ts` covers "Creating
+  a user creates a matching `_user` entity" for both the admin-created and
+  bootstrap-created cases.
+
+## 19. Visma Connect SSO
+
+- [ ] 19.1 *(setup)* A local OIDC provider test stub/fixture (its own RSA
+  keypair, discovery document, JWKS, and authorization/token/userinfo
+  endpoints) so no test in this or later groups calls the real Visma
+  Connect. Verify: `pnpm --filter @tayzu/auth test` runs the stub's own
+  smoke test, standing it up and tearing it down cleanly.
+- [ ] 19.2 `packages/auth/src/sso/visma-connect.ts`: the `genericOAuth`
+  plugin configured per design D23 (`providerId: "visma-connect"`,
+  `discoveryUrl` pointed at the task-19.1 stub in tests, `requireIdToken
+  Verification: true`, PKCE S256, `responseMode: "form_post"`, `scopes:
+  ["openid", "email", "profile"]`, `disableImplicitSignUp: true`,
+  `disableSignUp: true`, `overrideUserInfo: false`, `clientId`/`clientSecret`
+  from the environment). Verify: `sso-config.test.ts` asserts the registered
+  provider's options match the design D23 table, and that no `accountSubject`
+  resolver is configured (Better Auth's own discovery-default `sub`
+  resolution is relied on, not reimplemented).
+- [ ] 19.3 Add `/sign-in/social`, `/callback/visma-connect`, `/link-social`,
+  `/unlink-account`, and `/list-accounts` to D18's allowlist (design D23).
+  Verify: `auth-route-allowlist.int.test.ts` (extended) covers all five
+  routes remaining reachable, and `auth-route-allowlist.test.ts` (extended,
+  task 11.10's drift test) still fails when an unlisted route is introduced.
+- [ ] 19.4 The `/callback/visma-connect` handler maps every failure mode
+  (unlinked `sub`, `state`/`nonce` mismatch, invalid or unverifiable
+  `id_token`) to the same `AUTH_SSO_REJECTED` response, recording the
+  internal cause only on `auth.security.sso_sign_in_failed` (design D24).
+  Verify: `sso-sign-in.int.test.ts` covers "Sign-in with an unlinked Visma
+  Connect account is rejected generically" and "A mismatched state value is
+  rejected the same way as an unlinked account", asserting byte-identical
+  status/error-code/body shape across both.
+- [ ] 19.5 A successful sign-in for a `sub` already linked to a Tayzu user
+  resolves to that user's context (design D23/D24). Verify:
+  `sso-sign-in.int.test.ts` covers "Sign-in with a linked Visma Connect
+  account succeeds", plus the `auth.sso.callback` span and
+  `tayzu.auth.sso.events` counter on both the success and rejected paths.
+
+## 20. Account linking
+
+- [ ] 20.1 `identity.users.linkSsoAccount` / `identity.users.
+  unlinkSsoAccount`: Cerbos-gated oRPC procedures (`admin` role) writing or
+  removing an `account` row for a target user, keyed on the Visma Connect
+  `sub`, using `@tayzu/auth`'s internal adapter directly rather than Better
+  Auth's session-scoped `/link-social` (design D24). Verify:
+  `account-linking.int.test.ts` covers "An admin records a user's Visma
+  Connect UserID".
+- [ ] 20.2 A Fastify pre-handler on `/link-social` reusing task 4.2's
+  `twoFactorVerifiedAt` freshness check, requiring a fresh MFA verification
+  when the caller has an enrolled factor (design D24). Verify:
+  `link-social-step-up.int.test.ts` covers "A signed-in user links their own
+  Visma Connect account" and "Linking without a fresh MFA verification is
+  blocked for an MFA-enrolled user" (`AUTH_STEP_UP_REQUIRED`).
+- [ ] 20.3 A last-sign-in-method guard, shared by `identity.users.
+  unlinkSsoAccount` and Better Auth's own `/unlink-account`/password-removal
+  paths, rejecting an unlink or password removal that would leave the user
+  with zero sign-in methods (design D24). Verify: `account-linking.int.
+  test.ts` covers "Unlinking the only sign-in method is rejected".
+- [ ] 20.4 `auth.security.account_linked`/`account_unlinked` log events and
+  the `tayzu.auth.account_link.events` counter on both linking paths (design
+  D24). Verify: `account-linking.int.test.ts` (extended) asserts both
+  signals on the admin-recorded case, and `link-social-step-up.int.test.ts`
+  (extended) asserts them on the self-service case.
+
+## 21. JIT display-data refresh and step-up for SSO sessions
+
+- [ ] 21.1 On every successful Visma Connect sign-in, call `/connect/
+  userinfo` and write the returned name/email to the `_user` entity's
+  `title`/`contactEmail` display fields only, through the `system` actor
+  path — never Better Auth's `user.email` column (design D24). Verify:
+  `sso-jit-refresh.int.test.ts` covers "Display name and email are
+  refreshed on sign-in" and "A changed Visma Connect email does not alter
+  local sign-in identity".
+- [ ] 21.2 A migration adding `session.additionalFields.ssoSid` (nullable
+  text) to the already-migrated `auth.session` table, populated from the
+  Visma Connect `sid` claim on sign-in/refresh and left `null` for local
+  sessions (design D25). Verify: `session-schema.int.test.ts` asserts the
+  column via `information_schema`. ⛔ **Stop here for Checkpoint 3 approval
+  of this migration's SQL before continuing.**
+- [ ] 21.3 The step-up guard (task 4.2) branches on `ssoSid`: `null` keeps
+  D4's existing local `twoFactorVerifiedAt` check unchanged; non-null
+  initiates a Visma Connect re-authorization
+  (`max_age=300&prompt=login&acr_values=urn:idp:vismaconnect:mfa`) and
+  validates the returned ID token's `auth_time` (within 300s ± 30s skew),
+  `acr` (>= 3), and `amr` (containing an accepted MFA method) server-side
+  (design D25). Verify: `step-up-sso.int.test.ts` covers "A fresh Visma
+  Connect re-authorization with an MFA method satisfies step-up" and "A
+  Visma Connect re-authorization without a qualifying MFA claim does not
+  satisfy step-up", plus the `auth.security.step_up_insufficient` log event
+  on the failing case.
+
+## 22. Back-channel logout
+
+- [ ] 22.1 `POST /v1/auth/visma-connect/backchannel-logout`: a public route
+  outside `/api/auth/*`, parsing the `logout_token` form field and
+  validating, in order, its signature (via the discovered JWKS), `typ`,
+  `iss`, `aud`, `iat`/`exp` (±30s skew), `events`, and the absence of a
+  `nonce` claim, failing closed at the first failing check (design D26).
+  Verify: `backchannel-logout.int.test.ts` covers "An invalid signature is
+  rejected without revealing session existence", using task 19.1's stub
+  keys for both a validly-signed and a tampered token.
+- [ ] 22.2 `jti` replay protection reusing the existing `auth.verification`
+  table (`identifier: "backchannel-logout:{aud}:{jti}"`, `expiresAt`
+  bounded by the token's own `exp` plus skew) — no new table (design D26).
+  Verify: `backchannel-logout.int.test.ts` covers "A replayed logout token
+  is rejected without revoking anything twice".
+- [ ] 22.3 Session revocation matching primarily by `sid` (via the `ssoSid`
+  column, task 21.2) and, when the token omits `sid`, by `sub` via the
+  linked `account` row — revoking only that user's Visma-Connect
+  -established sessions, never their local sessions (design D26). Verify:
+  `backchannel-logout.int.test.ts` covers "A valid logout token revokes the
+  matching session", asserting the session fails as `CATALOG_CONTEXT_
+  REQUIRED` afterward while a same-user local session remains valid.
+- [ ] 22.4 `@fastify/rate-limit` on this route keyed by source IP only
+  (there is no caller identity to key on); every outcome (revoked, replay,
+  invalid, no-match) returns the identical `200` response shape (design
+  D26). Verify: `backchannel-logout.int.test.ts` (extended) asserts response
+  -shape identity across all four outcomes, plus the `auth.backchannel_
+  logout.received` span and `tayzu.auth.backchannel_logout.events` counter,
+  with no `sub`/`sid`/token/email/IP attribute on either signal.

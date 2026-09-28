@@ -10,13 +10,25 @@ allowed to do.
 ## Conventions
 
 - **New error codes**: `AUTH_FORBIDDEN` (403, Cerbos denied the action),
-  `AUTH_STEP_UP_REQUIRED` (403, the action needs a fresh MFA verification),
+  `AUTH_STEP_UP_REQUIRED` (403, the action needs a fresh MFA verification, or
+  a fresh Visma Connect re-authorization for a session it established),
   `AUTH_INVALID_CREDENTIALS` (401, the machine-token exchange rejected the
-  client id/secret), `AUTH_RATE_LIMITED` (429). A missing or invalid
-  session/access token surfaces identically to catalog-core's
-  `CATALOG_CONTEXT_REQUIRED`, because both mean "no valid context was
-  established" — this capability does not introduce a second "unauthenticated"
-  code.
+  client id/secret), `AUTH_RATE_LIMITED` (429), `AUTH_SSO_REJECTED` (401, a
+  Visma Connect sign-in was rejected — for every possible cause: an unlinked
+  account, a `state`/`nonce` mismatch, or an invalid token; the response
+  never distinguishes which). A missing or invalid session/access token
+  surfaces identically to catalog-core's `CATALOG_CONTEXT_REQUIRED`, because
+  both mean "no valid context was established" — this capability does not
+  introduce a second "unauthenticated" code.
+- **Sign-in methods**: local email+password and Visma Connect SSO
+  (`providerId: "visma-connect"`) both resolve to the same
+  `{ tenantId, actor: { type: 'user', id } }` context shape; neither method
+  is exclusive, and a user may have one or both linked to their account. A
+  Tayzu user is linked to a Visma Connect account only by that account's
+  immutable UserID (the ID token's `sub` claim), never by email — an email
+  address is display data only, refreshed just-in-time from Visma Connect on
+  each sign-in, and is never used to resolve, match, or create an account
+  link.
 - **Cerbos resource kinds**: `catalog_blueprint`, `catalog_entity` (carrying a
   `blueprintId` attribute for per-blueprint variation), `team`, `user`. Every
   principal and every resource carries `tenantId` as its first attribute.
@@ -139,6 +151,105 @@ every other active session belonging to that user.
 - **WHEN** they change their password from the first device
 - **THEN** the second device's session fails exactly as `CATALOG_CONTEXT_REQUIRED` on its next use
 
+### Requirement: Visma Connect SSO sign-in
+The system MUST let a human user sign in through Visma Connect (OIDC,
+authorization code with PKCE) as an alternative to local email+password,
+neither method excluding the other. A successful Visma Connect sign-in for a
+`sub` already linked to a Tayzu user MUST resolve to that user's context. A
+Visma Connect sign-in for a `sub` with no linked Tayzu user MUST be rejected
+with `AUTH_SSO_REJECTED`, and MUST NOT create a new user account under any
+circumstance. Every rejection of this flow — an unlinked account, a `state`
+or `nonce` mismatch, or an invalid or unverifiable token — MUST return the
+same status, error code, and body shape, regardless of cause.
+
+#### Scenario: Sign-in with a linked Visma Connect account succeeds
+- **GIVEN** a Tayzu user whose account is linked to a Visma Connect `sub`
+- **WHEN** that person completes sign-in through Visma Connect
+- **THEN** it resolves to `actor.type` `user` for the linked Tayzu user
+
+#### Scenario: Sign-in with an unlinked Visma Connect account is rejected generically
+- **GIVEN** a Visma Connect `sub` with no linked Tayzu user
+- **WHEN** that person completes sign-in through Visma Connect
+- **THEN** it fails with `AUTH_SSO_REJECTED`, and no user account is created
+
+#### Scenario: A mismatched state value is rejected the same way as an unlinked account
+- **GIVEN** a Visma Connect callback whose `state` does not match the value the sign-in was initiated with
+- **WHEN** the callback is processed
+- **THEN** it fails with the same `AUTH_SSO_REJECTED` status, error code, and body shape as an unlinked account
+
+### Requirement: Account linking to Visma Connect is explicit and keyed on the Visma Connect UserID
+Linking a Tayzu user to a Visma Connect account MUST happen only through one
+of two explicit paths: a user, signed in locally, linking their own account;
+or an org admin recording a user's Visma Connect UserID on that user's
+account. Neither path, nor any sign-in flow, MUST link or match an account by
+email. The link MUST be keyed on the Visma Connect account's immutable
+UserID. Linking from an authenticated session MUST require a fresh MFA
+verification when the caller has an enrolled MFA factor. An admin MUST be
+able to unlink an account. Neither linking nor unlinking MUST be permitted to
+leave a user with no sign-in method at all.
+
+#### Scenario: A signed-in user links their own Visma Connect account
+- **GIVEN** a user signed in locally with a fresh MFA verification
+- **WHEN** they link their Visma Connect account
+- **THEN** their account is linked, keyed on the Visma Connect UserID
+
+#### Scenario: Linking without a fresh MFA verification is blocked for an MFA-enrolled user
+- **GIVEN** a user signed in locally with an enrolled MFA factor but no fresh verification
+- **WHEN** they attempt to link their Visma Connect account
+- **THEN** it fails with `AUTH_STEP_UP_REQUIRED`
+
+#### Scenario: An admin records a user's Visma Connect UserID
+- **GIVEN** a caller with the `admin` role
+- **WHEN** they record a Visma Connect UserID on another user's account
+- **THEN** that account is linked, keyed on the Visma Connect UserID, and the action is audited
+
+#### Scenario: Unlinking the only sign-in method is rejected
+- **GIVEN** a user whose only sign-in method is their linked Visma Connect account, with no password set
+- **WHEN** an admin attempts to unlink it
+- **THEN** the request is rejected and the account remains linked
+
+### Requirement: Display data from Visma Connect is refreshed just-in-time and never used as an identity key
+On every successful Visma Connect sign-in, the linked user's display name and
+email MUST be refreshed from Visma Connect's current profile data. This
+refreshed email MUST be stored and used only as display data; it MUST NOT
+become or replace the value used to resolve which account signed in, and it
+MUST NOT be used for local email+password sign-in identity resolution.
+
+#### Scenario: Display name and email are refreshed on sign-in
+- **GIVEN** a linked user whose name at Visma Connect has changed since their last sign-in
+- **WHEN** they sign in through Visma Connect again
+- **THEN** their Tayzu display name reflects the new value
+
+#### Scenario: A changed Visma Connect email does not alter local sign-in identity
+- **GIVEN** a user with both a local password and a linked Visma Connect account
+- **WHEN** their email at Visma Connect changes and they sign in through Visma Connect
+- **THEN** their local email+password sign-in identity is unchanged
+
+### Requirement: Back-channel logout from Visma Connect revokes the matching sessions
+The system MUST expose a public endpoint that accepts a Visma Connect
+back-channel logout token, validates it per the OIDC Back-Channel Logout
+specification (signature, issuer, audience, expiry, event type, absence of a
+`nonce` claim, and replay protection on the token's unique id), and revokes
+every Tayzu session established through Visma Connect that matches the
+token's session id or subject. A token that fails validation, or a replayed
+token, MUST NOT revoke any session. This endpoint's response MUST NOT reveal
+whether a matching session existed.
+
+#### Scenario: A valid logout token revokes the matching session
+- **GIVEN** an active Tayzu session established through Visma Connect
+- **WHEN** a valid back-channel logout token naming that session's Visma Connect session id is received
+- **THEN** that session fails exactly as `CATALOG_CONTEXT_REQUIRED` on its next use
+
+#### Scenario: A replayed logout token is rejected without revoking anything twice
+- **GIVEN** a back-channel logout token already processed once
+- **WHEN** the same token is received again
+- **THEN** it is rejected as a replay and no further session state changes
+
+#### Scenario: An invalid signature is rejected without revealing session existence
+- **GIVEN** a logout token with an invalid signature
+- **WHEN** it is received
+- **THEN** it is rejected, and the response is identical in shape to a valid token naming a session that does not exist
+
 ### Requirement: Multi-factor authentication
 The system MUST let a human user enroll a TOTP factor and generate backup
 codes. Once a factor is enrolled, sign-in MUST require a valid TOTP code or an
@@ -162,18 +273,50 @@ usable more than once.
 - **THEN** sign-in completes with no additional factor requested
 
 ### Requirement: Authentication responses resist account enumeration
-Sign-up and sign-in responses MUST NOT reveal whether an email address has an
-account. A failed sign-in MUST return the same status, error code, and body
-shape whether the account does not exist, the password is wrong, or the
-account is disabled. A forgot-password/account-recovery flow is out of scope
-for this capability (deferred to `044-password-reset-and-account-recovery`);
-this requirement covers only the sign-up and sign-in surfaces this capability
-ships.
+Sign-in responses MUST NOT reveal whether an email address has an account. A
+failed sign-in MUST return the same status, error code, and body shape
+whether the account does not exist, the password is wrong, or the account is
+disabled. There is no sign-up surface to protect (see "Public self sign-up is
+not available"). A forgot-password/account-recovery flow is out of scope for
+this capability (deferred to `044-password-reset-and-account-recovery`); this
+requirement covers only the sign-in surface this capability ships.
 
 #### Scenario: Sign-in failure looks the same for an unknown account and a wrong password
 - **GIVEN** one email with no account and one email with an account and a known password
 - **WHEN** sign-in is attempted for the first with any password, and for the second with the wrong password
 - **THEN** both attempts fail with the same status, error code, and body shape
+
+### Requirement: Public self sign-up is not available
+Sign-up MUST be disabled under every circumstance, over HTTP and in-process
+alike. A Tayzu user account MUST be created only by an organization admin
+through a Cerbos-gated procedure, or by a one-time bootstrap script creating
+an organization's first admin. Neither path MUST send the new user's
+credential anywhere other than the creating admin's or operator's own
+response/output; there is no invitation email in this capability (invitations
+are `043-identity-lifecycle-and-org-admin`'s).
+
+#### Scenario: Self sign-up is not available
+- **WHEN** a request is sent to Better Auth's sign-up route over HTTP
+- **THEN** it fails with the same `404` response as a request to a path that does not exist
+
+#### Scenario: In-process sign-up is refused
+- **WHEN** the sign-up handler is invoked in-process, bypassing HTTP entirely
+- **THEN** it is refused and no user account is created
+
+#### Scenario: An org admin can create a user
+- **GIVEN** a caller with the `admin` role
+- **WHEN** they create a user with an email and a fixed actor kind
+- **THEN** a Tayzu user account exists, and a temporary credential is returned once in the response
+
+#### Scenario: A member cannot create a user
+- **GIVEN** a caller with only the `member` role
+- **WHEN** they attempt to create a user
+- **THEN** it fails with `AUTH_FORBIDDEN`
+
+#### Scenario: Bootstrapping an organization's first admin is idempotent
+- **GIVEN** an organization that has already been bootstrapped with a first admin
+- **WHEN** the bootstrap script is run again for that same organization
+- **THEN** no duplicate organization or user is created
 
 ### Requirement: Pre-authentication rate limiting protects against credential stuffing
 Sign-in, two-factor verification, and any sign-up or email-verification route
@@ -204,7 +347,22 @@ a `user` actor, MUST additionally require an MFA verification fresh within
 the threshold in Conventions. Without one, it MUST fail with
 `AUTH_STEP_UP_REQUIRED` and MUST NOT perform the operation. This requirement
 applies only to human (`user`) callers; `agent`, `integration`, and `system`
-actors are governed by Cerbos policy alone.
+actors are governed by Cerbos policy alone. For a session established
+through Visma Connect, freshness MUST instead be established by a Visma
+Connect re-authorization requesting its MFA authentication context, with the
+returned token's authentication time, context class, and method claims
+validated by the server — a client-stripped or otherwise unvalidated
+re-authorization request MUST NOT satisfy this requirement.
+
+#### Scenario: A fresh Visma Connect re-authorization with an MFA method satisfies step-up
+- **GIVEN** a user whose session was established through Visma Connect, re-authorizing with an MFA method within the freshness threshold
+- **WHEN** they call `blueprints.delete`
+- **THEN** the deletion proceeds
+
+#### Scenario: A Visma Connect re-authorization without a qualifying MFA claim does not satisfy step-up
+- **GIVEN** a user whose session was established through Visma Connect, completing a re-authorization whose returned claims do not include a qualifying MFA method or authentication context level
+- **WHEN** they call `blueprints.delete`
+- **THEN** it fails with `AUTH_STEP_UP_REQUIRED` and the blueprint is not deleted
 
 #### Scenario: High-risk operation without a fresh MFA verification is blocked
 - **GIVEN** a user signed in without verifying MFA in the last 5 minutes
@@ -420,12 +578,13 @@ MUST carry at least `identifier` (the user's email), `title` (the user's
 name), `status` (`Active` or `Disabled`, at minimum — the full lifecycle is
 `043-identity-lifecycle-and-org-admin`), `portRole` (`admin` or `member`),
 and `moderatedBlueprints`. `_team` MUST carry at least `identifier` and
-`title`. A Better Auth sign-up, role change, or ban/unban event MUST upsert
-the matching `_user` entity through the `system` actor path. No actor other
-than `system` MUST be able to write `_user` or `_team` entities directly.
+`title`. An admin-created user, a bootstrap-created first admin, a role
+change, or a ban/unban event MUST upsert the matching `_user` entity through
+the `system` actor path. No actor other than `system` MUST be able to write
+`_user` or `_team` entities directly.
 
-#### Scenario: Signing up creates a matching `_user` entity
-- **WHEN** a new user signs up and joins an organization
+#### Scenario: Creating a user creates a matching `_user` entity
+- **WHEN** an org admin creates a new user, or the bootstrap script creates an organization's first admin
 - **THEN** a `_user` entity exists for them with `status` `Active`
 
 #### Scenario: Disabling a user updates its `_user` entity status
