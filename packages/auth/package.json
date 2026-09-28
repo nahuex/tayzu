@@ -16,6 +16,7 @@
   "dependencies": {
     "@better-auth/api-key": "1.7.6",
     "@better-auth/drizzle-adapter": "1.7.6",
+    "@tayzu/db": "workspace:*",
     "better-auth": "1.7.6",
     "drizzle-orm": "^0.45.3"
   }

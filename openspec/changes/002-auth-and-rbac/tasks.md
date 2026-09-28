@@ -75,7 +75,7 @@ policy diff shown in chat, separately from the rest of the PR.
   lives under schema `auth` and that `tayzu_auth` has zero privileges on any
   `catalog_*` relation. ⛔ **Stop here for Checkpoint 3 approval of both
   migrations' SQL before continuing.**
-- [ ] 2.3 Mount Better Auth's sign-up and sign-in behind `apps/api` (built in
+- [x] 2.3 Mount Better Auth's sign-up and sign-in behind `apps/api` (built in
   group 11, stubbed here with an in-process handler call). Verify:
   `auth-flow.int.test.ts` covers "Signing up creates a matching `_user`
   entity" precondition (an organization and a Better Auth user exist) and

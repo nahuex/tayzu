@@ -51,6 +51,12 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       provider: 'pg',
       schemaName: 'auth',
     }),
+    // Email/password sign-up and sign-in (task 2.3). No `minPasswordLength`
+    // override: Better Auth's own default (8 characters) is the policy this
+    // change fixes; a stricter policy is not named anywhere in the design.
+    emailAndPassword: {
+      enabled: true,
+    },
     plugins: [organization(), admin(), twoFactor(), jwt(), apiKey()],
   });
 }
