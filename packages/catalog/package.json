@@ -11,7 +11,9 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run --project \"*unit*\""
+    "test:unit": "vitest run --project \"*unit*\"",
+    "contract:generate": "tsx src/api/generate-contract.ts",
+    "contract:check": "tsx src/api/check-contract.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",

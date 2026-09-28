@@ -343,6 +343,15 @@ within the caller's own data.
 Entity identifiers may contain `/`, so they are percent-encoded as a single
 path segment.
 
+Implementation note (task 9.1): in 001 the non-path inputs of `DELETE` and
+`GET` operations are declared as `in: query` in the OpenAPI document with an
+oRPC `spec` transform, because the procedures keep their flat input shape.
+oRPC's default `compact` input structure reads non-`GET` inputs from the
+body at runtime. **002 must make the HTTP runtime match the document**,
+for example with `inputStructure: 'detailed'` or a query-reading adapter.
+It must also add an HTTP-level test that
+`DELETE .../entities/{entity}?detachReferences=true` works (follow-up T3).
+
 | Error code | HTTP |
 |---|---|
 | `CATALOG_CONTEXT_REQUIRED` | 401 |
@@ -580,6 +589,9 @@ proposal):
 - T3 → 002: runtime and migration roles; `REVOKE UPDATE, DELETE, TRUNCATE`
   on `catalog_change_event`; `FORCE ROW LEVEL SECURITY`; RLS tests run as
   the non-owner role; `system` never mapped from an external credential.
+- T3 (addendum 2) → 002: make the HTTP runtime read `DELETE`/`GET` inputs
+  from the query string, as the OpenAPI document declares (see D11), and
+  test it over HTTP.
 - T3 (addendum) → 002: redact entity identifiers the caller cannot read
   from `CATALOG_SCHEMA_INCOMPATIBLE` and `CATALOG_REFERENCE_VIOLATION` to a
   count (R3). Add an OWASP ZAP baseline DAST job once the API is served (R9).

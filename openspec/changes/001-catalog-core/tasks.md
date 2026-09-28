@@ -350,19 +350,19 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 9. API contract (`@tayzu/catalog/src/api`)
 
-- [ ] 9.1 oRPC contract with Zod input and output for all 12 procedures, the
+- [x] 9.1 oRPC contract with Zod input and output for all 12 procedures, the
   routes from design D11 (percent-encoded entity identifiers), and a router
   bound to the services. Verify: `router.int.test.ts` calls every procedure
   once on the happy path through `createRouterClient`, checks that an
   identifier containing `/` round-trips, and checks that the three
   high-risk procedures carry `x-tayzu-risk: high`. It also covers "Blueprint
   definitions round-trip".
-- [ ] 9.2 Error mapping to HTTP status codes, and sanitization of internal
+- [x] 9.2 Error mapping to HTTP status codes, and sanitization of internal
   errors. Verify: `errors.int.test.ts` covers "Internal errors are not
   leaked", using a simulated database failure (no SQL or stack trace in the
   body, while the span holds the exception), and checks each code-to-status
   mapping in design D11.
-- [ ] 9.3 `contract:generate` and `contract:check` scripts, with the
+- [x] 9.3 `contract:generate` and `contract:check` scripts, with the
   committed `openapi/catalog.openapi.json`. Verify: `contract-check.test.ts`
   covers "Contract drift fails CI" by mutating a copy of an input schema and
   asserting the check exits non-zero, covers "Contract cannot carry the tenant", and the committed document

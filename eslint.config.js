@@ -101,4 +101,16 @@ export default defineConfig(
       '@typescript-eslint/no-confusing-void-expression': 'off',
     },
   },
+  {
+    // vitest types every asymmetric matcher (`expect.objectContaining`,
+    // `expect.any`, ...) as `<T = any>(...) => any`. Nesting one as a
+    // property value inside another matcher's argument object (asserting on
+    // a nested field, as this file does for `entities.listRelated`'s output)
+    // has no real type-safety issue, but reads as an unsafe assignment to
+    // typescript-eslint.
+    files: ['packages/catalog/src/api/router.int.test.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+    },
+  },
 );

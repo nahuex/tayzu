@@ -13,10 +13,17 @@ export interface Principal {
   id: string;
 }
 
-export interface CatalogContext {
+/**
+ * A `type` alias, not an `interface`: a value of this shape must remain
+ * structurally assignable to `Record<string, unknown>` at call sites (the
+ * raw, host-supplied context an oRPC client forwards per call, `api/router.ts`),
+ * which TypeScript only allows for object types without an index-signature
+ * check quirk that `interface` triggers.
+ */
+export type CatalogContext = {
   tenantId: string;
   actor: Principal & { onBehalfOf?: Principal };
-}
+};
 
 const TENANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const ACTOR_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
