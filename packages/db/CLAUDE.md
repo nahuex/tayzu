@@ -15,13 +15,14 @@ of `openspec/changes/archive/2026-09-28-001-catalog-core/design.md`.
 
 ## Migrations (Checkpoint 3)
 
-- Migrations are generated with `drizzle-kit generate` from the table
-  definitions. Never hand-write or hand-edit migration SQL. Keep the generated
-  down script next to each migration.
+- Table changes are generated with `drizzle-kit generate` from the table
+  definitions. SQL that Drizzle cannot express (roles, grants, RLS policies,
+  triggers) goes in a `drizzle-kit generate --custom` migration. Never edit a
+  migration after it has been approved. Each migration gets a hand-written
+  down script in `migrations/down/`.
 - Every new or changed migration stops at **Checkpoint 3**: present the SQL to
   the human and wait for explicit approval before continuing, even when the
   rest of the PR is already approved.
-- No roles, grants or RLS policies before `002-auth-and-rbac`.
 - Migrations are applied by `pnpm db:migrate` in CI and by the test harness
   only. There are no deployed environments yet.
 - Any future migration that adds a table or sequence to schema `auth` must

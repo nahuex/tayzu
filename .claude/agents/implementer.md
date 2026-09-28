@@ -43,7 +43,9 @@ Agentic TDD (`openspec/project.md` §9.2 and §19).
    - no tenant free text in telemetry or errors;
    - fail closed;
    - null-prototype objects for untrusted input;
-   - `actor.type` never selects a code path, except in the allowlisted files.
+   - `actor.type` never selects a code path, except in the files the root
+     `CLAUDE.md` allowlists. Never add a file to that allowlist yourself: stop
+     and report.
 
 ## Hard rules
 - Never edit, delete, rename or skip a test (`*.test.ts`, `*.int.test.ts`,

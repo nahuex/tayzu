@@ -3,7 +3,7 @@
 Tayzu is an Agentic SDLC Platform (the evolution of an IDP into an ADP). The
 fixed project rules live in `openspec/project.md`: read it before any
 non-trivial work. This file is the short, stable summary. Each package adds its
-local rules in `packages/<name>/CLAUDE.md`.
+local rules in `packages/<name>/CLAUDE.md` (or `apps/<name>/CLAUDE.md`).
 
 ## Language
 
@@ -49,6 +49,9 @@ red-green-refactor cycle:
   test contradicts the spec, stop and report it.
 - After the implementer, `observability-auditor` checks that the declared
   telemetry really exists.
+- Cerbos policies and their test suites are written by the `policy-writer`
+  subagent, only under `policies/`, and `pnpm policy:compile` is their
+  red-green cycle. Every policy change stops at Checkpoint 3.
 - Subagents never commit, push or create branches. The orchestrator commits.
 
 ## Security invariants
@@ -60,9 +63,11 @@ red-green-refactor cycle:
   host, never from procedure input, path, query or body.
 - **Same path for humans and agents**: there is one operation pipeline.
   `actor.type` is data and never selects a code path, except in
-  `packages/catalog/src/domain/reserved.ts` and
-  `packages/catalog/src/service/pipeline.ts` (lint-enforced; the actor-parity
-  test matrix is the real guard).
+  `packages/catalog/src/domain/reserved.ts`,
+  `packages/catalog/src/service/pipeline.ts` and
+  `packages/auth/src/step-up.ts`, where only `user` actors go through step-up
+  (002 design D4). This is lint-enforced; the actor-parity test matrix is the
+  real guard.
 - **Parameterized SQL only**: `sql.raw` is banned by lint. The tenant is set
   with `set_config('app.tenant_id', $1, true)`, never interpolated.
 - **Untrusted input**: parse into null-prototype objects, reject `__proto__`,
@@ -88,8 +93,10 @@ and Cerbos in front of it.
 
 ## Workspace
 
-- pnpm workspaces + Turborepo. Packages: `@tayzu/observability`, `@tayzu/db`,
-  `@tayzu/catalog` in `packages/`. Workspace dependencies use `workspace:*`.
+- pnpm workspaces + Turborepo. Libraries live in `packages/`
+  (`@tayzu/observability`, `@tayzu/db`, `@tayzu/catalog`, `@tayzu/auth`,
+  `@tayzu/authz`) and applications in `apps/` (`@tayzu/api`). Workspace
+  dependencies use `workspace:*`.
 - **Just-in-Time packages**: `exports` point at `./src/*.ts` and there is no
   build output. Vitest, tsx and tsc consume the TypeScript source directly, so
   `build` is a typecheck for now. Run TypeScript scripts with `tsx`.
@@ -113,6 +120,7 @@ pnpm test:unit            # unit tests only, no database needed
 pnpm --filter @tayzu/catalog test   # one package
 pnpm test:projects        # every package in one Vitest process (root config)
 pnpm format               # prettier --write .
+pnpm policy:compile       # cerbos compile + policy tests (pinned Docker image)
 pnpm ci:local             # the CI steps, locally
 ```
 
