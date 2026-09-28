@@ -1,0 +1,22 @@
+{
+  "name": "@tayzu/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tayzu's first application: Fastify bootstrap mounting Better Auth and the catalog's oRPC handler.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --project \"*unit*\""
+  },
+  "dependencies": {
+    "fastify": "^5.12.5",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/helmet": "^13.1.1",
+    "@fastify/rate-limit": "^11.2.0"
+  }
+}

@@ -31,26 +31,26 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 1. Workspace and dependency setup
 
-- [ ] 1.1 *(setup)* Add dependencies at the verified versions: `better-auth@1.7.6`,
+- [x] 1.1 *(setup)* Add dependencies at the verified versions: `better-auth@1.7.6`,
   `@better-auth/api-key@1.7.6`, `@better-auth/drizzle-adapter@1.7.6`,
   `@cerbos/grpc@0.29.1`, `@cerbos/orm-drizzle@0.1.0`, `fastify@^5.12.5`,
   `@fastify/cors@^11.3.0`, `@fastify/helmet@^13.1.1`,
   `@fastify/rate-limit@^11.2.0`. Verify: `pnpm install` succeeds and
   `pnpm audit --prod --audit-level=high` passes.
-- [ ] 1.2 *(setup)* Scaffold empty `packages/auth`, `packages/authz`, and
+- [x] 1.2 *(setup)* Scaffold empty `packages/auth`, `packages/authz`, and
   `apps/api` (each with `package.json`, `tsconfig.json`, `src/index.ts`, a
   trivial `smoke.test.ts`). Verify: `pnpm test` runs 3 new passing smoke
   tests through Turborepo.
-- [ ] 1.3 *(setup)* Scaffold the `policies/` tree (`derived_roles/`,
+- [x] 1.3 *(setup)* Scaffold the `policies/` tree (`derived_roles/`,
   `role_policies/`, `resource_policies/`, `resource_policies/testdata/`) and
   a `policy:compile` root script invoking `cerbos compile /policies` against
   the pinned `ghcr.io/cerbos/cerbos:0.55.0` image. Verify: `pnpm
   policy:compile` runs and reports "no policies" cleanly (nothing authored
   yet).
-- [ ] 1.4 *(setup)* Write `packages/auth/CLAUDE.md`, `packages/authz/CLAUDE.md`,
+- [x] 1.4 *(setup)* Write `packages/auth/CLAUDE.md`, `packages/authz/CLAUDE.md`,
   and `apps/api/CLAUDE.md` with local conventions. Verify: the files exist
   and `pnpm lint:md` passes.
-- [ ] 1.5 *(setup)* Add a `cerbos` service (pinned by digest, disk driver over
+- [x] 1.5 *(setup)* Add a `cerbos` service (pinned by digest, disk driver over
   `/policies`, `watchForChanges: false`) next to the existing `postgres:16`
   service in `.github/workflows/ci.yml` and the local dev-environment
   scripts. Verify: `pnpm ci:local` starts both containers, and the Cerbos

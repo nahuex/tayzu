@@ -1,0 +1,21 @@
+{
+  "name": "@tayzu/auth",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Better Auth instance, schema and context resolver for Tayzu (authentication, sessions, MFA, machine credentials).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --project \"*unit*\""
+  },
+  "dependencies": {
+    "better-auth": "1.7.6",
+    "@better-auth/api-key": "1.7.6",
+    "@better-auth/drizzle-adapter": "1.7.6"
+  }
+}

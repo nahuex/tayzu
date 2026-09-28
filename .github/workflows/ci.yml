@@ -41,6 +41,17 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      cerbos:
+        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). No
+        # shell in this image, so its own container HEALTHCHECK can't run
+        # here (GitHub Actions' service `options` health-cmd always execs
+        # through /bin/sh); the "Wait for Cerbos" step below polls instead.
+        image: ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515
+        env:
+          CERBOS_NO_TELEMETRY: '1'
+        ports:
+          - 3592:3592
+          - 3593:3593
     env:
       DATABASE_URL: postgres://tayzu:tayzu@localhost:5432/tayzu_test
     steps:
@@ -48,6 +59,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Wait for Cerbos
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3592/_cerbos/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Cerbos did not become healthy in time" >&2
+          exit 1
       - run: pnpm test
 
   contract-check:
@@ -77,6 +96,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      cerbos:
+        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). See the
+        # "Test" job above for why this can't carry its own health-cmd.
+        image: ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515
+        env:
+          CERBOS_NO_TELEMETRY: '1'
+        ports:
+          - 3592:3592
+          - 3593:3593
     env:
       DATABASE_URL: postgres://tayzu:tayzu@localhost:5432/tayzu_test
     steps:
@@ -84,6 +112,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Wait for Cerbos
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3592/_cerbos/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Cerbos did not become healthy in time" >&2
+          exit 1
       - run: pnpm otel-smoke-check
 
   dependency-audit:

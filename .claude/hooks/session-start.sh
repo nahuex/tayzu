@@ -88,4 +88,8 @@ if [ ! -d "$PROJECT_DIR/node_modules" ]; then
   (cd "$PROJECT_DIR" && pnpm install --frozen-lockfile)
 fi
 
+# --- Cerbos PDP (002-auth-and-rbac, design D7) --------------------------------
+
+"$PROJECT_DIR/scripts/dev/start-cerbos.sh" || echo "session-start: Cerbos did not start; integration tests that need it will fail." >&2
+
 exit 0

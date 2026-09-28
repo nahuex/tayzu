@@ -1,0 +1,28 @@
+# Cerbos PDP configuration for local development (compose.yaml) and the
+# cloud sandbox (.claude/hooks/session-start.sh). Mirrors design D7 of
+# openspec/changes/002-auth-and-rbac/design.md: disk storage over the
+# Checkpoint-3-reviewed `policies/` tree, no watch (Tayzu doesn't need
+# runtime-mutable policies in Phase 1), and fail-closed strict evaluation.
+# The Azure Container Apps deployment config (task 7.2) is the authoritative,
+# tested version of this file; this copy only has to be enough to compile and
+# serve an empty policy tree locally.
+server:
+  httpListenAddr: ':3592'
+  grpcListenAddr: ':3593'
+
+storage:
+  driver: disk
+  disk:
+    directory: /policies
+    watchForChanges: false
+
+engine:
+  strictEvaluation: true
+
+audit:
+  enabled: true
+  decisionLogsEnabled: true
+  accessLogsEnabled: false
+  backend: local
+  local:
+    storagePath: /tmp/cerbos-audit

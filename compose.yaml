@@ -23,5 +23,26 @@ services:
       timeout: 3s
       retries: 30
 
+  cerbos:
+    # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7).
+    image: ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515
+    command: ['server', '--config=/config/.cerbos.yaml']
+    environment:
+      # Cerbos's own anonymous usage telemetry, unrelated to Tayzu's
+      # OpenTelemetry pipeline. Opting out keeps local/CI runs offline.
+      CERBOS_NO_TELEMETRY: '1'
+    volumes:
+      - ./policies:/policies:ro
+      - ./config/cerbos.yaml:/config/.cerbos.yaml:ro
+    ports:
+      # Bound to loopback only, same as the database above.
+      - '127.0.0.1:${TAYZU_CERBOS_HTTP_PORT:-3592}:3592'
+      - '127.0.0.1:${TAYZU_CERBOS_GRPC_PORT:-3593}:3593'
+    healthcheck:
+      test: ['CMD', '/cerbos', 'healthcheck', '--config=/config/.cerbos.yaml']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
 volumes:
   tayzu-pg:
