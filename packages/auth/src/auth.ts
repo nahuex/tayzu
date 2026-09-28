@@ -78,6 +78,24 @@ const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 /** design D4: every `two-factor` verify endpoint (`/two-factor/verify-totp`, `-backup-code`, `-otp`). */
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 
+/**
+ * design D18/D22, task 18.2: Better Auth's own sign-up route. Never added to
+ * D18's allowlist (`packages/auth/CLAUDE.md`, task 11.9) -- intercepted here
+ * instead, ahead of that later Fastify-layer work, since `apps/api` is not a
+ * running listener yet (task 1.2's scaffold) and this route must already be
+ * indistinguishable from an unmatched one through `auth.handler`, Better
+ * Auth's real HTTP entry point, the one `apps/api` mounts unchanged in task
+ * 11.1.
+ */
+const SIGN_UP_EMAIL_PATH = '/sign-up/email';
+
+/**
+ * Better Auth's own default `basePath` (`dist/context/create-context.mjs`:
+ * `options.basePath || "/api/auth"`) -- `CreateAuthOptions` never overrides
+ * it, so it is fixed here rather than threaded through per request.
+ */
+const AUTH_BASE_PATH = '/api/auth';
+
 /** design.md, Metrics table: `tayzu.auth.session.events`'s only attribute. */
 const AUTH_EVENT_ATTRIBUTE = 'tayzu.auth.event';
 
@@ -89,6 +107,37 @@ const REVOCATION_REASON_ATTRIBUTE = 'tayzu.auth.revocation.reason';
 
 /** design.md, Log events table: `auth.security.session_revoked` -- the only reason task 3.3 emits. */
 const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
+
+/**
+ * Mirrors `@better-auth/core/utils/url`'s `normalizePathname` (also mirrored
+ * by `./rate-limit/pre-auth-rate-limit.ts`'s own `requestPath`), relative to
+ * the fixed `AUTH_BASE_PATH` above. Duplicated locally rather than imported:
+ * `@better-auth/core` is only a transitive dependency of `better-auth`, not a
+ * direct dependency of this package (`package.json`), so importing it would
+ * be a phantom dependency under pnpm's strict `node_modules` layout.
+ */
+function normalizedRequestPath(request: Request): string {
+  const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
+  if (pathname === AUTH_BASE_PATH) {
+    return '/';
+  }
+  if (pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
+    return pathname.slice(AUTH_BASE_PATH.length) || '/';
+  }
+  return pathname;
+}
+
+/**
+ * Byte-identical to `better-call@1.4.0`'s own unmatched-route response
+ * (`dist/router.mjs`, `processRequest`: every "no route" branch returns
+ * `new Response(null, { status: 404, statusText: "Not Found" })`) -- so a
+ * request to `SIGN_UP_EMAIL_PATH` cannot be told apart from a request to a
+ * path that was never registered at all (design D18's own reasoning: a
+ * different status, body, or even a `403` would reveal the route exists).
+ */
+function unmatchedRouteResponse(): Response {
+  return new Response(null, { status: 404, statusText: 'Not Found' });
+}
 
 /** A single `auth.member` row: the shape `databaseHooks.session.create.before` needs. */
 interface MembershipRow {
@@ -242,9 +291,22 @@ export interface AuthInstance {
   readonly $context: unknown;
 }
 
+/**
+ * Better Auth's own runtime `handler` shape (`Auth['handler']`,
+ * `dist/types/auth.d.mts`; also `.fetch`, the identical function under a
+ * second name) -- the narrow surface `createAuth`'s sign-up guard below
+ * needs. `AuthInstance` stays `unknown`-typed for `api`/`$context`
+ * (see that interface's own doc comments); this local type exists only to
+ * wrap `handler`/`fetch` without widening the public interface.
+ */
+interface AuthHandlerSurface {
+  readonly handler: (request: Request) => Promise<Response>;
+  readonly fetch: (request: Request) => Promise<Response>;
+}
+
 /** Builds the one `betterAuth` instance `@tayzu/auth` exposes. */
 export function createAuth(options: CreateAuthOptions): AuthInstance {
-  return betterAuth({
+  const auth = betterAuth({
     secret: options.secret,
     database: drizzleAdapter(options.db, {
       provider: 'pg',
@@ -403,4 +465,23 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       }),
     },
   });
+
+  // Task 18.2, design D18/D22: `/sign-up/email` is never reachable, over
+  // `auth.handler`, as anything other than the identical 404 an unmatched
+  // route already returns -- intercepted before Better Auth's own router
+  // runs at all, so its `400 EMAIL_PASSWORD_SIGN_UP_DISABLED` body (thrown by
+  // `disableSignUp` above) never reaches a caller and never reveals the route
+  // exists. `auth.api.signUpEmail` (in-process, bypassing this wrapper
+  // entirely) still reaches that same `disableSignUp` guard directly and is
+  // refused there.
+  const { handler: baseHandler } = auth as unknown as AuthHandlerSurface;
+  const signUpGuardedHandler = async (request: Request): Promise<Response> => {
+    if (normalizedRequestPath(request) === SIGN_UP_EMAIL_PATH) {
+      return unmatchedRouteResponse();
+    }
+    return baseHandler(request);
+  };
+
+  const guardedAuth = { ...auth, handler: signUpGuardedHandler, fetch: signUpGuardedHandler };
+  return guardedAuth;
 }

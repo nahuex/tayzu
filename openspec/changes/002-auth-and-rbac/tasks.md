@@ -519,7 +519,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `session-policy.int.test.ts`, `context-resolver.int.test.ts`,
   `active-org.int.test.ts`, and `enumeration-resistance.int.test.ts` keep
   passing unchanged in behavior.
-- [ ] 18.2 `emailAndPassword.disableSignUp: true` on the Better Auth
+- [x] 18.2 `emailAndPassword.disableSignUp: true` on the Better Auth
   instance; the sign-up route is not added to D18's allowlist (design D22).
   Verify: `signup-disabled.int.test.ts` covers "Self sign-up is not
   available" (a plain `404`, identical to an unknown route) and "In-process
