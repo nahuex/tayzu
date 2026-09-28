@@ -386,7 +386,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [x] 10.3 Marker-leak test. Verify: `otel-smoke-check` covers "Property
   values never reach telemetry" across spans (including `pg` spans),
   metrics and logs, including after a forced database constraint error.
-- [ ] 10.4 Document the telemetry reference in `docs/catalog/catalog-core.md`
+- [x] 10.4 Document the telemetry reference in `docs/catalog/catalog-core.md`
   (signals, attributes, and example queries against the Application Insights
   schema). Verify: markdownlint passes, and every name in the doc exists in
   `contract.ts` (checked by `contract.test.ts`).

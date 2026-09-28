@@ -111,3 +111,127 @@ removes a value:
 
 The result reports `outcome`: `created`, `updated` or `unchanged`. An
 `unchanged` write appends no change event and does not bump `version`.
+
+## Telemetry
+
+The catalog emits OpenTelemetry signals under the instrumentation scope
+`@tayzu/catalog`. The library depends on the OTel API only, so the host app
+configures the SDK and exporters. The executable mirror of this contract is
+`packages/catalog/src/telemetry/contract.ts`. `pnpm otel-smoke-check`
+verifies that every signal below is emitted with its attributes, that
+metrics carry no undeclared attribute, and that no tenant data reaches
+telemetry.
+
+Telemetry never contains property values, entity or blueprint titles and
+descriptions, validation messages, SQL text or bind values. Internal errors
+are recorded with their type, SQLSTATE and constraint name only.
+
+### Spans
+
+Every operation span carries these common attributes: `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.catalog.operation`. Failed
+operations set the span status to `ERROR`, with `error.type` set to the
+catalog error code, or to `internal` for unexpected errors.
+
+| Span                                    | Kind      | Required attributes                                                                                                                       | Conditional attributes                        |
+| --------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `catalog.blueprint.create`              | operation | `tayzu.catalog.blueprint.identifier`                                                                                                      | —                                             |
+| `catalog.blueprint.get`                 | operation | `tayzu.catalog.blueprint.identifier`                                                                                                      | —                                             |
+| `catalog.blueprint.list`                | operation | `tayzu.catalog.page.size`                                                                                                                 | `tayzu.catalog.result.count`                  |
+| `catalog.blueprint.update`              | operation | `tayzu.catalog.blueprint.identifier`                                                                                                      | `tayzu.catalog.compatibility.violation.count` |
+| `catalog.blueprint.delete`              | operation | `tayzu.catalog.blueprint.identifier`                                                                                                      | —                                             |
+| `catalog.entity.create`                 | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`                                                                   | `tayzu.catalog.relation.target.count`         |
+| `catalog.entity.upsert`                 | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.upsert.mode`                                      | `tayzu.catalog.mutation`                      |
+| `catalog.entity.get`                    | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`                                                                   | —                                             |
+| `catalog.entity.list`                   | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.page.size`                                                                           | `tayzu.catalog.result.count`                  |
+| `catalog.entity.delete`                 | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.detach_references`                                | `tayzu.catalog.detached.count`                |
+| `catalog.entity.status.write`           | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.status.source`                                    | `tayzu.catalog.relation.target.count`         |
+| `catalog.entity.related.list`           | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.related.direction`, `tayzu.catalog.related.scope` | `tayzu.catalog.result.count`                  |
+| `catalog.schema.compile`                | child     | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.blueprint.version`                                                                   | —                                             |
+| `catalog.blueprint.compatibility_check` | child     | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.compatibility.entities_checked`                                                      | `tayzu.catalog.compatibility.violation.count` |
+| `catalog.entity.validate`               | child     | `tayzu.catalog.blueprint.identifier`                                                                                                      | `tayzu.catalog.validation.issue.count`        |
+| `catalog.relations.resolve`             | child     | `tayzu.catalog.relation.target.count`                                                                                                     | `tayzu.catalog.relation.missing.count`        |
+
+Database spans (`pg.*`) come from `@opentelemetry/instrumentation-pg`, with
+`enhancedDatabaseReporting: false`, so bind values are never recorded.
+
+### Metrics
+
+Each metric carries only the attributes listed here. Entity identifiers and
+actor IDs are never metric attributes.
+
+| Metric                                  | Instrument | Unit          | Allowed attributes                                                                                      |
+| --------------------------------------- | ---------- | ------------- | ------------------------------------------------------------------------------------------------------- |
+| `tayzu.catalog.operation.duration`      | histogram  | `s`           | `tayzu.catalog.operation`, `tayzu.catalog.outcome`, `error.type`, `tayzu.tenant.id`, `tayzu.actor.type` |
+| `tayzu.catalog.entity.mutations`        | counter    | `{mutation}`  | `tayzu.tenant.id`, `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.mutation`, `tayzu.actor.type`   |
+| `tayzu.catalog.blueprint.mutations`     | counter    | `{mutation}`  | `tayzu.tenant.id`, `tayzu.catalog.mutation`, `tayzu.actor.type`                                         |
+| `tayzu.catalog.validation.failures`     | counter    | `{failure}`   | `tayzu.tenant.id`, `tayzu.catalog.operation`, `error.type`                                              |
+| `tayzu.catalog.context.rejections`      | counter    | `{rejection}` | `tayzu.catalog.operation`, `tayzu.catalog.context.reason`                                               |
+| `tayzu.catalog.schema.cache.lookups`    | counter    | `{lookup}`    | `tayzu.cache.result`                                                                                    |
+| `tayzu.catalog.schema.compile.duration` | histogram  | `s`           | —                                                                                                       |
+
+SLIs, derived from `tayzu.catalog.operation.duration` per operation and
+tenant:
+
+- **Availability**: the share of operations whose `tayzu.catalog.outcome` is
+  not `server_error`.
+- **Latency**: p99 of `tayzu.catalog.operation.duration` for successful
+  operations.
+
+### Log events
+
+| Event                                         | Severity | Attributes                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog.audit.mutation`                      | INFO     | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.actor.on_behalf_of.type`, `tayzu.actor.on_behalf_of.id`, `tayzu.catalog.mutation`, `tayzu.catalog.resource.kind`, `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.resource.identifier`, `tayzu.catalog.version`, `tayzu.catalog.change_event.seq` |
+| `catalog.security.context_rejected`           | WARN     | `tayzu.catalog.operation`, `tayzu.catalog.context.reason`                                                                                                                                                                                                                                                              |
+| `catalog.security.reserved_identifier_denied` | WARN     | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.catalog.blueprint.identifier`                                                                                                                                                                                                                          |
+| `catalog.internal_error`                      | ERROR    | `tayzu.catalog.operation`, `exception.type`, `db.response.status_code`, `tayzu.db.constraint`, `exception.stacktrace`                                                                                                                                                                                                  |
+
+Every log record carries the active trace and span IDs. `catalog_change_event`
+rows store the same `trace_id`, so an audit entry, its trace and its database
+event can be joined. The durable audit record is the append-only
+`catalog_change_event` table; `catalog.audit.mutation` is a best-effort copy
+for centralized logging.
+
+These signals must never be sampled or dropped by a downstream pipeline:
+`catalog.audit.mutation`, `catalog.security.context_rejected`, `catalog.security.reserved_identifier_denied`, `tayzu.catalog.context.rejections`, `tayzu.catalog.validation.failures`.
+
+### Example queries (Application Insights, KQL)
+
+With the Azure Monitor OpenTelemetry exporter, operation spans (`INTERNAL`
+kind) land in the `dependencies` table, metrics in `customMetrics` and log
+records in `traces`. Attributes appear under `customDimensions`.
+
+Error rate per operation over the last hour:
+
+```kusto
+customMetrics
+| where timestamp > ago(1h) and name == "tayzu.catalog.operation.duration"
+| extend operation = tostring(customDimensions["tayzu.catalog.operation"]),
+         outcome = tostring(customDimensions["tayzu.catalog.outcome"])
+| summarize calls = sum(valueCount),
+            serverErrors = sumif(valueCount, outcome == "server_error") by operation
+| extend errorRate = todouble(serverErrors) / calls
+```
+
+Callers without a valid catalog context (security signal):
+
+```kusto
+traces
+| where timestamp > ago(24h) and message == "catalog.security.context_rejected"
+| summarize count() by tostring(customDimensions["tayzu.catalog.operation"]),
+                     tostring(customDimensions["tayzu.catalog.context.reason"])
+```
+
+Everything an agent changed in a tenant, with its trace:
+
+```kusto
+traces
+| where message == "catalog.audit.mutation"
+| where customDimensions["tayzu.tenant.id"] == "<tenant>"
+    and customDimensions["tayzu.actor.type"] == "agent"
+| project timestamp, operation_Id,
+          actor = tostring(customDimensions["tayzu.actor.id"]),
+          onBehalfOf = tostring(customDimensions["tayzu.actor.on_behalf_of.id"]),
+          mutation = tostring(customDimensions["tayzu.catalog.mutation"]),
+          resource = tostring(customDimensions["tayzu.catalog.resource.identifier"])
+```
