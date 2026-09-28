@@ -220,7 +220,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   the check constraint, and the append-only trigger on
   `catalog_change_event` exist. **Stop for Checkpoint 3 approval of the SQL
   before continuing.**
-- [ ] 5.2 `withTenantTransaction(ctx, fn)` sets `app.tenant_id` through
+- [x] 5.2 `withTenantTransaction(ctx, fn)` sets `app.tenant_id` through
   `set_config($1, true)` and sets `statement_timeout`. Verify:
   `tenant-tx.int.test.ts` shows that `current_setting('app.tenant_id')`
   inside the transaction equals the tenant, that it is unset after commit,

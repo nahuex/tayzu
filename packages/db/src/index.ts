@@ -13,6 +13,13 @@ import { Pool } from 'pg';
 import { assertVerifiedTls } from './connection-security.js';
 import './pg-type-parsers.js';
 
+export {
+  setTenantContext,
+  withTenantTransaction,
+  type TenantTransactionContext,
+  type WithTenantTransactionOptions,
+} from './tenant-tx.js';
+
 const MIGRATIONS_FOLDER = fileURLToPath(new URL('../migrations', import.meta.url));
 
 /**
