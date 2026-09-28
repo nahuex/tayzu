@@ -188,7 +188,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   for `spec` and ignored for `status`. Verify: `relation-values.test.ts` covers "Missing required
   relation", "Wrong cardinality" and "Too many relation targets" (the pure
   part), and rejects duplicate targets.
-- [ ] 4.4 `applyWrite(current, input, mode)` for the `replace` and `merge`
+- [x] 4.4 `applyWrite(current, input, mode)` for the `replace` and `merge`
   modes, where `null` removes a key. Verify: `apply-write.test.ts` covers
   "Merge keeps unspecified keys" and "Merge with null removes a value", and
   checks that `replace` drops keys that are not given.
