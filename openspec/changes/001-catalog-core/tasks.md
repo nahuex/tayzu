@@ -182,7 +182,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [x] 4.2 Apply defaults on write. Verify: `entity-validator.test.ts`
   covers "Default is applied" and checks that an explicitly given value
   wins over the default.
-- [ ] 4.3 Relation value shape validation: cardinality, the required
+- [x] 4.3 Relation value shape validation: cardinality, the required
   relation, undeclared keys, uniqueness within `many`, and a maximum of 1000
   targets. The validator is parameterized by scope: `required` is enforced
   for `spec` and ignored for `status`. Verify: `relation-values.test.ts` covers "Missing required
