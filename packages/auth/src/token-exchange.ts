@@ -38,6 +38,25 @@
  * This module treats every such outcome identically, per the requirement
  * text ("On failure it returns `AUTH_INVALID_CREDENTIALS`") -- a caller
  * cannot distinguish an unknown client id from a revoked one.
+ *
+ * Task 5.4 fix (surfaced by `context-resolver.int.test.ts`'s own "fresh
+ * machine access token" scenario, which calls this function's real output
+ * through `./context-resolver.ts`'s new access-token branch): the installed
+ * `better-auth@1.7.6` `jwt` plugin's own `verifyJWT` (`dist/plugins/jwt/
+ * verify.mjs`) unconditionally rejects any payload lacking a truthy `sub` or
+ * `aud`, independent of signature or expiry validity -- confirmed against
+ * the installed source by running this module's own output through
+ * `verifyJWT` directly. `sub` is set here, to the credential's own client id
+ * (the same id the `actor.id` claim already carries). `aud` (and `iss`) are
+ * *not* set per-payload here: both `signJWT` and `verifyJWT` fall back
+ * identically to `ctx.context.options.baseURL` when the plugin's own
+ * `jwt.issuer`/`jwt.audience` option is unset -- an empty string, never
+ * `undefined` (confirmed against the installed `create-context.mjs`), which
+ * is why the plugin needed a real, non-empty `jwt.issuer`/`jwt.audience`
+ * configured once in `./auth.ts` (`MACHINE_TOKEN_ISSUER`/`_AUDIENCE`) rather
+ * than a differing constant passed per call here, which would only make
+ * `verifyJWT`'s own issuer/audience check fail against that empty-string
+ * default instead.
  */
 import type { AuthInstance } from './auth.js';
 import { AuthInvalidCredentialsError } from './errors.js';
@@ -141,6 +160,7 @@ export async function exchangeMachineToken(
       payload: {
         tenantId: key.referenceId,
         actor: { type: actorKind, id: key.id },
+        sub: key.id,
         iat: nowSeconds,
         exp: nowSeconds + ONE_HOUR_SECONDS,
       },

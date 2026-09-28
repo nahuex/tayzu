@@ -158,7 +158,7 @@ policy diff shown in chat, separately from the rest of the PR.
   and secret exchange for an access token", "Wrong secret is rejected", and
   "Revoked credential is rejected" (`AUTH_INVALID_CREDENTIALS`), plus the
   `auth.token.exchange` span and `tayzu.auth.token.exchanges` counter.
-- [ ] 5.4 The access-token branch of `resolveContext`, enforcing the 1-hour
+- [x] 5.4 The access-token branch of `resolveContext`, enforcing the 1-hour
   expiry. Verify: `context-resolver.int.test.ts` covers "Expired machine
   access token is rejected" and a fresh-token success case resolving
   `actor.type` from the credential's fixed kind.

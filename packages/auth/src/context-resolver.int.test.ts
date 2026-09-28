@@ -175,7 +175,16 @@ import { createAuth, type AuthInstance } from './auth.js';
 // own module doc comment, "Why this is expected to fail for the right
 // reason right now".
 import { createContextResolver } from './context-resolver.js';
+// Task 5.4's own two new scenarios (below, at the end of this file's one
+// `describe` block) reuse task 5.1's and 5.3's already-green production
+// code, unchanged, to provision a real machine credential and exchange it
+// for a real access token -- neither import below is "the module under
+// test" for task 5.4 (that is still `./context-resolver.js`'s still-missing
+// access-token branch, see each new test's own doc comment).
+import { createMachineCredential } from './machine-credentials.js';
+import type { CreatedMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
+import { exchangeMachineToken } from './token-exchange.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -281,6 +290,64 @@ async function expectContextRequiredRejection(promise: Promise<unknown>): Promis
 type ContextResolverFactory = (options: {
   readonly auth: AuthInstance;
 }) => (headers: Headers) => Promise<unknown>;
+
+/**
+ * The narrow slice of `auth.api.signJWT`'s installed, `serverOnly` endpoint
+ * (`better-auth@1.7.6`, `dist/plugins/jwt/index.mjs`) task 5.4's own
+ * "Expired machine access token is rejected" scenario needs: the same
+ * primitive `./token-exchange.ts`'s own, already-green `exchangeMachineToken`
+ * (task 5.3) calls internally to mint a real access token, exposed here
+ * because that scenario needs one whose `iat`/`exp` are already an hour in
+ * the past -- not something `exchangeMachineToken`'s own, fixed "+1 hour from
+ * now" call can ever produce (see `signExpiredMachineToken`'s own doc
+ * comment below for why this is built this way instead of waiting or faking
+ * the system clock).
+ */
+interface SignJwtApiSurface {
+  signJWT(args: {
+    body: { payload: Record<string, unknown> };
+  }): Promise<{ readonly token: string }>;
+}
+
+function signJwtOf(auth: AuthInstance): SignJwtApiSurface {
+  return auth.api as SignJwtApiSurface;
+}
+
+/** design D5: "a 1-hour access token." Mirrors `./token-exchange.ts`'s own identically-named constant. */
+const ONE_HOUR_SECONDS = 60 * 60;
+const TWO_HOURS_SECONDS = 2 * ONE_HOUR_SECONDS;
+
+/**
+ * Builds an access token carrying the exact `{ tenantId, actor: { type, id }
+ * }` claim shape design D5 names for `POST /v1/auth/token`'s own minted
+ * token (`./token-exchange.ts`'s `exchangeMachineToken`, task 5.3) -- but
+ * with an explicit `iat`/`exp` pair already an hour in the past, standing in
+ * for "an access token issued more than 1 hour ago" (task 5.4's own
+ * Verify-named scenario), the same "manipulate the persisted/signed
+ * timestamp directly rather than waiting a real hour or faking the system
+ * clock" practice `session-policy.int.test.ts`'s own idle-timeout fixtures
+ * already establish for this package, adapted here to a signed JWT claim
+ * instead of a database row -- a machine access token carries its own expiry
+ * inside the token itself, not in a queryable column, so there is no row to
+ * backdate.
+ */
+async function signExpiredMachineToken(
+  auth: AuthInstance,
+  credential: CreatedMachineCredential,
+): Promise<string> {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const signed = await signJwtOf(auth).signJWT({
+    body: {
+      payload: {
+        tenantId: credential.organizationId,
+        actor: { type: credential.actorKind, id: credential.id },
+        iat: nowSeconds - TWO_HOURS_SECONDS,
+        exp: nowSeconds - ONE_HOUR_SECONDS,
+      },
+    },
+  });
+  return signed.token;
+}
 
 describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () => {
   let db: TestDb;
@@ -552,5 +619,184 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // file's other scenarios already make).
     // THEN "it fails exactly as `CATALOG_CONTEXT_REQUIRED`".
     await expectContextRequiredRejection(resolveContext(new Headers({ cookie: tenant.cookie })));
+  });
+
+  /**
+   * Task 5.4 (design D5, D21; `specs/auth-and-rbac/spec.md`, "HTTP requests
+   * resolve to a catalog context or fail exactly like a missing context"),
+   * quoted in full:
+   *
+   * #### Scenario: Expired machine access token is rejected
+   * - WHEN a catalog operation is called with an access token issued more
+   *   than 1 hour ago
+   * - THEN it fails exactly as `CATALOG_CONTEXT_REQUIRED`
+   *
+   * The requirement text above the scenario is the source for "a valid
+   * machine access token MUST resolve to `{ tenantId, actor: { type:
+   * 'integration'|'agent', id } }` per the token's own claims" and "an
+   * invalid or expired token MUST be rejected with the same status and body
+   * as `CATALOG_CONTEXT_REQUIRED`" -- the same structural rejection shape
+   * `expectContextRequiredRejection` (above) already asserts throughout this
+   * file for the session-cookie branch's own rejection cases.
+   *
+   * ## Why this is expected to fail for the right reason right now
+   *
+   * `./context-resolver.ts`'s own module doc comment (task 3.1) says
+   * "Machine access tokens (task 5.4) ... are later tasks' own red/green
+   * cycles, not implemented here" -- confirmed by reading the current
+   * source: `createContextResolver`'s returned function never reads an
+   * `authorization` header at all, so a request carrying only one (no
+   * `cookie` header) falls straight through to `api.getSession`, which
+   * resolves `null` for a request with no session cookie -- the same
+   * "Missing credential is rejected like a missing context" path this file's
+   * second scenario already exercises. This scenario is therefore expected
+   * to **pass already, but for the wrong reason**: `resolveContext` rejects
+   * with `CATALOG_CONTEXT_REQUIRED` today regardless of whether the bearer
+   * token is expired, fresh, malformed, or entirely absent, because it never
+   * looks at the `authorization` header's contents at all yet -- there is no
+   * expiry-specific behavior here yet to have failed. This scenario is
+   * included anyway, per task 5.4's own Verify clause naming it explicitly,
+   * and is meaningful only together with the next scenario below (a fresh,
+   * valid access token, which genuinely fails today): together, the two
+   * demonstrate that only an expired token should be rejected, once the
+   * access-token branch exists, rather than every bearer token
+   * indiscriminately as today's placeholder behavior happens to do. Flagged
+   * explicitly here, and in this file's own report to the orchestrator, per
+   * this assignment's own instructions ("If they already pass because a
+   * library already behaves this way, say so clearly instead of forcing a
+   * failure").
+   */
+  it('Expired machine access token is rejected', async () => {
+    const admin = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Expired Token Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+
+    // GIVEN: "an access token issued more than 1 hour ago" -- built with the
+    // exact claim shape `POST /v1/auth/token` (task 5.3, `./token-exchange.ts`)
+    // mints for a real credential, but an `iat`/`exp` pair already an hour in
+    // the past instead of an hour in the future (see `signExpiredMachineToken`'s
+    // own doc comment for why this is built this way rather than waiting a
+    // real hour or faking the system clock).
+    const credential = await createMachineCredential(auth, {
+      headers: new Headers({ cookie: admin.cookie }),
+      organizationId: admin.organizationId,
+      name: 'Expired token test credential',
+      actorKind: 'integration',
+    });
+    const expiredToken = await signExpiredMachineToken(auth, credential);
+
+    // WHEN "a catalog operation is called with an access token issued more
+    // than 1 hour ago" (here, `resolveContext` itself, standing in for the
+    // pipeline stage that would call it -- `apps/api` does not exist yet,
+    // the same substitution this file's other scenarios already make).
+    // THEN "it fails exactly as `CATALOG_CONTEXT_REQUIRED`".
+    await expectContextRequiredRejection(
+      resolveContext(new Headers({ authorization: `Bearer ${expiredToken}` })),
+    );
+  });
+
+  /**
+   * Task 5.4's own second Verify-named scenario: "a fresh-token success case
+   * resolving `actor.type` from the credential's fixed kind." Not a scenario
+   * `specs/auth-and-rbac/spec.md` names verbatim by its own title (unlike
+   * every other scenario in this file); the requirement text it exercises is
+   * the same one the scenario above quotes: "A valid machine access token
+   * MUST resolve to `{ tenantId, actor: { type: 'integration'|'agent', id }
+   * }` per the token's own claims."
+   *
+   * The credential here is created with `actorKind: 'agent'`, not
+   * `'integration'` (the kind every other machine-credential test in this
+   * package uses) -- specifically so this scenario's own "resolving
+   * `actor.type` from the credential's fixed kind" clause is checked against
+   * a kind `resolveContext` could not satisfy by having simply hardcoded
+   * `'integration'` somewhere.
+   *
+   * ## Why this is expected to fail for the right reason right now
+   *
+   * The same reason the scenario above's own doc comment gives for why
+   * `resolveContext` does not yet read an `authorization` header at all --
+   * except this scenario's assertion runs the other way: it expects the
+   * returned promise to **resolve** to `{ tenantId, actor: { type: 'agent',
+   * id: credential.id } }`, and today it instead **rejects** with
+   * `CATALOG_CONTEXT_REQUIRED` (the same "no session cookie" fallback path),
+   * exactly as `resolveContext`'s own current source predicts -- a genuine
+   * assertion failure demonstrating the missing behavior, not a typo or a
+   * broken fixture: `createMachineCredential` and `exchangeMachineToken` are
+   * both already-green production code (tasks 5.1 and 5.3), imported and
+   * exercised unchanged by `machine-credentials.int.test.ts` and
+   * `token-exchange.int.test.ts` respectively.
+   *
+   * ## A pre-existing gap this scenario's own success path may also surface
+   *
+   * `./token-exchange.ts`'s `exchangeMachineToken` signs its payload with no
+   * `sub` claim and an empty-string `aud` claim (`ctx.context.options.
+   * baseURL` is never configured anywhere in this package, so `signJWT`'s own
+   * `defaultAud` falls back to `""`) -- the installed `better-auth@1.7.6`
+   * `jwt` plugin's own `verifyJWT` (`dist/plugins/jwt/verify.mjs`) rejects
+   * any payload lacking a truthy `sub` or `aud` unconditionally
+   * (`if (!payload.sub || !payload.aud) return null;`), independent of
+   * signature validity or expiry. If the green phase's access-token branch
+   * calls that same `verifyJWT` (the natural "verify a `jwt`-plugin-signed
+   * token" primitive, and the same one this file's sibling scenario above
+   * relies on transitively rejecting an expired token), this scenario's own
+   * fresh, real `exchangeMachineToken` output may still fail to verify for
+   * this unrelated reason -- in which case `./token-exchange.ts` (task 5.3,
+   * already committed) itself needs a small production fix (adding an
+   * explicit `sub` claim, and a non-empty `aud`/`iss`) alongside task 5.4's
+   * own new code, not a change to this test. Flagged explicitly here, and in
+   * this file's own report to the orchestrator, per this assignment's own
+   * instructions to report anything needing a non-test change.
+   */
+  it("A fresh machine access token resolves actor.type from the credential's fixed kind", async () => {
+    const admin = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Fresh Token Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+
+    // GIVEN "an active `agent`-kind machine credential" (see this test's own
+    // doc comment for why `agent`, not `integration`).
+    const credential = await createMachineCredential(auth, {
+      headers: new Headers({ cookie: admin.cookie }),
+      organizationId: admin.organizationId,
+      name: 'Fresh token test credential',
+      actorKind: 'agent',
+    });
+
+    // WHEN "its client id and secret are posted to `POST /v1/auth/token`"
+    // (task 5.3's own, already-green `exchangeMachineToken` -- the real
+    // production exchange, not a hand-built token, unlike the expiry
+    // scenario above, which needs an already-past `exp` no real exchange
+    // call can produce without waiting a full hour).
+    const exchanged = await exchangeMachineToken(auth, {
+      clientId: credential.id,
+      clientSecret: credential.secret,
+    });
+
+    // WHEN "a catalog operation is called" with that fresh access token
+    // (here, `resolveContext` itself, the same substitution this file's
+    // other scenarios already make).
+    const resolved = await resolveContext(
+      new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    );
+
+    // THEN: "A valid machine access token MUST resolve to `{ tenantId,
+    // actor: { type: 'integration'|'agent', id } }` per the token's own
+    // claims" -- `actor.type` is `'agent'`, the credential's own fixed kind
+    // (task 5.4's own Verify-clause wording), `actor.id` is the credential's
+    // own client id, and `tenantId` is the organization the credential
+    // belongs to.
+    expect(resolved).toEqual({
+      tenantId: admin.organizationId,
+      actor: { type: 'agent', id: credential.id },
+    });
   });
 });

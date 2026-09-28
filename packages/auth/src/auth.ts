@@ -82,6 +82,23 @@ const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
 
 /**
+ * Task 5.4 fix (design D5): a fixed, non-secret `iss`/`aud` for every `jwt`
+ * plugin-signed token this instance mints (`./token-exchange.ts`'s machine
+ * access tokens today; the plugin's own session-JWT side channel later, if
+ * ever read back). Required because the installed `better-auth@1.7.6` `jwt`
+ * plugin's own `verifyJWT` (`dist/plugins/jwt/verify.mjs`) rejects any
+ * payload whose `aud` claim is falsy, and both `signJWT` and `verifyJWT`
+ * fall back identically to `ctx.context.options.baseURL` -- an empty
+ * string, never `undefined`, when unset (confirmed against the installed
+ * `create-context.mjs`) -- for `iss`/`aud` alike whenever this option is
+ * left unset, which is falsy and so always rejected. Configured once, here,
+ * rather than per-payload in `./token-exchange.ts`, so `signJWT`'s and
+ * `verifyJWT`'s defaults stay the same fixed value on both sides.
+ */
+const MACHINE_TOKEN_ISSUER = 'tayzu-auth';
+const MACHINE_TOKEN_AUDIENCE = 'tayzu-auth';
+
+/**
  * design D18/D22, task 18.2: Better Auth's own sign-up route. Never added to
  * D18's allowlist (`packages/auth/CLAUDE.md`, task 11.9) -- intercepted here
  * instead, ahead of that later Fastify-layer work, since `apps/api` is not a
@@ -343,7 +360,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       organization(),
       admin(),
       twoFactor(),
-      jwt(),
+      // Task 5.4 fix (this file's own `MACHINE_TOKEN_ISSUER`/`_AUDIENCE` doc
+      // comment): a fixed, non-empty `iss`/`aud` default, required for
+      // `verifyJWT` to accept any token this plugin signs at all.
+      jwt({ jwt: { issuer: MACHINE_TOKEN_ISSUER, audience: MACHINE_TOKEN_AUDIENCE } }),
       // Task 5.1, design D5: the one `apiKey` plugin config machine
       // credentials use. `references: "organization"` makes
       // `checkOrgApiKeyPermission` (installed `@better-auth/api-key@1.7.6`

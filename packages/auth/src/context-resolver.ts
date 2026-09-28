@@ -58,10 +58,28 @@
  * transient failure fails closed for exactly one request rather than
  * extending the fail-closed window.
  *
- * Machine access tokens (task 5.4) and the `onBehalfOf` non-read guarantee
- * this function already upholds by construction (task 3.4, design D3 -- this
- * module never reads request body, path, or query string at all) are later
- * tasks' own red/green cycles, not implemented here.
+ * Machine access tokens (task 5.4, design D5): a request carrying an
+ * `Authorization: Bearer <token>` header is resolved through a second,
+ * independent branch, never the session-cookie branch above -- "every
+ * HTTP-served ... procedure MUST accept exactly two forms of caller
+ * credential" (spec). The bearer token is the 1-hour access token
+ * `./token-exchange.ts`'s `exchangeMachineToken` mints (task 5.3): this
+ * branch verifies it via the `jwt` plugin's own `auth.api.verifyJWT`
+ * (`better-auth@1.7.6`, `dist/plugins/jwt/verify.mjs`), which independently
+ * rejects an unsigned, malformed, tampered, or expired token (`jose`'s own
+ * `exp` check) by returning a `null` payload -- this module never re-checks
+ * expiry itself. A verified payload's own `{ tenantId, actor: { type, id } }`
+ * claims (design D5's own mint-time shape) are read back as-is and returned,
+ * after validating their shape defensively (an untrusted signed payload
+ * still gets structurally checked before being trusted as a `ResolvedContext`)
+ * -- "A valid machine access token MUST resolve to `{ tenantId, actor: {
+ * type: 'integration'|'agent', id } }` per the token's own claims" (spec).
+ * Revocation-list consultation (task 5.7, design D21) is a later task's own
+ * red/green cycle, not implemented here.
+ *
+ * The `onBehalfOf` non-read guarantee this function already upholds by
+ * construction (task 3.4, design D3 -- this module never reads request
+ * body, path, or query string at all) applies equally to this branch.
  */
 import type { AuthInstance } from './auth.js';
 import { AuthContextError } from './errors.js';
@@ -72,7 +90,7 @@ export interface ContextResolverOptions {
 }
 
 export interface ResolvedActor {
-  readonly type: 'user';
+  readonly type: 'user' | 'integration' | 'agent';
   readonly id: string;
 }
 
@@ -106,6 +124,68 @@ interface AuthApiSurface {
 
 function apiOf(auth: AuthInstance): AuthApiSurface {
   return auth.api as AuthApiSurface;
+}
+
+/**
+ * Task 5.4, design D5: the slice of `auth.api.verifyJWT`'s installed response
+ * (`better-auth@1.7.6`, `dist/plugins/jwt/index.mjs`) this module reads. A
+ * `null` payload covers every verification failure alike (bad signature,
+ * malformed token, missing `sub`/`aud`, or an expired `exp` claim -- `jose`'s
+ * own check, caught internally by `verifyJWT` and folded into the same
+ * `null`) -- this module never distinguishes which.
+ */
+interface JwtApiSurface {
+  verifyJWT(args: { body: { token: string } }): Promise<{
+    readonly payload: Record<string, unknown> | null;
+  }>;
+}
+
+function jwtApiOf(auth: AuthInstance): JwtApiSurface {
+  return auth.api as JwtApiSurface;
+}
+
+/** design D5: `POST /v1/auth/token`'s bearer-token convention. */
+const BEARER_PREFIX = 'Bearer ';
+
+/**
+ * Reads a `Bearer` access token off the `authorization` header, or `null`
+ * when the header is absent, empty, or not `Bearer`-scheme -- in every such
+ * case the session-cookie branch runs instead (this module's own doc
+ * comment).
+ */
+function extractBearerToken(headers: Headers): string | null {
+  const header = headers.get('authorization');
+  if (header === null || !header.startsWith(BEARER_PREFIX)) {
+    return null;
+  }
+  const token = header.slice(BEARER_PREFIX.length).trim();
+  return token.length > 0 ? token : null;
+}
+
+function isMachineActorType(value: unknown): value is 'integration' | 'agent' {
+  return value === 'integration' || value === 'agent';
+}
+
+/**
+ * Structurally validates a verified access token's own payload against
+ * design D5's mint-time shape (`./token-exchange.ts`'s `exchangeMachineToken`)
+ * before it is trusted as a `ResolvedContext` -- a valid signature proves the
+ * token was minted by this instance's own `jwt` plugin key, not that its
+ * claims are shaped the way this module expects, so they are checked anyway.
+ */
+function parseMachineTokenPayload(payload: Record<string, unknown>): ResolvedContext | null {
+  const { tenantId, actor } = payload;
+  if (typeof tenantId !== 'string' || tenantId.length === 0) {
+    return null;
+  }
+  if (typeof actor !== 'object' || actor === null) {
+    return null;
+  }
+  const { type, id } = actor as Record<string, unknown>;
+  if (!isMachineActorType(type) || typeof id !== 'string' || id.length === 0) {
+    return null;
+  }
+  return { tenantId, actor: { type, id } };
 }
 
 /**
@@ -156,6 +236,7 @@ function rejectMissingContext(): never {
 
 export function createContextResolver(options: ContextResolverOptions): ContextResolver {
   const api = apiOf(options.auth);
+  const jwtApi = jwtApiOf(options.auth);
   const membershipCache = new Map<string, MembershipCacheEntry>();
 
   // Task 3.6, design D19: the independent membership re-check. A cache hit
@@ -192,6 +273,23 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   }
 
   return async (headers: Headers): Promise<ResolvedContext> => {
+    // Task 5.4, design D5: a `Bearer` access token is resolved through its
+    // own branch, never falling through to the session-cookie branch below
+    // -- "exactly two forms of caller credential" (spec), never both checked
+    // for the same request.
+    const bearerToken = extractBearerToken(headers);
+    if (bearerToken !== null) {
+      const verified = await jwtApi.verifyJWT({ body: { token: bearerToken } });
+      if (verified.payload === null) {
+        rejectMissingContext();
+      }
+      const resolved = parseMachineTokenPayload(verified.payload);
+      if (resolved === null) {
+        rejectMissingContext();
+      }
+      return resolved;
+    }
+
     // design D3: the 12-hour idle timeout, layered on top of Better Auth's
     // own 7-day `expiresIn`/1-day `updateAge`. `disableRefresh: true` reads
     // `updatedAt` as actually persisted, immune to the refresh-on-read side
