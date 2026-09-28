@@ -83,6 +83,20 @@ policy diff shown in chat, separately from the rest of the PR.
 - [ ] 2.4 Wire `auth.security.login_succeeded`/`login_failed` log events and
   the `tayzu.auth.session.events` counter on sign-in. Verify:
   `auth-flow.int.test.ts` covers both outcomes emitting the declared signal.
+- [ ] 2.5 Better Auth `rateLimit` config: `storage: "database"`, `customRules`
+  for `/sign-in/email`, `/two-factor/verify`, and any sign-up/email-verification
+  route, each keyed by IP and by normalized email (design D20). Verify:
+  `pre-auth-rate-limit.int.test.ts` covers "Repeated failed sign-ins from the
+  same source are rate-limited" (`AUTH_RATE_LIMITED`, `Retry-After` header),
+  and the `auth.security.rate_limited` log event plus
+  `tayzu.auth.rate_limit.events` counter, with neither IP nor email present on
+  either signal.
+- [ ] 2.6 Sign-in/sign-up failure responses are identical in status, error
+  code, and body shape regardless of whether the account exists (design
+  Non-Goals: password reset itself is deferred to
+  `044-password-reset-and-account-recovery`). Verify:
+  `enumeration-resistance.int.test.ts` covers "Sign-in failure looks the same
+  for an unknown account and a wrong password".
 
 ## 3. Session and tenant resolution
 
@@ -99,6 +113,20 @@ policy diff shown in chat, separately from the rest of the PR.
 - [ ] 3.3 `changePassword` called with `revokeOtherSessions: true`. Verify:
   `session-policy.int.test.ts` covers "Password change revokes other
   sessions", and the resulting `auth.security.session_revoked` log event.
+- [ ] 3.4 `resolveContext(headers)` never reads `actor.onBehalfOf` from the
+  request body, path, query string, or any header; any client-supplied value
+  is ignored (design D3). Verify: `context-resolver.int.test.ts` covers "A
+  client-supplied onBehalfOf value is ignored".
+- [ ] 3.5 Better Auth's `setActiveOrganization` rejects setting an
+  organization the caller is not a member of (design D19). Verify:
+  `active-org.int.test.ts` covers "Setting an active organization you are not
+  a member of is rejected".
+- [ ] 3.6 `resolveContext()`'s session-cookie branch independently
+  re-verifies `session.activeOrganizationId` against a membership-row lookup,
+  cached for at most a few seconds, failing closed on a miss or lookup
+  failure (design D19). Verify: `context-resolver.int.test.ts` covers
+  "Context resolution independently rejects a stale non-membership", using a
+  membership row removed after the session was established.
 
 ## 4. Multi-factor authentication and step-up
 
@@ -134,6 +162,25 @@ policy diff shown in chat, separately from the rest of the PR.
   expiry. Verify: `context-resolver.int.test.ts` covers "Expired machine
   access token is rejected" and a fresh-token success case resolving
   `actor.type` from the credential's fixed kind.
+- [ ] 5.5 A new migration creating `machine_credential_revocation`
+  (`credential_id`, `revoked_at`, `tenant_id`), granted to `tayzu_app` with
+  the same `tenant_isolation` `pgPolicy`/`FORCE ROW LEVEL SECURITY` treatment
+  as every catalog table (design D21). Verify:
+  `revocation-schema.int.test.ts` asserts the table, its policy, and the
+  `FORCE` flag via `pg_policy`/`information_schema`. ⛔ **Stop here for
+  Checkpoint 3 approval of this migration's SQL before continuing.**
+- [ ] 5.6 The revoke procedure (5.2) additionally writes a
+  `machine_credential_revocation` row in the same operation that disables the
+  underlying `apiKey` config row. Verify: `machine-credentials.int.test.ts`
+  covers "Revocation is recorded in the revocation list, not only disabled at
+  the apiKey layer".
+- [ ] 5.7 The machine-token branch of `resolveContext` consults the
+  revocation list on every request through an in-process cache keyed by
+  `credential_id` with a TTL of at most 5 seconds, failing closed (rejecting
+  the token) on a lookup failure (design D21). Verify:
+  `context-resolver.int.test.ts` covers "A token issued before revocation is
+  rejected within the revocation TTL" and "Revocation-lookup failure fails
+  closed" (simulated lookup error).
 
 ## 6. Database roles and row-level security
 
@@ -299,6 +346,34 @@ policy diff shown in chat, separately from the rest of the PR.
   telemetry attribute. Verify: `rate-limit.int.test.ts` covers one
   principal's requests being rate-limited (`AUTH_RATE_LIMITED`, 429) while a
   different principal's bucket is unaffected.
+- [ ] 11.9 A Fastify pre-handler allowlist for `/api/auth/*` (design D18):
+  Better Auth's native organization-membership-mutation routes
+  (`inviteMember`, `updateMemberRole`, `removeMember`, organization
+  create/delete) and every `apiKey` plugin management route return `404`;
+  every other allowlisted route (sign-up, sign-in, sign-out, session read,
+  two-factor enroll/verify, `setActiveOrganization`, email verification)
+  remains reachable. Verify: `auth-route-allowlist.int.test.ts` covers "A
+  native organization-mutation route is not reachable" and "A native API-key
+  management route is not reachable", both asserting a plain `404`.
+- [ ] 11.10 An allowlist-drift test enumerating Better Auth's actual mounted
+  routes against the allowlist constant. Verify:
+  `auth-route-allowlist.test.ts` covers "An unlisted Better Auth route fails
+  the allowlist test", introducing a scratch route in a throwaway branch and
+  confirming the test fails, then reverting it.
+- [ ] 11.11 *(setup)* Verify the Better Auth `apiKey` plugin's hash-at-rest
+  algorithm against `@better-auth/api-key`'s installed source (not the docs
+  site), resolving the open item design's Risks section flags (SEC05).
+  Verify: a short note in `docs/security/dependencies.md` records the
+  confirmed algorithm and the source location checked.
+- [ ] 11.12 TLS/HSTS posture on the public ACA ingress: HSTS present, TLS 1.0
+  and 1.1 disabled. Verify: `headers.int.test.ts` (extended) asserts the HSTS
+  header on a response, and `docs/security/dependencies.md` records the
+  manual SSL-Labs-equivalent check run once against the deployed ingress.
+- [ ] 11.13 `@fastify/rate-limit` on `POST /v1/auth/token`, keyed by IP and by
+  the request's client id, independent of 11.8's authenticated-principal
+  bucket (design D20). Verify: `token-exchange-rate-limit.int.test.ts` covers
+  "Machine token exchange is rate-limited independently of the authenticated
+  bucket".
 
 ## 12. User and Team system blueprints
 
@@ -330,7 +405,10 @@ policy diff shown in chat, separately from the rest of the PR.
 - [ ] 13.3 Marker-leak test extension. Verify: `otel-smoke-check` covers a
   forced sign-in failure, MFA failure, and token-exchange failure, and
   asserts client secrets, access tokens, session tokens, TOTP codes, and
-  backup codes never appear in any exported span, metric, or log attribute.
+  backup codes never appear in any exported span, metric, or log attribute;
+  extended (design D20) to assert a rate-limited request's caller IP and
+  submitted email never appear on `auth.security.rate_limited` or
+  `tayzu.auth.rate_limit.events`.
 - [ ] 13.4 Wire the OTel SDK and an OTLP exporter in `apps/api`, plus
   `@opentelemetry/instrumentation-http`/`-pg` with
   `enhancedDatabaseReporting: false`. Verify: a documented manual smoke
@@ -373,6 +451,12 @@ policy diff shown in chat, separately from the rest of the PR.
   `pnpm lint:md` passes, and every name in the doc exists in
   `packages/authz/src/telemetry/contract.ts` (checked by `contract.test.ts`,
   task 13.1).
+- [ ] 16.4 Write `docs/security/attack-surfaces.md`: every Better Auth
+  allowlisted route, every catalog route, `/v1/auth/token`, each with its
+  actor category, authentication mechanism, and Cerbos/authorization check
+  (VCDM pre-assessment, ticket 6). Verify: `pnpm lint:md` passes, and every
+  route in the design's D13/D18 tables and `specs/auth-and-rbac/spec.md`
+  appears in the doc.
 
 ## 17. Integration checks before the PR (Checkpoint 2 readiness)
 

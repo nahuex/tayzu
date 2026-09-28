@@ -17,7 +17,8 @@ other catalog mutation.
   Cerbos deny on any operation added here surfaces as `002`'s `AUTH_FORBIDDEN`
   (403). The step-up gate on `setStatus`, `credentials.rotate`,
   `credentials.revoke`, and `organization.delete` surfaces as `002`'s
-  existing `AUTH_STEP_UP_REQUIRED` (403).
+  existing `AUTH_STEP_UP_REQUIRED` (403). The per-tenant invitation rate
+  limit surfaces as `002`'s existing `AUTH_RATE_LIMITED` (429).
 - **`_user.status` values**: `Staged`, `Invited`, `Active`, `Disabled` — the
   same capitalization `002-auth-and-rbac` already establishes for
   `Active`/`Disabled`.
@@ -87,7 +88,13 @@ creating the new one. Accepting an invitation MUST require the accepting
 session's email to match the invited email exactly. Only a `pending`,
 non-expired invitation MUST be acceptable; accepting a `rejected`,
 `cancelled`, `expired`, or already-`accepted` invitation MUST fail and MUST
-NOT change the invited user's status.
+NOT change the invited user's status. Every rejected-acceptance case
+(nonexistent invitation, wrong state, and mismatched email) MUST return the
+same status, error code, and body shape to the caller, so the response
+itself cannot be used to enumerate valid invitations or their state; the
+specific reason is recorded only in the
+`catalog.security.invitation_acceptance_denied` security log event, never in
+the HTTP response.
 
 #### Scenario: Invite sends exactly one email with exactly one link
 - **WHEN** an admin invites `bob@example.com`
@@ -114,6 +121,11 @@ NOT change the invited user's status.
 - **WHEN** a session authenticated as `carol@example.com` attempts to accept it
 - **THEN** the acceptance fails
 
+#### Scenario: Invitation-acceptance errors do not reveal which failure occurred
+- **GIVEN** three invitations to `bob@example.com`: one that does not exist, one expired, and one pending but accepted by a mismatched session email
+- **WHEN** each acceptance attempt is made
+- **THEN** all three fail with the same status, error code, and body shape, none of which reveals which specific reason caused the failure
+
 #### Scenario: Admin can cancel a pending invitation
 - **GIVEN** a pending invitation to `bob@example.com`
 - **WHEN** the admin cancels it
@@ -124,6 +136,19 @@ NOT change the invited user's status.
 - **WHEN** the admin resends it
 - **THEN** another email is sent to `bob@example.com` with the same invitation link
 - **AND** the invitation's expiry is still 48 hours from its original creation, not from the resend
+
+### Requirement: Per-tenant invitation rate limiting
+Creating and resending invitations MUST be rate-limited per tenant, so a
+single organization cannot use the invitation-email surface to send bulk,
+phishing-style messages through Tayzu's outbound email capability. Exceeding
+the configured limit MUST fail the invite or resend operation with
+`AUTH_RATE_LIMITED`, without sending an email, and MUST be logged as a
+security-relevant signal distinguishable from an ordinary Cerbos deny.
+
+#### Scenario: Exceeding the per-tenant invite rate limit blocks further invites
+- **GIVEN** a tenant that has already created or resent the configured maximum number of invitations in the current window
+- **WHEN** an admin attempts one more invite or resend
+- **THEN** the operation fails, no email is sent, and the excess-invitation attempt is logged
 
 ### Requirement: Service accounts are non-human users created API-only
 A service account MUST be a `_user` entity with `accountKind: "service"`
@@ -136,6 +161,26 @@ and MUST NOT be retrievable again afterward. Disabling a service account
 MUST also disable its credential, so that no new access token can be issued
 from it. Re-enabling reverses both. Deleting a service account's `_user`
 entity MUST also revoke (not merely disable) its credential.
+
+A service account MUST NOT hold the `admin` role and MUST NOT hold a
+Moderator grant over any blueprint (`moderatedBlueprints` MUST stay empty):
+it is restricted to `member` only, always, because service accounts
+authenticate as `integration`-kind actors and, per `002-auth-and-rbac`'s
+step-up requirement, never go through step-up MFA — an elevated role bound
+to a leaked service-account secret would otherwise have no MFA layer at all,
+unlike the human `admin` it would mirror. Creating or updating a `_user`
+entity with `accountKind: "service"` and a role or `moderatedBlueprints`
+value that would grant it more than `member` MUST fail, both at input
+validation and, independently, as a Cerbos deny.
+
+#### Scenario: Creating a service account with an elevated role is rejected
+- **WHEN** an admin attempts to create a service account with role `admin`
+- **THEN** the operation fails and no `_user` entity or credential is created
+
+#### Scenario: Granting an existing service account a Moderator grant is rejected
+- **GIVEN** service account `ci-github` with role `member` and no Moderator grant
+- **WHEN** an admin attempts to add a blueprint to its `moderatedBlueprints` list
+- **THEN** the operation fails and `ci-github`'s `moderatedBlueprints` stays empty
 
 #### Scenario: Service account is active immediately, no email
 - **WHEN** an admin creates service account `ci-github` for tenant `t1`

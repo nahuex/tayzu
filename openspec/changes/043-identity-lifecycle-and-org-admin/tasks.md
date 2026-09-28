@@ -114,6 +114,19 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 - [ ] 4.8 `identity.users.resendInvitation`: re-sends the invitation email
   without changing the invitation's expiry. Verify: `invitations.int.test.ts`
   covers "Resending a pending invitation does not change its expiry".
+- [ ] 4.9 Invitation-acceptance failures (nonexistent invitation, wrong
+  state, mismatched email) all return the same status, error code, and body
+  shape, while `catalog.security.invitation_acceptance_denied`'s
+  `denial_reason` still records the specific reason (design D4, VCDM
+  pre-assessment ticket 11). Verify: `invitations.int.test.ts` covers
+  "Invitation-acceptance errors do not reveal which failure occurred".
+- [ ] 4.10 A per-tenant `@fastify/rate-limit` bucket, keyed by `tenantId`,
+  shared by `identity.users.invite` and `identity.users.resendInvitation`
+  (design D4, VCDM pre-assessment ticket 12). Verify:
+  `invitation-rate-limit.int.test.ts` covers "Exceeding the per-tenant invite
+  rate limit blocks further invites", asserting the `EmailSender` fake
+  recorded no additional call and that `catalog.security.invitation_rate_
+  limited` is logged.
 
 ## 5. Invitation email delivery
 
@@ -153,6 +166,14 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   invitation is created. Verify: `invitations.int.test.ts` covers "Non-admin
   cannot invite" at the operation level (Cerbos deny, not just the pure
   state machine).
+- [ ] 6.5 A rule on `002`'s existing `user.yaml` resource policy denies any
+  action that would leave a `resource.attr.accountKind == "service"` entity
+  with role `admin` or a non-empty `moderatedBlueprints` (design D3/D6,
+  Resolved decision Q7). ⛔ **Stop for Checkpoint 3 approval of the policy
+  diff before continuing.** Verify: `cerbos compile` runs `user_test.yaml`'s
+  extended cases covering a service-account entity denied `admin` role and
+  denied a non-empty `moderatedBlueprints`, while an equivalent standard
+  account is unaffected.
 
 ## 7. Service accounts
 
@@ -186,6 +207,16 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   disables) its credential. Verify: `service-accounts.int.test.ts` covers
   "Deleting a service account revokes its credential", asserting the
   credential cannot be re-enabled afterward.
+- [ ] 7.7 `identity.serviceAccounts.create` validates the requested role and
+  `moderatedBlueprints` at input: only `member` and an empty list are
+  accepted (design Q7). Verify: `service-accounts.int.test.ts` covers
+  "Creating a service account with an elevated role is rejected", asserting
+  no `_user` entity or credential is created.
+- [ ] 7.8 The Cerbos-layer role restriction (task 6.5) is exercised through
+  the full operation pipeline, independent of 7.7's input validation (design
+  Q7). Verify: `service-accounts.int.test.ts` covers "Granting an existing
+  service account a Moderator grant is rejected", asserting
+  `moderatedBlueprints` stays empty.
 
 ## 8. Org API-credentials viewer
 
@@ -290,8 +321,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   scratch branch.
 - [ ] 12.4 Marker-leak test across this change's signals. Verify:
   `otel-smoke-check` covers "Invited email never reaches telemetry" for an
-  invite, an expired-acceptance attempt, and a credential rotation (secret
-  value as the marker for the last one).
+  invite, an expired-acceptance attempt, a rate-limited invite attempt, and a
+  credential rotation (secret value as the marker for the last one).
 
 ## 13. Docs, ADRs, diagram, and integration checks (Checkpoint 2 readiness)
 
@@ -305,9 +336,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 - [ ] 13.4 Write `docs/adr/0020-cerbos-gates-invite-and-status-not-origin.md`
   (design D3). Verify: same structure, linked from design D3.
 - [ ] 13.5 Write `docs/security/data-retention.md`: retention windows per
-  data category (org-deletion backup window, credential rotation cadence),
-  cross-referencing `010`/`015` for audit/security log retention rather than
-  redefining it. Verify: `pnpm lint:md` passes.
+  data category (org-deletion backup window, credential rotation cadence,
+  the per-tenant invitation rate-limit default), cross-referencing `010`/
+  `015` for audit/security log retention rather than redefining it. Verify:
+  `pnpm lint:md` passes.
 - [ ] 13.6 Update `docs/architecture/system-diagram.md`: add the email
   provider as a new external actor, and arrows for invite→email, credential
   rotation, and org deletion. Verify: the Mermaid block still renders with

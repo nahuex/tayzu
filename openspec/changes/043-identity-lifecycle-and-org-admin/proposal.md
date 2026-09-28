@@ -29,12 +29,19 @@ immediately after `002`, before `003` builds catalog UI on top of the
   48-hour expiry); an invitation email (new outbound-email capability, SEC11
   hardened: single link, no other clickable links, matching-email-before-accept);
   resend and cancel; a state-machine guard so accepting an expired, cancelled
-  or rejected invitation always fails.
+  or rejected invitation always fails, with indistinguishable error responses
+  across every rejection reason; a per-tenant rate cap on invite/resend
+  volume (VCDM pre-assessment).
 - **Service accounts.** A `_user` sub-kind for non-human actors, API-only
   creation (Admin only), `Active` at creation with no invitation email, backed
   by an organization-owned Better Auth API key (the machine-credential
   mechanism `002` builds) whose `clientId`/`clientSecret` are returned exactly
   once. Disabling the service account also disables its credential.
+  Restricted to `member` role only, never `admin`, never a Moderator grant,
+  enforced at both creation/update validation and by an independent Cerbos
+  rule (VCDM pre-assessment, joint with `002`: a service account never goes
+  through `002`'s step-up gate, so an elevated role would carry no MFA layer
+  at all).
 - **Org API-credentials viewer.** A read surface over org-scoped API keys
   (service accounts and integrations) showing name, kind, prefix, created,
   last used, enabled/disabled and rotation-due status — never the secret
@@ -101,5 +108,7 @@ tooling (`015`, `010` — `043` only emits the events), and multi-org UX
   verified via `npm view`) for invitation email delivery.
 - **Security**: pre-assessed against SSA SEC01-SEC16 by the
   `vcdm-ssa-validator` agent, with SEC11 (phishing) as the section this change
-  newly exercises in depth. Findings are folded into `design.md` under
+  newly exercises in depth, plus a second, adversarial pass run jointly with
+  `002` (`002/ssa-pre-assessment.md`) that found gaps only visible at the
+  seam between the two changes. Findings are folded into `design.md` under
   "Security considerations".

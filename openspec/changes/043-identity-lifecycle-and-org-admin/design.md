@@ -129,7 +129,13 @@ the `admin` role via a role policy (mirroring `r3-cerbos.md` §3.3's pattern):
 `user.invite`, `user.updateStatus` (with a derived-role condition that denies
 when the resource's identifier equals the principal's own — "a user cannot
 disable themselves"), `service_account.create`, `credential.rotate`,
-`credential.revoke`, `credential.list`, and `organization.delete`. Reusing
+`credential.revoke`, `credential.list`, and `organization.delete`. A rule on
+`002`'s existing `user` resource policy additionally denies **any** action
+that would leave a `resource.attr.accountKind == "service"` entity with role
+`admin` or a non-empty `moderatedBlueprints` (D6, Resolved decision Q7 —
+VCDM pre-assessment) — independent of, and in addition to, the input
+validation `identity.serviceAccounts.create` already performs, so the two
+layers cannot silently drift apart. Reusing
 `002`'s existing `user` resource kind for the first two, and adding
 `service_account`, `credential`, and `organization` as new, small, fixed
 resource kinds (per `002`'s own "static policy / dynamic context" pattern,
@@ -166,6 +172,27 @@ rather than relying on the opaque-ID-implies-optional default.
   Rejected: duplicates a state machine Better Auth already implements
   correctly (expiry, single-pending-per-email via re-invite cancellation),
   for a resource that is app-owned and tenant-scoped either way.
+
+**Invitation-acceptance errors are indistinguishable (VCDM pre-assessment,
+ticket 11).** Accepting a nonexistent invitation, a foreign one, one in the
+wrong state (expired/cancelled/rejected/already-accepted), and one with a
+mismatched session email all return the same status, error code, and body
+shape — classic enumeration surfaces for an invitation-based flow, per SEC06.
+The specific reason is recorded only in the
+`catalog.security.invitation_acceptance_denied` log event's `denial_reason`
+attribute (already in the Observability contract below), never surfaced to
+the caller.
+
+**Per-tenant invitation rate limiting (VCDM pre-assessment, ticket 12,
+SEC11 best practice).** `identity.users.invite` and
+`identity.users.resendInvitation` share one rate-limit bucket keyed by
+`tenantId`, using the same `@fastify/rate-limit` mechanism `002` D13
+establishes, with a Tayzu-chosen default cap (documented alongside the other
+policy defaults in `docs/security/data-retention.md`) — this stops the
+invitation-email surface from being used to send bulk, phishing-style
+messages through Tayzu's outbound email capability, distinct from `002`'s
+own per-actor and pre-authentication rate limits, which this operation is
+already subject to as an authenticated admin action.
 
 ### D5. Invitation email: an `EmailSender` port, Azure Communication Services adapter
 Better Auth's `sendInvitationEmail` callback has no default transport
@@ -222,6 +249,40 @@ neither `002`'s actor-type enum nor its tenant/context resolution contract.
   attempts, phishing-adjacent lookalike risk) for no behavioral benefit,
   since Tayzu's `_user.identifier` does not have to be email-shaped the way
   Port's does.
+
+**Service accounts are restricted to `member` role, never `admin`, never a
+Moderator grant (Resolved decision Q7, VCDM pre-assessment).** `002`'s
+step-up gate (its D4) exempts `agent`/`integration`/`system` actors
+entirely — a deliberate, already-approved call, because step-up is a
+human-specific control. Combined with a service account bound to an
+`admin`-role (or broadly-moderating) `_user` entity, a leaked service-account
+secret would carry that elevated power **forever**, with no MFA layer ever
+required, unlike the human admin it mirrors — an emergent risk neither `002`
+nor this change's original draft could see before the other existed. This
+change closes it at both layers: (1) `identity.serviceAccounts.create`
+validates that a service account is created with role `member` and an empty
+`moderatedBlueprints`, rejecting any other input before the `_user` entity or
+credential is created; (2) a Cerbos rule (D3) denies the same outcome
+independently, so a future code path that skips (1) — a bulk import, a direct
+entity-update procedure, a bug — still cannot produce a service account with
+more than `member`. Both layers are tested (task 7.7, task 7.3's extension).
+- *Alternative considered (Q4 option 2):* allow admin-role service accounts
+  with a secondary approval/friction mechanism for their high-risk
+  operations. Rejected: this is a new control this change would have to
+  design and build (what "friction" means for a non-interactive caller is
+  itself unresolved), for a capability (service accounts needing broad admin
+  power) nothing in the roadmap currently asks for.
+- *Alternative considered (Q4 option 3):* accept the current design as-is,
+  reasoning the credential itself is already a strong, hashed, revocable
+  secret. Rejected: that argument is exactly the reasoning `002`'s own D4
+  already rejected for human accounts (a strong password is not why MFA
+  exists) — a service account is not a special case that needs less
+  defense-in-depth than a human admin, it needs a different one (least
+  privilege at the role layer, since it cannot have the human one).
+- *Alternative considered (Q4 option 4):* document as an accepted residual
+  risk with no code change. Rejected: the fix is cheap (least-privilege at
+  creation, one more Cerbos rule) relative to the blast radius Summary #5
+  describes, so accepting the risk was not the proportionate choice.
 
 ### D7. Org API-credentials viewer is a read model over Better Auth's `apikey` table
 Listing is `auth.api.listApiKeys` (or the equivalent org-scoped query)
@@ -376,7 +437,7 @@ exception event; unexpected errors: sanitized exception, no message/SQL).
 
 | Instrument | Type, unit | Attributes | Purpose |
 |---|---|---|---|
-| `tayzu.identity.invitations` | Counter, `{invitation}` | `tayzu.tenant.id`, `tayzu.identity.invitation.mutation` (`created`\|`accepted`\|`rejected`\|`cancelled`\|`expired`) | Invitation funnel |
+| `tayzu.identity.invitations` | Counter, `{invitation}` | `tayzu.tenant.id`, `tayzu.identity.invitation.mutation` (`created`\|`accepted`\|`rejected`\|`cancelled`\|`expired`\|`rate_limited`) | Invitation funnel (`rate_limited` added per VCDM pre-assessment ticket 12) |
 | `tayzu.identity.user_status_changes` | Counter, `{change}` | `tayzu.tenant.id`, `tayzu.identity.user.status.to`, `tayzu.actor.type` | Lifecycle churn |
 | `tayzu.identity.service_accounts` | Counter, `{account}` | `tayzu.tenant.id`, `tayzu.identity.service_account.mutation` (`created`\|`disabled`\|`enabled`\|`deleted`) | Service-account volume |
 | `tayzu.identity.credential_mutations` | Counter, `{mutation}` | `tayzu.tenant.id`, `tayzu.identity.credential.kind` (`service_account`\|`integration`), `tayzu.identity.credential.mutation` (`created`\|`rotated`\|`revoked`) | Credential hygiene signal |
@@ -396,7 +457,8 @@ are **never** attributes on any signal — the cardinality guard extends
 | `catalog.audit.invitation_created` | INFO | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id` | Audit |
 | `catalog.audit.invitation_accepted` | INFO | same, plus `tayzu.identity.user.id` | Audit |
 | `catalog.audit.invitation_cancelled` | INFO | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason` | Audit |
-| `catalog.security.invitation_acceptance_denied` | WARN | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.denial_reason` (`expired`\|`cancelled`\|`rejected`\|`already_accepted`\|`email_mismatch`) | Detect misuse of dead/foreign invitations (SEC06/SEC11) |
+| `catalog.security.invitation_acceptance_denied` | WARN | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.denial_reason` (`expired`\|`cancelled`\|`rejected`\|`already_accepted`\|`email_mismatch`\|`not_found`) | Detect misuse of dead/foreign invitations (SEC06/SEC11); the reason lives only here, never in the HTTP response (VCDM pre-assessment ticket 11) |
+| `catalog.security.invitation_rate_limited` | WARN | `tayzu.tenant.id` | Per-tenant invite/resend volume abuse signal (VCDM pre-assessment ticket 12, SEC11); no invited email present |
 | `catalog.security.self_status_change_denied` | WARN | `tayzu.tenant.id`, `tayzu.actor.id` | Detect self-service status tampering attempts |
 | `catalog.audit.service_account_created` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.service_account.id` | Audit |
 | `catalog.audit.credential_rotated` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id` | Audit — opaque IDs only, never secrets |
@@ -415,20 +477,25 @@ This is this change's own SEC01-16 walk-through, informed by
 unsplit) `002`. The formal `vcdm-ssa-validator` pre-assessment (Mode A) is
 task 1.2 below, run before this proposal reaches Checkpoint 1, and its
 findings — if any — get folded in the same way `001`'s B1-B8/N1-N11 findings
-were.
+were. A second, adversarial Mode A pre-assessment, run jointly against this
+change and `002` (`002/ssa-pre-assessment.md`), found gaps only visible at
+the seam between the two changes — this change's share is folded in below
+(D3/D6's service-account role restriction, and SEC02/SEC06/SEC11's
+resolutions above); the report's own "Resolution" section records how each
+was closed.
 
 | Section | Applies | Posture |
 |---|---|---|
 | SEC01 Diagram | Yes | New external actor (email provider) and new arrows (invite→email, rotation, org deletion) added to `docs/architecture/system-diagram.md` (task in group 8). |
-| SEC02 Attack surfaces | Yes | Ten new routes (D10), each with its actor, auth mechanism (session or step-up-verified session) and Cerbos check named in the SEC02 table. |
-| SEC03 Access control | Yes, core of this change | Every operation Cerbos-gated to `admin` (D3); self-status-change explicitly denied; four operations require step-up (D10); fail-closed on missing grant, same as `001`/`002`. |
+| SEC02 Attack surfaces | Yes | Ten new routes (D10), each with its actor, auth mechanism (session or step-up-verified session) and Cerbos check named in the SEC02 table. The native Better Auth `inviteMember` route this same surface would otherwise duplicate is blocked by `002`'s allowlist (D18 there), closing the invite-bypass gap the joint VCDM pre-assessment found (`002`'s `ssa-pre-assessment.md`, Summary #1). |
+| SEC03 Access control | Yes, core of this change | Every operation Cerbos-gated to `admin` (D3); self-status-change explicitly denied; four operations require step-up (D10); fail-closed on missing grant, same as `001`/`002`; service accounts restricted to `member` role, never `admin`, closing the step-up-exemption interaction the joint VCDM pre-assessment flagged (Summary #5, Resolved decision Q7). |
 | SEC04 Password storage | N/A | No new password store; service-account credentials reuse `002`'s Better Auth `api-key` hashing. |
 | SEC05 Crypto | Partial | Invitation tokens are Better Auth's own opaque IDs; credential secrets are hashed by `002`'s mechanism; TLS to Azure Communication Services (managed service, TLS enforced by the provider). |
-| SEC06 Misuse | Yes | Expired/cancelled/rejected-invitation acceptance always fails (state-machine test); re-invite cancellation prevents duplicate-pending confusion; org deletion is idempotent against a second call. |
+| SEC06 Misuse | Yes | Expired/cancelled/rejected-invitation acceptance always fails (state-machine test); re-invite cancellation prevents duplicate-pending confusion; org deletion is idempotent against a second call; invitation-acceptance error responses are indistinguishable across failure reasons (VCDM pre-assessment ticket 11). |
 | SEC07 Dependencies | Yes | `@azure/communication-email` added to the existing Dependabot/`pnpm audit`/quarterly-EOL process (`001` R7) — no new gate. |
 | SEC08 File upload | N/A | No file upload surface. |
 | SEC09/SEC10 Secrets | Yes | Azure Communication Services connection string is a new Key Vault secret, with a documented change procedure in `docs/security/data-retention.md`'s companion secrets note (reusing `002`'s Key Vault seam, not a new mechanism). |
-| SEC11 Phishing | Yes, this change's core new exposure | 48h expiry, single link, session-email-must-match-invited-email, re-invite invalidates the old link (D4/D5). |
+| SEC11 Phishing | Yes, this change's core new exposure | 48h expiry, single link, session-email-must-match-invited-email, re-invite invalidates the old link (D4/D5); per-tenant invite/resend rate cap closes the bulk-invite/messaging-abuse gap the SSA's own SEC11 best practices ask for (VCDM pre-assessment ticket 12). |
 | SEC12 Testing | Yes | Every requirement has a scenario-backed test; `cerbos compile` gates new policies; existing ZAP baseline (`002`) covers the new routes automatically, no new DAST job needed. |
 | SEC13 Deployment | Partial | One new env var (Communication Services connection string via Key Vault reference), no new deploy step. |
 | SEC14 Infra permissions | N/A, no change | No new DB roles or grants — this change touches only tables `002` already grants `tayzu_app`/`tayzu_auth` access to. |
@@ -475,7 +542,8 @@ were.
    data-plane change — `001` design D7 already proves this class of change
    safe by construction (adding an optional property is always compatible).
 2. ⛔ **Checkpoint 3** still applies to every new Cerbos policy file this
-   change adds (D3): `user.invite`/`user.updateStatus` extensions, and the
+   change adds (D3): `user.invite`/`user.updateStatus` extensions (including
+   the service-account role-restriction rule, Resolved decision Q7), and the
    new `service_account`, `credential`, and `organization` resource-kind
    policies, each presented with its `cerbos compile` test output for
    separate approval.
@@ -496,6 +564,7 @@ Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 | Q4 | Canonical user status field | Stored as one field on `_user`, updated by hooks reacting to Better Auth events (`002` defines the field and `Active`/`Disabled` at minimum; this change completes `Staged`/`Invited` and the transition rules). |
 | Q5 | Machine credentials | Long-lived client id + secret (revocable, rotatable, hashed) exchanged for a short-lived (1-hour) access token — this change's service accounts and credential viewer/rotation consume that mechanism, they do not redefine it. |
 | Q6 | Step-up for high-risk operations | A fresh MFA verification (or a step-up-required error) gates any operation marked `x-tayzu-risk: high` — this change marks `setStatus`, `credentials.rotate`, `credentials.revoke`, and `organization.delete` that way (D10). |
+| Q7 | (VCDM pre-assessment, 2026-09-28) Should service accounts be restricted from holding `admin`/broad `moderatedBlueprints`, given they never go through step-up | Restrict service accounts to `member` role only, enforced at creation/update validation and by an independent Cerbos rule on `accountKind: "service"` (D6, D3). |
 
 ## Open Questions
 

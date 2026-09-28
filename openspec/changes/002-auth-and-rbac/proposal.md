@@ -31,10 +31,21 @@ depends on this change and runs immediately after it.
   `withTenantTransaction`.
 - **Session policy**: 7-day rolling expiry, 12-hour idle timeout, all other
   sessions revoked on password change, session cookie cache off.
+- **Better Auth's native org-management and apiKey routes are not reachable**:
+  blocked at the Fastify routing layer behind a deny-by-default allowlist;
+  every membership/credential mutation goes through a Cerbos-gated oRPC
+  procedure calling `auth.api.*` in-process instead (VCDM pre-assessment).
+- **Pre-authentication brute-force protection**: IP-and-email-keyed rate
+  limiting on sign-in/two-factor/sign-up (Better Auth `rateLimit`, database
+  storage), and a separate IP-and-client-id-keyed limit on
+  `POST /v1/auth/token` (VCDM pre-assessment).
 - **Machine credentials**: a long-lived, revocable, rotatable client
   id/secret pair (Better Auth `api-key` plugin, org-owned) exchanged for a
   short-lived (1-hour) signed access token, for `integration` and `agent`
-  actors — Port's own client-credentials pattern, adapted.
+  actors — Port's own client-credentials pattern, adapted. A revoked
+  credential's already-issued tokens stop working within a 5-second-TTL
+  revocation check, not only at the next token exchange (VCDM
+  pre-assessment).
 - **Step-up authentication**: an operation carrying `x-tayzu-risk: high`
   (001 D11) requires a fresh MFA verification from a human caller, or fails
   with a step-up-required error.
@@ -73,7 +84,11 @@ user status/invitation lifecycle and invitation email, service accounts, the
 org API-credentials viewer, data retention/deletion policy and org deletion,
 and credential-rotation policy UX. Also out of scope: generic OIDC/SAML/SCIM
 federation (`025`), the permission simulator, "view as", per-page ACLs, and
-workflow execute permissions (`014`/`006`), and any multi-org UX (`042`).
+workflow execute permissions (`014`/`006`), any multi-org UX (`042`), and a
+forgot-password/account-recovery flow, deferred to a new, explicitly named
+future change, `044-password-reset-and-account-recovery` (VCDM
+pre-assessment: `043` does not naturally absorb this, since it owns identity
+lifecycle depth, not a second authentication flow).
 
 ## Capabilities
 
@@ -96,11 +111,14 @@ workflow execute permissions (`014`/`006`), and any multi-org UX (`042`).
   Fastify bootstrap mounting Better Auth's handler and the catalog's oRPC
   handler), `policies/` (Cerbos policy YAML and their test suites, not a
   package).
-- **Database**: two Checkpoint-3 migrations — (1) Better Auth's generated
-  schema in its own `auth` Postgres schema, plus the `tayzu_auth` role; (2)
-  the `tayzu_migrator`/`tayzu_app` role split, `GRANT`/`REVOKE`, and `FORCE
-  ROW LEVEL SECURITY` on every catalog table. ⛔ **Checkpoint 3 applies to
-  both, separately.**
+- **Database**: three Checkpoint-3 migrations — (1) Better Auth's generated
+  schema in its own `auth` Postgres schema, plus the `tayzu_auth` role and
+  the `rateLimit` plugin's own table; (2) the `tayzu_migrator`/`tayzu_app`
+  role split, `GRANT`/`REVOKE`, and `FORCE ROW LEVEL SECURITY` on every
+  catalog table; (3) `machine_credential_revocation`, a new catalog table
+  recording revoked machine credentials, RLS-scoped like every other catalog
+  table (VCDM pre-assessment). ⛔ **Checkpoint 3 applies to all three,
+  separately.**
 - **Policies**: the first `policies/` tree (derived roles, resource policies,
   role policies). ⛔ **Checkpoint 3 applies to every policy file**, separately
   from the PR and from the migrations.
@@ -120,5 +138,8 @@ workflow execute permissions (`014`/`006`), and any multi-org UX (`042`).
   for session vs. machine-token callers. `003`, `004`-`006`, and `025` build
   directly on these.
 - **Security**: pre-assessed against SSA SEC01-SEC16 by the
-  `vcdm-ssa-validator` agent. Findings are folded into `design.md` under
-  "Security considerations".
+  `vcdm-ssa-validator` agent, including a second, adversarial pass run
+  jointly against this change and `043` (`ssa-pre-assessment.md`, committed
+  in this directory). Findings are folded into `design.md` under "Security
+  considerations", and the report's own "Resolution" section records how
+  each blocking gap and non-blocking ticket was closed.

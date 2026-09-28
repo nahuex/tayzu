@@ -27,7 +27,10 @@ allowed to do.
   attribute.
 - **Step-up freshness**: an MFA verification is "fresh" for 5 minutes.
 - **Machine access tokens** are valid for 1 hour from issuance and carry no
-  refresh token; the client must re-exchange its client id/secret.
+  refresh token; the client must re-exchange its client id/secret. A revoked
+  credential's already-issued tokens MUST also stop working within a bounded
+  revocation-check TTL (at most 5 seconds), not only at the next exchange
+  attempt.
 
 ## ADDED Requirements
 
@@ -42,7 +45,10 @@ claims. A request with neither credential, a session with no active
 organization, or an invalid or expired token MUST be rejected with the same
 status and body as `CATALOG_CONTEXT_REQUIRED`. This resolution MUST run before
 the catalog operation pipeline, and it MUST NOT read `tenantId` or `actor`
-from the request body, path, or query string.
+from the request body, path, or query string. It MUST also NOT read
+`actor.onBehalfOf` from the request body, path, query string, or any header:
+this capability does not accept a client-supplied attribution override, so a
+request carrying such a value MUST have it ignored, not honored.
 
 #### Scenario: Session cookie resolves a human context
 - **GIVEN** a signed-in user with an active organization
@@ -59,6 +65,57 @@ from the request body, path, or query string.
 
 #### Scenario: Expired machine access token is rejected
 - **WHEN** a catalog operation is called with an access token issued more than 1 hour ago
+- **THEN** it fails exactly as `CATALOG_CONTEXT_REQUIRED`
+
+#### Scenario: A client-supplied onBehalfOf value is ignored
+- **GIVEN** a valid session cookie or machine access token
+- **WHEN** the caller additionally supplies an `onBehalfOf` value in the request body, path, query string, or a header
+- **THEN** the resolved context's `actor.onBehalfOf` is not set from that value, and the operation is attributed to the resolved actor alone
+
+### Requirement: Only an allowlisted set of Better Auth routes is reachable over HTTP
+`apps/api` mounts Better Auth's `/api/auth/*` catch-all handler behind a
+Fastify route allowlist, deny by default. Every route the organization
+plugin exposes for mutating organization membership (invite member, update
+member role, remove member, set active organization, create organization,
+delete organization) and every route the `apiKey` plugin exposes for
+managing keys directly MUST NOT be reachable through this allowlist; a
+request to any such route MUST receive the same `404` response as a request
+to a path that does not exist. Every organization-membership or
+machine-credential mutation this capability or a later change needs MUST
+instead be exposed as a Cerbos-gated oRPC procedure that calls the
+corresponding `auth.api.*` method in-process.
+
+#### Scenario: A native organization-mutation route is not reachable
+- **WHEN** a caller sends a request directly to Better Auth's native `inviteMember`, `updateMemberRole`, `removeMember`, or organization create/delete route
+- **THEN** the response is `404`, identical to a request for a path that does not exist
+
+#### Scenario: A native API-key management route is not reachable
+- **WHEN** a caller sends a request directly to a Better Auth `apiKey` plugin route for creating, listing, or revoking a key
+- **THEN** the response is `404`
+
+#### Scenario: An unlisted Better Auth route fails the allowlist test
+- **GIVEN** Better Auth's actual set of mounted `/api/auth/*` routes
+- **WHEN** a route exists that the allowlist does not explicitly name
+- **THEN** the allowlist test fails, rather than silently allowing or blocking it by default
+
+### Requirement: Tenant-switch membership is independently re-verified
+Setting a session's active organization MUST be rejected when the caller is
+not a member of that organization. In addition to Better Auth's own
+membership check on `setActiveOrganization`, `resolveContext()`'s
+session-cookie branch MUST independently re-verify, via a membership-row
+lookup, that `session.activeOrganizationId` names an organization the
+session's user currently belongs to, using a cache no older than a few
+seconds. A failed or unavailable re-verification MUST fail closed, with the
+same status and body as `CATALOG_CONTEXT_REQUIRED`.
+
+#### Scenario: Setting an active organization you are not a member of is rejected
+- **GIVEN** a signed-in user who is not a member of organization `t2`
+- **WHEN** they attempt to set their active organization to `t2`
+- **THEN** the request is rejected and their active organization is unchanged
+
+#### Scenario: Context resolution independently rejects a stale non-membership
+- **GIVEN** a session whose `activeOrganizationId` names an organization the user is no longer a member of
+- **WHEN** a catalog operation is called with that session
 - **THEN** it fails exactly as `CATALOG_CONTEXT_REQUIRED`
 
 ### Requirement: Session policy
@@ -104,6 +161,43 @@ usable more than once.
 - **WHEN** they sign in with the correct password
 - **THEN** sign-in completes with no additional factor requested
 
+### Requirement: Authentication responses resist account enumeration
+Sign-up and sign-in responses MUST NOT reveal whether an email address has an
+account. A failed sign-in MUST return the same status, error code, and body
+shape whether the account does not exist, the password is wrong, or the
+account is disabled. A forgot-password/account-recovery flow is out of scope
+for this capability (deferred to `044-password-reset-and-account-recovery`);
+this requirement covers only the sign-up and sign-in surfaces this capability
+ships.
+
+#### Scenario: Sign-in failure looks the same for an unknown account and a wrong password
+- **GIVEN** one email with no account and one email with an account and a known password
+- **WHEN** sign-in is attempted for the first with any password, and for the second with the wrong password
+- **THEN** both attempts fail with the same status, error code, and body shape
+
+### Requirement: Pre-authentication rate limiting protects against credential stuffing
+Sign-in, two-factor verification, and any sign-up or email-verification route
+MUST be rate-limited before a caller is authenticated, keyed by both the
+caller's IP address and a normalized form of the submitted email, using
+storage shared across every running replica. `POST /v1/auth/token` MUST be
+separately rate-limited, keyed by both the caller's IP address and the
+submitted client id, independent of the per-authenticated-actor rate limit
+this capability also has. Exceeding any of these limits MUST fail with
+`AUTH_RATE_LIMITED` and a `Retry-After` header, and MUST NOT reveal whether
+the underlying account or credential exists. Every rate-limit rejection MUST
+be recorded as a security log event and a metric, neither of which carries
+the caller's IP address or email.
+
+#### Scenario: Repeated failed sign-ins from the same source are rate-limited
+- **GIVEN** a caller who has exceeded the configured sign-in attempt limit for their IP and email
+- **WHEN** they attempt to sign in again
+- **THEN** it fails with `AUTH_RATE_LIMITED` and a `Retry-After` header, and the `auth.security.rate_limited` event is logged
+
+#### Scenario: Machine token exchange is rate-limited independently of the authenticated bucket
+- **GIVEN** a caller who has exceeded the configured attempt limit for `POST /v1/auth/token` keyed by their IP and client id
+- **WHEN** they attempt another token exchange
+- **THEN** it fails with `AUTH_RATE_LIMITED`, regardless of any authenticated-actor rate-limit bucket's state
+
 ### Requirement: Step-up authentication for high-risk operations
 An operation whose OpenAPI route carries `x-tayzu-risk: high`, when invoked by
 a `user` actor, MUST additionally require an MFA verification fresh within
@@ -135,7 +229,13 @@ and stored hashed thereafter. The admin MUST be able to revoke a credential;
 there is no in-place rotation, only revoke-and-recreate. `POST /v1/auth/token`
 with a valid, non-revoked client id and its matching secret MUST return an
 access token valid for 1 hour and MUST NOT return a refresh token. An invalid
-or revoked credential MUST fail with `AUTH_INVALID_CREDENTIALS`.
+or revoked credential MUST fail with `AUTH_INVALID_CREDENTIALS`. Revoking a
+credential MUST also take effect against any access token already issued
+from it, within a bounded revocation-check TTL of at most 5 seconds — a
+still-unexpired token from a revoked credential MUST be rejected once that
+TTL has elapsed, exactly as `CATALOG_CONTEXT_REQUIRED`. A revocation-check
+failure (the revocation list is unreachable) MUST fail closed, rejecting the
+token, never treating an unreachable check as "not revoked."
 
 #### Scenario: Valid client id and secret exchange for an access token
 - **GIVEN** an active `integration`-kind machine credential
@@ -158,6 +258,11 @@ or revoked credential MUST fail with `AUTH_INVALID_CREDENTIALS`.
 #### Scenario: Access token expires after 1 hour
 - **GIVEN** an access token issued at time `T`
 - **WHEN** it is used at `T` + 61 minutes
+- **THEN** it fails exactly as `CATALOG_CONTEXT_REQUIRED`
+
+#### Scenario: A token issued before revocation is rejected within the revocation TTL
+- **GIVEN** an access token issued from an active machine credential, still within its 1-hour lifetime
+- **WHEN** an admin revokes the credential, and the token is used again after the revocation-check TTL has elapsed
 - **THEN** it fails exactly as `CATALOG_CONTEXT_REQUIRED`
 
 ### Requirement: Tenant isolation is enforced by the database independent of application code

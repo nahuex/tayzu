@@ -64,6 +64,13 @@
   plain attribute, not a Cerbos scope (Resolved decision, below).
 - No impersonation ("view as"). Better Auth's `admin` plugin ships it, but it
   is not in the roadmap's 002 scope and is deferred implicitly to `014`.
+- No forgot-password/account-recovery flow. `043` does not naturally absorb
+  it either — it owns identity *lifecycle* (invitations, service accounts,
+  credential rotation, org deletion), not a second authentication flow.
+  Deferred to a new, explicitly named future change,
+  `044-password-reset-and-account-recovery` (VCDM pre-assessment, ticket 9).
+  Sign-up and sign-in, which do ship in 002, still carry the
+  enumeration-resistance requirement below.
 
 ## Decisions
 
@@ -134,6 +141,16 @@ whose last use exceeds 12 hours is treated as expired even though Better
 Auth's own `expiresIn` has not elapsed. `changePassword` is called with
 `revokeOtherSessions: true`.
 
+`CatalogContext.actor.onBehalfOf` (001 D3) is reused, not redefined, but is
+**not reachable over HTTP in 002's scope** (VCDM pre-assessment, ticket 10):
+`resolveContext(headers)` never reads an `onBehalfOf` value from a header,
+body, path, or query string, and any such client-supplied field is ignored
+even if present. There is no in-scope caller (human session or machine token)
+that is trusted to attribute an action to a different principal in this
+change; a future change that needs it (e.g. `026-mcp-server` proxying on a
+user's behalf) must add an authenticated claim for it, never a bare
+client-supplied field.
+
 ### D4. Multi-factor authentication and step-up
 
 `two-factor` plugin (TOTP as the default factor, backup codes). Step-up
@@ -185,7 +202,7 @@ Three roles (`r4-data-http.md` Part (a), Resolved decision Q9):
 
 | Role | Owns | RLS |
 |---|---|---|
-| `tayzu_migrator` | catalog + `auth`-schema tables (DDL) | Bypasses (owner); never used at runtime |
+| `tayzu_migrator` | catalog + `auth`-schema tables (DDL) | Subject to `FORCE ROW LEVEL SECURITY` like any role, but never used at runtime to issue DML, so RLS applicability is moot in practice (corrected wording, VCDM pre-assessment ticket 13: `FORCE ROW LEVEL SECURITY` applies to the table owner too, unless the owner separately holds `BYPASSRLS`, which `tayzu_migrator` does not) |
 | `tayzu_app` | nothing; `SELECT/INSERT/UPDATE/DELETE` on catalog tables only, `SELECT/INSERT` only on `catalog_change_event` | Subject to, and `FORCE`d |
 | `tayzu_auth` | nothing; full CRUD on `auth`-schema tables only, no grants on any `catalog_*` table | Not applicable — Better Auth's own tables are never tenant-scoped rows (D2) |
 
@@ -221,7 +238,15 @@ action, not just the one rule, matching the fail-closed invariant more
 completely than v0.55's own per-DENY-rule default). `audit.decisionLogsEnabled
 = true`, `accessLogsEnabled = false` (denies are visible; full access-log
 volume is not needed yet); every decision log's `cerbosCallId` is attached to
-the calling operation's span (D14). `@cerbos/grpc@0.29.1` is the client (lower
+the calling operation's span (D14). **Decision-log retention and monitoring
+(VCDM pre-assessment, ticket 14, explicit rather than folded silently into
+"Yes"):** Cerbos decision logs stream to stdout, captured by the ACA log
+sink and forwarded to Azure Monitor with the same retention as every other
+application log in this environment (no Cerbos-side retention policy of its
+own, since `010`/`015` own that platform's retention/export tooling, not this
+change); Azure Monitor alerting on the `tayzu.authz.decisions` metric's
+`deny` rate is a `010`-owned dashboard concern, named here so it is not
+mistaken for something 002 ships. `@cerbos/grpc@0.29.1` is the client (lower
 overhead than the HTTP gateway); `@cerbos/orm-drizzle@0.1.0` turns
 `PlanResources` results into Drizzle `WHERE` clauses for every list operation
 (`entities.list`). No Cerbos `scope` is used (Resolved decision Q9/OQ-1's
@@ -259,6 +284,14 @@ resource policy at Checkpoint 3 review time (`r3-cerbos.md`'s own
 documented #1 pitfall: a role-policy allow does nothing without a matching
 resource-policy allow) — a `cerbos compile` test asserts the *combination*,
 not each file type in isolation, per resource kind.
+
+No new hook into this policy layer is needed for `043`'s service-account
+role restriction (Resolved decision Q4, VCDM pre-assessment): D10's
+static-policy/dynamic-context (dynamic ABAC) pattern already lets a
+resource-policy rule condition on any attribute the service layer passes in,
+so `043` adding a rule conditioning on the `_user` entity's `accountKind`
+attribute is exactly the pattern D10 already generalizes for, not a new
+mechanism this change must build.
 
 ### D9. Ownership resolution (None / Direct / Inherited)
 
@@ -396,6 +429,157 @@ container). `docs/catalog/auth-and-rbac.md` documents the resource-kind
 taxonomy, the role/ownership model, and the telemetry reference, mirroring
 001's `docs/catalog/catalog-core.md`.
 
+### D18. Better Auth native route allowlist (Resolved decision Q10)
+
+The `vcdm-ssa-validator` pre-assessment (`ssa-pre-assessment.md`, folded here
+2026-09-28) found that mounting Better Auth's entire `/api/auth/*` catch-all
+(D13) exposes the `organization` plugin's own native `inviteMember`,
+`updateMemberRole`, `removeMember`, `setActiveOrganization`, `create`/`delete`
+organization endpoints, and the `apiKey` plugin's own key-management routes —
+a second, ungoverned authorization path that contradicts D2's own invariant
+("Cerbos is the only place an authorization decision is made"). The human
+chose the recommended fix (Q1a): these routes are blocked at the Fastify
+routing layer with an **allowlist** of mounted `/api/auth/*` routes, deny by
+default. A Fastify `onRoute`/pre-handler check runs before `auth.handler` is
+reached: the request's path is matched against a fixed allowlist (sign-up,
+sign-in, sign-out, session read, two-factor enroll/verify, email
+verification, and any other route this design explicitly names as needed by
+002's own scenarios); any `/api/auth/*` path not on the allowlist — including
+every organization-member-mutation and apiKey-management route above —
+returns `404`, identical to an unknown route, never a `403` (a `403` would
+confirm the route exists). Every organization-membership mutation instead
+goes through a Cerbos-gated oRPC procedure (`identity.*` in `043`, and any
+002-owned equivalent) that calls `auth.api.inviteMember`/`updateMemberRole`/
+`removeMember`/`setActiveOrganization`/etc. **in-process**, after its own
+Cerbos check — Better Auth's own API surface remains the mechanism, Cerbos
+remains the sole decision point in front of it. The allowlist is a single
+exported `const` (`packages/auth/src/http/allowed-routes.ts`) so the CI
+allowlist test (task 11.9) can enumerate Better Auth's actual mounted routes
+against it and fail when a new plugin route appears unlisted, rather than
+silently trusting the allowlist to stay current as Better Auth or its
+plugins add routes.
+
+- *Alternative considered (Q1 option 2):* a Cerbos pre-handler in front of
+  `auth.handler` for these sub-routes, keeping them reachable. Rejected: it
+  keeps a second authorization seam alive (one more place `002`'s Cerbos
+  wiring must be replicated correctly, for routes 002 doesn't otherwise
+  exercise), for no benefit over routing the same mutation through the
+  oRPC procedure that already needs a Cerbos check for its own audit
+  logging (`043`'s `identity.users.invite`, for instance).
+- *Alternative considered (Q1 option 3):* trust Better Auth's own
+  owner/admin checks with no additional gate. Rejected: this is the literal
+  SEC03 "multiple ways to do access control" anti-pattern D2 already
+  disavows, and it left `043`'s carefully audited invite path bypassable by
+  the native route (VCDM Summary #1).
+
+### D19. Tenant-switch membership re-verification (Resolved decision Q11)
+
+`tenantId = session.activeOrganizationId` (D3) is the value RLS and Cerbos
+both key off — the single most consequential trust root in this design. The
+VCDM pre-assessment found no task verifying that Better Auth's
+`setActiveOrganization` endpoint (reachable, per D18's allowlist, since
+switching one's own active org is a legitimate self-service action, not a
+membership mutation) refuses to set an organization the caller is not a
+member of. The human chose defense in depth (Q2a): in addition to a test
+asserting non-membership is rejected, `resolveContext()`'s session-cookie
+branch independently re-verifies that `session.activeOrganizationId` names an
+organization the session's user actually has a `member` row for — a direct
+lookup against Better Auth's own membership table (`tayzu_auth`-scoped,
+outside `withTenantTransaction`, D6), not a re-derivation of Better Auth's
+internal check. The lookup result is cached in-process for at most a few
+seconds (bounded the same way D21's revocation cache is, so this doesn't
+become a second unbounded-cache design) to avoid a membership round trip on
+every request; a cache miss or lookup failure **fails closed**, resolving
+exactly as `CATALOG_CONTEXT_REQUIRED` — the same response an unauthenticated
+or non-member caller already gets, so this adds no new distinguishable
+failure mode for an attacker to probe.
+
+- *Alternative considered (Q2 option 2):* add the test only, trust Better
+  Auth's own logic with no extra code. Rejected: cheap defense in depth is
+  proportionate to this value's blast radius (Summary #2); a defense-in-depth
+  check that never fires in the passing case costs nothing at runtime beyond
+  the cached lookup.
+
+### D20. Pre-authentication brute-force protection (Resolved decision Q12)
+
+The only rate limiting this design had (D13's `@fastify/rate-limit`, keyed
+per already-authenticated principal) cannot apply before a caller is
+authenticated — sign-in, two-factor verification, and `/v1/auth/token` all
+run with no established actor, the textbook credential-stuffing gap (VCDM
+Summary #3). The human chose a second, pre-authentication layer (Q3a):
+- Better Auth's own `rateLimit` config is enabled with `storage: "database"`
+  (multi-replica safe — an in-memory bucket would not be shared across ACA
+  replicas) and `customRules` for `/sign-in/email`, `/two-factor/verify`, and
+  any sign-up/verification route, each keyed by **both** the caller's IP and
+  a normalized (lowercased, trimmed) email, so neither key alone can be used
+  to starve the other tenant's legitimate traffic. Better Auth's own
+  `storage: "database"` mode provisions its rate-limit table as part of the
+  Better Auth schema generation (task 2.2's existing migration, D2/D6) — it
+  is not a second Checkpoint-3 migration, it is one more table inside the
+  already-gated `auth` schema, and task 2.2's Checkpoint 3 review covers it.
+- `POST /v1/auth/token` (D5, not a Better Auth route, so Better Auth's own
+  `rateLimit` config does not cover it) gets its own `@fastify/rate-limit`
+  bucket, keyed by IP and by the client id supplied in the request body —
+  separate from D13's authenticated-principal bucket, since a token-exchange
+  caller has no `tenantId`/`actor` yet to key on.
+- Every one of these limiters returns `429` with a `Retry-After` header, and
+  a rejected sign-in never distinguishes "wrong password" from "no such
+  account" in its response body or timing budget (composes with the
+  enumeration-resistance requirement below) — the rate limit itself must not
+  become a new account-existence oracle.
+- `auth.security.rate_limited` (log event, WARN) and `tayzu.auth.rate_limit.
+  events` (counter, `{event}`, attribute `tayzu.auth.rate_limit.scope`
+  (`sign_in`\|`two_factor_verify`\|`token_exchange`)) are added to the
+  Observability contract below. Neither the caller's IP nor their email
+  appears on either signal — the scope enum is the only attribute, matching
+  001's existing no-tenant-free-text-in-telemetry invariant.
+
+- *Alternative considered (Q3 option 3):* defer to an infrastructure WAF
+  (Azure Front Door). Rejected for Phase 1: no such component is provisioned
+  yet, and account-takeover protection on the first internet-facing listener
+  shouldn't wait for a later change to add the infrastructure.
+- *Alternative considered (Q3 option 4):* accept the residual risk as
+  documented. Rejected: this is the textbook credential-stuffing gap the SSA
+  specifically flags, and the fix is proportionate (existing Better Auth
+  config plus one more `@fastify/rate-limit` bucket), not a large addition.
+
+### D21. Machine credential revocation list (Resolved decision Q13)
+
+The spec's "Revoked credential is rejected" scenario only covers the
+token-**exchange** endpoint (`POST /v1/auth/token`); nothing before this
+decision guaranteed a token **already issued** before revocation stopped
+working within its 1-hour lifetime, since the access token is a stateless
+signed JWT (D5) with no server-side lookup on every use (VCDM Summary #4).
+The human chose immediate revocation effect (Q5a): a Postgres table,
+`machine_credential_revocation` (`credential_id`, `revoked_at`, `tenant_id`),
+in the catalog schema (granted to `tayzu_app`, subject to the same
+`tenant_isolation` `pgPolicy`/`FORCE ROW LEVEL SECURITY` treatment as every
+other catalog table, D6) — this is a **new migration**, separate from D6's
+role/RLS migration and from D2's Better Auth schema migration, ⛔
+**Checkpoint 3 applies separately**. The machine-token branch of
+`resolveContext()` (D5's token-exchange consumer) consults this table on
+every machine-token request, through an in-process cache keyed by
+`credential_id` with a TTL of **at most 5 seconds** (bounded so the residual
+window after an admin revokes a credential is seconds, not the token's full
+remaining hour) — a cache miss re-queries Postgres; a lookup **failure**
+(the table or the database is unreachable) **fails closed**, rejecting the
+token exactly as `CATALOG_CONTEXT_REQUIRED`, never falling back to "assume
+not revoked." Revocation itself (D5's existing revoke procedure) writes one
+row here in the same operation that disables the underlying `apiKey`
+config row, so the two can never disagree about whether a credential is
+revoked.
+
+- *Alternative considered:* shorten the access-token lifetime further instead
+  of adding a revocation check. Rejected: this only shrinks the window, it
+  doesn't close it, and Q5a's own wording ("revoked machine credentials take
+  effect immediately") asks for immediate effect, not a shorter delay.
+- *Alternative considered:* a distributed cache (Redis) instead of an
+  in-process TTL cache. Rejected for Phase 1: no such component exists in
+  the stack yet (`project.md` §2), and a 5-second in-process TTL bounds the
+  cross-replica staleness window to the same 5 seconds a shared cache would,
+  at the cost of one extra Postgres read per cache miss per replica, which
+  is proportionate to "few known tenants."
+
 ## Observability contract
 
 `packages/authz/src/telemetry/contract.ts` is this section's executable
@@ -425,12 +609,15 @@ redefined.
 | `tayzu.auth.mfa.events` | Counter, `{event}` | `tayzu.auth.event` (`challenge_issued`\|`verified`\|`failed`) | MFA usage and failure signal |
 | `tayzu.auth.step_up.required` | Counter, `{event}` | `tayzu.catalog.operation` | Step-up friction signal |
 | `tayzu.auth.token.exchanges` | Counter, `{exchange}` | `tayzu.auth.credential.kind`, `tayzu.auth.exchange.outcome` (`success`\|`invalid_credentials`) | Machine-credential usage and abuse signal |
+| `tayzu.auth.rate_limit.events` | Counter, `{event}` | `tayzu.auth.rate_limit.scope` (`sign_in`\|`two_factor_verify`\|`token_exchange`) | Pre-authentication brute-force signal (design D20) |
+| `tayzu.auth.token.revocation_checks` | Counter, `{check}` | `tayzu.auth.credential.kind`, `tayzu.auth.revocation.result` (`allowed`\|`rejected`\|`lookup_failed`) | Revocation-check volume and fail-closed signal (design D21) |
 
 - **Cardinality budget**: `tayzu.auth.credential.kind` and
   `tayzu.authz.resource.kind` are closed enums (at most 4 values). Actor IDs,
   credential IDs, and entity identifiers are never metric attributes, per
   001's existing cardinality guard, which this change extends rather than
-  relaxes.
+  relaxes. `tayzu.auth.rate_limit.scope` is a closed enum; the rate-limited
+  caller's IP address and email are never metric attributes.
 
 ### Log events (OTel Logs API)
 
@@ -442,6 +629,8 @@ redefined.
 | `catalog.security.authz_denied` | WARN | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.authz.resource.kind`, `tayzu.authz.action` | Distinguishes a Cerbos deny from a validation error or a not-found (SEC16) |
 | `auth.security.step_up_required` | WARN | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.catalog.operation` | High-risk-operation friction and misuse signal |
 | `auth.security.token_exchange_failed` | WARN | `tayzu.auth.credential.kind` | Machine-credential abuse signal |
+| `auth.security.rate_limited` | WARN | `tayzu.auth.rate_limit.scope` (`sign_in`\|`two_factor_verify`\|`token_exchange`) | Pre-authentication brute-force signal (design D20); no IP or email attribute |
+| `auth.security.revoked_token_rejected` | WARN | `tayzu.tenant.id`, `tayzu.auth.credential.kind` | Confirms revocation takes effect against an already-issued token (design D21, SEC03) |
 
 - **Sampling exemption**: every event above, plus 001's own
   `catalog.security.*` events, MUST be exempt from sampling and from filter
@@ -451,23 +640,30 @@ redefined.
 - **Forbidden on any signal**: the same list 001 already bans (property
   values, titles, descriptions, validation messages, SQL bind values), plus:
   client secrets, access tokens, session tokens, TOTP codes, and backup
-  codes, in raw or hashed form.
+  codes, in raw or hashed form; and, per D20, the rate-limited caller's IP
+  address and submitted email, in raw, hashed, or partial form.
 
 ## Security considerations (SSA pre-assessment)
 
 Pre-assessed by the `vcdm-ssa-validator` agent before Checkpoint 1, building
 directly on the analysis already done in `scratchpad/p002/r5-carryover-
-security.md` §5 (which itself extended 001's own per-section table). Per
+security.md` §5 (which itself extended 001's own per-section table), and then
+by a second, adversarial Mode A pre-assessment run jointly against this
+change and `043` (`ssa-pre-assessment.md`, committed alongside this design),
+which found five blocking gaps at the seam between the two changes. Every
+blocking gap and every non-blocking ticket from that report is folded into
+this design (D18-D21, the Non-Goals password-reset deferral, the SEC05/SEC06
+items below) and recorded in that report's own "Resolution" section. Per
 -section posture:
 
 | Section | Applies | Posture after this design |
 |---|---|---|
 | SEC01 Diagram | Yes | Fastify listener (now live), Cerbos sidecar, Key Vault added (D17). |
-| SEC02 Attack surfaces | Yes, first real assessment | Every Better Auth endpoint, every catalog route, `/v1/auth/token`, and the org-scoped machine credential each get an explicit authentication + authorization row (D2-D5, D11). One key per org, never shared across tenants. |
-| SEC03 Access control | Yes, core of this change | Cerbos deny-by-default (D7-D11); a deny is distinct from not-found (spec); server-side only, never trusted from the browser; step-up for `x-tayzu-risk: high` (D4). |
+| SEC02 Attack surfaces | Yes, first real assessment | Every Better Auth endpoint, every catalog route, `/v1/auth/token`, and the org-scoped machine credential each get an explicit authentication + authorization row (D2-D5, D11), committed as `docs/security/attack-surfaces.md` (task 16.4). Better Auth's native organization/API-key management routes are blocked by allowlist, deny by default (D18) — no second, ungoverned authorization path. One key per org, never shared across tenants. |
+| SEC03 Access control | Yes, core of this change | Cerbos deny-by-default (D7-D11); a deny is distinct from not-found (spec); server-side only, never trusted from the browser; step-up for `x-tayzu-risk: high` (D4); tenant-switch membership independently re-verified (D19); pre-authentication brute-force protection on sign-in/two-factor/token-exchange (D20); a revoked machine credential's already-issued tokens stop working within a 5-second TTL, fail-closed (D21). |
 | SEC04 Password storage | Yes | Better Auth default `scrypt`. No second password store exists in this change. |
-| SEC05 Crypto | Yes | TLS on the ACA ingress (inbound edge, new); no TLS on the Cerbos sidecar loopback (Q8, explicit exception); session token opaque, not a JWT; access tokens are `jwt`-plugin-signed (asymmetric, short-lived); API-key hash-at-rest algorithm not independently source-verified (r2 O7) — recorded as an open verification item, not a claim. |
-| SEC06 Misuse | Yes | Notifications on password/MFA change built on Better Auth hooks (no library default); invitation acceptance/expiry state-machine hardening is `043`'s concern, not 002's (002 has no invitations). |
+| SEC05 Crypto | Yes | TLS on the ACA ingress (inbound edge, new; HSTS and disabled TLS 1.0/1.1 verified by task 11.12); no TLS on the Cerbos sidecar loopback (Q8, explicit exception); session token opaque, not a JWT; access tokens are `jwt`-plugin-signed (asymmetric, short-lived); API-key hash-at-rest algorithm independently source-verified against `@better-auth/api-key`'s installed source (task 11.11, closing the open item r2 O7 flagged). |
+| SEC06 Misuse | Yes | Notifications on password/MFA change built on Better Auth hooks (no library default); invitation acceptance/expiry state-machine hardening is `043`'s concern, not 002's (002 has no invitations); sign-up/sign-in responses resist account enumeration, and forgot-password/reset is explicitly out of scope, deferred to `044-password-reset-and-account-recovery` (spec "Authentication responses resist account enumeration"). |
 | SEC07 Dependencies | Yes | Better Auth, Cerbos SDKs, and their transitive deps added to 001's existing Dependabot/`pnpm audit`/quarterly-EOL gate (R7 there). |
 | SEC08 File upload | N/A | No upload surface. |
 | SEC09/SEC10 Secrets | Yes | Key Vault for DB role passwords, `BETTER_AUTH_SECRET`, `jwt` signing key (D15). Change procedure documented per secret. |
@@ -476,7 +672,7 @@ security.md` §5 (which itself extended 001's own per-section table). Per
 | SEC13 Deployment | Yes | Cerbos policy bundle ships through the same pinned, SHA-pinned pipeline 001 established; Cerbos image pinned by digest. |
 | SEC14 Infra permissions | Yes, this is T3's core | Three roles (D6): `tayzu_migrator` (DDL only), `tayzu_app` (CRUD only, no bypass), `tayzu_auth` (auth schema only, no catalog grants). No account shared between migration and CRUD. |
 | SEC15 Network/host | Partial | PaaS-only, no new host surface; Key Vault access via managed identity, not a stored credential. |
-| SEC16 Logging | Yes | New `auth.security.*`/`catalog.security.authz_denied` events, same sampling-exemption discipline as 001. |
+| SEC16 Logging | Yes | New `auth.security.*`/`catalog.security.authz_denied` events, same sampling-exemption discipline as 001; Cerbos decision-log retention and Azure Monitor post-launch monitoring stated explicitly, not folded silently into "Yes" (D7). |
 
 ## Divergences from Port (deliberate)
 
@@ -503,18 +699,30 @@ security.md` §5 (which itself extended 001's own per-section table). Per
   timeline for it] → No new risk: the plugin is additive, and `026` reuses
   the same signing key/`/jwks` endpoint rather than standing up a second one.
 - [API-key hash algorithm not independently source-verified (SEC05)] →
-  Tracked as a pre-Checkpoint-2 verification task (11.x in `tasks.md`), not
-  asserted as a fact until confirmed against the package source.
-- [Two Checkpoint-3 migrations plus a Checkpoint-3 policy tree in one change]
-  → Each is presented separately in chat, in the order Migration Plan lists,
-  so no single approval bundles unrelated risk.
+  Tracked as a pre-Checkpoint-2 verification task (task 11.11 in
+  `tasks.md`), not asserted as a fact until confirmed against the package
+  source.
+- [Three Checkpoint-3 migrations plus a Checkpoint-3 policy tree in one
+  change] → Each is presented separately in chat, in the order Migration Plan
+  lists, so no single approval bundles unrelated risk.
+- [The 5-second revocation-check cache (D21) means a revoked machine
+  credential's token can still succeed for up to 5 seconds after revocation]
+  → Accepted explicitly: Q5a asks for "immediate" in the sense of bounded
+  seconds, not zero latency; a lookup failure fails closed rather than
+  extending this window silently.
+- [The independent membership re-check (D19) adds one cached lookup to every
+  session-cookie-resolved request] → Bounded the same way (a few seconds'
+  cache), so the added latency and Postgres load are proportional to "few
+  known tenants," not a per-request round trip in the common case.
 
 ## Migration Plan
 
 1. **Better Auth schema migration**: `npx @better-auth/cli generate` (schema
    definitions) → `drizzle-kit generate` (SQL), landing in
    `packages/db/migrations/000N_auth_schema.sql`, creating the `auth` Postgres
-   schema and every Better Auth/plugin table inside it, plus `CREATE ROLE
+   schema and every Better Auth/plugin table inside it — including the
+   `rateLimit` plugin's own table once `storage: "database"` is configured
+   (D20), so this remains one migration, not two — plus `CREATE ROLE
    tayzu_auth` and its grants (hand-written custom SQL, since Drizzle cannot
    express `GRANT`). ⛔ **Checkpoint 3**: presented and approved separately,
    before continuing.
@@ -524,14 +732,19 @@ security.md` §5 (which itself extended 001's own per-section table). Per
    `CREATE ROLE tayzu_migrator`/`tayzu_app` where not already provisioned by
    infrastructure. ⛔ **Checkpoint 3**: presented and approved separately,
    after step 1's approval, before continuing.
-3. **Cerbos policy tree** (`policies/`): derived roles, role policies,
+3. **Machine credential revocation list migration** (D21): a Drizzle-generated
+   migration adding `machine_credential_revocation` with the same
+   `tenant_isolation` `pgPolicy`/`FORCE ROW LEVEL SECURITY` treatment as every
+   catalog table. ⛔ **Checkpoint 3**: presented and approved separately,
+   after step 2's approval, before continuing.
+4. **Cerbos policy tree** (`policies/`): derived roles, role policies,
    resource policies, and their test suites, compiled and tested by `cerbos
    compile` in CI. ⛔ **Checkpoint 3**: every policy file is presented and
-   approved separately, distinct from both migrations and from the PR review.
-4. Deploy: `apps/api` and the Cerbos sidecar ship together in one ACA
+   approved separately, distinct from every migration and from the PR review.
+5. Deploy: `apps/api` and the Cerbos sidecar ship together in one ACA
    revision (D7); there is no environment before this one, so this is the
    first real deployment, not a promotion.
-5. Rollback: this is still a low-data-volume deployment (`project.md` §6,
+6. Rollback: this is still a low-data-volume deployment (`project.md` §6,
    "few known tenants"); rollback is reverting the ACA revision and, if the
    migrations already ran, a generated `down` script for each (kept next to
    the migration, same convention as 001).
@@ -553,5 +766,9 @@ counts as approved until the human answers").
 | Q7 | Human session policy | 7-day rolling expiry, 12-hour idle timeout, revoke all sessions on password change. |
 | Q8 | TLS on the Cerbos sidecar loopback link | Not required inside the same ACA revision; documented exception. TLS mandatory for every other Cerbos link. |
 | Q9 | A cluster of implementation-shaping calls | Better Auth tables in their own `auth` schema under `tayzu_auth`, no grants on catalog tables, never inside `withTenantTransaction`; `dynamicAccessControl` off; Cerbos fixed resource kinds with per-blueprint attributes; `strictEvaluation` on; no Cerbos scopes before `042`; Cerbos decision logs on; `@fastify/rate-limit` keyed per principal; HTTP error-status fix via an oRPC interceptor; no "environment" permission dimension yet (`024`); `activeOrganizationId` persisted on the session; `session.cookieCache` off. |
+| Q10 | (VCDM pre-assessment, 2026-09-28) Neutralizing Better Auth's native org-management/apiKey endpoints | Blocked at the Fastify routing layer with a deny-by-default allowlist of mounted `/api/auth/*` routes; every membership mutation instead goes through a Cerbos-gated oRPC procedure calling `auth.api.*` in-process (D18). |
+| Q11 | (VCDM pre-assessment, 2026-09-28) Independent re-verification of `activeOrganizationId`/tenant-switch membership | Add both a test asserting non-membership is rejected, and a defense-in-depth re-check inside `resolveContext()`, independent of Better Auth's own logic, cached briefly, failing closed (D19). |
+| Q12 | (VCDM pre-assessment, 2026-09-28) Pre-authentication credential-stuffing/brute-force protection | A second, IP-and-email-keyed rate-limit layer (Better Auth `rateLimit`, database storage) for sign-in/two-factor/sign-up, plus a separate IP-and-client-id-keyed `@fastify/rate-limit` bucket for `/v1/auth/token` (D20). |
+| Q13 | (VCDM pre-assessment, 2026-09-28) Revoked machine credentials invalidating already-issued tokens | A Postgres revocation list, consulted by `resolveContext()` on every machine-token request through a cache of at most 5 seconds TTL, failing closed on lookup failure (D21). New table, Checkpoint 3 applies. |
 
 No open questions remain for this change.
