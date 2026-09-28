@@ -238,6 +238,8 @@ Recorded as [ADR-0008](../../../docs/adr/0008-catalog-property-schema-subset.md)
 
 ### D7. Schema-compatibility check
 
+Recorded as [ADR-0010](../../../docs/adr/0010-safe-schema-evolution.md).
+
 On blueprint update the service does the following:
 
 1. Lock the blueprint row `FOR UPDATE`.

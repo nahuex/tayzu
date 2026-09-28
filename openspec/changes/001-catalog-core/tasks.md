@@ -290,7 +290,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   "Same identifiers coexist across tenants", and checks that `get`,
   `update` and `delete` of another tenant's blueprint return
   `CATALOG_NOT_FOUND`.
-- [ ] 7.7 Write ADR `docs/adr/0010-safe-schema-evolution.md` (design D7).
+- [x] 7.7 Write ADR `docs/adr/0010-safe-schema-evolution.md` (design D7).
   Verify: the file exists and is linked from design D7.
 
 ## 8. Entity operations (integration, real Postgres)
