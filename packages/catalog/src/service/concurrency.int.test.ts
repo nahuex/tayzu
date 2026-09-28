@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 8.9 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 8.9 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3, D5, D7; spec "Safe blueprint schema evolution", "Entity shape with spec
  * and status"). Design D7: "Entity writes lock their blueprint row FOR
  * SHARE. Entity writes lock their blueprint row FOR SHARE. ... Entity writes

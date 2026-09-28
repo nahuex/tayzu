@@ -1,5 +1,5 @@
 /**
- * Task 6.1 (openspec/changes/001-catalog-core/tasks.md), first half: the
+ * Task 6.1 (openspec/changes/archive/2026-09-28-001-catalog-core/tasks.md), first half: the
  * cross-capability OTel attribute keys, defined once so every capability
  * (001's catalog, and 002/004/008 later) shares one vocabulary (design.md,
  * "Observability contract" -> "Shared attribute keys"; R15).

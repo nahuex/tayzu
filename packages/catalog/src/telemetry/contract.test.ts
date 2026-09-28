@@ -1,5 +1,5 @@
 /**
- * Task 6.1 (openspec/changes/001-catalog-core/tasks.md), second half:
+ * Task 6.1 (openspec/changes/archive/2026-09-28-001-catalog-core/tasks.md), second half:
  * `telemetry/contract.ts` is the executable mirror of design.md's
  * "Observability contract" section -- "a single source of names and
  * attributes" that `otel-smoke-check` (task 10.x) and the

@@ -1,5 +1,5 @@
 /**
- * Integration tests for tasks 6.2 and 6.3 (openspec/changes/001-catalog-core,
+ * Integration tests for tasks 6.2 and 6.3 (openspec/changes/archive/2026-09-28-001-catalog-core,
  * design D3, D5, D9, D11; spec "Tenant context is mandatory and fails
  * closed", "Actor attribution and change events", "Telemetry contract").
  *

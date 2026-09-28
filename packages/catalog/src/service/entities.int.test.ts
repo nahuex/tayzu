@@ -1,5 +1,5 @@
 /**
- * Integration tests for tasks 8.1 and 8.5 (openspec/changes/001-catalog-core,
+ * Integration tests for tasks 8.1 and 8.5 (openspec/changes/archive/2026-09-28-001-catalog-core,
  * design D3, D4, D6, D7 (locking only), D9, D10, D11; spec "Entity shape with
  * spec and status", "Entity create and upsert semantics", "Reserved system
  * identifiers", "Entity relations and referential integrity" (the

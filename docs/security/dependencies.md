@@ -3,7 +3,7 @@
 This document is the policy behind `.github/dependabot.yml`,
 `.github/workflows/ci.yml` and the `pnpm.auditConfig` field of the root
 `package.json`. It resolves R7 and R14 of
-`openspec/changes/001-catalog-core/design.md` (task 1.7) and covers SEC07 of
+`openspec/changes/archive/2026-09-28-001-catalog-core/design.md` (task 1.7) and covers SEC07 of
 the SSA.
 
 ## Automated updates

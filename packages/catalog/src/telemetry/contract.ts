@@ -1,5 +1,5 @@
 /**
- * Task 6.1 (openspec/changes/001-catalog-core/tasks.md): the executable
+ * Task 6.1 (openspec/changes/archive/2026-09-28-001-catalog-core/tasks.md): the executable
  * mirror of design.md's "Observability contract" section. This is the single
  * source of every span, metric, log event, SLI and sampling-exemption name
  * the catalog declares: `otel-smoke-check` (task 10.x) and the

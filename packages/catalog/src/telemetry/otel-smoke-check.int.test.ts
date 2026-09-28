@@ -1,5 +1,5 @@
 /**
- * `otel-smoke-check` (tasks 10.1, 10.2, 10.3, openspec/changes/001-catalog-core;
+ * `otel-smoke-check` (tasks 10.1, 10.2, 10.3, openspec/changes/archive/2026-09-28-001-catalog-core;
  * design.md, "Observability contract"; spec "Telemetry contract").
  *
  * **This file is what `pnpm otel-smoke-check` runs.** `packages/catalog/package.json`

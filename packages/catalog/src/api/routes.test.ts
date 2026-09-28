@@ -1,5 +1,5 @@
 /**
- * Unit test for task 9.1's follow-up (openspec/changes/001-catalog-core,
+ * Unit test for task 9.1's follow-up (openspec/changes/archive/2026-09-28-001-catalog-core,
  * design D11's route table; spec "Published API contract"). No database is
  * needed: generating the OpenAPI document only introspects the contract's
  * Zod schemas and route metadata -- this is a plain `*.test.ts`, not an
@@ -13,7 +13,7 @@
  * itself is not modified.
  *
  * D11's route table (quoted verbatim from
- * `openspec/changes/001-catalog-core/design.md`):
+ * `openspec/changes/archive/2026-09-28-001-catalog-core/design.md`):
  *
  * | Procedure | OpenAPI route |
  * |---|---|

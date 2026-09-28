@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 8.8 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 8.8 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3, D5; spec "Tenant data isolation").
  *
  * Named `isolation-entities.int.test.ts` rather than `isolation.int.test.ts`

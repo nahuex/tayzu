@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 8.6 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 8.6 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3-D5, D9-D11; spec "Entity read, list and delete", "Actor attribution and
  * change events").
  *

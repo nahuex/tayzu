@@ -3,7 +3,7 @@
 The tenant-scoped software catalog: blueprints, properties, entities (with
 `spec` and `status`) and relations. Global rules are in the root `CLAUDE.md`.
 The behavior is specified in
-`openspec/changes/001-catalog-core/specs/catalog-core/spec.md`, and the design
+`openspec/specs/catalog-core/spec.md`, and the design
 is `design.md` next to it. When code and design disagree, stop and ask.
 
 ## Layers (`src/`)

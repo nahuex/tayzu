@@ -1,5 +1,5 @@
 #!/bin/bash
-# SessionStart hook for Claude Code on the web (task 1.6, openspec/changes/001-catalog-core).
+# SessionStart hook for Claude Code on the web (task 1.6, openspec/changes/archive/2026-09-28-001-catalog-core).
 # Only runs its heavy setup in the remote/cloud environment; idempotent and fast otherwise.
 set -euo pipefail
 

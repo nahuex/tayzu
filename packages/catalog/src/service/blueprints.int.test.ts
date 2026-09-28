@@ -1,6 +1,6 @@
 /**
  * Integration tests for tasks 7.1, 7.2, 7.3 and 7.5
- * (openspec/changes/001-catalog-core, design D3, D4, D7, D9, D10, D11; spec
+ * (openspec/changes/archive/2026-09-28-001-catalog-core, design D3, D4, D7, D9, D10, D11; spec
  * "Blueprint definition", "Reserved system identifiers", "Relation
  * definitions", "Blueprint read and list", "Blueprint deletion", "Actor
  * attribution and change events", "Timestamps are UTC", "Telemetry

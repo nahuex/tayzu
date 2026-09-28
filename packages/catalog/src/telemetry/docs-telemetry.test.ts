@@ -1,5 +1,5 @@
 /**
- * Task 10.4 (openspec/changes/001-catalog-core/tasks.md): "Document the
+ * Task 10.4 (openspec/changes/archive/2026-09-28-001-catalog-core/tasks.md): "Document the
  * telemetry reference in `docs/catalog/catalog-core.md` ... Verify:
  * markdownlint passes, and every name in the doc exists in `contract.ts`".
  *

@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 8.4 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 8.4 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3, D4, D9, D11; spec "Status is written only through the status
  * operation", "Entity relations and referential integrity" (status scope),
  * "Actor attribution and change events", "Telemetry contract").

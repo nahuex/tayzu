@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 8.7 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 8.7 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3-D5, D9-D11; spec "Related entities traversal").
  *
  * ## Module under test and assumed API (identical across every file this

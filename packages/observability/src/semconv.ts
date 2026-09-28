@@ -1,6 +1,6 @@
 /**
  * Cross-capability OpenTelemetry attribute keys (task 6.1,
- * openspec/changes/001-catalog-core; design.md, "Observability contract" ->
+ * openspec/changes/archive/2026-09-28-001-catalog-core; design.md, "Observability contract" ->
  * "Shared attribute keys"; R15). Defined once so every capability (001's
  * catalog, and 002/004/008 later) shares one vocabulary instead of each
  * repeating the same five literal strings.

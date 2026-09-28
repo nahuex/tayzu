@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 8.3 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 8.3 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3, D9, D11; spec "Entity create and upsert semantics", "Status is written
  * only through the status operation" (the "Spec changes do not touch status"
  * scenario only), "Actor attribution and change events", "Telemetry

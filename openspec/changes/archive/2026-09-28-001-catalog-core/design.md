@@ -85,7 +85,7 @@ packages/
 
 ### D2. The oRPC router exists and is contract-checked, but is not served over the network
 
-Recorded as [ADR-0011](../../../docs/adr/0011-api-not-exposed-before-auth.md).
+Recorded as [ADR-0011](../../../../docs/adr/0011-api-not-exposed-before-auth.md).
 
 The catalog procedures, the input and output Zod schemas, error mapping, and
 the OpenAPI document all land in this change. Tests call them in-process with
@@ -141,7 +141,7 @@ example by destructuring, so it is not relied on.
 
 ### D4. Data model (first migration)
 
-The edge model for relations is recorded as [ADR-0009](../../../docs/adr/0009-relations-as-edges.md).
+The edge model for relations is recorded as [ADR-0009](../../../../docs/adr/0009-relations-as-edges.md).
 
 The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 `uuid`, because Better Auth's `organization.id` is a string ID. Timestamps are
@@ -204,7 +204,7 @@ without TLS.
 
 ### D6. Property schema subset and validation engine
 
-Recorded as [ADR-0008](../../../docs/adr/0008-catalog-property-schema-subset.md).
+Recorded as [ADR-0008](../../../../docs/adr/0008-catalog-property-schema-subset.md).
 
 - **Meta-validation** of blueprint definitions uses a strict parser that
   discriminates on `type` and rejects every key outside the subset (so unknown keywords
@@ -240,7 +240,7 @@ Recorded as [ADR-0008](../../../docs/adr/0008-catalog-property-schema-subset.md)
 
 ### D7. Schema-compatibility check
 
-Recorded as [ADR-0010](../../../docs/adr/0010-safe-schema-evolution.md).
+Recorded as [ADR-0010](../../../../docs/adr/0010-safe-schema-evolution.md).
 
 On blueprint update the service does the following:
 

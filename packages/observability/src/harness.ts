@@ -1,5 +1,5 @@
 /**
- * The telemetry test harness (task 1.4, openspec/changes/001-catalog-core).
+ * The telemetry test harness (task 1.4, openspec/changes/archive/2026-09-28-001-catalog-core).
  *
  * `createTelemetryTestHarness()` registers in-memory span, metric and log
  * exporters on the global OTel providers, so that tests emit through the

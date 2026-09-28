@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 9.2 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 9.2 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3, D11; spec "Published API contract").
  *
  * ## Module under test and assumed API

@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-09-27
-- **Change**: [`001-catalog-core`](../../openspec/changes/001-catalog-core/design.md) (design D6)
+- **Change**: [`001-catalog-core`](../../openspec/changes/archive/2026-09-28-001-catalog-core/design.md) (design D6)
 
 ## Context
 
