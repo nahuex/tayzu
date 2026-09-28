@@ -58,7 +58,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 2. Better Auth bootstrap
 
-- [ ] 2.1 `packages/auth`: a `betterAuth` instance with `organization`,
+- [x] 2.1 `packages/auth`: a `betterAuth` instance with `organization`,
   `admin`, `two-factor`, `jwt` (all bundled) and `apiKey` (separate package)
   registered, `drizzleAdapter(db, { schemaName: "auth" })`,
   `dynamicAccessControl` and `teams` left unconfigured (off). Verify:
