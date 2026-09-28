@@ -39,3 +39,19 @@ export class AuthStepUpError extends Error {
     this.name = 'AuthStepUpError';
   }
 }
+
+/**
+ * `./token-exchange.ts` (task 5.3, design D5) throws this on every failing
+ * `POST /v1/auth/token` exchange -- an unknown client id, a mismatched
+ * secret, or a revoked credential all fail identically, with no detail that
+ * would let a caller distinguish which. Same package-local, structural-shape
+ * convention as `AuthContextError`/`AuthStepUpError` above.
+ */
+export class AuthInvalidCredentialsError extends Error {
+  readonly code = 'AUTH_INVALID_CREDENTIALS';
+
+  constructor() {
+    super('The supplied client credentials are invalid');
+    this.name = 'AuthInvalidCredentialsError';
+  }
+}

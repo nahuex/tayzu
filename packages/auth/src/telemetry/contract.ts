@@ -16,6 +16,20 @@ import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 /** design.md, "Observability contract": tracer, meter and logger name. */
 export const INSTRUMENTATION_SCOPE_NAME = '@tayzu/auth';
 
+export interface SpanContract {
+  readonly name: string;
+  /** The *complete* allowed set of required attribute keys. */
+  readonly attributes: readonly string[];
+}
+
+/** design.md, "Observability contract" -> Spans table. */
+export const SPANS: readonly SpanContract[] = [
+  {
+    name: 'auth.token.exchange',
+    attributes: ['tayzu.auth.credential.kind'],
+  },
+];
+
 export type MetricInstrumentType = 'counter' | 'histogram';
 
 export interface MetricContract {
@@ -45,6 +59,12 @@ export const METRICS: readonly MetricContract[] = [
     instrumentType: 'counter',
     unit: '{event}',
     attributes: ['tayzu.catalog.operation'],
+  },
+  {
+    name: 'tayzu.auth.token.exchanges',
+    instrumentType: 'counter',
+    unit: '{exchange}',
+    attributes: ['tayzu.auth.credential.kind', 'tayzu.auth.exchange.outcome'],
   },
 ];
 

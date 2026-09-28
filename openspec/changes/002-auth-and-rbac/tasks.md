@@ -152,7 +152,7 @@ policy diff shown in chat, separately from the rest of the PR.
 - [x] 5.2 A revoke procedure (no in-place rotation). Verify:
   `machine-credentials.int.test.ts` covers that a revoked credential's id can
   no longer authenticate at the token endpoint (used together with 5.3).
-- [ ] 5.3 `POST /v1/auth/token`: `verifyApiKey` then a 1-hour access token
+- [x] 5.3 `POST /v1/auth/token`: `verifyApiKey` then a 1-hour access token
   minted through the `jwt` plugin, scoped to the credential's `tenantId` and
   `actorKind`. Verify: `token-exchange.int.test.ts` covers "Valid client id
   and secret exchange for an access token", "Wrong secret is rejected", and

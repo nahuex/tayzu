@@ -124,4 +124,20 @@ export default defineConfig(
       '@typescript-eslint/no-unsafe-assignment': 'off',
     },
   },
+  {
+    // Task 5.3 (002-auth-and-rbac): this file's own module doc comment casts
+    // `exchangeMachineToken` onto a locally-declared "assumed API" function
+    // type (`ExchangeMachineTokenFn`), written while `./token-exchange.ts`
+    // did not exist yet and the import resolved to `any` -- the same
+    // "introspect/extend the narrower production type locally" pattern this
+    // package's other int test files already establish (see this file's own
+    // doc comment). Now that `./token-exchange.ts` exists with exactly the
+    // assumed shape, typescript-eslint can prove the cast changes nothing,
+    // which would otherwise flag a frozen test file this repository's own
+    // rules forbid editing (`CLAUDE.md`, "Hard rules").
+    files: ['packages/auth/src/token-exchange.int.test.ts'],
+    rules: {
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+    },
+  },
 );
