@@ -367,7 +367,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   covers "Contract drift fails CI" by mutating a copy of an input schema and
   asserting the check exits non-zero, covers "Contract cannot carry the tenant", and the committed document
   passes.
-- [ ] 9.4 Write ADR `docs/adr/0011-api-not-exposed-before-auth.md` (design
+- [x] 9.4 Write ADR `docs/adr/0011-api-not-exposed-before-auth.md` (design
   D2) and the API section of `docs/catalog/catalog-core.md` (routes, error
   codes, examples). Verify: the docs build is not configured yet, so run
   `pnpm lint:md` (markdownlint) over `docs/`.

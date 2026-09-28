@@ -85,6 +85,8 @@ packages/
 
 ### D2. The oRPC router exists and is contract-checked, but is not served over the network
 
+Recorded as [ADR-0011](../../../docs/adr/0011-api-not-exposed-before-auth.md).
+
 The catalog procedures, the input and output Zod schemas, error mapping, and
 the OpenAPI document all land in this change. Tests call them in-process with
 `createRouterClient(router, { context })`. No Fastify listener mounts them
