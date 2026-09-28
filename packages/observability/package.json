@@ -5,7 +5,8 @@
   "description": "OpenTelemetry test harness and SDK bootstrap helper for Tayzu packages.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./semconv": "./src/semconv.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

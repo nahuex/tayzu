@@ -355,3 +355,66 @@ Reportes de platformengineering.org / Weave Intelligence (arquitecturas de refer
 - **Cuando un `design.md` se apoya en un reporte**, cita archivo y rango de líneas, y aclara si el reporte lo dice o si es una inferencia.
 - **Precedencia**: los reportes nunca reemplazan este documento, los ADRs ni un design aprobado. Si un reporte contradice una decisión, se pregunta al humano en el chat según §20.
 - Las estadísticas de los reportes mayormente no tienen fuente; no se citan como hechos. Los reportes no se editan nunca (las citas por línea tienen que seguir siendo válidas).
+
+---
+
+## 23. Roadmap v2: copia funcional idéntica de Port (reemplaza la Sección 11)
+
+Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la documentación de Port (`docs.port.io/llms.txt`, 7 pilares, unas 620 capacidades) y cubre cada capacidad que faltaba o estaba parcial. El inventario completo, con la asignación de cada capacidad a un change, está en `docs/references/port/port-capability-inventory.md`, y el análisis (alcance de cada change, capacidades de Port cubiertas, docs a leer, mapeo de IDs viejos a nuevos, chequeo de cobertura) en `docs/references/port/roadmap-analysis.md`. **Antes de proponer cada change se lee su sección en ese análisis**, junto con la matriz de §22.
+
+`001-catalog-core` conserva su alcance aprobado. Los IDs viejos 002-014 se renumeran según la tabla de mapeo del análisis.
+
+| Change | Scope | Depends on |
+|---|---|---|
+| `001-catalog-core` | Catalog core (Blueprint/Entity/Relation/Property) | none |
+| `002-auth-and-rbac` | Authentication, RBAC and multi-tenant isolation | 001 |
+| `003-catalog-ui-core` | Catalog UI — pages, entity page, search, branding | 001, 002 |
+| `004-integrations-sdk-core` | Integrations SDK ("Ocean" in TypeScript) + GitHub adapter | 001, 002 |
+| `005-search-and-query` | Unified search & query engine | 001, 002, 003 |
+| `006-workflow-engine-core` | Workflow graph engine (unified triggers/actions/conditions/input) | 001, 002, 005 |
+| `007-workflow-runs-and-execution` | Workflow run management & execution observability | 006 |
+| `008-workflow-canvas` | Visual workflow canvas (React Flow) + JSON editor | 006, 007 |
+| `009-workflow-ai-authoring` | AI-assisted workflow authoring | 006, 008 |
+| `010-workflow-self-service-forms` | Self-service form depth (inputs, encryption, multi-step) | 005, 006 |
+| `011-catalog-advanced-properties` | Advanced property types (mirror, calculation, aggregation, timer, embeds) | 001, 005 (aggregation needs the query engine), 006 (timer's |
+| `012-scorecards-core` | Scorecards core (rules, levels, entity tab, basic dashboard) | 001, 003, 005 |
+| `013-scorecards-integrations-and-groups` | Scorecard groups & third-party compliance automation | 006, 012 |
+| `014-governance-and-policy-simulation` | Permission simulator, page ACLs & cross-pillar policy depth | 002, 003, 005, 006 |
+| `015-platform-admin-audit-log` | Organization-wide audit log & usage analytics | 001, 002, 006 |
+| `016-observability-dogfood` | Observability dogfood (Service/Deployment + full default blueprints) | 001 |
+| `017-docs-as-catalog-entities` | Docs as catalog entities | 001, 003 |
+| `018-plugins-sandbox` | Plugin sandbox (postMessage, single-HTML artifact) | 003 |
+| `019-plugins-marketplace-and-cli` | Plugins CLI, marketplace & management API | 018 |
+| `020-dashboards-and-widgets` | Dashboard pages & widget system | 003, 005, 007, 018 |
+| `021-integrations-devops-batch` | Integrations batch — Jira Cloud & Azure DevOps | 004, 006, 013 |
+| `022-integrations-security-batch` | Integrations batch — security & code-quality tools | 004 |
+| `023-integrations-generic-webhook-and-connector-framework` | Generic webhook connector & no-code integration framework | 004 |
+| `024-catalog-data-lifecycle` | Catalog data lifecycle — migration, cleanup, export, IaC | 001, 005, 012, 020 |
+| `025-sso-and-identity-federation` | Enterprise SSO & identity federation | 002 |
+| `026-mcp-server` | MCP server (outward tool gateway) | 001, 002, 006, 012, 017, 018 |
+| `027-mcp-connectors-external` | MCP connectors — governed gateway to external MCP servers | 002, 006 |
+| `028-ai-agents` | AI agents (governed, catalog-native) | 001, 002, 006, 026 |
+| `029-ai-registry-llm-providers` | AI registry — LLM provider abstraction (BYOL) | 002 |
+| `030-ai-assistant` | General AI assistant (chat, invoke API, tool approvals) | 001, 002, 003, 006, 017, 026, 029 |
+| `031-ai-registry-skills-and-prompts` | AI registry — Skills & Prompts primitives | 004, 017, 026 |
+| `032-ai-gateway-governance` | AI Gateway governance | 006, 012, 028, 029 |
+| `033-developer-cli` | Tayzu CLI (Go) | 001, 002, 024 |
+| `034-notifications-and-slack` | Slack notification & interaction channel | 006, 025 |
+| `035-engineering-intelligence-metrics` | Engineering Intelligence & DORA metrics | 004, 012, 020, 021, 022, 031 |
+| `036-solutions-resource-management` | Resource Management golden paths (packaged solution) | 006, 010, 021 |
+| `037-solutions-autonomous-ticket-resolution` | Autonomous Ticket Resolution (packaged solution) | 001, 004, 006, 011, 012, 022, 028 |
+| `038-solutions-self-healing-incidents` | Self-Healing Incidents (packaged solution) | 001, 006, 012, 028, 037 |
+| `039-integrations-long-tail-backlog` | Long-tail native-integration backlog | 004, 023 |
+| `040-iac-provider` | Terraform provider (Go) for Tayzu resources, with a Pulumi provider generated through pulumi-terraform-bridge (decision D2) | 024, 033 |
+| `041-execution-agent` | Self-hosted execution agent: HTTP-polling relay for backends without ingress (decision D3) | 007 |
+| `042-multi-org` | Multi-org: organization switcher, account/company admin tiers, multi-org SSO (decision D7) | 002, 025 |
+### Decisiones del roadmap v2 (aprobadas con las opciones recomendadas)
+
+- **D1. Eventos consumibles desde afuera** (equivalente al topic de Kafka de Port): outbox por tenant más endpoint SSE/long-poll sobre el patrón de `catalog_change_event`, dentro de `023`. Sin Kafka.
+- **D2. IaC para los recursos de Tayzu**: provider de Terraform en Go (`040-iac-provider`); el de Pulumi se genera con `pulumi-terraform-bridge`. `024` mantiene el export/import.
+- **D3. Execution agent** para backends sin ingress: se construye (`041-execution-agent`), relay por HTTP polling sobre los workers.
+- **D4. Slack**: `034-notifications-and-slack` completo en la fase 1.
+- **D5. Nodos para agentes de terceros** (Claude Managed Agents, Cursor Cloud Agents): incluidos en `028-ai-agents`.
+- **D6. Solutions** `037`/`038`: se mantienen en la fase 1, al final.
+- **D7. Multi-org**: `042-multi-org` al final. Amplía §6 sin contradecirlo: el aislamiento lógico por `tenant_id` ya lo soporta.
+- **D8. JQ en lugar de JSONata** para mappings, condiciones y propiedades calculadas, para que las configuraciones y la documentación de Port sirvan tal cual. Reemplaza al ADR-0002; ver `docs/adr/0012-jq-instead-of-jsonata.md`. `001` no usa ninguno de los dos, así que no se ve afectado.

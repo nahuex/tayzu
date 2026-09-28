@@ -85,6 +85,8 @@ packages/
 
 ### D2. The oRPC router exists and is contract-checked, but is not served over the network
 
+Recorded as [ADR-0011](../../../docs/adr/0011-api-not-exposed-before-auth.md).
+
 The catalog procedures, the input and output Zod schemas, error mapping, and
 the OpenAPI document all land in this change. Tests call them in-process with
 `createRouterClient(router, { context })`. No Fastify listener mounts them
@@ -139,6 +141,8 @@ example by destructuring, so it is not relied on.
 
 ### D4. Data model (first migration)
 
+The edge model for relations is recorded as [ADR-0009](../../../docs/adr/0009-relations-as-edges.md).
+
 The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 `uuid`, because Better Auth's `organization.id` is a string ID. Timestamps are
 `timestamptz` in UTC. Row IDs are UUIDv7, generated in the application.
@@ -149,7 +153,7 @@ The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 | `catalog_relation_definition` | `id`, `tenant_id`, `source_blueprint_id`, `identifier`, `title jsonb`, `target_blueprint_id`, `many bool`, `required bool` | `UNIQUE (tenant_id, source_blueprint_id, identifier)`; FKs `(tenant_id, source_blueprint_id)` → blueprint `ON DELETE CASCADE` and `(tenant_id, target_blueprint_id)` → blueprint `ON DELETE RESTRICT`; `CHECK (NOT (many AND required))` |
 | `catalog_entity` | `id`, `tenant_id`, `blueprint_id`, `identifier`, `title`, `icon`, `spec_properties jsonb`, `status_properties jsonb NULL`, `status_observed_generation int NULL`, `status_observed_at`, `status_source`, `generation int`, `version int`, audit columns | `UNIQUE (tenant_id, blueprint_id, identifier)`, `UNIQUE (tenant_id, id)`; FK `(tenant_id, blueprint_id)` → blueprint `RESTRICT` |
 | `catalog_entity_relation` | `tenant_id`, `source_entity_id`, `relation_definition_id`, `scope` (`spec`\|`status`), `target_entity_id`, `position int` | PK `(tenant_id, source_entity_id, relation_definition_id, scope, target_entity_id)`; `CHECK (scope IN ('spec','status'))`; FK source `CASCADE`, target `RESTRICT`, definition `RESTRICT`, all composite with `tenant_id`; index `(tenant_id, target_entity_id)` for backward traversal |
-| `catalog_change_event` | `tenant_id`, `seq bigint`, `occurred_at`, `actor_type`, `actor_id`, `on_behalf_of_type NULL`, `on_behalf_of_id NULL`, `action`, `resource_kind`, `blueprint_identifier`, `resource_identifier`, `version`, `changed_fields text[]`, `trace_id NULL` | PK `(tenant_id, seq)`; trigger `catalog_change_event_append_only` (`BEFORE UPDATE OR DELETE` row-level, plus `BEFORE TRUNCATE` statement-level) raises an exception |
+| `catalog_change_event` | `tenant_id`, `seq bigint`, `occurred_at`, `actor_type`, `actor_id`, `on_behalf_of_type NULL`, `on_behalf_of_id NULL`, `action`, `resource_kind`, `blueprint_identifier`, `resource_identifier`, `version`, `changed_fields text[]`, `snapshot jsonb`, `trace_id NULL` | PK `(tenant_id, seq)`; trigger `catalog_change_event_append_only` (`BEFORE UPDATE OR DELETE` row-level, plus `BEFORE TRUNCATE` statement-level) raises an exception |
 | `catalog_tenant_sequence` | `tenant_id` PK, `last_seq bigint` | per-tenant counter for `seq` |
 
 - **Relations are stored only as edges**, never also inside `spec` or
@@ -200,10 +204,14 @@ without TLS.
 
 ### D6. Property schema subset and validation engine
 
-- **Meta-validation** of blueprint definitions uses a strict Zod
-  discriminated union on `type` (`.strict()` everywhere, so unknown keywords
+Recorded as [ADR-0008](../../../docs/adr/0008-catalog-property-schema-subset.md).
+
+- **Meta-validation** of blueprint definitions uses a strict parser that
+  discriminates on `type` and rejects every key outside the subset (so unknown keywords
   such as `$ref`, `$id`, `$defs`, `if`, and nested object schemas fail with a
   JSON-Pointer path). The same module is exported for 003's form generator.
+  (Implementation note: it is hand-written rather than Zod, because a direct
+  parser reports the exact JSON-Pointer issue paths the spec requires.)
 - **Entity validation** uses Ajv (draft 2020-12) with `strict: true`,
   `allErrors: true`, and `code.regExp` set to an **RE2** adapter over `re2js`,
   a pure-JS linear-time engine that needs no native build. The Ajv schema is
@@ -231,6 +239,8 @@ without TLS.
   (003) intractable. The subset can grow additively.
 
 ### D7. Schema-compatibility check
+
+Recorded as [ADR-0010](../../../docs/adr/0010-safe-schema-evolution.md).
 
 On blueprint update the service does the following:
 
@@ -266,11 +276,14 @@ Nothing expensive runs on oversized input.
 
 ### D9. Write semantics
 
-- **Unsafe keys**: all input objects are rebuilt as null-prototype objects
-  (`Object.create(null)`) during parsing, and `applyWrite` merges into them.
-  It never uses `Object.assign` or spread onto `{}`. `__proto__`,
-  `constructor` and `prototype` are rejected at every depth during parsing
-  (spec Conventions).
+- **Unsafe keys**: `domain/safe-parse.ts`'s `parseSafeInput` rebuilds every
+  input object as a null-prototype object (`Object.create(null)`), and
+  `applyWrite` merges into them. It never uses `Object.assign` or spread onto
+  `{}`. `__proto__`, `constructor` and `prototype` are rejected at every
+  depth (spec Conventions). The guard runs at the service boundary, in
+  `service/entities.ts`'s `create`, `upsert` and `writeStatus` handlers and
+  `service/blueprints.ts`'s `create` and `update` handlers, on the whole raw
+  input object, before limits, `applyWrite` or Ajv ever see it.
 - **Upsert** loads the current row `FOR UPDATE`, computes the next spec (a
   pure `applyWrite(current, input, mode)` function), applies defaults, and
   validates. It then compares canonical JSON (sorted keys, relation order
@@ -334,6 +347,15 @@ within the caller's own data.
 
 Entity identifiers may contain `/`, so they are percent-encoded as a single
 path segment.
+
+Implementation note (task 9.1): in 001 the non-path inputs of `DELETE` and
+`GET` operations are declared as `in: query` in the OpenAPI document with an
+oRPC `spec` transform, because the procedures keep their flat input shape.
+oRPC's default `compact` input structure reads non-`GET` inputs from the
+body at runtime. **002 must make the HTTP runtime match the document**,
+for example with `inputStructure: 'detailed'` or a query-reading adapter.
+It must also add an HTTP-level test that
+`DELETE .../entities/{entity}?detachReferences=true` works (follow-up T3).
 
 | Error code | HTTP |
 |---|---|
@@ -458,7 +480,7 @@ recorded. The same configuration applies in the test harness.
 
 | Instrument | Type, unit | Attributes (the complete allowed set) | Purpose |
 |---|---|---|---|
-| `tayzu.catalog.operation.duration` | Histogram, `s` (buckets 0.005…10) | `tayzu.catalog.operation`, `tayzu.catalog.outcome` (`success`\|`client_error`\|`server_error`), `error.type` (on error), `tayzu.tenant.id` | Latency, throughput, and error rate per operation (RED) |
+| `tayzu.catalog.operation.duration` | Histogram, `s` (buckets 0.005…10) | `tayzu.catalog.operation`, `tayzu.catalog.outcome` (`success`\|`client_error`\|`server_error`), `error.type` (on error), `tayzu.tenant.id`, `tayzu.actor.type` | Latency, throughput, and error rate per operation (RED) |
 | `tayzu.catalog.entity.mutations` | Counter, `{mutation}` | `tayzu.tenant.id`, `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.mutation` (`created`\|`updated`\|`status_updated`\|`deleted`\|`detached`), `tayzu.actor.type` | Write volume by blueprint and actor type (human vs agent vs integration) |
 | `tayzu.catalog.blueprint.mutations` | Counter, `{mutation}` | `tayzu.tenant.id`, `tayzu.catalog.mutation` (`created`\|`updated`\|`deleted`), `tayzu.actor.type` | Schema churn |
 | `tayzu.catalog.validation.failures` | Counter, `{failure}` | `tayzu.tenant.id`, `tayzu.catalog.operation`, `error.type` (`CATALOG_VALIDATION_FAILED`\|`CATALOG_REFERENCE_VIOLATION`\|`CATALOG_SCHEMA_INCOMPATIBLE`\|`CATALOG_LIMIT_EXCEEDED`\|`CATALOG_RESERVED_IDENTIFIER`) | Client-quality and misuse signal (SEC06) |
@@ -471,6 +493,37 @@ recorded. The same configuration applies in the test harness.
   `tayzu.catalog.blueprint.identifier` has at most 200 per tenant. Entity
   identifiers and actor IDs are **never** metric attributes. The cardinality
   guard in the otel-smoke-check enforces this.
+
+### Shared attribute keys
+
+The cross-capability keys (`tayzu.tenant.id`, `tayzu.actor.type`,
+`tayzu.actor.id`, `tayzu.actor.on_behalf_of.type`,
+`tayzu.actor.on_behalf_of.id`) are defined once in
+`@tayzu/observability/semconv`. The catalog's `contract.ts` imports them and
+defines only the `tayzu.catalog.*` keys. Later capabilities (002, 004, 008)
+reuse the same module, so all of Tayzu shares one vocabulary.
+
+### SLIs
+
+These SLIs need no new instruments; they are derived from
+`tayzu.catalog.operation.duration`, per `tayzu.catalog.operation` and
+`tayzu.tenant.id`:
+
+- **Availability**: the share of operations whose `tayzu.catalog.outcome` is
+  not `server_error`. `client_error` counts as available, because it is the
+  catalog correctly rejecting bad input.
+- **Latency**: p99 of `tayzu.catalog.operation.duration` for successful
+  operations.
+
+SLO targets and error-budget alerts are set in 010, together with T5b.
+
+### Sampling exemption
+
+The `catalog.audit.mutation` and `catalog.security.*` log events, and the
+counters that T5b alerts on (`tayzu.catalog.context.rejections`,
+`tayzu.catalog.validation.failures`), MUST be exempt from sampling and from
+filter or drop rules in any downstream telemetry pipeline. 010 inherits this
+as a constraint on its Collector or exporter configuration.
 
 ### Log events (OTel Logs API, structured)
 
@@ -504,7 +557,7 @@ against the code in task 11.2.
 | B4 Postgres error messages (row values) could reach spans and logs | Errors are sanitized to type, SQLSTATE and constraint (D11), and the marker-leak test covers forced database errors. |
 | B5 Free text in `status.source` and `actor.id` could reach telemetry | Both have strict patterns. `actor.id` is an opaque ID, never an email. |
 | B6 An agent's delegating principal was not recorded | `actor.onBehalfOf` is stored in attribution, change events and the audit log. |
-| B7 Prototype pollution: `constructor`/`prototype` matched the identifier pattern | Unsafe keys are rejected at every depth, and null-prototype objects are used in merges (D9). |
+| B7 Prototype pollution: `constructor`/`prototype` matched the identifier pattern | Unsafe keys are rejected at every depth by `domain/safe-parse.ts`'s `parseSafeInput`, run at the service boundary on every entity write and blueprint write's whole input (`service/entities.ts`, `service/blueprints.ts`) before limits, `applyWrite` or Ajv; null-prototype objects are used in merges (D9). |
 | B8 The change log was mutable, and the OTel audit log was treated as durable | Append-only trigger (D4). The DB table is the durable record; the OTel copy is best-effort. |
 | N1 `url` format accepted `javascript:` and `data:` | Only `http` and `https` are allowed (D6). |
 | N2 Several inputs had no limit | Limits added for blueprint size, `enum` entries, nesting depth, icon, detach referrers and cursor length. |
@@ -528,9 +581,9 @@ Per-section posture:
 | SEC04 / SEC08 / SEC11 / SEC15 | N/A | No passwords, no uploads, no messaging, PaaS only. |
 | SEC05 Crypto | Partial | TLS to the database outside tests. No other cryptography. IDs are not secrets. |
 | SEC06 Misuse | Yes | Parameterized SQL (`sql.raw` banned). RE2. No `$ref`. Limits checked before work. Unsafe keys rejected. URL schemes restricted. Agents take the same path. 003 must sanitize markdown and URLs on render. |
-| SEC07 Dependencies | Yes | Lockfile, `pnpm audit`, Dependabot, pure-JS `re2js`. Dependency SLA and quarterly EOL review (R7). |
+| SEC07 Dependencies | Yes | Lockfile, `pnpm audit`, Dependabot, pure-JS `re2js`. Dependency SLA and quarterly EOL review (R7). License review, audited waivers and an SBOM artifact (R14). |
 | SEC09 / SEC10 Secrets | Yes / Partial | Env-only `DATABASE_URL`, `.env*` ignored, gitleaks. Push protection enabled by the human (R5). Key Vault in 002/010. |
-| SEC12 Testing | Yes | Every control above has a test in `tasks.md`. Q1: security tests + VCDM + `/security-review` + DAST from 002 (R9). Q2: trained (R10). Q3: nonexistent, ticket T5b (R11). |
+| SEC12 Testing | Yes | Every control above has a test in `tasks.md`. Q1: security tests + VCDM + `/security-review` + Semgrep SAST in CI (R14) + DAST from 002 (R9). Q2: trained (R10). Q3: nonexistent, ticket T5b (R11). |
 | SEC13 Deployment | Partial | Managed GitHub Actions, SHA-pinned, `contents: read`. |
 | SEC14 Infra permissions | Partial | Trigger in 001. Roles, `REVOKE` and `FORCE RLS` in 002 (T3). |
 | SEC16 Logging | Yes | Durable append-only change log plus centralized OTel audit and security events. Retention 12 months + archive to 24 (R8). 24-hour log delivery (R12). |
@@ -541,6 +594,9 @@ proposal):
 - T3 → 002: runtime and migration roles; `REVOKE UPDATE, DELETE, TRUNCATE`
   on `catalog_change_event`; `FORCE ROW LEVEL SECURITY`; RLS tests run as
   the non-owner role; `system` never mapped from an external credential.
+- T3 (addendum 2) → 002: make the HTTP runtime read `DELETE`/`GET` inputs
+  from the query string, as the OpenAPI document declares (see D11), and
+  test it over HTTP.
 - T3 (addendum) → 002: redact entity identifiers the caller cannot read
   from `CATALOG_SCHEMA_INCOMPATIBLE` and `CATALOG_REFERENCE_VIOLATION` to a
   count (R3). Add an OWASP ZAP baseline DAST job once the API is served (R9).
@@ -626,5 +682,10 @@ human with options. The answers:
 | R10 | SEC12 Q2 training | Yes, the team is trained. |
 | R11 | SEC12 Q3 post-launch monitoring | Nonexistent today (nothing deployed). Ticket T5b for 010. |
 | R12 | SEC16 Q4 time to deliver logs | 24 hours, backed by a KQL export runbook in 010 (T5). |
+
+| R13 | Value-level history of catalog state (raised by the Platform Engineering references, `RA-AZ` L178, `SPE4` L366) | Every change event stores a `snapshot jsonb` of the resulting state (the last state for a delete). This gives point-in-time views and diffs without revision tables. |
+| R14 | Extra CI supply-chain controls (`RA-AZ` L426-L430, `VULN` L190-L196, L224, `SOV` L266-L302) | Semgrep OSS SAST (pinned, blocking on high severity); a Syft SBOM as a non-blocking artifact; a license review and an audited waiver path for `pnpm audit` in `docs/security/dependencies.md`. |
+| R15 | Observability contract additions (`RA-AZ` L190, `SPE4` L238-L250, L818-L826, `OBS` L100-L102, L216, L224) | SLIs on `operation.duration`; `tayzu.actor.type` on that histogram; shared attribute keys in `@tayzu/observability/semconv`; audit and security signals exempt from sampling. |
+| R16 | Blueprint definitions as code (`SOV` L709-L711, `RA-AZ` L174) | A contract test: blueprint read output, minus server-managed fields, is accepted unchanged by create and update. |
 
 No open questions remain for this change.

@@ -11,7 +11,10 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run --project \"*unit*\""
+    "test:unit": "vitest run --project \"*unit*\"",
+    "contract:generate": "tsx src/api/generate-contract.ts",
+    "contract:check": "tsx src/api/check-contract.ts",
+    "otel-smoke-check": "vitest run src/telemetry/otel-smoke-check.int.test.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
@@ -21,14 +24,16 @@
     "@orpc/server": "^1.15.4",
     "@orpc/zod": "^1.15.4",
     "@tayzu/db": "workspace:*",
+    "@tayzu/observability": "workspace:*",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "drizzle-orm": "^0.45.3",
+    "pg": "^8.23.0",
     "re2js": "^2.8.6",
     "uuidv7": "^1.2.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@tayzu/observability": "workspace:*"
+    "@types/pg": "^8.23.1"
   }
 }

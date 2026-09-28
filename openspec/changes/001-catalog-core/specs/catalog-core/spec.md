@@ -42,7 +42,8 @@ entity keeps its desired state (`spec`) separate from its observed state
 
   | Limit | Default |
   |---|---|
-  | Blueprint, property and relation identifier | `^[A-Za-z][A-Za-z0-9_-]{0,63}$` |
+  | Property and relation identifier | `^[A-Za-z][A-Za-z0-9_-]{0,63}$` |
+  | Blueprint identifier | `^_?[A-Za-z][A-Za-z0-9_-]{0,63}$` (a leading `_` marks a reserved system blueprint) |
   | Entity identifier | `^[A-Za-z0-9@_.:/=-]{1,256}$`, with no `.` or `..` path segment and no leading, trailing or repeated `/` |
   | Localized text, per locale | 256 characters (titles), 4096 (descriptions) |
   | Properties per blueprint (spec + status) | 200 |
@@ -56,7 +57,7 @@ entity keeps its desired state (`spec`) separate from its observed state
 | Nesting depth of `object` values | 16 |
 | Blueprint and entity `icon` | 64 characters |
 | String values with a `format` | 2048 characters |
-| Status `source` label | blueprint identifier pattern |
+| Status `source` label | property and relation identifier pattern |
 | Referrers detached by one delete | 1000 |
 | Pagination cursor | 512 characters |
 
@@ -426,7 +427,7 @@ not given are cleared. The following rules apply.
   lack a relation).
 - The operation MUST set `observedAt` to the server's current UTC time.
 - It MUST set `source` to the caller-supplied source label, which MUST match
-  the blueprint identifier pattern (for example `github`).
+  the property and relation identifier pattern (for example `github`).
 - It MUST set `observedGeneration` to the caller-supplied generation the
   observation corresponds to. That value MUST be ≤ the entity's current
   `generation`, otherwise the operation fails with `CATALOG_VALIDATION_FAILED`.
@@ -579,7 +580,14 @@ Every successful mutation MUST do the following.
   `updated`, `status_updated`, `deleted`), the resource kind (`blueprint` or
   `entity`), the blueprint identifier, the resource identifier, the resulting
   `version`, the list of changed top-level fields, the `onBehalfOf` principal
-  when present, and the current trace ID when one exists.
+  when present, the current trace ID when one exists, and a **snapshot** of the
+  resource's resulting state. For an entity, the snapshot holds `title`, `icon`,
+  `spec` and `status`. For a blueprint, it holds the full definition. For a
+  delete, it holds the last state before deletion.
+
+Change-event snapshots contain tenant data. They MUST NOT be copied into
+telemetry or error responses, and they are stored only in the tenant-scoped
+change-event log.
 
 The same code path MUST be used for every actor type. There MUST NOT be any
 operation variant that skips validation, attribution, or event recording for a
@@ -604,6 +612,13 @@ append any event.
 #### Scenario: Change events cannot be altered
 - **WHEN** a direct SQL `UPDATE` or `DELETE` is issued against the change-event log
 - **THEN** the database rejects it
+
+#### Scenario: Change events record resulting values
+- **GIVEN** entity `payments` with `spec.properties.tier` = `"gold"`
+- **WHEN** it is upserted in `merge` mode with `{ "tier": "silver" }`, then deleted
+- **THEN** the `updated` event's snapshot has `spec.properties.tier` = `"silver"`
+- **AND** the `deleted` event's snapshot holds the last state, with `tier` = `"silver"`
+- **AND** the state of `payments` at any past `version` can be read from its events
 
 #### Scenario: Failed mutation appends nothing
 - **WHEN** an entity write fails with `CATALOG_VALIDATION_FAILED`
@@ -646,7 +661,14 @@ errors MUST be recorded only as their error type, SQLSTATE and constraint name.
 The error message, database `detail` and `where` fields, and bind parameters
 MUST be dropped, because database messages embed row values. No procedure input
 MAY declare a `tenantId` or `actor` field. The contract check MUST fail if the
-document contains one.
+document contains one. A blueprint's read output, without its server-managed
+fields, MUST be valid input to blueprint create and update, so definitions
+can be exported from one instance and applied to another.
+
+#### Scenario: Blueprint definitions round-trip
+- **GIVEN** a non-reserved blueprint read with the get operation
+- **WHEN** its output, without the server-managed fields (`version`, `createdAt`, `createdBy`, `updatedAt`, `updatedBy`), is sent to the create operation in another tenant and to the update operation in the same tenant
+- **THEN** both are accepted unchanged, and a new get returns an equal definition
 
 #### Scenario: Contract drift fails CI
 - **GIVEN** the committed OpenAPI document

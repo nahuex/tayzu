@@ -128,8 +128,8 @@ defines them.
 - A run that includes integration tests fails fast, with an explicit message,
   when `DATABASE_URL` is missing. Export it first, for example
   `export DATABASE_URL=postgres://<user>:<password>@localhost:5432/tayzu_test`.
-  In the cloud sandbox the local cluster is `16 main` on `localhost:5432`
-  (superuser: `su postgres -c "psql ..."`).
+  Cloud sandbox: cluster `16 main` on `localhost:5432`. Laptop: `docker compose
+up -d --wait db`. Both are described in `docs/dev-environment/README.md`.
 - Isolation is tenant-per-test: each test uses a fresh random `tenantId`, so
   tests run in parallel without truncating tables.
 - Turborepo caches passing runs (`DATABASE_URL` is part of the `test` hash).
