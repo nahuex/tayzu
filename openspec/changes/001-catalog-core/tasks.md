@@ -171,7 +171,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 4. Entity validation and write semantics (pure)
 
-- [ ] 4.1 Derive an Ajv schema from a validated blueprint definition, with
+- [x] 4.1 Derive an Ajv schema from a validated blueprint definition, with
   `additionalProperties: false`, the RE2 `regExp` adapter and restricted
   formats. Verify: `entity-validator.test.ts` covers "Spec violating the
   schema is rejected" and "Undeclared property is rejected", with the exact
@@ -179,7 +179,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   rejected" (`javascript:`, `data:`, `ftp:`) and the 2048-character cap on
   formatted strings, which is checked before the format itself (ajv-formats
   in `fast` mode).
-- [ ] 4.2 Apply defaults on write. Verify: `entity-validator.test.ts`
+- [x] 4.2 Apply defaults on write. Verify: `entity-validator.test.ts`
   covers "Default is applied" and checks that an explicitly given value
   wins over the default.
 - [ ] 4.3 Relation value shape validation: cardinality, the required
