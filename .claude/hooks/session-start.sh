@@ -66,6 +66,10 @@ BEGIN
    END IF;
    -- The integration tests create and drop private scratch databases.
    ALTER ROLE tayzu CREATEDB;
+   -- Migrations from 002-auth-and-rbac on create the tayzu_auth, tayzu_app
+   -- and tayzu_migrator roles (design D6). Test cluster only; CI uses the
+   -- postgres:16 image's superuser.
+   ALTER ROLE tayzu CREATEROLE;
 END
 $do$;
 

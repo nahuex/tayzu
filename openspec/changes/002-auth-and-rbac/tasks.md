@@ -65,7 +65,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `auth-instance.test.ts` introspects `auth.api` and asserts the
   organization, admin, two-factor, apiKey and jwt handlers are present, and
   that no dynamic-access-control or teams handler exists.
-- [ ] 2.2 Generate the Better Auth schema (`npx @better-auth/cli generate` +
+- [x] 2.2 Generate the Better Auth schema (`npx @better-auth/cli generate` +
   `drizzle-kit generate`) into `packages/db/migrations/0002_auth_schema.sql`,
   creating Postgres schema `auth` and every Better Auth/plugin table inside
   it. Hand-write the companion custom SQL creating role `tayzu_auth` with

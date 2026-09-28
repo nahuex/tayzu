@@ -24,6 +24,13 @@ of `openspec/changes/archive/2026-09-28-001-catalog-core/design.md`.
 - No roles, grants or RLS policies before `002-auth-and-rbac`.
 - Migrations are applied by `pnpm db:migrate` in CI and by the test harness
   only. There are no deployed environments yet.
+- Any future migration that adds a table or sequence to schema `auth` must
+  grant `tayzu_auth` `SELECT`/`INSERT`/`UPDATE`/`DELETE` (and sequence
+  `USAGE`/`SELECT`) on it explicitly, in that same migration: 0003's
+  `GRANT ... ON ALL TABLES`/`ALL SEQUENCES` only covers what existed in schema
+  `auth` when it ran. `ALTER DEFAULT PRIVILEGES` would cover future objects
+  too, but only from the role that creates them, which needs a migrator role
+  (task 6.x) — until then, grant explicitly, per migration.
 
 ## SQL and tenant transactions
 

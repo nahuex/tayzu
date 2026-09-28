@@ -15,6 +15,20 @@
       "when": 1790557358233,
       "tag": "0001_catalog_change_event_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790616221046,
+      "tag": "0002_auth_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790616226904,
+      "tag": "0003_auth_role_grants",
+      "breakpoints": true
     }
   ]
 }
