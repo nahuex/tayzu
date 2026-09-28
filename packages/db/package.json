@@ -11,7 +11,9 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run --project \"*unit*\""
+    "test:unit": "vitest run --project \"*unit*\"",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/run-migrations.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.3",

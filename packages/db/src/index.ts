@@ -11,6 +11,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Pool } from 'pg';
 
 import { assertVerifiedTls } from './connection-security.js';
+import './pg-type-parsers.js';
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL('../migrations', import.meta.url));
 

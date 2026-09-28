@@ -210,7 +210,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 5. Persistence (`@tayzu/catalog/src/persistence`, `@tayzu/db`), ⛔ Checkpoint 3
 
-- [ ] 5.1 Drizzle table definitions for the 6 tables in design D4, including
+- [x] 5.1 Drizzle table definitions for the 6 tables in design D4, including
   composite tenant FKs, the `scope` column on the edge table (with its check
   and its place in the PK), the `CHECK (NOT (many AND required))` constraint and
   the indexes. Generate `0000_catalog_core.sql` (and its down script) with
