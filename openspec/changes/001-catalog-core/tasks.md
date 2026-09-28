@@ -240,13 +240,13 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 6. Operation pipeline and telemetry primitives (`@tayzu/catalog/src/service`, `src/telemetry`)
 
-- [ ] 6.1 `@tayzu/observability/semconv` defines the shared attribute keys,
+- [x] 6.1 `@tayzu/observability/semconv` defines the shared attribute keys,
   and `telemetry/contract.ts` imports them and mirrors the design's
   Observability contract (span names, metric names and units, allowed
   attribute keys, log event names, the SLI definitions and the list of
   sampling-exempt signals). Verify: `contract.test.ts` snapshot-asserts every name in the
   design tables, and the `observability-auditor` review compares the two.
-- [ ] 6.2 `defineCatalogOperation`: context validation, operation span with
+- [x] 6.2 `defineCatalogOperation`: context validation, operation span with
   the common attributes, the `operation.duration` histogram with an outcome
   class, and error mapping in which an unknown error becomes `INTERNAL` with a
   **sanitized** exception (type, SQLSTATE and constraint only, and the
@@ -255,7 +255,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   context failure it also records `context.rejections` and the
   `catalog.security.context_rejected` log. Verify: `pipeline.int.test.ts`
   uses a dummy operation and the telemetry harness.
-- [ ] 6.3 The pipeline emits `catalog.audit.mutation` for successful
+- [x] 6.3 The pipeline emits `catalog.audit.mutation` for successful
   mutations, and a `trace_id` is stored on the change event. Verify:
   `pipeline.int.test.ts` shows that the log record, the span and the event
   row share the same trace ID.
