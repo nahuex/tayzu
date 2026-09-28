@@ -393,17 +393,17 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 11. Integration checks before the PR (Checkpoint 2 readiness)
 
-- [ ] 11.1 `pnpm ci:local` is fully green (lint, typecheck, unit and
+- [x] 11.1 `pnpm ci:local` is fully green (lint, typecheck, unit and
   integration tests, contract-check, otel-smoke-check, audit, gitleaks).
   Verify: attach the command output to the PR description.
-- [ ] 11.2 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against
+- [x] 11.2 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against
   the implemented code, and resolve or explicitly defer every blocking GAP.
   Verify: the report is attached to the PR, with zero open blocking GAPs.
-- [ ] 11.3 Run `/security-review` on the branch and fix or justify every
+- [x] 11.3 Run `/security-review` on the branch and fix or justify every
   finding, then update `docs/architecture/system-diagram.md` if the
   implementation changed any component or arrow. Verify: the review output
   and the diagram diff are attached to the PR.
-- [ ] 11.4 `openspec validate 001-catalog-core --strict` passes, and the
+- [x] 11.4 `openspec validate 001-catalog-core --strict` passes, and the
   design, spec and code agree (update the design only if an implementation
   finding forced a change, and note it in the PR). Verify: the command
   output is attached to the PR.
