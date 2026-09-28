@@ -235,7 +235,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   gap, that the event stores the `snapshot` it is given, and it covers
   "Change events cannot be altered" (raw `UPDATE`, `DELETE` and `TRUNCATE`
   all raise).
-- [ ] 5.5 Write ADR `docs/adr/0009-relations-as-edges.md` (design D4).
+- [x] 5.5 Write ADR `docs/adr/0009-relations-as-edges.md` (design D4).
   Verify: the file exists and is linked from design D4.
 
 ## 6. Operation pipeline and telemetry primitives (`@tayzu/catalog/src/service`, `src/telemetry`)

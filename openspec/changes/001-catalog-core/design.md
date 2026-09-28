@@ -139,6 +139,8 @@ example by destructuring, so it is not relied on.
 
 ### D4. Data model (first migration)
 
+The edge model for relations is recorded as [ADR-0009](../../../docs/adr/0009-relations-as-edges.md).
+
 The `tenant_id` column is `text NOT NULL` in every table. It is `text`, not
 `uuid`, because Better Auth's `organization.id` is a string ID. Timestamps are
 `timestamptz` in UTC. Row IDs are UUIDv7, generated in the application.
