@@ -1,4 +1,14 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(claude -p --agent test-writer:*)",
+      "Bash(claude -p --agent implementer:*)",
+      "Bash(claude -p --agent observability-auditor:*)",
+      "Bash(timeout * claude -p --agent *)",
+      "Bash(git push origin claude/determined-cannon-7aom0j)",
+      "Bash(git push -q origin claude/determined-cannon-7aom0j)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
