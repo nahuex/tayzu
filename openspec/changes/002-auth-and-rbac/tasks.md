@@ -106,7 +106,7 @@ policy diff shown in chat, separately from the rest of the PR.
   "Session cookie resolves a human context", "Missing credential is rejected
   like a missing context", and "Session without an active organization is
   rejected" (all three failing exactly as `CATALOG_CONTEXT_REQUIRED`).
-- [ ] 3.2 A 12-hour idle timeout layered on top of Better Auth's own 7-day
+- [x] 3.2 A 12-hour idle timeout layered on top of Better Auth's own 7-day
   `expiresIn`/1-day `updateAge`. Verify: `session-policy.int.test.ts` covers
   "Idle session expires after 12 hours" and "Active session rolls forward up
   to 7 days".
