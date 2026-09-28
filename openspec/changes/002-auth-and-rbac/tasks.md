@@ -110,7 +110,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `expiresIn`/1-day `updateAge`. Verify: `session-policy.int.test.ts` covers
   "Idle session expires after 12 hours" and "Active session rolls forward up
   to 7 days".
-- [ ] 3.3 `changePassword` called with `revokeOtherSessions: true`. Verify:
+- [x] 3.3 `changePassword` called with `revokeOtherSessions: true`. Verify:
   `session-policy.int.test.ts` covers "Password change revokes other
   sessions", and the resulting `auth.security.session_revoked` log event.
 - [ ] 3.4 `resolveContext(headers)` never reads `actor.onBehalfOf` from the

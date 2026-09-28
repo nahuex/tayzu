@@ -22,6 +22,15 @@
  * up rows through the request's own `DBAdapter` (`context.context.adapter`),
  * never a second, ad hoc database connection.
  *
+ * Task 3.3 (design D3): a top-level `hooks.before` forces
+ * `revokeOtherSessions: true` onto every `/change-password` call -- "A
+ * password change MUST revoke every other active session belonging to that
+ * user," production code's own responsibility, not something left to
+ * whichever caller happens to invoke `changePassword`. The same `hooks.after`
+ * that already handles `/sign-in/email` also handles `/change-password`,
+ * emitting `auth.security.session_revoked` (reason `password_change`) and the
+ * `tayzu.auth.session.events` counter on success.
+ *
  * Configuration comes only from `CreateAuthOptions`, supplied by the host
  * (`apps/api`): this library never reads `process.env` or logs `secret`.
  */
@@ -40,12 +49,19 @@ import {
 import { logger, sessionEventsCounter } from './telemetry/instruments.js';
 
 const SIGN_IN_EMAIL_PATH = '/sign-in/email';
+const CHANGE_PASSWORD_PATH = '/change-password';
 
 /** design.md, Metrics table: `tayzu.auth.session.events`'s only attribute. */
 const AUTH_EVENT_ATTRIBUTE = 'tayzu.auth.event';
 
 /** design.md, Log events table: `auth.security.login_failed`'s only attribute. */
 const FAILURE_REASON_ATTRIBUTE = 'tayzu.auth.failure_reason';
+
+/** design.md, Log events table: `auth.security.session_revoked`'s reason attribute. */
+const REVOCATION_REASON_ATTRIBUTE = 'tayzu.auth.revocation.reason';
+
+/** design.md, Log events table: `auth.security.session_revoked` -- the only reason task 3.3 emits. */
+const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
 
 /** A single `auth.member` row: the shape `databaseHooks.session.create.before` needs. */
 interface MembershipRow {
@@ -60,6 +76,17 @@ interface ActiveOrganizationRow {
 /** `/sign-in/email`'s success body (Better Auth's own route, `sign-in.mjs`): the fields this file reads. */
 interface SignInEmailSuccessResponse {
   readonly token: string;
+  readonly user: { readonly id: string };
+}
+
+/**
+ * `/change-password`'s success body (Better Auth's own route,
+ * `update-user.mjs`): the fields this file reads. `token` is the new
+ * session's token, set whenever `revokeOtherSessions` is true -- always, on
+ * this path, since `hooks.before` below forces it.
+ */
+interface ChangePasswordSuccessResponse {
+  readonly token: string | null;
   readonly user: { readonly id: string };
 }
 
@@ -97,6 +124,30 @@ function emitLoginFailed(): void {
     attributes: { [FAILURE_REASON_ATTRIBUTE]: 'bad_credentials' },
   });
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'login_failed' });
+}
+
+/**
+ * design.md, Log events table: `auth.security.session_revoked`. Task 3.3
+ * only reaches this for the `password_change` reason; `admin_action` is a
+ * later task's own hook.
+ */
+function emitSessionRevoked(params: {
+  readonly actorId: string;
+  readonly tenantId?: string;
+}): void {
+  const attributes: Record<string, string> = {
+    [sharedAttributeKeys.actorId]: params.actorId,
+    [REVOCATION_REASON_ATTRIBUTE]: PASSWORD_CHANGE_REVOCATION_REASON,
+  };
+  if (params.tenantId !== undefined) {
+    attributes[sharedAttributeKeys.tenantId] = params.tenantId;
+  }
+  logger.emit({
+    eventName: 'auth.security.session_revoked',
+    severityNumber: SeverityNumber.INFO,
+    attributes,
+  });
+  sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'session_revoked' });
 }
 
 export interface CreateAuthOptions {
@@ -183,23 +234,50 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       },
     },
     hooks: {
+      // Task 3.3, design D3: "`changePassword` is called with
+      // `revokeOtherSessions: true`" -- forced here so every caller gets
+      // this behavior, not only ones that remember to opt in themselves.
+      // Returning `{ context: { body: {...} } }` deep-merges onto the
+      // endpoint's own `ctx.body` (`better-call`'s `createMiddleware`/
+      // Better Auth's own `dispatchAuthEndpoint`, both verified against the
+      // installed source), leaving `currentPassword`/`newPassword` untouched.
+      before: createAuthMiddleware((ctx) => {
+        if (ctx.path !== CHANGE_PASSWORD_PATH) {
+          return Promise.resolve(undefined);
+        }
+        return Promise.resolve({ context: { body: { revokeOtherSessions: true } } });
+      }),
       after: createAuthMiddleware(async (ctx) => {
-        if (ctx.path !== SIGN_IN_EMAIL_PATH) {
+        if (ctx.path === SIGN_IN_EMAIL_PATH) {
+          if (isAPIError(ctx.context.returned)) {
+            emitLoginFailed();
+            return;
+          }
+          const response = ctx.context.returned as SignInEmailSuccessResponse;
+          const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
+            model: 'session',
+            where: [{ field: 'token', value: response.token }],
+          });
+          emitLoginSucceeded({
+            actorId: response.user.id,
+            tenantId: sessionRow?.activeOrganizationId ?? undefined,
+          });
           return;
         }
-        if (isAPIError(ctx.context.returned)) {
-          emitLoginFailed();
-          return;
+        if (ctx.path === CHANGE_PASSWORD_PATH) {
+          if (isAPIError(ctx.context.returned)) {
+            return;
+          }
+          const response = ctx.context.returned as ChangePasswordSuccessResponse;
+          const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
+            model: 'session',
+            where: [{ field: 'token', value: response.token }],
+          });
+          emitSessionRevoked({
+            actorId: response.user.id,
+            tenantId: sessionRow?.activeOrganizationId ?? undefined,
+          });
         }
-        const response = ctx.context.returned as SignInEmailSuccessResponse;
-        const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
-          model: 'session',
-          where: [{ field: 'token', value: response.token }],
-        });
-        emitLoginSucceeded({
-          actorId: response.user.id,
-          tenantId: sessionRow?.activeOrganizationId ?? undefined,
-        });
       }),
     },
   });

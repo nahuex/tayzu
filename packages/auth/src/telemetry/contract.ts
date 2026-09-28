@@ -67,6 +67,15 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'WARN',
     attributes: ['tayzu.auth.rate_limit.scope'],
   },
+  {
+    name: 'auth.security.session_revoked',
+    severity: 'INFO',
+    attributes: [
+      sharedAttributeKeys.tenantId,
+      sharedAttributeKeys.actorId,
+      'tayzu.auth.revocation.reason',
+    ],
+  },
 ];
 
 /**
@@ -78,4 +87,5 @@ export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
   'auth.security.login_succeeded',
   'auth.security.login_failed',
   'auth.security.rate_limited',
+  'auth.security.session_revoked',
 ];

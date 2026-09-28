@@ -119,19 +119,24 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing (task 2.4; design D1; `packages/observability/
 // CLAUDE.md`, "Import order"): the harness must register before `./auth.js`,
 // which imports a telemetry/instruments module that creates its tracer,
 // meter and logger at import time. Same rationale as every other int test
 // file in this package (for example `context-resolver.int.test.ts`'s own
-// identical import-order comment), even though this file asserts no
-// telemetry itself.
-import './__fixtures__/registered-harness.js';
+// identical import-order comment). Task 3.2's own describe block below
+// asserts no telemetry itself; task 3.3's describe block (this file's
+// second one, added for task 3.3) does, so the named `registration`/
+// `TelemetryTestHarness` bindings are imported here too, alongside the
+// side-effecting registration import every other describe block in this
+// file already relies on.
+import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver, type ContextResolver } from './context-resolver.js';
 import * as authSchema from './persistence/schema.js';
@@ -449,6 +454,239 @@ describe('resolveContext: 12-hour idle timeout (task 3.2, design D3)', () => {
     expect(resolved).toEqual({
       tenantId: session.organizationId,
       actor: { type: 'user', id: session.userId },
+    });
+  });
+});
+
+/**
+ * Integration test for task 3.3 (design D3; `specs/auth-and-rbac/spec.md`,
+ * "Session policy"). "`changePassword` called with `revokeOtherSessions:
+ * true`." This describe block covers exactly the one scenario task 3.3's own
+ * Verify clause names, quoted from `specs/auth-and-rbac/spec.md`:
+ *
+ * #### Scenario: Password change revokes other sessions
+ * - GIVEN a user signed in on two devices
+ * - WHEN they change their password from the first device
+ * - THEN the second device's session fails exactly as `CATALOG_CONTEXT_REQUIRED`
+ *   on its next use
+ *
+ * plus the same Verify clause's "the resulting `auth.security.session_revoked`
+ * log event" (design.md, "Observability contract" -> Log events table:
+ * `auth.security.session_revoked`, INFO, `tayzu.tenant.id`,
+ * `tayzu.actor.id`, `tayzu.auth.revocation.reason`
+ * (`password_change`\|`admin_action`)).
+ *
+ * The requirement text above the scenario (same spec section) is this
+ * behavior's source: "A password change MUST revoke every other active
+ * session belonging to that user." Design D3 names the exact mechanism:
+ * "`changePassword` is called with `revokeOtherSessions: true`" -- read
+ * together with the requirement's "MUST revoke every *other* active
+ * session" (not "every session the caller happens to ask about"), this is
+ * production code's own responsibility, not something left to whichever
+ * caller happens to invoke `changePassword`. That is exactly what this test
+ * drives: the WHEN step below calls Better Auth's `changePassword` endpoint
+ * *without* passing `revokeOtherSessions` itself, so the only way the THEN
+ * step can observe the second device's session revoked is if `./auth.ts`'s
+ * own `createAuth` configuration forces `revokeOtherSessions: true` on every
+ * `changePassword` call, exactly as D3 states.
+ *
+ * ## Why this is expected to fail for the right reason right now
+ *
+ * `./auth.ts` (tasks 2.1-2.4, already green) registers no hook and no
+ * endpoint-level default around `/change-password` at all -- confirmed by
+ * reading the file before writing this one: nothing there ever sets
+ * `revokeOtherSessions`. Better Auth's own installed `changePassword` route
+ * (`better-auth@1.7.6`, `dist/api/routes/update-user.mjs`) only revokes other
+ * sessions when its caller explicitly passes `revokeOtherSessions: true` in
+ * the request body -- verified against that installed source, which reads
+ * `const { newPassword, currentPassword, revokeOtherSessions } = ctx.body;`
+ * and only calls `internalAdapter.deleteUserSessions` inside `if
+ * (revokeOtherSessions)`. This test's WHEN step deliberately omits that
+ * field, so today the second device's session survives the password change
+ * and the THEN step's `expectContextRequiredRejection` assertion fails
+ * (the promise resolves instead of rejecting) -- a plain **assertion
+ * failure**, not a missing export or a typo: `./auth.js`, `createAuth`,
+ * `createContextResolver` and every other import here already exist and are
+ * exercised unchanged by this file's own first describe block and by
+ * `context-resolver.int.test.ts`. The `auth.security.session_revoked` log
+ * assertion fails the same way, for the same underlying reason: nothing
+ * today emits that event name at all, so the captured-log-records array is
+ * empty.
+ *
+ * ## Why this test connects, seeds and asserts the way it does
+ *
+ * Same shared-`DATABASE_URL` / `runMigrations`-then-random-per-test isolation
+ * pattern as this file's own first describe block (task 3.2) and as
+ * `auth-flow.int.test.ts` (task 2.3/2.4), reusing that same file's top-level
+ * helpers (`handlerOf`, `postJson`, `cookieHeaderFrom`, `apiOf`, `randomIp`,
+ * `randomEmail`, `randomSlug`, `expectContextRequiredRejection`,
+ * `SignUpEmailResponseBody`) rather than redefining them. "Two devices" is
+ * two independent `/sign-in/email` calls for the same account, each from its
+ * own random IP (so task 2.5's pre-auth rate limiter, keyed by IP and by
+ * normalized email, never conflates the two sign-ins or the later
+ * `changePassword` call) -- the same "sign up, create org, sign in again"
+ * sequence `signUpWithOrganization` (task 3.2's own describe block) already
+ * establishes for one device, repeated here for two, since that helper
+ * itself is scoped to that other describe block's closure and only ever
+ * returns one session.
+ *
+ * `changePassword` is called directly through `auth.api.changePassword`
+ * (not `auth.handler`), passing `headers` carrying device 1's cookie so
+ * Better Auth's `sensitiveSessionMiddleware` resolves the authoritative
+ * session the same way `./context-resolver.ts`'s own `api.getSession({
+ * headers })` calls already do (`session.cookieCache` stays off, design D2:
+ * "no revocation-latency gap to explain" -- so there is no separate,
+ * stateless cookie-cache path this call could instead be reading). The
+ * telemetry harness (`./__fixtures__/registered-harness.js`, registered
+ * while this file's module graph loaded, before `./auth.js`) is reset
+ * immediately before the `changePassword` call under test, discarding
+ * whatever sign-up/organization-creation/sign-in emitted, so the captured
+ * log records after `forceFlush()` reflect only the `changePassword` call
+ * itself -- the same reset-then-assert pattern `auth-flow.int.test.ts`'s own
+ * task 2.4 describe block already establishes.
+ */
+describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let resolveContext: ContextResolver;
+  let harness: TelemetryTestHarness;
+
+  /** The harness `./__fixtures__/registered-harness.js` registered while the module graph loaded. */
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    resolveContext = createContextResolver({ auth });
+    harness = registeredHarness();
+  }, 60_000);
+
+  afterEach(async () => {
+    await harness.reset();
+  });
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  /** design.md, Log events table: `auth.security.session_revoked`'s only reason this task exercises. */
+  const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
+
+  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+
+  /**
+   * The narrow slice of `auth.api` this describe block additionally needs
+   * (`changePassword`), typed locally the same "introspect the narrower
+   * production type locally" pattern this file's own top-level `AuthApiSurface`
+   * (createOrganization only) and `auth-flow.int.test.ts`'s own
+   * `AuthApiSurface` already use -- kept as its own, separate interface
+   * rather than widening either of those, since neither is this describe
+   * block's to change.
+   */
+  interface ChangePasswordApiSurface {
+    changePassword(args: {
+      body: {
+        readonly currentPassword: string;
+        readonly newPassword: string;
+        readonly revokeOtherSessions?: boolean;
+      };
+      headers: Headers;
+    }): Promise<{ readonly token: string | null; readonly user: { readonly id: string } }>;
+  }
+
+  function changePasswordApiOf(authInstance: AuthInstance): ChangePasswordApiSurface {
+    return authInstance.api as ChangePasswordApiSurface;
+  }
+
+  it('Password change revokes other sessions', async () => {
+    const handler = handlerOf(auth);
+    const email = randomEmail();
+    const slug = randomSlug();
+
+    // GIVEN "a user signed in on two devices": one sign-up, one organization
+    // (so both sign-ins below resolve an activeOrganizationId, task 2.4's
+    // exactly-one-membership rule), then two independent `/sign-in/email`
+    // calls for the same account, each from its own random IP.
+    const signUpResponse = await postJson(
+      handler,
+      '/sign-up/email',
+      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
+    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
+
+    const organization = await apiOf(auth).createOrganization({
+      body: { name: 'Password Change Test Org', slug, userId: signUp.user.id },
+    });
+
+    const device1SignIn = await postJson(
+      handler,
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(device1SignIn.status, 'device 1 sign-in succeeds').toBe(200);
+    const device1Cookie = cookieHeaderFrom(device1SignIn);
+
+    const device2SignIn = await postJson(
+      handler,
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(device2SignIn.status, 'device 2 sign-in succeeds').toBe(200);
+    const device2Cookie = cookieHeaderFrom(device2SignIn);
+
+    // GIVEN sanity check: device 2's session resolves successfully before
+    // the password change, independent of whatever the WHEN step below does
+    // to it.
+    const device2Before = await resolveContext(new Headers({ cookie: device2Cookie }));
+    expect(device2Before).toEqual({
+      tenantId: organization.id,
+      actor: { type: 'user', id: signUp.user.id },
+    });
+
+    // Discard whatever sign-up/organization-creation/sign-in emitted: only
+    // the changePassword call below is under test.
+    await harness.reset();
+
+    // WHEN "they change their password from the first device". No
+    // `revokeOtherSessions` is passed here: design D3 places that
+    // responsibility on production code's own `changePassword` call, not on
+    // whichever caller happens to invoke this endpoint.
+    await changePasswordApiOf(auth).changePassword({
+      body: { currentPassword: TEST_PASSWORD, newPassword: NEW_PASSWORD },
+      headers: new Headers({ cookie: device1Cookie }),
+    });
+
+    await harness.forceFlush();
+
+    // THEN "the second device's session fails exactly as
+    // `CATALOG_CONTEXT_REQUIRED` on its next use".
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie: device2Cookie })));
+
+    // AND "the resulting `auth.security.session_revoked` log event"
+    // (design.md, Log events table).
+    const logs = [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'auth.security.session_revoked',
+    );
+    expect(logs, 'exactly one session_revoked log record').toHaveLength(1);
+    const record = logs[0];
+    expect(record?.severityNumber).toBe(SeverityNumber.INFO);
+    expect(record?.attributes).toEqual({
+      'tayzu.tenant.id': organization.id,
+      'tayzu.actor.id': signUp.user.id,
+      'tayzu.auth.revocation.reason': PASSWORD_CHANGE_REVOCATION_REASON,
     });
   });
 });
