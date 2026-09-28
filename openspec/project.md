@@ -409,10 +409,12 @@ Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la docume
 | `041-execution-agent` | Self-hosted execution agent: HTTP-polling relay for backends without ingress (decision D3) | 007 |
 | `042-multi-org` | Multi-org: organization switcher, account/company admin tiers, multi-org SSO (decision D7) | 002, 025 |
 | `043-identity-lifecycle-and-org-admin` | Identity lifecycle and org admin: 4-state user status lifecycle + invitations, service accounts, org API-credentials viewer & rotation, data retention & org deletion (decision D9) | 002 |
+| `044-password-reset-and-account-recovery` | Password reset and account recovery: forgot-password email link, single-use short-lived reset tokens, enumeration-resistant responses, session revocation on reset, MFA recovery (decision D10) | 002, 043 |
 
 **Execution order note (2026-09-28):** `002-auth-and-rbac` runs before
 `043-identity-lifecycle-and-org-admin`, which runs before
-`003-catalog-ui-core` (`002 -> 043 -> 003`). The numeric IDs in this table are
+`003-catalog-ui-core` (`002 -> 043 -> 044 -> 003`; `044` was added on the
+same day, see D10). The numeric IDs in this table are
 labels, not a sequencing rule — `043` was deliberately given a new id instead
 of renumbering the rest of the roadmap, and its real execution order is this
 dependency chain, not its position in the table.
@@ -438,3 +440,9 @@ dependency chain, not its position in the table.
   UX — is the new change `043-identity-lifecycle-and-org-admin` (a new id,
   not a renumbering), which depends on `002` and executes immediately after
   it.
+- **D10. `044-password-reset-and-account-recovery`: approved (2026-09-28).**
+  The VCDM pre-assessment of `002` (ticket 9) required an explicit scope for
+  forgot-password/reset. It gets its own change (a new id, not a
+  renumbering), because it sends an emailed link with its own token and
+  enumeration risks and `043` is already at 65 tasks. It reuses `043`'s
+  email sender and executes right after `043`.

@@ -770,5 +770,6 @@ counts as approved until the human answers").
 | Q11 | (VCDM pre-assessment, 2026-09-28) Independent re-verification of `activeOrganizationId`/tenant-switch membership | Add both a test asserting non-membership is rejected, and a defense-in-depth re-check inside `resolveContext()`, independent of Better Auth's own logic, cached briefly, failing closed (D19). |
 | Q12 | (VCDM pre-assessment, 2026-09-28) Pre-authentication credential-stuffing/brute-force protection | A second, IP-and-email-keyed rate-limit layer (Better Auth `rateLimit`, database storage) for sign-in/two-factor/sign-up, plus a separate IP-and-client-id-keyed `@fastify/rate-limit` bucket for `/v1/auth/token` (D20). |
 | Q13 | (VCDM pre-assessment, 2026-09-28) Revoked machine credentials invalidating already-issued tokens | A Postgres revocation list, consulted by `resolveContext()` on every machine-token request through a cache of at most 5 seconds TTL, failing closed on lookup failure (D21). New table, Checkpoint 3 applies. |
+| Q14 | (VCDM pre-assessment, ticket 9, 2026-09-28) Where forgot-password/reset lives | A new change, `044-password-reset-and-account-recovery`, executed after `043` (reuses its email sender). `002` ships no reset flow; its sign-up/sign-in responses still resist account enumeration. Recorded as `project.md` §23 D10. |
 
 No open questions remain for this change.
