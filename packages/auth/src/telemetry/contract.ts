@@ -40,6 +40,12 @@ export const METRICS: readonly MetricContract[] = [
     unit: '{event}',
     attributes: ['tayzu.auth.rate_limit.scope'],
   },
+  {
+    name: 'tayzu.auth.step_up.required',
+    instrumentType: 'counter',
+    unit: '{event}',
+    attributes: ['tayzu.catalog.operation'],
+  },
 ];
 
 export type LogSeverity = 'INFO' | 'WARN' | 'ERROR';
@@ -76,6 +82,15 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
       'tayzu.auth.revocation.reason',
     ],
   },
+  {
+    name: 'auth.security.step_up_required',
+    severity: 'WARN',
+    attributes: [
+      sharedAttributeKeys.tenantId,
+      sharedAttributeKeys.actorId,
+      'tayzu.catalog.operation',
+    ],
+  },
 ];
 
 /**
@@ -88,4 +103,5 @@ export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
   'auth.security.login_failed',
   'auth.security.rate_limited',
   'auth.security.session_revoked',
+  'auth.security.step_up_required',
 ];

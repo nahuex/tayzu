@@ -9,4 +9,10 @@ export {
   type ResolvedActor,
   type ResolvedContext,
 } from './context-resolver.js';
-export { AuthContextError } from './errors.js';
+export { AuthContextError, AuthStepUpError } from './errors.js';
+export {
+  createStepUpGuard,
+  type AssertStepUpParams,
+  type StepUpGuard,
+  type StepUpGuardOptions,
+} from './step-up.js';

@@ -12,9 +12,9 @@
  * telemetry harness has registered, or every instrument below is a
  * permanent no-op. See `src/__fixtures__/registered-harness.ts`.
  *
- * Only the instruments task 2.4's sign-in hooks need live here today. Later
- * tasks add the remaining `./contract.ts` spans/metrics as their own
- * operations start emitting them.
+ * Task 2.4's sign-in hooks and task 4.2's step-up guard (design D4) are the
+ * only instruments live here today. Later tasks add the remaining
+ * `./contract.ts` spans/metrics as their own operations start emitting them.
  */
 import { metrics } from '@opentelemetry/api';
 import { logs } from '@opentelemetry/api-logs';
@@ -35,5 +35,10 @@ export const sessionEventsCounter = meter.createCounter('tayzu.auth.session.even
 
 /** design.md, Metrics table: "Pre-authentication brute-force signal (design D20)". */
 export const rateLimitEventsCounter = meter.createCounter('tayzu.auth.rate_limit.events', {
+  unit: '{event}',
+});
+
+/** design.md, Metrics table: "Step-up friction signal" (design D4). */
+export const stepUpRequiredCounter = meter.createCounter('tayzu.auth.step_up.required', {
   unit: '{event}',
 });

@@ -49,6 +49,11 @@
  * `dist/api/dispatch.mjs`), so it needs no manual cleanup on the success
  * path.
  *
+ * Task 4.2 (design D4): a top-level `hooks.after` matcher on every
+ * `/two-factor/verify-*` path records the step-up freshness marker
+ * `./step-up.ts`'s guard reads back (see that module's own doc comment for
+ * why this file, not Better Auth itself, owns writing it).
+ *
  * Configuration comes only from `CreateAuthOptions`, supplied by the host
  * (`apps/api`): this library never reads `process.env` or logs `secret`.
  */
@@ -64,11 +69,14 @@ import {
   preAuthRateLimitPlugin,
   type PreAuthRateLimitOptions,
 } from './rate-limit/pre-auth-rate-limit.js';
+import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
 import { logger, sessionEventsCounter } from './telemetry/instruments.js';
 
 const SIGN_IN_EMAIL_PATH = '/sign-in/email';
 const CHANGE_PASSWORD_PATH = '/change-password';
 const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
+/** design D4: every `two-factor` verify endpoint (`/two-factor/verify-totp`, `-backup-code`, `-otp`). */
+const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 
 /** design.md, Metrics table: `tayzu.auth.session.events`'s only attribute. */
 const AUTH_EVENT_ATTRIBUTE = 'tayzu.auth.event';
@@ -120,6 +128,18 @@ interface SignInEmailSuccessResponse {
 interface ChangePasswordSuccessResponse {
   readonly token: string | null;
   readonly user: { readonly id: string };
+}
+
+/**
+ * Every `/two-factor/verify-*` endpoint's success body (`verify-two-factor.
+ * mjs`'s own `valid(ctx)` handler, shared by `verifyTOTP`/`verifyBackupCode`):
+ * the field task 4.2's freshness marker keys on. `token` is only absent when
+ * a caller opts out of a new session via `disableSession` (`verify-backup-
+ * code` only) -- that path carries nothing to key a freshness marker on, so
+ * it is silently skipped (task 4.2, design D4).
+ */
+interface TwoFactorVerifySuccessResponse {
+  readonly token?: string | null;
 }
 
 /** design.md, Log events table: `auth.security.login_succeeded`. */
@@ -350,6 +370,27 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           emitSessionRevoked({
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
+          });
+          return;
+        }
+        if (ctx.path.startsWith(TWO_FACTOR_VERIFY_PATH_PREFIX)) {
+          // Task 4.2, design D4: record the freshness marker `./step-up.ts`'s
+          // guard later reads, on every successful `/two-factor/verify-*`
+          // completion (TOTP, backup code, or a future OTP factor alike).
+          // Keyed by the resulting session's own token (see `./step-up.ts`'s
+          // own doc comment for why no built-in Better Auth mechanism does
+          // this already).
+          if (isAPIError(ctx.context.returned)) {
+            return;
+          }
+          const response = ctx.context.returned as TwoFactorVerifySuccessResponse;
+          if (response.token === undefined || response.token === null) {
+            return;
+          }
+          await ctx.context.internalAdapter.createVerificationValue({
+            identifier: stepUpVerificationIdentifier(response.token),
+            value: 'verified',
+            expiresAt: new Date(Date.now() + STEP_UP_FRESHNESS_MS),
           });
         }
       }),

@@ -134,7 +134,7 @@ policy diff shown in chat, separately from the rest of the PR.
   plugin. Verify: `mfa.int.test.ts` covers "Enrolled user must supply a TOTP
   code to sign in", "Backup code is single-use", and "Unenrolled user signs
   in with password alone".
-- [ ] 4.2 A step-up guard reading `x-tayzu-risk: high` off the invoked
+- [x] 4.2 A step-up guard reading `x-tayzu-risk: high` off the invoked
   procedure's route and a `twoFactorVerifiedAt` freshness check (5-minute
   threshold), applied only to `user` actors. Verify: `step-up.int.test.ts`
   covers "High-risk operation without a fresh MFA verification is blocked",

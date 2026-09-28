@@ -23,3 +23,19 @@ export class AuthContextError extends Error {
     this.name = 'AuthContextError';
   }
 }
+
+/**
+ * `./step-up.ts` (task 4.2, design D4) throws this when a `user` actor
+ * invokes an `x-tayzu-risk: high` operation without a fresh (within 5
+ * minutes) MFA verification. Same package-local, structural-shape
+ * convention as `AuthContextError` above, for the same reason (no
+ * `@tayzu/catalog` dependency).
+ */
+export class AuthStepUpError extends Error {
+  readonly code = 'AUTH_STEP_UP_REQUIRED';
+
+  constructor() {
+    super('A fresh multi-factor verification is required for this operation');
+    this.name = 'AuthStepUpError';
+  }
+}

@@ -56,10 +56,21 @@ const actorTypeRestrictions = [
   { selector: `${MEMBERSHIP_CALL} > ${ACTOR_TYPE}.arguments`, message: ACTOR_TYPE_MESSAGE },
 ];
 
-/** The only files allowed to branch on the actor type (design D3). */
+/**
+ * The only files allowed to branch on the actor type (design D3), plus
+ * `packages/auth/src/step-up.ts` (002-auth-and-rbac design D4): step-up is an
+ * explicit, spec-named human-only control layered *alongside* the operation
+ * pipeline, not a branch inside it -- "agent/integration/system actors skip
+ * this guard entirely (Cerbos already decided whether they may act; step-up
+ * is a human-specific control, matching the spec's own restriction)". The
+ * actor-parity principle this rule otherwise protects (every actor type runs
+ * the same operation pipeline) is untouched: Cerbos's decision for non-`user`
+ * actors is unaffected by this guard.
+ */
 const ACTOR_TYPE_ALLOWLIST = [
   'packages/catalog/src/domain/reserved.ts',
   'packages/catalog/src/service/pipeline.ts',
+  'packages/auth/src/step-up.ts',
 ];
 
 export default defineConfig(
