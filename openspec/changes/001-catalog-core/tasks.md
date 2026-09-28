@@ -195,7 +195,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [x] 4.5 Canonical equality (sorted keys, relation order preserved) for
   detecting `unchanged` writes. Verify: `canonical.test.ts` treats key order
   as irrelevant and `many` relation order as significant.
-- [ ] 4.6 Size limits evaluated before validation or compilation. Verify:
+- [x] 4.6 Size limits evaluated before validation or compilation. Verify:
   `limits.test.ts` covers "Oversized spec is rejected", and a spy shows the
   compiler is not invoked.
 - [ ] 4.7 Pure compatibility checker `checkCompatibility(newDefinition,
