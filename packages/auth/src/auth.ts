@@ -31,6 +31,24 @@
  * emitting `auth.security.session_revoked` (reason `password_change`) and the
  * `tayzu.auth.session.events` counter on success.
  *
+ * Task 3.5 (design D19): "their active organization is unchanged" after a
+ * rejected `/organization/set-active` attempt. Better Auth's own installed
+ * route (`dist/plugins/organization/routes/crud-org.mjs`, verified against
+ * the installed `better-auth@1.7.6` source) persists
+ * `activeOrganizationId = null` on the session *before* throwing `FORBIDDEN
+ * USER_IS_NOT_A_MEMBER_OF_THE_ORGANIZATION` on a non-member attempt -- a
+ * rejected request whose active organization was still changed, from a real
+ * organization to none. A `hooks.before` snapshot (via the same
+ * `getSessionFromCtx` helper Better Auth's own `sessionMiddleware` uses, so
+ * the read is cached and adds no extra round trip) paired with a
+ * `hooks.after` restore (`internalAdapter.updateSession`, the same primitive
+ * the organization plugin's own `setActiveOrganization` calls) undoes that
+ * side effect whenever the attempt is rejected, independent of Better Auth's
+ * own ordering. The snapshot lives in a `WeakMap` keyed by the per-request
+ * `ctx.context` object (a fresh object every dispatch, per
+ * `dist/api/dispatch.mjs`), so it needs no manual cleanup on the success
+ * path.
+ *
  * Configuration comes only from `CreateAuthOptions`, supplied by the host
  * (`apps/api`): this library never reads `process.env` or logs `secret`.
  */
@@ -39,7 +57,7 @@ import { drizzleAdapter, type DB } from '@better-auth/drizzle-adapter';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
-import { createAuthMiddleware, isAPIError } from 'better-auth/api';
+import { createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
 import { admin, jwt, organization, twoFactor } from 'better-auth/plugins';
 
 import {
@@ -50,6 +68,7 @@ import { logger, sessionEventsCounter } from './telemetry/instruments.js';
 
 const SIGN_IN_EMAIL_PATH = '/sign-in/email';
 const CHANGE_PASSWORD_PATH = '/change-password';
+const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 
 /** design.md, Metrics table: `tayzu.auth.session.events`'s only attribute. */
 const AUTH_EVENT_ATTRIBUTE = 'tayzu.auth.event';
@@ -67,6 +86,19 @@ const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
 interface MembershipRow {
   readonly organizationId: string;
 }
+
+/**
+ * Task 3.5, design D19: the session state `hooks.before` snapshots for
+ * `/organization/set-active`, restored by `hooks.after` on rejection. Keyed
+ * by the per-request `ctx.context` object (see this file's own doc comment
+ * for why that needs no manual cleanup).
+ */
+interface ActiveOrganizationSnapshot {
+  readonly sessionToken: string;
+  readonly previousActiveOrganizationId: string | null;
+}
+
+const activeOrganizationBeforeAttempt = new WeakMap<object, ActiveOrganizationSnapshot>();
 
 /** The `auth.session` row's tenant column, read back after `/sign-in/email` creates it. */
 interface ActiveOrganizationRow {
@@ -241,13 +273,44 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // endpoint's own `ctx.body` (`better-call`'s `createMiddleware`/
       // Better Auth's own `dispatchAuthEndpoint`, both verified against the
       // installed source), leaving `currentPassword`/`newPassword` untouched.
-      before: createAuthMiddleware((ctx) => {
-        if (ctx.path !== CHANGE_PASSWORD_PATH) {
-          return Promise.resolve(undefined);
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
+          // Task 3.5, design D19: snapshot the session's current active
+          // organization before Better Auth's own route runs, so
+          // `hooks.after` can restore it if the membership check rejects the
+          // attempt (see this file's own doc comment). `getSessionFromCtx`
+          // is the same helper Better Auth's own `sessionMiddleware` calls,
+          // so this caches the read rather than adding a second one.
+          const session = await getSessionFromCtx(ctx).catch(() => null);
+          if (session) {
+            activeOrganizationBeforeAttempt.set(ctx.context, {
+              sessionToken: session.session.token,
+              previousActiveOrganizationId:
+                (session.session.activeOrganizationId as string | null | undefined) ?? null,
+            });
+          }
+          return undefined;
         }
-        return Promise.resolve({ context: { body: { revokeOtherSessions: true } } });
+        if (ctx.path !== CHANGE_PASSWORD_PATH) {
+          return undefined;
+        }
+        return { context: { body: { revokeOtherSessions: true } } };
       }),
       after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
+          // Task 3.5, design D19: "their active organization is unchanged"
+          // -- restore the pre-attempt value whenever the attempt was
+          // rejected (see this file's own doc comment for why Better Auth's
+          // own route needs this undone).
+          const snapshot = activeOrganizationBeforeAttempt.get(ctx.context);
+          activeOrganizationBeforeAttempt.delete(ctx.context);
+          if (snapshot && isAPIError(ctx.context.returned)) {
+            await ctx.context.internalAdapter.updateSession(snapshot.sessionToken, {
+              activeOrganizationId: snapshot.previousActiveOrganizationId,
+            });
+          }
+          return;
+        }
         if (ctx.path === SIGN_IN_EMAIL_PATH) {
           if (isAPIError(ctx.context.returned)) {
             emitLoginFailed();

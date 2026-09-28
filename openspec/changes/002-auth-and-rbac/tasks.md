@@ -117,7 +117,7 @@ policy diff shown in chat, separately from the rest of the PR.
   request body, path, query string, or any header; any client-supplied value
   is ignored (design D3). Verify: `context-resolver.int.test.ts` covers "A
   client-supplied onBehalfOf value is ignored".
-- [ ] 3.5 Better Auth's `setActiveOrganization` rejects setting an
+- [x] 3.5 Better Auth's `setActiveOrganization` rejects setting an
   organization the caller is not a member of (design D19). Verify:
   `active-org.int.test.ts` covers "Setting an active organization you are not
   a member of is rejected".
