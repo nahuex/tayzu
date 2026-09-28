@@ -82,9 +82,9 @@ tooling (`015`, `010` — `043` only emits the events), and multi-org UX
 
 ## Impact
 
-- **New code**: extends the identity/auth module `002` introduces (assumed
-  `packages/auth`, `@tayzu/auth`, per the `002` research notes — confirmed
-  against `002`'s actual `design.md` before task 1.1 starts) with an
+- **New code**: extends the identity/auth module `002` introduces
+  (`packages/auth`, `@tayzu/auth` — confirmed against `002`'s actual
+  `design.md` during this reconciliation, 2026-09-28) with an
   `identity/` subtree (user-status state machine, invitations, service
   accounts, credential viewer/rotation, org deletion, an `EmailSender` port
   and an Azure Communication Services adapter). Adds oRPC procedures to the

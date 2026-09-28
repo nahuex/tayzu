@@ -10,18 +10,24 @@
   at least as `Active`/`Disabled`, the machine-token exchange mechanism
   (organization-owned API key → short-lived access token), the first HTTP
   listener, and the `x-tayzu-risk: high` step-up-MFA mechanism.
-- **Coordination risk, stated up front**: `002`'s own `design.md` does not
-  exist yet at the time this document is authored — both changes were
-  scaffolded together and `043` is written to execute "right after" `002`,
-  not concurrently with it in the codebase. Every reference below to `002`'s
-  package layout, exact `_user` schema, or Cerbos resource-kind names is an
-  assumption drawn from the shared research notes
+- **Reconciled against `002`'s actual `design.md` on 2026-09-28.** This
+  change was originally drafted in parallel with `002`, before `002`'s own
+  `design.md` existed, from the shared research notes
   (`scratchpad/p002/r1-port.md`, `r2-better-auth.md`, `r3-cerbos.md`,
-  `r4-data-http.md`, `r5-carryover-security.md`) that both changes' authors
-  read. None of it changes this change's *scope* (proposal.md, specs) if
-  `002` lands slightly differently — only import paths and exact attribute
-  names in `tasks.md` need adjusting, which task 1.1 makes an explicit,
-  reviewable step rather than a silent assumption.
+  `r4-data-http.md`, `r5-carryover-security.md`). Now that `002` is final,
+  this document has been checked against it directly. The package-layout
+  assumption held exactly: `002` D1 confirms `packages/auth`/`@tayzu/auth`,
+  `packages/authz`/`@tayzu/authz`, and the `user` Cerbos resource kind, so no
+  import-path changes were needed. Four substantive corrections were made as
+  part of this reconciliation: the `_user.status` value casing now matches
+  `002`'s `Active`/`Disabled` exactly (D2, Goals); the ADRs this change adds
+  are renumbered 0017-0020 to avoid colliding with `002`'s own 0013-0016
+  (D3, D6, D8, D9, D12); `AUTH_STEP_UP_REQUIRED` is corrected to reuse `002`'s
+  existing code (403), not a newly invented 409 (D10); and the service-account
+  credential mechanism (D6) is corrected to reuse `002`'s single
+  `machine-credential` apiKey config rather than a config `002` never
+  actually defines. Task 1.1 remains in `tasks.md` as a final drift-check at
+  implementation time, not a first-time discovery step.
 - Reused, not redefined: `CatalogContext`/`Principal`/`onBehalfOf`
   (`001` design D3), the catalog operation pipeline
   (`defineCatalogOperation`), the `catalog.audit.*`/`catalog.security.*`
@@ -44,8 +50,8 @@
 ## Goals / Non-Goals
 
 **Goals:**
-- Complete the Port-shaped user status model (`staged`/`invited`/`active`/
-  `disabled`) as one canonical field on the `_user` entity, updated by hooks
+- Complete the Port-shaped user status model (`Staged`/`Invited`/`Active`/
+  `Disabled`) as one canonical field on the `_user` entity, updated by hooks
   reacting to Better Auth events — never reconstructed from raw invitation
   history at read time (per the human's decision Q4, and `r5-carryover-security.md`
   OQ-3 recommendation B).
@@ -71,7 +77,7 @@
   scopes (still deferred past `042`, per `project.md` §23 D7).
 - No grace-period orchestration for credential rotation (old and new
   credential coexisting for a window) — v1 is an immediate two-credential
-  cutover (ADR-0014). No BullMQ-based asynchronous deletion queue — org
+  cutover (ADR-0018). No BullMQ-based asynchronous deletion queue — org
   deletion executes synchronously in one operation (no worker infrastructure
   is wired yet at this point in the roadmap).
 - No changes to `002`'s Better Auth bootstrap, MFA, DB roles/RLS, Cerbos
@@ -112,13 +118,13 @@ Auth.
   exactly how Port's own docs ended up needing a whole "forward-only"
   paragraph to describe emergent behavior — Tayzu encodes the invariant once.
 
-### D3. Cerbos, not origin, gates invite/status-change/service-account/credential/org-deletion — ADR-0016
+### D3. Cerbos, not origin, gates invite/status-change/service-account/credential/org-deletion — ADR-0020
 Port's docs state "only users with a UI/API origin can invite users and
 change their status" (`r1-port.md` §1.5) — i.e., they gate on *how* the
 request arrived, not *who* is making it. Tayzu already committed to the
 opposite principle (`project.md` §1: "humans and AI agents execute exactly
 the same workflow path... `actor.type` is data and never selects a code
-path"). This change instead adds five Cerbos-checked actions, all gated to
+path"). This change instead adds seven Cerbos-checked actions, all gated to
 the `admin` role via a role policy (mirroring `r3-cerbos.md` §3.3's pattern):
 `user.invite`, `user.updateStatus` (with a derived-role condition that denies
 when the resource's identifier equals the principal's own — "a user cannot
@@ -128,7 +134,11 @@ disable themselves"), `service_account.create`, `credential.rotate`,
 `service_account`, `credential`, and `organization` as new, small, fixed
 resource kinds (per `002`'s own "static policy / dynamic context" pattern,
 `r3-cerbos.md` §3.1) keeps this in the same small, reviewable policy-file set
-`002` already establishes.
+`002` already establishes. Every rule in every one of these new resource
+policies (`service_account.yaml`, `credential.yaml`, `organization.yaml`) and
+in `user.yaml`'s new rules imports `002` D7's `same_tenant` derived role,
+exactly as `002` already requires of every resource policy — this change
+introduces no second tenant-isolation mechanism.
 - *Alternative:* keep Port's origin-based rule as a secondary check on top of
   Cerbos. Rejected: it would be the actor/origin-as-code-path pattern
   `project.md` explicitly forbids, for no security benefit Cerbos's
@@ -139,8 +149,8 @@ Better Auth's own invitation record (`pending`/`accepted`/`rejected`/
 `canceled`, 48h default `invitationExpiresIn`) is the state of the
 *invitation*, distinct from the state of the *user* (`r5-carryover-security.md`
 OQ-3). This change wires `afterCreateInvitation` → set `_user.status =
-invited` (creating the `_user` entity first if the email has none yet),
-`afterAcceptInvitation` → set `_user.status = active`, and leaves
+Invited` (creating the `_user` entity first if the email has none yet),
+`afterAcceptInvitation` → set `_user.status = Active`, and leaves
 `afterRejectInvitation`/`afterCancelInvitation` as no-ops on `_user.status`
 (rejecting or cancelling an invitation does not retroactively disable a
 user — an admin re-invites, which is already a supported path, or explicitly
@@ -176,22 +186,36 @@ no other link, per SEC11 (`r1-port.md` §1.4's invite flow plus
   (SMTP username/password) to manage in Key Vault for no benefit over a
   managed Azure service already in the stack's cloud.
 
-### D6. Service accounts: `_user` sub-kind + org-owned machine credential, Tayzu's own identifier convention — ADR-0013
+### D6. Service accounts: `_user` sub-kind + org-owned machine credential, Tayzu's own identifier convention — ADR-0017
 A service account is a `_user` entity with `accountKind: "service"`, created
 through one orchestrated operation: (1) create the `_user` entity with
-`status: active` (no invitation, per the spec), (2) issue an
-organization-owned Better Auth API key via the `service-account` key config
-`002` is expected to define (`references: "organization"`, per
-`r2-better-auth.md` §6), (3) return `{ user, clientId, clientSecret }` once.
-Port fakes an email at a reserved domain (`serviceaccounts.getport.io`,
-`r1-port.md` §1.6) because Port's `_user.identifier` **is** an email address
-company-wide; Tayzu has no equivalent single public domain per tenant, so
-this change instead gives service-account identifiers their own pattern,
+`status: Active` (no invitation, per the spec), (2) issue an
+organization-owned Better Auth API key by reusing `002`'s existing
+`machine-credential` apiKey config directly (`references: "organization"`,
+`defaultPrefix: "tayzu_mc_"`, per `002` design D5) — there is no separate
+"service-account" config; `002` defines exactly one, and a service account is
+functionally an `integration`-kind credential with a bound catalog identity,
+consistent with the decision record's Q5 ("integration/agent actors
+authenticate with that token" — no third actor kind), (3) return `{ user,
+clientId, clientSecret }` once. Port fakes an email at a reserved domain
+(`serviceaccounts.getport.io`, `r1-port.md` §1.6) because Port's
+`_user.identifier` **is** an email address company-wide; Tayzu has no
+equivalent single public domain per tenant, so this change instead gives
+service-account identifiers their own pattern,
 `^svc-[A-Za-z][A-Za-z0-9_-]{0,58}$` (fits inside `001`'s existing entity
-identifier length limit), documented as ADR-0013, rather than manufacturing a
+identifier length limit), documented as ADR-0017, rather than manufacturing a
 fake email address that would read as a real one to anything downstream. The
-credential's `metadata` field records `{ userId }` so listing (D7) can join
-the two.
+credential's `metadata` field records `{ userId, actorKind: "integration" }`
+— `actorKind` fixed exactly as `002` D5 already does for any machine
+credential, `userId` new. Listing (D7) uses `userId` to join the two. Because
+a service account's requests resolve to `actor.type: integration` under
+`002`'s frozen context-resolution contract (not `actor.type: user`), this
+change additively extends `packages/authz`'s attribute builder: when an
+`integration`-actor request's underlying credential carries a bound
+`metadata.userId`, the builder also sources `role`/`team`/`moderatedBlueprints`
+from that `_user` entity, exactly as it already does for a `user`-type actor.
+This is new plumbing 043 adds on top of `002`'s mechanism — it changes
+neither `002`'s actor-type enum nor its tenant/context resolution contract.
 - *Alternative:* mint a synthetic `@service.tayzu.internal` email, closer to
   Port's literal convention. Rejected: it invites exactly the kind of
   confusion an actual email-shaped string causes (accidental email delivery
@@ -214,7 +238,7 @@ redaction-after-the-fact one.
   is a sync-drift risk for a page that only needs to read one org's rows at
   a time (bounded, not a hot path).
 
-### D8. Credential rotation is an immediate two-credential cutover — ADR-0014
+### D8. Credential rotation is an immediate two-credential cutover — ADR-0018
 Better Auth's `api-key` plugin has no rotate endpoint (`r2-better-auth.md`
 §6): rotation is "create a new key, disable the old one," done at the
 application layer. This change implements exactly that, atomically (new key
@@ -234,7 +258,7 @@ silently break an integration outside the platform's control.
   credential, which is not yet true of any Phase-1 integration. Recorded as a
   Risk below, not built.
 
-### D9. Org deletion: synchronous cascading delete, backup-window as the recovery mechanism — ADR-0015
+### D9. Org deletion: synchronous cascading delete, backup-window as the recovery mechanism — ADR-0019
 Deleting an organization runs as one operation: revoke every active session
 for the org (Better Auth `admin.revokeUserSessions` per member, or an
 org-scoped equivalent), disable every org-owned API key, delete every
@@ -287,8 +311,9 @@ deletion — disabling a user or revoking a live credential is exactly the
 "high-risk functionality" SEC03 asks step-up for, `r5-carryover-security.md`
 §5 SEC03 Q5). Error codes and HTTP-status mapping reuse `001` design D11's
 table (`CATALOG_VALIDATION_FAILED` → 400, `CATALOG_NOT_FOUND` → 404, etc.);
-a new `AUTH_STEP_UP_REQUIRED` code (409, since the request is well-formed but
-the session is not yet fit to execute it) is added for the step-up gate.
+the step-up gate reuses `002`'s existing `AUTH_STEP_UP_REQUIRED` code (403)
+verbatim — it is not new here, and 002 already fixes its status at 403, not
+409.
 
 ### D11. Testing strategy
 Unit tests (the D2 state machine, pure). Integration tests against a real
@@ -304,14 +329,15 @@ new policy file in CI, exactly as `r3-cerbos.md` §6.2/§6.4 establishes for
 `002`.
 
 ### D12. Docs-as-Code and ADRs from this change
-- `docs/adr/0013-service-account-identifier-convention.md` (D6)
-- `docs/adr/0014-credential-rotation-immediate-cutover.md` (D8)
-- `docs/adr/0015-org-deletion-backup-window-recovery.md` (D9)
-- `docs/adr/0016-cerbos-gates-invite-and-status-not-origin.md` (D3)
+- `docs/adr/0017-service-account-identifier-convention.md` (D6)
+- `docs/adr/0018-credential-rotation-immediate-cutover.md` (D8)
+- `docs/adr/0019-org-deletion-backup-window-recovery.md` (D9)
+- `docs/adr/0020-cerbos-gates-invite-and-status-not-origin.md` (D3)
 
-ADR numbers 0013-0016 are provisional: if `002` claims any of them first
-(its own design work may need ADRs too), renumber at task 1.1 — a mechanical
-rename, not a scope change. This change also writes
+These numbers were reconciled against `002`'s actual `design.md` on
+2026-09-28: `002` claims 0013-0016 (its D17), so this change's four ADRs are
+0017-0020, with no collision against `002` or the existing `docs/adr/0008`-
+`0012` range. This change also writes
 `docs/security/data-retention.md` (retention windows per data category: org
 deletion's 14-day backup recovery window (D9), credential rotation's 90-day
 default cadence (D8); Cerbos and audit-log retention numbers are cross-referenced
@@ -413,10 +439,10 @@ were.
 
 | Topic | Port | Tayzu 043 | Why |
 |---|---|---|---|
-| Invite/status-change authorization | Gated on request *origin* (UI/API) | Gated on Cerbos role (`admin`) | `project.md`'s "actor.type/origin never selects a code path" invariant (D3, ADR-0016) |
-| Service-account identifier | Real-looking email at a reserved domain (`serviceaccounts.getport.io`) | `^svc-...` non-email identifier | Tayzu's `_user.identifier` is not required to be email-shaped; avoids a lookalike-phishing surface (D6, ADR-0013) |
-| Org deletion recovery window | Described as a 14-day internal backup process, mechanics undocumented | Same 14-day number, explicitly sourced to Azure Database for PostgreSQL Flexible Server's backup retention setting, not an app-level queue | Reuses infrastructure Tayzu already has instead of building a second retention mechanism (D9, ADR-0015) |
-| Credential rotation | Undocumented beyond "rotate if exposed" | Explicit immediate two-credential cutover, 90-day documented rotation cadence | Port leaves this as a gap (`r1-port.md` §8.1); Tayzu specifies it fully (D8, ADR-0014) |
+| Invite/status-change authorization | Gated on request *origin* (UI/API) | Gated on Cerbos role (`admin`) | `project.md`'s "actor.type/origin never selects a code path" invariant (D3, ADR-0020) |
+| Service-account identifier | Real-looking email at a reserved domain (`serviceaccounts.getport.io`) | `^svc-...` non-email identifier | Tayzu's `_user.identifier` is not required to be email-shaped; avoids a lookalike-phishing surface (D6, ADR-0017) |
+| Org deletion recovery window | Described as a 14-day internal backup process, mechanics undocumented | Same 14-day number, explicitly sourced to Azure Database for PostgreSQL Flexible Server's backup retention setting, not an app-level queue | Reuses infrastructure Tayzu already has instead of building a second retention mechanism (D9, ADR-0019) |
+| Credential rotation | Undocumented beyond "rotate if exposed" | Explicit immediate two-credential cutover, 90-day documented rotation cadence | Port leaves this as a gap (`r1-port.md` §8.1); Tayzu specifies it fully (D8, ADR-0018) |
 | "View as" a different user | Documented, admin-only | Not built in this change | Explicitly later-UI (`003`/`014`), not dropped |
 | Support-user audit exemption | *"Support user actions are not logged"* | No such exemption anywhere in Tayzu | Every administrative action, including Tayzu's own operators, is logged uniformly (SEC16) |
 
@@ -431,9 +457,11 @@ were.
   infrastructure requirement to confirm when the Azure Database for
   PostgreSQL Flexible Server resource is actually provisioned (a later
   deployment change); flagged here so it is not silently assumed true.
-- [The package-layout assumption about `002` (Context) turns out wrong] →
-  Task 1.1 makes reconciling it an explicit, reviewable step before any other
-  task starts; no spec or requirement changes as a result, only paths.
+- [Drift between this design and `002`'s implementation by the time `043`
+  starts implementation] → The package-layout assumption was already checked
+  against `002`'s actual `design.md` during OpenSpec planning (2026-09-28,
+  see Context) and matched; task 1.1 remains as a final drift-check against
+  the merged code, not a first-time discovery step.
 - [Sending a real invitation email in integration tests would be flaky and
   slow] → `EmailSender` is faked in every test except a single, explicitly
   optional manual smoke check against a real Communication Services sandbox

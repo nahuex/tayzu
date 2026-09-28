@@ -408,6 +408,14 @@ Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la docume
 | `040-iac-provider` | Terraform provider (Go) for Tayzu resources, with a Pulumi provider generated through pulumi-terraform-bridge (decision D2) | 024, 033 |
 | `041-execution-agent` | Self-hosted execution agent: HTTP-polling relay for backends without ingress (decision D3) | 007 |
 | `042-multi-org` | Multi-org: organization switcher, account/company admin tiers, multi-org SSO (decision D7) | 002, 025 |
+| `043-identity-lifecycle-and-org-admin` | Identity lifecycle and org admin: 4-state user status lifecycle + invitations, service accounts, org API-credentials viewer & rotation, data retention & org deletion (decision D9) | 002 |
+
+**Execution order note (2026-09-28):** `002-auth-and-rbac` runs before
+`043-identity-lifecycle-and-org-admin`, which runs before
+`003-catalog-ui-core` (`002 -> 043 -> 003`). The numeric IDs in this table are
+labels, not a sequencing rule — `043` was deliberately given a new id instead
+of renumbering the rest of the roadmap, and its real execution order is this
+dependency chain, not its position in the table.
 ### Decisiones del roadmap v2 (aprobadas con las opciones recomendadas)
 
 - **D1. Eventos consumibles desde afuera** (equivalente al topic de Kafka de Port): outbox por tenant más endpoint SSE/long-poll sobre el patrón de `catalog_change_event`, dentro de `023`. Sin Kafka.
@@ -418,3 +426,15 @@ Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la docume
 - **D6. Solutions** `037`/`038`: se mantienen en la fase 1, al final.
 - **D7. Multi-org**: `042-multi-org` al final. Amplía §6 sin contradecirlo: el aislamiento lógico por `tenant_id` ya lo soporta.
 - **D8. JQ en lugar de JSONata** para mappings, condiciones y propiedades calculadas, para que las configuraciones y la documentación de Port sirvan tal cual. Reemplaza al ADR-0002; ver `docs/adr/0012-jq-instead-of-jsonata.md`. `001` no usa ninguno de los dos, así que no se ve afectado.
+- **D9. `002`/`043` split: approved (Q1 = b, 2026-09-28).** `002-auth-and-rbac`'s
+  original scope was split in two, sized to the roadmap's ~30-80 TDD-task
+  budget: `002` keeps the load-bearing baseline (Better Auth, MFA, DB
+  roles/RLS, the first HTTP listener, Cerbos wiring + three-tier RBAC +
+  moderator + team ownership + dynamic ABAC, machine credentials, the
+  `_user`/`_team` system blueprints, the Key Vault seam). The rest —
+  4-state user status lifecycle and invitations (with invitation email,
+  SEC11), service accounts, the org API-credentials viewer/management, data
+  retention & deletion policy + org deletion, and credential-rotation policy
+  UX — is the new change `043-identity-lifecycle-and-org-admin` (a new id,
+  not a renumbering), which depends on `002` and executes immediately after
+  it.

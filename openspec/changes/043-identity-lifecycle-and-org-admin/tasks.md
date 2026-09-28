@@ -21,12 +21,16 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 1. Setup and coordination with `002`
 
-- [ ] 1.1 *(setup)* Confirm `002-auth-and-rbac`'s actual package layout,
-  `_user` blueprint shape, and Cerbos resource-kind names against this
-  change's design.md Context assumptions (`packages/auth`, `@tayzu/auth`,
-  the `user` resource kind). Adjust import paths and attribute names only —
-  no scope change. Verify: a short note in the PR description states what,
-  if anything, was adjusted.
+- [ ] 1.1 *(setup)* This change's proposal/design/specs/tasks were already
+  reconciled against `002-auth-and-rbac`'s actual `design.md` at the
+  OpenSpec-planning level on 2026-09-28 (package layout matched; status
+  casing, ADR numbers 0017-0020, the `AUTH_STEP_UP_REQUIRED` code, and the
+  service-account credential mechanism were corrected — see design.md
+  Context). At implementation time, this task is a final drift-check against
+  the merged `002` code (package layout, `_user` blueprint shape, Cerbos
+  resource-kind names), not first-time discovery. Adjust import paths and
+  attribute names only if drift is found — no scope change. Verify: a short
+  note in the PR description states what, if anything, was adjusted.
 - [ ] 1.2 *(setup)* Run the `vcdm-ssa-validator` pre-assessment in Mode A
   against this proposal, specs and design, and fold every blocking finding
   into `design.md`'s Security considerations before Checkpoint 1. Verify:
@@ -56,18 +60,18 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 3. User status state machine (pure)
 
 - [ ] 3.1 `nextStatus(current, event)` for the creation events
-  (`created_staged` → `staged`, `created_invited` → `invited`). Verify:
+  (`created_staged` → `Staged`, `created_invited` → `Invited`). Verify:
   `user-status.test.ts` covers "New user without an invite starts staged"
   and "Explicit invite starts a user as invited" at the pure level.
-- [ ] 3.2 `nextStatus` for `first_sign_in` from both `staged` and `invited`.
+- [ ] 3.2 `nextStatus` for `first_sign_in` from both `Staged` and `Invited`.
   Verify: `user-status.test.ts` covers "First sign-in activates a staged or
   invited user" for both starting states.
-- [ ] 3.3 `nextStatus` rejects any transition from `active` to `invited` or
-  `staged`, returning `CATALOG_VALIDATION_FAILED`. Verify: `user-status.test.ts`
+- [ ] 3.3 `nextStatus` rejects any transition from `Active` to `Invited` or
+  `Staged`, returning `CATALOG_VALIDATION_FAILED`. Verify: `user-status.test.ts`
   covers "Active never regresses to invited or staged".
 - [ ] 3.4 `nextStatus` for `admin_disable` (from any status) and
-  `admin_enable` (from `disabled` only). Verify: `user-status.test.ts` covers
-  "Disable and re-enable" and rejects `admin_enable` from a non-`disabled`
+  `admin_enable` (from `Disabled` only). Verify: `user-status.test.ts` covers
+  "Disable and re-enable" and rejects `admin_enable` from a non-`Disabled`
   status.
 - [ ] 3.5 `nextStatus` is exhaustive: every `(status, event)` pair not
   explicitly allowed returns `CATALOG_VALIDATION_FAILED`, never `undefined`.
@@ -82,7 +86,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   `invitation-config.int.test.ts` asserts the configured values by creating
   an invitation and reading back its `expiresAt`.
 - [ ] 4.2 `identity.users.invite`: creates a Better Auth invitation and, via
-  `afterCreateInvitation`, creates or updates the `_user` entity to `invited`
+  `afterCreateInvitation`, creates or updates the `_user` entity to `Invited`
   and sends exactly one email through the `EmailSender` port. Verify:
   `invitations.int.test.ts` covers "Invite sends exactly one email with
   exactly one link" using a recording `EmailSender` fake, and asserts the
@@ -93,7 +97,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   invitation".
 - [ ] 4.4 `identity.users.acceptInvitation`: requires the accepting session's
   email to equal the invited email, and on success sets `_user.status =
-  active` via `afterAcceptInvitation`. Verify: `invitations.int.test.ts`
+  Active` via `afterAcceptInvitation`. Verify: `invitations.int.test.ts`
   covers "Accepting with a mismatched session email fails" and (positive
   case) that acceptance activates the user.
 - [ ] 4.5 Accepting an expired invitation fails and does not change the
@@ -130,12 +134,13 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 6. Cerbos: invite and status-change authorization, ⛔ Checkpoint 3
 
 - [ ] 6.1 Cerbos policy: `user.invite` and `user.updateStatus` actions on
-  resource kind `user`, allowed only for the `admin` role, with a condition
-  denying `user.updateStatus` when `request.resource.id ==
-  request.principal.id` (self-status-change). Verify: `cerbos compile` runs
-  the policy's own test suite (`user_test.yaml`) covering both actions ×
-  admin/non-admin × self/non-self. **Stop for Checkpoint 3 approval of the
-  policy diff before continuing.**
+  resource kind `user` (`002`'s existing kind, not a new one), importing
+  `002`'s `same_tenant` derived role in every rule, allowed only for the
+  `admin` role, with a condition denying `user.updateStatus` when `R.id ==
+  P.id` (self-status-change, using `002`'s own `R`/`P` CEL shorthand
+  convention). Verify: `cerbos compile` runs the policy's own test suite
+  (`user_test.yaml`) covering both actions × admin/non-admin × self/non-self.
+  **Stop for Checkpoint 3 approval of the policy diff before continuing.**
 - [ ] 6.2 `identity.users.setStatus`: validates the transition through
   `nextStatus` (group 3), checks the Cerbos grant, requires step-up
   (`x-tayzu-risk: high`), and appends a change event. Verify:
@@ -156,14 +161,17 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   `service-accounts.test.ts` covers acceptance of `svc-ci-github` and
   rejection of `ci-github` (missing prefix) and an over-length identifier.
 - [ ] 7.2 `identity.serviceAccounts.create`: creates the `_user` entity
-  (`status: active`, `accountKind: "service"`) and issues an
-  organization-owned Better Auth API key in one orchestrated call, returning
-  `clientId`/`clientSecret` once. Verify: `service-accounts.int.test.ts`
-  covers "Service account is active immediately, no email", asserting the
-  `EmailSender` fake recorded zero calls and that a later read of the
-  account never includes the secret.
+  (`status: Active`, `accountKind: "service"`) and issues an
+  organization-owned Better Auth API key by reusing `002`'s existing
+  `machine-credential` apiKey config directly (`actorKind: "integration"`
+  fixed, `metadata.userId` bound to the new `_user` entity — not a new key
+  config) in one orchestrated call, returning `clientId`/`clientSecret` once.
+  Verify: `service-accounts.int.test.ts` covers "Service account is active
+  immediately, no email", asserting the `EmailSender` fake recorded zero
+  calls and that a later read of the account never includes the secret.
 - [ ] 7.3 Cerbos policy: `service_account.create` on resource kind
-  `service_account`, `admin`-only. ⛔ **Checkpoint 3.** Verify: `cerbos
+  `service_account`, importing `002`'s `same_tenant` derived role,
+  `admin`-only. ⛔ **Checkpoint 3.** Verify: `cerbos
   compile` runs `service_account_test.yaml` covering admin/non-admin, and
   `service-accounts.int.test.ts` covers "A non-admin cannot create a service
   account".
@@ -189,7 +197,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   secret" by asserting no field in the response ever equals a seeded
   credential's known secret value.
 - [ ] 8.2 Cerbos policy: `credential.list` on resource kind `credential`,
-  `admin`-only. ⛔ **Checkpoint 3.** Verify: `cerbos compile` runs
+  importing `002`'s `same_tenant` derived role, `admin`-only. ⛔ **Checkpoint 3.** Verify: `cerbos compile` runs
   `credential_test.yaml`, and `credentials.int.test.ts` covers "Non-admin
   cannot list credentials".
 - [ ] 8.3 `rotationDueAt` is computed from the credential's
@@ -205,7 +213,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   credential", asserting the old credential can no longer produce an access
   token and the new one can.
 - [ ] 9.2 Cerbos policy: `credential.rotate` and `credential.revoke` on
-  resource kind `credential`, `admin`-only, both requiring step-up
+  resource kind `credential`, importing `002`'s `same_tenant` derived role,
+  `admin`-only, both requiring step-up
   (`x-tayzu-risk: high`). ⛔ **Checkpoint 3.** Verify: `cerbos compile` runs
   `credential_test.yaml`'s rotate/revoke cases, and `credentials.int.test.ts`
   covers a step-up-required denial for rotation without a fresh
@@ -223,7 +232,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 10. Org deletion
 
 - [ ] 10.1 Cerbos policy: `organization.delete` on resource kind
-  `organization`, `admin`-only. ⛔ **Checkpoint 3.** Verify: `cerbos compile`
+  `organization`, importing `002`'s `same_tenant` derived role, `admin`-only.
+  ⛔ **Checkpoint 3.** Verify: `cerbos compile`
   runs `organization_test.yaml` covering admin/non-admin.
 - [ ] 10.2 `identity.organization.delete` requires a fresh step-up
   verification and requires the caller to supply the organization's own
@@ -258,9 +268,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   `router.int.test.ts` calls each procedure once on its happy path through
   `createRouterClient`, and asserts the four high-risk procedures carry the
   marker in the generated OpenAPI document.
-- [ ] 11.2 `AUTH_STEP_UP_REQUIRED` maps to HTTP 409. Verify:
-  `errors.int.test.ts` covers the mapping over the mounted HTTP server for a
-  session without a fresh MFA verification calling a high-risk procedure.
+- [ ] 11.2 `002`'s existing `AUTH_STEP_UP_REQUIRED` maps to HTTP 403 for all
+  four of this change's high-risk procedures. Verify: `errors.int.test.ts`
+  covers the mapping over the mounted HTTP server for a session without a
+  fresh MFA verification calling a high-risk procedure.
 
 ## 12. Telemetry contract enforcement
 
@@ -284,14 +295,14 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 13. Docs, ADRs, diagram, and integration checks (Checkpoint 2 readiness)
 
-- [ ] 13.1 Write `docs/adr/0013-service-account-identifier-convention.md`
+- [ ] 13.1 Write `docs/adr/0017-service-account-identifier-convention.md`
   (design D6). Verify: the file exists with Context/Decision/Alternatives/
   Consequences, and design D6 links to it.
-- [ ] 13.2 Write `docs/adr/0014-credential-rotation-immediate-cutover.md`
+- [ ] 13.2 Write `docs/adr/0018-credential-rotation-immediate-cutover.md`
   (design D8). Verify: same structure, linked from design D8.
-- [ ] 13.3 Write `docs/adr/0015-org-deletion-backup-window-recovery.md`
+- [ ] 13.3 Write `docs/adr/0019-org-deletion-backup-window-recovery.md`
   (design D9). Verify: same structure, linked from design D9.
-- [ ] 13.4 Write `docs/adr/0016-cerbos-gates-invite-and-status-not-origin.md`
+- [ ] 13.4 Write `docs/adr/0020-cerbos-gates-invite-and-status-not-origin.md`
   (design D3). Verify: same structure, linked from design D3.
 - [ ] 13.5 Write `docs/security/data-retention.md`: retention windows per
   data category (org-deletion backup window, credential rotation cadence),

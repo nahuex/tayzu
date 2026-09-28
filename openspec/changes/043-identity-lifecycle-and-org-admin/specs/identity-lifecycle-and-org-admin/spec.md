@@ -8,61 +8,75 @@ invitations, service accounts, org API-credential visibility and rotation,
 and org-level data deletion, all attributed and audited the same way as every
 other catalog mutation.
 
+## Conventions
+
+- **New Cerbos resource kinds**: `service_account`, `credential`,
+  `organization`. `user.invite` and `user.updateStatus` are new actions on
+  `002-auth-and-rbac`'s existing `user` resource kind, not a new kind.
+- **Reused error codes**: this capability introduces no new error codes. A
+  Cerbos deny on any operation added here surfaces as `002`'s `AUTH_FORBIDDEN`
+  (403). The step-up gate on `setStatus`, `credentials.rotate`,
+  `credentials.revoke`, and `organization.delete` surfaces as `002`'s
+  existing `AUTH_STEP_UP_REQUIRED` (403).
+- **`_user.status` values**: `Staged`, `Invited`, `Active`, `Disabled` — the
+  same capitalization `002-auth-and-rbac` already establishes for
+  `Active`/`Disabled`.
+
 ## ADDED Requirements
 
 ### Requirement: User status has four states with forward-only transitions
 The `_user` system blueprint's `status` property MUST take one of four
-values: `staged`, `invited`, `active`, `disabled`. A user is `staged` when
-created without an explicit invite (default for a `_user` entity created with
-no `status` or `status: staged`). A user is `invited` when an admin
+values: `Staged`, `Invited`, `Active`, `Disabled` (the same capitalization
+`002-auth-and-rbac` already uses for `Active`/`Disabled`). A user is `Staged`
+when created without an explicit invite (default for a `_user` entity created
+with no `status` or `status: Staged`). A user is `Invited` when an admin
 explicitly invites them, whether via the invite operation or a `_user` entity
-created with `status: invited`. Both `staged` and `invited` users transition
-to `active` on their first successful sign-in. A user's status MUST NOT
-transition from `active` back to `invited` or `staged` under any operation.
-Any status MUST be able to transition to `disabled` through an explicit
-admin action, and a `disabled` user MUST be able to transition back to
-`active` through an explicit admin action (never automatically).
+created with `status: Invited`. Both `Staged` and `Invited` users transition
+to `Active` on their first successful sign-in. A user's status MUST NOT
+transition from `Active` back to `Invited` or `Staged` under any operation.
+Any status MUST be able to transition to `Disabled` through an explicit
+admin action, and a `Disabled` user MUST be able to transition back to
+`Active` through an explicit admin action (never automatically).
 
 #### Scenario: New user without an invite starts staged
 - **WHEN** a `_user` entity is created with no `status` given
-- **THEN** its status is `staged`
+- **THEN** its status is `Staged`
 
 #### Scenario: Explicit invite starts a user as invited
 - **WHEN** an admin invites `alice@example.com`
-- **THEN** a `_user` entity for `alice@example.com` exists with status `invited`
+- **THEN** a `_user` entity for `alice@example.com` exists with status `Invited`
 
 #### Scenario: First sign-in activates a staged or invited user
-- **GIVEN** a `_user` entity with status `staged`
+- **GIVEN** a `_user` entity with status `Staged`
 - **WHEN** that user signs in successfully for the first time
-- **THEN** its status becomes `active`
+- **THEN** its status becomes `Active`
 
 #### Scenario: Active never regresses to invited or staged
-- **GIVEN** a `_user` entity with status `active`
-- **WHEN** any operation is attempted that would set its status to `invited` or `staged`
+- **GIVEN** a `_user` entity with status `Active`
+- **WHEN** any operation is attempted that would set its status to `Invited` or `Staged`
 - **THEN** the operation fails with `CATALOG_VALIDATION_FAILED`
 
 #### Scenario: Disable and re-enable
-- **GIVEN** a `_user` entity with status `active`
+- **GIVEN** a `_user` entity with status `Active`
 - **WHEN** an admin disables the user, and later re-enables them
-- **THEN** the status becomes `disabled` and then `active`, in each case attributed to the admin
+- **THEN** the status becomes `Disabled` and then `Active`, in each case attributed to the admin
 
 ### Requirement: Only an admin may invite a user or change another user's status
 Inviting a user and changing a user's status (disable, re-enable) MUST be
 authorized by Cerbos against the acting principal's role, never by branching
 on `actor.type`. A user MUST NOT be able to change their own status. An
 attempt to do either without the required grant MUST fail with
-`CATALOG_CONTEXT_REQUIRED`'s access-control counterpart (a Cerbos deny,
-surfaced as the operation's standard authorization-denied error) and MUST be
+`AUTH_FORBIDDEN` (`002-auth-and-rbac`'s Cerbos-deny error code) and MUST be
 logged as a security event.
 
 #### Scenario: Non-admin cannot invite
 - **WHEN** an actor without the invite grant attempts to invite a user
-- **THEN** the operation is denied and no invitation is created
+- **THEN** the operation is denied with `AUTH_FORBIDDEN` and no invitation is created
 
 #### Scenario: A user cannot disable themselves
 - **GIVEN** an admin user `u1`
-- **WHEN** `u1` attempts to change their own status to `disabled`
-- **THEN** the operation is denied, `u1` stays `active`, and a `catalog.security.self_status_change_denied` event is logged
+- **WHEN** `u1` attempts to change their own status to `Disabled`
+- **THEN** the operation is denied with `AUTH_FORBIDDEN`, `u1` stays `Active`, and a `catalog.security.self_status_change_denied` event is logged
 
 ### Requirement: Invitation lifecycle
 An invitation MUST record the invited email, the inviting actor, an
@@ -114,7 +128,7 @@ NOT change the invited user's status.
 ### Requirement: Service accounts are non-human users created API-only
 A service account MUST be a `_user` entity with `accountKind: "service"`
 (as opposed to `"standard"` for a human user). Creating a service account
-MUST be authorized to admins only, MUST set its status to `active`
+MUST be authorized to admins only, MUST set its status to `Active`
 immediately with no invitation email sent, and MUST atomically issue one
 organization-owned machine credential (`clientId`/`clientSecret`) for it. The
 credential's secret MUST be returned exactly once, in the creation response,
@@ -125,7 +139,7 @@ entity MUST also revoke (not merely disable) its credential.
 
 #### Scenario: Service account is active immediately, no email
 - **WHEN** an admin creates service account `ci-github` for tenant `t1`
-- **THEN** the returned `_user` entity has status `active` and `accountKind: "service"`
+- **THEN** the returned `_user` entity has status `Active` and `accountKind: "service"`
 - **AND** no invitation email is sent
 - **AND** the response includes a `clientId` and a `clientSecret` that never appear in any later read of the account
 
@@ -134,9 +148,9 @@ entity MUST also revoke (not merely disable) its credential.
 - **THEN** the operation is denied and no `_user` entity or credential is created
 
 #### Scenario: Disabling a service account disables its credential
-- **GIVEN** service account `ci-github` is `active` with an enabled credential
+- **GIVEN** service account `ci-github` is `Active` with an enabled credential
 - **WHEN** an admin disables `ci-github`
-- **THEN** its status becomes `disabled` and its credential can no longer produce an access token
+- **THEN** its status becomes `Disabled` and its credential can no longer produce an access token
 
 #### Scenario: Deleting a service account revokes its credential
 - **GIVEN** service account `ci-github` with an enabled credential
