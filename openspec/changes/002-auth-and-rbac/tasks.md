@@ -80,7 +80,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `auth-flow.int.test.ts` covers "Signing up creates a matching `_user`
   entity" precondition (an organization and a Better Auth user exist) and
   "Sign in with the correct password succeeds".
-- [ ] 2.4 Wire `auth.security.login_succeeded`/`login_failed` log events and
+- [x] 2.4 Wire `auth.security.login_succeeded`/`login_failed` log events and
   the `tayzu.auth.session.events` counter on sign-in. Verify:
   `auth-flow.int.test.ts` covers both outcomes emitting the declared signal.
 - [ ] 2.5 Better Auth `rateLimit` config: `storage: "database"`, `customRules`

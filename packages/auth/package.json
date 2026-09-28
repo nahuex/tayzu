@@ -16,7 +16,10 @@
   "dependencies": {
     "@better-auth/api-key": "1.7.6",
     "@better-auth/drizzle-adapter": "1.7.6",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.222.0",
     "@tayzu/db": "workspace:*",
+    "@tayzu/observability": "workspace:*",
     "better-auth": "1.7.6",
     "drizzle-orm": "^0.45.3"
   }

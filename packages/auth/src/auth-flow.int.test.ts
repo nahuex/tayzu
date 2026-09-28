@@ -83,11 +83,21 @@
  */
 import { randomUUID } from 'node:crypto';
 
+import type { Attributes } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+// Import order is load-bearing here too (task 2.4; design D1;
+// `packages/observability/CLAUDE.md`, "Import order"): the harness must
+// register before `./auth.js`, which after task 2.4's green phase is
+// expected to import a telemetry/instruments module that creates its
+// tracer, meter and logger at import time -- exactly the rule
+// `packages/catalog/src/service/pipeline.int.test.ts` documents for its own
+// `./pipeline.js`. None of the imports above construct an OTel instrument.
+import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
 
@@ -282,5 +292,308 @@ describe('Better Auth sign-up and sign-in behind apps/api (task 2.3, design D2, 
     expect(signIn.token).toBeTypeOf('string');
     expect(signIn.token).not.toBe('');
     expect(signIn.user.email).toBe(email);
+  });
+});
+
+/**
+ * Integration tests for task 2.4 (design D2, D3, D19; design.md,
+ * "Observability contract" -> Metrics table row `tayzu.auth.session.events`
+ * and Log events table rows `auth.security.login_succeeded`/
+ * `auth.security.login_failed`).
+ *
+ * "Wire `auth.security.login_succeeded`/`login_failed` log events and the
+ * `tayzu.auth.session.events` counter on sign-in."
+ *
+ * ## Tenant resolution on sign-in (orchestrator decision, resumed task 2.4)
+ *
+ * The design leaves how `session.activeOrganizationId` gets set on sign-in
+ * unstated beyond D3's "few known tenants, no org switcher before 042"
+ * framing. Resolved: when a session is created, if the signing-in user
+ * belongs to exactly one organization, the session's `activeOrganizationId`
+ * is set to it; otherwise it stays `null`. So for a user with exactly one
+ * membership, `auth.security.login_succeeded` carries `tayzu.tenant.id` =
+ * that organization's id and `tayzu.actor.id` = the user's id, and the
+ * session row's `active_organization_id` column equals the same
+ * organization id (asserted directly against `auth.session`, the same table
+ * `findSessionByToken` below queries). A user with zero memberships is out
+ * of scope here (task 2.4's Verify clause and the orchestrator's own
+ * instructions do not name it); only the exactly-one-membership case is
+ * covered.
+ *
+ * `bad_credentials` is the sole failure reason exercised here (wrong
+ * password AND unknown email emit the identical `auth.security.login_failed`
+ * signal, matching Better Auth's own enumeration-resistant
+ * `INVALID_EMAIL_OR_PASSWORD` `APIError`, thrown identically for both cases
+ * by the installed `better-auth@1.7.6` source,
+ * `dist/api/routes/sign-in.mjs`). `mfa_failed` and `account_disabled` belong
+ * to later tasks (4.x) and are not exercised here.
+ *
+ * ## Why this is expected to fail for the right reason right now
+ *
+ * `./auth.ts` (task 2.1/2.3) never wires any telemetry: it emits no
+ * `auth.security.login_succeeded`/`login_failed` log record and no
+ * `tayzu.auth.session.events` counter increment on sign-in, and nothing sets
+ * `session.activeOrganizationId` for a single-membership user either. Every
+ * test below therefore fails on an assertion (an empty captured-log-records
+ * array, or an empty captured-counter-data-points array, or a `null`
+ * `active_organization_id`), not on a missing export or a typo: `./auth.js`,
+ * `createAuth` and every table this file queries already exist (tasks
+ * 2.1-2.3).
+ *
+ * ## Why this test connects, seeds and asserts the way it does
+ *
+ * Same shared-`DATABASE_URL` / `runMigrations`-then-`randomUUID()`-per-test
+ * isolation pattern as the describe block above (task 2.3), and the same
+ * `drizzle(url, { schema: authSchema })` handle for the same
+ * `@better-auth/drizzle-adapter` model-resolution reason documented there.
+ * This describe block opens its own connection and its own `createAuth`
+ * instance rather than reusing the one above's `describe`-scoped variables,
+ * because those are private to that `describe` callback's closure.
+ *
+ * The telemetry harness is registered by `./__fixtures__/registered-harness.js`,
+ * imported before `./auth.js` at the top of this file (import order is
+ * load-bearing; see that fixture's own doc comment and the comment on this
+ * file's import block). Each test below calls `harness.reset()` immediately
+ * before the sign-in call under test, discarding whatever sign-up/
+ * organization-creation setup emitted, so `finishedLogRecords`/
+ * `sumDataPoints` below only ever see the one action each test cares about.
+ */
+describe('Sign-in telemetry: login_succeeded / login_failed (task 2.4, design D2/D3/D19)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+  let harness: TelemetryTestHarness;
+
+  /** The harness `./__fixtures__/registered-harness.js` registered while the module graph loaded. */
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  type LogExporterLike = TelemetryTestHarness['logExporter'];
+  type ReadableLogRecordLike = ReturnType<LogExporterLike['getFinishedLogRecords']>[number];
+  type MetricExporterLike = TelemetryTestHarness['metricExporter'];
+
+  function finishedLogRecords(
+    exporter: LogExporterLike,
+    eventName: string,
+  ): ReadableLogRecordLike[] {
+    return [...exporter.getFinishedLogRecords()].filter((record) => record.eventName === eventName);
+  }
+
+  /**
+   * `@opentelemetry/sdk-metrics`'s `DataPointType.SUM` value, inlined rather
+   * than imported: `@tayzu/auth` does not declare `@opentelemetry/sdk-metrics`
+   * as its own dependency (only `@tayzu/observability` does), and this enum
+   * is part of the exporter's own stable, JSON-serializable data shape
+   * (same rationale as `packages/catalog/src/service/pipeline.int.test.ts`'s
+   * identical constant).
+   */
+  const METRIC_DATA_POINT_TYPE_SUM = 3;
+
+  interface CapturedSumPoint {
+    readonly attributes: Attributes;
+    readonly value: number;
+  }
+
+  /** Every SUM (counter) data point of `name`, across every export the exporter holds. */
+  function sumDataPoints(exporter: MetricExporterLike, name: string): CapturedSumPoint[] {
+    const points: CapturedSumPoint[] = [];
+    for (const resourceMetrics of exporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === name &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  /**
+   * A minimal, JSON-serializable snapshot of everything the harness has
+   * captured so far: every finished log record's `attributes`/`body`, and
+   * every finished metric data point's `attributes`. Deliberately narrower
+   * than serializing the exporters' raw finished-record objects directly
+   * (which carry resource/instrumentation-scope references and are not
+   * guaranteed acyclic) -- same rationale as the marker-leak sweep in
+   * `packages/catalog/src/service/pipeline.int.test.ts`.
+   */
+  function serializedTelemetrySnapshot(): string {
+    const logs = [...harness.logExporter.getFinishedLogRecords()].map((record) => ({
+      attributes: record.attributes,
+      body: record.body,
+    }));
+    const metricAttributes: Attributes[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          for (const dataPoint of metric.dataPoints) {
+            metricAttributes.push(dataPoint.attributes);
+          }
+        }
+      }
+    }
+    return JSON.stringify({ logs, metricAttributes });
+  }
+
+  /**
+   * Asserts that none of `secrets` (an email, a password, a name -- anything
+   * that must never reach telemetry, per root `CLAUDE.md`, "No tenant free
+   * text in telemetry or errors") appears anywhere in what the harness has
+   * captured so far.
+   */
+  function expectNoSecretsInTelemetry(secrets: readonly string[]): void {
+    const snapshot = serializedTelemetrySnapshot();
+    for (const secret of secrets) {
+      expect(snapshot, `telemetry must never contain ${JSON.stringify(secret)}`).not.toContain(
+        secret,
+      );
+    }
+  }
+
+  type SessionRow = {
+    readonly user_id: string;
+    readonly active_organization_id: string | null;
+  };
+
+  async function findSessionByToken(db: TestDb, token: string): Promise<SessionRow | undefined> {
+    const result = await db.execute<SessionRow>(sql`
+      select user_id, active_organization_id from auth.session where token = ${token}
+    `);
+    return result.rows[0];
+  }
+
+  const SIGN_IN_TELEMETRY_TEST_NAME = 'Sign-in Telemetry Test User';
+  const WRONG_PASSWORD = 'definitely the wrong password, not correct';
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    api = apiOf(auth);
+    harness = registeredHarness();
+  }, 60_000);
+
+  afterEach(async () => {
+    await harness.reset();
+  });
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  it('Sign in with the correct password, as a user with exactly one organization membership, emits exactly one login_succeeded log at INFO and increments the session-events counter', async () => {
+    const email = randomEmail();
+    const slug = randomSlug();
+    const signUp = await api.signUpEmail({
+      body: { name: SIGN_IN_TELEMETRY_TEST_NAME, email, password: TEST_PASSWORD },
+    });
+    const organization = await api.createOrganization({
+      body: { name: 'Sign-in Telemetry Test Org', slug, userId: signUp.user.id },
+    });
+
+    // Discard whatever sign-up/organization-creation emitted: only the
+    // sign-in call below is under test.
+    await harness.reset();
+
+    const signIn = await api.signInEmail({
+      body: { email, password: TEST_PASSWORD },
+    });
+
+    await harness.forceFlush();
+
+    const logs = finishedLogRecords(harness.logExporter, 'auth.security.login_succeeded');
+    expect(logs, 'exactly one login_succeeded log record').toHaveLength(1);
+    const record = logs[0];
+    expect(record?.severityNumber).toBe(SeverityNumber.INFO);
+    expect(record?.attributes).toEqual({
+      'tayzu.tenant.id': organization.id,
+      'tayzu.actor.id': signUp.user.id,
+    });
+
+    const points = sumDataPoints(harness.metricExporter, 'tayzu.auth.session.events').filter(
+      (point) => point.attributes['tayzu.auth.event'] === 'login_succeeded',
+    );
+    expect(points, 'the session-events counter incremented once for login_succeeded').toHaveLength(
+      1,
+    );
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({ 'tayzu.auth.event': 'login_succeeded' });
+
+    // The session's activeOrganizationId is the login_succeeded log's own
+    // tayzu.tenant.id, per the orchestrator's resolved decision above.
+    const sessionRow = await findSessionByToken(db, String(signIn.token));
+    expect(
+      sessionRow?.active_organization_id,
+      "the session row's active_organization_id equals the sole organization the user belongs to",
+    ).toBe(organization.id);
+
+    expectNoSecretsInTelemetry([email, TEST_PASSWORD, SIGN_IN_TELEMETRY_TEST_NAME]);
+  });
+
+  it('Sign in with the wrong password emits exactly one login_failed log at WARN with failure_reason bad_credentials and increments the session-events counter', async () => {
+    const email = randomEmail();
+    await api.signUpEmail({
+      body: { name: SIGN_IN_TELEMETRY_TEST_NAME, email, password: TEST_PASSWORD },
+    });
+
+    await harness.reset();
+
+    await expect(api.signInEmail({ body: { email, password: WRONG_PASSWORD } })).rejects.toThrow();
+
+    await harness.forceFlush();
+
+    const logs = finishedLogRecords(harness.logExporter, 'auth.security.login_failed');
+    expect(logs, 'exactly one login_failed log record').toHaveLength(1);
+    const record = logs[0];
+    expect(record?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(record?.attributes).toEqual({ 'tayzu.auth.failure_reason': 'bad_credentials' });
+
+    const points = sumDataPoints(harness.metricExporter, 'tayzu.auth.session.events').filter(
+      (point) => point.attributes['tayzu.auth.event'] === 'login_failed',
+    );
+    expect(points, 'the session-events counter incremented once for login_failed').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({ 'tayzu.auth.event': 'login_failed' });
+
+    expectNoSecretsInTelemetry([email, TEST_PASSWORD, WRONG_PASSWORD, SIGN_IN_TELEMETRY_TEST_NAME]);
+  });
+
+  it('Sign in for an unknown email emits exactly one login_failed log at WARN with the same failure_reason bad_credentials (no enumeration) and increments the session-events counter', async () => {
+    const email = randomEmail();
+
+    await harness.reset();
+
+    await expect(api.signInEmail({ body: { email, password: TEST_PASSWORD } })).rejects.toThrow();
+
+    await harness.forceFlush();
+
+    const logs = finishedLogRecords(harness.logExporter, 'auth.security.login_failed');
+    expect(logs, 'exactly one login_failed log record').toHaveLength(1);
+    const record = logs[0];
+    expect(record?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(record?.attributes).toEqual({ 'tayzu.auth.failure_reason': 'bad_credentials' });
+
+    const points = sumDataPoints(harness.metricExporter, 'tayzu.auth.session.events').filter(
+      (point) => point.attributes['tayzu.auth.event'] === 'login_failed',
+    );
+    expect(points, 'the session-events counter incremented once for login_failed').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({ 'tayzu.auth.event': 'login_failed' });
+
+    expectNoSecretsInTelemetry([email, TEST_PASSWORD]);
   });
 });
