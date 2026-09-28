@@ -91,4 +91,14 @@ export default defineConfig(
     files: ['**/*.js'],
     extends: [tseslint.configs.disableTypeChecked],
   },
+  {
+    // Idioms that are normal in tests but not in production code: an async
+    // iterable stub with no `await`, and asserting on a void-returning call
+    // (`expect(() => voidFn()).not.toThrow()`).
+    files: ['**/*.test.ts', '**/*.int.test.ts'],
+    rules: {
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-confusing-void-expression': 'off',
+    },
+  },
 );
