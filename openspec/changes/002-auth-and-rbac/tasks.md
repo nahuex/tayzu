@@ -91,7 +91,7 @@ policy diff shown in chat, separately from the rest of the PR.
   and the `auth.security.rate_limited` log event plus
   `tayzu.auth.rate_limit.events` counter, with neither IP nor email present on
   either signal.
-- [ ] 2.6 Sign-in/sign-up failure responses are identical in status, error
+- [x] 2.6 Sign-in/sign-up failure responses are identical in status, error
   code, and body shape regardless of whether the account exists (design
   Non-Goals: password reset itself is deferred to
   `044-password-reset-and-account-recovery`). Verify:
