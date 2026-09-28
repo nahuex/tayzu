@@ -21,7 +21,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function fail(code: CatalogErrorCode, path: string, message: string, details?: Record<string, unknown>): never {
+function fail(
+  code: CatalogErrorCode,
+  path: string,
+  message: string,
+  details?: Record<string, unknown>,
+): never {
   throw new CatalogError(code, message, { issues: [{ path, message }], details });
 }
 
@@ -42,7 +47,11 @@ export function validateRelationValues(
 
   for (const name of Object.keys(raw)) {
     if (!(name in definitions)) {
-      fail('CATALOG_VALIDATION_FAILED', `${basePath}/${name}`, 'Relation is not declared on the blueprint');
+      fail(
+        'CATALOG_VALIDATION_FAILED',
+        `${basePath}/${name}`,
+        'Relation is not declared on the blueprint',
+      );
     }
   }
 
@@ -61,7 +70,11 @@ export function validateRelationValues(
 
     if (definition.many) {
       if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-        fail('CATALOG_VALIDATION_FAILED', path, 'Wrong cardinality: expected an array of identifiers');
+        fail(
+          'CATALOG_VALIDATION_FAILED',
+          path,
+          'Wrong cardinality: expected an array of identifiers',
+        );
       }
       const targets = value as string[];
       if (targets.length > limits.relation.maxManyTargets) {

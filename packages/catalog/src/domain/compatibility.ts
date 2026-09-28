@@ -20,7 +20,10 @@ import type { ParsedBlueprintDefinition, ParsedPropertySchema } from './blueprin
  * pre-warms -- the same validator-cache entry entity writes at the new
  * version will hit next.
  */
-export type CompileValidatorFn = (schema: ParsedPropertySchema, kind: 'spec' | 'status') => EntityPropertyValidator;
+export type CompileValidatorFn = (
+  schema: ParsedPropertySchema,
+  kind: 'spec' | 'status',
+) => EntityPropertyValidator;
 
 export interface CompatibilityEntitySnapshot {
   identifier: string;
@@ -107,7 +110,8 @@ function entityIssues(
     if (hasSpecValue || hasStatusValue) {
       issues.push({
         path: `/spec/relations/${name}`,
-        message: "Changing this relation's target is incompatible with entities holding a value for it",
+        message:
+          "Changing this relation's target is incompatible with entities holding a value for it",
       });
     }
   }
@@ -127,7 +131,8 @@ export async function checkCompatibility(
 ): Promise<CompatibilityCheckResult> {
   const maxViolations = options.maxViolations ?? DEFAULT_MAX_VIOLATIONS;
   const changedTargets = changedRelationTargets(newDefinition, options.previousDefinition);
-  const compileValidator: CompileValidatorFn = options.compileValidator ?? ((schema) => compileEntityValidator(schema));
+  const compileValidator: CompileValidatorFn =
+    options.compileValidator ?? ((schema) => compileEntityValidator(schema));
   const specValidator = compileValidator(newDefinition.schema, 'spec');
   const statusValidator = newDefinition.statusSchema
     ? compileValidator(newDefinition.statusSchema, 'status')
@@ -136,7 +141,13 @@ export async function checkCompatibility(
   const violations: CompatibilityViolation[] = [];
 
   for await (const entity of entities) {
-    const issues = entityIssues(entity, newDefinition, specValidator, statusValidator, changedTargets);
+    const issues = entityIssues(
+      entity,
+      newDefinition,
+      specValidator,
+      statusValidator,
+      changedTargets,
+    );
     if (issues.length > 0) {
       violations.push({ entityIdentifier: entity.identifier, issues });
       if (violations.length >= maxViolations) break;

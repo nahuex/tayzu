@@ -12,11 +12,18 @@
  * `(tenantId, blueprintId, version)`, so they cannot share a single cache
  * keyed only by that triple.
  */
-import { compileEntityValidator, type EntityPropertyValidator } from '../domain/entity-validator.js';
+import {
+  compileEntityValidator,
+  type EntityPropertyValidator,
+} from '../domain/entity-validator.js';
 import type { ParsedPropertySchema } from '../domain/blueprint-definition.js';
 import type { CatalogLimits } from '../domain/limits.js';
 import { createValidatorCache, type ValidatorCacheKey } from '../domain/validator-cache.js';
-import { schemaCacheLookupsCounter, schemaCompileDurationHistogram, tracer } from '../telemetry/instruments.js';
+import {
+  schemaCacheLookupsCounter,
+  schemaCompileDurationHistogram,
+  tracer,
+} from '../telemetry/instruments.js';
 
 const BLUEPRINT_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.blueprint.identifier';
 const BLUEPRINT_VERSION_ATTRIBUTE = 'tayzu.catalog.blueprint.version';

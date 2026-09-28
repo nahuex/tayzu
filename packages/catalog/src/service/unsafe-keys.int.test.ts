@@ -79,7 +79,11 @@ import {
   type TestDb,
 } from './__fixtures__/blueprint-test-helpers.js';
 import { blueprintInput, ctx, entityInput } from './__fixtures__/entity-a-test-helpers.js';
-import { createBlueprintService, type BlueprintService, type CreateBlueprintInput } from './blueprints.js';
+import {
+  createBlueprintService,
+  type BlueprintService,
+  type CreateBlueprintInput,
+} from './blueprints.js';
 import { createEntityService, type EntityService } from './entities.js';
 
 function registeredHarness(): TelemetryTestHarness {
@@ -95,8 +99,14 @@ function registeredHarness(): TelemetryTestHarness {
 /** A blueprint with one `object`-typed spec property and one `object`-typed status property, no relations declared. */
 function blueprintWithObjectProperties(identifier: string): CreateBlueprintInput {
   return blueprintInput(identifier, {
-    schema: { properties: { metadata: { type: 'object', title: { en: 'Metadata' } } }, required: [] },
-    statusSchema: { properties: { observed: { type: 'object', title: { en: 'Observed' } } }, required: [] },
+    schema: {
+      properties: { metadata: { type: 'object', title: { en: 'Metadata' } } },
+      required: [],
+    },
+    statusSchema: {
+      properties: { observed: { type: 'object', title: { en: 'Observed' } } },
+      required: [],
+    },
   });
 }
 
@@ -145,11 +155,19 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       ) as Record<string, unknown>;
 
       await expectCatalogErrorCode(
-        entities.create(c, entityInput('service', 'svc-proto', { spec: { properties: maliciousProperties, relations: {} } })),
+        entities.create(
+          c,
+          entityInput('service', 'svc-proto', {
+            spec: { properties: maliciousProperties, relations: {} },
+          }),
+        ),
         'CATALOG_VALIDATION_FAILED',
       );
 
-      await expectCatalogErrorCode(entities.get(c, { blueprint: 'service', identifier: 'svc-proto' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.get(c, { blueprint: 'service', identifier: 'svc-proto' }),
+        'CATALOG_NOT_FOUND',
+      );
       expect(await selectChangeEvents(db, tenantId, 'svc-proto')).toHaveLength(0);
       expectNoGlobalPollution();
     });
@@ -164,11 +182,19 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       ) as Record<string, unknown>;
 
       await expectCatalogErrorCode(
-        entities.create(c, entityInput('service', 'svc-ctor', { spec: { properties: maliciousProperties, relations: {} } })),
+        entities.create(
+          c,
+          entityInput('service', 'svc-ctor', {
+            spec: { properties: maliciousProperties, relations: {} },
+          }),
+        ),
         'CATALOG_VALIDATION_FAILED',
       );
 
-      await expectCatalogErrorCode(entities.get(c, { blueprint: 'service', identifier: 'svc-ctor' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.get(c, { blueprint: 'service', identifier: 'svc-ctor' }),
+        'CATALOG_NOT_FOUND',
+      );
       expect(await selectChangeEvents(db, tenantId, 'svc-ctor')).toHaveLength(0);
       expectNoGlobalPollution();
     });
@@ -183,11 +209,19 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       ) as Record<string, unknown>;
 
       await expectCatalogErrorCode(
-        entities.create(c, entityInput('service', 'svc-proto2', { spec: { properties: maliciousProperties, relations: {} } })),
+        entities.create(
+          c,
+          entityInput('service', 'svc-proto2', {
+            spec: { properties: maliciousProperties, relations: {} },
+          }),
+        ),
         'CATALOG_VALIDATION_FAILED',
       );
 
-      await expectCatalogErrorCode(entities.get(c, { blueprint: 'service', identifier: 'svc-proto2' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.get(c, { blueprint: 'service', identifier: 'svc-proto2' }),
+        'CATALOG_NOT_FOUND',
+      );
       expect(await selectChangeEvents(db, tenantId, 'svc-proto2')).toHaveLength(0);
       expectNoGlobalPollution();
     });
@@ -197,14 +231,25 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       const c = ctx(tenantId);
       await blueprints.create(c, blueprintWithObjectProperties('service'));
 
-      const maliciousRelations = JSON.parse('{"constructor":"does-not-exist"}') as Record<string, unknown>;
+      const maliciousRelations = JSON.parse('{"constructor":"does-not-exist"}') as Record<
+        string,
+        unknown
+      >;
 
       await expectCatalogErrorCode(
-        entities.create(c, entityInput('service', 'svc-rel-ctor', { spec: { properties: {}, relations: maliciousRelations } })),
+        entities.create(
+          c,
+          entityInput('service', 'svc-rel-ctor', {
+            spec: { properties: {}, relations: maliciousRelations },
+          }),
+        ),
         'CATALOG_VALIDATION_FAILED',
       );
 
-      await expectCatalogErrorCode(entities.get(c, { blueprint: 'service', identifier: 'svc-rel-ctor' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.get(c, { blueprint: 'service', identifier: 'svc-rel-ctor' }),
+        'CATALOG_NOT_FOUND',
+      );
       expect(await selectChangeEvents(db, tenantId, 'svc-rel-ctor')).toHaveLength(0);
       expectNoGlobalPollution();
     });
@@ -214,14 +259,25 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       const c = ctx(tenantId);
       await blueprints.create(c, blueprintWithObjectProperties('service'));
 
-      const maliciousRelations = JSON.parse('{"__proto__":"does-not-exist"}') as Record<string, unknown>;
+      const maliciousRelations = JSON.parse('{"__proto__":"does-not-exist"}') as Record<
+        string,
+        unknown
+      >;
 
       await expectCatalogErrorCode(
-        entities.create(c, entityInput('service', 'svc-rel-proto', { spec: { properties: {}, relations: maliciousRelations } })),
+        entities.create(
+          c,
+          entityInput('service', 'svc-rel-proto', {
+            spec: { properties: {}, relations: maliciousRelations },
+          }),
+        ),
         'CATALOG_VALIDATION_FAILED',
       );
 
-      await expectCatalogErrorCode(entities.get(c, { blueprint: 'service', identifier: 'svc-rel-proto' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.get(c, { blueprint: 'service', identifier: 'svc-rel-proto' }),
+        'CATALOG_NOT_FOUND',
+      );
       expect(await selectChangeEvents(db, tenantId, 'svc-rel-proto')).toHaveLength(0);
       expectNoGlobalPollution();
     });
@@ -234,7 +290,9 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       await blueprints.create(c, blueprintWithObjectProperties('service'));
       const created = await entities.create(
         c,
-        entityInput('service', 'svc-upsert-replace', { spec: { properties: { metadata: { safe: true } }, relations: {} } }),
+        entityInput('service', 'svc-upsert-replace', {
+          spec: { properties: { metadata: { safe: true } }, relations: {} },
+        }),
       );
 
       const maliciousProperties = JSON.parse(
@@ -250,7 +308,10 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
         'CATALOG_VALIDATION_FAILED',
       );
 
-      const after = await entities.get(c, { blueprint: 'service', identifier: 'svc-upsert-replace' });
+      const after = await entities.get(c, {
+        blueprint: 'service',
+        identifier: 'svc-upsert-replace',
+      });
       expect(after.version).toBe(created.version);
       expect(after.spec.properties).toEqual({ metadata: { safe: true } });
       expect(await selectChangeEvents(db, tenantId, 'svc-upsert-replace')).toHaveLength(1);
@@ -265,7 +326,9 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       await blueprints.create(c, blueprintWithObjectProperties('service'));
       const created = await entities.create(
         c,
-        entityInput('service', 'svc-upsert-merge', { spec: { properties: { metadata: { safe: true } }, relations: {} } }),
+        entityInput('service', 'svc-upsert-merge', {
+          spec: { properties: { metadata: { safe: true } }, relations: {} },
+        }),
       );
 
       const maliciousProperties = JSON.parse(
@@ -324,7 +387,10 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       await blueprints.create(c, blueprintWithObjectProperties('service'));
       const created = await entities.create(c, entityInput('service', 'svc-status-rel-ctor'));
 
-      const maliciousStatusRelations = JSON.parse('{"constructor":"does-not-exist"}') as Record<string, unknown>;
+      const maliciousStatusRelations = JSON.parse('{"constructor":"does-not-exist"}') as Record<
+        string,
+        unknown
+      >;
 
       await expectCatalogErrorCode(
         entities.writeStatus(c, {
@@ -337,7 +403,10 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
         'CATALOG_VALIDATION_FAILED',
       );
 
-      const after = await entities.get(c, { blueprint: 'service', identifier: 'svc-status-rel-ctor' });
+      const after = await entities.get(c, {
+        blueprint: 'service',
+        identifier: 'svc-status-rel-ctor',
+      });
       expect(after.status).toBeNull();
       expect(after.version).toBe(created.version);
       expect(await selectChangeEvents(db, tenantId, 'svc-status-rel-ctor')).toHaveLength(1);
@@ -350,12 +419,18 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       const tenantId = randomTenantId();
       const c = ctx(tenantId);
       const input = blueprintInput('service', {
-        schema: { properties: { constructor: { type: 'string', title: { en: 'x' } } }, required: [] },
+        schema: {
+          properties: { constructor: { type: 'string', title: { en: 'x' } } },
+          required: [],
+        },
       });
 
       await expectCatalogErrorCode(blueprints.create(c, input), 'CATALOG_VALIDATION_FAILED');
 
-      await expectCatalogErrorCode(blueprints.get(c, { identifier: 'service' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        blueprints.get(c, { identifier: 'service' }),
+        'CATALOG_NOT_FOUND',
+      );
       expect(await selectChangeEvents(db, tenantId, 'service')).toHaveLength(0);
       expectNoGlobalPollution();
     });
@@ -369,7 +444,10 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
 
       await expectCatalogErrorCode(blueprints.create(c, input), 'CATALOG_VALIDATION_FAILED');
 
-      await expectCatalogErrorCode(blueprints.get(c, { identifier: 'service' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        blueprints.get(c, { identifier: 'service' }),
+        'CATALOG_NOT_FOUND',
+      );
       expect(await selectChangeEvents(db, tenantId, 'service')).toHaveLength(0);
       expectNoGlobalPollution();
     });
@@ -382,7 +460,10 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
       const created = await blueprints.create(c, blueprintInput('service'));
 
       const badUpdate = blueprintInput('service', {
-        schema: { properties: { constructor: { type: 'string', title: { en: 'x' } } }, required: [] },
+        schema: {
+          properties: { constructor: { type: 'string', title: { en: 'x' } } },
+          required: [],
+        },
       });
 
       await expectCatalogErrorCode(blueprints.update(c, badUpdate), 'CATALOG_VALIDATION_FAILED');

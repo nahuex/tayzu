@@ -70,9 +70,19 @@ const OPERATIONS: readonly OperationExpectation[] = [
     path: '/v1/blueprints',
     queryParams: [{ name: 'pageSize' }, { name: 'cursor' }],
   },
-  { operationId: 'blueprints.get', method: 'get', path: '/v1/blueprints/{blueprint}', queryParams: [] },
+  {
+    operationId: 'blueprints.get',
+    method: 'get',
+    path: '/v1/blueprints/{blueprint}',
+    queryParams: [],
+  },
   { operationId: 'blueprints.update', method: 'put', path: '/v1/blueprints/{blueprint}' },
-  { operationId: 'blueprints.delete', method: 'delete', path: '/v1/blueprints/{blueprint}', queryParams: [] },
+  {
+    operationId: 'blueprints.delete',
+    method: 'delete',
+    path: '/v1/blueprints/{blueprint}',
+    queryParams: [],
+  },
   { operationId: 'entities.create', method: 'post', path: '/v1/blueprints/{blueprint}/entities' },
   {
     operationId: 'entities.list',
@@ -86,19 +96,32 @@ const OPERATIONS: readonly OperationExpectation[] = [
     path: '/v1/blueprints/{blueprint}/entities/{entity}',
     queryParams: [],
   },
-  { operationId: 'entities.upsert', method: 'put', path: '/v1/blueprints/{blueprint}/entities/{entity}' },
+  {
+    operationId: 'entities.upsert',
+    method: 'put',
+    path: '/v1/blueprints/{blueprint}/entities/{entity}',
+  },
   {
     operationId: 'entities.delete',
     method: 'delete',
     path: '/v1/blueprints/{blueprint}/entities/{entity}',
     queryParams: [{ name: 'detachReferences', type: 'boolean' }],
   },
-  { operationId: 'entities.writeStatus', method: 'put', path: '/v1/blueprints/{blueprint}/entities/{entity}/status' },
+  {
+    operationId: 'entities.writeStatus',
+    method: 'put',
+    path: '/v1/blueprints/{blueprint}/entities/{entity}/status',
+  },
   {
     operationId: 'entities.listRelated',
     method: 'get',
     path: '/v1/blueprints/{blueprint}/entities/{entity}/related',
-    queryParams: [{ name: 'direction' }, { name: 'scope' }, { name: 'pageSize' }, { name: 'cursor' }],
+    queryParams: [
+      { name: 'direction' },
+      { name: 'scope' },
+      { name: 'pageSize' },
+      { name: 'cursor' },
+    ],
   },
 ];
 
@@ -116,7 +139,10 @@ describe('D11 route table: method, path and query-vs-body placement (task 9.1 fo
       expect(pathItem, `document.paths["${path}"] must exist for ${operationId}`).toBeDefined();
 
       const operation = (pathItem as Record<string, unknown> | undefined)?.[method];
-      expect(operation, `${method.toUpperCase()} ${path} must exist for ${operationId}`).toBeDefined();
+      expect(
+        operation,
+        `${method.toUpperCase()} ${path} must exist for ${operationId}`,
+      ).toBeDefined();
       expect(isPlainObject(operation)).toBe(true);
       if (!isPlainObject(operation)) return;
 

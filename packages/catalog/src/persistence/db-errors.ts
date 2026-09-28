@@ -19,7 +19,10 @@ export const UNIQUE_VIOLATION_SQLSTATE = '23505';
 /** SQLSTATE for a foreign-key-constraint violation. */
 export const FOREIGN_KEY_VIOLATION_SQLSTATE = '23503';
 
-function hasStringProperty<K extends string>(candidate: unknown, key: K): candidate is Record<K, string> {
+function hasStringProperty<K extends string>(
+  candidate: unknown,
+  key: K,
+): candidate is Record<K, string> {
   return (
     typeof candidate === 'object' &&
     candidate !== null &&

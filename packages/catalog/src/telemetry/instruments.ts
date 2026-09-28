@@ -31,9 +31,12 @@ export const logger = logs.getLogger(INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION
 const meter = metrics.getMeter(INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION);
 
 /** design.md, Metrics table: "Latency, throughput, and error rate per operation (RED)". */
-export const operationDurationHistogram = meter.createHistogram('tayzu.catalog.operation.duration', {
-  unit: 's',
-});
+export const operationDurationHistogram = meter.createHistogram(
+  'tayzu.catalog.operation.duration',
+  {
+    unit: 's',
+  },
+);
 
 /** design.md, Metrics table: "Security signal: callers without a valid context (SEC03, SEC16)". */
 export const contextRejectionsCounter = meter.createCounter('tayzu.catalog.context.rejections', {
@@ -61,6 +64,9 @@ export const schemaCacheLookupsCounter = meter.createCounter('tayzu.catalog.sche
 });
 
 /** design.md, Metrics table: "Compile cost" (task 4.8's validator-cache wiring). */
-export const schemaCompileDurationHistogram = meter.createHistogram('tayzu.catalog.schema.compile.duration', {
-  unit: 's',
-});
+export const schemaCompileDurationHistogram = meter.createHistogram(
+  'tayzu.catalog.schema.compile.duration',
+  {
+    unit: 's',
+  },
+);

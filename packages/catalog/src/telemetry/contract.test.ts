@@ -190,7 +190,10 @@ const DESIGN_SPANS: readonly SpanContract[] = [
   {
     name: 'catalog.blueprint.compatibility_check',
     kind: 'child',
-    requiredAttributes: ['tayzu.catalog.blueprint.identifier', 'tayzu.catalog.compatibility.entities_checked'],
+    requiredAttributes: [
+      'tayzu.catalog.blueprint.identifier',
+      'tayzu.catalog.compatibility.entities_checked',
+    ],
     conditionalAttributes: ['tayzu.catalog.compatibility.violation.count'],
   },
   {
@@ -213,7 +216,13 @@ const DESIGN_METRICS: readonly MetricContract[] = [
     name: 'tayzu.catalog.operation.duration',
     instrumentType: 'histogram',
     unit: 's',
-    attributes: ['tayzu.catalog.operation', 'tayzu.catalog.outcome', 'error.type', 'tayzu.tenant.id', 'tayzu.actor.type'],
+    attributes: [
+      'tayzu.catalog.operation',
+      'tayzu.catalog.outcome',
+      'error.type',
+      'tayzu.tenant.id',
+      'tayzu.actor.type',
+    ],
   },
   {
     name: 'tayzu.catalog.entity.mutations',
@@ -285,7 +294,12 @@ const DESIGN_LOG_EVENTS: readonly LogEventContract[] = [
   {
     name: 'catalog.security.reserved_identifier_denied',
     severity: 'WARN',
-    attributes: ['tayzu.tenant.id', 'tayzu.actor.type', 'tayzu.actor.id', 'tayzu.catalog.blueprint.identifier'],
+    attributes: [
+      'tayzu.tenant.id',
+      'tayzu.actor.type',
+      'tayzu.actor.id',
+      'tayzu.catalog.blueprint.identifier',
+    ],
   },
   {
     name: 'catalog.internal_error',
@@ -346,11 +360,13 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
 
   describe('Spans', () => {
     it('declares exactly the 16 spans design.md names, no more and no fewer', () => {
-      expect(SPANS.map((span) => span.name).sort()).toEqual(DESIGN_SPANS.map((span) => span.name).sort());
+      expect(SPANS.map((span) => span.name).sort()).toEqual(
+        DESIGN_SPANS.map((span) => span.name).sort(),
+      );
     });
 
     it.each(DESIGN_SPANS.map((span) => [span.name, span] as const))(
-      'span %s has design.md\'s exact kind, required and conditional attributes',
+      "span %s has design.md's exact kind, required and conditional attributes",
       (name, expected) => {
         const actual = byName(SPANS).get(name);
         expect(actual, `contract.ts must declare span ${name}`).toBeDefined();
@@ -373,13 +389,15 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
     });
 
     it.each(DESIGN_METRICS.map((metric) => [metric.name, metric] as const))(
-      'metric %s has design.md\'s exact instrument type, unit and complete allowed attribute set',
+      "metric %s has design.md's exact instrument type, unit and complete allowed attribute set",
       (name, expected) => {
         const actual = byName(METRICS).get(name);
         expect(actual, `contract.ts must declare metric ${name}`).toBeDefined();
         expect(actual?.instrumentType).toBe(expected.instrumentType);
         expect(actual?.unit).toBe(expected.unit);
-        expect(sortedAttributes(actual?.attributes ?? [])).toEqual(sortedAttributes(expected.attributes));
+        expect(sortedAttributes(actual?.attributes ?? [])).toEqual(
+          sortedAttributes(expected.attributes),
+        );
       },
     );
 
@@ -399,18 +417,20 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
     });
 
     it.each(DESIGN_LOG_EVENTS.map((event) => [event.name, event] as const))(
-      'log event %s has design.md\'s exact severity and attributes',
+      "log event %s has design.md's exact severity and attributes",
       (name, expected) => {
         const actual = byName(LOG_EVENTS).get(name);
         expect(actual, `contract.ts must declare log event ${name}`).toBeDefined();
         expect(actual?.severity).toBe(expected.severity);
-        expect(sortedAttributes(actual?.attributes ?? [])).toEqual(sortedAttributes(expected.attributes));
+        expect(sortedAttributes(actual?.attributes ?? [])).toEqual(
+          sortedAttributes(expected.attributes),
+        );
       },
     );
   });
 
   describe('SLIs (design.md, "SLIs")', () => {
-    it('derives availability from tayzu.catalog.operation.duration, per operation and tenant, with the design\'s exact definition', () => {
+    it("derives availability from tayzu.catalog.operation.duration, per operation and tenant, with the design's exact definition", () => {
       expect(SLIS.availability.metric).toBe('tayzu.catalog.operation.duration');
       expect(sortedAttributes(SLIS.availability.dimensions)).toEqual(
         sortedAttributes(['tayzu.catalog.operation', 'tayzu.tenant.id']),
@@ -421,7 +441,7 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
       );
     });
 
-    it('derives latency (p99) from tayzu.catalog.operation.duration for successful operations, with the design\'s exact definition', () => {
+    it("derives latency (p99) from tayzu.catalog.operation.duration for successful operations, with the design's exact definition", () => {
       expect(SLIS.latency.metric).toBe('tayzu.catalog.operation.duration');
       expect(sortedAttributes(SLIS.latency.dimensions)).toEqual(
         sortedAttributes(['tayzu.catalog.operation', 'tayzu.tenant.id']),
@@ -434,10 +454,12 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
 
   describe('Sampling exemption (design.md, "Sampling exemption")', () => {
     it('exempts catalog.audit.mutation, both catalog.security.* events, and the two counters T5b alerts on -- and nothing else', () => {
-      expect(SAMPLING_EXEMPT_SIGNALS.slice().sort()).toEqual(DESIGN_SAMPLING_EXEMPT_SIGNALS.slice().sort());
+      expect(SAMPLING_EXEMPT_SIGNALS.slice().sort()).toEqual(
+        DESIGN_SAMPLING_EXEMPT_SIGNALS.slice().sort(),
+      );
     });
 
-    it('never exempts catalog.internal_error (it is not named in design.md\'s sampling-exemption paragraph)', () => {
+    it("never exempts catalog.internal_error (it is not named in design.md's sampling-exemption paragraph)", () => {
       expect(SAMPLING_EXEMPT_SIGNALS).not.toContain('catalog.internal_error');
     });
   });

@@ -169,7 +169,9 @@ describe('withTenantTransaction (design D5, D3; SSA B1)', () => {
     const tenantId = randomTenantId();
 
     const observed = await withTenantTransaction(pool, { tenantId }, async (client: PoolClient) => {
-      const result = await client.query<{ value: string }>(`select current_setting('app.tenant_id') as value`);
+      const result = await client.query<{ value: string }>(
+        `select current_setting('app.tenant_id') as value`,
+      );
       return result.rows[0]?.value;
     });
 
@@ -180,7 +182,9 @@ describe('withTenantTransaction (design D5, D3; SSA B1)', () => {
     const tenantId = randomTenantId();
 
     await withTenantTransaction(pool, { tenantId }, async (client: PoolClient) => {
-      const result = await client.query<{ value: string }>(`select current_setting('app.tenant_id') as value`);
+      const result = await client.query<{ value: string }>(
+        `select current_setting('app.tenant_id') as value`,
+      );
       expect(result.rows[0]?.value).toBe(tenantId);
     });
 
@@ -189,9 +193,10 @@ describe('withTenantTransaction (design D5, D3; SSA B1)', () => {
     const client = await pool.connect();
     try {
       const after = await readCurrentTenantSetting(client);
-      expect(after === null || after === '', `app.tenant_id after commit, got ${JSON.stringify(after)}`).toBe(
-        true,
-      );
+      expect(
+        after === null || after === '',
+        `app.tenant_id after commit, got ${JSON.stringify(after)}`,
+      ).toBe(true);
     } finally {
       client.release();
     }

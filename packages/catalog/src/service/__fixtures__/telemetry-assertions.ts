@@ -35,7 +35,10 @@ export function onlySpan(exporter: SpanExporterLike, name: string): ReadableSpan
   return span;
 }
 
-export function finishedLogRecords(exporter: LogExporterLike, eventName: string): ReadableLogRecordLike[] {
+export function finishedLogRecords(
+  exporter: LogExporterLike,
+  eventName: string,
+): ReadableLogRecordLike[] {
   return [...exporter.getFinishedLogRecords()].filter((record) => record.eventName === eventName);
 }
 
@@ -61,8 +64,11 @@ export function sumDataPoints(exporter: MetricExporterLike, name: string): Captu
         // The enum's real type is intentionally not imported (see the
         // comment above); the numeric value it compares against is that
         // same enum's own stable, documented value.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-        if (metric.descriptor.name === name && metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM) {
+        if (
+          metric.descriptor.name === name &&
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+          metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+        ) {
           for (const dataPoint of metric.dataPoints) {
             points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
           }

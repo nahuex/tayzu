@@ -87,7 +87,9 @@ export async function selectEntitiesPage(
   options: EntitiesPageOptions,
 ): Promise<EntityRow[]> {
   const cursorClause =
-    options.afterIdentifier !== undefined ? sql`and identifier > ${options.afterIdentifier}` : sql``;
+    options.afterIdentifier !== undefined
+      ? sql`and identifier > ${options.afterIdentifier}`
+      : sql``;
   const result = await tx.execute<EntityRow>(sql`
     select ${ENTITY_COLUMNS}
     from catalog_entity
@@ -132,7 +134,10 @@ export interface InsertEntityRowParams {
 }
 
 /** Inserts one `catalog_entity` row. May reject with a unique violation on `catalog_entity_tenant_blueprint_identifier_uq`. */
-export async function insertEntityRow(tx: EntityRepositoryTx, row: InsertEntityRowParams): Promise<void> {
+export async function insertEntityRow(
+  tx: EntityRepositoryTx,
+  row: InsertEntityRowParams,
+): Promise<void> {
   await tx.execute(sql`
     insert into catalog_entity
       (id, tenant_id, blueprint_id, identifier, title, icon, spec_properties, generation, version,
@@ -157,7 +162,10 @@ export interface UpdateEntitySpecRowParams {
 }
 
 /** Replaces an entity's `spec`-side mutable fields. `status_*` columns are never touched (design D9). */
-export async function updateEntitySpecRow(tx: EntityRepositoryTx, row: UpdateEntitySpecRowParams): Promise<void> {
+export async function updateEntitySpecRow(
+  tx: EntityRepositoryTx,
+  row: UpdateEntitySpecRowParams,
+): Promise<void> {
   await tx.execute(sql`
     update catalog_entity set
       title = ${row.title},
@@ -185,7 +193,10 @@ export interface UpdateEntityStatusRowParams {
 }
 
 /** Replaces the observed snapshot. `spec_properties` and `generation` are never touched (design D9). */
-export async function updateEntityStatusRow(tx: EntityRepositoryTx, row: UpdateEntityStatusRowParams): Promise<void> {
+export async function updateEntityStatusRow(
+  tx: EntityRepositoryTx,
+  row: UpdateEntityStatusRowParams,
+): Promise<void> {
   await tx.execute(sql`
     update catalog_entity set
       status_properties = ${JSON.stringify(row.statusProperties)}::jsonb,
@@ -211,8 +222,12 @@ export interface BumpEntityVersionRowParams {
 }
 
 /** Bumps `version` (and, optionally, `generation`) of a referrer affected by another entity's delete. */
-export async function bumpEntityVersionRow(tx: EntityRepositoryTx, row: BumpEntityVersionRowParams): Promise<void> {
-  const generationClause = row.generation !== undefined ? sql`generation = ${row.generation},` : sql``;
+export async function bumpEntityVersionRow(
+  tx: EntityRepositoryTx,
+  row: BumpEntityVersionRowParams,
+): Promise<void> {
+  const generationClause =
+    row.generation !== undefined ? sql`generation = ${row.generation},` : sql``;
   await tx.execute(sql`
     update catalog_entity set
       ${generationClause}
@@ -225,7 +240,11 @@ export async function bumpEntityVersionRow(tx: EntityRepositoryTx, row: BumpEnti
 }
 
 /** Deletes the `catalog_entity` row. Callers must have already removed every edge that still targets it. */
-export async function deleteEntityRow(tx: EntityRepositoryTx, tenantId: string, id: string): Promise<void> {
+export async function deleteEntityRow(
+  tx: EntityRepositoryTx,
+  tenantId: string,
+  id: string,
+): Promise<void> {
   await tx.execute(sql`delete from catalog_entity where tenant_id = ${tenantId} and id = ${id}`);
 }
 
@@ -343,7 +362,10 @@ export async function selectRelationEdgesForEntity(
 }
 
 /** A relation definition's identifier and cardinality, keyed by its internal `id` (uuid). Mirrors `blueprints-repository.ts`'s own type. */
-export type EntityRelationDefinitionById = ReadonlyMap<string, { readonly identifier: string; readonly many: boolean }>;
+export type EntityRelationDefinitionById = ReadonlyMap<
+  string,
+  { readonly identifier: string; readonly many: boolean }
+>;
 
 /** Assembles one scope's relation bag (`{ [relation]: identifier | identifier[] }`) from a source entity's edges. */
 export function assembleEntityRelationBag(

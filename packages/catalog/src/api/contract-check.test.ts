@@ -93,13 +93,27 @@ function tempFilePath(name: string): string {
 function mutateInputSchemaCopy(document: unknown): unknown {
   const mutated = structuredClone(document) as {
     info?: { description?: string };
-    paths?: Record<string, Record<string, { requestBody?: { content?: Record<string, { schema?: { properties?: Record<string, unknown> } }> } }>>;
+    paths?: Record<
+      string,
+      Record<
+        string,
+        {
+          requestBody?: {
+            content?: Record<string, { schema?: { properties?: Record<string, unknown> } }>;
+          };
+        }
+      >
+    >;
   };
-  const schema = mutated.paths?.['/v1/blueprints']?.['post']?.requestBody?.content?.['application/json']?.schema;
+  const schema =
+    mutated.paths?.['/v1/blueprints']?.['post']?.requestBody?.content?.['application/json']?.schema;
   if (schema) {
     schema.properties = { ...(schema.properties ?? {}), __driftMarker: { type: 'string' } };
   } else {
-    mutated.info = { ...mutated.info, description: `${mutated.info?.description ?? ''} DRIFT-MARKER-${randomUUID()}` };
+    mutated.info = {
+      ...mutated.info,
+      description: `${mutated.info?.description ?? ''} DRIFT-MARKER-${randomUUID()}`,
+    };
   }
   return mutated;
 }
@@ -154,7 +168,9 @@ describe('contract generation and drift checking (design D11; task 9.3)', () => 
     const result = await checkContract({ router: leakyContract, committedDocumentPath });
 
     expect(result.ok).toBe(false);
-    expect(result.reasons.some((reason: string) => reason.toLowerCase().includes('tenantid'))).toBe(true);
+    expect(result.reasons.some((reason: string) => reason.toLowerCase().includes('tenantid'))).toBe(
+      true,
+    );
   });
 
   it('an `actor` field in a procedure input also fails the check', async () => {
@@ -162,7 +178,9 @@ describe('contract generation and drift checking (design D11; task 9.3)', () => 
       fake: {
         leak: oc
           .route({ method: 'POST', path: '/v1/fake-actor' })
-          .input(z.object({ actor: z.object({ type: z.string(), id: z.string() }), value: z.string() }))
+          .input(
+            z.object({ actor: z.object({ type: z.string(), id: z.string() }), value: z.string() }),
+          )
           .output(z.object({ ok: z.boolean() })),
       },
     });
@@ -174,7 +192,9 @@ describe('contract generation and drift checking (design D11; task 9.3)', () => 
     const result = await checkContract({ router: leakyContract, committedDocumentPath });
 
     expect(result.ok).toBe(false);
-    expect(result.reasons.some((reason: string) => reason.toLowerCase().includes('actor'))).toBe(true);
+    expect(result.reasons.some((reason: string) => reason.toLowerCase().includes('actor'))).toBe(
+      true,
+    );
   });
 
   it('the committed openapi/catalog.openapi.json passes the check', async () => {

@@ -34,6 +34,7 @@ step() {
 }
 
 step "lint" pnpm lint
+step "format:check" pnpm format:check
 step "typecheck" pnpm typecheck
 step "test" pnpm test
 step "contract:check" pnpm contract:check

@@ -150,7 +150,7 @@ describe('duplicate targets within a many relation are rejected', () => {
 });
 
 describe('undeclared relation keys are rejected', () => {
-  it('rejects a key absent from the blueprint\'s relation definitions', () => {
+  it("rejects a key absent from the blueprint's relation definitions", () => {
     const definitions = { owner: relation() };
 
     expectRejectedCode(
@@ -172,9 +172,9 @@ describe('well-formed relation values are accepted unchanged', () => {
   it('"Many relation keeps order": accepts a many relation and preserves the given order', () => {
     const definitions = { dependsOn: relation({ many: true, required: false, target: 'service' }) };
 
-    expect(
-      validateRelationValues(definitions, { dependsOn: ['ledger', 'auth'] }, 'spec'),
-    ).toEqual({ dependsOn: ['ledger', 'auth'] });
+    expect(validateRelationValues(definitions, { dependsOn: ['ledger', 'auth'] }, 'spec')).toEqual({
+      dependsOn: ['ledger', 'auth'],
+    });
   });
 
   it('a relation absent from input and not required is simply absent from the result', () => {

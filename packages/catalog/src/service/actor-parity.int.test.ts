@@ -246,7 +246,10 @@ import {
   selectChangeEvents,
   type TestDb,
 } from './__fixtures__/blueprint-test-helpers.js';
-import { countChangeEventsForTenant, selectChangeEventActors } from './__fixtures__/entity-b-test-helpers.js';
+import {
+  countChangeEventsForTenant,
+  selectChangeEventActors,
+} from './__fixtures__/entity-b-test-helpers.js';
 import { finishedLogRecords } from './__fixtures__/telemetry-assertions.js';
 import type { CatalogContext } from '../domain/context.js';
 import type { CatalogErrorCode } from '../domain/errors.js';
@@ -326,8 +329,18 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
     const userCtx = ctxFor(tenantId, 'user');
     const agentCtx = ctxFor(tenantId, 'agent');
 
-    const a = await entityService.upsert(userCtx, { blueprint: 'svc', identifier: 'a', title: 'a', mode: 'replace' });
-    const b = await entityService.upsert(agentCtx, { blueprint: 'svc', identifier: 'b', title: 'b', mode: 'replace' });
+    const a = await entityService.upsert(userCtx, {
+      blueprint: 'svc',
+      identifier: 'a',
+      title: 'a',
+      mode: 'replace',
+    });
+    const b = await entityService.upsert(agentCtx, {
+      blueprint: 'svc',
+      identifier: 'b',
+      title: 'b',
+      mode: 'replace',
+    });
 
     expect(a.updatedBy).toEqual({ type: 'user', id: 'user-1' });
     expect(b.updatedBy).toEqual({ type: 'agent', id: 'agent-1' });
@@ -356,7 +369,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
           resourceIdentifier: 'bp',
           action: 'created',
           succeed: async (c) => {
-            const output = await blueprintService.create(c, { identifier: 'bp', title: { en: 'bp' }, schema: emptySchema });
+            const output = await blueprintService.create(c, {
+              identifier: 'bp',
+              title: { en: 'bp' },
+              schema: emptySchema,
+            });
             return { createdBy: output.createdBy, updatedBy: output.updatedBy };
           },
           setupForFailure: async () => {
@@ -375,7 +392,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
           resourceIdentifier: 'bp',
           action: 'updated',
           succeed: async (c) => {
-            await blueprintService.create(c, { identifier: 'bp', title: { en: 'bp' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'bp',
+              title: { en: 'bp' },
+              schema: emptySchema,
+            });
             const output = await blueprintService.update(c, {
               identifier: 'bp',
               title: { en: 'bp updated' },
@@ -384,7 +405,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
             return { updatedBy: output.updatedBy };
           },
           setupForFailure: async (c) => {
-            await blueprintService.create(c, { identifier: 'bp', title: { en: 'bp' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'bp',
+              title: { en: 'bp' },
+              schema: emptySchema,
+            });
           },
           fail: (c) =>
             blueprintService.update(c, {
@@ -399,7 +424,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
           resourceIdentifier: 'bp',
           action: 'deleted',
           succeed: async (c) => {
-            await blueprintService.create(c, { identifier: 'bp', title: { en: 'bp' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'bp',
+              title: { en: 'bp' },
+              schema: emptySchema,
+            });
             await blueprintService.delete(c, { identifier: 'bp' });
             return {};
           },
@@ -414,12 +443,24 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
           resourceIdentifier: 'e1',
           action: 'created',
           succeed: async (c) => {
-            await blueprintService.create(c, { identifier: 'svc', title: { en: 'svc' }, schema: emptySchema });
-            const output = await entityService.create(c, { blueprint: 'svc', identifier: 'e1', title: 'e1' });
+            await blueprintService.create(c, {
+              identifier: 'svc',
+              title: { en: 'svc' },
+              schema: emptySchema,
+            });
+            const output = await entityService.create(c, {
+              blueprint: 'svc',
+              identifier: 'e1',
+              title: 'e1',
+            });
             return { createdBy: output.createdBy, updatedBy: output.updatedBy };
           },
           setupForFailure: async (c) => {
-            await blueprintService.create(c, { identifier: 'svc', title: { en: 'svc' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'svc',
+              title: { en: 'svc' },
+              schema: emptySchema,
+            });
           },
           fail: (c) =>
             entityService.create(c, {
@@ -435,7 +476,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
           resourceIdentifier: 'e1',
           action: 'created',
           succeed: async (c) => {
-            await blueprintService.create(c, { identifier: 'svc', title: { en: 'svc' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'svc',
+              title: { en: 'svc' },
+              schema: emptySchema,
+            });
             const output = await entityService.upsert(c, {
               blueprint: 'svc',
               identifier: 'e1',
@@ -445,7 +490,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
             return { createdBy: output.createdBy, updatedBy: output.updatedBy };
           },
           setupForFailure: async (c) => {
-            await blueprintService.create(c, { identifier: 'svc', title: { en: 'svc' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'svc',
+              title: { en: 'svc' },
+              schema: emptySchema,
+            });
           },
           fail: (c) =>
             entityService.upsert(c, {
@@ -466,7 +515,10 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
               identifier: 'svc',
               title: { en: 'svc' },
               schema: emptySchema,
-              statusSchema: { properties: { health: { type: 'string', title: { en: 'Health' } } }, required: [] },
+              statusSchema: {
+                properties: { health: { type: 'string', title: { en: 'Health' } } },
+                required: [],
+              },
             });
             await entityService.create(c, { blueprint: 'svc', identifier: 'e1', title: 'e1' });
             const output = await entityService.writeStatus(c, {
@@ -479,7 +531,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
             return { updatedBy: output.updatedBy };
           },
           setupForFailure: async (c) => {
-            await blueprintService.create(c, { identifier: 'svc', title: { en: 'svc' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'svc',
+              title: { en: 'svc' },
+              schema: emptySchema,
+            });
             await entityService.create(c, { blueprint: 'svc', identifier: 'e1', title: 'e1' });
           },
           fail: (c) =>
@@ -496,13 +552,21 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
           resourceIdentifier: 'e1',
           action: 'deleted',
           succeed: async (c) => {
-            await blueprintService.create(c, { identifier: 'svc', title: { en: 'svc' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'svc',
+              title: { en: 'svc' },
+              schema: emptySchema,
+            });
             await entityService.create(c, { blueprint: 'svc', identifier: 'e1', title: 'e1' });
             await entityService.delete(c, { blueprint: 'svc', identifier: 'e1' });
             return {};
           },
           setupForFailure: async (c) => {
-            await blueprintService.create(c, { identifier: 'svc', title: { en: 'svc' }, schema: emptySchema });
+            await blueprintService.create(c, {
+              identifier: 'svc',
+              title: { en: 'svc' },
+              schema: emptySchema,
+            });
           },
           fail: (c) => entityService.delete(c, { blueprint: 'svc', identifier: 'missing' }),
           failureCode: 'CATALOG_NOT_FOUND',
@@ -603,7 +667,11 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
       mode: 'replace',
     });
 
-    expect(output.updatedBy).toEqual({ type: 'agent', id: 'ag1', onBehalfOf: { type: 'user', id: 'u1' } });
+    expect(output.updatedBy).toEqual({
+      type: 'agent',
+      id: 'ag1',
+      onBehalfOf: { type: 'user', id: 'u1' },
+    });
 
     const events = await selectChangeEventActors(db, tenantId, 'delegated-e');
     const last = events[events.length - 1];

@@ -75,7 +75,11 @@ interface SchemaIncompatibleViolation {
  * this file asserts on is a real `catalog_entity_relation` row the entity
  * service itself wrote.
  */
-async function setupTeamAndWidget(blueprints: BlueprintService, entities: EntityService, ctx: CatalogContext): Promise<void> {
+async function setupTeamAndWidget(
+  blueprints: BlueprintService,
+  entities: EntityService,
+  ctx: CatalogContext,
+): Promise<void> {
   await blueprints.create(ctx, {
     identifier: 'team',
     title: { en: 'Team' },
@@ -93,7 +97,11 @@ async function setupTeamAndWidget(blueprints: BlueprintService, entities: Entity
 }
 
 /** Every `catalog_entity_relation` row's target, for one source entity's spec edges (a direct DB check, independent of the entity service's own read path). */
-async function specEdgeTargets(db: TestDb, tenantId: string, sourceIdentifier: string): Promise<string[]> {
+async function specEdgeTargets(
+  db: TestDb,
+  tenantId: string,
+  sourceIdentifier: string,
+): Promise<string[]> {
   const result = await db.execute<{ target_identifier: string }>(sql`
     select te.identifier as target_identifier
     from catalog_entity_relation cer
@@ -155,7 +163,9 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
         identifier: 'widget',
         title: { en: 'Widget Renamed' },
         schema: { properties: {}, required: [] },
-        relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false } },
+        relations: {
+          owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false },
+        },
         expectedVersion: before.version,
       });
 
@@ -190,7 +200,9 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
         identifier: 'widget',
         title: { en: 'Widget' },
         schema: { properties: { note: { type: 'string', title: { en: 'Note' } } }, required: [] },
-        relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false } },
+        relations: {
+          owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false },
+        },
         expectedVersion: 1,
       });
 
@@ -232,7 +244,8 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
         'CATALOG_SCHEMA_INCOMPATIBLE',
       );
 
-      const violations = error.details?.['violations'] as readonly SchemaIncompatibleViolation[] | undefined;
+      const violations = error.details?.['violations'] as
+        readonly SchemaIncompatibleViolation[] | undefined;
       expect(violations?.map((violation) => violation.entityIdentifier)).toEqual(['widget-1']);
 
       const stillCurrent = await blueprints.get(ctx, { identifier: 'widget' });
@@ -268,13 +281,16 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
           identifier: 'widget',
           title: { en: 'Widget' },
           schema: { properties: {}, required: [] },
-          relations: { owner: { title: { en: 'Owner' }, target: 'team2', many: false, required: false } },
+          relations: {
+            owner: { title: { en: 'Owner' }, target: 'team2', many: false, required: false },
+          },
           expectedVersion: 1,
         }),
         'CATALOG_SCHEMA_INCOMPATIBLE',
       );
 
-      const violations = error.details?.['violations'] as readonly SchemaIncompatibleViolation[] | undefined;
+      const violations = error.details?.['violations'] as
+        readonly SchemaIncompatibleViolation[] | undefined;
       expect(violations?.map((violation) => violation.entityIdentifier)).toEqual(['widget-1']);
 
       const stillCurrent = await blueprints.get(ctx, { identifier: 'widget' });
@@ -308,7 +324,9 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
         identifier: 'widget',
         title: { en: 'Widget' },
         schema: { properties: {}, required: [] },
-        relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true } },
+        relations: {
+          owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true },
+        },
         expectedVersion: 1,
       });
 
@@ -331,20 +349,27 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
         title: 'Widget One',
         spec: { relations: { owner: 'team-a' } },
       });
-      await entities.create(ctx, { blueprint: 'widget', identifier: 'widget-2', title: 'Widget Two' });
+      await entities.create(ctx, {
+        blueprint: 'widget',
+        identifier: 'widget-2',
+        title: 'Widget Two',
+      });
 
       const error = await expectCatalogErrorCode(
         blueprints.update(ctx, {
           identifier: 'widget',
           title: { en: 'Widget' },
           schema: { properties: {}, required: [] },
-          relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true } },
+          relations: {
+            owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true },
+          },
           expectedVersion: 1,
         }),
         'CATALOG_SCHEMA_INCOMPATIBLE',
       );
 
-      const violations = error.details?.['violations'] as readonly SchemaIncompatibleViolation[] | undefined;
+      const violations = error.details?.['violations'] as
+        readonly SchemaIncompatibleViolation[] | undefined;
       expect(violations?.map((violation) => violation.entityIdentifier)).toEqual(['widget-2']);
 
       const stillCurrent = await blueprints.get(ctx, { identifier: 'widget' });

@@ -198,7 +198,9 @@ async function readColumns(db: Db, table: string): Promise<Map<string, ColumnSpe
        and not a.attisdropped
      order by a.attnum
   `);
-  return new Map(result.rows.map((row) => [row.column, { type: row.type, nullable: row.nullable }]));
+  return new Map(
+    result.rows.map((row) => [row.column, { type: row.type, nullable: row.nullable }]),
+  );
 }
 
 function expectColumns(
@@ -282,7 +284,9 @@ function expectConstraint(rows: readonly ConstraintRow[], expected: ExpectedCons
     expect(row.columns, `"${expected.name}" columns`).toEqual([...expected.columns]);
   }
   if (expected.referencedTable !== undefined) {
-    expect(row.referencedTable, `"${expected.name}" referenced table`).toBe(expected.referencedTable);
+    expect(row.referencedTable, `"${expected.name}" referenced table`).toBe(
+      expected.referencedTable,
+    );
   }
   if (expected.referencedColumns !== undefined) {
     expect(row.referencedColumns, `"${expected.name}" referenced columns`).toEqual([
@@ -444,7 +448,9 @@ describe('0000_catalog_core migration (design D4)', () => {
       deleteRule: 'RESTRICT',
     });
 
-    const check = constraints.find((row) => row.name === 'catalog_relation_definition_many_required_check');
+    const check = constraints.find(
+      (row) => row.name === 'catalog_relation_definition_many_required_check',
+    );
     expect(check, 'the many/required check constraint exists').toBeDefined();
     expect(check?.type).toBe('c');
     expect(normalize(check?.definition ?? '')).toMatch(/NOT\s*\(\s*many\s+AND\s+required\s*\)/i);
@@ -519,7 +525,13 @@ describe('0000_catalog_core migration (design D4)', () => {
     expectConstraint(constraints, {
       name: 'catalog_entity_relation_pkey',
       type: 'p',
-      columns: ['tenant_id', 'source_entity_id', 'relation_definition_id', 'scope', 'target_entity_id'],
+      columns: [
+        'tenant_id',
+        'source_entity_id',
+        'relation_definition_id',
+        'scope',
+        'target_entity_id',
+      ],
     });
     expectConstraint(constraints, {
       name: 'catalog_entity_relation_source_fk',

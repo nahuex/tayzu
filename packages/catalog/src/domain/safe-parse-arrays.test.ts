@@ -56,8 +56,22 @@ function buildMixedNested(levels: readonly Level[]): unknown {
 
 /** 8 array levels alternated with 8 object levels: 16 total, right at the default limit. */
 const ALTERNATING_16_LEVELS: readonly Level[] = [
-  'array', 'object', 'array', 'object', 'array', 'object', 'array', 'object',
-  'array', 'object', 'array', 'object', 'array', 'object', 'array', 'object',
+  'array',
+  'object',
+  'array',
+  'object',
+  'array',
+  'object',
+  'array',
+  'object',
+  'array',
+  'object',
+  'array',
+  'object',
+  'array',
+  'object',
+  'array',
+  'object',
 ];
 
 function expectRejectedWith(fn: () => unknown, code: CatalogErrorCode): void {

@@ -288,12 +288,18 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       await blueprints.create(
         c,
         blueprintInput('service', {
-          schema: { properties: { language: { type: 'string', title: { en: 'Language' } } }, required: [] },
+          schema: {
+            properties: { language: { type: 'string', title: { en: 'Language' } } },
+            required: [],
+          },
         }),
       );
 
       const error = await expectCatalogErrorCode(
-        entities.create(c, entityInput('service', 'payments', { spec: { properties: { language: 42 } } })),
+        entities.create(
+          c,
+          entityInput('service', 'payments', { spec: { properties: { language: 42 } } }),
+        ),
         'CATALOG_VALIDATION_FAILED',
       );
       expect(error.issues?.some((issue) => issue.path === '/spec/properties/language')).toBe(true);
@@ -305,14 +311,19 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       await blueprints.create(
         c,
         blueprintInput('service', {
-          schema: { properties: { language: { type: 'string', title: { en: 'Language' } } }, required: [] },
+          schema: {
+            properties: { language: { type: 'string', title: { en: 'Language' } } },
+            required: [],
+          },
         }),
       );
 
       const error = await expectCatalogErrorCode(
         entities.create(
           c,
-          entityInput('service', 'payments', { spec: { properties: { language: 'go', colour: 'red' } } }),
+          entityInput('service', 'payments', {
+            spec: { properties: { language: 'go', colour: 'red' } },
+          }),
         ),
         'CATALOG_VALIDATION_FAILED',
       );
@@ -332,7 +343,10 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
         }),
       );
 
-      const result = await entities.create(c, entityInput('service', 'payments', { spec: { properties: {} } }));
+      const result = await entities.create(
+        c,
+        entityInput('service', 'payments', { spec: { properties: {} } }),
+      );
 
       expect(result.spec.properties['tier']).toBe('bronze');
     });
@@ -341,7 +355,10 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       const tenantId = randomTenantId();
       const c = ctx(tenantId);
 
-      await expectCatalogErrorCode(entities.create(c, entityInput('nonexistent', 'payments')), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.create(c, entityInput('nonexistent', 'payments')),
+        'CATALOG_NOT_FOUND',
+      );
     });
 
     it('Create on existing identifier', async () => {
@@ -350,12 +367,18 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       await blueprints.create(c, blueprintInput('service'));
       await entities.create(c, entityInput('service', 'payments'));
 
-      await expectCatalogErrorCode(entities.create(c, entityInput('service', 'payments')), 'CATALOG_ALREADY_EXISTS');
+      await expectCatalogErrorCode(
+        entities.create(c, entityInput('service', 'payments')),
+        'CATALOG_ALREADY_EXISTS',
+      );
     });
 
     it('Tenant cannot write entities of a reserved blueprint', async () => {
       const tenantId = randomTenantId();
-      await blueprints.create(ctx(tenantId, { type: 'system', id: 'sys' }), blueprintInput('_workflow'));
+      await blueprints.create(
+        ctx(tenantId, { type: 'system', id: 'sys' }),
+        blueprintInput('_workflow'),
+      );
 
       await expectCatalogErrorCode(
         entities.upsert(
@@ -380,7 +403,12 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       await entities.create(c, entityInput('other', 'x'));
 
       const error = await expectCatalogErrorCode(
-        entities.create(c, entityInput('service', 'payments', { spec: { properties: {}, relations: { owner: 'x' } } })),
+        entities.create(
+          c,
+          entityInput('service', 'payments', {
+            spec: { properties: {}, relations: { owner: 'x' } },
+          }),
+        ),
         'CATALOG_REFERENCE_VIOLATION',
       );
       expect(error.details?.['relation']).toBe('owner');
@@ -397,19 +425,25 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       // inside `entities.create` below rather than during setup.
       await seedChangeEventSeqCollision(db, tenantId, await nextTenantSeq(db, tenantId));
 
-      const thrown = await entities.create(c, entityInput('service', 'payments')).catch((error: unknown) => error);
+      const thrown = await entities
+        .create(c, entityInput('service', 'payments'))
+        .catch((error: unknown) => error);
 
       expect(thrown, 'the operation must reject').toBeDefined();
-      expect(isCatalogError(thrown), 'an unmapped database error must not be fabricated into a CatalogError').toBe(
-        false,
-      );
+      expect(
+        isCatalogError(thrown),
+        'an unmapped database error must not be fabricated into a CatalogError',
+      ).toBe(false);
 
       await harness.forceFlush();
       const span = onlySpan(harness.spanExporter, 'catalog.entity.create');
       expect(span.attributes['error.type']).toBe('internal');
 
       // The whole transaction rolled back: the entity row must not exist.
-      await expectCatalogErrorCode(entities.get(c, { blueprint: 'service', identifier: 'payments' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.get(c, { blueprint: 'service', identifier: 'payments' }),
+        'CATALOG_NOT_FOUND',
+      );
     });
 
     it('records the catalog.entity.create span, the catalog.entity.validate child span, and the entity.mutations counter', async () => {
@@ -430,7 +464,9 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
         'tayzu.catalog.entity.identifier': 'payments',
       });
 
-      expect(finishedSpans(harness.spanExporter, 'catalog.entity.validate').length).toBeGreaterThanOrEqual(1);
+      expect(
+        finishedSpans(harness.spanExporter, 'catalog.entity.validate').length,
+      ).toBeGreaterThanOrEqual(1);
 
       const points = sumDataPoints(harness.metricExporter, 'tayzu.catalog.entity.mutations');
       const matching = points.filter((point) => point.attributes['tayzu.tenant.id'] === tenantId);
@@ -463,7 +499,10 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       const c = ctx(tenantId);
       await blueprints.create(c, blueprintInput('service'));
 
-      await expectCatalogErrorCode(entities.get(c, { blueprint: 'service', identifier: 'ghost' }), 'CATALOG_NOT_FOUND');
+      await expectCatalogErrorCode(
+        entities.get(c, { blueprint: 'service', identifier: 'ghost' }),
+        'CATALOG_NOT_FOUND',
+      );
     });
 
     it('lists entities of one blueprint with pagination', async () => {
@@ -478,7 +517,11 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
       expect(firstPage.items.map((item: EntityOutput) => item.identifier)).toEqual(['a', 'b']);
       expect(firstPage.cursor).toBeDefined();
 
-      const secondPage = await entities.list(c, { blueprint: 'service', pageSize: 2, cursor: firstPage.cursor });
+      const secondPage = await entities.list(c, {
+        blueprint: 'service',
+        pageSize: 2,
+        cursor: firstPage.cursor,
+      });
       expect(secondPage.items.map((item: EntityOutput) => item.identifier)).toEqual(['c']);
       expect(secondPage.cursor).toBeUndefined();
     });

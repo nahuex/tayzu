@@ -48,7 +48,9 @@ export function createCatalogRouter(services: CatalogRouterServices) {
       create: os.blueprints.create.handler(({ context, input }) =>
         run(() => services.blueprints.create(context, input)),
       ),
-      list: os.blueprints.list.handler(({ context, input }) => run(() => services.blueprints.list(context, input))),
+      list: os.blueprints.list.handler(({ context, input }) =>
+        run(() => services.blueprints.list(context, input)),
+      ),
       get: os.blueprints.get.handler(({ context, input }) =>
         run(() => services.blueprints.get(context, { identifier: input.blueprint })),
       ),
@@ -71,10 +73,16 @@ export function createCatalogRouter(services: CatalogRouterServices) {
       ),
     },
     entities: {
-      create: os.entities.create.handler(({ context, input }) => run(() => services.entities.create(context, input))),
-      list: os.entities.list.handler(({ context, input }) => run(() => services.entities.list(context, input))),
+      create: os.entities.create.handler(({ context, input }) =>
+        run(() => services.entities.create(context, input)),
+      ),
+      list: os.entities.list.handler(({ context, input }) =>
+        run(() => services.entities.list(context, input)),
+      ),
       get: os.entities.get.handler(({ context, input }) =>
-        run(() => services.entities.get(context, { blueprint: input.blueprint, identifier: input.entity })),
+        run(() =>
+          services.entities.get(context, { blueprint: input.blueprint, identifier: input.entity }),
+        ),
       ),
       upsert: os.entities.upsert.handler(({ context, input }) =>
         run(() =>

@@ -60,7 +60,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing: see the module doc comment above.
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
-import { connect, databaseUrl, endQuietly, randomTenantId, type TestDb } from './__fixtures__/blueprint-test-helpers.js';
+import {
+  connect,
+  databaseUrl,
+  endQuietly,
+  randomTenantId,
+  type TestDb,
+} from './__fixtures__/blueprint-test-helpers.js';
 import { finishedLogRecords, finishedSpans } from './__fixtures__/telemetry-assertions.js';
 import type { CatalogContext } from '../domain/context.js';
 import { isCatalogError } from '../domain/errors.js';
@@ -148,79 +154,88 @@ describe('defineCatalogOperation: sanitizing a real DrizzleQueryError (design D3
     await endQuietly(pool);
   }, 60_000);
 
-  it(
-    'records only sanitized stack frames (no SQL, no "params:" line, no marker) in exception.stacktrace, and takes db.response.status_code / tayzu.db.constraint from the DrizzleQueryError.cause chain',
-    async () => {
-      const tenantId = randomTenantId();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'user', id: 'user-1' } };
+  it('records only sanitized stack frames (no SQL, no "params:" line, no marker) in exception.stacktrace, and takes db.response.status_code / tayzu.db.constraint from the DrizzleQueryError.cause chain', async () => {
+    const tenantId = randomTenantId();
+    const ctx: CatalogContext = { tenantId, actor: { type: 'user', id: 'user-1' } };
 
-      const thrown = await leakOperation(ctx, {}).then(
-        () => undefined,
-        (error: unknown) => error,
-      );
+    const thrown = await leakOperation(ctx, {}).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
 
-      expect(thrown, 'the second, colliding insert must reject the operation').toBeDefined();
-      expect(
-        isCatalogError(thrown),
-        'a real DrizzleQueryError must never be fabricated into a CatalogError by the pipeline',
-      ).toBe(false);
-      expect((thrown as { constructor: { name: string } }).constructor.name).toBe('DrizzleQueryError');
+    expect(thrown, 'the second, colliding insert must reject the operation').toBeDefined();
+    expect(
+      isCatalogError(thrown),
+      'a real DrizzleQueryError must never be fabricated into a CatalogError by the pipeline',
+    ).toBe(false);
+    expect((thrown as { constructor: { name: string } }).constructor.name).toBe(
+      'DrizzleQueryError',
+    );
 
-      await harness.forceFlush();
+    await harness.forceFlush();
 
-      const spans = finishedSpans(harness.spanExporter, DUMMY_SPAN_NAME);
-      expect(spans).toHaveLength(1);
-      const span = spans[0];
-      if (span === undefined) throw new Error('unreachable: length was just asserted to be 1');
-      expect(span.status.code).toBe(SpanStatusCode.ERROR);
-      expect(span.attributes['error.type']).toBe('internal');
+    const spans = finishedSpans(harness.spanExporter, DUMMY_SPAN_NAME);
+    expect(spans).toHaveLength(1);
+    const span = spans[0];
+    if (span === undefined) throw new Error('unreachable: length was just asserted to be 1');
+    expect(span.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span.attributes['error.type']).toBe('internal');
 
-      const exceptionEvents = span.events.filter((event) => event.name === 'exception');
-      expect(exceptionEvents).toHaveLength(1);
-      const attributes = exceptionEvents[0]?.attributes ?? {};
+    const exceptionEvents = span.events.filter((event) => event.name === 'exception');
+    expect(exceptionEvents).toHaveLength(1);
+    const attributes = exceptionEvents[0]?.attributes ?? {};
 
-      // design.md, Spans table / D11: exactly these four sanitized keys --
-      // db.response.status_code and tayzu.db.constraint must be present, read
-      // from the real pg DatabaseError nested in DrizzleQueryError.cause,
-      // exactly like persistence/db-errors.ts's own pgErrorInfo does for the
-      // mapped-error path.
-      expect(Object.keys(attributes).sort()).toEqual(
-        ['db.response.status_code', 'exception.stacktrace', 'exception.type', 'tayzu.db.constraint'].sort(),
-      );
-      expect(attributes['exception.type']).toBe('DrizzleQueryError');
-      expect(attributes['db.response.status_code']).toBe(UNIQUE_VIOLATION_SQLSTATE);
-      expect(attributes['tayzu.db.constraint']).toBe(VIOLATED_CONSTRAINT);
+    // design.md, Spans table / D11: exactly these four sanitized keys --
+    // db.response.status_code and tayzu.db.constraint must be present, read
+    // from the real pg DatabaseError nested in DrizzleQueryError.cause,
+    // exactly like persistence/db-errors.ts's own pgErrorInfo does for the
+    // mapped-error path.
+    expect(Object.keys(attributes).sort()).toEqual(
+      [
+        'db.response.status_code',
+        'exception.stacktrace',
+        'exception.type',
+        'tayzu.db.constraint',
+      ].sort(),
+    );
+    expect(attributes['exception.type']).toBe('DrizzleQueryError');
+    expect(attributes['db.response.status_code']).toBe(UNIQUE_VIOLATION_SQLSTATE);
+    expect(attributes['tayzu.db.constraint']).toBe(VIOLATED_CONSTRAINT);
 
-      const stacktrace = stringAttribute(attributes['exception.stacktrace']);
-      expect(stacktrace.length).toBeGreaterThan(0);
-      expect(stacktrace).not.toContain(MARKER);
-      expect(stacktrace.toLowerCase()).not.toContain('params:');
-      expect(stacktrace.toLowerCase()).not.toContain('insert into');
-      expect(stacktrace.toLowerCase()).not.toContain('failed query');
+    const stacktrace = stringAttribute(attributes['exception.stacktrace']);
+    expect(stacktrace.length).toBeGreaterThan(0);
+    expect(stacktrace).not.toContain(MARKER);
+    expect(stacktrace.toLowerCase()).not.toContain('params:');
+    expect(stacktrace.toLowerCase()).not.toContain('insert into');
+    expect(stacktrace.toLowerCase()).not.toContain('failed query');
 
-      // "only stack frames": every non-blank line, once trimmed, is a real
-      // V8 call-site line ("    at ..."), never a leftover message line.
-      const lines = stacktrace.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
-      expect(lines.length).toBeGreaterThan(0);
-      for (const line of lines) {
-        expect(line.startsWith('at '), `stacktrace line "${line}" is not a stack frame`).toBe(true);
-      }
+    // "only stack frames": every non-blank line, once trimmed, is a real
+    // V8 call-site line ("    at ..."), never a leftover message line.
+    const lines = stacktrace
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line.startsWith('at '), `stacktrace line "${line}" is not a stack frame`).toBe(true);
+    }
 
-      const logs = finishedLogRecords(harness.logExporter, 'catalog.internal_error');
-      expect(logs).toHaveLength(1);
-      const record = logs[0];
-      expect(record?.severityNumber).toBe(SeverityNumber.ERROR);
-      expect(record?.attributes['db.response.status_code']).toBe(UNIQUE_VIOLATION_SQLSTATE);
-      expect(record?.attributes['tayzu.db.constraint']).toBe(VIOLATED_CONSTRAINT);
-      const logStacktrace = stringAttribute(record?.attributes['exception.stacktrace']);
-      expect(logStacktrace).not.toContain(MARKER);
-      expect(logStacktrace.toLowerCase()).not.toContain('params:');
+    const logs = finishedLogRecords(harness.logExporter, 'catalog.internal_error');
+    expect(logs).toHaveLength(1);
+    const record = logs[0];
+    expect(record?.severityNumber).toBe(SeverityNumber.ERROR);
+    expect(record?.attributes['db.response.status_code']).toBe(UNIQUE_VIOLATION_SQLSTATE);
+    expect(record?.attributes['tayzu.db.constraint']).toBe(VIOLATED_CONSTRAINT);
+    const logStacktrace = stringAttribute(record?.attributes['exception.stacktrace']);
+    expect(logStacktrace).not.toContain(MARKER);
+    expect(logStacktrace.toLowerCase()).not.toContain('params:');
 
-      // A last, independent sweep across the whole serialized signal, same
-      // pattern as otel-smoke-check.int.test.ts's own marker-leak check.
-      const sanitizedSignals = JSON.stringify({ spanEvent: attributes, logAttributes: record?.attributes });
-      expect(sanitizedSignals).not.toContain(MARKER);
-    },
-    60_000,
-  );
+    // A last, independent sweep across the whole serialized signal, same
+    // pattern as otel-smoke-check.int.test.ts's own marker-leak check.
+    const sanitizedSignals = JSON.stringify({
+      spanEvent: attributes,
+      logAttributes: record?.attributes,
+    });
+    expect(sanitizedSignals).not.toContain(MARKER);
+  }, 60_000);
 });

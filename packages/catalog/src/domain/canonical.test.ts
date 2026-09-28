@@ -85,7 +85,11 @@ describe('detecting an unchanged entity write (title, icon, spec triple)', () =>
 
   it('treats a title change as changed', () => {
     const before = { title: 'Payments', icon: 'server', spec: { properties: {}, relations: {} } };
-    const after = { title: 'Payments Service', icon: 'server', spec: { properties: {}, relations: {} } };
+    const after = {
+      title: 'Payments Service',
+      icon: 'server',
+      spec: { properties: {}, relations: {} },
+    };
 
     expect(areCanonicallyEqual(before, after)).toBe(false);
   });

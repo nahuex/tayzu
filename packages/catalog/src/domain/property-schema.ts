@@ -74,23 +74,50 @@ const STRING_FORMATS: ReadonlySet<string> = new Set([
 
 /** Keywords allowed on a top-level property definition, one set per `type`. */
 const STRING_PROPERTY_KEYWORDS: ReadonlySet<string> = new Set([
-  'type', 'title', 'format', 'minLength', 'maxLength', 'pattern', 'enum', 'default',
+  'type',
+  'title',
+  'format',
+  'minLength',
+  'maxLength',
+  'pattern',
+  'enum',
+  'default',
 ]);
 const NUMBER_PROPERTY_KEYWORDS: ReadonlySet<string> = new Set([
-  'type', 'title', 'minimum', 'maximum', 'enum', 'default',
+  'type',
+  'title',
+  'minimum',
+  'maximum',
+  'enum',
+  'default',
 ]);
 const BOOLEAN_PROPERTY_KEYWORDS: ReadonlySet<string> = new Set(['type', 'title', 'default']);
 const ARRAY_PROPERTY_KEYWORDS: ReadonlySet<string> = new Set([
-  'type', 'title', 'items', 'minItems', 'maxItems', 'uniqueItems',
+  'type',
+  'title',
+  'items',
+  'minItems',
+  'maxItems',
+  'uniqueItems',
 ]);
 const OBJECT_PROPERTY_KEYWORDS: ReadonlySet<string> = new Set(['type', 'title']);
 
 /** The same keyword sets, minus `title`, for an array's `items` definition. */
 const STRING_ITEM_KEYWORDS: ReadonlySet<string> = new Set([
-  'type', 'format', 'minLength', 'maxLength', 'pattern', 'enum', 'default',
+  'type',
+  'format',
+  'minLength',
+  'maxLength',
+  'pattern',
+  'enum',
+  'default',
 ]);
 const NUMBER_ITEM_KEYWORDS: ReadonlySet<string> = new Set([
-  'type', 'minimum', 'maximum', 'enum', 'default',
+  'type',
+  'minimum',
+  'maximum',
+  'enum',
+  'default',
 ]);
 const BOOLEAN_ITEM_KEYWORDS: ReadonlySet<string> = new Set(['type', 'default']);
 
@@ -139,7 +166,11 @@ function fail(path: string): never {
 }
 
 /** Any key of `value` outside `known` is an unrecognized keyword or construct. */
-function rejectUnknownKeys(value: Record<string, unknown>, known: ReadonlySet<string>, path: string): void {
+function rejectUnknownKeys(
+  value: Record<string, unknown>,
+  known: ReadonlySet<string>,
+  path: string,
+): void {
   for (const key of Object.keys(value)) {
     if (!known.has(key)) fail(`${path}/${key}`);
   }
@@ -175,8 +206,10 @@ function parseStringKeywords(
     if (typeof format !== 'string' || !STRING_FORMATS.has(format)) fail(`${path}/format`);
     result.format = format as StringFormat;
   }
-  if ('minLength' in value) result.minLength = parseNumberKeyword(value['minLength'], `${path}/minLength`);
-  if ('maxLength' in value) result.maxLength = parseNumberKeyword(value['maxLength'], `${path}/maxLength`);
+  if ('minLength' in value)
+    result.minLength = parseNumberKeyword(value['minLength'], `${path}/minLength`);
+  if ('maxLength' in value)
+    result.maxLength = parseNumberKeyword(value['maxLength'], `${path}/maxLength`);
   if ('pattern' in value) result.pattern = parsePattern(value['pattern'], `${path}/pattern`);
   if ('enum' in value) {
     const rawEnum = value['enum'];
@@ -253,8 +286,10 @@ function parseArrayKeywords(
   const result: Omit<ArrayPropertyDefinition, 'type' | 'title'> = {
     items: parseArrayItemDefinition(value['items'], `${path}/items`),
   };
-  if ('minItems' in value) result.minItems = parseNumberKeyword(value['minItems'], `${path}/minItems`);
-  if ('maxItems' in value) result.maxItems = parseNumberKeyword(value['maxItems'], `${path}/maxItems`);
+  if ('minItems' in value)
+    result.minItems = parseNumberKeyword(value['minItems'], `${path}/minItems`);
+  if ('maxItems' in value)
+    result.maxItems = parseNumberKeyword(value['maxItems'], `${path}/maxItems`);
   if ('uniqueItems' in value) {
     result.uniqueItems = parseBooleanKeyword(value['uniqueItems'], `${path}/uniqueItems`);
   }

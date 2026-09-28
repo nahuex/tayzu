@@ -109,7 +109,11 @@ interface BlueprintFixture {
   readonly identifier: string;
 }
 
-async function insertBlueprint(db: Db, tenantId: string, identifier: string): Promise<BlueprintFixture> {
+async function insertBlueprint(
+  db: Db,
+  tenantId: string,
+  identifier: string,
+): Promise<BlueprintFixture> {
   const blueprintId = randomUUID();
   await db.execute(sql`
     insert into catalog_blueprint
@@ -190,7 +194,9 @@ describe('database-level tenant isolation (design D4, D9): raw inserts, no servi
       order by tenant_id
     `);
     expect(blueprintRows.rows).toHaveLength(2);
-    expect(new Set(blueprintRows.rows.map((row) => row.tenant_id))).toEqual(new Set([tenantA, tenantB]));
+    expect(new Set(blueprintRows.rows.map((row) => row.tenant_id))).toEqual(
+      new Set([tenantA, tenantB]),
+    );
     for (const row of blueprintRows.rows) {
       expect(row.identifier).toBe(sharedBlueprintIdentifier);
     }
@@ -200,7 +206,9 @@ describe('database-level tenant isolation (design D4, D9): raw inserts, no servi
       order by tenant_id
     `);
     expect(entityRows.rows).toHaveLength(2);
-    expect(new Set(entityRows.rows.map((row) => row.tenant_id))).toEqual(new Set([tenantA, tenantB]));
+    expect(new Set(entityRows.rows.map((row) => row.tenant_id))).toEqual(
+      new Set([tenantA, tenantB]),
+    );
     for (const row of entityRows.rows) {
       expect(row.identifier).toBe(sharedEntityIdentifier);
     }
@@ -214,7 +222,12 @@ describe('database-level tenant isolation (design D4, D9): raw inserts, no servi
     const blueprintB = await insertBlueprint(db, tenantB, 'target-bp');
     const entityA = await insertEntity(db, blueprintA, 'source-entity');
     const entityB = await insertEntity(db, blueprintB, 'target-entity');
-    const relationDefinitionId = await insertRelationDefinition(db, blueprintA, blueprintA, 'points-to');
+    const relationDefinitionId = await insertRelationDefinition(
+      db,
+      blueprintA,
+      blueprintA,
+      'points-to',
+    );
 
     let caught: unknown;
     try {
@@ -238,7 +251,9 @@ describe('database-level tenant isolation (design D4, D9): raw inserts, no servi
     expect(caught, 'the cross-tenant edge insert must fail').toBeDefined();
     const pgError = pgErrorOf(caught);
     expect(pgError.code, 'SQLSTATE for the cross-tenant edge insert').toBe(FK_VIOLATION_SQLSTATE);
-    expect(pgError.constraint, 'violated constraint name').toBe('catalog_entity_relation_target_fk');
+    expect(pgError.constraint, 'violated constraint name').toBe(
+      'catalog_entity_relation_target_fk',
+    );
 
     const edgeRows = await db.execute<{ target_entity_id: string }>(sql`
       select target_entity_id from catalog_entity_relation

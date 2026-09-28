@@ -57,7 +57,11 @@ import {
 } from './__fixtures__/blueprint-test-helpers.js';
 import { onlySpan } from './__fixtures__/telemetry-assertions.js';
 import type { CatalogContext } from '../domain/context.js';
-import { createBlueprintService, type BlueprintService, type CreateBlueprintInput } from './blueprints.js';
+import {
+  createBlueprintService,
+  type BlueprintService,
+  type CreateBlueprintInput,
+} from './blueprints.js';
 
 function registeredHarness(): TelemetryTestHarness {
   if ('error' in registration) {
@@ -75,7 +79,10 @@ function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): 
   return { tenantId, actor };
 }
 
-function blueprintInput(identifier: string, overrides: Partial<CreateBlueprintInput> = {}): CreateBlueprintInput {
+function blueprintInput(
+  identifier: string,
+  overrides: Partial<CreateBlueprintInput> = {},
+): CreateBlueprintInput {
   return {
     identifier,
     title: { en: identifier },
@@ -124,7 +131,9 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
 
     const seededIdentifiers = ['e0', 'e1', 'e2', 'e3', 'e4'];
     for (const identifier of seededIdentifiers) {
-      await seedEntity(db, tenantId, blueprintId, identifier, { specProperties: { language: 'go' } });
+      await seedEntity(db, tenantId, blueprintId, identifier, {
+        specProperties: { language: 'go' },
+      });
     }
     const before = await selectEntitySpecs(db, tenantId, blueprintId);
     expect(before).toHaveLength(5);
@@ -182,7 +191,8 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
       'CATALOG_SCHEMA_INCOMPATIBLE',
     );
 
-    const violations = error.details?.['violations'] as readonly SchemaIncompatibleViolation[] | undefined;
+    const violations = error.details?.['violations'] as
+      readonly SchemaIncompatibleViolation[] | undefined;
     expect(violations?.map((violation) => violation.entityIdentifier).sort()).toEqual(['e1', 'e2']);
 
     // "the blueprint stays at its previous version"
@@ -214,7 +224,8 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
       'CATALOG_SCHEMA_INCOMPATIBLE',
     );
 
-    const violations = error.details?.['violations'] as readonly SchemaIncompatibleViolation[] | undefined;
+    const violations = error.details?.['violations'] as
+      readonly SchemaIncompatibleViolation[] | undefined;
     expect(violations?.map((violation) => violation.entityIdentifier)).toEqual(['payments']);
   });
 
@@ -222,7 +233,11 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
     const tenantId = randomTenantId();
     const c = ctx(tenantId);
     await service.create(c, blueprintInput('service'));
-    await service.update(c, { identifier: 'service', title: { en: 'service' }, schema: { properties: {}, required: [] } }); // version 2
+    await service.update(c, {
+      identifier: 'service',
+      title: { en: 'service' },
+      schema: { properties: {}, required: [] },
+    }); // version 2
     const atVersionThree = await service.update(c, {
       identifier: 'service',
       title: { en: 'service' },

@@ -68,7 +68,12 @@ export async function selectBlueprintRow(
   identifier: string,
   options: { readonly forUpdate?: boolean; readonly forShare?: boolean } = {},
 ): Promise<BlueprintRow | undefined> {
-  const lockClause = options.forUpdate === true ? sql` for update` : options.forShare === true ? sql` for share` : sql``;
+  const lockClause =
+    options.forUpdate === true
+      ? sql` for update`
+      : options.forShare === true
+        ? sql` for share`
+        : sql``;
   const result = await tx.execute<BlueprintRow>(sql`
     select ${BLUEPRINT_COLUMNS}
     from catalog_blueprint
@@ -90,7 +95,9 @@ export async function selectBlueprintsPage(
   options: BlueprintsPageOptions,
 ): Promise<BlueprintRow[]> {
   const cursorClause =
-    options.afterIdentifier !== undefined ? sql`and identifier > ${options.afterIdentifier}` : sql``;
+    options.afterIdentifier !== undefined
+      ? sql`and identifier > ${options.afterIdentifier}`
+      : sql``;
   const result = await tx.execute<BlueprintRow>(sql`
     select ${BLUEPRINT_COLUMNS}
     from catalog_blueprint
@@ -128,7 +135,10 @@ export interface InsertBlueprintRowParams {
 }
 
 /** Inserts one `catalog_blueprint` row. May reject with a unique-violation on `catalog_blueprint_tenant_identifier_uq`. */
-export async function insertBlueprintRow(tx: BlueprintRepositoryTx, row: InsertBlueprintRowParams): Promise<void> {
+export async function insertBlueprintRow(
+  tx: BlueprintRepositoryTx,
+  row: InsertBlueprintRowParams,
+): Promise<void> {
   await tx.execute(sql`
     insert into catalog_blueprint
       (id, tenant_id, identifier, title, description, icon, schema, status_schema, version,
@@ -156,7 +166,10 @@ export interface UpdateBlueprintRowParams {
 }
 
 /** Replaces a blueprint's mutable fields (design D7: "replace its mutable fields ... and increment version"). */
-export async function updateBlueprintRow(tx: BlueprintRepositoryTx, row: UpdateBlueprintRowParams): Promise<void> {
+export async function updateBlueprintRow(
+  tx: BlueprintRepositoryTx,
+  row: UpdateBlueprintRowParams,
+): Promise<void> {
   await tx.execute(sql`
     update catalog_blueprint set
       title = ${JSON.stringify(row.title)}::jsonb,
@@ -180,7 +193,11 @@ export async function updateBlueprintRow(tx: BlueprintRepositoryTx, row: UpdateB
  * spec "Blueprint deletion"). Its own relation definitions (as source) are
  * removed by `catalog_relation_definition_source_blueprint_fk`'s `CASCADE`.
  */
-export async function deleteBlueprintRow(tx: BlueprintRepositoryTx, tenantId: string, id: string): Promise<void> {
+export async function deleteBlueprintRow(
+  tx: BlueprintRepositoryTx,
+  tenantId: string,
+  id: string,
+): Promise<void> {
   await tx.execute(sql`delete from catalog_blueprint where tenant_id = ${tenantId} and id = ${id}`);
 }
 
@@ -336,7 +353,10 @@ async function selectRelationEdgesForEntities(
 }
 
 /** A relation definition's identifier and cardinality, keyed by its internal `id` (uuid). */
-export type RelationDefinitionById = ReadonlyMap<string, { readonly identifier: string; readonly many: boolean }>;
+export type RelationDefinitionById = ReadonlyMap<
+  string,
+  { readonly identifier: string; readonly many: boolean }
+>;
 
 function assembleRelationBag(
   edges: readonly RawEdgeRow[],

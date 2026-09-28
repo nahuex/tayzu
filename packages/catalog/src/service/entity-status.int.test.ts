@@ -203,7 +203,11 @@ import {
 } from './__fixtures__/blueprint-test-helpers.js';
 import { blueprintInput, ctx, entityInput } from './__fixtures__/entity-a-test-helpers.js';
 import { onlySpan, sumDataPoints } from './__fixtures__/telemetry-assertions.js';
-import { createBlueprintService, type BlueprintService, type CreateBlueprintInput } from './blueprints.js';
+import {
+  createBlueprintService,
+  type BlueprintService,
+  type CreateBlueprintInput,
+} from './blueprints.js';
 import { createEntityService, type EntityService } from './entities.js';
 
 function registeredHarness(): TelemetryTestHarness {
@@ -220,9 +224,14 @@ const INTEGRATION_ACTOR = { type: 'integration' as const, id: 'github' };
 
 function serviceBlueprintWithStatusAndDependsOn(): CreateBlueprintInput {
   return blueprintInput('service', {
-    schema: { properties: { language: { type: 'string', title: { en: 'Language' } } }, required: [] },
+    schema: {
+      properties: { language: { type: 'string', title: { en: 'Language' } } },
+      required: [],
+    },
     statusSchema: {
-      properties: { lastDeployAt: { type: 'string', format: 'date-time', title: { en: 'Last deploy' } } },
+      properties: {
+        lastDeployAt: { type: 'string', format: 'date-time', title: { en: 'Last deploy' } },
+      },
       required: [],
     },
     relations: { dependsOn: { title: { en: 'Depends on' }, target: 'service', many: true } },
@@ -256,10 +265,19 @@ describe('entities.writeStatus (service; design D3, D4, D9, D11; task 8.4)', () 
   /** Creates `payments` and bumps it to `generation` 2 with one spec-changing upsert. */
   async function createPaymentsAtGeneration2(tenantId: string): Promise<void> {
     const c = ctx(tenantId);
-    await entities.upsert(c, entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'go' } } }));
     await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'rust' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'go' } },
+      }),
+    );
+    await entities.upsert(
+      c,
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'rust' } },
+      }),
     );
   }
 
@@ -289,8 +307,9 @@ describe('entities.writeStatus (service; design D3, D4, D9, D11; task 8.4)', () 
     await entities.create(c, entityInput('service', 'ledger'));
     await entities.create(c, entityInput('service', 'auth'));
     await createPaymentsAtGeneration2(tenantId);
-    const specRelationsBefore = (await entities.get(c, { blueprint: 'service', identifier: 'payments' })).spec
-      .relations;
+    const specRelationsBefore = (
+      await entities.get(c, { blueprint: 'service', identifier: 'payments' })
+    ).spec.relations;
 
     const result = await entities.writeStatus(ctx(tenantId, INTEGRATION_ACTOR), {
       blueprint: 'service',

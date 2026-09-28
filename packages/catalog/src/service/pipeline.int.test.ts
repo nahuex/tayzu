@@ -161,7 +161,9 @@ type InMemorySpanExporterLike = TelemetryTestHarness['spanExporter'];
 type ReadableSpanLike = ReturnType<InMemorySpanExporterLike['getFinishedSpans']>[number];
 type InMemoryMetricExporterLike = TelemetryTestHarness['metricExporter'];
 type InMemoryLogRecordExporterLike = TelemetryTestHarness['logExporter'];
-type ReadableLogRecordLike = ReturnType<InMemoryLogRecordExporterLike['getFinishedLogRecords']>[number];
+type ReadableLogRecordLike = ReturnType<
+  InMemoryLogRecordExporterLike['getFinishedLogRecords']
+>[number];
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -222,7 +224,10 @@ function onlySpan(exporter: InMemorySpanExporterLike, name: string): ReadableSpa
   return span;
 }
 
-function finishedLogRecords(exporter: { getFinishedLogRecords(): readonly ReadableLogRecordLike[] }, eventName: string): ReadableLogRecordLike[] {
+function finishedLogRecords(
+  exporter: { getFinishedLogRecords(): readonly ReadableLogRecordLike[] },
+  eventName: string,
+): ReadableLogRecordLike[] {
   return [...exporter.getFinishedLogRecords()].filter((record) => record.eventName === eventName);
 }
 
@@ -255,8 +260,11 @@ function sumDataPoints(exporter: InMemoryMetricExporterLike, name: string): Capt
         // dataPointType's real enum type is intentionally not imported (see the comment
         // above); the numeric value it compares against is that same enum's own stable,
         // documented value.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-        if (metric.descriptor.name === name && metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM) {
+        if (
+          metric.descriptor.name === name &&
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+          metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+        ) {
           for (const dataPoint of metric.dataPoints) {
             points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
           }
@@ -273,14 +281,20 @@ interface CapturedHistogramPoint {
 }
 
 /** Every HISTOGRAM data point of `name`, across every export the exporter holds. */
-function histogramDataPoints(exporter: InMemoryMetricExporterLike, name: string): CapturedHistogramPoint[] {
+function histogramDataPoints(
+  exporter: InMemoryMetricExporterLike,
+  name: string,
+): CapturedHistogramPoint[] {
   const points: CapturedHistogramPoint[] = [];
   for (const resourceMetrics of exporter.getMetrics()) {
     for (const scopeMetrics of resourceMetrics.scopeMetrics) {
       for (const metric of scopeMetrics.metrics) {
         // See the eslint-disable comment in sumDataPoints above.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-        if (metric.descriptor.name === name && metric.dataPointType === METRIC_DATA_POINT_TYPE_HISTOGRAM) {
+        if (
+          metric.descriptor.name === name &&
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+          metric.dataPointType === METRIC_DATA_POINT_TYPE_HISTOGRAM
+        ) {
           for (const dataPoint of metric.dataPoints) {
             const value = dataPoint.value as { readonly count: number };
             points.push({ attributes: dataPoint.attributes, count: value.count });
@@ -416,79 +430,79 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
     await endQuietly(pool);
   }, 60_000);
 
-  describe(
-    'context validation (design D3 step 1; spec "Tenant context is mandatory and fails closed")',
-    () => {
-      it('rejects a context with no tenantId: CATALOG_CONTEXT_REQUIRED, context.rejections, the WARN log, no span, and the handler never runs', async () => {
-        const rawContext = { actor: { type: 'user', id: 'user-1' } };
+  describe('context validation (design D3 step 1; spec "Tenant context is mandatory and fails closed")', () => {
+    it('rejects a context with no tenantId: CATALOG_CONTEXT_REQUIRED, context.rejections, the WARN log, no span, and the handler never runs', async () => {
+      const rawContext = { actor: { type: 'user', id: 'user-1' } };
 
-        const thrown = await dummyOperation(rawContext, { mode: 'success' }).catch(
-          (error: unknown) => error,
-        );
+      const thrown = await dummyOperation(rawContext, { mode: 'success' }).catch(
+        (error: unknown) => error,
+      );
 
-        expect(isCatalogError(thrown)).toBe(true);
-        if (isCatalogError(thrown)) {
-          expect(thrown.code).toBe('CATALOG_CONTEXT_REQUIRED');
-          expect(thrown.details?.['reason']).toBe('missing_tenant');
-        }
-        expect(handlerCalls, 'the handler must never run: no data may be read or written').toHaveLength(0);
+      expect(isCatalogError(thrown)).toBe(true);
+      if (isCatalogError(thrown)) {
+        expect(thrown.code).toBe('CATALOG_CONTEXT_REQUIRED');
+        expect(thrown.details?.['reason']).toBe('missing_tenant');
+      }
+      expect(
+        handlerCalls,
+        'the handler must never run: no data may be read or written',
+      ).toHaveLength(0);
 
-        await harness.forceFlush();
+      await harness.forceFlush();
 
-        expect(
-          finishedSpans(harness.spanExporter, DUMMY_SPAN_NAME),
-          'no operation span is started on a context rejection (design D3: validation is step 1, the span is step 2)',
-        ).toHaveLength(0);
+      expect(
+        finishedSpans(harness.spanExporter, DUMMY_SPAN_NAME),
+        'no operation span is started on a context rejection (design D3: validation is step 1, the span is step 2)',
+      ).toHaveLength(0);
 
-        const rejections = sumDataPoints(harness.metricExporter, 'tayzu.catalog.context.rejections');
-        expect(rejections).toHaveLength(1);
-        expect(rejections[0]?.value).toBe(1);
-        expect(rejections[0]?.attributes).toEqual({
-          'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
-          'tayzu.catalog.context.reason': 'missing_tenant',
-        });
-
-        const logs = finishedLogRecords(harness.logExporter, 'catalog.security.context_rejected');
-        expect(logs).toHaveLength(1);
-        expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
-        expect(logs[0]?.attributes).toEqual({
-          'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
-          'tayzu.catalog.context.reason': 'missing_tenant',
-        });
+      const rejections = sumDataPoints(harness.metricExporter, 'tayzu.catalog.context.rejections');
+      expect(rejections).toHaveLength(1);
+      expect(rejections[0]?.value).toBe(1);
+      expect(rejections[0]?.attributes).toEqual({
+        'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
+        'tayzu.catalog.context.reason': 'missing_tenant',
       });
 
-      it('rejects an unknown actor type with reason invalid_actor, on the counter and the log alike', async () => {
-        const rawContext = { tenantId: randomTenantId(), actor: { type: 'robot', id: 'x' } };
-
-        const thrown = await dummyOperation(rawContext, { mode: 'success' }).catch(
-          (error: unknown) => error,
-        );
-
-        expect(isCatalogError(thrown)).toBe(true);
-        if (isCatalogError(thrown)) {
-          expect(thrown.code).toBe('CATALOG_CONTEXT_REQUIRED');
-          expect(thrown.details?.['reason']).toBe('invalid_actor');
-        }
-        expect(handlerCalls).toHaveLength(0);
-
-        await harness.forceFlush();
-
-        const rejections = sumDataPoints(harness.metricExporter, 'tayzu.catalog.context.rejections');
-        expect(rejections).toHaveLength(1);
-        expect(rejections[0]?.attributes).toEqual({
-          'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
-          'tayzu.catalog.context.reason': 'invalid_actor',
-        });
-
-        const logs = finishedLogRecords(harness.logExporter, 'catalog.security.context_rejected');
-        expect(logs).toHaveLength(1);
-        expect(logs[0]?.attributes).toEqual({
-          'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
-          'tayzu.catalog.context.reason': 'invalid_actor',
-        });
+      const logs = finishedLogRecords(harness.logExporter, 'catalog.security.context_rejected');
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+      expect(logs[0]?.attributes).toEqual({
+        'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
+        'tayzu.catalog.context.reason': 'missing_tenant',
       });
-    },
-  );
+    });
+
+    it('rejects an unknown actor type with reason invalid_actor, on the counter and the log alike', async () => {
+      const rawContext = { tenantId: randomTenantId(), actor: { type: 'robot', id: 'x' } };
+
+      const thrown = await dummyOperation(rawContext, { mode: 'success' }).catch(
+        (error: unknown) => error,
+      );
+
+      expect(isCatalogError(thrown)).toBe(true);
+      if (isCatalogError(thrown)) {
+        expect(thrown.code).toBe('CATALOG_CONTEXT_REQUIRED');
+        expect(thrown.details?.['reason']).toBe('invalid_actor');
+      }
+      expect(handlerCalls).toHaveLength(0);
+
+      await harness.forceFlush();
+
+      const rejections = sumDataPoints(harness.metricExporter, 'tayzu.catalog.context.rejections');
+      expect(rejections).toHaveLength(1);
+      expect(rejections[0]?.attributes).toEqual({
+        'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
+        'tayzu.catalog.context.reason': 'invalid_actor',
+      });
+
+      const logs = finishedLogRecords(harness.logExporter, 'catalog.security.context_rejected');
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.attributes).toEqual({
+        'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
+        'tayzu.catalog.context.reason': 'invalid_actor',
+      });
+    });
+  });
 
   describe('successful operation (design D3 steps 2, 3, 6, 7)', () => {
     it('records the operation span with the common attributes, and operation.duration with outcome success and tayzu.actor.type', async () => {
@@ -511,7 +525,10 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
         'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
       });
 
-      const points = histogramDataPoints(harness.metricExporter, 'tayzu.catalog.operation.duration');
+      const points = histogramDataPoints(
+        harness.metricExporter,
+        'tayzu.catalog.operation.duration',
+      );
       expect(points).toHaveLength(1);
       expect(points[0]?.count).toBe(1);
       expect(points[0]?.attributes).toEqual({
@@ -541,14 +558,20 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
 
       const span = onlySpan(harness.spanExporter, DUMMY_SPAN_NAME);
       expect(span.status.code).toBe(SpanStatusCode.ERROR);
-      expect(span.status.message, 'the CatalogError message must never reach the span').toBeUndefined();
+      expect(
+        span.status.message,
+        'the CatalogError message must never reach the span',
+      ).toBeUndefined();
       expect(span.attributes['error.type']).toBe('CATALOG_VALIDATION_FAILED');
       expect(span.events.filter((event) => event.name === 'exception')).toHaveLength(0);
 
       const spanText = JSON.stringify({ attributes: span.attributes, events: span.events });
       expect(spanText).not.toContain('deliberate validation failure');
 
-      const points = histogramDataPoints(harness.metricExporter, 'tayzu.catalog.operation.duration');
+      const points = histogramDataPoints(
+        harness.metricExporter,
+        'tayzu.catalog.operation.duration',
+      );
       expect(points).toHaveLength(1);
       expect(points[0]?.attributes).toMatchObject({
         'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
@@ -563,7 +586,9 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
       const tenantId = randomTenantId();
       const ctx: CatalogContext = { tenantId, actor: { type: 'integration', id: 'integration-1' } };
 
-      const thrown = await dummyOperation(ctx, { mode: 'db_error' }).catch((error: unknown) => error);
+      const thrown = await dummyOperation(ctx, { mode: 'db_error' }).catch(
+        (error: unknown) => error,
+      );
 
       expect(thrown, 'the operation must reject').toBeDefined();
       expect(
@@ -582,7 +607,12 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
       const exceptionAttributes = exceptionEvents[0]?.attributes ?? {};
 
       expect(Object.keys(exceptionAttributes).sort()).toEqual(
-        ['db.response.status_code', 'exception.stacktrace', 'exception.type', 'tayzu.db.constraint'].sort(),
+        [
+          'db.response.status_code',
+          'exception.stacktrace',
+          'exception.type',
+          'tayzu.db.constraint',
+        ].sort(),
       );
       expect(exceptionAttributes['exception.type']).toBe('DatabaseError');
       expect(exceptionAttributes['db.response.status_code']).toBe(UNIQUE_VIOLATION_SQLSTATE);
@@ -595,7 +625,10 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
       expect(stacktraceText.toLowerCase()).not.toContain('duplicate key value violates');
       expect(stacktraceText).not.toContain(tenantId);
 
-      const points = histogramDataPoints(harness.metricExporter, 'tayzu.catalog.operation.duration');
+      const points = histogramDataPoints(
+        harness.metricExporter,
+        'tayzu.catalog.operation.duration',
+      );
       expect(points).toHaveLength(1);
       expect(points[0]?.attributes).toMatchObject({
         'tayzu.catalog.operation': DUMMY_OPERATION_NAME,
@@ -636,73 +669,70 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
     });
   });
 
-  describe(
-    'successful mutation audit trail (design D9, R13; spec "Actor attribution and change events"; task 6.3)',
-    () => {
-      it("emits catalog.audit.mutation with the declared attributes, and the change event's trace_id equals the span's and the log record's trace id", async () => {
-        const tenantId = randomTenantId();
-        const resourceIdentifier = randomResourceIdentifier();
-        const ctx: CatalogContext = {
-          tenantId,
-          actor: { type: 'agent', id: 'agent-1', onBehalfOf: { type: 'user', id: 'user-1' } },
-        };
+  describe('successful mutation audit trail (design D9, R13; spec "Actor attribution and change events"; task 6.3)', () => {
+    it("emits catalog.audit.mutation with the declared attributes, and the change event's trace_id equals the span's and the log record's trace id", async () => {
+      const tenantId = randomTenantId();
+      const resourceIdentifier = randomResourceIdentifier();
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'agent', id: 'agent-1', onBehalfOf: { type: 'user', id: 'user-1' } },
+      };
 
-        const result = await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
-        expect(result).toEqual({ ok: true });
+      const result = await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
+      expect(result).toEqual({ ok: true });
 
-        await harness.forceFlush();
+      await harness.forceFlush();
 
-        const span = onlySpan(harness.spanExporter, DUMMY_SPAN_NAME);
-        const traceId = span.spanContext().traceId;
+      const span = onlySpan(harness.spanExporter, DUMMY_SPAN_NAME);
+      const traceId = span.spanContext().traceId;
 
-        const eventRows = await pool.query<{ trace_id: string | null; seq: string }>(
-          'select trace_id, seq from catalog_change_event where tenant_id = $1 and resource_identifier = $2',
-          [tenantId, resourceIdentifier],
-        );
-        expect(eventRows.rows, 'exactly one change event for this dummy mutation').toHaveLength(1);
-        expect(
-          eventRows.rows[0]?.trace_id,
-          "the change event's trace_id must equal the operation span's trace id",
-        ).toBe(traceId);
-        const changeEventSeq = Number(eventRows.rows[0]?.seq);
+      const eventRows = await pool.query<{ trace_id: string | null; seq: string }>(
+        'select trace_id, seq from catalog_change_event where tenant_id = $1 and resource_identifier = $2',
+        [tenantId, resourceIdentifier],
+      );
+      expect(eventRows.rows, 'exactly one change event for this dummy mutation').toHaveLength(1);
+      expect(
+        eventRows.rows[0]?.trace_id,
+        "the change event's trace_id must equal the operation span's trace id",
+      ).toBe(traceId);
+      const changeEventSeq = Number(eventRows.rows[0]?.seq);
 
-        const logs = finishedLogRecords(harness.logExporter, 'catalog.audit.mutation');
-        expect(logs).toHaveLength(1);
-        const record = logs[0];
-        expect(record?.severityNumber).toBe(SeverityNumber.INFO);
-        expect(
-          record?.spanContext?.traceId,
-          "the OTel Logs API's automatic trace correlation must match the operation span",
-        ).toBe(traceId);
-        expect(record?.attributes).toEqual({
-          'tayzu.tenant.id': tenantId,
-          'tayzu.actor.type': 'agent',
-          'tayzu.actor.id': 'agent-1',
-          'tayzu.actor.on_behalf_of.type': 'user',
-          'tayzu.actor.on_behalf_of.id': 'user-1',
-          'tayzu.catalog.mutation': 'created',
-          'tayzu.catalog.resource.kind': 'entity',
-          'tayzu.catalog.blueprint.identifier': DUMMY_BLUEPRINT_IDENTIFIER,
-          'tayzu.catalog.resource.identifier': resourceIdentifier,
-          'tayzu.catalog.version': 1,
-          'tayzu.catalog.change_event.seq': changeEventSeq,
-        });
+      const logs = finishedLogRecords(harness.logExporter, 'catalog.audit.mutation');
+      expect(logs).toHaveLength(1);
+      const record = logs[0];
+      expect(record?.severityNumber).toBe(SeverityNumber.INFO);
+      expect(
+        record?.spanContext?.traceId,
+        "the OTel Logs API's automatic trace correlation must match the operation span",
+      ).toBe(traceId);
+      expect(record?.attributes).toEqual({
+        'tayzu.tenant.id': tenantId,
+        'tayzu.actor.type': 'agent',
+        'tayzu.actor.id': 'agent-1',
+        'tayzu.actor.on_behalf_of.type': 'user',
+        'tayzu.actor.on_behalf_of.id': 'user-1',
+        'tayzu.catalog.mutation': 'created',
+        'tayzu.catalog.resource.kind': 'entity',
+        'tayzu.catalog.blueprint.identifier': DUMMY_BLUEPRINT_IDENTIFIER,
+        'tayzu.catalog.resource.identifier': resourceIdentifier,
+        'tayzu.catalog.version': 1,
+        'tayzu.catalog.change_event.seq': changeEventSeq,
       });
+    });
 
-      it('omits the on_behalf_of attributes entirely when the actor has no delegate', async () => {
-        const tenantId = randomTenantId();
-        const resourceIdentifier = randomResourceIdentifier();
-        const ctx: CatalogContext = { tenantId, actor: { type: 'system', id: 'sys' } };
+    it('omits the on_behalf_of attributes entirely when the actor has no delegate', async () => {
+      const tenantId = randomTenantId();
+      const resourceIdentifier = randomResourceIdentifier();
+      const ctx: CatalogContext = { tenantId, actor: { type: 'system', id: 'sys' } };
 
-        await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
-        await harness.forceFlush();
+      await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
+      await harness.forceFlush();
 
-        const logs = finishedLogRecords(harness.logExporter, 'catalog.audit.mutation');
-        expect(logs).toHaveLength(1);
-        const attributeKeys = Object.keys(logs[0]?.attributes ?? {});
-        expect(attributeKeys).not.toContain('tayzu.actor.on_behalf_of.type');
-        expect(attributeKeys).not.toContain('tayzu.actor.on_behalf_of.id');
-      });
-    },
-  );
+      const logs = finishedLogRecords(harness.logExporter, 'catalog.audit.mutation');
+      expect(logs).toHaveLength(1);
+      const attributeKeys = Object.keys(logs[0]?.attributes ?? {});
+      expect(attributeKeys).not.toContain('tayzu.actor.on_behalf_of.type');
+      expect(attributeKeys).not.toContain('tayzu.actor.on_behalf_of.id');
+    });
+  });
 });

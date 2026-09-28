@@ -139,7 +139,10 @@ export const SPANS: readonly SpanContract[] = [
   {
     name: 'catalog.blueprint.compatibility_check',
     kind: 'child',
-    requiredAttributes: ['tayzu.catalog.blueprint.identifier', 'tayzu.catalog.compatibility.entities_checked'],
+    requiredAttributes: [
+      'tayzu.catalog.blueprint.identifier',
+      'tayzu.catalog.compatibility.entities_checked',
+    ],
     conditionalAttributes: ['tayzu.catalog.compatibility.violation.count'],
   },
   {
@@ -195,7 +198,11 @@ export const METRICS: readonly MetricContract[] = [
     name: 'tayzu.catalog.blueprint.mutations',
     instrumentType: 'counter',
     unit: '{mutation}',
-    attributes: [sharedAttributeKeys.tenantId, 'tayzu.catalog.mutation', sharedAttributeKeys.actorType],
+    attributes: [
+      sharedAttributeKeys.tenantId,
+      'tayzu.catalog.mutation',
+      sharedAttributeKeys.actorType,
+    ],
   },
   {
     name: 'tayzu.catalog.validation.failures',

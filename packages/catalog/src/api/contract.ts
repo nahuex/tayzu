@@ -149,7 +149,9 @@ const actorTypeOutputSchema = z.enum(['user', 'agent', 'integration', 'system'])
 const principalOutputSchema = z.object({ type: actorTypeOutputSchema, id: z.string() });
 
 /** `domain/context.ts`'s `CatalogContext['actor']`: a `Principal` plus an optional delegating `Principal`. */
-const actorOutputSchema = principalOutputSchema.extend({ onBehalfOf: principalOutputSchema.optional() });
+const actorOutputSchema = principalOutputSchema.extend({
+  onBehalfOf: principalOutputSchema.optional(),
+});
 
 /** `../service/blueprints.ts`'s `BlueprintOutput`. */
 const blueprintOutputSchema = z.object({
@@ -262,7 +264,10 @@ function renameIdentifierTo(pathParam: string): (raw: unknown) => unknown {
 
 /** A blueprint-level leaf (`GetBlueprintInput`, `DeleteBlueprintInput`, `UpdateBlueprintInput`): path `{blueprint}`. */
 function withBlueprintPathParam<Shape extends z.ZodRawShape>(shape: Shape) {
-  return z.preprocess(renameIdentifierTo('blueprint'), z.object({ blueprint: z.string(), ...shape }));
+  return z.preprocess(
+    renameIdentifierTo('blueprint'),
+    z.object({ blueprint: z.string(), ...shape }),
+  );
 }
 
 /** An entity-level leaf (`GetEntityInput`, ...): path `{blueprint}/entities/{entity}`. `blueprint` needs no rename. */
@@ -482,7 +487,9 @@ const openApiGenerator = new OpenAPIGenerator({
   schemaConverters: [new ZodToJsonSchemaConverter()],
 });
 
-export async function generateOpenApiDocument(router: AnyContractRouter = catalogContract): Promise<OpenAPI.Document> {
+export async function generateOpenApiDocument(
+  router: AnyContractRouter = catalogContract,
+): Promise<OpenAPI.Document> {
   return openApiGenerator.generate(router, {
     info: { title: 'Tayzu Catalog API', version: '0.0.0' },
   });
@@ -600,7 +607,9 @@ function findForbiddenContextFields(document: OpenAPI.Document): string[] {
  * for a forbidden `tenantId`/`actor` field. `ok` is `false` if either check
  * finds anything.
  */
-export async function checkContract(options: ContractCheckOptions = {}): Promise<ContractCheckResult> {
+export async function checkContract(
+  options: ContractCheckOptions = {},
+): Promise<ContractCheckResult> {
   const router = options.router ?? catalogContract;
   const committedDocumentPath = options.committedDocumentPath ?? OPENAPI_DOCUMENT_PATH;
 
@@ -612,7 +621,9 @@ export async function checkContract(options: ContractCheckOptions = {}): Promise
   try {
     const committedSerialized = await readFile(committedDocumentPath, 'utf8');
     if (committedSerialized !== currentSerialized) {
-      reasons.push(`The generated OpenAPI document drifted from the committed document at ${committedDocumentPath}.`);
+      reasons.push(
+        `The generated OpenAPI document drifted from the committed document at ${committedDocumentPath}.`,
+      );
     }
   } catch {
     reasons.push(`Could not read the committed OpenAPI document at ${committedDocumentPath}.`);

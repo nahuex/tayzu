@@ -394,7 +394,8 @@ describe('entity write racing a blueprint update (task 8.9; design D7)', () => {
     expect(created.spec.properties).toEqual({ tier: 'silver' });
 
     const updateError = await expectCatalogErrorCode(updatePromise, 'CATALOG_SCHEMA_INCOMPATIBLE');
-    const violations = updateError.details?.['violations'] as readonly { entityIdentifier: string }[] | undefined;
+    const violations = updateError.details?.['violations'] as
+      readonly { entityIdentifier: string }[] | undefined;
     expect(violations?.map((violation) => violation.entityIdentifier)).toEqual(['billing']);
 
     // Nothing changed: the blueprint stayed at its previous version, and the
@@ -402,7 +403,10 @@ describe('entity write racing a blueprint update (task 8.9; design D7)', () => {
     // current schema.
     const stillCurrent = await blueprintService.get(c, { identifier: 'service' });
     expect(stillCurrent.version).toBe(1);
-    const stillBilling = await entityService.get(c, { blueprint: 'service', identifier: 'billing' });
+    const stillBilling = await entityService.get(c, {
+      blueprint: 'service',
+      identifier: 'billing',
+    });
     expect(stillBilling.spec.properties).toEqual({ tier: 'silver' });
   });
 });

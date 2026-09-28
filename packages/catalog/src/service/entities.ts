@@ -35,8 +35,15 @@ import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
 import type { ValidatorCacheKey } from '../domain/validator-cache.js';
 import { appendChangeEvent } from '../persistence/change-events.js';
-import { findBlueprintIdByIdentifier, selectBlueprintRow } from '../persistence/blueprints-repository.js';
-import { FOREIGN_KEY_VIOLATION_SQLSTATE, UNIQUE_VIOLATION_SQLSTATE, pgErrorInfo } from '../persistence/db-errors.js';
+import {
+  findBlueprintIdByIdentifier,
+  selectBlueprintRow,
+} from '../persistence/blueprints-repository.js';
+import {
+  FOREIGN_KEY_VIOLATION_SQLSTATE,
+  UNIQUE_VIOLATION_SQLSTATE,
+  pgErrorInfo,
+} from '../persistence/db-errors.js';
 import {
   assembleEntityRelationBag,
   bumpEntityVersionRow,
@@ -180,18 +187,28 @@ export interface CreateEntityServiceOptions {
 export interface EntityService {
   readonly create: (rawContext: unknown, input: CreateEntityInput) => Promise<EntityOutput>;
   readonly upsert: (rawContext: unknown, input: UpsertEntityInput) => Promise<UpsertEntityOutput>;
-  readonly writeStatus: (rawContext: unknown, input: WriteEntityStatusInput) => Promise<EntityOutput>;
+  readonly writeStatus: (
+    rawContext: unknown,
+    input: WriteEntityStatusInput,
+  ) => Promise<EntityOutput>;
   readonly get: (rawContext: unknown, input: GetEntityInput) => Promise<EntityOutput>;
   readonly list: (rawContext: unknown, input: ListEntitiesInput) => Promise<ListEntitiesOutput>;
   readonly delete: (rawContext: unknown, input: DeleteEntityInput) => Promise<void>;
-  readonly listRelated: (rawContext: unknown, input: ListRelatedInput) => Promise<ListRelatedOutput>;
+  readonly listRelated: (
+    rawContext: unknown,
+    input: ListRelatedInput,
+  ) => Promise<ListRelatedOutput>;
 }
 
 const BLUEPRINT_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.blueprint.identifier';
 const ENTITY_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.entity.identifier';
 
 /** design.md, "Log events" table: the reserved-identifier WARN, emitted before `assertReservedAccess` throws (mirrors `blueprints.ts`'s own `denyIfReserved`). */
-function denyIfReserved(ctx: CatalogContext, blueprintIdentifier: string, operation: ReservedOperationKind): void {
+function denyIfReserved(
+  ctx: CatalogContext,
+  blueprintIdentifier: string,
+  operation: ReservedOperationKind,
+): void {
   try {
     assertReservedAccess(blueprintIdentifier, operation, ctx.actor);
   } catch (error) {
@@ -260,7 +277,10 @@ const ENTITY_REFERENCE_VIOLATION_CONSTRAINTS: ReadonlySet<string> = new Set([
 
 function throwMappedEntityWriteError(error: unknown): never {
   const info = pgErrorInfo(error);
-  if (info.code === UNIQUE_VIOLATION_SQLSTATE && info.constraint === 'catalog_entity_tenant_blueprint_identifier_uq') {
+  if (
+    info.code === UNIQUE_VIOLATION_SQLSTATE &&
+    info.constraint === 'catalog_entity_tenant_blueprint_identifier_uq'
+  ) {
     throw new CatalogError('CATALOG_ALREADY_EXISTS', 'Entity identifier already exists');
   }
   if (
@@ -428,7 +448,12 @@ async function resolveEntityRelationTargets(
           continue;
         }
 
-        const idsByIdentifier = await findEntityIdsByIdentifiers(tx, tenantId, targetBlueprintId, identifiers);
+        const idsByIdentifier = await findEntityIdsByIdentifiers(
+          tx,
+          tenantId,
+          targetBlueprintId,
+          identifiers,
+        );
         const targetIds: string[] = [];
         const missing: string[] = [];
         for (const identifier of identifiers) {
@@ -453,7 +478,12 @@ async function resolveEntityRelationTargets(
 
       if (firstMissingRelation !== undefined) {
         throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'Relation target does not exist', {
-          issues: [{ path: `/${scope}/relations/${firstMissingRelation}`, message: 'Relation target does not exist' }],
+          issues: [
+            {
+              path: `/${scope}/relations/${firstMissingRelation}`,
+              message: 'Relation target does not exist',
+            },
+          ],
           details: { relation: firstMissingRelation, missing: firstMissingIdentifiers },
         });
       }
@@ -488,7 +518,10 @@ async function writeRelationEdges(
   }
 }
 
-function buildStatusOutput(row: EntityRow, statusRelations: Record<string, string | string[]>): EntityStatusOutput | null {
+function buildStatusOutput(
+  row: EntityRow,
+  statusRelations: Record<string, string | string[]>,
+): EntityStatusOutput | null {
   if (row.status_properties === null) return null;
   return {
     properties: row.status_properties as Record<string, unknown>,
@@ -502,14 +535,20 @@ function buildStatusOutput(row: EntityRow, statusRelations: Record<string, strin
 function buildEntityOutput(
   blueprintIdentifier: string,
   row: EntityRow,
-  relationBags: { spec: Record<string, string | string[]>; status: Record<string, string | string[]> },
+  relationBags: {
+    spec: Record<string, string | string[]>;
+    status: Record<string, string | string[]>;
+  },
 ): EntityOutput {
   return {
     blueprint: blueprintIdentifier,
     identifier: row.identifier,
     title: row.title,
     icon: row.icon ?? undefined,
-    spec: { properties: row.spec_properties as Record<string, unknown>, relations: relationBags.spec },
+    spec: {
+      properties: row.spec_properties as Record<string, unknown>,
+      relations: relationBags.spec,
+    },
     status: buildStatusOutput(row, relationBags.status),
     generation: row.generation,
     version: row.version,
@@ -556,7 +595,12 @@ function buildEntitySnapshot(output: EntityOutput): Record<string, unknown> {
   return { title: output.title, icon: output.icon, spec: output.spec, status: output.status };
 }
 
-function emitEntityMutation(tenantId: string, blueprintIdentifier: string, mutation: string, actorType: ActorType): void {
+function emitEntityMutation(
+  tenantId: string,
+  blueprintIdentifier: string,
+  mutation: string,
+  actorType: ActorType,
+): void {
   entityMutationsCounter.add(1, {
     'tayzu.tenant.id': tenantId,
     'tayzu.catalog.blueprint.identifier': blueprintIdentifier,
@@ -582,7 +626,9 @@ function invalidRelatedCursor(): never {
 }
 
 function encodeRelatedCursor(key: RelatedCursorKey): string {
-  return Buffer.from(JSON.stringify({ r: key.relation, i: key.identifier }), 'utf8').toString('base64url');
+  return Buffer.from(JSON.stringify({ r: key.relation, i: key.identifier }), 'utf8').toString(
+    'base64url',
+  );
 }
 
 function decodeRelatedCursor(cursor: string): RelatedCursorKey {
@@ -650,12 +696,19 @@ async function bumpReferrerAndAppendEvent(
   if (!referrerRow) return; // defensive: the referrer exists within this same transaction
 
   const relationDefs = await relationDefsFor(tx, ctx.tenantId, referrerRow.blueprint_id, cache);
-  const blueprintIdentifier = await blueprintIdentifierFor(tx, ctx.tenantId, referrerRow.blueprint_id, cache);
+  const blueprintIdentifier = await blueprintIdentifierFor(
+    tx,
+    ctx.tenantId,
+    referrerRow.blueprint_id,
+    cache,
+  );
   const bags = await loadEntityRelationBags(tx, ctx.tenantId, referrerId, relationDefs);
 
   const now = new Date();
   const newVersion = referrerRow.version + 1;
-  const newGeneration = options.bumpGeneration ? referrerRow.generation + 1 : referrerRow.generation;
+  const newGeneration = options.bumpGeneration
+    ? referrerRow.generation + 1
+    : referrerRow.generation;
 
   await bumpEntityVersionRow(tx, {
     tenantId: ctx.tenantId,
@@ -666,7 +719,11 @@ async function bumpReferrerAndAppendEvent(
     actor: ctx.actor,
   });
 
-  const output = buildEntityOutput(blueprintIdentifier, { ...referrerRow, generation: newGeneration, version: newVersion }, bags);
+  const output = buildEntityOutput(
+    blueprintIdentifier,
+    { ...referrerRow, generation: newGeneration, version: newVersion },
+    bags,
+  );
 
   await appendChangeEvent(tx, {
     tenantId: ctx.tenantId,
@@ -681,7 +738,12 @@ async function bumpReferrerAndAppendEvent(
     traceId: trace.getActiveSpan()?.spanContext().traceId,
   });
 
-  emitEntityMutation(ctx.tenantId, blueprintIdentifier, options.action === 'updated' ? 'updated' : 'status_updated', ctx.actor.type);
+  emitEntityMutation(
+    ctx.tenantId,
+    blueprintIdentifier,
+    options.action === 'updated' ? 'updated' : 'status_updated',
+    ctx.actor.type,
+  );
 }
 
 export function createEntityService(options: CreateEntityServiceOptions): EntityService {
@@ -699,7 +761,9 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, identifier);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
-      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, { forShare: true });
+      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, {
+        forShare: true,
+      });
       if (!blueprintRow) throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintRow.id);
@@ -715,13 +779,24 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       assertEntitySpecSize(nextSpec, limits);
 
       const schema = blueprintRow.schema as ParsedPropertySchema;
-      const validatedProperties = runEntityValidation(schema, nextSpec.properties, '/spec/properties', limits, {
-        tenantId: ctx.tenantId,
-        blueprintIdentifier: input.blueprint,
-        blueprintVersion: blueprintRow.version,
-        scope: 'spec',
-      });
-      const relationValues = validateRelationValues(relationDefs.definitions, nextSpec.relations, 'spec', { limits });
+      const validatedProperties = runEntityValidation(
+        schema,
+        nextSpec.properties,
+        '/spec/properties',
+        limits,
+        {
+          tenantId: ctx.tenantId,
+          blueprintIdentifier: input.blueprint,
+          blueprintVersion: blueprintRow.version,
+          scope: 'spec',
+        },
+      );
+      const relationValues = validateRelationValues(
+        relationDefs.definitions,
+        nextSpec.relations,
+        'spec',
+        { limits },
+      );
       const { resolved, totalTargets } = await resolveRelationsIfDeclared(
         tx,
         ctx.tenantId,
@@ -811,13 +886,21 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.upsert.mode', input.mode);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
-      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, { forShare: true });
+      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, {
+        forShare: true,
+      });
       if (!blueprintRow) throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintRow.id);
-      const currentRow = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, identifier, { forUpdate: true });
+      const currentRow = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, identifier, {
+        forUpdate: true,
+      });
 
-      if (currentRow && input.expectedVersion !== undefined && input.expectedVersion !== currentRow.version) {
+      if (
+        currentRow &&
+        input.expectedVersion !== undefined &&
+        input.expectedVersion !== currentRow.version
+      ) {
         throw new CatalogError('CATALOG_VERSION_CONFLICT', 'Entity was updated by someone else');
       }
 
@@ -833,7 +916,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       }
 
       const currentSpec = currentRow
-        ? { properties: currentRow.spec_properties as Record<string, unknown>, relations: currentSpecRelations }
+        ? {
+            properties: currentRow.spec_properties as Record<string, unknown>,
+            relations: currentSpecRelations,
+          }
         : undefined;
       const nextSpec = applyWrite(
         currentSpec,
@@ -843,13 +929,24 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       assertEntitySpecSize(nextSpec, limits);
 
       const schema = blueprintRow.schema as ParsedPropertySchema;
-      const validatedProperties = runEntityValidation(schema, nextSpec.properties, '/spec/properties', limits, {
-        tenantId: ctx.tenantId,
-        blueprintIdentifier: input.blueprint,
-        blueprintVersion: blueprintRow.version,
-        scope: 'spec',
-      });
-      const relationValues = validateRelationValues(relationDefs.definitions, nextSpec.relations, 'spec', { limits });
+      const validatedProperties = runEntityValidation(
+        schema,
+        nextSpec.properties,
+        '/spec/properties',
+        limits,
+        {
+          tenantId: ctx.tenantId,
+          blueprintIdentifier: input.blueprint,
+          blueprintVersion: blueprintRow.version,
+          scope: 'spec',
+        },
+      );
+      const relationValues = validateRelationValues(
+        relationDefs.definitions,
+        nextSpec.relations,
+        'spec',
+        { limits },
+      );
       const { resolved, totalTargets } = await resolveRelationsIfDeclared(
         tx,
         ctx.tenantId,
@@ -864,13 +961,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const now = new Date();
 
       if (currentRow) {
-        const propertiesUnchanged = areCanonicallyEqual(validatedProperties, currentRow.spec_properties);
+        const propertiesUnchanged = areCanonicallyEqual(
+          validatedProperties,
+          currentRow.spec_properties,
+        );
         const relationsUnchanged = areCanonicallyEqual(relationValues, currentSpecRelations);
-        const titleIconUnchanged = title === currentRow.title && (icon ?? null) === (currentRow.icon ?? null);
+        const titleIconUnchanged =
+          title === currentRow.title && (icon ?? null) === (currentRow.icon ?? null);
 
         if (propertiesUnchanged && relationsUnchanged && titleIconUnchanged) {
           const output: UpsertEntityOutput = {
-            ...buildEntityOutput(input.blueprint, currentRow, { spec: currentSpecRelations, status: currentStatusRelations }),
+            ...buildEntityOutput(input.blueprint, currentRow, {
+              spec: currentSpecRelations,
+              status: currentStatusRelations,
+            }),
             outcome: 'unchanged',
           };
           // design.md, Spans table: tayzu.catalog.mutation's conditional
@@ -913,7 +1017,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           generation,
           version,
           createdAt: new Date(currentRow.created_at).toISOString(),
-          createdBy: { type: currentRow.created_by_type as ActorType, id: currentRow.created_by_id },
+          createdBy: {
+            type: currentRow.created_by_type as ActorType,
+            id: currentRow.created_by_id,
+          },
           updatedAt: now.toISOString(),
           updatedBy: ctx.actor,
           outcome: 'updated',
@@ -1031,21 +1138,34 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.status.source', source);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
-      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, { forShare: true });
+      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, {
+        forShare: true,
+      });
       if (!blueprintRow) throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintRow.id);
-      const currentRow = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, identifier, { forUpdate: true });
+      const currentRow = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, identifier, {
+        forUpdate: true,
+      });
       if (!currentRow) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
 
       if (input.observedGeneration > currentRow.generation) {
-        throw new CatalogError('CATALOG_VALIDATION_FAILED', 'Observed generation is from the future', {
-          issues: [{ path: '/observedGeneration', message: 'Observed generation is from the future' }],
-        });
+        throw new CatalogError(
+          'CATALOG_VALIDATION_FAILED',
+          'Observed generation is from the future',
+          {
+            issues: [
+              { path: '/observedGeneration', message: 'Observed generation is from the future' },
+            ],
+          },
+        );
       }
 
       const rawStatusProperties = input.properties ?? {};
-      assertEntityStatusSize({ properties: rawStatusProperties, relations: input.relations ?? {} }, limits);
+      assertEntityStatusSize(
+        { properties: rawStatusProperties, relations: input.relations ?? {} },
+        limits,
+      );
 
       const statusSchema = blueprintRow.status_schema as ParsedPropertySchema | null;
       if (statusSchema === null && Object.keys(rawStatusProperties).length > 0) {
@@ -1063,9 +1183,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
               scope: 'status',
             });
 
-      const statusRelationValues = validateRelationValues(relationDefs.definitions, input.relations ?? {}, 'status', {
-        limits,
-      });
+      const statusRelationValues = validateRelationValues(
+        relationDefs.definitions,
+        input.relations ?? {},
+        'status',
+        {
+          limits,
+        },
+      );
       const { resolved, totalTargets } = await resolveRelationsIfDeclared(
         tx,
         ctx.tenantId,
@@ -1102,7 +1227,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         identifier,
         title: currentRow.title,
         icon: currentRow.icon ?? undefined,
-        spec: { properties: currentRow.spec_properties as Record<string, unknown>, relations: specBags.spec },
+        spec: {
+          properties: currentRow.spec_properties as Record<string, unknown>,
+          relations: specBags.spec,
+        },
         status: {
           properties: validatedStatusProperties,
           relations: statusRelationValues,
@@ -1157,7 +1285,8 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const tx = drizzle(client);
 
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);
-      if (blueprintId === undefined) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
+      if (blueprintId === undefined)
+        throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
 
       const row = await selectEntityRow(tx, ctx.tenantId, blueprintId, input.identifier);
       if (!row) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
@@ -1190,10 +1319,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
 
       const tx = drizzle(client);
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);
-      if (blueprintId === undefined) throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
+      if (blueprintId === undefined)
+        throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintId);
-      const rows = await selectEntitiesPage(tx, ctx.tenantId, blueprintId, { limit: pageSize, afterIdentifier });
+      const rows = await selectEntitiesPage(tx, ctx.tenantId, blueprintId, {
+        limit: pageSize,
+        afterIdentifier,
+      });
       const hasMore = rows.length > pageSize;
       const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
 
@@ -1224,10 +1357,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.detach_references', detachReferences);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
-      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, { forShare: true });
+      const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, {
+        forShare: true,
+      });
       if (!blueprintRow) throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
-      const row = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, input.identifier, { forUpdate: true });
+      const row = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, input.identifier, {
+        forUpdate: true,
+      });
       if (!row) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
 
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintRow.id);
@@ -1243,17 +1380,24 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
 
       if (!detachReferences) {
         if (specReferrers.length > 0) {
-          const referrers = [...new Set(specReferrers.map((referrer) => referrer.source_identifier))].slice(0, 10);
+          const referrers = [
+            ...new Set(specReferrers.map((referrer) => referrer.source_identifier)),
+          ].slice(0, 10);
           throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'Entity is still referenced', {
             details: { referrers },
           });
         }
       } else {
         if (specReferrers.some((referrer) => referrer.required)) {
-          throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'A required relation blocks detach');
+          throw new CatalogError(
+            'CATALOG_REFERENCE_VIOLATION',
+            'A required relation blocks detach',
+          );
         }
 
-        const distinctReferrerIds = [...new Set(specReferrers.map((referrer) => referrer.source_entity_id))];
+        const distinctReferrerIds = [
+          ...new Set(specReferrers.map((referrer) => referrer.source_entity_id)),
+        ];
         if (distinctReferrerIds.length > limits.detach.maxReferrers) {
           throw new CatalogError('CATALOG_LIMIT_EXCEEDED', 'Too many referrers to detach', {
             details: { limit: 'detach.maxReferrers' },
@@ -1263,9 +1407,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         if (distinctReferrerIds.length > 0) {
           await deleteEntityRelationEdgesForTarget(tx, ctx.tenantId, row.id, 'spec');
           for (const referrerId of distinctReferrerIds) {
-            await bumpReferrerAndAppendEvent(tx, ctx, referrerId, cache, { bumpGeneration: true, action: 'updated' });
+            await bumpReferrerAndAppendEvent(tx, ctx, referrerId, cache, {
+              bumpGeneration: true,
+              action: 'updated',
+            });
           }
-          trace.getActiveSpan()?.setAttribute('tayzu.catalog.detached.count', distinctReferrerIds.length);
+          trace
+            .getActiveSpan()
+            ?.setAttribute('tayzu.catalog.detached.count', distinctReferrerIds.length);
         }
       }
 
@@ -1274,7 +1423,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       if (statusReferrerIds.length > 0) {
         await deleteEntityRelationEdgesForTarget(tx, ctx.tenantId, row.id, 'status');
         for (const referrerId of statusReferrerIds) {
-          await bumpReferrerAndAppendEvent(tx, ctx, referrerId, cache, { bumpGeneration: false, action: 'status_updated' });
+          await bumpReferrerAndAppendEvent(tx, ctx, referrerId, cache, {
+            bumpGeneration: false,
+            action: 'status_updated',
+          });
         }
       }
 
@@ -1336,7 +1488,8 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
 
       const tx = drizzle(client);
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);
-      if (blueprintId === undefined) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
+      if (blueprintId === undefined)
+        throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
       const entityRow = await selectEntityRow(tx, ctx.tenantId, blueprintId, input.identifier);
       if (!entityRow) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
 
@@ -1355,10 +1508,17 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           relation: row.relation_identifier,
           scope: row.scope as 'spec' | 'status',
           sourceBlueprint: input.blueprint,
-          entity: { blueprint: row.target_blueprint_identifier, identifier: row.target_identifier, title: row.target_title },
+          entity: {
+            blueprint: row.target_blueprint_identifier,
+            identifier: row.target_identifier,
+            title: row.target_title,
+          },
         }));
         const last = pageRows[pageRows.length - 1];
-        lastKey = hasMore && last ? { relation: last.relation_identifier, identifier: last.target_identifier } : undefined;
+        lastKey =
+          hasMore && last
+            ? { relation: last.relation_identifier, identifier: last.target_identifier }
+            : undefined;
       } else {
         const rows = await selectBackwardRelatedPage(tx, ctx.tenantId, entityRow.id, {
           scope: dbScope,
@@ -1371,10 +1531,17 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           relation: row.relation_identifier,
           scope: row.scope as 'spec' | 'status',
           sourceBlueprint: row.source_blueprint_identifier,
-          entity: { blueprint: row.source_blueprint_identifier, identifier: row.source_identifier, title: row.source_title },
+          entity: {
+            blueprint: row.source_blueprint_identifier,
+            identifier: row.source_identifier,
+            title: row.source_title,
+          },
         }));
         const last = pageRows[pageRows.length - 1];
-        lastKey = hasMore && last ? { relation: last.relation_identifier, identifier: last.source_identifier } : undefined;
+        lastKey =
+          hasMore && last
+            ? { relation: last.relation_identifier, identifier: last.source_identifier }
+            : undefined;
       }
 
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', items.length);

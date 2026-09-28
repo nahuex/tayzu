@@ -7,7 +7,11 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-import { generateOpenApiDocument, OPENAPI_DOCUMENT_PATH, serializeWithStableKeyOrder } from './contract.js';
+import {
+  generateOpenApiDocument,
+  OPENAPI_DOCUMENT_PATH,
+  serializeWithStableKeyOrder,
+} from './contract.js';
 
 const document = await generateOpenApiDocument();
 await mkdir(dirname(OPENAPI_DOCUMENT_PATH), { recursive: true });

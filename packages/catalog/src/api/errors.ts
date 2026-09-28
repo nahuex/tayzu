@@ -31,7 +31,10 @@ import { isCatalogError, type CatalogError, type CatalogErrorCode } from '../dom
 /** A `CatalogError`, augmented with the public fields `router.ts`'s callers read off a rejected call. */
 export type ApiCatalogError = CatalogError & {
   readonly status: number;
-  readonly data: { readonly issues?: CatalogError['issues']; readonly details?: CatalogError['details'] };
+  readonly data: {
+    readonly issues?: CatalogError['issues'];
+    readonly details?: CatalogError['details'];
+  };
 };
 
 /** design D11's error-code -> HTTP status table, verbatim. */

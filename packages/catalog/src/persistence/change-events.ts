@@ -70,7 +70,10 @@ async function nextSeq(tx: ChangeEventTransaction, tenantId: string): Promise<bi
  * Appends one row to `catalog_change_event` inside `tx`, with a fresh,
  * per-tenant gap-free `seq`. Returns the assigned `seq`.
  */
-export async function appendChangeEvent(tx: ChangeEventTransaction, event: ChangeEventInput): Promise<bigint> {
+export async function appendChangeEvent(
+  tx: ChangeEventTransaction,
+  event: ChangeEventInput,
+): Promise<bigint> {
   const seq = await nextSeq(tx, event.tenantId);
   const onBehalfOf = event.actor.onBehalfOf;
   const occurredAt = event.occurredAt ?? new Date();

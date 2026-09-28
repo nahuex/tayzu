@@ -53,7 +53,11 @@ function applyBag(
  * `current` defaults to an empty spec (entity creation: both modes then
  * behave the same way).
  */
-export function applyWrite(current: EntitySpec | undefined, input: EntitySpecWriteInput, mode: WriteMode): EntitySpec {
+export function applyWrite(
+  current: EntitySpec | undefined,
+  input: EntitySpecWriteInput,
+  mode: WriteMode,
+): EntitySpec {
   const currentProperties = current?.properties ?? {};
   const currentRelations = current?.relations ?? {};
 

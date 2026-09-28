@@ -140,10 +140,7 @@ describe('"Missing English title is rejected"', () => {
 
 describe('"Unsupported locale is rejected"', () => {
   it('reports the issue at "/title/xx"', () => {
-    expectValidationRejected(
-      validBlueprint({ title: { en: 'Service', xx: '?' } }),
-      '/title/xx',
-    );
+    expectValidationRejected(validBlueprint({ title: { en: 'Service', xx: '?' } }), '/title/xx');
   });
 });
 

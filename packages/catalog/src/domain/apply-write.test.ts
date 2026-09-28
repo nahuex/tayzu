@@ -125,7 +125,11 @@ describe('"replace" drops keys that are not given', () => {
 
 describe('"Upsert creates then replaces" (creation with no current spec)', () => {
   it('applies the input directly when current is undefined, in replace mode', () => {
-    const result = applyWrite(undefined, { properties: { language: 'go', tier: 'gold' } }, 'replace');
+    const result = applyWrite(
+      undefined,
+      { properties: { language: 'go', tier: 'gold' } },
+      'replace',
+    );
 
     expect(result).toEqual({ properties: { language: 'go', tier: 'gold' }, relations: {} });
   });
@@ -137,7 +141,11 @@ describe('"Upsert creates then replaces" (creation with no current spec)', () =>
   });
 
   it('replacing again with a different value drops the previous keys not repeated', () => {
-    const created = applyWrite(undefined, { properties: { language: 'go', tier: 'gold' } }, 'replace');
+    const created = applyWrite(
+      undefined,
+      { properties: { language: 'go', tier: 'gold' } },
+      'replace',
+    );
     const replaced = applyWrite(created, { properties: { language: 'rust' } }, 'replace');
 
     expect(replaced.properties).toEqual({ language: 'rust' });

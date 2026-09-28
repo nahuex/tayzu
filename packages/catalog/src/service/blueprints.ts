@@ -56,7 +56,11 @@ import {
   type RelationDefinitionById,
   type RelationDefinitionRow,
 } from '../persistence/blueprints-repository.js';
-import { FOREIGN_KEY_VIOLATION_SQLSTATE, UNIQUE_VIOLATION_SQLSTATE, pgErrorInfo } from '../persistence/db-errors.js';
+import {
+  FOREIGN_KEY_VIOLATION_SQLSTATE,
+  UNIQUE_VIOLATION_SQLSTATE,
+  pgErrorInfo,
+} from '../persistence/db-errors.js';
 import { blueprintMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
 import { defineCatalogOperation } from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
@@ -66,8 +70,14 @@ export interface CreateBlueprintInput {
   readonly title: Record<string, string>;
   readonly description?: Record<string, string>;
   readonly icon?: string;
-  readonly schema: { readonly properties?: Record<string, unknown>; readonly required?: readonly string[] };
-  readonly statusSchema?: { readonly properties?: Record<string, unknown>; readonly required?: readonly string[] };
+  readonly schema: {
+    readonly properties?: Record<string, unknown>;
+    readonly required?: readonly string[];
+  };
+  readonly statusSchema?: {
+    readonly properties?: Record<string, unknown>;
+    readonly required?: readonly string[];
+  };
   readonly relations?: Record<
     string,
     {
@@ -130,7 +140,11 @@ const COMPATIBILITY_CHECK_STATEMENT_TIMEOUT_MS = 30_000;
 const BLUEPRINT_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.blueprint.identifier';
 
 /** design.md, "Log events" table: the reserved-identifier WARN, emitted before `assertReservedAccess` throws. */
-function denyIfReserved(ctx: CatalogContext, identifier: string, operation: ReservedOperationKind): void {
+function denyIfReserved(
+  ctx: CatalogContext,
+  identifier: string,
+  operation: ReservedOperationKind,
+): void {
   try {
     assertReservedAccess(identifier, operation, ctx.actor);
   } catch (error) {
@@ -164,7 +178,10 @@ function parseSafeBlueprintInput(rawInput: unknown, limits: CatalogLimits): unkn
 /** design D9: `23505` on `catalog_blueprint_tenant_identifier_uq` -> `CATALOG_ALREADY_EXISTS`; anything else propagates unchanged. */
 function throwMappedCreateError(error: unknown): never {
   const info = pgErrorInfo(error);
-  if (info.code === UNIQUE_VIOLATION_SQLSTATE && info.constraint === 'catalog_blueprint_tenant_identifier_uq') {
+  if (
+    info.code === UNIQUE_VIOLATION_SQLSTATE &&
+    info.constraint === 'catalog_blueprint_tenant_identifier_uq'
+  ) {
     throw new CatalogError('CATALOG_ALREADY_EXISTS', 'Blueprint identifier already exists');
   }
   throw error;
@@ -198,9 +215,18 @@ async function resolveRelationTargets(
   for (const [name, relation] of Object.entries(relations)) {
     const targetId = await findBlueprintIdByIdentifier(tx, tenantId, relation.target);
     if (targetId === undefined) {
-      throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'Relation target blueprint does not exist', {
-        issues: [{ path: `/relations/${name}/target`, message: 'Relation target blueprint does not exist' }],
-      });
+      throw new CatalogError(
+        'CATALOG_REFERENCE_VIOLATION',
+        'Relation target blueprint does not exist',
+        {
+          issues: [
+            {
+              path: `/relations/${name}/target`,
+              message: 'Relation target blueprint does not exist',
+            },
+          ],
+        },
+      );
     }
     targetIds.set(name, targetId);
   }
@@ -254,7 +280,11 @@ function relationsFromRows(rows: readonly RelationDefinitionRow[]): LoadedRelati
 }
 
 /** The relation rows of `blueprintId`, both as `RelationDefinition`s and keyed by internal id (for edge assembly). */
-async function loadRelations(tx: BlueprintRepositoryTx, tenantId: string, blueprintId: string): Promise<LoadedRelations> {
+async function loadRelations(
+  tx: BlueprintRepositoryTx,
+  tenantId: string,
+  blueprintId: string,
+): Promise<LoadedRelations> {
   const rows = await selectRelationDefinitions(tx, tenantId, blueprintId);
   return relationsFromRows(rows);
 }
@@ -312,11 +342,16 @@ async function persistRelationDefinitions(
     }
   }
 
-  const removedIds = previousRows.filter((row) => !(row.identifier in relations)).map((row) => row.id);
+  const removedIds = previousRows
+    .filter((row) => !(row.identifier in relations))
+    .map((row) => row.id);
   await deleteRelationDefinitionRows(tx, tenantId, removedIds);
 }
 
-function toParsedDefinition(row: BlueprintRow, relations: Record<string, RelationDefinition>): ParsedBlueprintDefinition {
+function toParsedDefinition(
+  row: BlueprintRow,
+  relations: Record<string, RelationDefinition>,
+): ParsedBlueprintDefinition {
   return {
     identifier: row.identifier,
     title: row.title as LocalizedText,
@@ -368,7 +403,10 @@ function buildBlueprintOutput(
   };
 }
 
-function buildSnapshot(definition: ParsedBlueprintDefinition, version: number): Record<string, unknown> {
+function buildSnapshot(
+  definition: ParsedBlueprintDefinition,
+  version: number,
+): Record<string, unknown> {
   return {
     identifier: definition.identifier,
     title: definition.title,
@@ -414,11 +452,20 @@ async function runCompatibilityCheck(
         }
       }
 
-      const key: ValidatorCacheKey = { tenantId, blueprintId: newDefinition.identifier, version: newVersion };
+      const key: ValidatorCacheKey = {
+        tenantId,
+        blueprintId: newDefinition.identifier,
+        version: newVersion,
+      };
       const compileValidator: CompileValidatorFn = (schema, kind) =>
-        kind === 'spec' ? getCachedSpecValidator(key, schema, limits) : getCachedStatusValidator(key, schema, limits);
+        kind === 'spec'
+          ? getCachedSpecValidator(key, schema, limits)
+          : getCachedStatusValidator(key, schema, limits);
 
-      const result = await checkCompatibility(newDefinition, counting(), { previousDefinition, compileValidator });
+      const result = await checkCompatibility(newDefinition, counting(), {
+        previousDefinition,
+        compileValidator,
+      });
 
       span.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, newDefinition.identifier);
       span.setAttribute('tayzu.catalog.compatibility.entities_checked', checked);
@@ -485,7 +532,15 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
         blueprintIdentifier: definition.identifier,
         resourceIdentifier: definition.identifier,
         version: 1,
-        changedFields: ['identifier', 'title', 'description', 'icon', 'schema', 'statusSchema', 'relations'],
+        changedFields: [
+          'identifier',
+          'title',
+          'description',
+          'icon',
+          'schema',
+          'statusSchema',
+          'relations',
+        ],
         snapshot: buildSnapshot(definition, 1),
         traceId,
       });
@@ -545,10 +600,15 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
       const afterIdentifier = input.cursor !== undefined ? decodeCursor(input.cursor) : undefined;
 
       const tx = drizzle(client);
-      const rows = await selectBlueprintsPage(tx, ctx.tenantId, { limit: pageSize, afterIdentifier });
+      const rows = await selectBlueprintsPage(tx, ctx.tenantId, {
+        limit: pageSize,
+        afterIdentifier,
+      });
       const hasMore = rows.length > pageSize;
       const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
-      const items = await Promise.all(pageRows.map((row) => mapBlueprintRowToOutput(tx, ctx.tenantId, row)));
+      const items = await Promise.all(
+        pageRows.map((row) => mapBlueprintRowToOutput(tx, ctx.tenantId, row)),
+      );
 
       const lastItem = pageRows[pageRows.length - 1];
       const cursor = hasMore && lastItem ? encodeCursor(lastItem.identifier) : undefined;
@@ -570,7 +630,9 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
       denyIfReserved(ctx, definition.identifier, 'blueprint_write');
 
       const tx = drizzle(client);
-      const row = await selectBlueprintRow(tx, ctx.tenantId, definition.identifier, { forUpdate: true });
+      const row = await selectBlueprintRow(tx, ctx.tenantId, definition.identifier, {
+        forUpdate: true,
+      });
       if (!row) throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
       if (input.expectedVersion !== undefined && input.expectedVersion !== row.version) {
@@ -579,7 +641,8 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
 
       const targetIds = await resolveRelationTargets(tx, ctx.tenantId, definition.relations);
       const previousRelationRows = await selectRelationDefinitions(tx, ctx.tenantId, row.id);
-      const { relations: previousRelations, byId: previousRelationsById } = relationsFromRows(previousRelationRows);
+      const { relations: previousRelations, byId: previousRelationsById } =
+        relationsFromRows(previousRelationRows);
       const previousDefinition = toParsedDefinition(row, previousRelations);
 
       const newVersion = row.version + 1;
@@ -596,7 +659,10 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
       if (compatibility.violations.length > 0) {
         trace
           .getActiveSpan()
-          ?.setAttribute('tayzu.catalog.compatibility.violation.count', compatibility.violations.length);
+          ?.setAttribute(
+            'tayzu.catalog.compatibility.violation.count',
+            compatibility.violations.length,
+          );
         throw new CatalogError(
           'CATALOG_SCHEMA_INCOMPATIBLE',
           'Blueprint update is incompatible with existing entities',
