@@ -42,7 +42,8 @@ entity keeps its desired state (`spec`) separate from its observed state
 
   | Limit | Default |
   |---|---|
-  | Blueprint, property and relation identifier | `^[A-Za-z][A-Za-z0-9_-]{0,63}$` |
+  | Property and relation identifier | `^[A-Za-z][A-Za-z0-9_-]{0,63}$` |
+  | Blueprint identifier | `^_?[A-Za-z][A-Za-z0-9_-]{0,63}$` (a leading `_` marks a reserved system blueprint) |
   | Entity identifier | `^[A-Za-z0-9@_.:/=-]{1,256}$`, with no `.` or `..` path segment and no leading, trailing or repeated `/` |
   | Localized text, per locale | 256 characters (titles), 4096 (descriptions) |
   | Properties per blueprint (spec + status) | 200 |
@@ -56,7 +57,7 @@ entity keeps its desired state (`spec`) separate from its observed state
 | Nesting depth of `object` values | 16 |
 | Blueprint and entity `icon` | 64 characters |
 | String values with a `format` | 2048 characters |
-| Status `source` label | blueprint identifier pattern |
+| Status `source` label | property and relation identifier pattern |
 | Referrers detached by one delete | 1000 |
 | Pagination cursor | 512 characters |
 
@@ -426,7 +427,7 @@ not given are cleared. The following rules apply.
   lack a relation).
 - The operation MUST set `observedAt` to the server's current UTC time.
 - It MUST set `source` to the caller-supplied source label, which MUST match
-  the blueprint identifier pattern (for example `github`).
+  the property and relation identifier pattern (for example `github`).
 - It MUST set `observedGeneration` to the caller-supplied generation the
   observation corresponds to. That value MUST be ≤ the entity's current
   `generation`, otherwise the operation fails with `CATALOG_VALIDATION_FAILED`.
