@@ -39,3 +39,13 @@ export const operationDurationHistogram = meter.createHistogram('tayzu.catalog.o
 export const contextRejectionsCounter = meter.createCounter('tayzu.catalog.context.rejections', {
   unit: '{rejection}',
 });
+
+/** design.md, Metrics table: "Client-quality and misuse signal (SEC06)". */
+export const validationFailuresCounter = meter.createCounter('tayzu.catalog.validation.failures', {
+  unit: '{failure}',
+});
+
+/** design.md, Metrics table: "Schema churn" (task 7.x). */
+export const blueprintMutationsCounter = meter.createCounter('tayzu.catalog.blueprint.mutations', {
+  unit: '{mutation}',
+});

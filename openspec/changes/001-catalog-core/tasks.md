@@ -262,31 +262,31 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 7. Blueprint operations (integration, real Postgres)
 
-- [ ] 7.1 `blueprints.create`, with attribution, `version` 1, a UTC
+- [x] 7.1 `blueprints.create`, with attribution, `version` 1, a UTC
   timestamp and a change event. Verify: `blueprints.int.test.ts` covers
   "Create a blueprint with localized title", "Duplicate blueprint
   identifier", "Relation to an existing blueprint", "Self relation" and
   "Relation to a missing blueprint", and checks the span, the
   `blueprint.mutations` counter and "Timestamps are returned in UTC".
-- [ ] 7.2 Reserved identifiers through the service. Verify:
+- [x] 7.2 Reserved identifiers through the service. Verify:
   `blueprints.int.test.ts` covers "Tenant cannot create a reserved
   blueprint" (and the WARN log) and "System actor can create a reserved
   blueprint".
-- [ ] 7.3 `blueprints.get` and `blueprints.list` with keyset pagination and
+- [x] 7.3 `blueprints.get` and `blueprints.list` with keyset pagination and
   opaque cursors. Verify: `blueprints.int.test.ts` covers "List blueprints
   with pagination", checks that a malformed cursor fails with
   `CATALOG_VALIDATION_FAILED`, and checks the page size limit of 500.
-- [ ] 7.4 `blueprints.update` with the D7 compatibility check (`FOR UPDATE`,
+- [x] 7.4 `blueprints.update` with the D7 compatibility check (`FOR UPDATE`,
   batched streaming), the relation-target-change rule, and `expectedVersion`.
   Verify: `blueprints-update.int.test.ts` covers "Adding an optional property
   is compatible", "Adding a required property without values is
   incompatible", "Removing a property that has values is incompatible" and
   "Stale expected version", and checks the `compatibility_check` span
   attributes.
-- [ ] 7.5 `blueprints.delete`. Verify: `blueprints.int.test.ts` covers
+- [x] 7.5 `blueprints.delete`. Verify: `blueprints.int.test.ts` covers
   "Blueprint with entities cannot be deleted", "Relation target blueprint
   cannot be deleted" and "Unused blueprint is deleted".
-- [ ] 7.6 Blueprint tenant isolation. Verify: `isolation.int.test.ts` covers
+- [x] 7.6 Blueprint tenant isolation. Verify: `isolation.int.test.ts` covers
   "Same identifiers coexist across tenants", and checks that `get`,
   `update` and `delete` of another tenant's blueprint return
   `CATALOG_NOT_FOUND`.

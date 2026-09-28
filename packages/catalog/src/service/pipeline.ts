@@ -40,8 +40,14 @@ import type { Pool, PoolClient } from 'pg';
 
 import type { CatalogContext } from '../domain/context.js';
 import { parseCatalogContext } from '../domain/context.js';
-import { CatalogError, isCatalogError } from '../domain/errors.js';
-import { contextRejectionsCounter, logger, operationDurationHistogram, tracer } from '../telemetry/instruments.js';
+import { CatalogError, isCatalogError, type CatalogErrorCode } from '../domain/errors.js';
+import {
+  contextRejectionsCounter,
+  logger,
+  operationDurationHistogram,
+  tracer,
+  validationFailuresCounter,
+} from '../telemetry/instruments.js';
 
 const TENANT_ATTRIBUTE = 'tayzu.tenant.id';
 const ACTOR_TYPE_ATTRIBUTE = 'tayzu.actor.type';
@@ -52,6 +58,20 @@ const OPERATION_ATTRIBUTE = 'tayzu.catalog.operation';
 const OUTCOME_ATTRIBUTE = 'tayzu.catalog.outcome';
 const ERROR_TYPE_ATTRIBUTE = 'error.type';
 const CONTEXT_REASON_ATTRIBUTE = 'tayzu.catalog.context.reason';
+
+/**
+ * design.md, Metrics table: `tayzu.catalog.validation.failures`'s allowed
+ * `error.type` values ("Client-quality and misuse signal", SEC06). Every
+ * other `CatalogError` code (`CATALOG_CONTEXT_REQUIRED`, `CATALOG_NOT_FOUND`,
+ * `CATALOG_ALREADY_EXISTS`, `CATALOG_VERSION_CONFLICT`) never increments it.
+ */
+const VALIDATION_FAILURE_CODES: ReadonlySet<CatalogErrorCode> = new Set([
+  'CATALOG_VALIDATION_FAILED',
+  'CATALOG_REFERENCE_VIOLATION',
+  'CATALOG_SCHEMA_INCOMPATIBLE',
+  'CATALOG_LIMIT_EXCEEDED',
+  'CATALOG_RESERVED_IDENTIFIER',
+]);
 
 type OperationOutcome = 'success' | 'client_error' | 'server_error';
 
@@ -95,6 +115,13 @@ export interface DefineCatalogOperationOptions<Input, Output> {
   /** The production connection pool this operation runs against. */
   readonly pool: Pool;
   readonly handler: CatalogOperationHandler<Input, Output>;
+  /**
+   * Overrides `withTenantTransaction`'s default 5 s `statement_timeout`
+   * (design D5). Design Risks: "`statement_timeout` raised only for this
+   * operation (30 s)" -- used by `blueprints.update`'s compatibility check
+   * (design D7), which streams every entity of a blueprint.
+   */
+  readonly statementTimeoutMs?: number;
 }
 
 /** Reads `error.details.reason`, falling back to `'invalid_actor'` if it is ever missing. */
@@ -230,7 +257,7 @@ function elapsedSeconds(startedAtMillis: number): number {
 export function defineCatalogOperation<Input, Output>(
   options: DefineCatalogOperationOptions<Input, Output>,
 ): (rawContext: unknown, input: Input) => Promise<Output> {
-  const { name, pool, handler } = options;
+  const { name, pool, handler, statementTimeoutMs } = options;
   const spanName = `catalog.${name}`;
 
   return async function catalogOperation(rawContext: unknown, input: Input): Promise<Output> {
@@ -256,7 +283,9 @@ export function defineCatalogOperation<Input, Output>(
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
-        const result = await withTenantTransaction(pool, ctx, (client) => handler({ ctx, client, input }));
+        const result = await withTenantTransaction(pool, ctx, (client) => handler({ ctx, client, input }), {
+          statementTimeoutMs,
+        });
 
         if (result.audit) {
           emitAuditMutationLog(ctx, result.audit);
@@ -274,6 +303,13 @@ export function defineCatalogOperation<Input, Output>(
 
         if (isCatalogError(error)) {
           span.setAttribute(ERROR_TYPE_ATTRIBUTE, error.code);
+          if (VALIDATION_FAILURE_CODES.has(error.code)) {
+            validationFailuresCounter.add(1, {
+              [TENANT_ATTRIBUTE]: ctx.tenantId,
+              [OPERATION_ATTRIBUTE]: name,
+              [ERROR_TYPE_ATTRIBUTE]: error.code,
+            });
+          }
           recordOperationDuration({
             operationName: name,
             ctx,

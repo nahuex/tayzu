@@ -6,8 +6,17 @@
  */
 import { CatalogError } from './errors.js';
 
-/** Blueprint, property and relation identifiers: max 64 chars, leading letter. */
+/** Property and relation identifiers: max 64 chars, leading letter. */
 const NAME_IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * Blueprint identifiers: the same shape as `NAME_IDENTIFIER_PATTERN`, plus a
+ * single optional leading `_` (spec, "Reserved system identifiers": "Blueprint
+ * identifiers starting with `_` are reserved for platform-defined blueprints,
+ * such as the future `_workflow`"). A second leading `_` (`__proto__`) still
+ * fails: the character after the optional `_` must be a letter.
+ */
+const BLUEPRINT_IDENTIFIER_PATTERN = /^_?[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 /** Entity identifiers: max 256 chars, path-like character class. */
 const ENTITY_IDENTIFIER_PATTERN = /^[A-Za-z0-9@_.:/=-]{1,256}$/;
@@ -29,7 +38,10 @@ function parseNameIdentifier(value: unknown, path: string): string {
 }
 
 export function parseBlueprintIdentifier(value: unknown, path: string): string {
-  return parseNameIdentifier(value, path);
+  if (typeof value !== 'string' || !BLUEPRINT_IDENTIFIER_PATTERN.test(value)) {
+    invalidIdentifier(path);
+  }
+  return value;
 }
 
 export function parsePropertyIdentifier(value: unknown, path: string): string {
