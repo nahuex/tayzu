@@ -198,7 +198,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 - [x] 4.6 Size limits evaluated before validation or compilation. Verify:
   `limits.test.ts` covers "Oversized spec is rejected", and a spy shows the
   compiler is not invoked.
-- [ ] 4.7 Pure compatibility checker `checkCompatibility(newDefinition,
+- [x] 4.7 Pure compatibility checker `checkCompatibility(newDefinition,
   entitiesAsyncIterable)` that stops after 10 violations. Verify:
   `compatibility.test.ts` covers the three compatibility scenarios from the
   spec at the pure level, and checks the early exit with 15 bad entities
