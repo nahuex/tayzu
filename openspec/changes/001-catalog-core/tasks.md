@@ -229,7 +229,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   runs a raw insert of a `catalog_entity_relation` edge whose target belongs
   to another tenant and shows it fails with an FK violation, which is
   defense in depth independent of the service layer.
-- [ ] 5.4 Change-event appender with a per-tenant gap-free `seq`. Verify:
+- [x] 5.4 Change-event appender with a per-tenant gap-free `seq`. Verify:
   `change-events.int.test.ts` shows that the sequence increments per tenant
   independently, that a rolled-back transaction leaves no event and no sequence
   gap, that the event stores the `snapshot` it is given, and it covers
