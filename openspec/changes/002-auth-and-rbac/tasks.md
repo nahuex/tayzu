@@ -83,7 +83,7 @@ policy diff shown in chat, separately from the rest of the PR.
 - [x] 2.4 Wire `auth.security.login_succeeded`/`login_failed` log events and
   the `tayzu.auth.session.events` counter on sign-in. Verify:
   `auth-flow.int.test.ts` covers both outcomes emitting the declared signal.
-- [ ] 2.5 Better Auth `rateLimit` config: `storage: "database"`, `customRules`
+- [x] 2.5 Better Auth `rateLimit` config: `storage: "database"`, `customRules`
   for `/sign-in/email`, `/two-factor/verify`, and any sign-up/email-verification
   route, each keyed by IP and by normalized email (design D20). Verify:
   `pre-auth-rate-limit.int.test.ts` covers "Repeated failed sign-ins from the

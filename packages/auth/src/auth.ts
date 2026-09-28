@@ -33,6 +33,10 @@ import { betterAuth } from 'better-auth';
 import { createAuthMiddleware, isAPIError } from 'better-auth/api';
 import { admin, jwt, organization, twoFactor } from 'better-auth/plugins';
 
+import {
+  preAuthRateLimitPlugin,
+  type PreAuthRateLimitOptions,
+} from './rate-limit/pre-auth-rate-limit.js';
 import { logger, sessionEventsCounter } from './telemetry/instruments.js';
 
 const SIGN_IN_EMAIL_PATH = '/sign-in/email';
@@ -105,6 +109,12 @@ export interface CreateAuthOptions {
   readonly db: DB;
   /** Better Auth's own `secret` option (`BETTER_AUTH_SECRET`, host-resolved). */
   readonly secret: string;
+  /**
+   * Pre-authentication rate limiting (task 2.5, design D20). Optional so
+   * every earlier task's `createAuth({ db, secret })` call keeps working
+   * unchanged; a path with no configured rule here is never rate-limited.
+   */
+  readonly rateLimit?: PreAuthRateLimitOptions;
 }
 
 export interface AuthInstance {
@@ -132,7 +142,25 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
     emailAndPassword: {
       enabled: true,
     },
-    plugins: [organization(), admin(), twoFactor(), jwt(), apiKey()],
+    // `enabled: false` (task 2.5, design D20): Better Auth's own built-in
+    // database-backed rate limiter can only key by IP+path and its blocked
+    // response cannot be reshaped into `AUTH_RATE_LIMITED`/`Retry-After`
+    // (`./rate-limit/pre-auth-rate-limit.ts`'s own module doc comment), so
+    // it stays fully disabled; `storage: "database"` still registers the
+    // `rateLimit` schema table (`./persistence/schema.ts`) that plugin reads
+    // and writes through `ctx.adapter` instead.
+    rateLimit: {
+      enabled: false,
+      storage: 'database',
+    },
+    plugins: [
+      organization(),
+      admin(),
+      twoFactor(),
+      jwt(),
+      apiKey(),
+      preAuthRateLimitPlugin(options),
+    ],
     databaseHooks: {
       session: {
         create: {

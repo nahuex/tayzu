@@ -29,6 +29,20 @@
       "when": 1790616226904,
       "tag": "0003_auth_role_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790620297775,
+      "tag": "0004_rate_limit_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790620315283,
+      "tag": "0005_rate_limit_table_grants",
+      "breakpoints": true
     }
   ]
 }

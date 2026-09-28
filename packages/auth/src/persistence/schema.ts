@@ -287,3 +287,34 @@ export const apikey = authSchema.table(
     index('apikey_key_idx').on(t.key),
   ],
 );
+
+/**
+ * `storage: "database"` mode for pre-authentication rate limiting (task 2.5,
+ * design D20). Reuses Better Auth's own `rateLimit` model shape (`id`, `key`,
+ * `count`, `last_request`), so `@better-auth/drizzle-adapter`'s generic
+ * model/field resolution (`getAuthTables`, active once `options.rateLimit.
+ * storage === "database"`, `../auth.ts`) can address it through `ctx.adapter`
+ * -- the same low-level adapter surface Better Auth's own built-in
+ * database-backed rate limiter would use. Task 2.5 disables that built-in
+ * enforcement (`rateLimit.enabled: false`): it can only key by IP+path and
+ * its blocked response cannot be reshaped into `AUTH_RATE_LIMITED`/
+ * `Retry-After` (verified against the installed `better-auth@1.7.6` source).
+ * Only `packages/auth/src/rate-limit/pre-auth-rate-limit.ts`'s own plugin
+ * ever reads or writes this table. One deliberate difference from Better
+ * Auth's own generator output (orchestrator decision, task 2.5): `last_
+ * request` is `timestamp with time zone` here, not a bigint
+ * epoch-milliseconds column, for consistency with every other timestamp
+ * column in this file -- safe only because no Better Auth built-in code path
+ * ever touches this table (`enabled: false` above); `pre-auth-rate-limit.ts`
+ * reads and writes it with `Date` values throughout, never a raw number.
+ */
+export const rateLimit = authSchema.table(
+  'rate_limit',
+  {
+    id: text('id').primaryKey(),
+    key: text('key').notNull(),
+    count: integer('count').notNull(),
+    lastRequest: timestamp('last_request', { withTimezone: true }).notNull(),
+  },
+  (t) => [unique('rate_limit_key_uq').on(t.key)],
+);

@@ -32,3 +32,8 @@ const meter = metrics.getMeter(INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE
 export const sessionEventsCounter = meter.createCounter('tayzu.auth.session.events', {
   unit: '{event}',
 });
+
+/** design.md, Metrics table: "Pre-authentication brute-force signal (design D20)". */
+export const rateLimitEventsCounter = meter.createCounter('tayzu.auth.rate_limit.events', {
+  unit: '{event}',
+});

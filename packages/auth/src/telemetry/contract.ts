@@ -34,6 +34,12 @@ export const METRICS: readonly MetricContract[] = [
     unit: '{event}',
     attributes: ['tayzu.auth.event'],
   },
+  {
+    name: 'tayzu.auth.rate_limit.events',
+    instrumentType: 'counter',
+    unit: '{event}',
+    attributes: ['tayzu.auth.rate_limit.scope'],
+  },
 ];
 
 export type LogSeverity = 'INFO' | 'WARN' | 'ERROR';
@@ -56,6 +62,11 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'WARN',
     attributes: ['tayzu.auth.failure_reason'],
   },
+  {
+    name: 'auth.security.rate_limited',
+    severity: 'WARN',
+    attributes: ['tayzu.auth.rate_limit.scope'],
+  },
 ];
 
 /**
@@ -66,4 +77,5 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
 export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
   'auth.security.login_succeeded',
   'auth.security.login_failed',
+  'auth.security.rate_limited',
 ];
