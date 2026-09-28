@@ -100,7 +100,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 3. Session and tenant resolution
 
-- [ ] 3.1 `resolveContext(headers)` in `packages/auth`: the session-cookie
+- [x] 3.1 `resolveContext(headers)` in `packages/auth`: the session-cookie
   branch resolves `{ tenantId: session.activeOrganizationId, actor: { type:
   'user', id: user.id } }`. Verify: `context-resolver.int.test.ts` covers
   "Session cookie resolves a human context", "Missing credential is rejected
