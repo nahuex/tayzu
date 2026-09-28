@@ -1,4 +1,11 @@
 /**
+ * Task 18.1 migration note (design D22): every fixture in this file that
+ * used to call `auth.api.signUpEmail` now creates its user through
+ * `./__fixtures__/admin-user.js`'s `createAdminUser` instead (the
+ * admin-creation path, `auth.api.createUser`), since public self sign-up is
+ * disabled (task 18.2). This changes only how each fixture's user account is
+ * created, never the behavior any test below asserts.
+ *
  * Integration test for task 2.3 (design D2, D13; Migration Plan step 1).
  * "Mount Better Auth's sign-up and sign-in behind `apps/api` (built in group
  * 11, stubbed here with an in-process handler call)."
@@ -97,6 +104,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 // tracer, meter and logger at import time -- exactly the rule
 // `packages/catalog/src/service/pipeline.int.test.ts` documents for its own
 // `./pipeline.js`. None of the imports above construct an OTel instrument.
+import { createAdminUser } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -140,11 +148,6 @@ function randomSlug(): string {
 const TEST_PASSWORD = 'correct horse battery staple';
 const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 
-interface SignUpEmailResult {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
-}
-
 interface SignInEmailResult {
   readonly token: string | null;
   readonly user: { readonly id: string; readonly email: string };
@@ -163,9 +166,6 @@ interface CreateOrganizationResult {
  * assertions.
  */
 interface AuthApiSurface {
-  signUpEmail(args: {
-    body: { name: string; email: string; password: string };
-  }): Promise<SignUpEmailResult>;
   signInEmail(args: { body: { email: string; password: string } }): Promise<SignInEmailResult>;
   createOrganization(args: {
     body: { name: string; slug: string; userId: string };
@@ -247,20 +247,25 @@ describe('Better Auth sign-up and sign-in behind apps/api (task 2.3, design D2, 
     const email = randomEmail();
     const slug = randomSlug();
 
-    const signUp = await api.signUpEmail({
-      body: { name: 'Flow Test User', email, password: TEST_PASSWORD },
+    // Task 18.1 (design D22): no self-service sign-up left to exercise --
+    // the admin-creation path (`auth.api.createUser`) is what now creates
+    // the Better Auth `user` row this precondition needs.
+    const adminUser = await createAdminUser(auth, {
+      name: 'Flow Test User',
+      email,
+      password: TEST_PASSWORD,
     });
 
-    expect(signUp.user.email).toBe(email);
+    expect(adminUser.email).toBe(email);
 
     const userRow = await findUserByEmail(db, email);
     expect(userRow, `a Better Auth "user" row exists for ${email}`).toBeDefined();
-    expect(userRow?.id).toBe(signUp.user.id);
+    expect(userRow?.id).toBe(adminUser.userId);
 
     // "... and joins an organization" (spec "Signing up creates a matching
-    // `_user` entity"): the signed-up user creates, and so joins, one.
+    // `_user` entity"): the admin-created user is made a member of one.
     const organization = await api.createOrganization({
-      body: { name: 'Flow Test Org', slug, userId: signUp.user.id },
+      body: { name: 'Flow Test Org', slug, userId: adminUser.userId },
     });
 
     expect(organization.slug).toBe(slug);
@@ -272,18 +277,16 @@ describe('Better Auth sign-up and sign-in behind apps/api (task 2.3, design D2, 
     ).toBeDefined();
     expect(organizationRow?.slug).toBe(slug);
 
-    const memberRow = await findMember(db, organization.id, signUp.user.id);
+    const memberRow = await findMember(db, organization.id, adminUser.userId);
     expect(
       memberRow,
-      'a Better Auth "member" row joins the signed-up user to the organization',
+      'a Better Auth "member" row joins the admin-created user to the organization',
     ).toBeDefined();
   });
 
   it('Sign in with the correct password succeeds', async () => {
     const email = randomEmail();
-    await api.signUpEmail({
-      body: { name: 'Flow Test User', email, password: TEST_PASSWORD },
-    });
+    await createAdminUser(auth, { name: 'Flow Test User', email, password: TEST_PASSWORD });
 
     const signIn = await api.signInEmail({
       body: { email, password: TEST_PASSWORD },
@@ -498,11 +501,13 @@ describe('Sign-in telemetry: login_succeeded / login_failed (task 2.4, design D2
   it('Sign in with the correct password, as a user with exactly one organization membership, emits exactly one login_succeeded log at INFO and increments the session-events counter', async () => {
     const email = randomEmail();
     const slug = randomSlug();
-    const signUp = await api.signUpEmail({
-      body: { name: SIGN_IN_TELEMETRY_TEST_NAME, email, password: TEST_PASSWORD },
+    const adminUser = await createAdminUser(auth, {
+      name: SIGN_IN_TELEMETRY_TEST_NAME,
+      email,
+      password: TEST_PASSWORD,
     });
     const organization = await api.createOrganization({
-      body: { name: 'Sign-in Telemetry Test Org', slug, userId: signUp.user.id },
+      body: { name: 'Sign-in Telemetry Test Org', slug, userId: adminUser.userId },
     });
 
     // Discard whatever sign-up/organization-creation emitted: only the
@@ -521,7 +526,7 @@ describe('Sign-in telemetry: login_succeeded / login_failed (task 2.4, design D2
     expect(record?.severityNumber).toBe(SeverityNumber.INFO);
     expect(record?.attributes).toEqual({
       'tayzu.tenant.id': organization.id,
-      'tayzu.actor.id': signUp.user.id,
+      'tayzu.actor.id': adminUser.userId,
     });
 
     const points = sumDataPoints(harness.metricExporter, 'tayzu.auth.session.events').filter(
@@ -546,8 +551,10 @@ describe('Sign-in telemetry: login_succeeded / login_failed (task 2.4, design D2
 
   it('Sign in with the wrong password emits exactly one login_failed log at WARN with failure_reason bad_credentials and increments the session-events counter', async () => {
     const email = randomEmail();
-    await api.signUpEmail({
-      body: { name: SIGN_IN_TELEMETRY_TEST_NAME, email, password: TEST_PASSWORD },
+    await createAdminUser(auth, {
+      name: SIGN_IN_TELEMETRY_TEST_NAME,
+      email,
+      password: TEST_PASSWORD,
     });
 
     await harness.reset();

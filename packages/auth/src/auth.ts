@@ -253,8 +253,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
     // Email/password sign-up and sign-in (task 2.3). No `minPasswordLength`
     // override: Better Auth's own default (8 characters) is the policy this
     // change fixes; a stricter policy is not named anywhere in the design.
+    // `disableSignUp: true` (task 18.1/18.2, design D22): public self
+    // sign-up is disabled under every circumstance -- users are created only
+    // through the admin-creation path (`identity.users.create`, task 18.3)
+    // or the bootstrap script (task 18.4), both calling `auth.api.
+    // createUser` directly, which `disableSignUp` does not affect (confirmed
+    // against the installed `@better-auth/core@1.7.6` option type).
     emailAndPassword: {
       enabled: true,
+      disableSignUp: true,
     },
     // `enabled: false` (task 2.5, design D20): Better Auth's own built-in
     // database-backed rate limiter can only key by IP+path and its blocked

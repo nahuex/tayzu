@@ -136,6 +136,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 // `TelemetryTestHarness` bindings are imported here too, alongside the
 // side-effecting registration import every other describe block in this
 // file already relies on.
+import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver, type ContextResolver } from './context-resolver.js';
@@ -239,16 +240,6 @@ function postJson(
   );
 }
 
-interface SignUpEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
-}
-
-interface SignInEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
-}
-
 /**
  * A real `cookie` header value built from a Better Auth HTTP response's own
  * `Set-Cookie` header(s) -- same helper as `context-resolver.int.test.ts`'s
@@ -331,14 +322,14 @@ describe('resolveContext: 12-hour idle timeout (task 3.2, design D3)', () => {
   });
 
   /**
-   * Signs a fresh user up, gives them a single organization membership, then
-   * signs in again so the returned session already carries that
-   * organization as its `activeOrganizationId` (task 2.4's own,
-   * already-green exactly-one-membership rule -- the same two-step "sign up,
-   * create org, sign in again" sequence `context-resolver.int.test.ts`'s own
-   * first scenario uses, and for the same reason: the sign-up session is
-   * created before the membership row exists, so only the *second* session
-   * gets an active organization).
+   * Task 18.1 (design D22): creates a user through the admin-creation path
+   * (`./__fixtures__/admin-user.js`'s `bootstrapTestTenant`) instead of
+   * Better Auth's own `/sign-up/email` route, gives them a single
+   * organization membership, then signs them in so the returned session
+   * already carries that organization as its `activeOrganizationId` (task
+   * 2.4's own, already-green exactly-one-membership rule) -- the membership
+   * row exists before `bootstrapTestTenant`'s own, single sign-in call, so
+   * that one session already gets an active organization.
    */
   async function signUpWithOrganization(): Promise<{
     readonly cookie: string;
@@ -346,37 +337,20 @@ describe('resolveContext: 12-hour idle timeout (task 3.2, design D3)', () => {
     readonly userId: string;
     readonly organizationId: string;
   }> {
-    const handler = handlerOf(auth);
-    const email = randomEmail();
-    const slug = randomSlug();
-
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
-
-    const organization = await apiOf(auth).createOrganization({
-      body: { name: 'Session Policy Test Org', slug, userId: signUp.user.id },
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Session Policy Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
     });
 
-    const signInResponse = await postJson(
-      handler,
-      '/sign-in/email',
-      { email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signInResponse.status, 'sign-in succeeds').toBe(200);
-    const signIn = (await signInResponse.json()) as SignInEmailResponseBody;
-
     return {
-      cookie: cookieHeaderFrom(signInResponse),
-      token: String(signIn.token),
-      userId: signUp.user.id,
-      organizationId: organization.id,
+      cookie: tenant.cookie,
+      token: tenant.token,
+      userId: tenant.userId,
+      organizationId: tenant.organizationId,
     };
   }
 
@@ -519,16 +493,14 @@ describe('resolveContext: 12-hour idle timeout (task 3.2, design D3)', () => {
  * pattern as this file's own first describe block (task 3.2) and as
  * `auth-flow.int.test.ts` (task 2.3/2.4), reusing that same file's top-level
  * helpers (`handlerOf`, `postJson`, `cookieHeaderFrom`, `apiOf`, `randomIp`,
- * `randomEmail`, `randomSlug`, `expectContextRequiredRejection`,
- * `SignUpEmailResponseBody`) rather than redefining them. "Two devices" is
- * two independent `/sign-in/email` calls for the same account, each from its
- * own random IP (so task 2.5's pre-auth rate limiter, keyed by IP and by
- * normalized email, never conflates the two sign-ins or the later
- * `changePassword` call) -- the same "sign up, create org, sign in again"
- * sequence `signUpWithOrganization` (task 3.2's own describe block) already
- * establishes for one device, repeated here for two, since that helper
- * itself is scoped to that other describe block's closure and only ever
- * returns one session.
+ * `randomEmail`, `randomSlug`, `expectContextRequiredRejection`) rather than
+ * redefining them. Task 18.1 (design D22): the user under test is created
+ * through the admin-creation path (`./__fixtures__/admin-user.js`'s
+ * `createAdminUser`), not Better Auth's own `/sign-up/email` route -- "two
+ * devices" is then two independent `/sign-in/email` calls for that same
+ * account, each from its own random IP (so task 2.5's pre-auth rate limiter,
+ * keyed by IP and by normalized email, never conflates the two sign-ins or
+ * the later `changePassword` call).
  *
  * `changePassword` is called directly through `auth.api.changePassword`
  * (not `auth.handler`), passing `headers` carrying device 1's cookie so
@@ -612,21 +584,20 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
     const email = randomEmail();
     const slug = randomSlug();
 
-    // GIVEN "a user signed in on two devices": one sign-up, one organization
-    // (so both sign-ins below resolve an activeOrganizationId, task 2.4's
-    // exactly-one-membership rule), then two independent `/sign-in/email`
-    // calls for the same account, each from its own random IP.
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
+    // GIVEN "a user signed in on two devices": one admin-created user (task
+    // 18.1, design D22 -- no self-service sign-up left to call), one
+    // organization (so both sign-ins below resolve an activeOrganizationId,
+    // task 2.4's exactly-one-membership rule), then two independent
+    // `/sign-in/email` calls for the same account, each from its own random
+    // IP.
+    const adminUser = await createAdminUser(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+    });
 
     const organization = await apiOf(auth).createOrganization({
-      body: { name: 'Password Change Test Org', slug, userId: signUp.user.id },
+      body: { name: 'Password Change Test Org', slug, userId: adminUser.userId },
     });
 
     const device1SignIn = await postJson(
@@ -653,10 +624,10 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
     const device2Before = await resolveContext(new Headers({ cookie: device2Cookie }));
     expect(device2Before).toEqual({
       tenantId: organization.id,
-      actor: { type: 'user', id: signUp.user.id },
+      actor: { type: 'user', id: adminUser.userId },
     });
 
-    // Discard whatever sign-up/organization-creation/sign-in emitted: only
+    // Discard whatever admin-user-creation/organization-creation/sign-in emitted: only
     // the changePassword call below is under test.
     await harness.reset();
 
@@ -685,7 +656,7 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
     expect(record?.severityNumber).toBe(SeverityNumber.INFO);
     expect(record?.attributes).toEqual({
       'tayzu.tenant.id': organization.id,
-      'tayzu.actor.id': signUp.user.id,
+      'tayzu.actor.id': adminUser.userId,
       'tayzu.auth.revocation.reason': PASSWORD_CHANGE_REVOCATION_REASON,
     });
   });

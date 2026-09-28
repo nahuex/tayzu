@@ -123,6 +123,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // telemetry itself: an unregistered harness would make `./auth.js`'s own
 // instruments permanent no-ops for every other test file sharing the module
 // graph within the same worker.
+import { createAdminUser } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance, type CreateAuthOptions } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -175,7 +176,6 @@ function handlerOf(auth: AuthInstance): (request: Request) => Promise<Response> 
 }
 
 const SIGN_IN_URL = 'http://localhost:3000/api/auth/sign-in/email';
-const SIGN_UP_URL = 'http://localhost:3000/api/auth/sign-up/email';
 
 function randomIp(): string {
   const octet = (): string => randomInt(1, 255).toString(10);
@@ -204,33 +204,6 @@ function postSignIn(
         'x-forwarded-for': attempt.ip,
       },
       body: JSON.stringify({ email: attempt.email, password: attempt.password }),
-    }),
-  );
-}
-
-interface SignUpAttempt {
-  readonly ip: string;
-  readonly name: string;
-  readonly email: string;
-  readonly password: string;
-}
-
-function postSignUp(
-  handler: (request: Request) => Promise<Response>,
-  attempt: SignUpAttempt,
-): Promise<Response> {
-  return handler(
-    new Request(SIGN_UP_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-forwarded-for': attempt.ip,
-      },
-      body: JSON.stringify({
-        name: attempt.name,
-        email: attempt.email,
-        password: attempt.password,
-      }),
     }),
   );
 }
@@ -267,15 +240,19 @@ describe('Enumeration resistance: sign-in failure status/error-code/body-shape p
   it('Sign-in failure looks the same for an unknown account and a wrong password (spec scenario)', async () => {
     const handler = handlerOf(auth);
 
-    // GIVEN ... one email with an account and a known password.
+    // GIVEN ... one email with an account and a known password. Task 18.1
+    // (design D22): no self-service sign-up left to exercise -- the
+    // admin-creation path (`./__fixtures__/admin-user.js`'s
+    // `createAdminUser`, `auth.api.createUser`) is what now creates the
+    // known account; it throws if creation fails, so no separate "setup
+    // succeeded" assertion is needed (same pattern `auth-flow.int.test.ts`'s
+    // migrated fixtures already establish).
     const knownEmail = randomEmail();
-    const signUpResponse = await postSignUp(handler, {
-      ip: randomIp(),
+    await createAdminUser(auth, {
       name: 'Enumeration Resistance Test User',
       email: knownEmail,
       password: TEST_PASSWORD,
     });
-    expect(signUpResponse.status, 'setup: sign-up for the known account succeeds').toBe(200);
 
     // GIVEN ... one email with no account.
     const unknownEmail = randomEmail();

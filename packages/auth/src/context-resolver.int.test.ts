@@ -164,6 +164,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // even though this file asserts no telemetry itself: an unregistered harness
 // would make `./auth.js`'s own instruments permanent no-ops for every other
 // test file sharing the module graph within the same worker.
+import {
+  bootstrapTestTenant,
+  createAdminUser,
+  signInAdminUser,
+} from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 3.1). Does not exist yet -- see this file's
@@ -217,84 +222,13 @@ const TEST_PASSWORD = 'correct horse battery staple';
 const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_USER_NAME = 'Context Resolver Test User';
 
-const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
-
-/**
- * `./auth.ts`'s `AuthInstance.api` is typed `unknown`; `.handler` is Better
- * Auth's real, documented HTTP entry point (`dist/types/auth.d.mts`:
- * `handler: (request: Request) => Promise<Response>`), not otherwise exposed
- * on `AuthInstance` yet -- same cast `pre-auth-rate-limit.int.test.ts`'s own
- * `handlerOf` already uses.
- */
-function handlerOf(auth: AuthInstance): (request: Request) => Promise<Response> {
-  return (auth as unknown as { handler: (request: Request) => Promise<Response> }).handler;
-}
-
-interface CreateOrganizationResult {
-  readonly id: string;
-  readonly slug: string;
-}
-
-/**
- * The narrow slice of `auth.api` this file drives in-process (organization
- * creation only -- sign-up/sign-in go through `auth.handler` instead, see
- * this file's own module doc comment), typed locally the same way
- * `auth-flow.int.test.ts`'s own `AuthApiSurface` is.
- */
-interface AuthApiSurface {
-  createOrganization(args: {
-    body: { name: string; slug: string; userId: string };
-  }): Promise<CreateOrganizationResult>;
-}
-
-function apiOf(auth: AuthInstance): AuthApiSurface {
-  return auth.api as AuthApiSurface;
-}
-
-function postJson(
-  handler: (request: Request) => Promise<Response>,
-  path: string,
-  body: Record<string, unknown>,
-  ip: string,
-): Promise<Response> {
-  return handler(
-    new Request(`${AUTH_BASE_URL}${path}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-forwarded-for': ip,
-      },
-      body: JSON.stringify(body),
-    }),
-  );
-}
-
-interface SignUpEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
-}
-
-interface SignInEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
-}
-
-/**
- * A real `cookie` header value built from a Better Auth HTTP response's own
- * `Set-Cookie` header(s) -- the same "name=value; name=value" shape a
- * browser would send back on the next request. `Headers.getSetCookie()`
- * (available on Node 22's `Headers`, verified in this environment) returns
- * every `Set-Cookie` header separately, never comma-joined, which
- * `Headers.get('set-cookie')` cannot be relied on for when more than one
- * cookie is set.
- */
-function cookieHeaderFrom(response: Response): string {
-  const setCookies = response.headers.getSetCookie();
-  if (setCookies.length === 0) {
-    throw new Error('expected response to carry at least one Set-Cookie header');
-  }
-  return setCookies.map((raw) => raw.split(';')[0]).join('; ');
-}
+// Task 18.1 (design D22): this file no longer drives `auth.handler`/
+// `auth.api` directly for user provisioning -- every fixture below goes
+// through `./__fixtures__/admin-user.js`'s `createAdminUser`/
+// `signInAdminUser`/`bootstrapTestTenant` instead (no self-service
+// `/sign-up/email` route left to call), so the local `handlerOf`/`apiOf`/
+// `postJson`/`cookieHeaderFrom`/response-body-shape helpers every earlier
+// revision of this file defined are no longer needed here.
 
 type SessionRow = {
   readonly active_organization_id: string | null;
@@ -365,60 +299,41 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
   });
 
   it('Session cookie resolves a human context', async () => {
-    const handler = handlerOf(auth);
-    const email = randomEmail();
-    const slug = randomSlug();
-
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
-
-    // GIVEN "a signed-in user with an active organization": the sign-up
-    // above leaves the user with zero memberships, so an organization is
-    // created for them next (task 2.4's own already-green
-    // exactly-one-membership rule needs that membership row to exist
-    // *before* the session under test is created).
-    const organization = await apiOf(auth).createOrganization({
-      body: { name: 'Context Resolver Test Org', slug, userId: signUp.user.id },
+    // GIVEN "a signed-in user with an active organization": task 18.1
+    // (design D22) provisions this through the admin-creation path
+    // (`./__fixtures__/admin-user.js`'s `bootstrapTestTenant`) instead of
+    // Better Auth's own `/sign-up/email` route -- the created user's one
+    // organization membership already exists before `bootstrapTestTenant`'s
+    // own, single sign-in call, so that session already carries it as its
+    // `activeOrganizationId` (task 2.4's own, already-green
+    // exactly-one-membership rule).
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Context Resolver Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
     });
-
-    // The sign-up session was created before the organization existed, so
-    // it never got an active organization. Signing in again creates a
-    // *second*, fresh session, after the membership row exists -- this is
-    // the one whose cookie is read back below.
-    const signInResponse = await postJson(
-      handler,
-      '/sign-in/email',
-      { email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signInResponse.status, 'sign-in succeeds').toBe(200);
-    const signIn = (await signInResponse.json()) as SignInEmailResponseBody;
-    const cookie = cookieHeaderFrom(signInResponse);
 
     // GIVEN sanity check: the session row this cookie names really does
     // carry the created organization as its active one, independent of
     // whatever `resolveContext` itself does with it.
-    const sessionRow = await findSessionByToken(db, String(signIn.token));
+    const sessionRow = await findSessionByToken(db, tenant.token);
     expect(
       sessionRow?.active_organization_id,
       "the signed-in session's active_organization_id is the created organization",
-    ).toBe(organization.id);
+    ).toBe(tenant.organizationId);
 
-    const resolved = await resolveContext(new Headers({ cookie }));
+    const resolved = await resolveContext(new Headers({ cookie: tenant.cookie }));
 
     // Requirement text: "A valid session cookie MUST resolve to
     // `{ tenantId: session.activeOrganizationId, actor: { type: 'user', id:
     // user.id } }`." Scenario THEN: "it runs with `actor.type` `user` and
     // `tenantId` equal to their active organization."
     expect(resolved).toEqual({
-      tenantId: organization.id,
-      actor: { type: 'user', id: signUp.user.id },
+      tenantId: tenant.organizationId,
+      actor: { type: 'user', id: tenant.userId },
     });
   });
 
@@ -428,25 +343,28 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
   });
 
   it('Session without an active organization is rejected', async () => {
-    const handler = handlerOf(auth);
     const email = randomEmail();
 
-    // A signed-up user with zero memberships: task 2.4's own
-    // exactly-one-membership rule leaves `activeOrganizationId` `null` on
-    // this session (no organization is ever created for this user).
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
-    const cookie = cookieHeaderFrom(signUpResponse);
+    // Task 18.1 (design D22): an admin-created user with zero memberships
+    // (`./__fixtures__/admin-user.js`, no self-service `/sign-up/email` left
+    // to call) -- task 2.4's own exactly-one-membership rule leaves
+    // `activeOrganizationId` `null` on the resulting session (no
+    // organization is ever created for this user).
+    const adminUser = await createAdminUser(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    expect(signedIn.userId).toBe(adminUser.userId);
 
     // GIVEN sanity check: this session really has no active organization,
     // independent of whatever `resolveContext` itself does with it.
-    const sessionRow = await findSessionByToken(db, String(signUp.token));
+    const sessionRow = await findSessionByToken(db, signedIn.token);
     expect(
       sessionRow?.active_organization_id,
       "a zero-membership user's session has no active organization",
@@ -455,7 +373,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // WHEN: a signed-in user with no active organization calls a catalog
     // operation (here, `resolveContext` itself, standing in for the
     // pipeline stage that would call it -- `apps/api` does not exist yet).
-    await expectContextRequiredRejection(resolveContext(new Headers({ cookie })));
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie: signedIn.cookie })));
   });
 
   /**
@@ -501,35 +419,18 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
    * real signed-in user, never the header's attempted override.
    */
   it('A client-supplied onBehalfOf value is ignored', async () => {
-    const handler = handlerOf(auth);
-    const email = randomEmail();
-    const slug = randomSlug();
-
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
-
-    // GIVEN "a valid session cookie": same two-step organization-then-sign-in
-    // sequence the first scenario in this file uses, so the session under
-    // test has an active organization.
-    const organization = await apiOf(auth).createOrganization({
-      body: { name: 'OnBehalfOf Test Org', slug, userId: signUp.user.id },
+    // GIVEN "a valid session cookie": task 18.1 (design D22) provisions this
+    // through the admin-creation path (`./__fixtures__/admin-user.js`'s
+    // `bootstrapTestTenant`), the same replacement the first scenario in
+    // this file uses, so the session under test has an active organization.
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'OnBehalfOf Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
     });
-
-    const signInResponse = await postJson(
-      handler,
-      '/sign-in/email',
-      { email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signInResponse.status, 'sign-in succeeds').toBe(200);
-    const signIn = (await signInResponse.json()) as SignInEmailResponseBody;
-    const cookie = cookieHeaderFrom(signInResponse);
 
     // WHEN: the caller additionally supplies an onBehalfOf value in a
     // header, alongside the otherwise-valid session cookie. A different,
@@ -539,7 +440,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     const forgedOnBehalfOfUserId = randomUUID();
     const resolved = await resolveContext(
       new Headers({
-        cookie,
+        cookie: tenant.cookie,
         'x-tayzu-on-behalf-of': forgedOnBehalfOfUserId,
       }),
     );
@@ -550,12 +451,10 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // scenario in this file asserts for the same session, `onBehalfOf`
     // header or not.
     expect(resolved).toEqual({
-      tenantId: organization.id,
-      actor: { type: 'user', id: signUp.user.id },
+      tenantId: tenant.organizationId,
+      actor: { type: 'user', id: tenant.userId },
     });
-    expect(String(signIn.token).length, 'sanity: sign-in produced a real session').toBeGreaterThan(
-      0,
-    );
+    expect(tenant.token.length, 'sanity: sign-in produced a real session').toBeGreaterThan(0);
   });
 
   /**
@@ -616,60 +515,42 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
    * still says it belongs to an organization its user no longer does.
    */
   it('Context resolution independently rejects a stale non-membership', async () => {
-    const handler = handlerOf(auth);
-    const email = randomEmail();
-    const slug = randomSlug();
-
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
-
-    // GIVEN, step 1: the user is made a member of a real organization first
-    // (task 2.4's own exactly-one-membership rule needs that membership row
-    // to exist *before* the session under test is created, same as this
-    // file's first scenario).
-    const organization = await apiOf(auth).createOrganization({
-      body: { name: 'Stale Membership Test Org', slug, userId: signUp.user.id },
+    // GIVEN, step 1: task 18.1 (design D22) provisions a user who is a
+    // member of a real organization through the admin-creation path
+    // (`./__fixtures__/admin-user.js`'s `bootstrapTestTenant`), the same
+    // replacement this file's first scenario uses -- the membership row
+    // already exists before `bootstrapTestTenant`'s own, single sign-in
+    // call, so that session already carries it as its `activeOrganizationId`
+    // (task 2.4's exactly-one-membership rule).
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Stale Membership Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
     });
-
-    // The second, fresh session (created after the membership row exists) is
-    // the one whose cookie is read back below -- again, the same sequence
-    // this file's first scenario uses.
-    const signInResponse = await postJson(
-      handler,
-      '/sign-in/email',
-      { email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signInResponse.status, 'sign-in succeeds').toBe(200);
-    const signIn = (await signInResponse.json()) as SignInEmailResponseBody;
-    const cookie = cookieHeaderFrom(signInResponse);
 
     // GIVEN sanity check: the session really is active on the created
     // organization before the membership row is removed, independent of
     // whatever `resolveContext` itself does with it.
-    const sessionRow = await findSessionByToken(db, String(signIn.token));
+    const sessionRow = await findSessionByToken(db, tenant.token);
     expect(
       sessionRow?.active_organization_id,
       "the signed-in session's active_organization_id is the created organization",
-    ).toBe(organization.id);
+    ).toBe(tenant.organizationId);
 
     // GIVEN, step 2: "a session whose `activeOrganizationId` names an
     // organization the user is no longer a member of" -- the membership row
     // is removed *after* the session above was already established, leaving
     // the session row's own `active_organization_id` column unchanged.
-    await deleteMembership(db, organization.id, signUp.user.id);
+    await deleteMembership(db, tenant.organizationId, tenant.userId);
 
     // WHEN "a catalog operation is called with that session" (here,
     // `resolveContext` itself, standing in for the pipeline stage that would
     // call it -- `apps/api` does not exist yet, the same substitution this
     // file's other scenarios already make).
     // THEN "it fails exactly as `CATALOG_CONTEXT_REQUIRED`".
-    await expectContextRequiredRejection(resolveContext(new Headers({ cookie })));
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie: tenant.cookie })));
   });
 });

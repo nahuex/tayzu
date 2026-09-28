@@ -106,6 +106,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // imports a telemetry/instruments module that creates its tracer, meter and
 // logger at import time. Same rationale as every other int test file in this
 // package; this file asserts no telemetry itself.
+import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -207,29 +208,6 @@ function postJson(
   );
 }
 
-interface SignUpEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
-}
-
-interface SignInEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
-}
-
-/**
- * A real `cookie` header value built from a Better Auth HTTP response's own
- * `Set-Cookie` header(s) -- same helper as `context-resolver.int.test.ts`'s
- * own `cookieHeaderFrom`.
- */
-function cookieHeaderFrom(response: Response): string {
-  const setCookies = response.headers.getSetCookie();
-  if (setCookies.length === 0) {
-    throw new Error('expected response to carry at least one Set-Cookie header');
-  }
-  return setCookies.map((raw) => raw.split(';')[0]).join('; ');
-}
-
 type SessionRow = {
   readonly active_organization_id: string | null;
 };
@@ -257,72 +235,46 @@ describe('setActiveOrganization: rejects a non-member organization (task 3.5, de
 
   it('Setting an active organization you are not a member of is rejected', async () => {
     const handler = handlerOf(auth);
-    const api = apiOf(auth);
 
-    // GIVEN "a signed-in user who is not a member of organization t2": the
-    // user under test signs up and creates their own organization (t1),
-    // becoming its sole member; a second, unrelated user creates a second
-    // organization (t2) that the user under test never joins.
-    const emailA = randomEmail('active-org-a');
-    const signUpAResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: 'Active Org Test User A', email: emailA, password: TEST_PASSWORD },
-      { 'x-forwarded-for': randomIp() },
-    );
-    expect(signUpAResponse.status, 'user A sign-up succeeds').toBe(200);
-    const signUpA = (await signUpAResponse.json()) as SignUpEmailResponseBody;
-
-    const t1 = await api.createOrganization({
-      body: {
-        name: 'Active Org Test Org 1',
-        slug: randomSlug('active-org-t1'),
-        userId: signUpA.user.id,
-      },
+    // GIVEN "a signed-in user who is not a member of organization t2": task
+    // 18.1 (design D22) provisions the user under test through the
+    // admin-creation path (`./__fixtures__/admin-user.js`'s
+    // `bootstrapTestTenant`, no self-service `/sign-up/email` route left to
+    // call), becoming t1's sole member; a second, unrelated user (also
+    // admin-created) creates a second organization (t2) that the user under
+    // test never joins.
+    const userA = await bootstrapTestTenant(auth, {
+      name: 'Active Org Test User A',
+      email: randomEmail('active-org-a'),
+      password: TEST_PASSWORD,
+      organizationName: 'Active Org Test Org 1',
+      organizationSlug: randomSlug('active-org-t1'),
+      ip: randomIp(),
     });
+    const t1Id = userA.organizationId;
+    const cookieA = userA.cookie;
 
-    const emailB = randomEmail('active-org-b');
-    const signUpBResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: 'Active Org Test User B', email: emailB, password: TEST_PASSWORD },
-      { 'x-forwarded-for': randomIp() },
-    );
-    expect(signUpBResponse.status, 'user B sign-up succeeds').toBe(200);
-    const signUpB = (await signUpBResponse.json()) as SignUpEmailResponseBody;
-
-    const t2 = await api.createOrganization({
+    const adminB = await createAdminUser(auth, {
+      name: 'Active Org Test User B',
+      email: randomEmail('active-org-b'),
+      password: TEST_PASSWORD,
+    });
+    const t2 = await apiOf(auth).createOrganization({
       body: {
         name: 'Active Org Test Org 2',
         slug: randomSlug('active-org-t2'),
-        userId: signUpB.user.id,
+        userId: adminB.userId,
       },
     });
-
-    // The sign-up session was created before t1 existed, so it never got an
-    // active organization. Signing in again creates a *second*, fresh
-    // session, after the membership row exists -- task 2.4's own
-    // exactly-one-membership rule gives this session t1 as its active
-    // organization, the same "sign up, create org, sign in again" sequence
-    // `context-resolver.int.test.ts`'s own first scenario uses.
-    const signInAResponse = await postJson(
-      handler,
-      '/sign-in/email',
-      { email: emailA, password: TEST_PASSWORD },
-      { 'x-forwarded-for': randomIp() },
-    );
-    expect(signInAResponse.status, 'user A sign-in succeeds').toBe(200);
-    const signInA = (await signInAResponse.json()) as SignInEmailResponseBody;
-    const cookieA = cookieHeaderFrom(signInAResponse);
 
     // GIVEN sanity check: the signed-in session really is active on t1, and
     // user A really has no membership row for t2 -- independent of whatever
     // `/organization/set-active` itself does with it.
-    const beforeAttempt = await findSessionByToken(db, String(signInA.token));
+    const beforeAttempt = await findSessionByToken(db, userA.token);
     expect(
       beforeAttempt?.active_organization_id,
       "user A's session is active on their own organization (t1) before the attempt",
-    ).toBe(t1.id);
+    ).toBe(t1Id);
 
     // WHEN "they attempt to set their active organization to t2".
     const setActiveResponse = await postJson(
@@ -341,10 +293,10 @@ describe('setActiveOrganization: rejects a non-member organization (task 3.5, de
     // THEN "... and their active organization is unchanged": still t1, the
     // same organization the session was active on immediately before the
     // rejected attempt -- not `null`, and not t2.
-    const afterAttempt = await findSessionByToken(db, String(signInA.token));
+    const afterAttempt = await findSessionByToken(db, userA.token);
     expect(
       afterAttempt?.active_organization_id,
       "user A's active organization is unchanged (still t1) after the rejected attempt",
-    ).toBe(t1.id);
+    ).toBe(t1Id);
   });
 });

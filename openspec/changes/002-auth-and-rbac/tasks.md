@@ -508,7 +508,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 18. Public self sign-up disabled; admin and bootstrap user creation
 
-- [ ] 18.1 A test-only helper (e.g. `createAdminUser`/`bootstrapTestTenant`)
+- [x] 18.1 A test-only helper (e.g. `createAdminUser`/`bootstrapTestTenant`)
   in the test harness that creates users through the admin-creation path
   instead of Better Auth sign-up, and migrate every existing fixture that
   called sign-up (groups 2-4's integration tests) to use it (design D22).

@@ -149,6 +149,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // file in this package (for example `active-org.int.test.ts`'s own,
 // identically side-effecting import). Task 4.1's own Verify clause names no
 // telemetry signal, so the harness is never read from in this file.
+import { createAdminUser, signInAdminUser } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -236,11 +237,6 @@ function cookieHeaderFrom(response: Response): string {
     throw new Error('expected response to carry at least one Set-Cookie header');
   }
   return setCookies.map((raw) => raw.split(';')[0]).join('; ');
-}
-
-interface SignUpEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
 }
 
 interface SignInSuccessBody {
@@ -334,19 +330,26 @@ describe('Multi-factor authentication: TOTP enrollment and backup codes (task 4.
     await endQuietly(db.$client);
   });
 
-  /** One sign-up, returning the fresh session cookie sign-up itself creates. */
+  /**
+   * Task 18.1 (design D22): creates a user through the admin-creation path
+   * (`./__fixtures__/admin-user.js`'s `createAdminUser`, `auth.api.
+   * createUser` in-process) instead of Better Auth's own `/sign-up/email`
+   * route, then signs them in to obtain a real session cookie -- `createUser`
+   * itself creates no session (see that fixture's own module doc comment).
+   */
   async function signUp(): Promise<{ cookie: string; userId: string; email: string }> {
-    const handler = handlerOf(auth);
     const email = randomEmail();
-    const response = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(response.status, 'sign-up succeeds').toBe(200);
-    const body = (await response.json()) as SignUpEmailResponseBody;
-    return { cookie: cookieHeaderFrom(response), userId: body.user.id, email };
+    const adminUser = await createAdminUser(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    return { cookie: signedIn.cookie, userId: adminUser.userId, email };
   }
 
   /**

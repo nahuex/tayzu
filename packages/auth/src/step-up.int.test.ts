@@ -172,6 +172,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 // which imports a telemetry/instruments module that creates its tracer,
 // meter and logger at import time. Same rationale as every other int test
 // file in this package.
+import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 4.2): does not exist yet (see this file's own
@@ -269,11 +270,6 @@ function cookieHeaderFrom(response: Response): string {
     throw new Error('expected response to carry at least one Set-Cookie header');
   }
   return setCookies.map((raw) => raw.split(';')[0]).join('; ');
-}
-
-interface SignUpEmailResponseBody {
-  readonly token: string | null;
-  readonly user: { readonly id: string; readonly email: string };
 }
 
 interface VerifyTotpResponseBody {
@@ -446,45 +442,32 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
    * "GIVEN a user signed in without verifying MFA in the last 5 minutes":
    * realized as a user with no enrolled MFA factor at all, signed in
    * normally -- trivially satisfies the GIVEN clause (see this file's own
-   * module doc comment). Joins one organization first, the same
-   * "sign up, create org, sign in again" sequence every other int test file
-   * in this package uses so the returned session already carries an
-   * `activeOrganizationId` (task 2.4's exactly-one-membership rule).
+   * module doc comment). Task 18.1 (design D22): provisioned through the
+   * admin-creation path (`./__fixtures__/admin-user.js`'s
+   * `bootstrapTestTenant`) instead of Better Auth's own `/sign-up/email`
+   * route -- since the created user's one organization membership already
+   * exists before `bootstrapTestTenant`'s own, single sign-in call, that
+   * session already carries an `activeOrganizationId` (task 2.4's
+   * exactly-one-membership rule).
    */
   async function signUpSignedInWithOrg(): Promise<{
     readonly cookie: string;
     readonly userId: string;
     readonly organizationId: string;
   }> {
-    const handler = handlerOf(auth);
-    const email = randomEmail();
-    const slug = randomSlug();
-
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
-
-    const organization = await api.createOrganization({
-      body: { name: 'Step-Up Test Org', slug, userId: signUp.user.id },
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Step-Up Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
     });
 
-    const signInResponse = await postJson(
-      handler,
-      '/sign-in/email',
-      { email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signInResponse.status, 'sign-in succeeds').toBe(200);
-
     return {
-      cookie: cookieHeaderFrom(signInResponse),
-      userId: signUp.user.id,
-      organizationId: organization.id,
+      cookie: tenant.cookie,
+      userId: tenant.userId,
+      organizationId: tenant.organizationId,
     };
   }
 
@@ -504,33 +487,32 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
   }> {
     const handler = handlerOf(auth);
     const email = randomEmail();
-    const slug = randomSlug();
 
-    const signUpResponse = await postJson(
-      handler,
-      '/sign-up/email',
-      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
-      randomIp(),
-    );
-    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
-    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
-    const signUpCookie = cookieHeaderFrom(signUpResponse);
-
-    const organization = await api.createOrganization({
-      body: { name: 'Step-Up Test Org', slug, userId: signUp.user.id },
+    // Task 18.1 (design D22): provisioned through the admin-creation path
+    // (`./__fixtures__/admin-user.js`) instead of Better Auth's own
+    // `/sign-up/email` route -- see `signUpSignedInWithOrg`'s own comment
+    // above for why `bootstrapTestTenant`'s single sign-in already carries
+    // an `activeOrganizationId`.
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Step-Up Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
     });
 
-    // Enroll TOTP over the sign-up session (enrollment does not itself need
+    // Enroll TOTP over that first session (enrollment does not itself need
     // to be fresh; only the later sign-in verification does).
     const enabled = await api.enableTwoFactor({
       body: { password: TEST_PASSWORD, method: 'totp' },
-      headers: new Headers({ cookie: signUpCookie }),
+      headers: new Headers({ cookie: tenant.cookie }),
     });
     const secret = rawSecretFromTotpUri(enabled.totpURI);
     const enrollCode = (await api.generateTOTP({ body: { secret } })).code;
     await api.verifyTOTP({
       body: { code: enrollCode },
-      headers: new Headers({ cookie: signUpCookie }),
+      headers: new Headers({ cookie: tenant.cookie }),
     });
 
     // A fresh sign-in now challenges for the enrolled TOTP factor.
@@ -557,12 +539,12 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
     );
     expect(verifyResponse.status, 'the TOTP challenge is verified').toBe(200);
     const verified = (await verifyResponse.json()) as VerifyTotpResponseBody;
-    expect(verified.user.id).toBe(signUp.user.id);
+    expect(verified.user.id).toBe(tenant.userId);
 
     return {
       cookie: cookieHeaderFrom(verifyResponse),
-      userId: signUp.user.id,
-      organizationId: organization.id,
+      userId: tenant.userId,
+      organizationId: tenant.organizationId,
     };
   }
 
