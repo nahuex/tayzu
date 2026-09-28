@@ -308,6 +308,21 @@ async function findSessionByToken(db: TestDb, token: string): Promise<SessionRow
 }
 
 /**
+ * Task 3.6 (design D19): removes the `auth.member` row naming `userId` as a
+ * member of `organizationId`, direct SQL against the same schema
+ * `context-resolver.int.test.ts`'s other queries already read (`auth.member`,
+ * `packages/auth/src/persistence/schema.ts`'s `member` table) -- standing in
+ * for "a membership row removed after the session was established", the
+ * fixture task 3.6's own Verify clause names explicitly, independent of
+ * whatever `resolveContext` itself does with the resulting stale session.
+ */
+async function deleteMembership(db: TestDb, organizationId: string, userId: string): Promise<void> {
+  await db.execute(sql`
+    delete from auth.member where organization_id = ${organizationId} and user_id = ${userId}
+  `);
+}
+
+/**
  * "fails exactly as `CATALOG_CONTEXT_REQUIRED`" (spec, both rejection
  * scenarios below): whatever `resolveContext` rejects with must carry a
  * `code` property equal to this string, checked structurally so this file
@@ -541,5 +556,120 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     expect(String(signIn.token).length, 'sanity: sign-in produced a real session').toBeGreaterThan(
       0,
     );
+  });
+
+  /**
+   * Task 3.6 (design D19; `specs/auth-and-rbac/spec.md`, "Tenant-switch
+   * membership is independently re-verified"), quoted in full:
+   *
+   * #### Scenario: Context resolution independently rejects a stale non-membership
+   * - GIVEN a session whose `activeOrganizationId` names an organization the
+   *   user is no longer a member of
+   * - WHEN a catalog operation is called with that session
+   * - THEN it fails exactly as `CATALOG_CONTEXT_REQUIRED`
+   *
+   * The requirement text above the scenario is explicit that this is a
+   * *second*, independent check, not a re-derivation of Better Auth's own
+   * `setActiveOrganization` membership check (task 3.5's own scenario,
+   * `active-org.int.test.ts`): "`resolveContext()`'s session-cookie branch
+   * MUST independently re-verify, via a membership-row lookup, that
+   * `session.activeOrganizationId` names an organization the session's user
+   * currently belongs to, using a cache no older than a few seconds. A
+   * failed or unavailable re-verification MUST fail closed, with the same
+   * status and body as `CATALOG_CONTEXT_REQUIRED`." This test's GIVEN clause
+   * ("a membership row removed after the session was established", task
+   * 3.6's own Verify clause) is exactly the case that check exists for: the
+   * session row itself still carries the organization as its
+   * `activeOrganizationId` (nothing here touches the session row, unlike
+   * task 3.5's `setActiveOrganization` scenario), so only an independent
+   * membership-row lookup -- not merely trusting the session's own column --
+   * can catch it.
+   *
+   * ## Why this is expected to fail for the right reason right now
+   *
+   * `./context-resolver.ts`'s own module doc comment (task 3.1) says so
+   * directly: "the independent membership re-check (task 3.6, design D19)
+   * are later tasks' own red/green cycles, not implemented here." Its
+   * `createContextResolver` resolves a session's `activeOrganizationId`
+   * straight from the session row, with no membership-table lookup at all
+   * (`./context-resolver.ts`, current source, confirmed by reading it before
+   * writing this test) -- so this test is expected to fail as a plain
+   * **assertion failure**: the promise below resolves successfully (the
+   * stale organization id, the real signed-up user) instead of rejecting
+   * with `CATALOG_CONTEXT_REQUIRED`. Not a missing export or a typo: every
+   * import this file uses already exists and is exercised, unchanged, by the
+   * three scenarios above in this same file.
+   *
+   * ## Why this test seeds and asserts the way it does
+   *
+   * Same "sign up, create org, sign in again" sequence this file's first
+   * scenario ("Session cookie resolves a human context") already
+   * establishes, so the session under test starts with a real active
+   * organization the user is genuinely a member of -- the GIVEN sanity check
+   * below confirms that, independent of whatever `resolveContext` itself
+   * does with it, the same pattern every other scenario in this file
+   * follows. `deleteMembership` (above) then removes the `auth.member` row
+   * *after* that session already exists, leaving the session row's own
+   * `active_organization_id` column untouched (unlike task 3.5's scenario,
+   * which is about `setActiveOrganization` itself mutating that column) --
+   * the precise "stale non-membership" this scenario names: a session that
+   * still says it belongs to an organization its user no longer does.
+   */
+  it('Context resolution independently rejects a stale non-membership', async () => {
+    const handler = handlerOf(auth);
+    const email = randomEmail();
+    const slug = randomSlug();
+
+    const signUpResponse = await postJson(
+      handler,
+      '/sign-up/email',
+      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
+    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
+
+    // GIVEN, step 1: the user is made a member of a real organization first
+    // (task 2.4's own exactly-one-membership rule needs that membership row
+    // to exist *before* the session under test is created, same as this
+    // file's first scenario).
+    const organization = await apiOf(auth).createOrganization({
+      body: { name: 'Stale Membership Test Org', slug, userId: signUp.user.id },
+    });
+
+    // The second, fresh session (created after the membership row exists) is
+    // the one whose cookie is read back below -- again, the same sequence
+    // this file's first scenario uses.
+    const signInResponse = await postJson(
+      handler,
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(signInResponse.status, 'sign-in succeeds').toBe(200);
+    const signIn = (await signInResponse.json()) as SignInEmailResponseBody;
+    const cookie = cookieHeaderFrom(signInResponse);
+
+    // GIVEN sanity check: the session really is active on the created
+    // organization before the membership row is removed, independent of
+    // whatever `resolveContext` itself does with it.
+    const sessionRow = await findSessionByToken(db, String(signIn.token));
+    expect(
+      sessionRow?.active_organization_id,
+      "the signed-in session's active_organization_id is the created organization",
+    ).toBe(organization.id);
+
+    // GIVEN, step 2: "a session whose `activeOrganizationId` names an
+    // organization the user is no longer a member of" -- the membership row
+    // is removed *after* the session above was already established, leaving
+    // the session row's own `active_organization_id` column unchanged.
+    await deleteMembership(db, organization.id, signUp.user.id);
+
+    // WHEN "a catalog operation is called with that session" (here,
+    // `resolveContext` itself, standing in for the pipeline stage that would
+    // call it -- `apps/api` does not exist yet, the same substitution this
+    // file's other scenarios already make).
+    // THEN "it fails exactly as `CATALOG_CONTEXT_REQUIRED`".
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie })));
   });
 });

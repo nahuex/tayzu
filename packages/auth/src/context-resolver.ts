@@ -39,11 +39,29 @@
  * rolling-refresh still runs normally on every non-idle use, exactly as
  * design D3's "kept" `updateAge` describes.
  *
- * Machine access tokens (task 5.4), the `onBehalfOf` non-read guarantee this
- * function already upholds by construction (task 3.4, design D3 -- this
- * module never reads request body, path, or query string at all), and the
- * independent membership re-check (task 3.6, design D19) are later tasks'
- * own red/green cycles, not implemented here.
+ * The session-cookie branch also independently re-verifies
+ * `session.activeOrganizationId` against a membership-row lookup (task 3.6,
+ * design D19): "In addition to Better Auth's own membership check on
+ * `setActiveOrganization`, `resolveContext()`'s session-cookie branch MUST
+ * independently re-verify, via a membership-row lookup, that
+ * `session.activeOrganizationId` names an organization the session's user
+ * currently belongs to, using a cache no older than a few seconds. A failed
+ * or unavailable re-verification MUST fail closed, with the same status and
+ * body as `CATALOG_CONTEXT_REQUIRED`." The lookup goes through Better Auth's
+ * own low-level adapter (`auth.$context`'s `.adapter`, the same primitive
+ * `./auth.ts`'s own `databaseHooks` use via `context.context.adapter`), never
+ * a second, ad hoc database connection -- direct SQL against the same `auth`
+ * schema, outside `withTenantTransaction` (design D6). The result is cached
+ * per resolver instance, keyed by `userId`/`organizationId`, for at most 5
+ * seconds -- "bounded the same way D21's revocation cache is" (design D19) --
+ * and a lookup failure is treated as non-membership and never cached, so a
+ * transient failure fails closed for exactly one request rather than
+ * extending the fail-closed window.
+ *
+ * Machine access tokens (task 5.4) and the `onBehalfOf` non-read guarantee
+ * this function already upholds by construction (task 3.4, design D3 -- this
+ * module never reads request body, path, or query string at all) are later
+ * tasks' own red/green cycles, not implemented here.
  */
 import type { AuthInstance } from './auth.js';
 import { AuthContextError } from './errors.js';
@@ -90,8 +108,42 @@ function apiOf(auth: AuthInstance): AuthApiSurface {
   return auth.api as AuthApiSurface;
 }
 
+/**
+ * The slice of Better Auth's own `AuthContext` (`auth.$context`, `./auth.ts`'s
+ * own doc comment) this module reads: its low-level model adapter, the same
+ * primitive `./auth.ts`'s `databaseHooks` reach via `context.context.adapter`.
+ */
+interface AuthContextSurface {
+  readonly adapter: {
+    count(data: {
+      readonly model: 'member';
+      readonly where: ReadonlyArray<{ readonly field: string; readonly value: string }>;
+    }): Promise<number>;
+  };
+}
+
+function contextOf(auth: AuthInstance): Promise<AuthContextSurface> {
+  return auth.$context as Promise<AuthContextSurface>;
+}
+
 /** design D3, Resolved decision Q7: the idle-timeout window, in milliseconds. */
 const IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * design D19: "using a cache no older than a few seconds," bounded the same
+ * way design D21's revocation cache is (task 5.7, "a TTL of at most 5
+ * seconds").
+ */
+const MEMBERSHIP_CACHE_TTL_MS = 5000;
+
+interface MembershipCacheEntry {
+  readonly isMember: boolean;
+  readonly expiresAt: number;
+}
+
+function membershipCacheKey(userId: string, organizationId: string): string {
+  return `${userId}\u0000${organizationId}`;
+}
 
 /**
  * design D3: "fails exactly as `CATALOG_CONTEXT_REQUIRED`". Every caller of
@@ -104,6 +156,40 @@ function rejectMissingContext(): never {
 
 export function createContextResolver(options: ContextResolverOptions): ContextResolver {
   const api = apiOf(options.auth);
+  const membershipCache = new Map<string, MembershipCacheEntry>();
+
+  // Task 3.6, design D19: the independent membership re-check. A cache hit
+  // (younger than `MEMBERSHIP_CACHE_TTL_MS`) skips the lookup; a miss
+  // queries Better Auth's own `member` table directly. Any lookup failure
+  // (the table or the database is unreachable) resolves to `false` and is
+  // never cached, so it fails closed for exactly this one request rather
+  // than widening the fail-closed window past the failure itself.
+  async function isCurrentMember(userId: string, organizationId: string): Promise<boolean> {
+    const key = membershipCacheKey(userId, organizationId);
+    const now = Date.now();
+    const cached = membershipCache.get(key);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.isMember;
+    }
+
+    let isMember: boolean;
+    try {
+      const context = await contextOf(options.auth);
+      const count = await context.adapter.count({
+        model: 'member',
+        where: [
+          { field: 'organizationId', value: organizationId },
+          { field: 'userId', value: userId },
+        ],
+      });
+      isMember = count > 0;
+    } catch {
+      return false;
+    }
+
+    membershipCache.set(key, { isMember, expiresAt: now + MEMBERSHIP_CACHE_TTL_MS });
+    return isMember;
+  }
 
   return async (headers: Headers): Promise<ResolvedContext> => {
     // design D3: the 12-hour idle timeout, layered on top of Better Auth's
@@ -131,6 +217,13 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
 
     const tenantId = result.session.activeOrganizationId;
     if (tenantId === null || tenantId === undefined) {
+      rejectMissingContext();
+    }
+
+    // Task 3.6, design D19: independently re-verify the session's own
+    // `activeOrganizationId` against a membership-row lookup, rather than
+    // trusting the session row alone.
+    if (!(await isCurrentMember(result.user.id, tenantId))) {
       rejectMissingContext();
     }
 

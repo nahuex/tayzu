@@ -121,7 +121,7 @@ policy diff shown in chat, separately from the rest of the PR.
   organization the caller is not a member of (design D19). Verify:
   `active-org.int.test.ts` covers "Setting an active organization you are not
   a member of is rejected".
-- [ ] 3.6 `resolveContext()`'s session-cookie branch independently
+- [x] 3.6 `resolveContext()`'s session-cookie branch independently
   re-verifies `session.activeOrganizationId` against a membership-row lookup,
   cached for at most a few seconds, failing closed on a miss or lookup
   failure (design D19). Verify: `context-resolver.int.test.ts` covers

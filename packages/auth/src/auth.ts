@@ -209,6 +209,17 @@ export interface AuthInstance {
    * because nothing in this package needs that precision yet.
    */
   readonly api: unknown;
+  /**
+   * Better Auth's own internal context promise (`Auth['$context']`,
+   * `dist/types/auth.d.mts`), the same object `databaseHooks` above reach via
+   * `context.context` -- its `.adapter` is Better Auth's own low-level model
+   * adapter (`findOne`/`findMany`/`count`, keyed by model name), independent
+   * of any request/session middleware. `./context-resolver.ts`'s task 3.6
+   * membership re-check reads `.adapter` off it the same way, outside any
+   * hook. Typed `unknown` for the same reason `api` is: callers narrow it
+   * locally where used.
+   */
+  readonly $context: unknown;
 }
 
 /** Builds the one `betterAuth` instance `@tayzu/auth` exposes. */
