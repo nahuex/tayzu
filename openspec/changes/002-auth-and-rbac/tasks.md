@@ -531,7 +531,7 @@ policy diff shown in chat, separately from the rest of the PR.
   (design D22). Verify: `admin-user-creation.int.test.ts` covers "An org
   admin can create a user" and "A member cannot create a user"
   (`AUTH_FORBIDDEN`).
-- [ ] 18.4 `packages/auth/scripts/bootstrap-admin.ts`: an idempotent,
+- [x] 18.4 `packages/auth/scripts/bootstrap-admin.ts`: an idempotent,
   non-HTTP-reachable script creating an organization and its first `admin`
   -role user, via the same `auth.api.createUser` call as 18.3 (design D22).
   Verify: `bootstrap.int.test.ts` covers "Bootstrapping an organization's
