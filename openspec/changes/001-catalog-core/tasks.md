@@ -374,16 +374,16 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 10. Telemetry contract enforcement
 
-- [ ] 10.1 `otel-smoke-check`. It runs every operation once successfully and
+- [x] 10.1 `otel-smoke-check`. It runs every operation once successfully and
   once per applicable error class, and asserts that every declared span,
   metric and log event appears with its required attributes. This covers
   "Declared telemetry is emitted". Verify: `pnpm otel-smoke-check` is green,
   and removing one span in a scratch branch makes it fail.
-- [ ] 10.2 Cardinality guard: the catalog metrics carry **no** attribute key
+- [x] 10.2 Cardinality guard: the catalog metrics carry **no** attribute key
   outside the allowed set in the contract. Verify: `otel-smoke-check`
   includes the guard, and a deliberately added `tayzu.catalog.entity.identifier`
   metric attribute makes it fail.
-- [ ] 10.3 Marker-leak test. Verify: `otel-smoke-check` covers "Property
+- [x] 10.3 Marker-leak test. Verify: `otel-smoke-check` covers "Property
   values never reach telemetry" across spans (including `pg` spans),
   metrics and logs, including after a forced database constraint error.
 - [ ] 10.4 Document the telemetry reference in `docs/catalog/catalog-core.md`
