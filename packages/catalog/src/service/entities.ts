@@ -28,8 +28,9 @@ import { assertEntitySpecSize, assertEntityStatusSize } from '../domain/entity-l
 import { CatalogError, isCatalogError } from '../domain/errors.js';
 import { parseEntityIdentifier } from '../domain/identifiers.js';
 import { defaultCatalogLimits, type CatalogLimits } from '../domain/limits.js';
-import { decodeCursor, encodeCursor } from '../domain/pagination.js';
+import { assertCursorLength, decodeCursor, encodeCursor } from '../domain/pagination.js';
 import { assertReservedAccess, type ReservedOperationKind } from '../domain/reserved.js';
+import { parseSafeInput } from '../domain/safe-parse.js';
 import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
 import type { ValidatorCacheKey } from '../domain/validator-cache.js';
@@ -208,6 +209,16 @@ function denyIfReserved(ctx: CatalogContext, blueprintIdentifier: string, operat
     }
     throw error;
   }
+}
+
+/**
+ * design D9, spec Conventions "Unsafe keys are rejected": the service
+ * boundary guard for every entity write. Rebuilds `rawInput` as
+ * null-prototype objects and rejects `__proto__`/`constructor`/`prototype`
+ * at every depth, before limits, `applyWrite` or Ajv ever see it.
+ */
+function parseSafeEntityInput(rawInput: unknown, limits: CatalogLimits): unknown {
+  return parseSafeInput(rawInput, { maxDepth: limits.object.maxNestingDepth });
 }
 
 /** Spec "Entity shape with spec and status": a plain string of 1-256 characters. */
@@ -680,7 +691,8 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const create = defineCatalogOperation<CreateEntityInput, EntityOutput>({
     name: 'entity.create',
     pool,
-    handler: async ({ ctx, client, input }) => {
+    handler: async ({ ctx, client, input: rawInput }) => {
+      const input = parseSafeEntityInput(rawInput, limits) as CreateEntityInput;
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
@@ -790,7 +802,8 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const upsert = defineCatalogOperation<UpsertEntityInput, UpsertEntityOutput>({
     name: 'entity.upsert',
     pool,
-    handler: async ({ ctx, client, input }) => {
+    handler: async ({ ctx, client, input: rawInput }) => {
+      const input = parseSafeEntityInput(rawInput, limits) as UpsertEntityInput;
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
@@ -1008,7 +1021,8 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const writeStatus = defineCatalogOperation<WriteEntityStatusInput, EntityOutput>({
     name: 'entity.status.write',
     pool,
-    handler: async ({ ctx, client, input }) => {
+    handler: async ({ ctx, client, input: rawInput }) => {
+      const input = parseSafeEntityInput(rawInput, limits) as WriteEntityStatusInput;
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
@@ -1171,6 +1185,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           details: { limit: 'pagination.maxPageSize' },
         });
       }
+      if (input.cursor !== undefined) assertCursorLength(input.cursor, limits);
       const afterIdentifier = input.cursor !== undefined ? decodeCursor(input.cursor) : undefined;
 
       const tx = drizzle(client);
@@ -1315,6 +1330,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           details: { limit: 'pagination.maxPageSize' },
         });
       }
+      if (input.cursor !== undefined) assertCursorLength(input.cursor, limits);
       const after = input.cursor !== undefined ? decodeRelatedCursor(input.cursor) : undefined;
       const dbScope = scopeFilter === 'both' ? undefined : scopeFilter;
 

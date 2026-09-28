@@ -276,11 +276,14 @@ Nothing expensive runs on oversized input.
 
 ### D9. Write semantics
 
-- **Unsafe keys**: all input objects are rebuilt as null-prototype objects
-  (`Object.create(null)`) during parsing, and `applyWrite` merges into them.
-  It never uses `Object.assign` or spread onto `{}`. `__proto__`,
-  `constructor` and `prototype` are rejected at every depth during parsing
-  (spec Conventions).
+- **Unsafe keys**: `domain/safe-parse.ts`'s `parseSafeInput` rebuilds every
+  input object as a null-prototype object (`Object.create(null)`), and
+  `applyWrite` merges into them. It never uses `Object.assign` or spread onto
+  `{}`. `__proto__`, `constructor` and `prototype` are rejected at every
+  depth (spec Conventions). The guard runs at the service boundary, in
+  `service/entities.ts`'s `create`, `upsert` and `writeStatus` handlers and
+  `service/blueprints.ts`'s `create` and `update` handlers, on the whole raw
+  input object, before limits, `applyWrite` or Ajv ever see it.
 - **Upsert** loads the current row `FOR UPDATE`, computes the next spec (a
   pure `applyWrite(current, input, mode)` function), applies defaults, and
   validates. It then compares canonical JSON (sorted keys, relation order
@@ -554,7 +557,7 @@ against the code in task 11.2.
 | B4 Postgres error messages (row values) could reach spans and logs | Errors are sanitized to type, SQLSTATE and constraint (D11), and the marker-leak test covers forced database errors. |
 | B5 Free text in `status.source` and `actor.id` could reach telemetry | Both have strict patterns. `actor.id` is an opaque ID, never an email. |
 | B6 An agent's delegating principal was not recorded | `actor.onBehalfOf` is stored in attribution, change events and the audit log. |
-| B7 Prototype pollution: `constructor`/`prototype` matched the identifier pattern | Unsafe keys are rejected at every depth, and null-prototype objects are used in merges (D9). |
+| B7 Prototype pollution: `constructor`/`prototype` matched the identifier pattern | Unsafe keys are rejected at every depth by `domain/safe-parse.ts`'s `parseSafeInput`, run at the service boundary on every entity write and blueprint write's whole input (`service/entities.ts`, `service/blueprints.ts`) before limits, `applyWrite` or Ajv; null-prototype objects are used in merges (D9). |
 | B8 The change log was mutable, and the OTel audit log was treated as durable | Append-only trigger (D4). The DB table is the durable record; the OTel copy is best-effort. |
 | N1 `url` format accepted `javascript:` and `data:` | Only `http` and `https` are allowed (D6). |
 | N2 Several inputs had no limit | Limits added for blueprint size, `enum` entries, nesting depth, icon, detach referrers and cursor length. |

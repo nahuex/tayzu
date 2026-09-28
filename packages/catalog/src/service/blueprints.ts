@@ -33,8 +33,9 @@ import type { ActorType, CatalogContext, Principal } from '../domain/context.js'
 import { CatalogError, isCatalogError } from '../domain/errors.js';
 import { defaultCatalogLimits, type CatalogLimits } from '../domain/limits.js';
 import type { LocalizedText } from '../domain/localized-text.js';
-import { decodeCursor, encodeCursor } from '../domain/pagination.js';
+import { assertCursorLength, decodeCursor, encodeCursor } from '../domain/pagination.js';
 import { assertReservedAccess, type ReservedOperationKind } from '../domain/reserved.js';
+import { parseSafeInput } from '../domain/safe-parse.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
 import type { ValidatorCacheKey } from '../domain/validator-cache.js';
 import { appendChangeEvent } from '../persistence/change-events.js';
@@ -147,6 +148,17 @@ function denyIfReserved(ctx: CatalogContext, identifier: string, operation: Rese
     }
     throw error;
   }
+}
+
+/**
+ * design D9, spec Conventions "Unsafe keys are rejected": the service
+ * boundary guard for every blueprint write. Rebuilds `rawInput` as
+ * null-prototype objects and rejects `__proto__`/`constructor`/`prototype`
+ * at every depth, before limits, `applyWrite` or Ajv (via
+ * `parseBlueprintDefinition`) ever see it.
+ */
+function parseSafeBlueprintInput(rawInput: unknown, limits: CatalogLimits): unknown {
+  return parseSafeInput(rawInput, { maxDepth: limits.object.maxNestingDepth });
 }
 
 /** design D9: `23505` on `catalog_blueprint_tenant_identifier_uq` -> `CATALOG_ALREADY_EXISTS`; anything else propagates unchanged. */
@@ -428,7 +440,8 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
   const create = defineCatalogOperation<CreateBlueprintInput, BlueprintOutput>({
     name: 'blueprint.create',
     pool,
-    handler: async ({ ctx, client, input }) => {
+    handler: async ({ ctx, client, input: rawInput }) => {
+      const input = parseSafeBlueprintInput(rawInput, limits) as CreateBlueprintInput;
       const definition = parseBlueprintDefinition(input, limits);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, definition.identifier);
       denyIfReserved(ctx, definition.identifier, 'blueprint_write');
@@ -528,6 +541,7 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
           details: { limit: 'pagination.maxPageSize' },
         });
       }
+      if (input.cursor !== undefined) assertCursorLength(input.cursor, limits);
       const afterIdentifier = input.cursor !== undefined ? decodeCursor(input.cursor) : undefined;
 
       const tx = drizzle(client);
@@ -549,7 +563,8 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
     name: 'blueprint.update',
     pool,
     statementTimeoutMs: COMPATIBILITY_CHECK_STATEMENT_TIMEOUT_MS,
-    handler: async ({ ctx, client, input }) => {
+    handler: async ({ ctx, client, input: rawInput }) => {
+      const input = parseSafeBlueprintInput(rawInput, limits) as UpdateBlueprintInput;
       const definition = parseBlueprintDefinition(input, limits);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, definition.identifier);
       denyIfReserved(ctx, definition.identifier, 'blueprint_write');

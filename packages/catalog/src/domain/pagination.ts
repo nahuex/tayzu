@@ -8,6 +8,7 @@
  * `CATALOG_VALIDATION_FAILED`.
  */
 import { CatalogError } from './errors.js';
+import type { CatalogLimits } from './limits.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -17,6 +18,20 @@ function invalidCursor(): never {
   throw new CatalogError('CATALOG_VALIDATION_FAILED', 'Pagination cursor is invalid', {
     issues: [{ path: '/cursor', message: 'Pagination cursor is invalid' }],
   });
+}
+
+/**
+ * spec Conventions, "Default limits" ("Pagination cursor | 512 characters");
+ * design D8: limits are checked before any expensive work. Callers run this
+ * before decoding, so an over-length cursor fails with `CATALOG_LIMIT_EXCEEDED`
+ * naming the limit rather than falling through to a decode failure.
+ */
+export function assertCursorLength(cursor: string, limits: CatalogLimits): void {
+  if (cursor.length > limits.cursor.maxLength) {
+    throw new CatalogError('CATALOG_LIMIT_EXCEEDED', 'Pagination cursor exceeds the length limit', {
+      details: { limit: 'cursor.maxLength' },
+    });
+  }
 }
 
 /** Encodes `key` (the last item's sort key on the current page) as an opaque cursor. */
