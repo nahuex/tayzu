@@ -122,6 +122,11 @@ import { createAuth, type AuthInstance } from './auth.js';
 // "Why this is expected to fail for the right reason right now").
 import { createMachineCredential } from './machine-credentials.js';
 import type { CreatedMachineCredential } from './machine-credentials.js';
+// The module under test (task 5.2, added by this task -- see this file's
+// second module doc comment block below, right above the new test). Named
+// export expected not to exist yet, alongside the already-existing
+// `createMachineCredential`/`CreatedMachineCredential` above.
+import { revokeMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
@@ -187,11 +192,26 @@ interface GetApiKeyResult {
   readonly id: string;
 }
 
+/**
+ * The narrow slice of Better Auth's own `verifyApiKey` response
+ * (`@better-auth/api-key@1.7.6`, `dist/index-BJOGXZav.d.mts`) task 5.2's own
+ * new test reads below -- design D5's own words for the token endpoint's
+ * mechanism: "It calls `auth.api.verifyApiKey({ body: { key } })`". Only the
+ * `valid` boolean is read; the installed type's `error`/`key` union members
+ * carry no field this test needs.
+ */
+interface VerifyApiKeyResult {
+  readonly valid: boolean;
+}
+
 interface AuthApiSurface {
   getApiKey(args: {
     query: { readonly id: string; readonly configId?: string };
     headers: Headers;
   }): Promise<GetApiKeyResult>;
+  verifyApiKey(args: {
+    body: { readonly key: string; readonly configId?: string };
+  }): Promise<VerifyApiKeyResult>;
 }
 
 function apiOf(auth: AuthInstance): AuthApiSurface {
@@ -261,5 +281,135 @@ describe('Machine credentials (task 5.1, design D5)', () => {
       laterRead,
       'no later read exposes the secret under this wrapper’s own field name either',
     ).not.toHaveProperty('secret');
+  });
+
+  /**
+   * Task 5.2 (design D5; `specs/auth-and-rbac/spec.md`, "Machine
+   * credentials"). Task 5.2's own Verify clause, quoted from
+   * `openspec/changes/002-auth-and-rbac/tasks.md`: "A revoke procedure (no
+   * in-place rotation). Verify: `machine-credentials.int.test.ts` covers
+   * that a revoked credential's id can no longer authenticate at the token
+   * endpoint (used together with 5.3)." Unlike every other task in this
+   * change, 5.2's own Verify clause names no quoted spec scenario of its
+   * own -- the spec's "Revoked credential is rejected" scenario (`WHEN` its
+   * client id and secret are posted to `POST /v1/auth/token`, `THEN` it
+   * fails with `AUTH_INVALID_CREDENTIALS`) is task 5.3's own scenario to
+   * cover, end-to-end, in `token-exchange.int.test.ts` (task 5.3's own
+   * Verify clause names that file and that scenario explicitly). This test
+   * instead covers the requirement text one level below the not-yet-built
+   * token endpoint itself, at the exact mechanism design D5 names for it:
+   * "A new procedure, `POST /v1/auth/token` ... calls `auth.api.
+   * verifyApiKey({ body: { key } })`; on success it mints a 1-hour token ...
+   * On failure it returns `AUTH_INVALID_CREDENTIALS`." -- and the
+   * requirement text above the spec's scenarios: "The admin MUST be able to
+   * revoke a credential; there is no in-place rotation, only
+   * revoke-and-recreate." "used together with 5.3" reads as: this test
+   * establishes, ahead of the token-endpoint wrapper task 5.3 adds, that
+   * revocation actually disables the credential at `verifyApiKey` --  the
+   * one call 5.3's own wrapper will make on every `POST /v1/auth/token`
+   * request -- so 5.3's own end-to-end test can build on a revoke path
+   * already proven to work at this layer.
+   *
+   * ## Module under test
+   *
+   * `revokeMachineCredential(auth, params)`, the same `functionName(auth,
+   * params)` convention this file's own module doc comment already
+   * establishes for `createMachineCredential`. Assumed shape, following that
+   * same convention and this task's own text ("no in-place rotation" -- a
+   * revoke, not an update, so this wrapper returns nothing the caller could
+   * mistake for a rotated credential):
+   *
+   * - `RevokeMachineCredentialParams`: `headers` (a real `Headers` carrying
+   *   the calling admin's session cookie, forwarded so Better Auth's own
+   *   `checkOrgApiKeyPermission` -- this time for the `"update"` action,
+   *   `@better-auth/api-key@1.7.6`'s installed source,
+   *   `dist/index.mjs`, `updateApiKey`'s own handler -- decides admin-only
+   *   -ness, the same pattern `createMachineCredential` already
+   *   establishes); `id` (the credential's client id, `CreatedMachineCredential`
+   *   ['id']` from task 5.1). No `organizationId` parameter: Better Auth's
+   *   own `updateApiKey` handler looks the key up by `id` first and derives
+   *   the organization to check permission against from the stored key's own
+   *   `referenceId`, so this wrapper does not need to be told it separately
+   *   (confirmed against the installed source at the same path).
+   * - Return type: `Promise<void>` -- nothing in the requirement text or
+   *   design D5 has this task's caller read anything back from a revoke.
+   *
+   * ## Why this is expected to fail for the right reason right now
+   *
+   * `revokeMachineCredential` does not exist anywhere in `./machine-
+   * credentials.ts` yet (confirmed by reading that file before writing this
+   * test) -- only `createMachineCredential`/`CreatedMachineCredential`
+   * (task 5.1) are exported today. The import this file adds above therefore
+   * fails at import time -- a missing named export from the module under
+   * test, the one condition this assignment's own instructions call
+   * acceptable ("acceptable only for the module under test"). Every other
+   * import this test adds or reuses (`./auth.js`, `./__fixtures__/
+   * admin-user.js`, `@better-auth/api-key`'s installed `verifyApiKey`
+   * response shape) is already exercised, unchanged, by the existing test
+   * above.
+   *
+   * ## Why this test asserts against `verifyApiKey` directly, not a not-yet-
+   * built token-endpoint wrapper
+   *
+   * `POST /v1/auth/token` (task 5.3) does not exist yet either -- this test
+   * would have no endpoint to call even if it wanted one. Design D5 names
+   * `auth.api.verifyApiKey({ body: { key } })` as that endpoint's own,
+   * literal first step, so asserting the credential's raw secret (the one
+   * value a `POST /v1/auth/token` caller would present) no longer verifies
+   * through that exact call, after revocation, is a direct, spec-faithful
+   * check of "can no longer authenticate at the token endpoint" without
+   * this file needing task 5.3's own wrapper to exist first. `configId:
+   * 'machine-credential'` is required on this call: `./auth.ts` registers
+   * only that one named `apiKey` config (no config with an implicit
+   * `configId: 'default'`), and the installed `resolveConfiguration` throws
+   * `NO_DEFAULT_API_KEY_CONFIGURATION_FOUND` when `configId` is omitted and
+   * no default-named config exists (confirmed against the installed source
+   * at the same path as above).
+   */
+  it("A revoked credential's id can no longer authenticate at the token endpoint", async () => {
+    // Setup: same admin-creation and credential-creation path as the
+    // existing test above.
+    const admin = await bootstrapTestTenant(auth, {
+      name: TEST_ADMIN_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Machine Credential Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const headers = new Headers({ cookie: admin.cookie });
+    const created: CreatedMachineCredential = await createMachineCredential(auth, {
+      headers,
+      organizationId: admin.organizationId,
+      name: 'CI pipeline credential',
+      actorKind: 'integration',
+    });
+
+    // Precondition: before revocation, the credential's secret verifies
+    // through the exact call design D5 names for the token endpoint's own
+    // mechanism -- otherwise a false "no longer authenticates" below would
+    // prove nothing.
+    const beforeRevoke = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(
+      beforeRevoke.valid,
+      'the credential authenticates before revocation, so the later failure is caused by revocation',
+    ).toBe(true);
+
+    // WHEN "an admin revokes the credential" (task 5.2's own Verify clause).
+    await revokeMachineCredential(auth, { headers, id: created.id });
+
+    // THEN "a revoked credential's id can no longer authenticate at the
+    // token endpoint" (task 5.2's own Verify clause) -- the same
+    // `verifyApiKey` call the token endpoint's own mechanism (design D5)
+    // makes, using the same still-known secret, now fails.
+    const afterRevoke = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(
+      afterRevoke.valid,
+      'the revoked credential no longer authenticates at the token endpoint’s own mechanism',
+    ).toBe(false);
   });
 });

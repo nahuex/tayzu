@@ -1,6 +1,6 @@
 /**
- * Machine credential creation (task 5.1, design D5; `specs/auth-and-rbac/
- * spec.md`, "Machine credentials").
+ * Machine credential creation and revocation (tasks 5.1-5.2, design D5;
+ * `specs/auth-and-rbac/spec.md`, "Machine credentials").
  *
  * "The system MUST let an organization admin create a named machine
  * credential of a fixed kind (`integration` or `agent`, chosen at creation):
@@ -25,6 +25,13 @@
  * returned from this module's own field, never read back from the caller
  * later: `POST /v1/auth/token` (task 5.3) is the only place that later reads
  * it back, off the stored key, not off this response.
+ *
+ * `revokeMachineCredential(auth, params)` (task 5.2) is the matching
+ * revocation wrapper: "there is no in-place rotation, only
+ * revoke-and-recreate." It disables the key through `auth.api.updateApiKey`
+ * (Better Auth's own `"update"` action of `checkOrgApiKeyPermission`), which
+ * makes the key fail `auth.api.verifyApiKey` -- the exact call `POST
+ * /v1/auth/token` (task 5.3) makes on every request.
  */
 import type { AuthInstance } from './auth.js';
 
@@ -77,6 +84,14 @@ interface AuthApiSurface {
       metadata: Record<string, unknown>;
     };
   }): Promise<CreateApiKeyResult>;
+  updateApiKey(args: {
+    headers: Headers;
+    body: {
+      configId: string;
+      keyId: string;
+      enabled: boolean;
+    };
+  }): Promise<unknown>;
 }
 
 function apiOf(auth: AuthInstance): AuthApiSurface {
@@ -109,4 +124,38 @@ export async function createMachineCredential(
     actorKind: params.actorKind,
     organizationId: created.referenceId,
   };
+}
+
+/**
+ * Revocation (task 5.2, design D5). "The admin MUST be able to revoke a
+ * credential; there is no in-place rotation, only revoke-and-recreate."
+ */
+export interface RevokeMachineCredentialParams {
+  /** The calling admin's session cookie, forwarded so Better Auth's own admin-only check runs. */
+  readonly headers: Headers;
+  /** The credential's client id (`CreatedMachineCredential['id']`). */
+  readonly id: string;
+}
+
+/**
+ * Revokes a machine credential by disabling it through Better Auth's own
+ * `updateApiKey`, scoped to the `machine-credential` config. Disabling a key
+ * makes it fail `auth.api.verifyApiKey` (Better Auth's own behavior), which
+ * `POST /v1/auth/token` (task 5.3) relies on as its own revocation check.
+ * Throws whatever `auth.api.updateApiKey` throws on a non-admin/non-member
+ * caller (Better Auth's own `checkOrgApiKeyPermission`, this time for the
+ * `"update"` action) or an unknown credential id.
+ */
+export async function revokeMachineCredential(
+  auth: AuthInstance,
+  params: RevokeMachineCredentialParams,
+): Promise<void> {
+  await apiOf(auth).updateApiKey({
+    headers: params.headers,
+    body: {
+      configId: MACHINE_CREDENTIAL_CONFIG_ID,
+      keyId: params.id,
+      enabled: false,
+    },
+  });
 }

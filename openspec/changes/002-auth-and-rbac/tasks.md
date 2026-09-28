@@ -149,7 +149,7 @@ policy diff shown in chat, separately from the rest of the PR.
   (`references: "organization"`), and an admin-only creation procedure fixing
   `actorKind` (`integration`\|`agent`) at creation. Verify:
   `machine-credentials.int.test.ts` covers "Credential is shown only once".
-- [ ] 5.2 A revoke procedure (no in-place rotation). Verify:
+- [x] 5.2 A revoke procedure (no in-place rotation). Verify:
   `machine-credentials.int.test.ts` covers that a revoked credential's id can
   no longer authenticate at the token endpoint (used together with 5.3).
 - [ ] 5.3 `POST /v1/auth/token`: `verifyApiKey` then a 1-hour access token
