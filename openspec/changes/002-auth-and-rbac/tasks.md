@@ -130,7 +130,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 4. Multi-factor authentication and step-up
 
-- [ ] 4.1 TOTP enrollment and backup-code generation via the `two-factor`
+- [x] 4.1 TOTP enrollment and backup-code generation via the `two-factor`
   plugin. Verify: `mfa.int.test.ts` covers "Enrolled user must supply a TOTP
   code to sign in", "Backup code is single-use", and "Unenrolled user signs
   in with password alone".
