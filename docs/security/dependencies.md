@@ -17,6 +17,12 @@ Dependabot opens weekly pull requests for two ecosystems
 - **github-actions**, root directory. Every action pinned in `ci.yml` and the
   composite action under `.github/actions/setup/` is covered.
 
+Runtime-coupled versions are held on purpose. `@types/node` stays on the
+major version of the Node runtime (22), so Dependabot ignores its major
+updates (`.github/dependabot.yml`); moving to a new Node major is an
+explicit decision that updates the runtime, `engines` and these types
+together.
+
 ## Fix SLA
 
 Once an advisory is confirmed against Tayzu's dependency graph:

@@ -98,12 +98,36 @@ describe('"Supported property types are accepted"', () => {
     ['string with format email', { type: 'string', title: TITLE, format: 'email' }],
     ['string with format markdown', { type: 'string', title: TITLE, format: 'markdown' }],
     ['string with format yaml', { type: 'string', title: TITLE, format: 'yaml' }],
-    ['string with pattern/enum/lengths', { type: 'string', title: TITLE, minLength: 1, maxLength: 10, pattern: '^[a-z]+$', enum: ['a', 'b'], default: 'a' }],
+    [
+      'string with pattern/enum/lengths',
+      {
+        type: 'string',
+        title: TITLE,
+        minLength: 1,
+        maxLength: 10,
+        pattern: '^[a-z]+$',
+        enum: ['a', 'b'],
+        default: 'a',
+      },
+    ],
     ['integer with minimum', { type: 'integer', title: TITLE, minimum: 0 }],
-    ['number with minimum/maximum/default', { type: 'number', title: TITLE, minimum: 0, maximum: 1, default: 0.5 }],
+    [
+      'number with minimum/maximum/default',
+      { type: 'number', title: TITLE, minimum: 0, maximum: 1, default: 0.5 },
+    ],
     ['boolean with default', { type: 'boolean', title: TITLE, default: true }],
     ['array of strings', { type: 'array', title: TITLE, items: { type: 'string' } }],
-    ['array of integers with min/max/uniqueItems', { type: 'array', title: TITLE, items: { type: 'integer' }, minItems: 1, maxItems: 5, uniqueItems: true }],
+    [
+      'array of integers with min/max/uniqueItems',
+      {
+        type: 'array',
+        title: TITLE,
+        items: { type: 'integer' },
+        minItems: 1,
+        maxItems: 5,
+        uniqueItems: true,
+      },
+    ],
     ['object', { type: 'object', title: TITLE }],
   ])('%s is accepted', (_name, definition) => {
     const parsed = parsePropertyDefinition(definition, PATH);

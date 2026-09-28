@@ -33,9 +33,7 @@ function rejectDepthExceeded(): never {
 function walk(value: unknown, path: string, depth: number, maxDepth: number): unknown {
   if (Array.isArray(value)) {
     if (depth >= maxDepth) rejectDepthExceeded();
-    return value.map((item, index) =>
-      walk(item, `${path}/${String(index)}`, depth + 1, maxDepth),
-    );
+    return value.map((item, index) => walk(item, `${path}/${String(index)}`, depth + 1, maxDepth));
   }
 
   if (!isPlainObject(value)) return value;

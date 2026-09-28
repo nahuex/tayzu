@@ -226,7 +226,9 @@ describe('appendChangeEvent (design D9, R13; spec "Actor attribution and change 
       await appendOneEvent(tenantId);
 
       await expect(
-        db.execute(sql`update catalog_change_event set version = 99 where tenant_id = ${tenantId} and seq = 1`),
+        db.execute(
+          sql`update catalog_change_event set version = 99 where tenant_id = ${tenantId} and seq = 1`,
+        ),
       ).rejects.toThrow();
 
       const rows = await selectEvents(db, tenantId);

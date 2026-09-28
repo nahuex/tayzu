@@ -248,13 +248,17 @@ describe('entity relations and referential integrity (service; design D3, D9; ta
     await blueprints.create(c, blueprintInput('team'));
     await blueprints.create(
       c,
-      blueprintInput('service', { relations: { owner: { title: { en: 'Owner' }, target: 'team' } } }),
+      blueprintInput('service', {
+        relations: { owner: { title: { en: 'Owner' }, target: 'team' } },
+      }),
     );
     await entities.create(c, entityInput('team', 'team-a'));
 
     const result = await entities.create(
       c,
-      entityInput('service', 'payments', { spec: { properties: {}, relations: { owner: 'team-a' } } }),
+      entityInput('service', 'payments', {
+        spec: { properties: {}, relations: { owner: 'team-a' } },
+      }),
     );
 
     expect(result.spec.relations['owner']).toBe('team-a');
@@ -272,13 +276,17 @@ describe('entity relations and referential integrity (service; design D3, D9; ta
     await blueprints.create(c, blueprintInput('team'));
     await blueprints.create(
       c,
-      blueprintInput('service', { relations: { owner: { title: { en: 'Owner' }, target: 'team' } } }),
+      blueprintInput('service', {
+        relations: { owner: { title: { en: 'Owner' }, target: 'team' } },
+      }),
     );
 
     const error = await expectCatalogErrorCode(
       entities.create(
         c,
-        entityInput('service', 'payments', { spec: { properties: {}, relations: { owner: 'ghost-team' } } }),
+        entityInput('service', 'payments', {
+          spec: { properties: {}, relations: { owner: 'ghost-team' } },
+        }),
       ),
       'CATALOG_REFERENCE_VIOLATION',
     );
@@ -306,7 +314,9 @@ describe('entity relations and referential integrity (service; design D3, D9; ta
 
     await entities.create(
       c,
-      entityInput('service', 'payments', { spec: { properties: {}, relations: { dependsOn: ['ledger', 'auth'] } } }),
+      entityInput('service', 'payments', {
+        spec: { properties: {}, relations: { dependsOn: ['ledger', 'auth'] } },
+      }),
     );
 
     const result = await entities.get(c, { blueprint: 'service', identifier: 'payments' });

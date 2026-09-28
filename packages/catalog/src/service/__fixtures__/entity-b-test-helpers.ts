@@ -41,7 +41,9 @@ export async function entityRowId(
   `);
   const row = result.rows[0];
   if (!row) {
-    throw new Error(`no catalog_entity row for tenant ${tenantId}, blueprint ${blueprintId}, identifier ${identifier}`);
+    throw new Error(
+      `no catalog_entity row for tenant ${tenantId}, blueprint ${blueprintId}, identifier ${identifier}`,
+    );
   }
   return row.id;
 }
@@ -226,7 +228,10 @@ export async function blueprintRowLocation(
  * Verified empirically against a live PostgreSQL 16 instance with one, two
  * and three concurrent waiters.
  */
-export async function countBlueprintRowWaiters(db: TestDb, location: BlueprintRowLocation): Promise<number> {
+export async function countBlueprintRowWaiters(
+  db: TestDb,
+  location: BlueprintRowLocation,
+): Promise<number> {
   const result = await db.execute<{ count: string }>(sql`
     select count(*)::text as count
     from pg_locks
@@ -286,10 +291,10 @@ export async function acquireBlueprintRowLock(
   const client = await pool.connect();
   await client.query('BEGIN');
   const lockClause = mode === 'update' ? 'for update' : 'for share';
-  await client.query(`select id from catalog_blueprint where tenant_id = $1 and identifier = $2 ${lockClause}`, [
-    tenantId,
-    identifier,
-  ]);
+  await client.query(
+    `select id from catalog_blueprint where tenant_id = $1 and identifier = $2 ${lockClause}`,
+    [tenantId, identifier],
+  );
   return {
     async release(): Promise<void> {
       await client.query('COMMIT');

@@ -95,7 +95,10 @@ async function* toAsyncIterable<T>(items: readonly T[]): AsyncIterable<T> {
 }
 
 /** An async iterable that records how many items were actually pulled, to prove early exit. */
-function countingAsyncIterable<T>(items: readonly T[], counter: { pulls: number }): AsyncIterable<T> {
+function countingAsyncIterable<T>(
+  items: readonly T[],
+  counter: { pulls: number },
+): AsyncIterable<T> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
       let index = 0;
@@ -157,10 +160,7 @@ describe('"Adding a required property without values is incompatible"', () => {
         required: ['language', 'tier'],
       },
     });
-    const entities = [
-      entity('svc-1', { language: 'go' }),
-      entity('svc-2', { language: 'rust' }),
-    ];
+    const entities = [entity('svc-1', { language: 'go' }), entity('svc-2', { language: 'rust' })];
 
     const result = await checkCompatibility(newDefinition, toAsyncIterable(entities));
 
@@ -183,9 +183,9 @@ describe('"Removing a property that has values is incompatible"', () => {
 
     expect(result.compatible).toBe(false);
     expect(violationIdentifiers(result.violations)).toContain('payments');
-    expect(hasIssueAt((result.violations as CompatibilityViolation[])[0], '/spec/properties/language')).toBe(
-      true,
-    );
+    expect(
+      hasIssueAt((result.violations as CompatibilityViolation[])[0], '/spec/properties/language'),
+    ).toBe(true);
   });
 });
 
@@ -212,7 +212,10 @@ describe('early exit after 10 violations', () => {
     const badEntities = Array.from({ length: 15 }, (_, index) => entity(`svc-${String(index)}`));
     const counter = { pulls: 0 };
 
-    const result = await checkCompatibility(newDefinition, countingAsyncIterable(badEntities, counter));
+    const result = await checkCompatibility(
+      newDefinition,
+      countingAsyncIterable(badEntities, counter),
+    );
 
     expect(result.violations).toHaveLength(10);
     expect(result.compatible).toBe(false);
@@ -237,7 +240,10 @@ describe('status properties are checked against the proposed statusSchema', () =
     expect(result.compatible).toBe(false);
     expect(violationIdentifiers(result.violations)).toContain('payments');
     expect(
-      hasIssueAt((result.violations as CompatibilityViolation[])[0], '/status/properties/lastDeployAt'),
+      hasIssueAt(
+        (result.violations as CompatibilityViolation[])[0],
+        '/status/properties/lastDeployAt',
+      ),
     ).toBe(true);
   });
 
@@ -261,9 +267,9 @@ describe('relation requiredness and cardinality are checked (spec relations only
     const result = await checkCompatibility(newDefinition, toAsyncIterable(entities));
 
     expect(result.compatible).toBe(false);
-    expect(hasIssueAt((result.violations as CompatibilityViolation[])[0], '/spec/relations/owner')).toBe(
-      true,
-    );
+    expect(
+      hasIssueAt((result.violations as CompatibilityViolation[])[0], '/spec/relations/owner'),
+    ).toBe(true);
   });
 
   it('does not require a status value for a required relation (required does not apply to status)', async () => {
@@ -271,7 +277,12 @@ describe('relation requiredness and cardinality are checked (spec relations only
       relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true } },
     });
     const entities = [
-      entity('payments', { language: 'go' }, { owner: 'team-a' }, { properties: {}, relations: {} }),
+      entity(
+        'payments',
+        { language: 'go' },
+        { owner: 'team-a' },
+        { properties: {}, relations: {} },
+      ),
     ];
 
     const result = await checkCompatibility(newDefinition, toAsyncIterable(entities));
@@ -283,10 +294,14 @@ describe('relation requiredness and cardinality are checked (spec relations only
 describe('relation target change while an entity holds a value is incompatible (pure half)', () => {
   it('flags an entity with a spec value for a relation whose target changed', async () => {
     const previousDefinition = blueprintWith({
-      relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false } },
+      relations: {
+        owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false },
+      },
     });
     const newDefinition = blueprintWith({
-      relations: { owner: { title: { en: 'Owner' }, target: 'department', many: false, required: false } },
+      relations: {
+        owner: { title: { en: 'Owner' }, target: 'department', many: false, required: false },
+      },
     });
     const entities = [entity('payments', { language: 'go' }, { owner: 'team-a' })];
 
@@ -300,10 +315,14 @@ describe('relation target change while an entity holds a value is incompatible (
 
   it('does not flag an entity with no value for a relation whose target changed', async () => {
     const previousDefinition = blueprintWith({
-      relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false } },
+      relations: {
+        owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false },
+      },
     });
     const newDefinition = blueprintWith({
-      relations: { owner: { title: { en: 'Owner' }, target: 'department', many: false, required: false } },
+      relations: {
+        owner: { title: { en: 'Owner' }, target: 'department', many: false, required: false },
+      },
     });
     const entities = [entity('sandbox', { language: 'go' })];
 
@@ -316,7 +335,9 @@ describe('relation target change while an entity holds a value is incompatible (
 
   it('does not flag anything when no previousDefinition is given', async () => {
     const newDefinition = blueprintWith({
-      relations: { owner: { title: { en: 'Owner' }, target: 'department', many: false, required: false } },
+      relations: {
+        owner: { title: { en: 'Owner' }, target: 'department', many: false, required: false },
+      },
     });
     const entities = [entity('payments', { language: 'go' }, { owner: 'team-a' })];
 

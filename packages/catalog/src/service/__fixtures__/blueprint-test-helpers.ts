@@ -25,7 +25,9 @@ import { isCatalogError, type CatalogError, type CatalogErrorCode } from '../../
 export function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (url === undefined || url.trim() === '') {
-    throw new Error('DATABASE_URL is not set: the int project global setup should have stopped this run.');
+    throw new Error(
+      'DATABASE_URL is not set: the int project global setup should have stopped this run.',
+    );
   }
   return url;
 }
@@ -75,7 +77,10 @@ export async function expectCatalogErrorCode(
     () => undefined,
     (error: unknown) => error,
   );
-  expect(thrown, `expected the operation to reject with ${code}, but it did not reject`).toBeDefined();
+  expect(
+    thrown,
+    `expected the operation to reject with ${code}, but it did not reject`,
+  ).toBeDefined();
   expect(isCatalogError(thrown), `expected a CatalogError, got ${String(thrown)}`).toBe(true);
   if (!isCatalogError(thrown)) {
     throw new Error('unreachable: isCatalogError was just asserted true');
@@ -91,7 +96,11 @@ export async function expectCatalogErrorCode(
  * exposes this internal id, by design (design D11: the public shape has no
  * database-internal fields).
  */
-export async function blueprintRowId(db: TestDb, tenantId: string, identifier: string): Promise<string> {
+export async function blueprintRowId(
+  db: TestDb,
+  tenantId: string,
+  identifier: string,
+): Promise<string> {
   const result = await db.execute<{ id: string }>(sql`
     select id from catalog_blueprint where tenant_id = ${tenantId} and identifier = ${identifier}
   `);
@@ -142,7 +151,11 @@ export type EntitySpecRow = {
 };
 
 /** Every seeded entity row of one blueprint, ordered by identifier, for a before/after comparison. */
-export async function selectEntitySpecs(db: TestDb, tenantId: string, blueprintId: string): Promise<EntitySpecRow[]> {
+export async function selectEntitySpecs(
+  db: TestDb,
+  tenantId: string,
+  blueprintId: string,
+): Promise<EntitySpecRow[]> {
   const result = await db.execute<EntitySpecRow>(sql`
     select identifier, spec_properties, version
     from catalog_entity

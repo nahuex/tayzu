@@ -7,7 +7,11 @@
  */
 import { RE2JS } from 're2js';
 import { CatalogError } from './errors.js';
-import { parseBlueprintIdentifier, parsePropertyIdentifier, parseRelationIdentifier } from './identifiers.js';
+import {
+  parseBlueprintIdentifier,
+  parsePropertyIdentifier,
+  parseRelationIdentifier,
+} from './identifiers.js';
 import { parseLocalizedText, type LocalizedText } from './localized-text.js';
 import { parsePropertyDefinition, type PropertyDefinition } from './property-schema.js';
 import { parseRelationDefinition, type RelationDefinition } from './relation-definition.js';
@@ -63,7 +67,10 @@ function parsePropertySchema(rawSchema: unknown, path: string): ParsedPropertySc
   const properties: Record<string, PropertyDefinition> = {};
   for (const name of Object.keys(propertiesRaw)) {
     const identifier = parsePropertyIdentifier(name, `${path}/properties/${name}`);
-    properties[identifier] = parsePropertyDefinition(propertiesRaw[name], `${path}/properties/${name}`);
+    properties[identifier] = parsePropertyDefinition(
+      propertiesRaw[name],
+      `${path}/properties/${name}`,
+    );
   }
 
   const requiredRaw = rawRequired(rawSchema);
@@ -90,9 +97,14 @@ function validateDefaultAgainstOwnDefinition(path: string, definition: PropertyD
 
   if (definition.type === 'string') {
     const value = definition.default;
-    if (definition.minLength !== undefined && value.length < definition.minLength) fail(`${path}/default`);
-    if (definition.maxLength !== undefined && value.length > definition.maxLength) fail(`${path}/default`);
-    if (definition.pattern !== undefined && !RE2JS.compile(definition.pattern).matcher(value).find()) {
+    if (definition.minLength !== undefined && value.length < definition.minLength)
+      fail(`${path}/default`);
+    if (definition.maxLength !== undefined && value.length > definition.maxLength)
+      fail(`${path}/default`);
+    if (
+      definition.pattern !== undefined &&
+      !RE2JS.compile(definition.pattern).matcher(value).find()
+    ) {
       fail(`${path}/default`);
     }
     if (definition.enum !== undefined && !definition.enum.includes(value)) fail(`${path}/default`);
@@ -150,7 +162,9 @@ export function parseBlueprintDefinition(
 
   const schema = parsePropertySchema(value['schema'], '/schema');
   const statusSchema =
-    value['statusSchema'] === undefined ? undefined : parsePropertySchema(value['statusSchema'], '/statusSchema');
+    value['statusSchema'] === undefined
+      ? undefined
+      : parsePropertySchema(value['statusSchema'], '/statusSchema');
 
   const propertyIdentifiers = new Set<string>(Object.keys(schema.properties));
   for (const name of Object.keys(statusSchema?.properties ?? {})) {

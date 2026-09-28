@@ -73,22 +73,23 @@ function expectValidationRejected(run: () => unknown, issuePath?: string): void 
 
 describe('"Spec violating the schema is rejected"', () => {
   it('rejects a wrong-typed property value at /spec/properties/language', () => {
-    const schema = schemaFor(
-      { language: { type: 'string', title: { en: 'Language' } } },
-      ['language'],
-    );
+    const schema = schemaFor({ language: { type: 'string', title: { en: 'Language' } } }, [
+      'language',
+    ]);
     const validator = compileEntityValidator(schema);
 
-    expectValidationRejected(() => validator.validate({ language: 42 }), '/spec/properties/language');
+    expectValidationRejected(
+      () => validator.validate({ language: 42 }),
+      '/spec/properties/language',
+    );
   });
 });
 
 describe('"Undeclared property is rejected"', () => {
   it('rejects a property not declared on the blueprint at /spec/properties/colour', () => {
-    const schema = schemaFor(
-      { language: { type: 'string', title: { en: 'Language' } } },
-      ['language'],
-    );
+    const schema = schemaFor({ language: { type: 'string', title: { en: 'Language' } } }, [
+      'language',
+    ]);
     const validator = compileEntityValidator(schema);
 
     expectValidationRejected(
@@ -101,16 +102,18 @@ describe('"Undeclared property is rejected"', () => {
     const schema = schemaFor({ language: { type: 'string', title: { en: 'Language' } } });
     const validator = compileEntityValidator(schema);
 
-    expectValidationRejected(() => validator.validate({ colour: 'red' }), '/spec/properties/colour');
+    expectValidationRejected(
+      () => validator.validate({ colour: 'red' }),
+      '/spec/properties/colour',
+    );
   });
 });
 
 describe('a missing required property (no default) is rejected', () => {
   it('rejects an entity omitting a required property with no default, at /spec/properties/language', () => {
-    const schema = schemaFor(
-      { language: { type: 'string', title: { en: 'Language' } } },
-      ['language'],
-    );
+    const schema = schemaFor({ language: { type: 'string', title: { en: 'Language' } } }, [
+      'language',
+    ]);
     const validator = compileEntityValidator(schema);
 
     expectValidationRejected(() => validator.validate({}), '/spec/properties/language');

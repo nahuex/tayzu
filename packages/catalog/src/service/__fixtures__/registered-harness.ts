@@ -20,9 +20,7 @@ import { createTelemetryTestHarness, type TelemetryTestHarness } from '@tayzu/ob
 
 export type { TelemetryTestHarness } from '@tayzu/observability';
 
-export type Registration =
-  | { readonly harness: TelemetryTestHarness }
-  | { readonly error: unknown };
+export type Registration = { readonly harness: TelemetryTestHarness } | { readonly error: unknown };
 
 function register(): Registration {
   try {

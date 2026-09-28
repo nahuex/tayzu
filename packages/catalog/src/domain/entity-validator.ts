@@ -84,7 +84,10 @@ type NumberKeywords = Omit<NumberPropertyDefinition, 'title'>;
 type BooleanKeywords = Omit<BooleanPropertyDefinition, 'title'>;
 
 /** Derives the `string` sub-schema, including the formatted-string length cap (ADR-0008). */
-function deriveStringSchema(definition: StringKeywords, limits: CatalogLimits): Record<string, unknown> {
+function deriveStringSchema(
+  definition: StringKeywords,
+  limits: CatalogLimits,
+): Record<string, unknown> {
   const schema: Record<string, unknown> = { type: 'string' };
 
   if (definition.minLength !== undefined) schema['minLength'] = definition.minLength;
@@ -94,7 +97,10 @@ function deriveStringSchema(definition: StringKeywords, limits: CatalogLimits): 
 
   let maxLength = definition.maxLength;
   if (definition.format !== undefined) {
-    maxLength = maxLength === undefined ? limits.formattedString.maxLength : Math.min(maxLength, limits.formattedString.maxLength);
+    maxLength =
+      maxLength === undefined
+        ? limits.formattedString.maxLength
+        : Math.min(maxLength, limits.formattedString.maxLength);
 
     if (definition.format === 'url') {
       schema['format'] = 'uri';
@@ -126,13 +132,19 @@ function deriveBooleanSchema(definition: BooleanKeywords): Record<string, unknow
 }
 
 /** An array's `items` are always a primitive type (ADR-0008): never `format`. */
-function deriveArrayItemSchema(item: ArrayItemDefinition, limits: CatalogLimits): Record<string, unknown> {
+function deriveArrayItemSchema(
+  item: ArrayItemDefinition,
+  limits: CatalogLimits,
+): Record<string, unknown> {
   if (item.type === 'string') return deriveStringSchema(item, limits);
   if (item.type === 'boolean') return deriveBooleanSchema(item);
   return deriveNumberSchema(item);
 }
 
-function derivePropertySchema(definition: PropertyDefinition, limits: CatalogLimits): Record<string, unknown> {
+function derivePropertySchema(
+  definition: PropertyDefinition,
+  limits: CatalogLimits,
+): Record<string, unknown> {
   switch (definition.type) {
     case 'string':
       return deriveStringSchema(definition, limits);
@@ -158,7 +170,10 @@ function derivePropertySchema(definition: PropertyDefinition, limits: CatalogLim
   }
 }
 
-function deriveSchema(schema: ParsedPropertySchema, limits: CatalogLimits): Record<string, unknown> {
+function deriveSchema(
+  schema: ParsedPropertySchema,
+  limits: CatalogLimits,
+): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   for (const [name, definition] of Object.entries(schema.properties)) {
     properties[name] = derivePropertySchema(definition, limits);
@@ -202,7 +217,10 @@ function issuePath(error: ErrorObject, basePath: string): string {
   return `${basePath}${error.instancePath}`;
 }
 
-function issuesFromAjvErrors(errors: ErrorObject[] | null | undefined, basePath: string): CatalogErrorIssue[] {
+function issuesFromAjvErrors(
+  errors: ErrorObject[] | null | undefined,
+  basePath: string,
+): CatalogErrorIssue[] {
   if (!errors) return [];
   return errors.map((error) => ({
     path: issuePath(error, basePath),

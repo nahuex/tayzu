@@ -122,7 +122,10 @@ describe('Pagination cursor length limit is checked before decoding (spec Conven
     it('rejects a 513-character cursor with CATALOG_LIMIT_EXCEEDED naming the cursor limit', async () => {
       const tenantId = randomTenantId();
       const error = await expectCatalogErrorCode(
-        entities.list(ctx(tenantId), { blueprint: 'service', cursor: cursorOfLength(CURSOR_MAX_LENGTH + 1) }),
+        entities.list(ctx(tenantId), {
+          blueprint: 'service',
+          cursor: cursorOfLength(CURSOR_MAX_LENGTH + 1),
+        }),
         'CATALOG_LIMIT_EXCEEDED',
       );
       expect(error.details?.['limit']).toBe('cursor.maxLength');
@@ -131,7 +134,10 @@ describe('Pagination cursor length limit is checked before decoding (spec Conven
     it('rejects a 512-character (well-formed-length but invalid) cursor with CATALOG_VALIDATION_FAILED', async () => {
       const tenantId = randomTenantId();
       await expectCatalogErrorCode(
-        entities.list(ctx(tenantId), { blueprint: 'service', cursor: cursorOfLength(CURSOR_MAX_LENGTH) }),
+        entities.list(ctx(tenantId), {
+          blueprint: 'service',
+          cursor: cursorOfLength(CURSOR_MAX_LENGTH),
+        }),
         'CATALOG_VALIDATION_FAILED',
       );
     });

@@ -20,12 +20,18 @@ function assertSize(value: unknown, maxBytes: number, limit: EntitySizeLimitName
 }
 
 /** Rejects a `spec` whose serialized size exceeds `limits.entity.specMaxBytes`. */
-export function assertEntitySpecSize(spec: unknown, limits: CatalogLimits = defaultCatalogLimits): void {
+export function assertEntitySpecSize(
+  spec: unknown,
+  limits: CatalogLimits = defaultCatalogLimits,
+): void {
   assertSize(spec, limits.entity.specMaxBytes, 'entity.spec.maxBytes');
 }
 
 /** Rejects a `status` whose serialized size exceeds `limits.entity.statusMaxBytes`. */
-export function assertEntityStatusSize(status: unknown, limits: CatalogLimits = defaultCatalogLimits): void {
+export function assertEntityStatusSize(
+  status: unknown,
+  limits: CatalogLimits = defaultCatalogLimits,
+): void {
   assertSize(status, limits.entity.statusMaxBytes, 'entity.status.maxBytes');
 }
 

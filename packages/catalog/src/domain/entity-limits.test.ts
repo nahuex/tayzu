@@ -37,7 +37,11 @@
  * `compile` and prove the compiler is never invoked for oversized input.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { assertEntitySpecSize, assertEntityStatusSize, compileWithSizeGuard } from './entity-limits.js';
+import {
+  assertEntitySpecSize,
+  assertEntityStatusSize,
+  compileWithSizeGuard,
+} from './entity-limits.js';
 import { isCatalogError } from './errors.js';
 import { defaultCatalogLimits } from './limits.js';
 

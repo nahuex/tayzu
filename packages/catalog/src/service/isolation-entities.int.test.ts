@@ -242,8 +242,17 @@ import {
   randomTenantId,
   type TestDb,
 } from './__fixtures__/blueprint-test-helpers.js';
-import { createBlueprintService, type BlueprintService, type CreateBlueprintInput } from './blueprints.js';
-import { createEntityService, type CreateEntityInput, type EntityOutput, type EntityService } from './entities.js';
+import {
+  createBlueprintService,
+  type BlueprintService,
+  type CreateBlueprintInput,
+} from './blueprints.js';
+import {
+  createEntityService,
+  type CreateEntityInput,
+  type EntityOutput,
+  type EntityService,
+} from './entities.js';
 import type { CatalogContext } from '../domain/context.js';
 
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
@@ -252,7 +261,10 @@ function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): 
   return { tenantId, actor };
 }
 
-function blueprintInput(identifier: string, overrides: Partial<CreateBlueprintInput> = {}): CreateBlueprintInput {
+function blueprintInput(
+  identifier: string,
+  overrides: Partial<CreateBlueprintInput> = {},
+): CreateBlueprintInput {
   return {
     identifier,
     title: { en: identifier },
@@ -261,7 +273,11 @@ function blueprintInput(identifier: string, overrides: Partial<CreateBlueprintIn
   };
 }
 
-function entityInput(blueprint: string, identifier: string, overrides: Partial<CreateEntityInput> = {}): CreateEntityInput {
+function entityInput(
+  blueprint: string,
+  identifier: string,
+  overrides: Partial<CreateEntityInput> = {},
+): CreateEntityInput {
   return {
     blueprint,
     identifier,
@@ -310,12 +326,17 @@ describe('entity tenant isolation (task 8.8; spec "Tenant data isolation")', () 
     await blueprintService.create(
       ctx(tenantB),
       blueprintInput('service', {
-        relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false } },
+        relations: {
+          owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false },
+        },
       }),
     );
 
     await expectCatalogErrorCode(
-      entityService.create(ctx(tenantB), entityInput('service', 'payments', { spec: { relations: { owner: 'team-a' } } })),
+      entityService.create(
+        ctx(tenantB),
+        entityInput('service', 'payments', { spec: { relations: { owner: 'team-a' } } }),
+      ),
       'CATALOG_REFERENCE_VIOLATION',
     );
   });
@@ -334,6 +355,10 @@ describe('entity tenant isolation (task 8.8; spec "Tenant data isolation")', () 
     }
 
     const listA = await entityService.list(ctx(tenantA), { blueprint: 'service' });
-    expect(listA.items.map((item: EntityOutput) => item.identifier).sort()).toEqual(['e0', 'e1', 'e2']);
+    expect(listA.items.map((item: EntityOutput) => item.identifier).sort()).toEqual([
+      'e0',
+      'e1',
+      'e2',
+    ]);
   });
 });

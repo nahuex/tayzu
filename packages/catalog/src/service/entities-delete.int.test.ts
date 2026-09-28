@@ -249,7 +249,11 @@ import {
   seedManyReferrers,
   selectChangeEventActors,
 } from './__fixtures__/entity-b-test-helpers.js';
-import { createBlueprintService, type BlueprintService, type CreateBlueprintInput } from './blueprints.js';
+import {
+  createBlueprintService,
+  type BlueprintService,
+  type CreateBlueprintInput,
+} from './blueprints.js';
 import { createEntityService, type CreateEntityInput, type EntityService } from './entities.js';
 import type { CatalogContext } from '../domain/context.js';
 
@@ -259,7 +263,10 @@ function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): 
   return { tenantId, actor };
 }
 
-function blueprintInput(identifier: string, overrides: Partial<CreateBlueprintInput> = {}): CreateBlueprintInput {
+function blueprintInput(
+  identifier: string,
+  overrides: Partial<CreateBlueprintInput> = {},
+): CreateBlueprintInput {
   return {
     identifier,
     title: { en: identifier },
@@ -268,7 +275,11 @@ function blueprintInput(identifier: string, overrides: Partial<CreateBlueprintIn
   };
 }
 
-function entityInput(blueprint: string, identifier: string, overrides: Partial<CreateEntityInput> = {}): CreateEntityInput {
+function entityInput(
+  blueprint: string,
+  identifier: string,
+  overrides: Partial<CreateEntityInput> = {},
+): CreateEntityInput {
   return {
     blueprint,
     identifier,
@@ -330,11 +341,16 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     await blueprintService.create(
       c,
       blueprintInput('service', {
-        relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false } },
+        relations: {
+          owner: { title: { en: 'Owner' }, target: 'team', many: false, required: false },
+        },
       }),
     );
     await entityService.create(c, entityInput('team', 'team-a'));
-    await entityService.create(c, entityInput('service', 'payments', { spec: { relations: { owner: 'team-a' } } }));
+    await entityService.create(
+      c,
+      entityInput('service', 'payments', { spec: { relations: { owner: 'team-a' } } }),
+    );
 
     const error = await expectCatalogErrorCode(
       entityService.delete(c, { blueprint: 'team', identifier: 'team-a' }),
@@ -354,25 +370,41 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     await blueprintService.create(
       c,
       blueprintInput('service', {
-        relations: { dependsOn: { title: { en: 'Depends on' }, target: 'service', many: true, required: false } },
+        relations: {
+          dependsOn: {
+            title: { en: 'Depends on' },
+            target: 'service',
+            many: true,
+            required: false,
+          },
+        },
       }),
     );
     await entityService.create(c, entityInput('service', 'ledger'));
     await entityService.create(c, entityInput('service', 'auth'));
     const beforePayments = await entityService.create(
       c,
-      entityInput('service', 'payments', { spec: { relations: { dependsOn: ['ledger', 'auth'] } } }),
+      entityInput('service', 'payments', {
+        spec: { relations: { dependsOn: ['ledger', 'auth'] } },
+      }),
     );
     expect(beforePayments.version).toBe(1);
     expect(beforePayments.generation).toBe(1);
 
-    await entityService.delete(c, { blueprint: 'service', identifier: 'ledger', detachReferences: true });
+    await entityService.delete(c, {
+      blueprint: 'service',
+      identifier: 'ledger',
+      detachReferences: true,
+    });
 
     await expectCatalogErrorCode(
       entityService.get(c, { blueprint: 'service', identifier: 'ledger' }),
       'CATALOG_NOT_FOUND',
     );
-    const afterPayments = await entityService.get(c, { blueprint: 'service', identifier: 'payments' });
+    const afterPayments = await entityService.get(c, {
+      blueprint: 'service',
+      identifier: 'payments',
+    });
     expect(afterPayments.spec.relations['dependsOn']).toEqual(['auth']);
     // "each modified referrer gets a new version and generation"
     expect(afterPayments.version).toBe(2);
@@ -386,11 +418,16 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     await blueprintService.create(
       c,
       blueprintInput('service', {
-        relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true } },
+        relations: {
+          owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true },
+        },
       }),
     );
     await entityService.create(c, entityInput('team', 'team-a'));
-    await entityService.create(c, entityInput('service', 'payments', { spec: { relations: { owner: 'team-a' } } }));
+    await entityService.create(
+      c,
+      entityInput('service', 'payments', { spec: { relations: { owner: 'team-a' } } }),
+    );
 
     await expectCatalogErrorCode(
       entityService.delete(c, { blueprint: 'team', identifier: 'team-a', detachReferences: true }),
@@ -399,7 +436,10 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
 
     const stillTeamA = await entityService.get(c, { blueprint: 'team', identifier: 'team-a' });
     expect(stillTeamA.identifier).toBe('team-a');
-    const stillPayments = await entityService.get(c, { blueprint: 'service', identifier: 'payments' });
+    const stillPayments = await entityService.get(c, {
+      blueprint: 'service',
+      identifier: 'payments',
+    });
     expect(stillPayments.spec.relations['owner']).toBe('team-a');
     expect(stillPayments.version).toBe(1);
   });
@@ -410,7 +450,14 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     await blueprintService.create(
       c,
       blueprintInput('service', {
-        relations: { dependsOn: { title: { en: 'Depends on' }, target: 'service', many: true, required: false } },
+        relations: {
+          dependsOn: {
+            title: { en: 'Depends on' },
+            target: 'service',
+            many: true,
+            required: false,
+          },
+        },
       }),
     );
     await entityService.create(c, entityInput('service', 'ledger'));
@@ -419,7 +466,11 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
       entityInput('service', 'payments', { spec: { relations: { dependsOn: ['ledger'] } } }),
     );
 
-    await entityService.delete(c, { blueprint: 'service', identifier: 'ledger', detachReferences: true });
+    await entityService.delete(c, {
+      blueprint: 'service',
+      identifier: 'ledger',
+      detachReferences: true,
+    });
 
     const ledgerEvents = await selectChangeEvents(db, tenantId, 'ledger');
     expect(ledgerEvents.map((event) => event.action)).toEqual(['created', 'deleted']);
@@ -443,7 +494,14 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     await blueprintService.create(
       c,
       blueprintInput('service', {
-        relations: { dependsOn: { title: { en: 'Depends on' }, target: 'service', many: true, required: false } },
+        relations: {
+          dependsOn: {
+            title: { en: 'Depends on' },
+            target: 'service',
+            many: true,
+            required: false,
+          },
+        },
       }),
     );
     await entityService.create(c, entityInput('service', 'ledger'));
@@ -464,7 +522,10 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
       entityService.get(c, { blueprint: 'service', identifier: 'ledger' }),
       'CATALOG_NOT_FOUND',
     );
-    const afterPayments = await entityService.get(c, { blueprint: 'service', identifier: 'payments' });
+    const afterPayments = await entityService.get(c, {
+      blueprint: 'service',
+      identifier: 'payments',
+    });
     expect(afterPayments.status?.relations['dependsOn'] ?? []).not.toContain('ledger');
     // "each affected referrer gets a new version (not generation) and a
     // status_updated change event"
@@ -472,7 +533,11 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     expect(afterPayments.version).toBe(3); // created (1) -> status write (2) -> status_updated from the delete (3)
 
     const paymentsEvents = await selectChangeEvents(db, tenantId, 'payments');
-    expect(paymentsEvents.map((event) => event.action)).toEqual(['created', 'status_updated', 'status_updated']);
+    expect(paymentsEvents.map((event) => event.action)).toEqual([
+      'created',
+      'status_updated',
+      'status_updated',
+    ]);
   });
 
   it('detachReferences fails with CATALOG_LIMIT_EXCEEDED naming detach.maxReferrers beyond 1000 referrers', async () => {
@@ -482,7 +547,9 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     await blueprintService.create(
       c,
       blueprintInput('ref', {
-        relations: { points: { title: { en: 'Points to' }, target: 'target', many: false, required: false } },
+        relations: {
+          points: { title: { en: 'Points to' }, target: 'target', many: false, required: false },
+        },
       }),
     );
     const victim = await entityService.create(c, entityInput('target', 'victim'));
@@ -492,11 +559,27 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     const refBlueprintId = await blueprintRowId(db, tenantId, 'ref');
 
     const victimEntityId = await entityRowId(db, tenantId, targetBlueprintId, 'victim');
-    const relationDefinitionId = await relationDefinitionRowId(db, tenantId, refBlueprintId, 'points');
-    await seedManyReferrers(db, tenantId, refBlueprintId, relationDefinitionId, victimEntityId, 1001);
+    const relationDefinitionId = await relationDefinitionRowId(
+      db,
+      tenantId,
+      refBlueprintId,
+      'points',
+    );
+    await seedManyReferrers(
+      db,
+      tenantId,
+      refBlueprintId,
+      relationDefinitionId,
+      victimEntityId,
+      1001,
+    );
 
     const error = await expectCatalogErrorCode(
-      entityService.delete(c, { blueprint: 'target', identifier: 'victim', detachReferences: true }),
+      entityService.delete(c, {
+        blueprint: 'target',
+        identifier: 'victim',
+        detachReferences: true,
+      }),
       'CATALOG_LIMIT_EXCEEDED',
     );
     expect(error.details?.['limit']).toBe('detach.maxReferrers');

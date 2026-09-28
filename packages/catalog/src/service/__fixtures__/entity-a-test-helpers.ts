@@ -31,7 +31,10 @@ import type { TestDb } from './blueprint-test-helpers.js';
 
 export const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
-export function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
+export function ctx(
+  tenantId: string,
+  actor: CatalogContext['actor'] = DEFAULT_ACTOR,
+): CatalogContext {
   return { tenantId, actor };
 }
 
@@ -136,7 +139,11 @@ export async function nextTenantSeq(db: TestDb, tenantId: string): Promise<numbe
  * "anything else -> INTERNAL" step (`service/pipeline.ts`, design D3 step 5)
  * is what actually reports it.
  */
-export async function seedChangeEventSeqCollision(db: TestDb, tenantId: string, seq: number): Promise<void> {
+export async function seedChangeEventSeqCollision(
+  db: TestDb,
+  tenantId: string,
+  seq: number,
+): Promise<void> {
   const changedFields = sql.param([]);
   await db.execute(sql`
     insert into catalog_change_event

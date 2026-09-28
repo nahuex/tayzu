@@ -301,16 +301,20 @@ describe('schema hardening: enumerated-column CHECK constraints and the change-e
       const constraints = await readConstraints(db, 'catalog_change_event');
       expectCheckConstraintExists(constraints, 'catalog_change_event_actor_type_check');
       const definition = normalize(
-        constraints.find((row) => row.name === 'catalog_change_event_actor_type_check')?.definition ?? '',
+        constraints.find((row) => row.name === 'catalog_change_event_actor_type_check')
+          ?.definition ?? '',
       );
       for (const value of ['user', 'agent', 'integration', 'system']) {
         expect(definition).toMatch(new RegExp(`'${value}'`));
       }
     });
 
-    it.each(['user', 'agent', 'integration', 'system'])('accepts actor_type %s', async (actorType) => {
-      await expect(insertChangeEvent(db, { actorType })).resolves.toBeUndefined();
-    });
+    it.each(['user', 'agent', 'integration', 'system'])(
+      'accepts actor_type %s',
+      async (actorType) => {
+        await expect(insertChangeEvent(db, { actorType })).resolves.toBeUndefined();
+      },
+    );
 
     it('rejects an invalid actor_type with SQLSTATE 23514', async () => {
       await expectCheckViolation(
@@ -386,16 +390,20 @@ describe('schema hardening: enumerated-column CHECK constraints and the change-e
       const constraints = await readConstraints(db, 'catalog_change_event');
       expectCheckConstraintExists(constraints, 'catalog_change_event_action_check');
       const definition = normalize(
-        constraints.find((row) => row.name === 'catalog_change_event_action_check')?.definition ?? '',
+        constraints.find((row) => row.name === 'catalog_change_event_action_check')?.definition ??
+          '',
       );
       for (const value of ['created', 'updated', 'status_updated', 'deleted']) {
         expect(definition).toMatch(new RegExp(`'${value}'`));
       }
     });
 
-    it.each(['created', 'updated', 'status_updated', 'deleted'])('accepts action %s', async (action) => {
-      await expect(insertChangeEvent(db, { action })).resolves.toBeUndefined();
-    });
+    it.each(['created', 'updated', 'status_updated', 'deleted'])(
+      'accepts action %s',
+      async (action) => {
+        await expect(insertChangeEvent(db, { action })).resolves.toBeUndefined();
+      },
+    );
 
     it('rejects an invalid action with SQLSTATE 23514', async () => {
       await expectCheckViolation(
@@ -411,8 +419,8 @@ describe('schema hardening: enumerated-column CHECK constraints and the change-e
       const constraints = await readConstraints(db, 'catalog_change_event');
       expectCheckConstraintExists(constraints, 'catalog_change_event_resource_kind_check');
       const definition = normalize(
-        constraints.find((row) => row.name === 'catalog_change_event_resource_kind_check')?.definition ??
-          '',
+        constraints.find((row) => row.name === 'catalog_change_event_resource_kind_check')
+          ?.definition ?? '',
       );
       for (const value of ['blueprint', 'entity']) {
         expect(definition).toMatch(new RegExp(`'${value}'`));
@@ -437,8 +445,13 @@ describe('schema hardening: enumerated-column CHECK constraints and the change-e
       const constraints = await readConstraints(db, 'catalog_blueprint');
       expectCheckConstraintExists(constraints, 'catalog_blueprint_created_by_type_check');
       expectCheckConstraintExists(constraints, 'catalog_blueprint_updated_by_type_check');
-      for (const name of ['catalog_blueprint_created_by_type_check', 'catalog_blueprint_updated_by_type_check']) {
-        const definition = normalize(constraints.find((row) => row.name === name)?.definition ?? '');
+      for (const name of [
+        'catalog_blueprint_created_by_type_check',
+        'catalog_blueprint_updated_by_type_check',
+      ]) {
+        const definition = normalize(
+          constraints.find((row) => row.name === name)?.definition ?? '',
+        );
         for (const value of ['user', 'agent', 'integration', 'system']) {
           expect(definition, `${name} allows '${value}'`).toMatch(new RegExp(`'${value}'`));
         }
@@ -476,8 +489,13 @@ describe('schema hardening: enumerated-column CHECK constraints and the change-e
       const constraints = await readConstraints(db, 'catalog_entity');
       expectCheckConstraintExists(constraints, 'catalog_entity_created_by_type_check');
       expectCheckConstraintExists(constraints, 'catalog_entity_updated_by_type_check');
-      for (const name of ['catalog_entity_created_by_type_check', 'catalog_entity_updated_by_type_check']) {
-        const definition = normalize(constraints.find((row) => row.name === name)?.definition ?? '');
+      for (const name of [
+        'catalog_entity_created_by_type_check',
+        'catalog_entity_updated_by_type_check',
+      ]) {
+        const definition = normalize(
+          constraints.find((row) => row.name === name)?.definition ?? '',
+        );
         for (const value of ['user', 'agent', 'integration', 'system']) {
           expect(definition, `${name} allows '${value}'`).toMatch(new RegExp(`'${value}'`));
         }

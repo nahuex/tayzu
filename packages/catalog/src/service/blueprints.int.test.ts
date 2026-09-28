@@ -144,7 +144,11 @@ import {
   seedEntity,
   type TestDb,
 } from './__fixtures__/blueprint-test-helpers.js';
-import { finishedLogRecords, onlySpan, sumDataPoints } from './__fixtures__/telemetry-assertions.js';
+import {
+  finishedLogRecords,
+  onlySpan,
+  sumDataPoints,
+} from './__fixtures__/telemetry-assertions.js';
 import type { CatalogContext } from '../domain/context.js';
 import {
   createBlueprintService,
@@ -171,7 +175,10 @@ function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): 
 }
 
 /** A minimal, valid blueprint input, with `overrides` shallow-merged on top. */
-function blueprintInput(identifier: string, overrides: Partial<CreateBlueprintInput> = {}): CreateBlueprintInput {
+function blueprintInput(
+  identifier: string,
+  overrides: Partial<CreateBlueprintInput> = {},
+): CreateBlueprintInput {
   return {
     identifier,
     title: { en: identifier },
@@ -224,7 +231,11 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
 
       // spec "Actor attribution and change events": exactly one change event,
       // in the same transaction, with a snapshot of the resulting definition.
-      const events = await db.execute<{ action: string; resource_kind: string; snapshot: { identifier?: string } }>(
+      const events = await db.execute<{
+        action: string;
+        resource_kind: string;
+        snapshot: { identifier?: string };
+      }>(
         sql`select action, resource_kind, snapshot from catalog_change_event
             where tenant_id = ${tenantId} and resource_identifier = 'service'`,
       );
@@ -239,7 +250,10 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
       const c = ctx(tenantId);
       await service.create(c, blueprintInput('service'));
 
-      await expectCatalogErrorCode(service.create(c, blueprintInput('service')), 'CATALOG_ALREADY_EXISTS');
+      await expectCatalogErrorCode(
+        service.create(c, blueprintInput('service')),
+        'CATALOG_ALREADY_EXISTS',
+      );
     });
 
     it('Relation to an existing blueprint', async () => {
@@ -352,7 +366,10 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
       );
 
       await harness.forceFlush();
-      const logs = finishedLogRecords(harness.logExporter, 'catalog.security.reserved_identifier_denied');
+      const logs = finishedLogRecords(
+        harness.logExporter,
+        'catalog.security.reserved_identifier_denied',
+      );
       expect(logs).toHaveLength(1);
       expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
       expect(logs[0]?.attributes).toEqual({
@@ -366,7 +383,10 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
     it('System actor can create a reserved blueprint', async () => {
       const tenantId = randomTenantId();
 
-      const result = await service.create(ctx(tenantId, { type: 'system', id: 'sys' }), blueprintInput('_workflow'));
+      const result = await service.create(
+        ctx(tenantId, { type: 'system', id: 'sys' }),
+        blueprintInput('_workflow'),
+      );
 
       expect(result.identifier).toBe('_workflow');
     });
@@ -417,7 +437,10 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
       const blueprintId = await blueprintRowId(db, tenantId, 'service');
       await seedEntity(db, tenantId, blueprintId, 'payments');
 
-      await expectCatalogErrorCode(service.delete(c, { identifier: 'service' }), 'CATALOG_REFERENCE_VIOLATION');
+      await expectCatalogErrorCode(
+        service.delete(c, { identifier: 'service' }),
+        'CATALOG_REFERENCE_VIOLATION',
+      );
     });
 
     it('Relation target blueprint cannot be deleted', async () => {
@@ -431,7 +454,10 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
         }),
       );
 
-      await expectCatalogErrorCode(service.delete(c, { identifier: 'team' }), 'CATALOG_REFERENCE_VIOLATION');
+      await expectCatalogErrorCode(
+        service.delete(c, { identifier: 'team' }),
+        'CATALOG_REFERENCE_VIOLATION',
+      );
     });
 
     it('Unused blueprint is deleted', async () => {

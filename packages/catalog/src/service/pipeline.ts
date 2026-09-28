@@ -297,9 +297,14 @@ export function defineCatalogOperation<Input, Output>(
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
-        const result = await withTenantTransaction(pool, ctx, (client) => handler({ ctx, client, input }), {
-          statementTimeoutMs,
-        });
+        const result = await withTenantTransaction(
+          pool,
+          ctx,
+          (client) => handler({ ctx, client, input }),
+          {
+            statementTimeoutMs,
+          },
+        );
 
         if (result.audit) {
           emitAuditMutationLog(ctx, result.audit);

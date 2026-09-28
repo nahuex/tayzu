@@ -66,7 +66,10 @@ import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing: see `./router.int.test.ts`'s identical note (design D1).
-import { registration, type TelemetryTestHarness } from '../service/__fixtures__/registered-harness.js';
+import {
+  registration,
+  type TelemetryTestHarness,
+} from '../service/__fixtures__/registered-harness.js';
 import {
   connect,
   databaseUrl,
@@ -104,7 +107,10 @@ interface ApiErrorLike {
   readonly code: string;
   readonly status: number;
   readonly message: string;
-  readonly data?: { readonly issues?: readonly { path: string; message: string }[]; readonly details?: Record<string, unknown> };
+  readonly data?: {
+    readonly issues?: readonly { path: string; message: string }[];
+    readonly details?: Record<string, unknown>;
+  };
 }
 
 /** Never passes silently on a resolved promise (mirrors `expectCatalogErrorCode`). */
@@ -136,7 +142,9 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
   let harness: TelemetryTestHarness;
   let blueprints: BlueprintService;
   let entities: EntityService;
-  let client: ReturnType<typeof createRouterClient<ReturnType<typeof createCatalogRouter>, Record<string, unknown>>>;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createCatalogRouter>, Record<string, unknown>>
+  >;
 
   beforeAll(async () => {
     db = connect(databaseUrl());
@@ -175,7 +183,11 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
       const tenantId = randomTenantId();
       const error = await expectApiError(
         client.blueprints.create(
-          { identifier: '_reserved', title: { en: 'Reserved' }, schema: { properties: {}, required: [] } },
+          {
+            identifier: '_reserved',
+            title: { en: 'Reserved' },
+            schema: { properties: {}, required: [] },
+          },
           { context: ctx(tenantId) },
         ),
       );
@@ -185,23 +197,35 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
 
     it('CATALOG_NOT_FOUND -> 404', async () => {
       const tenantId = randomTenantId();
-      const error = await expectApiError(client.blueprints.get({ identifier: 'missing' }, { context: ctx(tenantId) }));
+      const error = await expectApiError(
+        client.blueprints.get({ identifier: 'missing' }, { context: ctx(tenantId) }),
+      );
       expect(error.code).toBe('CATALOG_NOT_FOUND');
       expect(error.status).toBe(EXPECTED_STATUS_BY_CODE.CATALOG_NOT_FOUND);
     });
 
     it('CATALOG_ALREADY_EXISTS -> 409', async () => {
       const tenantId = randomTenantId();
-      const input = { identifier: 'dup', title: { en: 'Dup' }, schema: { properties: {}, required: [] } };
+      const input = {
+        identifier: 'dup',
+        title: { en: 'Dup' },
+        schema: { properties: {}, required: [] },
+      };
       await client.blueprints.create(input, { context: ctx(tenantId) });
-      const error = await expectApiError(client.blueprints.create(input, { context: ctx(tenantId) }));
+      const error = await expectApiError(
+        client.blueprints.create(input, { context: ctx(tenantId) }),
+      );
       expect(error.code).toBe('CATALOG_ALREADY_EXISTS');
       expect(error.status).toBe(EXPECTED_STATUS_BY_CODE.CATALOG_ALREADY_EXISTS);
     });
 
     it('CATALOG_VERSION_CONFLICT -> 409', async () => {
       const tenantId = randomTenantId();
-      const input = { identifier: 'stale', title: { en: 'Stale' }, schema: { properties: {}, required: [] } };
+      const input = {
+        identifier: 'stale',
+        title: { en: 'Stale' },
+        schema: { properties: {}, required: [] },
+      };
       await client.blueprints.create(input, { context: ctx(tenantId) });
       const error = await expectApiError(
         client.blueprints.update({ ...input, expectedVersion: 999 }, { context: ctx(tenantId) }),
@@ -215,11 +239,19 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
       const input = {
         identifier: 'incompatible',
         title: { en: 'Incompatible' },
-        schema: { properties: { language: { type: 'string' as const, title: { en: 'Language' } } }, required: [] },
+        schema: {
+          properties: { language: { type: 'string' as const, title: { en: 'Language' } } },
+          required: [],
+        },
       };
       await client.blueprints.create(input, { context: ctx(tenantId) });
       await client.entities.create(
-        { blueprint: 'incompatible', identifier: 'e1', title: 'E1', spec: { properties: { language: 'go' } } },
+        {
+          blueprint: 'incompatible',
+          identifier: 'e1',
+          title: 'E1',
+          spec: { properties: { language: 'go' } },
+        },
         { context: ctx(tenantId) },
       );
       const error = await expectApiError(
@@ -263,7 +295,9 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
 
     it('CATALOG_LIMIT_EXCEEDED -> 422', async () => {
       const tenantId = randomTenantId();
-      const error = await expectApiError(client.blueprints.list({ pageSize: 501 }, { context: ctx(tenantId) }));
+      const error = await expectApiError(
+        client.blueprints.list({ pageSize: 501 }, { context: ctx(tenantId) }),
+      );
       expect(error.code).toBe('CATALOG_LIMIT_EXCEEDED');
       expect(error.status).toBe(EXPECTED_STATUS_BY_CODE.CATALOG_LIMIT_EXCEEDED);
     });
@@ -282,10 +316,17 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
 
       const brokenBlueprints = createBlueprintService({ pool: brokenPool });
       const brokenEntities = createEntityService({ pool: brokenPool });
-      const brokenRouter = createCatalogRouter({ blueprints: brokenBlueprints, entities: brokenEntities });
-      const brokenClient = createRouterClient(brokenRouter, { context: (raw: Record<string, unknown>) => raw });
+      const brokenRouter = createCatalogRouter({
+        blueprints: brokenBlueprints,
+        entities: brokenEntities,
+      });
+      const brokenClient = createRouterClient(brokenRouter, {
+        context: (raw: Record<string, unknown>) => raw,
+      });
 
-      const error = await expectApiError(brokenClient.blueprints.list({ pageSize: 10 }, { context: ctx(tenantId) }));
+      const error = await expectApiError(
+        brokenClient.blueprints.list({ pageSize: 10 }, { context: ctx(tenantId) }),
+      );
 
       // The caller sees a generic, fixed error: no SQL text, no stack trace,
       // no fragment of the driver's own message (design D11).
@@ -305,7 +346,9 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
       const exceptionAttributes = exceptionEvents[0]?.attributes ?? {};
       expect(typeof exceptionAttributes['exception.type']).toBe('string');
       expect(typeof exceptionAttributes['exception.stacktrace']).toBe('string');
-      expect(String(exceptionAttributes['exception.stacktrace']).toLowerCase()).not.toContain('duplicate key');
+      expect(String(exceptionAttributes['exception.stacktrace']).toLowerCase()).not.toContain(
+        'duplicate key',
+      );
     });
   });
 });

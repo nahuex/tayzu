@@ -39,7 +39,11 @@ import {
   type TestDb,
 } from './__fixtures__/blueprint-test-helpers.js';
 import { blueprintInput, ctx, entityInput } from './__fixtures__/entity-a-test-helpers.js';
-import { createBlueprintService, type BlueprintService, type CreateBlueprintInput } from './blueprints.js';
+import {
+  createBlueprintService,
+  type BlueprintService,
+  type CreateBlueprintInput,
+} from './blueprints.js';
 import { createEntityService, type EntityService } from './entities.js';
 
 function registeredHarness(): TelemetryTestHarness {
@@ -55,7 +59,10 @@ function registeredHarness(): TelemetryTestHarness {
 /** A blueprint with one `object`-typed spec property, no relations declared. */
 function blueprintWithObjectProperty(identifier: string): CreateBlueprintInput {
   return blueprintInput(identifier, {
-    schema: { properties: { metadata: { type: 'object', title: { en: 'Metadata' } } }, required: [] },
+    schema: {
+      properties: { metadata: { type: 'object', title: { en: 'Metadata' } } },
+      required: [],
+    },
   });
 }
 

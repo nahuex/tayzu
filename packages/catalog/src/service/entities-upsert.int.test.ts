@@ -260,14 +260,20 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
 
     const created = await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'go', tier: 'gold' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'go', tier: 'gold' } },
+      }),
     );
     expect(created.outcome).toBe('created');
     expect(created.generation).toBe(1);
 
     const updated = await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'rust' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'rust' } },
+      }),
     );
 
     expect(updated.outcome).toBe('updated');
@@ -281,12 +287,18 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
     await blueprints.create(c, SERVICE_BLUEPRINT_WITH_LANGUAGE_AND_TIER);
     await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'go', tier: 'gold' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'go', tier: 'gold' } },
+      }),
     );
 
     const result = await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'merge', spec: { properties: { tier: 'silver' } } }),
+      entityInput('service', 'payments', {
+        mode: 'merge',
+        spec: { properties: { tier: 'silver' } },
+      }),
     );
 
     expect(result.spec.properties).toEqual({ language: 'go', tier: 'silver' });
@@ -298,7 +310,10 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
     await blueprints.create(c, SERVICE_BLUEPRINT_WITH_LANGUAGE_AND_TIER);
     await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { tier: 'gold' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { tier: 'gold' } },
+      }),
     );
 
     const result = await entities.upsert(
@@ -315,7 +330,10 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
     await blueprints.create(c, SERVICE_BLUEPRINT_WITH_LANGUAGE_AND_TIER);
     await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'go' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'go' } },
+      }),
     );
     const atVersion2 = await entities.upsert(
       c,
@@ -350,7 +368,10 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
     await entities.upsert(c, entityInput('service', 'payments', { mode: 'replace' }));
 
     await expectCatalogErrorCode(
-      entities.upsert(c, entityInput('service', 'payments', { mode: 'replace', expectedVersion: 99 })),
+      entities.upsert(
+        c,
+        entityInput('service', 'payments', { mode: 'replace', expectedVersion: 99 }),
+      ),
       'CATALOG_VERSION_CONFLICT',
     );
   });
@@ -361,16 +382,24 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
     await blueprints.create(
       c,
       blueprintInput('service', {
-        schema: { properties: { language: { type: 'string', title: { en: 'Language' } } }, required: [] },
+        schema: {
+          properties: { language: { type: 'string', title: { en: 'Language' } } },
+          required: [],
+        },
         statusSchema: {
-          properties: { lastDeployAt: { type: 'string', format: 'date-time', title: { en: 'Last deploy' } } },
+          properties: {
+            lastDeployAt: { type: 'string', format: 'date-time', title: { en: 'Last deploy' } },
+          },
           required: [],
         },
       }),
     );
     await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'go' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'go' } },
+      }),
     );
     await entities.writeStatus(ctx(tenantId, { type: 'integration', id: 'github' }), {
       blueprint: 'service',
@@ -380,12 +409,18 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
       source: 'github',
     });
 
-    const beforeGeneration = (await entities.get(c, { blueprint: 'service', identifier: 'payments' })).generation;
-    const statusBefore = (await entities.get(c, { blueprint: 'service', identifier: 'payments' })).status;
+    const beforeGeneration = (
+      await entities.get(c, { blueprint: 'service', identifier: 'payments' })
+    ).generation;
+    const statusBefore = (await entities.get(c, { blueprint: 'service', identifier: 'payments' }))
+      .status;
 
     const result = await entities.upsert(
       c,
-      entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'rust' } } }),
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'rust' } },
+      }),
     );
 
     expect(result.generation).toBe(beforeGeneration + 1);
@@ -397,9 +432,27 @@ describe('entities.upsert (service; design D3, D9, D11; task 8.3)', () => {
     const c = ctx(tenantId);
     await blueprints.create(c, SERVICE_BLUEPRINT_WITH_LANGUAGE_AND_TIER);
 
-    await entities.upsert(c, entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'go' } } }));
-    await entities.upsert(c, entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'rust' } } }));
-    await entities.upsert(c, entityInput('service', 'payments', { mode: 'replace', spec: { properties: { language: 'rust' } } }));
+    await entities.upsert(
+      c,
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'go' } },
+      }),
+    );
+    await entities.upsert(
+      c,
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'rust' } },
+      }),
+    );
+    await entities.upsert(
+      c,
+      entityInput('service', 'payments', {
+        mode: 'replace',
+        spec: { properties: { language: 'rust' } },
+      }),
+    );
     await harness.forceFlush();
 
     const points = sumDataPoints(harness.metricExporter, 'tayzu.catalog.entity.mutations').filter(

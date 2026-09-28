@@ -44,7 +44,10 @@ function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): 
   return { tenantId, actor };
 }
 
-function blueprintInput(identifier: string, overrides: Partial<CreateBlueprintInput> = {}): CreateBlueprintInput {
+function blueprintInput(
+  identifier: string,
+  overrides: Partial<CreateBlueprintInput> = {},
+): CreateBlueprintInput {
   return {
     identifier,
     title: { en: identifier },
@@ -73,7 +76,10 @@ describe('blueprint tenant isolation (task 7.6; spec "Tenant data isolation")', 
     const tenantA = randomTenantId();
     const tenantB = randomTenantId();
 
-    await service.create(ctx(tenantA), blueprintInput('service', { title: { en: 'Tenant A service' } }));
+    await service.create(
+      ctx(tenantA),
+      blueprintInput('service', { title: { en: 'Tenant A service' } }),
+    );
     const created = await service.create(
       ctx(tenantB),
       blueprintInput('service', { title: { en: 'Tenant B service' } }),
@@ -96,7 +102,10 @@ describe('blueprint tenant isolation (task 7.6; spec "Tenant data isolation")', 
     const tenantB = randomTenantId();
     await service.create(ctx(tenantA), blueprintInput('service'));
 
-    await expectCatalogErrorCode(service.get(ctx(tenantB), { identifier: 'service' }), 'CATALOG_NOT_FOUND');
+    await expectCatalogErrorCode(
+      service.get(ctx(tenantB), { identifier: 'service' }),
+      'CATALOG_NOT_FOUND',
+    );
   });
 
   it('update of another tenant blueprint fails with CATALOG_NOT_FOUND', async () => {
@@ -119,7 +128,10 @@ describe('blueprint tenant isolation (task 7.6; spec "Tenant data isolation")', 
     const tenantB = randomTenantId();
     await service.create(ctx(tenantA), blueprintInput('service'));
 
-    await expectCatalogErrorCode(service.delete(ctx(tenantB), { identifier: 'service' }), 'CATALOG_NOT_FOUND');
+    await expectCatalogErrorCode(
+      service.delete(ctx(tenantB), { identifier: 'service' }),
+      'CATALOG_NOT_FOUND',
+    );
 
     // Tenant A's own blueprint must be unaffected by tenant B's rejected attempt.
     const stillThere = await service.get(ctx(tenantA), { identifier: 'service' });

@@ -7,3 +7,7 @@ openspec/
 # Third-party reference reports, kept verbatim
 docs/references/**/*.md
 !docs/references/**/README.md
+# Generated artifacts: their generators own the formatting
+# (contract:check compares openapi/ byte for byte; drizzle-kit rewrites meta/)
+openapi/catalog.openapi.json
+packages/db/migrations/meta/

@@ -107,7 +107,10 @@ export const catalogRelationDefinition = pgTable(
       columns: [t.tenantId, t.targetBlueprintId],
       foreignColumns: [catalogBlueprint.tenantId, catalogBlueprint.id],
     }).onDelete('restrict'),
-    check('catalog_relation_definition_many_required_check', sql`NOT (${t.many} AND ${t.required})`),
+    check(
+      'catalog_relation_definition_many_required_check',
+      sql`NOT (${t.many} AND ${t.required})`,
+    ),
   ],
 );
 
@@ -136,7 +139,11 @@ export const catalogEntity = pgTable(
     updatedById: text('updated_by_id').notNull(),
   },
   (t) => [
-    unique('catalog_entity_tenant_blueprint_identifier_uq').on(t.tenantId, t.blueprintId, t.identifier),
+    unique('catalog_entity_tenant_blueprint_identifier_uq').on(
+      t.tenantId,
+      t.blueprintId,
+      t.identifier,
+    ),
     // FK target for catalog_entity_relation's composite references to this table.
     unique('catalog_entity_tenant_id_uq').on(t.tenantId, t.id),
     foreignKey({
@@ -234,7 +241,10 @@ export const catalogChangeEvent = pgTable(
       'catalog_change_event_action_check',
       sql`${t.action} in ('created', 'updated', 'status_updated', 'deleted')`,
     ),
-    check('catalog_change_event_resource_kind_check', sql`${t.resourceKind} in ('blueprint', 'entity')`),
+    check(
+      'catalog_change_event_resource_kind_check',
+      sql`${t.resourceKind} in ('blueprint', 'entity')`,
+    ),
     // "The state of a resource at any past version can be read from its
     // events" (spec, "Change events record resulting values") as an index
     // lookup rather than a sequential scan.

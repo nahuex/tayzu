@@ -84,7 +84,10 @@ import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing: see the module doc comment above (design D1).
-import { registration, type TelemetryTestHarness } from '../service/__fixtures__/registered-harness.js';
+import {
+  registration,
+  type TelemetryTestHarness,
+} from '../service/__fixtures__/registered-harness.js';
 import {
   connect,
   databaseUrl,
@@ -130,7 +133,9 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
   // `client`'s context type is the raw, unvalidated host-supplied value
   // (design D3): a plain record, not a validated `CatalogContext`, so a test
   // can also exercise a deliberately invalid one.
-  let client: ReturnType<typeof createRouterClient<ReturnType<typeof createCatalogRouter>, Record<string, unknown>>>;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createCatalogRouter>, Record<string, unknown>>
+  >;
 
   beforeAll(async () => {
     db = connect(databaseUrl());
@@ -171,14 +176,25 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
         required: [],
       },
       statusSchema: {
-        properties: { lastDeployAt: { type: 'string' as const, title: { en: 'Last deploy' }, format: 'date-time' as const } },
+        properties: {
+          lastDeployAt: {
+            type: 'string' as const,
+            title: { en: 'Last deploy' },
+            format: 'date-time' as const,
+          },
+        },
         required: [],
       },
       relations: { owner: { title: { en: 'Owner' }, target: 'team', many: false, required: true } },
     };
     const serviceV1 = await client.blueprints.create(serviceInputV1, { context: hostContext });
     expect(serviceV1.identifier).toBe('service');
-    expect(serviceV1.relations['owner']).toEqual({ title: { en: 'Owner' }, target: 'team', many: false, required: true });
+    expect(serviceV1.relations['owner']).toEqual({
+      title: { en: 'Owner' },
+      target: 'team',
+      many: false,
+      required: true,
+    });
 
     // A dedicated, always-unreferenced blueprint for the `blueprints.delete` happy path below.
     await client.blueprints.create(
@@ -187,7 +203,10 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
     );
 
     // 2. blueprints.get
-    const fetchedService = await client.blueprints.get({ identifier: 'service' }, { context: hostContext });
+    const fetchedService = await client.blueprints.get(
+      { identifier: 'service' },
+      { context: hostContext },
+    );
     expect(fetchedService.identifier).toBe('service');
     expect(fetchedService.version).toBe(1);
 
@@ -226,7 +245,10 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
     expect(teamA.version).toBe(1);
 
     // An always-unreferenced entity for the `entities.delete` happy path below.
-    await client.entities.create({ blueprint: 'team', identifier: 'sandbox', title: 'Sandbox' }, { context: hostContext });
+    await client.entities.create(
+      { blueprint: 'team', identifier: 'sandbox', title: 'Sandbox' },
+      { context: hostContext },
+    );
 
     // 5 (again). entities.create -- an identifier containing "/".
     const created = await client.entities.create(
@@ -243,12 +265,20 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
     expect(created.spec.relations['owner']).toBe('team-a');
 
     // 6. entities.get -- the "/" round-trips unchanged through the API layer.
-    const fetchedEntity = await client.entities.get({ blueprint: 'service', identifier: 'org/repo' }, { context: hostContext });
+    const fetchedEntity = await client.entities.get(
+      { blueprint: 'service', identifier: 'org/repo' },
+      { context: hostContext },
+    );
     expect(fetchedEntity.identifier).toBe('org/repo');
 
     // 7. entities.list
-    const entityPage = await client.entities.list({ blueprint: 'service', pageSize: 10 }, { context: hostContext });
-    expect(entityPage.items.map((item: { identifier: string }) => item.identifier)).toEqual(['org/repo']);
+    const entityPage = await client.entities.list(
+      { blueprint: 'service', pageSize: 10 },
+      { context: hostContext },
+    );
+    expect(entityPage.items.map((item: { identifier: string }) => item.identifier)).toEqual([
+      'org/repo',
+    ]);
 
     // 8. entities.upsert
     const upserted = await client.entities.upsert(
@@ -285,11 +315,18 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
       { context: hostContext },
     );
     expect(related.items).toContainEqual(
-      expect.objectContaining({ relation: 'owner', scope: 'spec', entity: expect.objectContaining({ identifier: 'team-a' }) }),
+      expect.objectContaining({
+        relation: 'owner',
+        scope: 'spec',
+        entity: expect.objectContaining({ identifier: 'team-a' }),
+      }),
     );
 
     // 11. entities.delete -- an unreferenced entity.
-    await client.entities.delete({ blueprint: 'team', identifier: 'sandbox' }, { context: hostContext });
+    await client.entities.delete(
+      { blueprint: 'team', identifier: 'sandbox' },
+      { context: hostContext },
+    );
     await expectCatalogErrorCode(
       client.entities.get({ blueprint: 'team', identifier: 'sandbox' }, { context: hostContext }),
       'CATALOG_NOT_FOUND',
@@ -306,16 +343,34 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
   it('marks exactly the three high-risk procedures with x-tayzu-risk: high (design D11)', async () => {
     const document = await generateOpenApiDocument(catalogContract);
 
-    expect(operationExtension(document, '/v1/blueprints/{blueprint}', 'put', 'x-tayzu-risk')).toBe('high');
-    expect(operationExtension(document, '/v1/blueprints/{blueprint}', 'delete', 'x-tayzu-risk')).toBe('high');
-    expect(operationExtension(document, '/v1/blueprints/{blueprint}/entities/{entity}', 'delete', 'x-tayzu-risk')).toBe(
+    expect(operationExtension(document, '/v1/blueprints/{blueprint}', 'put', 'x-tayzu-risk')).toBe(
       'high',
     );
+    expect(
+      operationExtension(document, '/v1/blueprints/{blueprint}', 'delete', 'x-tayzu-risk'),
+    ).toBe('high');
+    expect(
+      operationExtension(
+        document,
+        '/v1/blueprints/{blueprint}/entities/{entity}',
+        'delete',
+        'x-tayzu-risk',
+      ),
+    ).toBe('high');
 
     // No blanket marking: a non-high-risk procedure never carries it.
     expect(operationExtension(document, '/v1/blueprints', 'post', 'x-tayzu-risk')).toBeUndefined();
-    expect(operationExtension(document, '/v1/blueprints/{blueprint}', 'get', 'x-tayzu-risk')).toBeUndefined();
-    expect(operationExtension(document, '/v1/blueprints/{blueprint}/entities/{entity}', 'get', 'x-tayzu-risk')).toBeUndefined();
+    expect(
+      operationExtension(document, '/v1/blueprints/{blueprint}', 'get', 'x-tayzu-risk'),
+    ).toBeUndefined();
+    expect(
+      operationExtension(
+        document,
+        '/v1/blueprints/{blueprint}/entities/{entity}',
+        'get',
+        'x-tayzu-risk',
+      ),
+    ).toBeUndefined();
   });
 
   it('Blueprint definitions round-trip (spec "Published API contract")', async () => {
@@ -328,7 +383,10 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
         title: { en: 'Library', es: 'Biblioteca' },
         description: { en: 'A reusable definition' },
         icon: 'book',
-        schema: { properties: { name: { type: 'string', title: { en: 'Name' } } }, required: ['name'] },
+        schema: {
+          properties: { name: { type: 'string', title: { en: 'Name' } } },
+          required: ['name'],
+        },
       },
       { context: ctx(tenantA) },
     );
@@ -349,7 +407,9 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
       relations: read.relations,
     };
 
-    const createdElsewhere = await client.blueprints.create(portableDefinition, { context: ctx(tenantB) });
+    const createdElsewhere = await client.blueprints.create(portableDefinition, {
+      context: ctx(tenantB),
+    });
     expect(createdElsewhere.identifier).toBe('library');
     expect(createdElsewhere.title).toEqual(read.title);
     expect(createdElsewhere.description).toEqual(read.description);
@@ -365,14 +425,20 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
     expect(updated.identifier).toBe('library');
 
     // THEN both are accepted unchanged, and a new get returns an equal definition.
-    const readAgain = await client.blueprints.get({ identifier: 'library' }, { context: ctx(tenantA) });
+    const readAgain = await client.blueprints.get(
+      { identifier: 'library' },
+      { context: ctx(tenantA) },
+    );
     expect(readAgain.title).toEqual(read.title);
     expect(readAgain.description).toEqual(read.description);
     expect(readAgain.icon).toBe(read.icon);
     expect(readAgain.schema).toEqual(read.schema);
     expect(readAgain.relations).toEqual(read.relations);
 
-    const readElsewhereAgain = await client.blueprints.get({ identifier: 'library' }, { context: ctx(tenantB) });
+    const readElsewhereAgain = await client.blueprints.get(
+      { identifier: 'library' },
+      { context: ctx(tenantB) },
+    );
     expect(readElsewhereAgain.title).toEqual(read.title);
     expect(readElsewhereAgain.schema).toEqual(read.schema);
   });

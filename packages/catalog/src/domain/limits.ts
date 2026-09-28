@@ -77,7 +77,12 @@ function mergeNode(base: unknown, override: unknown, path: string): unknown {
     return override;
   }
 
-  if (typeof base === 'object' && base !== null && typeof override === 'object' && override !== null) {
+  if (
+    typeof base === 'object' &&
+    base !== null &&
+    typeof override === 'object' &&
+    override !== null
+  ) {
     const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
     for (const key of Object.keys(override)) {
       merged[key] = mergeNode(
