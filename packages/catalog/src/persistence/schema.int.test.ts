@@ -312,6 +312,74 @@ async function readIndexDefs(db: Db, table: string): Promise<string[]> {
   return result.rows.map((row) => normalize(row.definition));
 }
 
+/**
+ * Task 6.1 (design D6, Migration Plan step 2's Drizzle-generated half): every
+ * catalog table listed in `schema.ts` gets `ENABLE ROW LEVEL SECURITY` plus a
+ * single `tenant_isolation` policy, `for: 'all'`, scoped to `tayzu_app`, whose
+ * `USING`/`WITH CHECK` clauses both compare `tenant_id` against
+ * `current_setting('app.tenant_id', true)`. `FORCE ROW LEVEL SECURITY` and the
+ * table grants themselves are task 6.2's hand-written migration and are
+ * asserted there, not here.
+ */
+const CATALOG_TABLES = [
+  'catalog_blueprint',
+  'catalog_change_event',
+  'catalog_entity',
+  'catalog_entity_relation',
+  'catalog_relation_definition',
+  'catalog_tenant_sequence',
+] as const;
+
+// Matches `tenant_id = current_setting('app.tenant_id', true)`, tolerating an
+// optional table-qualifying prefix on the column and an optional `::text`
+// cast on the setting-name literal, both of which are formatting choices
+// `pg_get_expr`/the SQL generator may make without changing the meaning of
+// design D6's literal expression.
+const TENANT_ISOLATION_EXPRESSION =
+  /(?:\w+\.)?tenant_id\s*=\s*current_setting\('app\.tenant_id'(?:::text)?,\s*true\)/;
+
+async function readRowSecurityEnabled(db: Db, table: string): Promise<boolean | undefined> {
+  const result = await db.execute<{ enabled: boolean }>(sql`
+    select relrowsecurity as enabled
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public' and c.relname = ${table}
+  `);
+  return result.rows[0]?.enabled;
+}
+
+type PolicyRow = {
+  readonly name: string;
+  readonly cmd: string;
+  readonly permissive: boolean;
+  readonly roles: string[] | null;
+  readonly using: string | null;
+  readonly withCheck: string | null;
+};
+
+async function readTenantIsolationPolicy(db: Db, table: string): Promise<PolicyRow | undefined> {
+  const result = await db.execute<PolicyRow>(sql`
+    select
+      pol.polname as name,
+      pol.polcmd as cmd,
+      pol.polpermissive as permissive,
+      (
+        select array_agg(r.rolname order by r.rolname)
+          from pg_roles r
+         where r.oid = any(pol.polroles)
+      ) as roles,
+      pg_get_expr(pol.polqual, pol.polrelid) as using,
+      pg_get_expr(pol.polwithcheck, pol.polrelid) as "withCheck"
+      from pg_policy pol
+      join pg_class c on c.oid = pol.polrelid
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public'
+       and c.relname = ${table}
+       and pol.polname = 'tenant_isolation'
+  `);
+  return result.rows[0];
+}
+
 describe('0000_catalog_core migration (design D4)', () => {
   let admin: Db;
   let scratchName: string;
@@ -656,5 +724,47 @@ describe('0000_catalog_core migration (design D4)', () => {
     ).rejects.toThrow();
 
     await expect(db.execute(sql`truncate catalog_change_event`)).rejects.toThrow();
+  });
+
+  describe('tenant_isolation RLS policy (design D6, task 6.1)', () => {
+    it.each(CATALOG_TABLES)('%s has ENABLE ROW LEVEL SECURITY set', async (table) => {
+      const enabled = await readRowSecurityEnabled(db, table);
+      expect(enabled, `${table} has row level security enabled`).toBe(true);
+    });
+
+    it.each(CATALOG_TABLES)(
+      '%s has a permissive tenant_isolation policy, for: "all", scoped to tayzu_app',
+      async (table) => {
+        const policy = await readTenantIsolationPolicy(db, table);
+        expect(policy, `${table} has a "tenant_isolation" policy`).toBeDefined();
+        if (policy === undefined) {
+          return;
+        }
+
+        expect(policy.permissive, `${table}'s tenant_isolation policy is permissive`).toBe(true);
+        expect(
+          policy.cmd,
+          `${table}'s tenant_isolation policy applies to every command (for: 'all')`,
+        ).toBe('*');
+        expect(policy.roles, `${table}'s tenant_isolation policy is scoped to tayzu_app`).toEqual([
+          'tayzu_app',
+        ]);
+
+        expect(policy.using, `${table}'s tenant_isolation USING clause is present`).not.toBeNull();
+        expect(
+          policy.using,
+          `${table}'s tenant_isolation USING clause compares tenant_id to current_setting('app.tenant_id', true)`,
+        ).toMatch(TENANT_ISOLATION_EXPRESSION);
+
+        expect(
+          policy.withCheck,
+          `${table}'s tenant_isolation WITH CHECK clause is present`,
+        ).not.toBeNull();
+        expect(
+          policy.withCheck,
+          `${table}'s tenant_isolation WITH CHECK clause compares tenant_id to current_setting('app.tenant_id', true)`,
+        ).toMatch(TENANT_ISOLATION_EXPRESSION);
+      },
+    );
   });
 });

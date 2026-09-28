@@ -184,12 +184,12 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 6. Database roles and row-level security
 
-- [ ] 6.1 `pgRole`/`pgPolicy` additions (`tenant_isolation`, `for: 'all'`) on
+- [x] 6.1 `pgRole`/`pgPolicy` additions (`tenant_isolation`, `for: 'all'`) on
   every catalog table in `packages/catalog/src/persistence/schema.ts`.
   Generate the migration. Verify: `schema.int.test.ts` asserts, via
   `pg_policy`, that the policy and `ENABLE ROW LEVEL SECURITY` exist on every
   catalog table.
-- [ ] 6.2 A hand-written custom SQL migration: `CREATE ROLE tayzu_migrator`/
+- [x] 6.2 A hand-written custom SQL migration: `CREATE ROLE tayzu_migrator`/
   `tayzu_app` where not already infrastructure-provisioned, `GRANT`s for
   `tayzu_app` on every catalog table, `REVOKE UPDATE, DELETE, TRUNCATE ON
   catalog_change_event FROM tayzu_app`, and `FORCE ROW LEVEL SECURITY` on

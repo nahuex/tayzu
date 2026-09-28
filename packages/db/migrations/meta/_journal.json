@@ -43,6 +43,20 @@
       "when": 1790620315283,
       "tag": "0005_rate_limit_table_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790635564014,
+      "tag": "0006_catalog_role_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790636206467,
+      "tag": "0007_catalog_tenant_isolation_rls",
+      "breakpoints": true
     }
   ]
 }

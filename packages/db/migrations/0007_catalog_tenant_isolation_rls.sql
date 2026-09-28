@@ -1,0 +1,12 @@
+ALTER TABLE "catalog_blueprint" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "catalog_change_event" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "catalog_entity" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "catalog_entity_relation" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "catalog_relation_definition" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "catalog_tenant_sequence" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "catalog_blueprint" AS PERMISSIVE FOR ALL TO "tayzu_app" USING ("catalog_blueprint"."tenant_id" = current_setting('app.tenant_id', true)) WITH CHECK ("catalog_blueprint"."tenant_id" = current_setting('app.tenant_id', true));--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "catalog_change_event" AS PERMISSIVE FOR ALL TO "tayzu_app" USING ("catalog_change_event"."tenant_id" = current_setting('app.tenant_id', true)) WITH CHECK ("catalog_change_event"."tenant_id" = current_setting('app.tenant_id', true));--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "catalog_entity" AS PERMISSIVE FOR ALL TO "tayzu_app" USING ("catalog_entity"."tenant_id" = current_setting('app.tenant_id', true)) WITH CHECK ("catalog_entity"."tenant_id" = current_setting('app.tenant_id', true));--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "catalog_entity_relation" AS PERMISSIVE FOR ALL TO "tayzu_app" USING ("catalog_entity_relation"."tenant_id" = current_setting('app.tenant_id', true)) WITH CHECK ("catalog_entity_relation"."tenant_id" = current_setting('app.tenant_id', true));--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "catalog_relation_definition" AS PERMISSIVE FOR ALL TO "tayzu_app" USING ("catalog_relation_definition"."tenant_id" = current_setting('app.tenant_id', true)) WITH CHECK ("catalog_relation_definition"."tenant_id" = current_setting('app.tenant_id', true));--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "catalog_tenant_sequence" AS PERMISSIVE FOR ALL TO "tayzu_app" USING ("catalog_tenant_sequence"."tenant_id" = current_setting('app.tenant_id', true)) WITH CHECK ("catalog_tenant_sequence"."tenant_id" = current_setting('app.tenant_id', true));

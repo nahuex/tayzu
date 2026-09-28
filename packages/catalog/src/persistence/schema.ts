@@ -27,6 +27,9 @@ import {
   index,
   integer,
   jsonb,
+  pgPolicy,
+  type PgPolicy,
+  pgRole,
   pgTable,
   primaryKey,
   text,
@@ -34,6 +37,37 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
+
+/**
+ * The runtime CRUD role every catalog query runs as (design D6). Declared
+ * `.existing()` so `drizzle-kit generate` never emits `CREATE ROLE`/`DROP
+ * ROLE` for it: the role itself, its grants and `FORCE ROW LEVEL SECURITY`
+ * are task 6.2's hand-written migration, not expressible through Drizzle's
+ * table definitions. This declaration exists only so `tenantIsolationPolicy`
+ * below has a typed `to` target.
+ */
+const tayzuApp = pgRole('tayzu_app').existing();
+
+/**
+ * Every catalog table's single RLS policy (design D6): permissive, `for:
+ * 'all'`, scoped to `tayzu_app`, comparing `tenant_id` to the session-local
+ * `app.tenant_id` setting that `withTenantTransaction` (`@tayzu/db`) sets on
+ * every request. `USING` gates reads (and the pre-update read of a row);
+ * `WITH CHECK` gates the row a write leaves behind — both must hold, so both
+ * clauses repeat the same comparison. Declaring this alongside a table's
+ * columns is what makes `drizzle-kit generate` also emit `ENABLE ROW LEVEL
+ * SECURITY` for that table; `FORCE ROW LEVEL SECURITY` is not expressible
+ * through Drizzle and ships as task 6.2's hand-written migration.
+ */
+function tenantIsolationPolicy(column: AnyPgColumn): PgPolicy {
+  const tenantMatchesSession = sql`${column} = current_setting('app.tenant_id', true)`;
+  return pgPolicy('tenant_isolation', {
+    for: 'all',
+    to: tayzuApp,
+    using: tenantMatchesSession,
+    withCheck: tenantMatchesSession,
+  });
+}
 
 /**
  * Restricts `column` to the closed set of actor types (spec Conventions,
@@ -73,6 +107,7 @@ export const catalogBlueprint = pgTable(
     unique('catalog_blueprint_tenant_id_uq').on(t.tenantId, t.id),
     check('catalog_blueprint_created_by_type_check', actorTypeCheck(t.createdByType)),
     check('catalog_blueprint_updated_by_type_check', actorTypeCheck(t.updatedByType)),
+    tenantIsolationPolicy(t.tenantId),
   ],
 );
 
@@ -111,6 +146,7 @@ export const catalogRelationDefinition = pgTable(
       'catalog_relation_definition_many_required_check',
       sql`NOT (${t.many} AND ${t.required})`,
     ),
+    tenantIsolationPolicy(t.tenantId),
   ],
 );
 
@@ -153,6 +189,7 @@ export const catalogEntity = pgTable(
     }).onDelete('restrict'),
     check('catalog_entity_created_by_type_check', actorTypeCheck(t.createdByType)),
     check('catalog_entity_updated_by_type_check', actorTypeCheck(t.updatedByType)),
+    tenantIsolationPolicy(t.tenantId),
   ],
 );
 
@@ -194,6 +231,7 @@ export const catalogEntityRelation = pgTable(
     check('catalog_entity_relation_scope_check', sql`${t.scope} in ('spec', 'status')`),
     // Backward traversal ("what points at this entity?") without a table scan.
     index('catalog_entity_relation_tenant_target_idx').on(t.tenantId, t.targetEntityId),
+    tenantIsolationPolicy(t.tenantId),
   ],
 );
 
@@ -254,11 +292,16 @@ export const catalogChangeEvent = pgTable(
       t.resourceIdentifier,
       t.seq,
     ),
+    tenantIsolationPolicy(t.tenantId),
   ],
 );
 
 /** Per-tenant gap-free counter that assigns `catalog_change_event.seq` (design D9). */
-export const catalogTenantSequence = pgTable('catalog_tenant_sequence', {
-  tenantId: text('tenant_id').notNull().primaryKey(),
-  lastSeq: bigint('last_seq', { mode: 'bigint' }).notNull(),
-});
+export const catalogTenantSequence = pgTable(
+  'catalog_tenant_sequence',
+  {
+    tenantId: text('tenant_id').notNull().primaryKey(),
+    lastSeq: bigint('last_seq', { mode: 'bigint' }).notNull(),
+  },
+  (t) => [tenantIsolationPolicy(t.tenantId)],
+);
