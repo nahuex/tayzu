@@ -225,7 +225,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   `tenant-tx.int.test.ts` shows that `current_setting('app.tenant_id')`
   inside the transaction equals the tenant, that it is unset after commit,
   and that a quote-containing tenant ID is stored literally (no injection).
-- [ ] 5.3 Database-level isolation guard. Verify: `db-isolation.int.test.ts`
+- [x] 5.3 Database-level isolation guard. Verify: `db-isolation.int.test.ts`
   runs a raw insert of a `catalog_entity_relation` edge whose target belongs
   to another tenant and shows it fails with an FK violation, which is
   defense in depth independent of the service layer.
