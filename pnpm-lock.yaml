@@ -71,6 +71,9 @@ importers:
       '@tayzu/db':
         specifier: workspace:*
         version: link:../db
+      '@tayzu/observability':
+        specifier: workspace:*
+        version: link:../observability
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -80,6 +83,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.3
         version: 0.45.3(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(pg@8.23.0)
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
       re2js:
         specifier: ^2.8.6
         version: 2.8.6
@@ -90,9 +96,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
-      '@tayzu/observability':
-        specifier: workspace:*
-        version: link:../observability
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
 
   packages/db:
     dependencies:

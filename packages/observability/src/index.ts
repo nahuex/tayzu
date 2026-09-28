@@ -7,3 +7,5 @@
  */
 export { createTelemetryTestHarness } from './harness.js';
 export type { TelemetryTestHarness } from './harness.js';
+export { sharedAttributeKeys } from './semconv.js';
+export type { SharedAttributeKey } from './semconv.js';
