@@ -9,6 +9,8 @@ context: |
   Before proposing a change, read its row in the roadmap relevance matrix of
   docs/references/platform-engineering/README.md (Platform Engineering reference
   reports) and cite file + line range in design.md when a decision relies on one.
+  The roadmap is project.md §23 (identical copy of Port). Before proposing a change,
+  read its section in docs/references/port/roadmap-analysis.md.
 
 rules:
   design:
