@@ -54,3 +54,13 @@ export const blueprintMutationsCounter = meter.createCounter('tayzu.catalog.blue
 export const entityMutationsCounter = meter.createCounter('tayzu.catalog.entity.mutations', {
   unit: '{mutation}',
 });
+
+/** design.md, Metrics table: "Cache effectiveness" (task 4.8's validator-cache wiring). */
+export const schemaCacheLookupsCounter = meter.createCounter('tayzu.catalog.schema.cache.lookups', {
+  unit: '{lookup}',
+});
+
+/** design.md, Metrics table: "Compile cost" (task 4.8's validator-cache wiring). */
+export const schemaCompileDurationHistogram = meter.createHistogram('tayzu.catalog.schema.compile.duration', {
+  unit: 's',
+});

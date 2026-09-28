@@ -234,15 +234,53 @@ export async function insertRelationDefinitionRow(
   `);
 }
 
-/** Removes every relation definition whose `source_blueprint_id` is `sourceBlueprintId` (design D7's "replace"). */
-export async function deleteRelationDefinitionsForSource(
+export interface UpdateRelationDefinitionRowParams {
+  readonly tenantId: string;
+  readonly id: string;
+  readonly title: LocalizedText;
+  readonly targetBlueprintId: string;
+  readonly many: boolean;
+  readonly required: boolean;
+}
+
+/**
+ * Updates `title`, `target_blueprint_id`, `many` and `required` in place,
+ * keeping the row's own `id` (design D7, D9's "replace its mutable fields"):
+ * `catalog_entity_relation.relation_definition_id` is `ON DELETE RESTRICT`,
+ * so a relation an entity still holds an edge for must never be deleted and
+ * reinserted with a fresh id on every blueprint update.
+ */
+export async function updateRelationDefinitionRow(
   tx: BlueprintRepositoryTx,
-  tenantId: string,
-  sourceBlueprintId: string,
+  row: UpdateRelationDefinitionRowParams,
 ): Promise<void> {
   await tx.execute(sql`
+    update catalog_relation_definition set
+      title = ${JSON.stringify(row.title)}::jsonb,
+      target_blueprint_id = ${row.targetBlueprintId},
+      many = ${row.many},
+      required = ${row.required}
+    where tenant_id = ${row.tenantId} and id = ${row.id}
+  `);
+}
+
+/**
+ * Deletes exactly the given relation-definition rows by id -- only the ones
+ * an update actually removes, and only after the compatibility check
+ * (design D7) has already confirmed no entity holds a spec or status value
+ * for them, so no `catalog_entity_relation` edge's `RESTRICT` FK blocks the
+ * delete.
+ */
+export async function deleteRelationDefinitionRows(
+  tx: BlueprintRepositoryTx,
+  tenantId: string,
+  ids: readonly string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  const idParams = sql.param([...ids]);
+  await tx.execute(sql`
     delete from catalog_relation_definition
-    where tenant_id = ${tenantId} and source_blueprint_id = ${sourceBlueprintId}
+    where tenant_id = ${tenantId} and id = any(${idParams}::uuid[])
   `);
 }
 

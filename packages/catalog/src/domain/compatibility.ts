@@ -8,7 +8,19 @@
 import { compileEntityValidator, type EntityPropertyValidator } from './entity-validator.js';
 import { validateRelationValues } from './relation-values.js';
 import { isCatalogError, type CatalogErrorIssue } from './errors.js';
-import type { ParsedBlueprintDefinition } from './blueprint-definition.js';
+import type { ParsedBlueprintDefinition, ParsedPropertySchema } from './blueprint-definition.js';
+
+/**
+ * How a proposed schema is compiled into a validator. Defaults to a direct,
+ * uncached `compileEntityValidator` call, so every existing caller (this
+ * module's own tests) is unaffected. The service layer overrides this
+ * (`service/blueprints.ts`) to route compilation through
+ * `service/schema-validator-cache.js` (task 4.8, design D6), so a
+ * `blueprints.update`'s compatibility check reuses -- and, on a miss,
+ * pre-warms -- the same validator-cache entry entity writes at the new
+ * version will hit next.
+ */
+export type CompileValidatorFn = (schema: ParsedPropertySchema, kind: 'spec' | 'status') => EntityPropertyValidator;
 
 export interface CompatibilityEntitySnapshot {
   identifier: string;
@@ -30,6 +42,8 @@ export interface CheckCompatibilityOptions {
   previousDefinition?: ParsedBlueprintDefinition;
   /** Stop after this many violations (default 10, design D7). */
   maxViolations?: number;
+  /** See `CompileValidatorFn`. Defaults to an uncached `compileEntityValidator`. */
+  compileValidator?: CompileValidatorFn;
 }
 
 const DEFAULT_MAX_VIOLATIONS = 10;
@@ -113,9 +127,10 @@ export async function checkCompatibility(
 ): Promise<CompatibilityCheckResult> {
   const maxViolations = options.maxViolations ?? DEFAULT_MAX_VIOLATIONS;
   const changedTargets = changedRelationTargets(newDefinition, options.previousDefinition);
-  const specValidator = compileEntityValidator(newDefinition.schema);
+  const compileValidator: CompileValidatorFn = options.compileValidator ?? ((schema) => compileEntityValidator(schema));
+  const specValidator = compileValidator(newDefinition.schema, 'spec');
   const statusValidator = newDefinition.statusSchema
-    ? compileEntityValidator(newDefinition.statusSchema)
+    ? compileValidator(newDefinition.statusSchema, 'status')
     : undefined;
 
   const violations: CompatibilityViolation[] = [];

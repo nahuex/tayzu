@@ -24,7 +24,6 @@ import { applyWrite } from '../domain/apply-write.js';
 import type { ParsedPropertySchema } from '../domain/blueprint-definition.js';
 import { areCanonicallyEqual } from '../domain/canonical.js';
 import type { ActorType, CatalogContext, Principal } from '../domain/context.js';
-import { compileEntityValidator } from '../domain/entity-validator.js';
 import { assertEntitySpecSize, assertEntityStatusSize } from '../domain/entity-limits.js';
 import { CatalogError, isCatalogError } from '../domain/errors.js';
 import { parseEntityIdentifier } from '../domain/identifiers.js';
@@ -33,6 +32,7 @@ import { decodeCursor, encodeCursor } from '../domain/pagination.js';
 import { assertReservedAccess, type ReservedOperationKind } from '../domain/reserved.js';
 import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
+import type { ValidatorCacheKey } from '../domain/validator-cache.js';
 import { appendChangeEvent } from '../persistence/change-events.js';
 import { findBlueprintIdByIdentifier, selectBlueprintRow } from '../persistence/blueprints-repository.js';
 import { FOREIGN_KEY_VIOLATION_SQLSTATE, UNIQUE_VIOLATION_SQLSTATE, pgErrorInfo } from '../persistence/db-errors.js';
@@ -65,6 +65,7 @@ import {
 import type { LocalizedText } from '../domain/localized-text.js';
 import { entityMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
 import { defineCatalogOperation } from './pipeline.js';
+import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
 export interface EntitySpecWriteInput {
   readonly properties?: Record<string, unknown>;
@@ -310,18 +311,40 @@ async function loadEntityRelationBags(
   };
 }
 
-/** design.md, Spans table: `catalog.entity.validate`, `tayzu.catalog.validation.issue.count` conditional on failure. */
+/** Identifies the compiled validator this write needs (design D6: `(tenantId, blueprintId, version)`, one instance per schema role). */
+interface ValidatedSchemaRef {
+  readonly tenantId: string;
+  readonly blueprintIdentifier: string;
+  readonly blueprintVersion: number;
+  readonly scope: 'spec' | 'status';
+}
+
+/**
+ * design.md, Spans table: `catalog.entity.validate`, `tayzu.catalog.validation.issue.count`
+ * conditional on failure. The compiled validator itself comes from
+ * `./schema-validator-cache.js` (task 4.8's LRU, design D6), keyed by
+ * `(tenantId, blueprintId, version)`: a cache hit skips Ajv compilation
+ * entirely, and a miss emits its own child `catalog.schema.compile` span.
+ */
 function runEntityValidation(
   schema: ParsedPropertySchema,
   properties: unknown,
   path: string,
   limits: CatalogLimits,
-  blueprintIdentifier: string,
+  ref: ValidatedSchemaRef,
 ): Record<string, unknown> {
   return tracer.startActiveSpan('catalog.entity.validate', (span) => {
-    span.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, blueprintIdentifier);
+    span.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, ref.blueprintIdentifier);
     try {
-      const validator = compileEntityValidator(schema, limits);
+      const key: ValidatorCacheKey = {
+        tenantId: ref.tenantId,
+        blueprintId: ref.blueprintIdentifier,
+        version: ref.blueprintVersion,
+      };
+      const validator =
+        ref.scope === 'spec'
+          ? getCachedSpecValidator(key, schema, limits)
+          : getCachedStatusValidator(key, schema, limits);
       return validator.validate(properties, path);
     } catch (error) {
       if (isCatalogError(error) && error.issues) {
@@ -680,13 +703,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       assertEntitySpecSize(nextSpec, limits);
 
       const schema = blueprintRow.schema as ParsedPropertySchema;
-      const validatedProperties = runEntityValidation(
-        schema,
-        nextSpec.properties,
-        '/spec/properties',
-        limits,
-        input.blueprint,
-      );
+      const validatedProperties = runEntityValidation(schema, nextSpec.properties, '/spec/properties', limits, {
+        tenantId: ctx.tenantId,
+        blueprintIdentifier: input.blueprint,
+        blueprintVersion: blueprintRow.version,
+        scope: 'spec',
+      });
       const relationValues = validateRelationValues(relationDefs.definitions, nextSpec.relations, 'spec', { limits });
       const { resolved, totalTargets } = await resolveRelationsIfDeclared(
         tx,
@@ -808,13 +830,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       assertEntitySpecSize(nextSpec, limits);
 
       const schema = blueprintRow.schema as ParsedPropertySchema;
-      const validatedProperties = runEntityValidation(
-        schema,
-        nextSpec.properties,
-        '/spec/properties',
-        limits,
-        input.blueprint,
-      );
+      const validatedProperties = runEntityValidation(schema, nextSpec.properties, '/spec/properties', limits, {
+        tenantId: ctx.tenantId,
+        blueprintIdentifier: input.blueprint,
+        blueprintVersion: blueprintRow.version,
+        scope: 'spec',
+      });
       const relationValues = validateRelationValues(relationDefs.definitions, nextSpec.relations, 'spec', { limits });
       const { resolved, totalTargets } = await resolveRelationsIfDeclared(
         tx,
@@ -839,6 +860,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
             ...buildEntityOutput(input.blueprint, currentRow, { spec: currentSpecRelations, status: currentStatusRelations }),
             outcome: 'unchanged',
           };
+          // design.md, Spans table: tayzu.catalog.mutation's conditional
+          // attribute records 'unchanged' too, exactly like 'created' and
+          // 'updated' below -- an idempotent upsert is not a mutation (no
+          // counter increment, no change event), but it is still one of the
+          // attribute's three enumerated values.
+          trace.getActiveSpan()?.setAttribute('tayzu.catalog.mutation', 'unchanged');
           return { output };
         }
 
@@ -1015,7 +1042,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const validatedStatusProperties: Record<string, unknown> =
         statusSchema === null
           ? {}
-          : runEntityValidation(statusSchema, rawStatusProperties, '/status/properties', limits, input.blueprint);
+          : runEntityValidation(statusSchema, rawStatusProperties, '/status/properties', limits, {
+              tenantId: ctx.tenantId,
+              blueprintIdentifier: input.blueprint,
+              blueprintVersion: blueprintRow.version,
+              scope: 'status',
+            });
 
       const statusRelationValues = validateRelationValues(relationDefs.definitions, input.relations ?? {}, 'status', {
         limits,
@@ -1130,13 +1162,16 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
 
       const pageSize = input.pageSize ?? limits.pagination.defaultPageSize;
+      // design.md, Spans table: tayzu.catalog.page.size is a *required*
+      // attribute of catalog.entity.list, not conditional -- set it before
+      // the CATALOG_LIMIT_EXCEEDED check below can throw.
+      trace.getActiveSpan()?.setAttribute('tayzu.catalog.page.size', pageSize);
       if (pageSize > limits.pagination.maxPageSize) {
         throw new CatalogError('CATALOG_LIMIT_EXCEEDED', 'Page size exceeds the limit', {
           details: { limit: 'pagination.maxPageSize' },
         });
       }
       const afterIdentifier = input.cursor !== undefined ? decodeCursor(input.cursor) : undefined;
-      trace.getActiveSpan()?.setAttribute('tayzu.catalog.page.size', pageSize);
 
       const tx = drizzle(client);
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);

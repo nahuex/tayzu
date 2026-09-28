@@ -41,6 +41,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { CatalogContext } from '../domain/context.js';
 import { parseCatalogContext } from '../domain/context.js';
 import { CatalogError, isCatalogError, type CatalogErrorCode } from '../domain/errors.js';
+import { pgErrorInfo } from '../persistence/db-errors.js';
 import {
   contextRejectionsCounter,
   logger,
@@ -144,18 +145,25 @@ function recordContextRejection(operationName: string, reason: string): void {
   });
 }
 
-/** Reads a string property off an unknown thrown value without ever widening it to `any`. */
-function readStringProperty(value: unknown, key: string): string | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const candidate = (value as Record<string, unknown>)[key];
-  return typeof candidate === 'string' ? candidate : undefined;
-}
-
-/** The thrown value's `.stack` with its first line (the message) removed. */
+/**
+ * The thrown value's `.stack`, kept only where it is a real V8 call-site
+ * line. `Error.captureStackTrace` renders the message (`${name}: ${message}`)
+ * as one or more *leading* lines before the first `    at ...` frame, but a
+ * message can itself span several physical lines -- `DrizzleQueryError`'s own
+ * message is `Failed query: <sql>\nparams: <bind values>`, two lines, not
+ * one. Slicing off only the first line (as a bare "remove the message line"
+ * would) leaves the second message line, `params: ...`, verbatim in the
+ * stacktrace -- exactly the SQL bind values design D11 forbids. Filtering by
+ * shape instead (every trimmed, non-blank line must start with `"at "`,
+ * V8's own frame prefix) drops every message line regardless of how many
+ * there are, and never depends on the message's own content.
+ */
 function stacktraceWithoutMessage(error: unknown): string {
   const stack = error instanceof Error && typeof error.stack === 'string' ? error.stack : '';
-  const newlineIndex = stack.indexOf('\n');
-  return newlineIndex === -1 ? '' : stack.slice(newlineIndex + 1);
+  return stack
+    .split('\n')
+    .filter((line) => line.trim().startsWith('at '))
+    .join('\n');
 }
 
 /**
@@ -164,6 +172,13 @@ function stacktraceWithoutMessage(error: unknown): string {
  * supplies them) `db.response.status_code` (SQLSTATE) and
  * `tayzu.db.constraint`. Never the error's `.message`, Postgres `detail` or
  * `where`, or any bind value.
+ *
+ * `code` and `constraint` are read through `pgErrorInfo`'s `.cause`-unwrapping
+ * loop (`persistence/db-errors.ts`), not off the top-level thrown value: a
+ * real database write goes through drizzle-orm's query builder
+ * (`tx.execute(sql\`...\`)`), which wraps every failure in its own
+ * `DrizzleQueryError` and moves the underlying `pg` `DatabaseError` (where
+ * `code`/`constraint` actually live) to `error.cause`.
  */
 function sanitizeUnknownError(error: unknown): Attributes {
   const exceptionType =
@@ -174,13 +189,12 @@ function sanitizeUnknownError(error: unknown): Attributes {
     'exception.stacktrace': stacktraceWithoutMessage(error),
   };
 
-  const sqlstate = readStringProperty(error, 'code');
-  if (sqlstate !== undefined) {
-    attributes['db.response.status_code'] = sqlstate;
+  const info = pgErrorInfo(error);
+  if (info.code !== undefined) {
+    attributes['db.response.status_code'] = info.code;
   }
-  const constraint = readStringProperty(error, 'constraint');
-  if (constraint !== undefined) {
-    attributes['tayzu.db.constraint'] = constraint;
+  if (info.constraint !== undefined) {
+    attributes['tayzu.db.constraint'] = info.constraint;
   }
 
   return attributes;

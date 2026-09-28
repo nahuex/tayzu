@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:unit": "vitest run --project \"*unit*\"",
     "contract:generate": "tsx src/api/generate-contract.ts",
-    "contract:check": "tsx src/api/check-contract.ts"
+    "contract:check": "tsx src/api/check-contract.ts",
+    "otel-smoke-check": "vitest run src/telemetry/otel-smoke-check.int.test.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
