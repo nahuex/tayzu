@@ -4,7 +4,7 @@ title = "tayzu gitleaks config"
 useDefault = true
 
 # Scoped allowlist for the test-only local Postgres credential created by the
-# SessionStart hook (see openspec/changes/001-catalog-core/tasks.md, 1.6, and
+# SessionStart hook (see openspec/changes/archive/2026-09-28-001-catalog-core/tasks.md, 1.6, and
 # packages/db/CLAUDE.md: it is a fixed, non-secret, localhost-only test login).
 [[allowlists]]
 description = "Test-only local Postgres URL for the SessionStart hook"

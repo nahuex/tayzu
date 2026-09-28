@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 8.2 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 8.2 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3, D4, D9, D11; spec "Entity relations and referential integrity",
  * "Telemetry contract"). "Missing required relation" and "Wrong cardinality"
  * are already covered at the pure domain level by task 4.3's

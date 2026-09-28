@@ -1,5 +1,5 @@
 /**
- * Unit tests for task 9.3 (openspec/changes/001-catalog-core, design D11;
+ * Unit tests for task 9.3 (openspec/changes/archive/2026-09-28-001-catalog-core, design D11;
  * spec "Published API contract"). No database is needed: generating and
  * diffing the OpenAPI document only introspects the contract's Zod schemas
  * and route metadata, it never opens a connection or runs a query -- this is

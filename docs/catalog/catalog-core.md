@@ -1,7 +1,7 @@
 # Catalog core
 
 The catalog core (`@tayzu/catalog`, OpenSpec change
-[`001-catalog-core`](../../openspec/changes/001-catalog-core/)) is Tayzu's
+[`001-catalog-core`](../../openspec/changes/archive/2026-09-28-001-catalog-core/)) is Tayzu's
 tenant-scoped software catalog. Tenants define **blueprints**: types with
 typed properties and relations. Humans, AI agents and integrations then
 create **entities** of those blueprints. Each entity keeps its desired

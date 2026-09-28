@@ -3,7 +3,7 @@
 PostgreSQL access shared by every capability: the `pg` pool, the tenant
 transaction seam for RLS, the migration runner, and the migrations directory.
 Global rules are in the root `CLAUDE.md`. Design references: D1, D4, D5 and D12
-of `openspec/changes/001-catalog-core/design.md`.
+of `openspec/changes/archive/2026-09-28-001-catalog-core/design.md`.
 
 ## Boundaries
 

@@ -1,6 +1,6 @@
 /**
  * Integration/unit test for a `/security-review` finding on task 11.3
- * (openspec/changes/001-catalog-core): `domain/safe-parse.ts`'s `walk`
+ * (openspec/changes/archive/2026-09-28-001-catalog-core): `domain/safe-parse.ts`'s `walk`
  * enforces the nesting-depth limit (spec Conventions, "Default limits":
  * "Nesting depth of `object` values | 16"; design D8: limits are checked
  * before any expensive work) only for the plain-object branch --

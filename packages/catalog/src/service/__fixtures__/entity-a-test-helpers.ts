@@ -1,6 +1,6 @@
 /**
  * Shared test helpers for the entity-operation integration tests owned by
- * this batch (tasks 8.1-8.5, openspec/changes/001-catalog-core):
+ * this batch (tasks 8.1-8.5, openspec/changes/archive/2026-09-28-001-catalog-core):
  * `entities.int.test.ts`, `entity-relations.int.test.ts`,
  * `entities-upsert.int.test.ts` and `entity-status.int.test.ts`. Not a test
  * file itself (no assertions run at import time), only connection, input-

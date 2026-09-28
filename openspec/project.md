@@ -203,7 +203,7 @@ dentro de openspec/changes/). No reemplaces esa estructura por la de otro plugin
 
 Empezamos por la primera capability del roadmap: 001-catalog-core.
 
-Generá, dentro de openspec/changes/001-catalog-core/:
+Generá, dentro de openspec/changes/archive/2026-09-28-001-catalog-core/:
 - proposal.md
 - specs/catalog-core.md (MUST/SHOULD/MAY + escenarios Given/When/Then)
 - design.md (incluye el contrato de observabilidad: qué spans y métricas de

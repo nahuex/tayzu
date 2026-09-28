@@ -1,6 +1,6 @@
 /**
  * Shared test helpers for the blueprint-operation integration tests (tasks
- * 7.1-7.6, openspec/changes/001-catalog-core): `blueprints.int.test.ts`,
+ * 7.1-7.6, openspec/changes/archive/2026-09-28-001-catalog-core): `blueprints.int.test.ts`,
  * `blueprints-update.int.test.ts` and `isolation-blueprints.int.test.ts`. Not
  * a test file itself (no assertions run at import time), only connection,
  * seeding and error-assertion helpers.

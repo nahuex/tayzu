@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 7.4 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 7.4 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D7, D9; spec "Safe blueprint schema evolution"). See
  * `blueprints.int.test.ts` for `./blueprints.js`'s full assumed API
  * (`createBlueprintService`, `BlueprintService`, `CreateBlueprintInput` /

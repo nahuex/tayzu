@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 7.6 (openspec/changes/001-catalog-core, design
+ * Integration tests for task 7.6 (openspec/changes/archive/2026-09-28-001-catalog-core, design
  * D3, D5; spec "Tenant data isolation"). See `blueprints.int.test.ts` for
  * `./blueprints.js`'s full assumed API (`createBlueprintService`,
  * `BlueprintService`, `CreateBlueprintInput`, `BlueprintOutput`); this file

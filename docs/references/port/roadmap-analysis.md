@@ -2,7 +2,7 @@
 
 Source: `port-capability-inventory.md` (this folder), `openspec/project.md` §1-11,
 `docs/references/platform-engineering/README.md`, and
-`openspec/changes/001-catalog-core/{proposal,design}.md`. `001-catalog-core`'s
+`openspec/changes/archive/2026-09-28-001-catalog-core/{proposal,design}.md`. `001-catalog-core`'s
 approved scope is unchanged and not widened by this proposal; everything it
 explicitly excludes is picked up by a later change below.
 
@@ -23,7 +23,7 @@ L78).
 
 #### 001-catalog-core
 **Title**: Catalog core (Blueprint/Entity/Relation/Property)
-**Scope**: Unchanged from the approved `openspec/changes/001-catalog-core/proposal.md`:
+**Scope**: Unchanged from the approved `openspec/changes/archive/2026-09-28-001-catalog-core/proposal.md`:
 tenant-scoped Blueprint/Property/Entity/Relation model, `spec`/`status` split, safe
 schema evolution, actor-attributed change-event log, oRPC contract (not served over
 the network yet).

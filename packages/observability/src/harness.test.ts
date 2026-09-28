@@ -35,7 +35,7 @@ import { createTelemetryTestHarness } from './harness.js';
 import * as entryPoint from './index.js';
 
 /**
- * Task 1.4 (openspec/changes/001-catalog-core/tasks.md): the telemetry test
+ * Task 1.4 (openspec/changes/archive/2026-09-28-001-catalog-core/tasks.md): the telemetry test
  * harness registers in-memory span, metric and log exporters on the global
  * OTel providers, with `reset()` and `shutdown()`. Tests emit through the
  * OTel **API**, exactly like production code, and never write to an exporter
