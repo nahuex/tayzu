@@ -2,7 +2,11 @@
   // Markdown lint scope: product and architecture docs plus every CLAUDE.md.
   // openspec/ artifacts are validated by `openspec validate`, not here.
   "globs": ["docs/**/*.md", "**/CLAUDE.md"],
-  "ignores": ["**/node_modules/**"],
+  "ignores": [
+    "**/node_modules/**",
+    // Third-party reports kept verbatim; only their README index is linted.
+    "docs/references/**/!(README).md",
+  ],
   "gitignore": true,
   "config": {
     "default": true,
