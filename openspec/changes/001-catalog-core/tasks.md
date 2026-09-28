@@ -203,7 +203,7 @@ live next to the code as `*.test.ts`. Integration tests are named
   `compatibility.test.ts` covers the three compatibility scenarios from the
   spec at the pure level, and checks the early exit with 15 bad entities
   (10 reported, iteration stopped).
-- [ ] 4.8 Validator LRU cache keyed by `(tenantId, blueprintId, version)`,
+- [x] 4.8 Validator LRU cache keyed by `(tenantId, blueprintId, version)`,
   with hit and miss callbacks. Verify: `validator-cache.test.ts` shows that
   a second lookup is a hit, a version bump is a miss, and eviction happens
   at 500 entries.
