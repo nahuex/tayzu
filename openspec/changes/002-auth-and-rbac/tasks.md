@@ -113,7 +113,7 @@ policy diff shown in chat, separately from the rest of the PR.
 - [x] 3.3 `changePassword` called with `revokeOtherSessions: true`. Verify:
   `session-policy.int.test.ts` covers "Password change revokes other
   sessions", and the resulting `auth.security.session_revoked` log event.
-- [ ] 3.4 `resolveContext(headers)` never reads `actor.onBehalfOf` from the
+- [x] 3.4 `resolveContext(headers)` never reads `actor.onBehalfOf` from the
   request body, path, query string, or any header; any client-supplied value
   is ignored (design D3). Verify: `context-resolver.int.test.ts` covers "A
   client-supplied onBehalfOf value is ignored".

@@ -442,4 +442,104 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // pipeline stage that would call it -- `apps/api` does not exist yet).
     await expectContextRequiredRejection(resolveContext(new Headers({ cookie })));
   });
+
+  /**
+   * Task 3.4 (design D3; `specs/auth-and-rbac/spec.md`, "HTTP requests
+   * resolve to a catalog context or fail exactly like a missing context"),
+   * quoted in full:
+   *
+   * #### Scenario: A client-supplied onBehalfOf value is ignored
+   * - GIVEN a valid session cookie or machine access token
+   * - WHEN the caller additionally supplies an `onBehalfOf` value in the
+   *   request body, path, query string, or a header
+   * - THEN the resolved context's `actor.onBehalfOf` is not set from that
+   *   value, and the operation is attributed to the resolved actor alone
+   *
+   * This exercises only the session-cookie half of the scenario's GIVEN
+   * clause (a valid session cookie): the machine-access-token half is task
+   * 5.4's own branch of `resolveContext`, which does not exist yet (see this
+   * file's own module doc comment on scope).
+   *
+   * `resolveContext`'s own signature is `(headers: Headers) =>
+   * Promise<ResolvedContext>` (`./context-resolver.ts`): it has no parameter
+   * through which a request body, path, or query string could ever reach it
+   * at all, so those three of the WHEN clause's four vectors are unreachable
+   * by construction at this call boundary, exactly as `./context-resolver.ts`'s
+   * own doc comment already argues ("this module never reads request body,
+   * path, or query string at all"). The one vector `resolveContext` could
+   * conceivably read is a header, so this test supplies the client-side
+   * `onBehalfOf` value the same way `x-tayzu-risk` (design D4) is supplied --
+   * as a plain request header, here named `x-tayzu-on-behalf-of` (no
+   * canonical header name for this appears anywhere in the spec or design,
+   * because D3 states plainly that this field is "not reachable over HTTP in
+   * 002's scope" at all; any header name choice with the value ignored
+   * satisfies the requirement).
+   *
+   * The THEN clause ("the resolved context's `actor.onBehalfOf` is not set
+   * from that value, and the operation is attributed to the resolved actor
+   * alone") is checked with `toEqual`, the same exact-shape check the first
+   * scenario in this file uses: `ResolvedContext.actor` has no `onBehalfOf`
+   * property in its resolved value at all, matching design D3's "is reused,
+   * not redefined, but is not reachable over HTTP in 002's scope" -- there is
+   * no `onBehalfOf`-shaped field to have been set from the header, and the
+   * resolved `actor` is exactly `{ type: 'user', id: signUp.user.id }`, the
+   * real signed-in user, never the header's attempted override.
+   */
+  it('A client-supplied onBehalfOf value is ignored', async () => {
+    const handler = handlerOf(auth);
+    const email = randomEmail();
+    const slug = randomSlug();
+
+    const signUpResponse = await postJson(
+      handler,
+      '/sign-up/email',
+      { name: TEST_USER_NAME, email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(signUpResponse.status, 'sign-up succeeds').toBe(200);
+    const signUp = (await signUpResponse.json()) as SignUpEmailResponseBody;
+
+    // GIVEN "a valid session cookie": same two-step organization-then-sign-in
+    // sequence the first scenario in this file uses, so the session under
+    // test has an active organization.
+    const organization = await apiOf(auth).createOrganization({
+      body: { name: 'OnBehalfOf Test Org', slug, userId: signUp.user.id },
+    });
+
+    const signInResponse = await postJson(
+      handler,
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(signInResponse.status, 'sign-in succeeds').toBe(200);
+    const signIn = (await signInResponse.json()) as SignInEmailResponseBody;
+    const cookie = cookieHeaderFrom(signInResponse);
+
+    // WHEN: the caller additionally supplies an onBehalfOf value in a
+    // header, alongside the otherwise-valid session cookie. A different,
+    // unrelated user id (a random UUID, not any real user this suite has
+    // created) stands in for the "different principal" a forged attribution
+    // would name.
+    const forgedOnBehalfOfUserId = randomUUID();
+    const resolved = await resolveContext(
+      new Headers({
+        cookie,
+        'x-tayzu-on-behalf-of': forgedOnBehalfOfUserId,
+      }),
+    );
+
+    // THEN: the resolved context's actor carries no onBehalfOf value taken
+    // from that header, and the operation is attributed to the resolved
+    // actor (the real signed-in user) alone -- the identical shape the first
+    // scenario in this file asserts for the same session, `onBehalfOf`
+    // header or not.
+    expect(resolved).toEqual({
+      tenantId: organization.id,
+      actor: { type: 'user', id: signUp.user.id },
+    });
+    expect(String(signIn.token).length, 'sanity: sign-in produced a real session').toBeGreaterThan(
+      0,
+    );
+  });
 });
