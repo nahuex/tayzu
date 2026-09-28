@@ -55,14 +55,20 @@ export type BlueprintRow = {
 const BLUEPRINT_COLUMNS = sql`id, identifier, title, description, icon, schema, status_schema, version,
        created_at, created_by_type, created_by_id, updated_at, updated_by_type, updated_by_id`;
 
-/** The `catalog_blueprint` row of `identifier` in `tenantId`, or `undefined` when it does not exist. */
+/**
+ * The `catalog_blueprint` row of `identifier` in `tenantId`, or `undefined`
+ * when it does not exist. `forShare` is used by every entity write
+ * (design D7: "Entity writes lock their blueprint row FOR SHARE"), so a
+ * concurrent `blueprints.update`'s own `FOR UPDATE` can never interleave with
+ * it and commit an entity against a stale schema.
+ */
 export async function selectBlueprintRow(
   tx: BlueprintRepositoryTx,
   tenantId: string,
   identifier: string,
-  options: { readonly forUpdate?: boolean } = {},
+  options: { readonly forUpdate?: boolean; readonly forShare?: boolean } = {},
 ): Promise<BlueprintRow | undefined> {
-  const lockClause = options.forUpdate === true ? sql` for update` : sql``;
+  const lockClause = options.forUpdate === true ? sql` for update` : options.forShare === true ? sql` for share` : sql``;
   const result = await tx.execute<BlueprintRow>(sql`
     select ${BLUEPRINT_COLUMNS}
     from catalog_blueprint

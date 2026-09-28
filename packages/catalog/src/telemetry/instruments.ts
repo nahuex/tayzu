@@ -49,3 +49,8 @@ export const validationFailuresCounter = meter.createCounter('tayzu.catalog.vali
 export const blueprintMutationsCounter = meter.createCounter('tayzu.catalog.blueprint.mutations', {
   unit: '{mutation}',
 });
+
+/** design.md, Metrics table: "Write volume by blueprint and actor type" (task 8.x). */
+export const entityMutationsCounter = meter.createCounter('tayzu.catalog.entity.mutations', {
+  unit: '{mutation}',
+});

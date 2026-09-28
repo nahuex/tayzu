@@ -295,7 +295,7 @@ live next to the code as `*.test.ts`. Integration tests are named
 
 ## 8. Entity operations (integration, real Postgres)
 
-- [ ] 8.1 `entities.create`, with validation, defaults, `generation` and
+- [x] 8.1 `entities.create`, with validation, defaults, `generation` and
   `version` 1, `status` null, and a change event. Verify:
   `entities.int.test.ts` covers "Create an entity", "Entity of a missing
   blueprint" and "Create on existing identifier" (a unique violation mapped
@@ -304,44 +304,44 @@ live next to the code as `*.test.ts`. Integration tests are named
   forced FK violation (`23503`) on a known constraint maps to
   `CATALOG_REFERENCE_VIOLATION` while an unknown constraint maps to
   `INTERNAL`.
-- [ ] 8.2 Relation resolution and referential integrity on write, with the
+- [x] 8.2 Relation resolution and referential integrity on write, with the
   `catalog.relations.resolve` span. Verify: `entity-relations.int.test.ts`
   covers "Valid single relation", "Missing relation target" and "Many
   relation keeps order".
-- [ ] 8.3 `entities.upsert` in both modes, `unchanged` detection,
+- [x] 8.3 `entities.upsert` in both modes, `unchanged` detection,
   `expectedVersion`, and the rule that status is never touched. Verify:
   `entities-upsert.int.test.ts` covers "Upsert creates then replaces",
   "Idempotent upsert is unchanged" (no event, no version bump) and "Spec
   changes do not touch status", and checks the `entity.mutations` counter.
-- [ ] 8.4 `entities.writeStatus` with properties and relations, replacing the
+- [x] 8.4 `entities.writeStatus` with properties and relations, replacing the
   whole snapshot. Verify: `entity-status.int.test.ts` covers "Integration
   reports status", "Integration reports observed relations", "Observed
   relation to a missing target is rejected", "Status write replaces the
   snapshot" and "Observed generation from the future is rejected", checks that a
   blueprint without a `statusSchema` rejects a non-empty status, and checks
   that a `source` of `Git Hub!` is rejected.
-- [ ] 8.5 `entities.get` and `entities.list` with keyset pagination. Verify:
+- [x] 8.5 `entities.get` and `entities.list` with keyset pagination. Verify:
   `entities.int.test.ts` covers pagination, and checks that the list never
   includes entities of another blueprint.
-- [ ] 8.6 `entities.delete` with `detachReferences`. Verify:
+- [x] 8.6 `entities.delete` with `detachReferences`. Verify:
   `entities-delete.int.test.ts` covers "Delete an unreferenced entity",
   "Delete a referenced entity is rejected by default", "Detach optional
   references on delete", "Required references block detach" "Detach on
   delete records every affected entity", "Observed references never block
   delete", and the 1000-referrer limit
   (`CATALOG_LIMIT_EXCEEDED`).
-- [ ] 8.7 `entities.listRelated` in the forward and backward directions,
+- [x] 8.7 `entities.listRelated` in the forward and backward directions,
   with the `scope` filter and pagination. Verify: `entity-related.int.test.ts`
   covers "Forward and backward relations" and "Traversal distinguishes
   desired and observed".
-- [ ] 8.8 Entity tenant isolation. Verify: `isolation.int.test.ts` covers
+- [x] 8.8 Entity tenant isolation. Verify: `isolation.int.test.ts` covers
   "Cross-tenant read looks like not found", "Cross-tenant relation target
   is rejected" and "Listing never leaks other tenants' data".
-- [ ] 8.9 Concurrency: an entity write racing a blueprint update (two
+- [x] 8.9 Concurrency: an entity write racing a blueprint update (two
   connections) must commit against the new schema or be rejected, and must
   never persist an invalid entity. Verify: `concurrency.int.test.ts`, run
   deterministically with explicit lock ordering using a barrier.
-- [ ] 8.10 Actor parity and the audit trail. Verify: `actor-parity.int.test.ts`
+- [x] 8.10 Actor parity and the audit trail. Verify: `actor-parity.int.test.ts`
   covers "Agent and human writes are attributed identically", "Every
   mutation behaves the same for every actor type" (the full matrix), "Change
   events record resulting values",
