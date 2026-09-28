@@ -40,19 +40,40 @@
  * `operation` (`tayzu.catalog.operation`'s value on the blocked-case
  * telemetry below, `packages/catalog/src/service/pipeline.ts`'s own
  * `OPERATION_ATTRIBUTE`).
+ *
+ * Telemetry fix-up (`observability-auditor` BLOCK on this task): design.md's
+ * Spans table also declares `auth.session.step_up_check`, unconditional on
+ * every guard invocation for a `user` actor on a high-risk route -- fired
+ * once per call, whether the guard then allows or blocks, with
+ * `tayzu.auth.method` (always `'local'` today, see `LOCAL_AUTH_METHOD`) and
+ * `tayzu.auth.step_up.fresh` recording the same freshness check
+ * `emitStepUpRequired` only reports on the blocked case.
  */
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 
 import type { AuthInstance } from './auth.js';
 import { AuthStepUpError } from './errors.js';
-import { logger, stepUpRequiredCounter } from './telemetry/instruments.js';
+import { logger, stepUpRequiredCounter, tracer } from './telemetry/instruments.js';
 
 /** design.md, Conventions/D4: "an MFA verification is 'fresh' for 5 minutes." */
 export const STEP_UP_FRESHNESS_MS = 5 * 60 * 1000;
 
 /** design.md, Log/Metrics tables: `auth.security.step_up_required`'s/`tayzu.auth.step_up.required`'s shared attribute. */
 const OPERATION_ATTRIBUTE = 'tayzu.catalog.operation';
+
+/** design.md, Spans table: `auth.session.step_up_check`'s required attribute. */
+const METHOD_ATTRIBUTE = 'tayzu.auth.method';
+/** design.md, Spans table: `auth.session.step_up_check`'s conditional attribute. */
+const FRESHNESS_ATTRIBUTE = 'tayzu.auth.step_up.fresh';
+
+/**
+ * design.md, Spans table: `auth.session.step_up_check`'s `tayzu.auth.method`
+ * (`local`|`visma_connect`). No session in this package yet carries a Visma
+ * Connect-established marker (`ssoSid`, design D25, task 21.2, not
+ * implemented) -- `'local'` is the only value reachable today.
+ */
+const LOCAL_AUTH_METHOD = 'local';
 
 const STEP_UP_VERIFICATION_IDENTIFIER_PREFIX = 'step-up-verified';
 
@@ -139,6 +160,20 @@ function emitStepUpRequired(params: {
   stepUpRequiredCounter.add(1, { [OPERATION_ATTRIBUTE]: params.operation });
 }
 
+/**
+ * design.md, Spans table: `auth.session.step_up_check` -- "any `x-tayzu-
+ * risk: high` operation invoked by a `user` actor," unconditional on the
+ * guard's own allow/block outcome (unlike `emitStepUpRequired` above, which
+ * fires only on the blocked case).
+ */
+function recordStepUpCheck(fresh: boolean): void {
+  tracer
+    .startSpan('auth.session.step_up_check', {
+      attributes: { [METHOD_ATTRIBUTE]: LOCAL_AUTH_METHOD, [FRESHNESS_ATTRIBUTE]: fresh },
+    })
+    .end();
+}
+
 export function createStepUpGuard(options: StepUpGuardOptions): StepUpGuard {
   const api = apiOf(options.auth);
 
@@ -163,6 +198,7 @@ export function createStepUpGuard(options: StepUpGuardOptions): StepUpGuard {
 
     const session = await api.getSession({ headers: params.headers });
     if (session === null) {
+      recordStepUpCheck(false);
       rejectStepUp();
     }
     const sessionToken = session.session.token;
@@ -176,7 +212,10 @@ export function createStepUpGuard(options: StepUpGuardOptions): StepUpGuard {
       )
       .catch(() => null);
 
-    if (verification === null || verification.expiresAt.getTime() <= Date.now()) {
+    const fresh = verification !== null && verification.expiresAt.getTime() > Date.now();
+    recordStepUpCheck(fresh);
+
+    if (!fresh) {
       rejectStepUp();
     }
   };

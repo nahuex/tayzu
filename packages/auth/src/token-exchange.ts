@@ -34,10 +34,36 @@
  *
  * `auth.api.verifyApiKey` (`@better-auth/api-key@1.7.6`, `dist/index.mjs`)
  * never throws on an invalid, mismatched, or disabled (revoked) key: every
- * failure is caught internally and returned as `{ valid: false, key: null }`.
- * This module treats every such outcome identically, per the requirement
- * text ("On failure it returns `AUTH_INVALID_CREDENTIALS`") -- a caller
- * cannot distinguish an unknown client id from a revoked one.
+ * failure is caught internally and returned as `{ valid: false, key: null,
+ * error: { code, message } }`. This module treats every such outcome
+ * identically from the *caller's* point of view, per the requirement text
+ * ("On failure it returns `AUTH_INVALID_CREDENTIALS`") -- a caller cannot
+ * distinguish an unknown client id from a revoked one. Internally, though,
+ * `error.code` (confirmed against the installed source: `defineErrorCodes`,
+ * `@better-auth/core/utils/error-codes.mjs`, tags every `API_KEY_ERROR_CODES`
+ * entry with its own key as `code`) is read once, for telemetry only, to
+ * recover the credential's `actorKind` on the one rejection reason where the
+ * row was actually found (`KEY_DISABLED`, see this module's own
+ * `disabledCredentialKind` and the "Telemetry on the failure paths" section
+ * below) -- never to change the response shape or timing.
+ *
+ * ## Telemetry on the failure paths (`observability-auditor` fix-up)
+ *
+ * design.md, "Observability contract": every rejection also emits the
+ * `auth.token.exchange` span, the `tayzu.auth.token.exchanges` counter
+ * (`tayzu.auth.exchange.outcome: 'invalid_credentials'`), and the
+ * `auth.security.token_exchange_failed` WARN log -- not only the success
+ * path. `tayzu.auth.credential.kind` is present on all three only when the
+ * credential was actually found (disabled); it is absent when
+ * `verifyApiKey`'s own lookup-by-secret never found a row at all (an unknown
+ * client id or the right client id with a wrong secret), since nothing in
+ * that response tells this module what kind such a row would have been.
+ * `disabledCredentialKind` recovers the known case with one direct row
+ * lookup, by `clientId`, through the same low-level adapter primitive
+ * `./step-up.ts`'s own freshness check already uses (`auth.$context`'s
+ * `adapter`/`internalAdapter`, never a second, ad hoc database connection) --
+ * a lookup failure there fails safe by omitting the attribute, never by
+ * changing the thrown error.
  *
  * Task 5.4 fix (surfaced by `context-resolver.int.test.ts`'s own "fresh
  * machine access token" scenario, which calls this function's real output
@@ -58,10 +84,12 @@
  * `verifyJWT`'s own issuer/audience check fail against that empty-string
  * default instead.
  */
+import { SeverityNumber } from '@opentelemetry/api-logs';
+
 import type { AuthInstance } from './auth.js';
 import { AuthInvalidCredentialsError } from './errors.js';
 import type { MachineCredentialActorKind } from './machine-credentials.js';
-import { tokenExchangesCounter, tracer } from './telemetry/instruments.js';
+import { logger, tokenExchangesCounter, tracer } from './telemetry/instruments.js';
 
 /** design D5: the one `apiKey` plugin config machine credentials live under (mirrors `./machine-credentials.ts`'s own `MACHINE_CREDENTIAL_CONFIG_ID`). */
 const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
@@ -78,7 +106,13 @@ const CREDENTIAL_KIND_ATTRIBUTE = 'tayzu.auth.credential.kind';
 const EXCHANGE_OUTCOME_ATTRIBUTE = 'tayzu.auth.exchange.outcome';
 
 export interface ExchangeMachineTokenParams {
-  /** The credential's client id (`CreatedMachineCredential['id']`). Not otherwise used: `verifyApiKey` looks the credential up by its secret alone. */
+  /**
+   * The credential's client id (`CreatedMachineCredential['id']`).
+   * `verifyApiKey` itself looks the credential up by its secret alone; this
+   * field is only used on a `KEY_DISABLED` rejection, to recover the
+   * disabled credential's own `actorKind` for failure telemetry (see this
+   * module's own doc comment, "Telemetry on the failure paths").
+   */
   readonly clientId: string;
   /** The credential's client secret (`CreatedMachineCredential['secret']`). */
   readonly clientSecret: string;
@@ -92,10 +126,13 @@ export interface ExchangedMachineToken {
 /**
  * The narrow slice of `auth.api.verifyApiKey`'s installed response
  * (`@better-auth/api-key@1.7.6`, `dist/index-BJOGXZav.d.mts`) this module
- * reads.
+ * reads. `error.code` is only read on a rejection, to tell a
+ * `KEY_DISABLED` row (found, but disabled) apart from every other rejection
+ * reason (no row found at all) -- see this module's own doc comment.
  */
 interface VerifiedApiKey {
   readonly valid: boolean;
+  readonly error: { readonly code?: string } | null;
   readonly key: {
     readonly id: string;
     readonly referenceId: string;
@@ -117,6 +154,62 @@ function apiOf(auth: AuthInstance): AuthApiSurface {
   return auth.api as AuthApiSurface;
 }
 
+/**
+ * The one row-shaped slice `disabledCredentialKind` reads directly off the
+ * `apikey` table, through the same low-level `auth.$context` adapter
+ * primitive `./step-up.ts`'s own freshness check already uses -- never a
+ * second, ad hoc database connection, and never direct SQL.
+ */
+interface StoredMachineCredentialRow {
+  readonly metadata: Record<string, unknown> | null;
+}
+
+interface AdapterSurface {
+  findOne<T>(args: {
+    model: string;
+    where: readonly { field: string; value: string }[];
+  }): Promise<T | null>;
+}
+
+interface AuthContextSurface {
+  readonly adapter: AdapterSurface;
+}
+
+function contextOf(auth: AuthInstance): Promise<AuthContextSurface> {
+  return auth.$context as Promise<AuthContextSurface>;
+}
+
+/** `@better-auth/api-key@1.7.6`'s own model name for the `apiKey` table (`dist/index.mjs`'s `API_KEY_TABLE_NAME`). */
+const API_KEY_TABLE_NAME = 'apikey';
+
+/** `verifyApiKey`'s own rejection code (`@better-auth/api-key@1.7.6`'s `API_KEY_ERROR_CODES.KEY_DISABLED.code`) for "the row was found, but disabled." */
+const KEY_DISABLED_ERROR_CODE = 'KEY_DISABLED';
+
+/**
+ * Recovers a disabled machine credential's own `actorKind`, for failure
+ * telemetry only (see this module's own doc comment, "Telemetry on the
+ * failure paths"): `verifyApiKey`'s own public response discards `key` on
+ * every rejection, including a disabled key it otherwise found by its real
+ * secret. Any lookup failure here (the row is gone, or the database is
+ * unreachable) resolves to `undefined` -- the caller-visible
+ * `AuthInvalidCredentialsError` never depends on this succeeding.
+ */
+async function disabledCredentialKind(
+  auth: AuthInstance,
+  clientId: string,
+): Promise<MachineCredentialActorKind | undefined> {
+  const kind = await contextOf(auth)
+    .then((context) =>
+      context.adapter.findOne<StoredMachineCredentialRow>({
+        model: API_KEY_TABLE_NAME,
+        where: [{ field: 'id', value: clientId }],
+      }),
+    )
+    .then((row) => row?.metadata?.[ACTOR_KIND_METADATA_KEY])
+    .catch(() => undefined);
+  return kind === 'integration' || kind === 'agent' ? kind : undefined;
+}
+
 /** design.md, Spans table: `auth.token.exchange`; Metrics table: `tayzu.auth.token.exchanges`. */
 function recordSuccessfulExchange(actorKind: MachineCredentialActorKind): void {
   tracer
@@ -125,6 +218,31 @@ function recordSuccessfulExchange(actorKind: MachineCredentialActorKind): void {
   tokenExchangesCounter.add(1, {
     [CREDENTIAL_KIND_ATTRIBUTE]: actorKind,
     [EXCHANGE_OUTCOME_ATTRIBUTE]: 'success',
+  });
+}
+
+/**
+ * design.md, Spans table: `auth.token.exchange`; Metrics table: `tayzu.auth.
+ * token.exchanges`; Log events table: `auth.security.token_exchange_failed`.
+ * `actorKind` is only known (and only present as an attribute) when the
+ * credential was found but disabled (see this module's own doc comment) --
+ * absent for every other rejection reason, per design.md's own closed
+ * `integration`|`agent` enum naming no third value for "unknown."
+ */
+function recordFailedExchange(actorKind: MachineCredentialActorKind | undefined): void {
+  const kindAttributes = actorKind === undefined ? {} : { [CREDENTIAL_KIND_ATTRIBUTE]: actorKind };
+
+  tracer.startSpan('auth.token.exchange', { attributes: kindAttributes }).end();
+
+  tokenExchangesCounter.add(1, {
+    ...kindAttributes,
+    [EXCHANGE_OUTCOME_ATTRIBUTE]: 'invalid_credentials',
+  });
+
+  logger.emit({
+    eventName: 'auth.security.token_exchange_failed',
+    severityNumber: SeverityNumber.WARN,
+    attributes: kindAttributes,
   });
 }
 
@@ -146,11 +264,20 @@ export async function exchangeMachineToken(
   });
   const key = verified.valid ? verified.key : null;
   if (key === null) {
+    // "Wrong secret is rejected" never finds a row by secret at all; only a
+    // `KEY_DISABLED` rejection found a real, disabled row worth recovering
+    // the kind of (see this module's own doc comment).
+    const knownKind =
+      verified.error?.code === KEY_DISABLED_ERROR_CODE
+        ? await disabledCredentialKind(auth, params.clientId)
+        : undefined;
+    recordFailedExchange(knownKind);
     throw new AuthInvalidCredentialsError();
   }
 
   const actorKind = key.metadata?.[ACTOR_KIND_METADATA_KEY];
   if (actorKind !== 'integration' && actorKind !== 'agent') {
+    recordFailedExchange(undefined);
     throw new AuthInvalidCredentialsError();
   }
 

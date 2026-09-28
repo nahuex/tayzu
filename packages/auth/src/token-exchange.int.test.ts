@@ -29,9 +29,12 @@
  * auth.credential.kind` (`integration`|`agent`), no conditional attribute;
  * Metrics table: `tayzu.auth.token.exchanges`, Counter `{exchange}`,
  * attributes `tayzu.auth.credential.kind`, `tayzu.auth.exchange.outcome`
- * (`success`|`invalid_credentials`)), asserted on the success scenario below,
- * where both attributes are unambiguous (see "Why this file only asserts
- * telemetry on the success scenario" further down).
+ * (`success`|`invalid_credentials`); Log events table: `auth.security.
+ * token_exchange_failed`, WARN, attribute `tayzu.auth.credential.kind`),
+ * asserted below on all three scenarios -- see "Why the two rejection
+ * scenarios assert `tayzu.auth.credential.kind` differently" further down for
+ * why "Wrong secret" and "Revoked credential" assert a different value (or
+ * absence) of that one attribute from each other and from the success case.
  *
  * The requirement text above these scenarios (same spec section) is the
  * source for "MUST fail with `AUTH_INVALID_CREDENTIALS`" and the design
@@ -48,57 +51,49 @@
  * creation-time `actorKind` (`'integration'`) below, not against anything the
  * exchange call itself supplies.
  *
- * ## Module under test, and why its shape is this file's own design decision
+ * ## Module under test
  *
- * No file named `token-exchange.ts` (or anything similar) exists anywhere in
- * `packages/auth/src` yet (confirmed by listing the directory before writing
- * this file) -- task 5.3 is genuinely new production code, not an extension
- * of an existing module. Design D5 names the mechanism (`auth.api.
- * verifyApiKey` then a `jwt`-plugin-signed token) but no concrete
- * wrapper-function signature, so -- the same "flagged here, in case the
- * green phase settles on a different shape" practice `machine-credentials.
- * int.test.ts`'s own module doc comment (task 5.1) and `step-up.int.test.ts`'s
- * own module doc comment (task 4.2) both establish for this package -- this
- * file assumes `./token-exchange.ts` exports:
+ * `./token-exchange.ts` (task 5.3) exists and is already green for the three
+ * scenario assertions above: it exports `exchangeMachineToken(auth, params)`,
+ * `ExchangeMachineTokenParams` (`clientId`/`clientSecret`), and
+ * `ExchangedMachineToken` (`accessToken`) exactly as this file originally
+ * assumed before that module existed -- imported directly below, no longer
+ * through a locally-declared "assumed API" type and cast (see "Why the
+ * `as ExchangeMachineTokenFn` cast is gone" further down). It rejects with a
+ * `{ code: 'AUTH_INVALID_CREDENTIALS' }`-shaped error (`./errors.ts`'s
+ * `AuthInvalidCredentialsError`) on an invalid, mismatched, or revoked
+ * credential, asserted structurally below, the same way
+ * `context-resolver.int.test.ts`'s own `expectContextRequiredRejection` and
+ * `step-up.int.test.ts`'s own inline `toMatchObject({ code:
+ * 'AUTH_STEP_UP_REQUIRED' })` assertions do.
  *
- * - `exchangeMachineToken(auth, params)`, the same `functionName(auth,
- *   params)` convention `./machine-credentials.ts`'s own
- *   `createMachineCredential`/`revokeMachineCredential` already establish for
- *   this package's one-shot, non-guard actions (as opposed to the `create*({
- *   auth })` factory `./context-resolver.ts`/`./step-up.ts` use for
- *   long-lived guards held across requests -- a token exchange is a single
- *   call, not a reusable guard).
- * - `ExchangeMachineTokenParams`: `clientId`/`clientSecret` (the requirement
- *   text's own wording, "a valid, non-revoked client id and its matching
- *   secret"; `clientId` is `CreatedMachineCredential['id']`, `clientSecret`
- *   is `CreatedMachineCredential['secret']`, task 5.1's own field names).
- * - `ExchangedMachineToken`: `accessToken` (a string), the requirement text's
- *   own wording, "MUST return an access token."
- * - Rejects with a `{ code: 'AUTH_INVALID_CREDENTIALS' }`-shaped error on an
- *   invalid, mismatched, or revoked credential -- the same structural-error-
- *   shape convention `./errors.ts`'s own `AuthContextError` (`{ code:
- *   'CATALOG_CONTEXT_REQUIRED' }`) and `AuthStepUpError` (`{ code:
- *   'AUTH_STEP_UP_REQUIRED' }`) already establish for this package, asserted
- *   against here the same structural way `context-resolver.int.test.ts`'s own
- *   `expectContextRequiredRejection` and `step-up.int.test.ts`'s own inline
- *   `toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' })` assertions do, without
- *   this file needing to import a class from `./errors.js` that may not exist
- *   there yet (that file already exists, so a new named export missing from
- *   it would not be "the module under test" this assignment's own
- *   instructions call acceptable -- the structural assertion sidesteps that
- *   entirely, the same way `step-up.int.test.ts`'s own module doc comment
- *   explains for `AuthStepUpError`).
+ * This is a **telemetry fix-up** (`observability-auditor` BLOCK on tasks 5.3/
+ * 4.2): `exchangeMachineToken` currently emits the `auth.token.exchange` span
+ * and `tayzu.auth.token.exchanges` counter (with `tayzu.auth.exchange.outcome`
+ * `success`) on the success path only, and never emits
+ * `auth.security.token_exchange_failed` at all. Every rejection path
+ * (`AuthInvalidCredentialsError`, confirmed by reading `./token-exchange.ts`'s
+ * own `throw new AuthInvalidCredentialsError()` call sites) returns before any
+ * of these three signals fire. The two rejection scenarios below are extended
+ * to assert all three, and are expected to fail against the currently-green
+ * production code for exactly that reason: an assertion failure (the
+ * declared span/counter/log record is simply absent), never a missing-module
+ * or syntax error -- see each scenario's own comment below for the precise
+ * expected failure.
  *
- * ## Why this is expected to fail for the right reason right now
+ * ## Why the `as ExchangeMachineTokenFn` cast is gone
  *
- * `./token-exchange.js` does not exist (confirmed above), so every test below
- * fails at import time with a "Cannot find module" error -- the one
- * acceptable missing-module condition this assignment's own instructions name
- * ("acceptable only for the module under test"). Every other import in this
- * file (`./auth.js`, `./machine-credentials.js`, `./__fixtures__/
- * admin-user.js`, `./__fixtures__/registered-harness.js`, `@tayzu/db`) already
- * exists and is exercised unchanged by every other int test file in this
- * package.
+ * The original (task 5.3 red-phase) version of this file cast
+ * `exchangeMachineToken` onto a locally-declared `ExchangeMachineTokenFn` type
+ * because `./token-exchange.ts` did not exist yet and the import resolved to
+ * `any` -- the same "introspect/extend the narrower production type locally"
+ * pattern this package's other int test files establish while their own
+ * module under test doesn't exist yet. `./token-exchange.ts` now exists with
+ * exactly that assumed shape (confirmed above), so the cast is provably
+ * unnecessary (`@typescript-eslint/no-unnecessary-type-assertion`, exempted
+ * for this file only in `eslint.config.js` for exactly this reason). Removing
+ * it here lets that now-stale exemption be dropped from `eslint.config.js`
+ * (a non-test file, out of this file's own scope to edit).
  *
  * ## Why this file decodes the returned token without verifying its signature
  *
@@ -118,26 +113,58 @@
  * own built-in `Buffer` `'base64url'` encoding (Node 22, no dependency) is
  * enough to read the middle segment back.
  *
- * ## Why this file only asserts telemetry on the success scenario
+ * ## Why the two rejection scenarios assert `tayzu.auth.credential.kind` differently
  *
- * The Metrics table's `tayzu.auth.token.exchanges` row lists `tayzu.auth.
- * credential.kind` as a required attribute alongside `tayzu.auth.exchange.
- * outcome`. On the success path, the credential's `actorKind` is
- * unambiguously known (it is the same value `createMachineCredential` fixed
- * at creation and the value the decoded token itself carries). On the
- * "Wrong secret"/"Revoked credential" paths, the installed `@better-auth/
- * api-key@1.7.6` `verifyApiKey` endpoint's own response type (`dist/
- * index-BJOGXZav.d.mts`) returns `key: null` on every failing branch --
- * `./token-exchange.ts` would need its own additional lookup (by `clientId`)
- * to attribute a credential kind to a failed exchange at all, a mechanism
- * design D5 does not name and this file's own instructions do not ask it to
- * invent. Asserting a specific `tayzu.auth.credential.kind` value on those
- * two paths would assume an implementation detail this task's Verify clause
- * does not name; the span/counter check is therefore attached to the one
- * scenario where every required attribute is unambiguous, satisfying "plus
- * the `auth.token.exchange` span and `tayzu.auth.token.exchanges` counter"
- * without overreaching into the two rejection scenarios' own, narrower
- * `AUTH_INVALID_CREDENTIALS` assertions.
+ * The Spans/Metrics/Log-events tables all list `tayzu.auth.credential.kind`
+ * as an attribute of `auth.token.exchange`/`tayzu.auth.token.exchanges`/
+ * `auth.security.token_exchange_failed` with no "conditional" marker and no
+ * third, "unknown" enum value beyond `integration`|`agent` -- but the
+ * installed `@better-auth/api-key@1.7.6` `verifyApiKey` endpoint (`dist/
+ * index.mjs`, read in full before writing this file) makes the two rejection
+ * scenarios genuinely different in whether that value is knowable at all:
+ *
+ * - **"Wrong secret is rejected"**: `verifyApiKey`'s own `key` parameter is
+ *   the *secret* alone (`clientId` is never sent, confirmed by this file's
+ *   own call sites below and by `./token-exchange.ts`'s own `body: { key:
+ *   params.clientSecret, ... }`) -- `validateApiKey` looks the row up by
+ *   secret hash, and a wrong secret matches no row at all
+ *   (`APIError.from("UNAUTHORIZED", API_KEY_ERROR_CODES.INVALID_API_KEY)`,
+ *   `dist/index.mjs` line ~1625). Mechanically, this scenario's "a valid
+ *   client id ... with an incorrect secret" (requirement text) is a
+ *   **credential-not-found** case from `verifyApiKey`'s own point of view:
+ *   nothing in the response, or in any mechanism design D5 names, tells
+ *   `./token-exchange.ts` what kind that never-found row would have been.
+ *   Per this task's own instructions ("if the design makes the kind
+ *   attribute required on failures, assert the value the design specifies,
+ *   otherwise assert it is absent"): the design specifies no value for an
+ *   unknown kind (only the closed `integration`|`agent` enum), so this file
+ *   asserts the attribute is **absent** on all three signals for this
+ *   scenario -- reported here, per this task's own instructions, as the
+ *   choice made and why.
+ * - **"Revoked credential is rejected"**: the *same* lookup finds the row
+ *   (the secret matches -- it is the one real secret `createMachineCredential`
+ *   returned), then rejects it for being disabled
+ *   (`API_KEY_ERROR_CODES.KEY_DISABLED`, same file, line ~1634) -- the
+ *   credential, and therefore its `actorKind`, is genuinely known at the
+ *   point of rejection, even though the installed endpoint's own public
+ *   response shape (`{ valid: false, key: null }`) currently discards it
+ *   before returning. This file therefore asserts the attribute **is**
+ *   present, with the real value ("integration", the kind `createMachine
+ *   Credential` was called with in this file's own `createIntegrationCredential`
+ *   helper) -- the green phase is expected to recover it (for example, a
+ *   direct lookup by `clientId` on the `KEY_DISABLED` branch specifically),
+ *   not to invent a mechanism this file assumes for it.
+ *
+ * Both rejection scenarios still assert `tayzu.auth.exchange.outcome`:
+ * `invalid_credentials` (the one attribute the design leaves unambiguous on
+ * every failure, independent of whether the kind is knowable), and the
+ * `auth.security.token_exchange_failed` log event at WARN with exactly the
+ * same knowable-or-absent `tayzu.auth.credential.kind` attribute the Log
+ * events table names as its only one. Every assertion below also checks that
+ * the credential's own client id, its client secret, and (on the success
+ * path) the minted access token never appear on any of the three signals
+ * (`expectNoSecretsInTelemetry`, mirroring `auth-flow.int.test.ts`'s own
+ * identically-named helper).
  *
  * ## Why this test connects, seeds and asserts the way it does
  *
@@ -163,33 +190,31 @@
 import { randomInt, randomUUID } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing (task 2.4; design D1; `packages/observability/
 // CLAUDE.md`, "Import order"): the harness must register before `./auth.js`'s
-// real module runs, before it (and `./token-exchange.js`, once it exists)
-// create their tracer, meter instruments and logger at import time.
-// `./__fixtures__/admin-user.js`'s own import of `../auth.js` is type-only
-// (erased at compile time, `verbatimModuleSyntax`), so it carries no runtime
-// ordering weight -- same reasoning as every other int test file in this
-// package.
+// real module runs, before it (and `./token-exchange.js`) create their
+// tracer, meter instruments and logger at import time. `./__fixtures__/
+// admin-user.js`'s own import of `../auth.js` is type-only (erased at compile
+// time, `verbatimModuleSyntax`), so it carries no runtime ordering weight --
+// same reasoning as every other int test file in this package.
 import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createMachineCredential, revokeMachineCredential } from './machine-credentials.js';
 import type { CreatedMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
-// The module under test (task 5.3): does not exist yet (module doc comment,
-// "Why this is expected to fail for the right reason right now"). Its return
-// shape is defined locally, just below, and cast onto this binding once --
-// the same "introspect/extend the narrower production type locally" pattern
-// `context-resolver.int.test.ts`'s own `ContextResolverFactory` cast already
-// establishes for this package, for the identical reason: casting works even
-// before `./token-exchange.ts` exists, so every call site below is a
-// type-checked, non-`any` function call instead of an unsafe one.
+// The module under test (task 5.3, telemetry fix-up): exists (module doc
+// comment, "Module under test"). Its exported types are used directly here --
+// no more locally-declared "assumed API" type/cast, now that the real module
+// exists with exactly that shape (see "Why the `as ExchangeMachineTokenFn`
+// cast is gone").
 import { exchangeMachineToken } from './token-exchange.js';
+import type { ExchangeMachineTokenParams, ExchangedMachineToken } from './token-exchange.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -268,23 +293,15 @@ function decodeJwtPayloadUnsafe(token: string): MachineTokenPayload {
   ) as MachineTokenPayload;
 }
 
-/** design D5, requirement text: "MUST return an access token." */
-interface ExchangedMachineToken {
-  readonly accessToken: string;
-}
-
-interface ExchangeMachineTokenParams {
-  readonly clientId: string;
-  readonly clientSecret: string;
-}
-
-type ExchangeMachineTokenFn = (
+/**
+ * `./token-exchange.ts`'s own `exchangeMachineToken`, called directly -- no
+ * cast needed now that the real module exists (see this file's own module
+ * doc comment, "Why the `as ExchangeMachineTokenFn` cast is gone").
+ */
+const exchange: (
   auth: AuthInstance,
   params: ExchangeMachineTokenParams,
-) => Promise<ExchangedMachineToken>;
-
-/** Cast once, here, per this file's own import-block comment. */
-const exchange: ExchangeMachineTokenFn = exchangeMachineToken as ExchangeMachineTokenFn;
+) => Promise<ExchangedMachineToken> = exchangeMachineToken;
 
 describe('Machine-credential token exchange (task 5.3, design D5)', () => {
   let db: TestDb;
@@ -324,15 +341,113 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     });
   }
 
-  it('Valid client id and secret exchange for an access token', async () => {
-    const registeredHarness = registration;
-    if ('error' in registeredHarness) {
+  /** The harness `./__fixtures__/registered-harness.js` registered while the module graph loaded. */
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
       throw new Error(
-        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registeredHarness.error)}`,
-        { cause: registeredHarness.error },
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
       );
     }
-    const harness: TelemetryTestHarness = registeredHarness.harness;
+    return registration.harness;
+  }
+
+  type LogExporterLike = TelemetryTestHarness['logExporter'];
+  type ReadableLogRecordLike = ReturnType<LogExporterLike['getFinishedLogRecords']>[number];
+  type MetricExporterLike = TelemetryTestHarness['metricExporter'];
+
+  /** Same pattern as `auth-flow.int.test.ts`'s/`step-up.int.test.ts`'s own identically-named helper. */
+  function finishedLogRecords(
+    exporter: LogExporterLike,
+    eventName: string,
+  ): ReadableLogRecordLike[] {
+    return [...exporter.getFinishedLogRecords()].filter((record) => record.eventName === eventName);
+  }
+
+  /**
+   * `@opentelemetry/sdk-metrics`'s `DataPointType.SUM` value, inlined rather
+   * than imported -- same rationale, and the same value, as every other int
+   * test file in this package's identical constant.
+   */
+  const METRIC_DATA_POINT_TYPE_SUM = 3;
+
+  interface CapturedSumPoint {
+    readonly attributes: Attributes;
+    readonly value: number;
+  }
+
+  function sumDataPoints(exporter: MetricExporterLike, name: string): CapturedSumPoint[] {
+    const points: CapturedSumPoint[] = [];
+    for (const resourceMetrics of exporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === name &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  /**
+   * A minimal, JSON-serializable snapshot of everything the harness has
+   * captured so far across all three signal kinds (span attributes, log
+   * attributes/body, metric data-point attributes) -- same rationale as
+   * `auth-flow.int.test.ts`'s own identically-purposed
+   * `serializedTelemetrySnapshot`/`expectNoSecretsInTelemetry`, extended here
+   * with span attributes since this file's own new assertions cover
+   * `auth.token.exchange` (a span), not only the counter/log Better Auth's
+   * sign-in flow emits.
+   */
+  function serializedTelemetrySnapshot(harness: TelemetryTestHarness): string {
+    const logs = [...harness.logExporter.getFinishedLogRecords()].map((record) => ({
+      attributes: record.attributes,
+      body: record.body,
+    }));
+    const spanAttributes = [...harness.spanExporter.getFinishedSpans()].map(
+      (span) => span.attributes,
+    );
+    const metricAttributes: Attributes[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          for (const dataPoint of metric.dataPoints) {
+            metricAttributes.push(dataPoint.attributes);
+          }
+        }
+      }
+    }
+    return JSON.stringify({ logs, spanAttributes, metricAttributes });
+  }
+
+  /**
+   * Asserts that none of `secrets` (a client id, a client secret, a minted
+   * access token -- anything that must never reach telemetry, per root
+   * `CLAUDE.md`, "No tenant free text in telemetry or errors", extended by
+   * design.md's own "client secrets, access tokens ... in raw or hashed form")
+   * appears anywhere in what the harness has captured so far.
+   */
+  function expectNoSecretsInTelemetry(
+    harness: TelemetryTestHarness,
+    secrets: readonly string[],
+  ): void {
+    const snapshot = serializedTelemetrySnapshot(harness);
+    for (const secret of secrets) {
+      expect(snapshot, `telemetry must never contain ${JSON.stringify(secret)}`).not.toContain(
+        secret,
+      );
+    }
+  }
+
+  it('Valid client id and secret exchange for an access token', async () => {
+    const harness = registeredHarness();
 
     // GIVEN "an active `integration`-kind machine credential".
     const admin = await bootstrapAdmin();
@@ -369,8 +484,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     ).toBe(admin.organizationId);
 
     // "plus the `auth.token.exchange` span and `tayzu.auth.token.exchanges`
-    // counter" (see this file's own module doc comment for why only this
-    // scenario asserts telemetry).
+    // counter" (design.md, "Observability contract").
     await harness.forceFlush();
 
     const spans = harness.spanExporter
@@ -379,27 +493,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     expect(spans, 'exactly one auth.token.exchange span').toHaveLength(1);
     expect(spans[0]?.attributes).toEqual({ 'tayzu.auth.credential.kind': 'integration' });
 
-    const METRIC_DATA_POINT_TYPE_SUM = 3;
-    interface CapturedSumPoint {
-      readonly attributes: Attributes;
-      readonly value: number;
-    }
-    const points: CapturedSumPoint[] = [];
-    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
-      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
-        for (const metric of scopeMetrics.metrics) {
-          if (
-            metric.descriptor.name === 'tayzu.auth.token.exchanges' &&
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-            metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
-          ) {
-            for (const dataPoint of metric.dataPoints) {
-              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
-            }
-          }
-        }
-      }
-    }
+    const points = sumDataPoints(harness.metricExporter, 'tayzu.auth.token.exchanges');
     expect(points, 'the token-exchanges counter incremented once, for this success').toHaveLength(
       1,
     );
@@ -408,12 +502,27 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
       'tayzu.auth.credential.kind': 'integration',
       'tayzu.auth.exchange.outcome': 'success',
     });
+
+    // No log event is declared for the success path (Log events table names
+    // `auth.security.token_exchange_failed` only, on failure).
+    expect(
+      finishedLogRecords(harness.logExporter, 'auth.security.token_exchange_failed'),
+    ).toHaveLength(0);
+
+    // Never a client id, a client secret, or the minted access token itself.
+    expectNoSecretsInTelemetry(harness, [created.id, created.secret, exchanged.accessToken]);
   });
 
   it('Wrong secret is rejected', async () => {
+    const harness = registeredHarness();
+
     // "a valid client id" (scenario WHEN): a real, active credential exists.
     const admin = await bootstrapAdmin();
     const created = await createIntegrationCredential(admin);
+
+    // Discard whatever admin bootstrap/credential creation emitted: only the
+    // exchange call below is under test.
+    await harness.reset();
 
     // WHEN "a valid client id is posted with an incorrect secret".
     const rejection = exchange(auth, {
@@ -424,9 +533,56 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     // THEN "it fails with `AUTH_INVALID_CREDENTIALS`" -- asserted
     // structurally (see this file's own module doc comment for why).
     await expect(rejection).rejects.toMatchObject({ code: 'AUTH_INVALID_CREDENTIALS' });
+
+    // AND (telemetry fix-up, `observability-auditor` BLOCK on task 5.3): the
+    // `auth.token.exchange` span, the `tayzu.auth.token.exchanges` counter
+    // (`tayzu.auth.exchange.outcome` `invalid_credentials`), and the
+    // `auth.security.token_exchange_failed` WARN log all fire on this
+    // rejection too -- not only on success. This scenario's own credential
+    // lookup never finds a matching row (see this file's own module doc
+    // comment, "Why the two rejection scenarios assert `tayzu.auth.
+    // credential.kind` differently"), so `tayzu.auth.credential.kind` is
+    // **absent** on all three signals here, unlike the "Revoked credential"
+    // scenario below.
+    await harness.forceFlush();
+
+    const spans = harness.spanExporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'auth.token.exchange');
+    expect(spans, 'exactly one auth.token.exchange span for the rejected exchange').toHaveLength(1);
+    expect(
+      spans[0]?.attributes,
+      'no credential.kind attribute: the credential was not found',
+    ).toEqual({});
+
+    const points = sumDataPoints(harness.metricExporter, 'tayzu.auth.token.exchanges');
+    expect(points, 'the token-exchanges counter incremented once, for this rejection').toHaveLength(
+      1,
+    );
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.auth.exchange.outcome': 'invalid_credentials',
+    });
+
+    const logs = finishedLogRecords(harness.logExporter, 'auth.security.token_exchange_failed');
+    expect(logs, 'exactly one token_exchange_failed log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(
+      logs[0]?.attributes,
+      'no credential.kind attribute: the credential was not found',
+    ).toEqual({});
+
+    // Never the credential's client id or its (wrong) client secret.
+    expectNoSecretsInTelemetry(harness, [
+      created.id,
+      created.secret,
+      'definitely-the-wrong-secret-not-the-one-created-above',
+    ]);
   });
 
   it('Revoked credential is rejected', async () => {
+    const harness = registeredHarness();
+
     // GIVEN "a machine credential that has been revoked".
     const admin = await bootstrapAdmin();
     const created = await createIntegrationCredential(admin);
@@ -434,6 +590,10 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
       headers: new Headers({ cookie: admin.cookie }),
       id: created.id,
     });
+
+    // Discard whatever admin bootstrap/credential-creation/revocation
+    // emitted: only the exchange call below is under test.
+    await harness.reset();
 
     // WHEN "its client id and secret are posted to `POST /v1/auth/token`".
     const rejection = exchange(auth, {
@@ -444,5 +604,37 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     // THEN "it fails with `AUTH_INVALID_CREDENTIALS`" -- asserted
     // structurally (see this file's own module doc comment for why).
     await expect(rejection).rejects.toMatchObject({ code: 'AUTH_INVALID_CREDENTIALS' });
+
+    // AND (telemetry fix-up, `observability-auditor` BLOCK on task 5.3): same
+    // three signals as "Wrong secret" above, but this scenario's own
+    // credential lookup *does* find the (disabled) row by its real secret, so
+    // `tayzu.auth.credential.kind` is the real, known value here (see this
+    // file's own module doc comment for why this differs from "Wrong secret"
+    // above).
+    await harness.forceFlush();
+
+    const spans = harness.spanExporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'auth.token.exchange');
+    expect(spans, 'exactly one auth.token.exchange span for the rejected exchange').toHaveLength(1);
+    expect(spans[0]?.attributes).toEqual({ 'tayzu.auth.credential.kind': 'integration' });
+
+    const points = sumDataPoints(harness.metricExporter, 'tayzu.auth.token.exchanges');
+    expect(points, 'the token-exchanges counter incremented once, for this rejection').toHaveLength(
+      1,
+    );
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.auth.credential.kind': 'integration',
+      'tayzu.auth.exchange.outcome': 'invalid_credentials',
+    });
+
+    const logs = finishedLogRecords(harness.logExporter, 'auth.security.token_exchange_failed');
+    expect(logs, 'exactly one token_exchange_failed log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual({ 'tayzu.auth.credential.kind': 'integration' });
+
+    // Never the credential's client id or its client secret.
+    expectNoSecretsInTelemetry(harness, [created.id, created.secret]);
   });
 });

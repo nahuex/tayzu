@@ -30,6 +30,31 @@
  * `tayzu.catalog.operation`; Metrics table: `tayzu.auth.step_up.required`,
  * Counter `{event}`, attribute `tayzu.catalog.operation`).
  *
+ * **Telemetry fix-up** (`observability-auditor` BLOCK on this task):
+ * design.md's Spans table also declares `auth.session.step_up_check` ("any
+ * `x-tayzu-risk: high` operation invoked by a `user` actor", required
+ * attribute `tayzu.auth.method` (`local`\|`visma_connect`), conditional
+ * attribute `tayzu.auth.step_up.fresh` (bool)) -- unconditional on every
+ * guard invocation for a `user` actor on a high-risk route, independent of
+ * whether the guard blocks or allows the operation through, unlike the
+ * blocked-only log/counter above. `./step-up.ts` currently never starts this
+ * span at all (confirmed by reading the whole file: no `tracer.startSpan`
+ * call anywhere in it). The first two scenarios below (the only two that
+ * invoke the guard as a `user` actor) are extended to assert it, once on the
+ * blocked path (`tayzu.auth.step_up.fresh: false`) and once on the fresh
+ * path (`tayzu.auth.step_up.fresh: true`); the third (`integration` actor)
+ * scenario is extended to assert the span is *not* emitted, since design.md's
+ * own "invoked by a `user` actor" scope excludes it, matching the guard's own
+ * existing early return for non-`user` actors. `tayzu.auth.method` is
+ * asserted as `'local'` in both user-actor cases: no session in this package
+ * yet carries a Visma Connect-established marker (`ssoSid`, design D25, task
+ * 21.2, not implemented -- confirmed by reading `./persistence/schema.ts`),
+ * so `'local'` is the only value design.md's closed two-value enum permits
+ * here today. No client id, secret, or token appears in any signal this file
+ * asserts on (none of that data exists on this guard's own inputs/outputs in
+ * the first place -- `AssertStepUpParams` carries `headers`/`tenantId`/
+ * `actor`/`route`/`operation` only, none of it a credential).
+ *
  * The requirement text above the scenarios (same spec section) is the source
  * for the human-only scope: "This requirement applies only to human (`user`)
  * callers; `agent`, `integration`, and `system` actors are governed by Cerbos
@@ -607,6 +632,24 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
     expect(points[0]?.attributes).toEqual({
       'tayzu.catalog.operation': BLUEPRINT_DELETE_OPERATION,
     });
+
+    // Telemetry fix-up (design.md, Spans table: `auth.session.step_up_check`,
+    // "any `x-tayzu-risk: high` operation invoked by a `user` actor" --
+    // unconditional on this guard invocation, blocked or not): required
+    // attribute `tayzu.auth.method` (`'local'`, see this file's own module
+    // doc comment for why); conditional attribute `tayzu.auth.step_up.fresh`,
+    // `false` on this blocked path.
+    const stepUpCheckSpans = harness.spanExporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'auth.session.step_up_check');
+    expect(
+      stepUpCheckSpans,
+      'exactly one auth.session.step_up_check span on the blocked path',
+    ).toHaveLength(1);
+    expect(stepUpCheckSpans[0]?.attributes).toEqual({
+      'tayzu.auth.method': 'local',
+      'tayzu.auth.step_up.fresh': false,
+    });
   });
 
   it('High-risk operation with a fresh MFA verification succeeds', async () => {
@@ -635,6 +678,22 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
       0,
     );
     expect(sumDataPoints(harness.metricExporter, 'tayzu.auth.step_up.required')).toHaveLength(0);
+
+    // Telemetry fix-up (design.md, Spans table: `auth.session.
+    // step_up_check`): the span still fires on this allowed path -- "any
+    // `x-tayzu-risk: high` operation invoked by a `user` actor" names no
+    // allow/block distinction -- with `tayzu.auth.step_up.fresh: true`.
+    const stepUpCheckSpans = harness.spanExporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'auth.session.step_up_check');
+    expect(
+      stepUpCheckSpans,
+      'exactly one auth.session.step_up_check span on the fresh path',
+    ).toHaveLength(1);
+    expect(stepUpCheckSpans[0]?.attributes).toEqual({
+      'tayzu.auth.method': 'local',
+      'tayzu.auth.step_up.fresh': true,
+    });
   });
 
   it('High-risk operation by an integration actor is not gated by step-up', async () => {
@@ -666,5 +725,16 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
       0,
     );
     expect(sumDataPoints(harness.metricExporter, 'tayzu.auth.step_up.required')).toHaveLength(0);
+
+    // Telemetry fix-up (design.md, Spans table: `auth.session.
+    // step_up_check`, "invoked by a `user` actor"): an `integration` actor is
+    // out of that span's own declared scope, matching the guard's existing
+    // early return for non-`user` actors -- never emitted here.
+    expect(
+      harness.spanExporter
+        .getFinishedSpans()
+        .filter((span) => span.name === 'auth.session.step_up_check'),
+      'no step_up_check span for a non-user actor',
+    ).toHaveLength(0);
   });
 });

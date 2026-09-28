@@ -985,7 +985,7 @@ redefined.
 
 | Event name | Severity | Attributes | Purpose |
 |---|---|---|---|
-| `auth.security.login_succeeded` | INFO | `tayzu.tenant.id`, `tayzu.actor.id` | Auth audit trail |
+| `auth.security.login_succeeded` | INFO | `tayzu.actor.id`; `tayzu.tenant.id` when the new session has an active organization (D3) | Auth audit trail |
 | `auth.security.login_failed` | WARN | `tayzu.auth.failure_reason` (`bad_credentials`\|`mfa_failed`\|`account_disabled`) | Brute-force / misuse signal |
 | `auth.security.session_revoked` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.revocation.reason` (`password_change`\|`admin_action`) | Auth audit trail |
 | `catalog.security.authz_denied` | WARN | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.authz.resource.kind`, `tayzu.authz.action` | Distinguishes a Cerbos deny from a validation error or a not-found (SEC16) |

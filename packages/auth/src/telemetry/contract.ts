@@ -28,6 +28,10 @@ export const SPANS: readonly SpanContract[] = [
     name: 'auth.token.exchange',
     attributes: ['tayzu.auth.credential.kind'],
   },
+  {
+    name: 'auth.session.step_up_check',
+    attributes: ['tayzu.auth.method', 'tayzu.auth.step_up.fresh'],
+  },
 ];
 
 export type MetricInstrumentType = 'counter' | 'histogram';
@@ -111,6 +115,11 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
       'tayzu.catalog.operation',
     ],
   },
+  {
+    name: 'auth.security.token_exchange_failed',
+    severity: 'WARN',
+    attributes: ['tayzu.auth.credential.kind'],
+  },
 ];
 
 /**
@@ -124,4 +133,5 @@ export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
   'auth.security.rate_limited',
   'auth.security.session_revoked',
   'auth.security.step_up_required',
+  'auth.security.token_exchange_failed',
 ];
