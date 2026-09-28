@@ -234,6 +234,28 @@ function scratchDatabaseUrl(name: string): string {
 }
 
 /**
+ * Ends a pool or client that is about to be torn down, with an 'error'
+ * listener attached first. `dropScratchDatabase` below waits for a scratch
+ * database's sessions to go away before dropping it, but that wait has a
+ * deadline: if a caller's own pool has not quite finished closing by then
+ * (a leak, or just an unlucky scheduling delay), the final `with (force)`
+ * still has to terminate it, and that termination can report back to the
+ * pool as SQLSTATE 57P01 ("terminating connection due to administrator
+ * command") after this file has already stopped awaiting anything on it.
+ * Without a listener, that stray event is an unhandled 'error' event
+ * instead of something any assertion here could explain.
+ */
+async function endQuietly(closeable: {
+  on(event: 'error', listener: (error: unknown) => void): unknown;
+  end(): Promise<void>;
+}): Promise<void> {
+  closeable.on('error', () => {
+    // Expected only during teardown; nothing left to report it to.
+  });
+  await closeable.end();
+}
+
+/**
  * Drops a scratch database once its connections are gone. `Pool#end()`
  * resolves before the server has closed the sessions, and terminating a
  * session that is still closing makes pg raise an uncaught error in this
@@ -283,7 +305,7 @@ async function withScratchDatabase(action: (url: string) => Promise<void>): Prom
           [],
         );
       } finally {
-        await probe.end();
+        await endQuietly(probe);
       }
 
       await action(url);
@@ -291,7 +313,7 @@ async function withScratchDatabase(action: (url: string) => Promise<void>): Prom
       await dropScratchDatabase(admin, name);
     }
   } finally {
-    await admin.end();
+    await endQuietly(admin);
   }
 }
 
@@ -449,7 +471,7 @@ describe('runMigrations against a real PostgreSQL 16', () => {
             await expectJournalMatchesShippedMigrations(first);
             expect(await readSchemaState(first)).toEqual(migrated);
           } finally {
-            await Promise.all(pools.map((pool) => pool.end()));
+            await Promise.all(pools.map((pool) => endQuietly(pool)));
           }
         });
       }
@@ -476,7 +498,7 @@ describe('a separate test run against a fresh database', () => {
         try {
           await expectJournalMatchesShippedMigrations(pool);
         } finally {
-          await pool.end();
+          await endQuietly(pool);
         }
       });
     },

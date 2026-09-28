@@ -86,6 +86,29 @@ function randomTenantId(): string {
 
 const MARKER_TABLE = 'tenant_tx_rollback_marker';
 
+/**
+ * Ends a pool or client that is about to be torn down, with an 'error'
+ * listener attached first. This file's own `pool` never drops a database,
+ * but `harness.int.test.ts` in this same package does create and drop
+ * private scratch databases, and `drop database ... with (force)` there can
+ * occasionally report SQLSTATE 57P01 ("terminating connection due to
+ * administrator command") back to a connection that is itself already
+ * mid-`.end()` (`Pool#end()`/`Client#end()` resolve once every client has
+ * been told to end, not once the server side has actually finished closing
+ * it). Without a listener, a stray event like that on this file's own pool
+ * would be an unhandled 'error' event, not something an assertion here
+ * could ever explain.
+ */
+async function endQuietly(closeable: {
+  on(event: 'error', listener: (error: unknown) => void): unknown;
+  end(): Promise<void>;
+}): Promise<void> {
+  closeable.on('error', () => {
+    // Expected only during teardown; nothing left to report it to.
+  });
+  await closeable.end();
+}
+
 /** PostgreSQL's SQLSTATE for a statement cancelled by `statement_timeout`. */
 const STATEMENT_TIMEOUT_SQLSTATE = '57014';
 
@@ -139,7 +162,7 @@ describe('withTenantTransaction (design D5, D3; SSA B1)', () => {
 
   afterAll(async () => {
     await pool.query(`drop table if exists ${MARKER_TABLE}`);
-    await pool.end();
+    await endQuietly(pool);
   }, 30_000);
 
   it("sets current_setting('app.tenant_id') to the given tenant inside the transaction", async () => {

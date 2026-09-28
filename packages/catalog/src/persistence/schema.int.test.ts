@@ -145,6 +145,40 @@ function scratchDatabaseName(): string {
   return name;
 }
 
+/**
+ * A pool or client whose `.on('error', ...)` and `.end()` the teardown
+ * helper below needs. Both `drizzle(url).$client` (a `pg.Pool`) and a raw
+ * `pg.Client`/`pg.Pool` satisfy this structurally.
+ */
+interface EndableWithErrorEvent {
+  on(event: 'error', listener: (error: unknown) => void): unknown;
+  end(): Promise<void>;
+}
+
+/**
+ * Ends a pool or client that is about to be torn down, and only then lets
+ * the caller proceed to `drop database ... with (force)`.
+ *
+ * Root cause this guards against: `Pool#end()`/`Client#end()` resolve once
+ * every client has been told to end, but the server side of that connection
+ * can still be in the process of closing when the promise settles. If
+ * `drop database ... with (force)` runs in that window, Postgres terminates
+ * the still-closing connection with SQLSTATE 57P01 ("terminating connection
+ * due to administrator command"). That termination arrives asynchronously,
+ * on a client object whose own `.end()` promise has already resolved and is
+ * no longer awaited by anything, so without a listener it surfaces as an
+ * unhandled 'error' event instead of being attributable to any assertion.
+ * Attaching `.on('error', ...)` before `.end()` gives that late,
+ * teardown-only event a place to land instead of crashing the process.
+ */
+async function endQuietly(closeable: EndableWithErrorEvent): Promise<void> {
+  closeable.on('error', () => {
+    // Expected here: see the note above. Teardown has already moved on by
+    // the time this can fire, so there is nothing left to report it to.
+  });
+  await closeable.end();
+}
+
 interface ColumnSpec {
   readonly type: string;
   readonly nullable: boolean;
@@ -299,9 +333,9 @@ describe('0000_catalog_core migration (design D4)', () => {
   }, 60_000);
 
   afterAll(async () => {
-    await db.$client.end();
+    await endQuietly(db.$client);
     await admin.execute(`drop database if exists ${scratchName} with (force)`);
-    await admin.$client.end();
+    await endQuietly(admin.$client);
   }, 60_000);
 
   it('creates exactly the six catalog tables in the public schema', async () => {

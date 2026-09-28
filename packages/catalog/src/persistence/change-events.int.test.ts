@@ -82,6 +82,28 @@ function connect(url: string) {
 
 type Db = ReturnType<typeof connect>;
 
+/**
+ * Ends a pool or client that is about to be torn down, with an 'error'
+ * listener attached first. This file connects to the shared `DATABASE_URL`
+ * database (no scratch database of its own to drop), but other int test
+ * files in this same run do create and drop private scratch databases, and
+ * `drop database ... with (force)` there can occasionally report SQLSTATE
+ * 57P01 ("terminating connection due to administrator command") back to a
+ * connection that is itself already mid-`.end()` (see
+ * `schema-hardening.int.test.ts` for the mechanism). Without a listener, a
+ * stray event like that on this file's own pool would be an unhandled
+ * 'error' event, not something an assertion here could ever explain.
+ */
+async function endQuietly(closeable: {
+  on(event: 'error', listener: (error: unknown) => void): unknown;
+  end(): Promise<void>;
+}): Promise<void> {
+  closeable.on('error', () => {
+    // Expected only during teardown; nothing left to report it to.
+  });
+  await closeable.end();
+}
+
 function randomTenantId(): string {
   return `t${randomUUID().replaceAll('-', '')}`;
 }
@@ -128,7 +150,7 @@ describe('appendChangeEvent (design D9, R13; spec "Actor attribution and change 
   }, 60_000);
 
   afterAll(async () => {
-    await db.$client.end();
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('assigns seq starting at 1 and increments it per tenant independently', async () => {
