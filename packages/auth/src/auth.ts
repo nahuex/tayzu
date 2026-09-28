@@ -78,6 +78,9 @@ const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 /** design D4: every `two-factor` verify endpoint (`/two-factor/verify-totp`, `-backup-code`, `-otp`). */
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 
+/** design D5, task 5.1: the one `apiKey` plugin config machine credentials use (`./machine-credentials.ts`). */
+const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
+
 /**
  * design D18/D22, task 18.2: Better Auth's own sign-up route. Never added to
  * D18's allowlist (`packages/auth/CLAUDE.md`, task 11.9) -- intercepted here
@@ -341,7 +344,18 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       admin(),
       twoFactor(),
       jwt(),
-      apiKey(),
+      // Task 5.1, design D5: the one `apiKey` plugin config machine
+      // credentials use. `references: "organization"` makes
+      // `checkOrgApiKeyPermission` (installed `@better-auth/api-key@1.7.6`
+      // source) the admin-only gate `./machine-credentials.ts` relies on;
+      // `enableMetadata: true` is required for `actorKind` to be storable at
+      // all (`METADATA_DISABLED` otherwise, same installed source).
+      apiKey({
+        configId: MACHINE_CREDENTIAL_CONFIG_ID,
+        references: 'organization',
+        defaultPrefix: 'tayzu_mc_',
+        enableMetadata: true,
+      }),
       preAuthRateLimitPlugin(options),
     ],
     databaseHooks: {

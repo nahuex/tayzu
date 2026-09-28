@@ -145,7 +145,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 5. Machine credentials
 
-- [ ] 5.1 An `apiKey` plugin config `machine-credential`
+- [x] 5.1 An `apiKey` plugin config `machine-credential`
   (`references: "organization"`), and an admin-only creation procedure fixing
   `actorKind` (`integration`\|`agent`) at creation. Verify:
   `machine-credentials.int.test.ts` covers "Credential is shown only once".
