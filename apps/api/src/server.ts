@@ -70,6 +70,10 @@ export interface CreateAppOptions {
   readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
   /** Visma Connect SSO (D23), forwarded to `createAuth`; omitted: SSO is not registered. */
   readonly sso?: CreateAuthOptions['sso'];
+  /** Better Auth's pre-auth limits (D20), forwarded to `createAuth`; omitted: none. */
+  readonly preAuthRateLimit?: CreateAuthOptions['rateLimit'];
+  /** Back-channel logout budget per source IP per minute (D26, Q32); omitted: 600. */
+  readonly backchannelLogoutRateLimitPerMinute?: number;
 }
 
 export interface App {
@@ -98,7 +102,7 @@ const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
 /** Skew added to the token's `exp` for the replay record's lifetime (D26). */
 const LOGOUT_JTI_SKEW_SECONDS = 30;
 /** Generous per-IP floor (D26): high enough not to drop legitimate logout bursts. */
-const BACKCHANNEL_LOGOUT_RATE_LIMIT = { max: 600, timeWindowMs: 60_000 };
+const DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE = 600;
 const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 
 function isTokenExchange(request: FastifyRequest): boolean {
@@ -146,6 +150,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     db: authDb,
     secret: options.authSecret,
     ...(options.sso === undefined ? {} : { sso: options.sso }),
+    ...(options.preAuthRateLimit === undefined ? {} : { rateLimit: options.preAuthRateLimit }),
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
 
@@ -338,7 +343,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     return revoked > 0 ? 'revoked' : 'no_match';
   }
   const sso = options.sso;
+  // Without SSO configuration the route is disabled: it answers 404.
   await app.register((scope, _opts, done) => {
+    if (sso === undefined) {
+      // Explicit 404, so the `/v1/*` catch-all never answers for it.
+      scope.post(BACKCHANNEL_LOGOUT_PATH, (_request, reply) =>
+        reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 }),
+      );
+      done();
+      return;
+    }
     scope.addContentTypeParser(
       'application/x-www-form-urlencoded',
       { parseAs: 'string' },
@@ -359,8 +373,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           // Floor against abuse, keyed by source IP only: the caller is Visma
           // Connect's infrastructure, not a Tayzu principal (D26).
           rateLimit: {
-            max: BACKCHANNEL_LOGOUT_RATE_LIMIT.max,
-            timeWindow: BACKCHANNEL_LOGOUT_RATE_LIMIT.timeWindowMs,
+            max:
+              options.backchannelLogoutRateLimitPerMinute ??
+              DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE,
+            timeWindow: 60_000,
             keyGenerator: (request: FastifyRequest): string => `backchannel-logout:${request.ip}`,
           },
         },
@@ -369,7 +385,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         const token = (request.body as Record<string, string> | undefined)?.['logout_token'];
         const malformed = typeof token !== 'string' || token === '';
         await withBackchannelLogoutTelemetry(async () => {
-          if (malformed || sso === undefined) {
+          if (malformed) {
             return 'invalid';
           }
           return handleLogoutToken(token, sso);

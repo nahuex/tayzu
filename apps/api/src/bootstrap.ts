@@ -23,7 +23,23 @@ export async function createAppFromEnv(env: Env): Promise<App> {
   let authPool: ReturnType<typeof createPool> | undefined;
   try {
     authPool = createPool(authUrl);
-    const built = await createApp({ appPool, authPool, authSecret, cerbosAddress, allowedOrigins });
+    const built = await createApp({
+      appPool,
+      authPool,
+      authSecret,
+      cerbosAddress,
+      allowedOrigins,
+      backchannelLogoutRateLimitPerMinute: config.backchannelLogoutRateLimitPerMinute,
+      ...(config.sso === undefined ? {} : { sso: config.sso }),
+      ...(config.preAuthSignInRateLimit === undefined
+        ? {}
+        : { preAuthRateLimit: { signIn: config.preAuthSignInRateLimit } }),
+      ...(config.rateLimit === undefined ? {} : { rateLimit: config.rateLimit }),
+      ...(config.tokenExchangeRateLimit === undefined
+        ? {}
+        : { tokenExchangeRateLimit: config.tokenExchangeRateLimit }),
+      ...(config.bodyLimit === undefined ? {} : { bodyLimit: config.bodyLimit }),
+    });
     const ownedAuthPool = authPool;
     return {
       ...built,

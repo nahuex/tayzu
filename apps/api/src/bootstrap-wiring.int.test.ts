@@ -50,6 +50,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { createMachineCredential } from '../../../packages/auth/src/machine-credentials.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -437,5 +438,390 @@ describe('production app wiring: machine token exchange (task 11.16, D5)', () =>
     const keys = jwks.json<{ keys?: { kid?: unknown }[] }>().keys ?? [];
     expect(keys.length).toBeGreaterThan(0);
     expect(keys.map((key) => key.kid)).toContain(header.kid);
+  }, 60_000);
+});
+
+/**
+ * Task 11.17 (design D13, D20, D23, D26, Q32; `specs/auth-and-rbac/spec.md`).
+ *
+ * Task 11.17: "`createAppFromEnv` wires Visma Connect SSO (from its environment
+ * variables; absent configuration disables SSO explicitly and its routes return
+ * 404), the pre-auth, per-principal and token-exchange rate limits, the body
+ * limit and the back-channel logout processing. Verify: `bootstrap-wiring.int.
+ * test.ts` covers each of these being active on the production app."
+ *
+ * Scenarios exercised over HTTP on an app built by `createAppFromEnv`:
+ * - "Repeated failed sign-ins from the same source are rate-limited" (pre-auth).
+ * - "One principal is rate-limited while a different principal is unaffected"
+ *   (per-principal, D13).
+ * - "Machine token exchange is rate-limited independently of the authenticated
+ *   bucket" (D20).
+ * - "A request body over the configured limit is rejected" (D13 body limit).
+ * - "A valid logout token revokes the matching session" and the Q32 rate limit
+ *   (back-channel logout, D26).
+ * - Visma Connect SSO is registered from the environment, and absent
+ *   configuration disables it: `/api/auth/sign-in/social` for the provider and
+ *   the back-channel logout route answer 404.
+ *
+ * ## Production symbols expected (ASSUMED names: the design names only the last)
+ *
+ * `loadConfig` (`./config.js`) reads, and `createAppFromEnv` forwards to
+ * `createApp` as `sso`, `rateLimit`, `tokenExchangeRateLimit`, `bodyLimit` and
+ * Better Auth's pre-auth `rateLimit.signIn` (seconds window):
+ * - `VISMA_CONNECT_DISCOVERY_URL`, `VISMA_CONNECT_CLIENT_ID`,
+ *   `VISMA_CONNECT_CLIENT_SECRET`: all three or none (none = SSO disabled).
+ * - `PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX`, `PRE_AUTH_SIGN_IN_RATE_LIMIT_WINDOW_SECONDS`
+ * - `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS` (per principal, `/v1/*`)
+ * - `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS`
+ * - `BODY_LIMIT_BYTES`
+ * - `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE` (Q32: positive integer, default
+ *   600, anything else fails startup naming the variable). `createApp` must
+ *   accept it (an option such as `backchannelLogoutRateLimitPerMinute`).
+ * - With SSO disabled, `POST /v1/auth/visma-connect/backchannel-logout` is not
+ *   registered (404).
+ *
+ * ## Why this fails right now
+ *
+ * `loadConfig` reads none of these variables, so the limits and SSO are never
+ * active (assertion failures), and the logout route answers even without SSO.
+ */
+const LOGOUT_ROUTE = '/v1/auth/visma-connect/backchannel-logout';
+const LOGOUT_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
+
+function ssoEnv(stub: OidcStub): Record<string, string> {
+  return {
+    VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
+    VISMA_CONNECT_CLIENT_ID: stub.clientId,
+    VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
+  };
+}
+
+describe('production app wiring: Visma Connect SSO and back-channel logout (task 11.17, D23, D26)', () => {
+  let app: App;
+  let stub: OidcStub;
+  let authPool: import('pg').Pool;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+    stub = await startOidcStub();
+    app = await createAppFromEnv({ ...ENV, ...ssoEnv(stub) });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function ssoTenant(sid: string): Promise<string> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Wiring SSO',
+      email: `wiring-sso-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Wiring SSO Org ${suffix}`,
+      organizationSlug: `wiring-sso-${suffix}`,
+      ip: randomIp(),
+    });
+    await authPool.query('update auth.session set sso_sid = $1 where token = $2', [
+      sid,
+      tenant.token,
+    ]);
+    return tenant.cookie;
+  }
+
+  it('Visma Connect SSO is registered from its environment variables: sign-in initiation redirects to the discovered provider', async () => {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/social',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'http://localhost:3000',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ provider: 'visma-connect', callbackURL: '/' }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ url?: string }>().url?.startsWith(stub.issuer)).toBe(true);
+  }, 60_000);
+
+  it('A valid logout token revokes the matching session on the production app', async () => {
+    const sid = `sid-${randomUUID()}`;
+    const cookie = await ssoTenant(sid);
+    const use = () => app.app.inject({ method: 'GET', url: '/v1/blueprints', headers: { cookie } });
+    expect((await use()).statusCode, 'the SSO session works before').toBe(200);
+    const now = Math.floor(Date.now() / 1000);
+    const token = stub.signJwt(
+      {
+        iss: stub.issuer,
+        aud: stub.clientId,
+        sub: `wiring-sub-${randomUUID()}`,
+        sid,
+        iat: now,
+        exp: now + 300,
+        jti: randomUUID(),
+        events: { [LOGOUT_EVENT]: {} },
+      },
+      { typ: 'logout+jwt' },
+    );
+
+    const response = await app.app.inject({
+      method: 'POST',
+      url: LOGOUT_ROUTE,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: new URLSearchParams({ logout_token: token }).toString(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const revoked = await use();
+    expect(revoked.statusCode).toBe(401);
+    expect(revoked.json<{ code?: unknown }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
+  }, 60_000);
+});
+
+describe('production app wiring: absent SSO configuration disables SSO (task 11.17, D23)', () => {
+  let app: App;
+
+  beforeAll(async () => {
+    const { appPool, authPool } = await harnessPools();
+    state.pools.set('app', appPool);
+    state.pools.set('auth', authPool);
+    app = await createAppFromEnv(ENV);
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    state.pools.clear();
+  }, 60_000);
+
+  it('the Visma Connect sign-in and back-channel logout routes return 404', async () => {
+    const signIn = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/social',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'http://localhost:3000',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ provider: 'visma-connect', callbackURL: '/' }),
+    });
+    const logout = await app.app.inject({
+      method: 'POST',
+      url: LOGOUT_ROUTE,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: new URLSearchParams({ logout_token: 'a.b.c' }).toString(),
+    });
+
+    expect(signIn.statusCode).toBe(404);
+    expect(logout.statusCode).toBe(404);
+  }, 60_000);
+});
+
+describe('production app wiring: startup validation of the Q32 variable (task 11.17)', () => {
+  beforeAll(async () => {
+    const { appPool, authPool } = await harnessPools();
+    state.pools.set('app', appPool);
+    state.pools.set('auth', authPool);
+  }, 60_000);
+
+  afterAll(() => {
+    state.pools.clear();
+  });
+
+  it.each(['0', '-1', 'abc', '1.5', ''])(
+    'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE=%j fails startup naming the variable',
+    async (value) => {
+      const outcome = await createAppFromEnv({
+        ...ENV,
+        BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE: value,
+      }).then(
+        async (started) => {
+          await started.close();
+          return 'started';
+        },
+        (error: unknown) => (error instanceof Error ? error.message : 'non-error rejection'),
+      );
+      expect(outcome, 'startup fails instead of starting').not.toBe('started');
+      expect(outcome).toMatch(/BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE/);
+    },
+    60_000,
+  );
+});
+
+describe('production app wiring: rate limits and body limit from the environment (task 11.17, D13, D20)', () => {
+  const MAX = 2;
+  const BODY_LIMIT = 4096;
+  let app: App;
+  let stub: OidcStub;
+
+  beforeAll(async () => {
+    const { appPool, authPool } = await harnessPools();
+    state.pools.set('app', appPool);
+    state.pools.set('auth', authPool);
+    stub = await startOidcStub();
+    app = await createAppFromEnv({
+      ...ENV,
+      ...ssoEnv(stub),
+      PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX: String(MAX),
+      PRE_AUTH_SIGN_IN_RATE_LIMIT_WINDOW_SECONDS: '60',
+      RATE_LIMIT_MAX: String(MAX),
+      RATE_LIMIT_WINDOW_SECONDS: '60',
+      TOKEN_EXCHANGE_RATE_LIMIT_MAX: String(MAX),
+      TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS: '60',
+      BODY_LIMIT_BYTES: String(BODY_LIMIT),
+      BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE: String(MAX),
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function newCookie(): Promise<string> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Limits Wiring',
+      email: `limits-wiring-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Limits Wiring Org ${suffix}`,
+      organizationSlug: `limits-wiring-${suffix}`,
+      ip: randomIp(),
+    });
+    return tenant.cookie;
+  }
+
+  it('Repeated failed sign-ins from the same source are rate-limited over HTTP', async () => {
+    const ip = randomIp();
+    const email = `nobody-${randomUUID()}@example.test`;
+    const signIn = () =>
+      app.app.inject({
+        method: 'POST',
+        url: '/api/auth/sign-in/email',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://localhost:3000',
+          'x-forwarded-for': ip,
+        },
+        payload: JSON.stringify({ email, password: `wrong-${randomUUID()}` }),
+      });
+    for (let i = 0; i < MAX; i += 1) {
+      expect((await signIn()).statusCode).not.toBe(429);
+    }
+
+    const limited = await signIn();
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('One principal is rate-limited while a different principal is unaffected on the production app', async () => {
+    const cookie = await newCookie();
+    const other = await newCookie();
+    const probe = (who: string) =>
+      app.app.inject({
+        method: 'GET',
+        url: `/v1/blueprints/limits-probe-${randomUUID()}`,
+        headers: { cookie: who },
+      });
+    for (let i = 0; i < MAX; i += 1) {
+      expect((await probe(cookie)).statusCode).toBe(404);
+    }
+
+    const limited = await probe(cookie);
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+    expect((await probe(other)).statusCode).toBe(404);
+  }, 60_000);
+
+  it('Machine token exchange is rate-limited on the production app', async () => {
+    const ip = randomIp();
+    const clientId = `client-${randomUUID()}`;
+    const exchange = () =>
+      app.app.inject({
+        method: 'POST',
+        url: '/v1/auth/token',
+        headers: {
+          'content-type': 'application/json',
+          origin: ORIGIN,
+          'x-forwarded-for': ip,
+          ...csrfHeaders('POST'),
+        },
+        payload: JSON.stringify({ clientId, clientSecret: `wrong-${randomUUID()}` }),
+      });
+    for (let i = 0; i < MAX; i += 1) {
+      expect((await exchange()).statusCode).not.toBe(429);
+    }
+
+    const limited = await exchange();
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('A request body over the configured limit is rejected with 413 on the production app', async () => {
+    const cookie = await newCookie();
+
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/v1/blueprints',
+      headers: {
+        cookie,
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({
+        identifier: `big-${randomUUID().slice(0, 8)}`,
+        title: { en: 'x'.repeat(BODY_LIMIT * 2) },
+        schema: { properties: {}, required: [] },
+      }),
+    });
+
+    expect(response.statusCode).toBe(413);
+  }, 60_000);
+
+  it('The back-channel logout route is rate-limited per source IP from BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE', async () => {
+    const ip = randomIp();
+    const post = () =>
+      app.app.inject({
+        method: 'POST',
+        url: LOGOUT_ROUTE,
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': ip },
+        payload: new URLSearchParams({ logout_token: 'a.b.c' }).toString(),
+      });
+    for (let i = 0; i < MAX; i += 1) {
+      expect((await post()).statusCode).toBe(200);
+    }
+
+    expect((await post()).statusCode).toBe(429);
+    expect(
+      (
+        await app.app.inject({
+          method: 'POST',
+          url: LOGOUT_ROUTE,
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            'x-forwarded-for': randomIp(),
+          },
+          payload: new URLSearchParams({ logout_token: 'a.b.c' }).toString(),
+        })
+      ).statusCode,
+      'another source IP has its own bucket',
+    ).toBe(200);
   }, 60_000);
 });

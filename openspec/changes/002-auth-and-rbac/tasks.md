@@ -410,7 +410,7 @@ policy diff shown in chat, separately from the rest of the PR.
   behind its IP/client-id rate limit (5.3, 11.13), plus the JWKS route design
   D5 names. Verify: `bootstrap-wiring.int.test.ts` covers "Machine token
   exchange works over HTTP on the production app".
-- [ ] 11.17 `createAppFromEnv` wires Visma Connect SSO (from its environment
+- [x] 11.17 `createAppFromEnv` wires Visma Connect SSO (from its environment
   variables; absent configuration disables SSO explicitly and its routes
   return 404), the pre-auth, per-principal and token-exchange rate limits,
   the body limit and the back-channel logout processing. Verify:
