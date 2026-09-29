@@ -39,7 +39,7 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 // Import order is load-bearing (design D1): the telemetry harness must register
 // before anything that loads `@tayzu/auth`, so this import stays first.
@@ -51,8 +51,34 @@ import {
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
+import { createAppFromEnv } from './bootstrap.js';
 import type { Pool } from 'pg';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+
+const poolState = vi.hoisted(() => ({ pools: new Map<string, unknown>() }));
+
+// Task 22.4 fix-up harness: `createPool` hands out the harness pools (production
+// URLs need `sslmode=verify-full`); `end` is a no-op so the shared pools survive.
+vi.mock('@tayzu/db', async (importActual) => {
+  const actual = await importActual<typeof import('@tayzu/db')>();
+  return {
+    ...actual,
+    createPool: vi.fn((url: string) => {
+      const real = poolState.pools.get(url.includes('tayzu_auth') ? 'auth' : 'app') as object;
+      return new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'end') {
+            return () => Promise.resolve();
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function'
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      });
+    }),
+  };
+});
 
 const TEST_PASSWORD = 'correct horse battery staple';
 const ROUTE = '/v1/auth/visma-connect/backchannel-logout';
@@ -493,5 +519,70 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
     ]) {
       expect(serialized, 'no sensitive value in the span or counter').not.toContain(secret);
     }
+  }, 60_000);
+});
+
+/**
+ * Task 22.4 fix-up (design D26 "Rate limiting and information exposure", Q32):
+ * `@fastify/rate-limit` on the back-channel logout route, keyed by source IP
+ * only, budget from `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`, on the app built
+ * by the production bootstrap (`createAppFromEnv`, complete environment, local
+ * OIDC stub for Visma Connect, no bound port).
+ *
+ * Production symbols expected: `loadConfig` reads the variable (default 600,
+ * positive integer) and `createAppFromEnv` forwards it to the route's limiter.
+ */
+describe('apps/api back-channel logout rate limit from the environment (task 22.4, Q32)', () => {
+  const MAX = 2;
+  let app: App;
+  let stub: OidcStub;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    poolState.pools.set('app', pools.appPool);
+    poolState.pools.set('auth', pools.authPool);
+    stub = await startOidcStub();
+    app = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
+      VISMA_CONNECT_CLIENT_ID: stub.clientId,
+      VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
+      BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE: String(MAX),
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+    poolState.pools.clear();
+  }, 60_000);
+
+  function post(ip: string, logoutToken: string) {
+    return app.app.inject({
+      method: 'POST',
+      url: ROUTE,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': ip },
+      payload: new URLSearchParams({ logout_token: logoutToken }).toString(),
+    });
+  }
+
+  it('The route is limited per source IP to the configured budget; another IP has its own bucket and the limit does not depend on the token', async () => {
+    const ip = randomIp();
+    const first = await post(ip, 'a.b.c');
+    expect(first.statusCode).toBe(200);
+    // A different (invalid) token from the same IP shares the bucket.
+    expect((await post(ip, `x.${randomUUID()}.z`)).statusCode).toBe(200);
+
+    const limited = await post(ip, 'a.b.c');
+    expect(limited.statusCode, 'the third request within the minute exceeds the budget').toBe(429);
+    expect(limited.body).not.toContain(ip);
+
+    const other = await post(randomIp(), 'a.b.c');
+    expect(other.statusCode, 'another source IP is unaffected').toBe(200);
+    expect(other.body, 'the response shape is unchanged for every outcome').toBe(first.body);
   }, 60_000);
 });

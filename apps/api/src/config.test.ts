@@ -130,6 +130,31 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     expect(vi.mocked(createPool)).not.toHaveBeenCalled();
   });
 
+  /**
+   * Task 22.4 fix-up (design Q32): the back-channel logout budget per source IP
+   * per minute. Production symbol: `Config.backchannelLogoutRateLimitPerMinute`.
+   */
+  it('BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE defaults to 600 when unset (Q32)', () => {
+    expect(loadConfig(env()).backchannelLogoutRateLimitPerMinute).toBe(600);
+  });
+
+  it('BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE is read as a positive integer (Q32)', () => {
+    expect(
+      loadConfig(env({ BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE: '42' }))
+        .backchannelLogoutRateLimitPerMinute,
+    ).toBe(42);
+  });
+
+  it.each(['0', '-1', 'abc', '1.5', '', '   ', '1e3'])(
+    'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE=%j fails fast naming the variable (Q32)',
+    (value) => {
+      const error = thrown(() =>
+        loadConfig(env({ BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE: value })),
+      );
+      expect(error.message).toContain('BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE');
+    },
+  );
+
   it('documents the change procedure for every secret in docs/security/secrets.md', async () => {
     const path = fileURLToPath(new URL('../../../docs/security/secrets.md', import.meta.url));
     const doc = await readFile(path, 'utf8');
