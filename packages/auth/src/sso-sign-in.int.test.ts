@@ -53,6 +53,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { startOidcStub, type OidcStub } from './__fixtures__/oidc-stub.js';
 import { createAuth, type AuthInstance } from './auth.js';
+import { createContextResolver } from './context-resolver.js';
+import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
 import * as authSchema from './persistence/schema.js';
 
 function databaseUrl(): string {
@@ -338,5 +340,165 @@ describe('Visma Connect callback rejection (task 19.4, design D24)', () => {
     expect(
       await countRows(db, sql`select count(*)::text as n from auth."user" where email = ${email}`),
     ).toBe(0);
+  }, 60_000);
+});
+
+/**
+ * Task 19.5 (design D23/D24; spec "Visma Connect SSO sign-in").
+ *
+ * Scenario: "Sign-in with a linked Visma Connect account succeeds": GIVEN a
+ * Tayzu user whose account is linked to a Visma Connect `sub`, WHEN that
+ * person completes sign-in through Visma Connect, THEN it resolves to
+ * `actor.type` `user` for the linked Tayzu user.
+ *
+ * Plus design "Observability contract": span `auth.sso.callback`
+ * (`tayzu.auth.method` = `visma_connect`, `tayzu.auth.sso.outcome` =
+ * `success` | `rejected`) and counter `tayzu.auth.sso.events`
+ * (`tayzu.auth.event` = `sso_succeeded` | `sso_rejected`) on both paths.
+ *
+ * Expected production symbols: the `auth.sso.callback` span and the
+ * `tayzu.auth.sso.events` counter (in `telemetry/contract.ts` and
+ * `telemetry/instruments.ts`), emitted around the `/callback/visma-connect`
+ * handling in `auth.ts`. Successful sign-in itself is expected to work
+ * already (Better Auth's genericOAuth with a pre-linked account row).
+ */
+const METRIC_DATA_POINT_TYPE_SUM = 3;
+
+function ssoEventCount(harness: TelemetryTestHarness, event: string): number {
+  let total = 0;
+  for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+    for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+      for (const metric of scopeMetrics.metrics) {
+        if (
+          metric.descriptor.name === 'tayzu.auth.sso.events' &&
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+          metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+        ) {
+          for (const point of metric.dataPoints) {
+            if (point.attributes['tayzu.auth.event'] === event) {
+              total += point.value;
+            }
+          }
+        }
+      }
+    }
+  }
+  return total;
+}
+
+describe('Visma Connect linked sign-in (task 19.5, design D23/D24)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let stub: OidcStub;
+  let resolveContext: (headers: Headers) => Promise<unknown>;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    stub = await startOidcStub();
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+    const appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = createContextResolver({ auth, revocationPool: appPool });
+  }, 60_000);
+
+  afterAll(async () => {
+    await stub.close();
+    await endQuietly(db.$client);
+  });
+
+  it('Sign-in with a linked Visma Connect account succeeds: resolves to actor.type user for the linked Tayzu user, with span and counter', async () => {
+    const harness = registeredHarness();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: 'Linked Person',
+      email: `linked-${randomUUID()}@example.test`,
+      password: 'correct-horse-battery-staple-1',
+      organizationName: 'Linked Org',
+      organizationSlug: `linked-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const sub = `linked-sub-${randomUUID()}`;
+    await db.insert(authSchema.account).values({
+      id: randomUUID(),
+      accountId: sub,
+      providerId: PROVIDER_ID,
+      userId: tenant.userId,
+    });
+    // The identity's email differs from the Tayzu user's: linking is by sub only.
+    stub.setSubject({
+      sub,
+      email: `other-${randomUUID()}@example.test`,
+      name: 'Linked Person',
+      sid: `sid-${randomUUID()}`,
+    });
+    await harness.reset();
+
+    const { cookie, params } = await initiateSignIn(auth, stub);
+    const response = await completeCallback(auth, cookie, params);
+
+    expect(response.status, 'not a rejection').toBeLessThan(400);
+    const sessionCookie = response.headers
+      .getSetCookie()
+      .map((raw) => raw.split(';')[0])
+      .filter((pair) => pair?.includes('session_token') === true)
+      .join('; ');
+    expect(sessionCookie, 'a session is established').not.toBe('');
+
+    const context = (await resolveContext(new Headers({ cookie: sessionCookie }))) as {
+      tenantId: string;
+      actor: { type: string; id: string };
+    };
+    expect(context.actor.type).toBe('user');
+    expect(context.actor.id).toBe(tenant.userId);
+    expect(context.tenantId).toBe(tenant.organizationId);
+
+    await harness.forceFlush();
+    const spans = [...harness.spanExporter.getFinishedSpans()].filter(
+      (span) => span.name === 'auth.sso.callback',
+    );
+    expect(spans, 'exactly one auth.sso.callback span').toHaveLength(1);
+    expect(spans[0]?.attributes).toEqual({
+      'tayzu.auth.method': 'visma_connect',
+      'tayzu.auth.sso.outcome': 'success',
+    });
+    expect(ssoEventCount(harness, 'sso_succeeded')).toBe(1);
+    expect(ssoEventCount(harness, 'sso_rejected')).toBe(0);
+    expect(JSON.stringify(spans[0]?.attributes)).not.toContain(sub);
+  }, 60_000);
+
+  it('A rejected Visma Connect callback emits the auth.sso.callback span and the sso_rejected counter', async () => {
+    const harness = registeredHarness();
+    stub.setSubject({
+      sub: `unlinked-${randomUUID()}`,
+      email: `sso-unlinked-${randomUUID()}@example.test`,
+      name: 'Unlinked Person',
+    });
+    await harness.reset();
+
+    const { cookie, params } = await initiateSignIn(auth, stub);
+    const response = await completeCallback(auth, cookie, params);
+    expect(response.status).toBe(401);
+
+    await harness.forceFlush();
+    const spans = [...harness.spanExporter.getFinishedSpans()].filter(
+      (span) => span.name === 'auth.sso.callback',
+    );
+    expect(spans, 'exactly one auth.sso.callback span').toHaveLength(1);
+    expect(spans[0]?.attributes).toEqual({
+      'tayzu.auth.method': 'visma_connect',
+      'tayzu.auth.sso.outcome': 'rejected',
+    });
+    expect(ssoEventCount(harness, 'sso_rejected')).toBe(1);
+    expect(ssoEventCount(harness, 'sso_succeeded')).toBe(0);
   }, 60_000);
 });

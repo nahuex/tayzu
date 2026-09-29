@@ -32,6 +32,10 @@ export const SPANS: readonly SpanContract[] = [
     name: 'auth.session.step_up_check',
     attributes: ['tayzu.auth.method', 'tayzu.auth.step_up.fresh'],
   },
+  {
+    name: 'auth.sso.callback',
+    attributes: ['tayzu.auth.method', 'tayzu.auth.sso.outcome'],
+  },
 ];
 
 export type MetricInstrumentType = 'counter' | 'histogram';
@@ -48,6 +52,12 @@ export interface MetricContract {
 export const METRICS: readonly MetricContract[] = [
   {
     name: 'tayzu.auth.session.events',
+    instrumentType: 'counter',
+    unit: '{event}',
+    attributes: ['tayzu.auth.event'],
+  },
+  {
+    name: 'tayzu.auth.sso.events',
     instrumentType: 'counter',
     unit: '{event}',
     attributes: ['tayzu.auth.event'],

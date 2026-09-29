@@ -71,13 +71,14 @@ import {
 } from './rate-limit/pre-auth-rate-limit.js';
 import {
   callbackFailureCode,
+  isCallbackHop,
   recordSsoSignInFailed,
   ssoRejectedResponse,
   SSO_CALLBACK_PATH,
 } from './sso/callback-rejection.js';
 import { vismaConnect, type VismaConnectOptions } from './sso/visma-connect.js';
 import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
-import { logger, sessionEventsCounter } from './telemetry/instruments.js';
+import { logger, sessionEventsCounter, ssoEventsCounter, tracer } from './telemetry/instruments.js';
 
 const SIGN_IN_EMAIL_PATH = '/sign-in/email';
 const CHANGE_PASSWORD_PATH = '/change-password';
@@ -608,6 +609,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
     }
     if (options.sso !== undefined && normalizedRequestPath(request) === SSO_CALLBACK_PATH) {
       // Task 19.4, design D24: every callback failure becomes the same 401.
+      // Task 19.5: one `auth.sso.callback` span and one counter event per
+      // completed sign-in. With `form_post`, the POST hop that only redirects
+      // to the GET callback is not a completion and emits nothing.
+      const startTime = Date.now();
       let response: Response | undefined;
       try {
         response = await baseHandler(request);
@@ -615,6 +620,18 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         response = undefined;
       }
       const failure = response === undefined ? { code: null } : callbackFailureCode(response);
+      if (response !== undefined && failure === null && isCallbackHop(response)) {
+        return response;
+      }
+      const outcome = failure === null ? 'success' : 'rejected';
+      const span = tracer.startSpan('auth.sso.callback', {
+        startTime,
+        attributes: { 'tayzu.auth.method': 'visma_connect', 'tayzu.auth.sso.outcome': outcome },
+      });
+      span.end();
+      ssoEventsCounter.add(1, {
+        'tayzu.auth.event': failure === null ? 'sso_succeeded' : 'sso_rejected',
+      });
       if (failure === null) {
         return response as Response;
       }

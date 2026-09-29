@@ -593,7 +593,7 @@ policy diff shown in chat, separately from the rest of the PR.
   Connect account is rejected generically" and "A mismatched state value is
   rejected the same way as an unlinked account", asserting byte-identical
   status/error-code/body shape across both.
-- [ ] 19.5 A successful sign-in for a `sub` already linked to a Tayzu user
+- [x] 19.5 A successful sign-in for a `sub` already linked to a Tayzu user
   resolves to that user's context (design D23/D24). Verify:
   `sso-sign-in.int.test.ts` covers "Sign-in with a linked Visma Connect
   account succeeds", plus the `auth.sso.callback` span and

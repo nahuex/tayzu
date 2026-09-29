@@ -54,3 +54,8 @@ export const tokenExchangesCounter = meter.createCounter('tayzu.auth.token.excha
 export const revocationChecksCounter = meter.createCounter('tayzu.auth.token.revocation_checks', {
   unit: '{check}',
 });
+
+/** design.md, Metrics table: "Visma Connect sign-in volume and rejection signal" (design D23/D24). */
+export const ssoEventsCounter = meter.createCounter('tayzu.auth.sso.events', {
+  unit: '{event}',
+});

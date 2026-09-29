@@ -60,6 +60,17 @@ export function callbackFailureCode(response: Response): { readonly code: string
   return response.status >= 400 ? { code: null } : null;
 }
 
+/** True for the `form_post` POST hop: a redirect back to the callback path itself. */
+export function isCallbackHop(response: Response): boolean {
+  const location = response.headers.get('location');
+  return (
+    response.status >= 300 &&
+    response.status < 400 &&
+    location !== null &&
+    new URL(location, 'http://localhost').pathname.endsWith(SSO_CALLBACK_PATH)
+  );
+}
+
 /** Records the internal cause on the log event; never on the response. */
 export function recordSsoSignInFailed(code: string | null): void {
   logger.emit({
