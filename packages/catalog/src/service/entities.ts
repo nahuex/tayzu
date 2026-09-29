@@ -82,6 +82,7 @@ import {
   RESOURCE_KINDS,
   buildAttributes,
   planToFilter,
+  redactUnreadable,
   type CerbosClient,
   type PlanFilter,
 } from '@tayzu/authz';
@@ -745,6 +746,53 @@ async function blueprintIdentifierFor(
   }
   cache.identifierByBlueprintId.set(blueprintId, found);
   return found;
+}
+
+/** Most readable referrer identifiers a delete error names; the rest are only counted (design D12). */
+const MAX_NAMED_REFERRERS = 10;
+
+/** Most delete-blocking referrers considered for redaction. */
+const MAX_REFERRER_CANDIDATES = 1000;
+
+/** design D12: names the referrers the caller can read (one batch `CheckResources(read)`) and counts the rest. */
+async function redactReferrers(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  identifiers: readonly string[],
+): Promise<{ referrers: string[]; notVisible: number }> {
+  const distinct = [...new Set(identifiers)];
+  const candidates = distinct.slice(0, MAX_REFERRER_CANDIDATES);
+  const { readable, notVisible } = await redactUnreadable({
+    authz,
+    tenantId: ctx.tenantId,
+    actor: ctx.actor,
+    principal: {
+      roles: ctx.principal?.roles ?? [],
+      teams: ctx.principal?.teams ?? [],
+      moderatedBlueprints: ctx.principal?.moderatedBlueprints ?? [],
+    },
+    kind: RESOURCE_KINDS.catalogEntity,
+    candidates: candidates.map((id) => ({ id })),
+  });
+  const readableSet = new Set(readable);
+  return {
+    referrers: candidates.filter((id) => readableSet.has(id)).slice(0, MAX_NAMED_REFERRERS),
+    // Candidates beyond the cap cannot be checked, so they are reported as not visible.
+    notVisible: notVisible + (distinct.length - candidates.length),
+  };
+}
+
+/** Blocks a delete with the redacted referrer list. */
+async function throwReferenceViolation(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  message: string,
+  identifiers: readonly string[],
+): Promise<never> {
+  const { referrers, notVisible } = await redactReferrers(authz, ctx, identifiers);
+  throw new CatalogError('CATALOG_REFERENCE_VIOLATION', message, {
+    details: notVisible > 0 ? { referrers, notVisible } : { referrers },
+  });
 }
 
 interface BumpReferrerOptions {
@@ -1492,18 +1540,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
 
       if (!detachReferences) {
         if (specReferrers.length > 0) {
-          const referrers = [
-            ...new Set(specReferrers.map((referrer) => referrer.source_identifier)),
-          ].slice(0, 10);
-          throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'Entity is still referenced', {
-            details: { referrers },
-          });
+          return throwReferenceViolation(
+            authz,
+            ctx,
+            'Entity is still referenced',
+            specReferrers.map((referrer) => referrer.source_identifier),
+          );
         }
       } else {
         if (specReferrers.some((referrer) => referrer.required)) {
-          throw new CatalogError(
-            'CATALOG_REFERENCE_VIOLATION',
+          return throwReferenceViolation(
+            authz,
+            ctx,
             'A required relation blocks detach',
+            specReferrers.map((referrer) => referrer.source_identifier),
           );
         }
 

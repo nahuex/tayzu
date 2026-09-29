@@ -325,7 +325,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `blueprints.int.test.ts` gains "Referring entities the caller cannot read
   are redacted to a count", and `blueprints-update.int.test.ts` gains
   "Incompatible entities the caller cannot read are redacted".
-- [ ] 10.3 Wire the helper into entity deletion's referrer list (both the
+- [x] 10.3 Wire the helper into entity deletion's referrer list (both the
   blocking case and the `detachReferences` case). Verify:
   `entities-delete.int.test.ts` gains "Delete-blocking referrers the caller
   cannot read are redacted to a count".
