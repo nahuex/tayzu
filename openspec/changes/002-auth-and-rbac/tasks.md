@@ -543,7 +543,7 @@ policy diff shown in chat, separately from the rest of the PR.
   Verify: `signup-disabled.int.test.ts` covers "Self sign-up is not
   available" (a plain `404`, identical to an unknown route) and "In-process
   sign-up is refused".
-- [ ] 18.3 `identity.users.create`: a Cerbos-gated oRPC procedure (`admin`
+- [x] 18.3 `identity.users.create`: a Cerbos-gated oRPC procedure (`admin`
   role, `user.yaml` resource policy) calling `auth.api.createUser`
   in-process, fixing the created user's initial role and returning a
   system-generated temporary password once, in the creation response only
