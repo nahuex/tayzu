@@ -1,9 +1,11 @@
 /**
  * Shared test helpers for the blueprint-operation integration tests (tasks
  * 7.1-7.6, openspec/changes/archive/2026-09-28-001-catalog-core): `blueprints.int.test.ts`,
- * `blueprints-update.int.test.ts` and `isolation-blueprints.int.test.ts`. Not
- * a test file itself (no assertions run at import time), only connection,
- * seeding and error-assertion helpers.
+ * `blueprints-update.int.test.ts` and `isolation-blueprints.int.test.ts`, and
+ * (task 6.3, design D6, Resolved decision Q1a) every other `service/*.int.
+ * test.ts` and `api/*.int.test.ts` file in this package. Not a test file
+ * itself (no assertions run at import time), only connection, seeding and
+ * error-assertion helpers.
  *
  * Entity rows are seeded with raw parameterized SQL directly into
  * `catalog_entity`, exactly like `persistence/db-isolation.int.test.ts`
@@ -12,11 +14,43 @@
  * (task 7.4, design D7) and delete (task 7.5) both need pre-existing
  * entities to validate their compatibility and reference-violation rules
  * against.
+ *
+ * ## `connect()` vs `connectAsOwner()` (task 6.3, design D6, Resolved
+ * decision Q1a, 2026-09-28)
+ *
+ * Every catalog table is `FORCE ROW LEVEL SECURITY` under the
+ * `tenant_isolation` policy, granted only to `tayzu_app` (migrations 0006,
+ * 0007). This package does not use `@tayzu/db`'s own test harness
+ * (`getTestDatabase()`/`getOwnerPool()`): that harness is deliberately not
+ * part of `@tayzu/db`'s `exports` map (see `persistence/schema.int.test.ts`'s
+ * module doc comment), so it is not reachable from here. `connect()` and
+ * `connectAsOwner()` below are this package's own equivalent pair, connecting
+ * directly to `DATABASE_URL` (never through TLS, test-only, same as every
+ * other raw connection in this package):
+ *
+ * - `connect(url)` runs every query as `tayzu_app` (a literal `SET ROLE
+ *   tayzu_app` queued on every new physical connection the pool opens, ahead
+ *   of any query a caller sends on it — `pg` serializes queries on one
+ *   connection, so no caller ever races the role switch). Every test that
+ *   goes through the service layer, the router, or `withTenantTransaction`
+ *   uses this: the pool it hands the service under test must run under the
+ *   real `tenant_isolation` RLS policy, exactly like production, or the test
+ *   proves nothing about RLS.
+ * - `connectAsOwner(url)` connects as the raw `DATABASE_URL` role itself
+ *   (bypasses RLS: superuser in CI, `BYPASSRLS` in the sandbox — see
+ *   `packages/db/src/harness.int.test.ts` for the same distinction on
+ *   `@tayzu/db`'s side). Every test that seeds or inspects raw rows without a
+ *   tenant context (no `app.tenant_id` session setting outside
+ *   `withTenantTransaction`), or that checks constraints, triggers, grants,
+ *   or cross-tenant raw state, uses this instead — otherwise the very same
+ *   RLS policy that `connect()` now enforces would hide those rows from the
+ *   assertion itself, which has nothing to do with the behavior under test.
  */
 import { randomUUID } from 'node:crypto';
 
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
 import { expect } from 'vitest';
 
 import { isCatalogError, type CatalogError, type CatalogErrorCode } from '../../domain/errors.js';
@@ -32,7 +66,39 @@ export function databaseUrl(): string {
   return url;
 }
 
+/** Fixed literal role name (task 6.3): never interpolated, never built from input. */
+const APP_ROLE_SET_STATEMENT = 'SET ROLE tayzu_app';
+
+function createAppPool(url: string): Pool {
+  const pool = new Pool({ connectionString: url });
+  pool.on('connect', (client) => {
+    void client.query(APP_ROLE_SET_STATEMENT).catch(() => {
+      // A failure here surfaces as the real, catchable error below: the next
+      // query queued on this same connection fails with a permission error
+      // instead of silently running under the wrong (owner) identity. Same
+      // pattern as `@tayzu/db`'s `runMigrationsAsMigrator` (`src/harness.ts`).
+    });
+  });
+  return pool;
+}
+
+/**
+ * Runs every later query as `tayzu_app`, under the real `tenant_isolation`
+ * RLS policy (task 6.3, design D6 Resolved decision Q1a). Use for every test
+ * that exercises the service layer, the router, or `withTenantTransaction`.
+ */
 export function connect(url: string): ReturnType<typeof drizzle> {
+  return drizzle(createAppPool(url));
+}
+
+/**
+ * Connects as the raw `DATABASE_URL` role itself (bypasses RLS: superuser in
+ * CI, `BYPASSRLS` in the sandbox), for a test that deliberately needs
+ * cross-tenant or tenant-less raw access: seeding without a tenant context,
+ * inspecting raw rows outside `withTenantTransaction`, or checking
+ * constraints/triggers/grants (task 6.3, design D6 Resolved decision Q1a).
+ */
+export function connectAsOwner(url: string): ReturnType<typeof drizzle> {
   return drizzle(url);
 }
 

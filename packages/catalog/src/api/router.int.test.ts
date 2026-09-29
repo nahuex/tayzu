@@ -90,6 +90,7 @@ import {
 } from '../service/__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -125,7 +126,6 @@ function operationExtension(document: unknown, path: string, method: string, key
 }
 
 describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
-  let db: TestDb;
   let pool: TestDb['$client'];
   let harness: TelemetryTestHarness;
   let blueprints: BlueprintService;
@@ -138,9 +138,16 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
   >;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). No raw introspection follows in this file,
+    // so the owner connection is closed right after migrating.
+    const ownerDb = connectAsOwner(databaseUrl());
+    await runMigrations(ownerDb.$client);
+    await endQuietly(ownerDb.$client);
+    // The router under test runs through the real tenant_isolation RLS
+    // policy, exactly like production.
+    const db = connect(databaseUrl());
     pool = db.$client;
-    await runMigrations(pool);
     harness = registeredHarness();
     blueprints = createBlueprintService({ pool });
     entities = createEntityService({ pool });

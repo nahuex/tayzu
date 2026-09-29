@@ -239,6 +239,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -302,9 +303,15 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
   let entityService: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw introspection only (selectChangeEvents/countChangeEventsForTenant/
+    // selectChangeEventActors below run outside withTenantTransaction, with
+    // no app.tenant_id session setting): the owner connection bypasses RLS,
+    // task 6.3, design D6 Resolved decision Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production (task 6.3, design D6 Q1a).
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
     blueprintService = createBlueprintService({ pool });
     entityService = createEntityService({ pool });
@@ -316,6 +323,7 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
 
   afterAll(async () => {
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('Agent and human writes are attributed identically', async () => {

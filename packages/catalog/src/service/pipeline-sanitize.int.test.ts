@@ -62,6 +62,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   randomTenantId,
@@ -112,9 +113,14 @@ describe('defineCatalogOperation: sanitizing a real DrizzleQueryError (design D3
   let leakOperation: (rawContext: unknown, input: Record<string, never>) => Promise<DummyOutput>;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Only used to run migrations before the pipeline's own tenant
+    // transaction runs (task 6.3, design D6 Q1a): tayzu_app has no DDL
+    // privilege, so migrations must run as the owner.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The pipeline under test runs through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
 
     leakOperation = defineCatalogOperation<Record<string, never>, DummyOutput>({
@@ -152,6 +158,7 @@ describe('defineCatalogOperation: sanitizing a real DrizzleQueryError (design D3
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('records only sanitized stack frames (no SQL, no "params:" line, no marker) in exception.stacktrace, and takes db.response.status_code / tayzu.db.constraint from the DrizzleQueryError.cause chain', async () => {

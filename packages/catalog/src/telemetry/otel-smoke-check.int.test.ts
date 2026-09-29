@@ -90,6 +90,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -294,11 +295,19 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
   >;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). `db` is also `forceChangeEventPkCollision`'s
+    // connection below: that helper runs raw selects/inserts outside
+    // withTenantTransaction, with no app.tenant_id session setting, so the
+    // owner connection is the only one that can see and plant those rows
+    // under RLS.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
     harness = registeredHarness();
 
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     const blueprints: BlueprintService = createBlueprintService({ pool });
     const entities: EntityService = createEntityService({ pool });
     const router = createCatalogRouter({ blueprints, entities });
@@ -308,6 +317,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('runs every operation once successfully and once per applicable error class, and every declared span, metric and log event is observed with its required (and, where the condition holds, conditional) attributes (spec "Declared telemetry is emitted"; task 10.1)', async () => {
@@ -803,7 +813,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
       },
       { context: internalContext },
     );
-    await forceChangeEventPkCollision(pool, internalTenantId);
+    await forceChangeEventPkCollision(db.$client, internalTenantId);
 
     const captureInternalUpsert = spanTracker(harness.spanExporter, 'catalog.entity.upsert');
     const captureInternalLog = logTracker(harness.logExporter, 'catalog.internal_error');
@@ -992,7 +1002,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
     // Force a real, unmapped database constraint error on the *next*
     // write of this same entity (see forceChangeEventPkCollision's doc
     // comment).
-    await forceChangeEventPkCollision(pool, tenantId);
+    await forceChangeEventPkCollision(db.$client, tenantId);
 
     const thrown = await client.entities
       .upsert(

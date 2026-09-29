@@ -47,6 +47,7 @@ import { registration, type TelemetryTestHarness } from './__fixtures__/register
 import {
   blueprintRowId,
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -107,9 +108,15 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
   let service: BlueprintService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw seeding/introspection only (blueprintRowId, seedEntity,
+    // selectEntitySpecs below run outside withTenantTransaction, with no
+    // app.tenant_id session setting): the owner connection bypasses RLS,
+    // task 6.3, design D6 Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The service under test runs through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
     service = createBlueprintService({ pool });
   }, 60_000);
@@ -121,6 +128,7 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('Adding an optional property is compatible', async () => {

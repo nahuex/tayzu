@@ -196,7 +196,7 @@ policy diff shown in chat, separately from the rest of the PR.
   every catalog table. Verify: `roles.int.test.ts` asserts the exact grants
   and the `FORCE` flag via `information_schema`/`pg_catalog`. ⛔ **Stop here
   for Checkpoint 3 approval of this migration's SQL before continuing.**
-- [ ] 6.3 Update `getTestDatabase()` (`@tayzu/db`) to migrate as
+- [x] 6.3 Update `getTestDatabase()` (`@tayzu/db`) to migrate as
   `tayzu_migrator` and hand back a pool connected as `tayzu_app`. Verify:
   001's existing isolation tests (`isolation-blueprints.int.test.ts`,
   `isolation-entities.int.test.ts`, `db-isolation.int.test.ts`) pass unchanged

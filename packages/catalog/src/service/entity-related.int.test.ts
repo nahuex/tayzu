@@ -232,6 +232,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   randomTenantId,
@@ -294,9 +295,15 @@ describe('entities.listRelated (task 8.7; spec "Related entities traversal")', (
   let entityService: EntityService;
 
   beforeAll(async () => {
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). No raw introspection follows in this file.
+    const ownerDb = connectAsOwner(databaseUrl());
+    await runMigrations(ownerDb.$client);
+    await endQuietly(ownerDb.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
     const db = connect(databaseUrl());
     pool = db.$client;
-    await runMigrations(pool);
     blueprintService = createBlueprintService({ pool });
     entityService = createEntityService({ pool });
   }, 60_000);

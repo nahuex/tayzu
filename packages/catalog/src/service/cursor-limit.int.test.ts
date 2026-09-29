@@ -50,6 +50,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -82,9 +83,16 @@ describe('Pagination cursor length limit is checked before decoding (spec Conven
   let entities: EntityService;
 
   beforeAll(async () => {
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). No raw introspection follows in this file,
+    // so the owner connection is closed right after migrating.
+    const ownerDb = connectAsOwner(databaseUrl());
+    await runMigrations(ownerDb.$client);
+    await endQuietly(ownerDb.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
     const db = connect(databaseUrl());
     pool = db.$client;
-    await runMigrations(pool);
     harness = registeredHarness();
     blueprints = createBlueprintService({ pool });
     entities = createEntityService({ pool });

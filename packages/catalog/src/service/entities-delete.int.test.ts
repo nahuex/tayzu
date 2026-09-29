@@ -236,6 +236,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   blueprintRowId,
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -309,15 +310,22 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
   let entityService: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw seeding/introspection only (seedManyReferrers, blueprintRowId,
+    // entityRowId, selectChangeEvents/selectChangeEventActors below run
+    // outside withTenantTransaction, with no app.tenant_id session setting):
+    // the owner connection bypasses RLS, task 6.3, design D6 Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     blueprintService = createBlueprintService({ pool });
     entityService = createEntityService({ pool });
   }, 60_000);
 
   afterAll(async () => {
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('Delete an unreferenced entity', async () => {

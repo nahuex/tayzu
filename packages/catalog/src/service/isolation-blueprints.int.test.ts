@@ -24,6 +24,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -62,14 +63,21 @@ describe('blueprint tenant isolation (task 7.6; spec "Tenant data isolation")', 
   let service: BlueprintService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). Every check in this file goes through the
+    // real blueprint service below, so no other raw connection is needed.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The service under test runs through the real tenant_isolation RLS
+    // policy, exactly like production: cross-tenant reads are now blocked by
+    // two independent layers, application scoping and RLS.
+    pool = connect(databaseUrl()).$client;
     service = createBlueprintService({ pool });
   }, 60_000);
 
   afterAll(async () => {
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('Same identifiers coexist across tenants', async () => {

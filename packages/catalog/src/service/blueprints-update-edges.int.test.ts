@@ -40,6 +40,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -121,9 +122,14 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
   let entities: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw introspection only (specEdgeTargets below runs outside
+    // withTenantTransaction, with no app.tenant_id session setting): the
+    // owner connection bypasses RLS, task 6.3, design D6 Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
     blueprints = createBlueprintService({ pool });
     entities = createEntityService({ pool });
@@ -136,6 +142,7 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   describe('(a) an in-use relation kept unchanged', () => {

@@ -170,6 +170,11 @@ describe('database-level tenant isolation (design D4, D9): raw inserts, no servi
   let db: Db;
 
   beforeAll(async () => {
+    // Connects directly as the DATABASE_URL role (bypasses RLS: superuser in
+    // CI, BYPASSRLS in the sandbox) for the raw, cross-tenant FK-violation
+    // checks below — the same role @tayzu/db's own getOwnerPool() names (task
+    // 6.3, design D6 Q1a), not reachable here across the package's export
+    // boundary.
     db = connect(databaseUrl());
     await runMigrations(db.$client);
   }, 60_000);

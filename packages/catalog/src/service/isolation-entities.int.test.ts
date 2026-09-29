@@ -236,6 +236,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -292,9 +293,18 @@ describe('entity tenant isolation (task 8.8; spec "Tenant data isolation")', () 
   let entityService: EntityService;
 
   beforeAll(async () => {
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). Every check in this file goes through the
+    // real blueprint/entity services below, so no other raw connection is
+    // needed.
+    const ownerDb = connectAsOwner(databaseUrl());
+    await runMigrations(ownerDb.$client);
+    await endQuietly(ownerDb.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production: cross-tenant reads are now blocked by
+    // two independent layers, application scoping and RLS.
     const db = connect(databaseUrl());
     pool = db.$client;
-    await runMigrations(pool);
     blueprintService = createBlueprintService({ pool });
     entityService = createEntityService({ pool });
   }, 60_000);

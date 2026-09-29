@@ -133,6 +133,7 @@ import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing: see the module doc comment above.
@@ -192,6 +193,34 @@ async function endQuietly(closeable: {
 
 function randomTenantId(): string {
   return `t${randomUUID().replaceAll('-', '')}`;
+}
+
+/**
+ * Fixed literal role name (task 6.3, design D6 Resolved decision Q1a): never
+ * interpolated, never built from input.
+ */
+const APP_ROLE_SET_STATEMENT = 'SET ROLE tayzu_app';
+
+/**
+ * Connects as `tayzu_app` (every later query on this pool runs under the
+ * real `tenant_isolation` RLS policy, exactly like production), by queuing a
+ * literal `SET ROLE` on every new physical connection ahead of any query a
+ * caller sends on it (`pg` serializes queries on one connection). Same
+ * pattern as `./__fixtures__/blueprint-test-helpers.js`'s own `connect()`;
+ * duplicated locally rather than imported, matching this file's own existing
+ * choice to build its own connection rather than depend on that fixture
+ * module (see the `Db` type comment below).
+ */
+function connectAsApp(url: string): ReturnType<typeof drizzle> {
+  const pool = new Pool({ connectionString: url });
+  pool.on('connect', (client) => {
+    void client.query(APP_ROLE_SET_STATEMENT).catch(() => {
+      // A failure here surfaces as the real, catchable error below: the next
+      // query queued on this same connection fails with a permission error
+      // instead of silently running under the wrong (owner) identity.
+    });
+  });
+  return drizzle(pool);
 }
 
 function randomResourceIdentifier(): string {
@@ -345,9 +374,15 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   let dummyOperation: (rawContext: unknown, input: DummyInput) => Promise<DummyOutput>;
 
   beforeAll(async () => {
+    // Raw introspection only (the change-event trace_id check below runs
+    // outside withTenantTransaction, with no app.tenant_id session setting):
+    // the owner connection bypasses RLS, task 6.3, design D6 Q1a. It also
+    // runs migrations: tayzu_app has no DDL privilege.
     db = drizzle(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    await runMigrations(db.$client);
+    // The pipeline under test runs through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connectAsApp(databaseUrl()).$client;
     harness = registeredHarness();
 
     handlerCalls = [];
@@ -428,6 +463,7 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   describe('context validation (design D3 step 1; spec "Tenant context is mandatory and fails closed")', () => {
@@ -686,7 +722,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
       const span = onlySpan(harness.spanExporter, DUMMY_SPAN_NAME);
       const traceId = span.spanContext().traceId;
 
-      const eventRows = await pool.query<{ trace_id: string | null; seq: string }>(
+      // Raw introspection on the owner connection: this runs outside
+      // withTenantTransaction, with no app.tenant_id session setting, so the
+      // tayzu_app pool above would see zero rows under RLS regardless of the
+      // tenant_id filter (task 6.3, design D6 Q1a).
+      const eventRows = await db.$client.query<{ trace_id: string | null; seq: string }>(
         'select trace_id, seq from catalog_change_event where tenant_id = $1 and resource_identifier = $2',
         [tenantId, resourceIdentifier],
       );

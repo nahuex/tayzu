@@ -35,6 +35,19 @@
  *   with `DATABASE_URL`, is then subject to the `tenant_isolation` policy
  *   exactly as `tayzu_app` is, while `current_user` stays the `DATABASE_URL`
  *   role itself.
+ *
+ * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28): plain membership is
+ * not enough on its own — a `DATABASE_URL` role that is itself a superuser
+ * (the CI `postgres:16` service) or holds `BYPASSRLS` (the sandbox) skips
+ * `tenant_isolation` regardless of what it is a member of. `getTestDatabase()`
+ * therefore hands back a pool that runs every query *as* `tayzu_app`
+ * (`SET ROLE tayzu_app`, a fixed literal queued on every new connection,
+ * ahead of any query a caller sends on it), so `current_user` reads back as
+ * `tayzu_app` itself and 001's isolation tests become real RLS tests
+ * unchanged. `getOwnerPool()` is the explicit escape hatch for a test that
+ * deliberately needs the raw, RLS-bypassing `DATABASE_URL` role (cross-tenant
+ * or tenant-less raw access): a distinct, separately memoized pool with no
+ * `SET ROLE` at all.
  */
 import { Client, Pool } from 'pg';
 
@@ -66,6 +79,14 @@ function requireDatabaseUrl(): string {
 /** Design D6's migration/runtime role names. */
 const MIGRATOR_ROLE = 'tayzu_migrator';
 const APP_ROLE = 'tayzu_app';
+
+/**
+ * Fixed literal (task 6.3): never interpolated, never built from input, so it
+ * cannot become a SQL-injection seam even though it runs through `Client#
+ * query` rather than a parameterized statement (`SET ROLE` takes no bind
+ * parameter in Postgres).
+ */
+const APP_ROLE_SET_STATEMENT = 'SET ROLE tayzu_app';
 
 /**
  * Advisory-lock key serializing this harness's own bootstrap (role creation,
@@ -223,6 +244,37 @@ async function grantAppRoleMembership(bootstrap: Client): Promise<void> {
   `);
 }
 
+/**
+ * Grants `tayzu_app` read access to drizzle-orm's own migration journal
+ * (`drizzle.__drizzle_migrations`), test-harness-only: since task 6.3 hands
+ * every caller a pool that runs *as* `tayzu_app` (`SET ROLE`, not merely
+ * inherited privilege), `information_schema` only lists that journal table to
+ * a role with a privilege on it — the journal assertions this package's own
+ * integration tests make (task 1.5) would otherwise see an empty database.
+ * Guarded: the schema/table already exist by the time this runs (drizzle's
+ * migrator creates them unconditionally, even for an empty migration set),
+ * but the check is the same defensive pattern `ensureMigratorRole` already
+ * uses for the same schema/table.
+ */
+async function grantAppRoleJournalAccess(bootstrap: Client): Promise<void> {
+  await bootstrap.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = 'drizzle') THEN
+        GRANT USAGE ON SCHEMA drizzle TO ${APP_ROLE};
+        IF EXISTS (
+          SELECT 1 FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'drizzle' AND c.relname = '__drizzle_migrations'
+        ) THEN
+          GRANT SELECT ON drizzle.__drizzle_migrations TO ${APP_ROLE};
+        END IF;
+      END IF;
+    END
+    $$;
+  `);
+}
+
 async function initializeTestDatabase(): Promise<TestDatabase> {
   const url = requireDatabaseUrl();
   assertVerifiedTlsOrLocal(url);
@@ -243,12 +295,21 @@ async function initializeTestDatabase(): Promise<TestDatabase> {
     await withBootstrapLock(postMigration, async () => {
       await reassignCatalogTableOwnership(postMigration);
       await grantAppRoleMembership(postMigration);
+      await grantAppRoleJournalAccess(postMigration);
     });
   } finally {
     await postMigration.end();
   }
 
   const pool = new Pool({ connectionString: url });
+  pool.on('connect', (client) => {
+    void client.query(APP_ROLE_SET_STATEMENT).catch(() => {
+      // A failure here surfaces as the real, catchable error below: the next
+      // query queued on this same connection fails with a permission error
+      // instead of silently running under the wrong (owner) identity. Same
+      // pattern as `runMigrationsAsMigrator` above.
+    });
+  });
   return { pool };
 }
 
@@ -268,6 +329,36 @@ export function getTestDatabase(): Promise<TestDatabase> {
     // reachable) must not be cached forever: a later call gets a fresh try.
     if (testDatabase === current) {
       testDatabase = undefined;
+    }
+  });
+  return current;
+}
+
+/** Memoized across concurrent callers within the same process (module instance). */
+let ownerPool: Promise<Pool> | undefined;
+
+function initializeOwnerPool(): Pool {
+  const url = requireDatabaseUrl();
+  assertVerifiedTlsOrLocal(url);
+  return new Pool({ connectionString: url });
+}
+
+/**
+ * Returns a pool that connects as the plain `DATABASE_URL` role itself, with
+ * no `SET ROLE` at all — the role that bypasses `tenant_isolation` RLS
+ * (superuser in CI, `BYPASSRLS` in the sandbox). A distinct pool from
+ * `getTestDatabase()`'s own (task 6.3, design D6, Resolved decision Q1a): the
+ * two roles must never share one physical connection pool. Use only for a
+ * test that deliberately needs cross-tenant or tenant-less raw access; every
+ * other caller should go through `getTestDatabase()`, which runs as
+ * `tayzu_app` under the real RLS policy.
+ */
+export function getOwnerPool(): Promise<Pool> {
+  ownerPool ??= Promise.resolve().then(() => initializeOwnerPool());
+  const current = ownerPool;
+  void current.catch(() => {
+    if (ownerPool === current) {
+      ownerPool = undefined;
     }
   });
   return current;

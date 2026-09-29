@@ -283,6 +283,11 @@ describe('schema hardening: enumerated-column CHECK constraints and the change-e
     scratchName = scratchDatabaseName();
     await admin.execute(`create database ${scratchName}`);
 
+    // `db` connects directly as the DATABASE_URL role (bypasses RLS:
+    // superuser in CI, BYPASSRLS in the sandbox) for raw, tenant-less
+    // constraint/index checks — the same role @tayzu/db's own getOwnerPool()
+    // names (task 6.3, design D6 Q1a), not reachable here across the
+    // package's export boundary (`@tayzu/db`'s harness is not exported).
     db = connect(scratchDatabaseUrl(scratchName));
     await runMigrations(db.$client);
     // gen_random_uuid() is used by fixtures above (pgcrypto, or PG13+ built-in
