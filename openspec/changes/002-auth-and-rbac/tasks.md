@@ -315,7 +315,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 10. Redaction of unreadable identifiers
 
-- [ ] 10.1 A batch `CheckResources(read)` redaction helper in
+- [x] 10.1 A batch `CheckResources(read)` redaction helper in
   `packages/authz` that replaces unreadable identifiers in a candidate list
   with a count. Verify: `redaction.test.ts` (a pure unit test against a
   mocked Cerbos client) covers "N identifiers become a count when

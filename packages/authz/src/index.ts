@@ -15,3 +15,5 @@ export type {
 } from './ownership-resolution.js';
 export { planToFilter } from './plan-filter.js';
 export type { PlanColumnMapper, PlanFilter, QueryPlan } from './plan-filter.js';
+export { redactUnreadable } from './redaction.js';
+export type { RedactionCandidate, RedactionResult, RedactUnreadableInput } from './redaction.js';
