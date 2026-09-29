@@ -26,6 +26,7 @@ const USER_BLUEPRINT: CreateBlueprintInput = {
     properties: {
       status: { type: 'string', title: { en: 'Status' }, enum: ['Active', 'Disabled'] },
       portRole: { type: 'string', title: { en: 'Port role' }, enum: ['admin', 'member'] },
+      contactEmail: { type: 'string', title: { en: 'Contact email' } },
       moderatedBlueprints: {
         type: 'array',
         title: { en: 'Moderated blueprints' },

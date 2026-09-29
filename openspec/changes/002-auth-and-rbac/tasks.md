@@ -627,7 +627,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 21. JIT display-data refresh and step-up for SSO sessions
 
-- [ ] 21.1 On every successful Visma Connect sign-in, call `/connect/
+- [x] 21.1 On every successful Visma Connect sign-in, call `/connect/
   userinfo` and write the returned name/email to the `_user` entity's
   `title`/`contactEmail` display fields only, through the `system` actor
   path — never Better Auth's `user.email` column (design D24). Verify:

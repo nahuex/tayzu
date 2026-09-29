@@ -16,6 +16,8 @@ export interface UserSyncInput {
   readonly tenantId: string;
   readonly email: string;
   readonly name: string;
+  /** Display-only Visma Connect email (design D24), merged into `spec.properties.contactEmail`. */
+  readonly contactEmail?: string;
   /** Omitted fields keep their stored value (merge upsert). */
   readonly portRole?: 'admin' | 'member';
   readonly status?: 'Active' | 'Disabled';
@@ -45,6 +47,7 @@ export function createUserSync(options: CreateUserSyncOptions): UserSync {
       const properties: Record<string, unknown> = {};
       if (input.status !== undefined) properties['status'] = input.status;
       if (input.portRole !== undefined) properties['portRole'] = input.portRole;
+      if (input.contactEmail !== undefined) properties['contactEmail'] = input.contactEmail;
       await entities.upsert(
         {
           tenantId: input.tenantId,

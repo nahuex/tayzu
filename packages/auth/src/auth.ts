@@ -82,6 +82,7 @@ import {
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
 import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
 import { logger, sessionEventsCounter, ssoEventsCounter, tracer } from './telemetry/instruments.js';
 
@@ -308,6 +309,62 @@ async function emitSelfLink(
   });
 }
 
+/** Better Auth's route template for `/callback/:providerId` (`ctx.path` is the template, not the URL). */
+const GENERIC_OAUTH_CALLBACK_ROUTE = '/callback/:id';
+
+/**
+ * Task 21.1, design D24: after a Visma Connect callback sign-in, writes the
+ * userinfo `name`/`email` to the linked user's `_user` entity (`title` /
+ * `contactEmail`) through the `system`-actor user sync. The entity is
+ * addressed by the user's own local email, and Better Auth's `user.email` is
+ * never written. Best-effort: any failure leaves the sign-in untouched.
+ */
+async function refreshDisplayData(
+  options: CreateAuthOptions,
+  account: {
+    readonly providerId?: unknown;
+    readonly userId?: unknown;
+    readonly accessToken?: unknown;
+  },
+  context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
+): Promise<void> {
+  if (
+    options.sso === undefined ||
+    options.userSync === undefined ||
+    !context ||
+    context.path !== GENERIC_OAUTH_CALLBACK_ROUTE ||
+    account.providerId !== VISMA_CONNECT_PROVIDER_ID ||
+    typeof account.userId !== 'string' ||
+    typeof account.accessToken !== 'string'
+  ) {
+    return;
+  }
+  try {
+    const info = await fetchVismaUserInfo(options.sso.discoveryUrl, account.accessToken);
+    if (info === null || (info.name === undefined && info.email === undefined)) {
+      return;
+    }
+    const user = await context.context.internalAdapter.findUserById(account.userId);
+    if (user === null) {
+      return;
+    }
+    const memberships = await context.context.adapter.findMany<MembershipRow>({
+      model: 'member',
+      where: [{ field: 'userId', value: account.userId }],
+    });
+    for (const membership of memberships) {
+      await options.userSync.upsertUser({
+        tenantId: membership.organizationId,
+        email: user.email,
+        name: info.name ?? user.name,
+        ...(info.email === undefined ? {} : { contactEmail: info.email }),
+      });
+    }
+  } catch {
+    // Display data is best-effort; never block or fail the sign-in.
+  }
+}
+
 export interface CreateAuthOptions {
   /**
    * A `@better-auth/drizzle-adapter`-compatible DB handle. The adapter never
@@ -344,6 +401,8 @@ export interface UserSyncPort {
     readonly tenantId: string;
     readonly email: string;
     readonly name: string;
+    /** Display-only Visma Connect email (design D24); never an identity key. */
+    readonly contactEmail?: string;
     readonly portRole?: 'admin' | 'member';
     readonly status?: 'Active' | 'Disabled';
   }): Promise<void>;
@@ -489,6 +548,14 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         delete: {
           after: async (account, context) => {
             await emitSelfLink('unlinked', account, context);
+          },
+        },
+        // Task 21.1 (design D24): Better Auth refreshes the linked account's
+        // tokens on every successful callback sign-in; that update is the hook
+        // point for the JIT display-data refresh.
+        update: {
+          after: async (account, context) => {
+            await refreshDisplayData(options, account, context);
           },
         },
       },
