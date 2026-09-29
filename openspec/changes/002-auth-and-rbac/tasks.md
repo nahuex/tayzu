@@ -388,7 +388,7 @@ policy diff shown in chat, separately from the rest of the PR.
   and 1.1 disabled. Verify: `headers.int.test.ts` (extended) asserts the HSTS
   header on a response, and `docs/security/dependencies.md` records the
   manual SSL-Labs-equivalent check run once against the deployed ingress.
-- [ ] 11.13 `@fastify/rate-limit` on `POST /v1/auth/token`, keyed by IP and by
+- [x] 11.13 `@fastify/rate-limit` on `POST /v1/auth/token`, keyed by IP and by
   the request's client id, independent of 11.8's authenticated-principal
   bucket (design D20). Verify: `token-exchange-rate-limit.int.test.ts` covers
   "Machine token exchange is rate-limited independently of the authenticated

@@ -9,6 +9,8 @@
  * point hands it explicit options. Later group 11 tasks add CORS, CSRF,
  * headers, body limits, rate limiting, the route allowlist and error mapping.
  */
+import { createHash } from 'node:crypto';
+
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
@@ -53,6 +55,11 @@ export interface CreateAppOptions {
    * `${tenantId}:${actor.type}:${actor.id}` from `resolveContext`; omitted: no limiter.
    */
   readonly rateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /**
+   * Budget for `POST /v1/auth/token` (D20), independent of `rateLimit`. The
+   * bucket key is the caller's IP plus the body's client id; omitted: no limiter.
+   */
+  readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
 }
 
 export interface App {
@@ -67,6 +74,12 @@ export interface App {
 /** Better Auth's runtime `handler` (`AuthInstance` types its surface as `unknown`). */
 interface AuthHandlerSurface {
   handler(request: Request): Promise<Response>;
+}
+
+const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+
+function isTokenExchange(request: FastifyRequest): boolean {
+  return request.method === 'POST' && request.url.split('?', 1)[0] === TOKEN_EXCHANGE_PATH;
 }
 
 const CERBOS_TLS_LOOPBACK_ONLY = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
@@ -131,7 +144,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ],
   });
 
-  const app = Fastify(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit });
+  // Only a proxy on a private or loopback address (the ACA ingress) may set
+  // the client address via `X-Forwarded-For`; a public peer's header is ignored.
+  const app = Fastify({
+    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
+    ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
+  });
   // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
   await app.register(fastifyHelmet, { contentSecurityPolicy: false });
   // Exact-match allowlist; `credentials` is required for Better Auth's cookie.
@@ -194,17 +212,46 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     return pending;
   };
 
+  const limited = new ORPCError('AUTH_RATE_LIMITED', {
+    status: 429,
+    message: 'Too many requests',
+  });
+  if (options.rateLimit !== undefined || options.tokenExchangeRateLimit !== undefined) {
+    await app.register(fastifyRateLimit, { global: false });
+  }
+
+  // D20: token exchange has no tenant/actor yet, so it gets its own bucket
+  // (IP + client id) and is exempt from the authenticated one below.
+  if (options.tokenExchangeRateLimit !== undefined) {
+    const check = app.createRateLimit({
+      max: options.tokenExchangeRateLimit.max,
+      timeWindow: options.tokenExchangeRateLimit.timeWindowMs,
+      // Internal bucket key only: hashed to bound its size, never logged or returned.
+      keyGenerator: (request: FastifyRequest): string => {
+        const body = request.body as { clientId?: unknown } | null | undefined;
+        const clientId = typeof body?.clientId === 'string' ? body.clientId : '';
+        return `token:${request.ip}:${createHash('sha256').update(clientId).digest('hex')}`;
+      },
+    });
+    app.addHook('preHandler', async (request, reply) => {
+      if (!isTokenExchange(request)) {
+        return;
+      }
+      const result = await check(request);
+      if (!result.isAllowed && result.isExceeded) {
+        return reply.status(429).header('retry-after', result.ttlInSeconds).send(limited.toJSON());
+      }
+      return undefined;
+    });
+  }
+
   let v1Config: { rateLimit?: object } = {};
   if (options.rateLimit !== undefined) {
-    await app.register(fastifyRateLimit, { global: false });
-    const limited = new ORPCError('AUTH_RATE_LIMITED', {
-      status: 429,
-      message: 'Too many requests',
-    });
     v1Config = {
       rateLimit: {
         max: options.rateLimit.max,
         timeWindow: options.rateLimit.timeWindowMs,
+        allowList: isTokenExchange,
         // Internal bucket key only: never logged, returned or exported.
         keyGenerator: async (request: FastifyRequest): Promise<string> => {
           const resolved = await resolveOnce(request);
