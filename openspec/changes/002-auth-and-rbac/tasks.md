@@ -162,7 +162,7 @@ policy diff shown in chat, separately from the rest of the PR.
   expiry. Verify: `context-resolver.int.test.ts` covers "Expired machine
   access token is rejected" and a fresh-token success case resolving
   `actor.type` from the credential's fixed kind.
-- [ ] 5.5 A new migration creating `machine_credential_revocation`
+- [x] 5.5 A new migration creating `machine_credential_revocation`
   (`credential_id`, `revoked_at`, `tenant_id`), granted to `tayzu_app` with
   the same `tenant_isolation` `pgPolicy`/`FORCE ROW LEVEL SECURITY` treatment
   as every catalog table (design D21). Verify:
