@@ -1,0 +1,20 @@
+# Design D8/D9. `ownerTeam` is the effective owning team, resolved by the
+# service layer before the Cerbos call (None / Direct / Inherited). An entity
+# with `None` ownership carries no `ownerTeam` attribute, so this role is
+# simply not derived for it. The tenant check is repeated here because team
+# ids are only unique within a tenant.
+---
+apiVersion: api.cerbos.dev/v1
+description: Principal belongs to the team that owns the resource.
+derivedRoles:
+  name: owning_team_member
+  definitions:
+    - name: owning_team_member
+      parentRoles: ['*']
+      condition:
+        match:
+          all:
+            of:
+              - expr: R.attr.tenantId == P.attr.tenantId
+              - expr: has(R.attr.ownerTeam) && has(P.attr.teams)
+              - expr: R.attr.ownerTeam in P.attr.teams

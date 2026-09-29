@@ -1,0 +1,71 @@
+---
+# Shared principals for every suite in policies/resource_policies/.
+# Attribute names match packages/authz (design D7-D9): tenantId, teams,
+# moderatedBlueprints. Roles are the Cerbos roles `admin` and `member` only.
+principals:
+  admin_t1:
+    id: admin_t1
+    roles: [admin]
+    attr:
+      tenantId: t1
+      teams: []
+      moderatedBlueprints: []
+  # Holds the admin role but belongs to another tenant.
+  admin_t2:
+    id: admin_t2
+    roles: [admin]
+    attr:
+      tenantId: t2
+      teams: []
+      moderatedBlueprints: []
+  # Malformed principal: no tenantId attribute. Every rule must fail closed.
+  admin_no_tenant:
+    id: admin_no_tenant
+    roles: [admin]
+    attr:
+      teams: []
+      moderatedBlueprints: []
+  # Authenticated principal whose only role no policy recognizes.
+  unknown_role_t1:
+    id: unknown_role_t1
+    roles: [guest]
+    attr:
+      tenantId: t1
+      teams: []
+      moderatedBlueprints: []
+  member_t1:
+    id: member_t1
+    roles: [member]
+    attr:
+      tenantId: t1
+      teams: []
+      moderatedBlueprints: []
+  member_platform_t1:
+    id: member_platform_t1
+    roles: [member]
+    attr:
+      tenantId: t1
+      teams: [platform]
+      moderatedBlueprints: []
+  member_moderator_service_t1:
+    id: member_moderator_service_t1
+    roles: [member]
+    attr:
+      tenantId: t1
+      teams: []
+      moderatedBlueprints: [service]
+  # Other tenant: same team name and same moderated blueprint id as tenant t1.
+  member_platform_t2:
+    id: member_platform_t2
+    roles: [member]
+    attr:
+      tenantId: t2
+      teams: [platform]
+      moderatedBlueprints: []
+  member_moderator_service_t2:
+    id: member_moderator_service_t2
+    roles: [member]
+    attr:
+      tenantId: t2
+      teams: []
+      moderatedBlueprints: [service]

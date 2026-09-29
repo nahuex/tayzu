@@ -1,0 +1,70 @@
+---
+name: UserTest
+description: >-
+  Task 8.2: user denies by default; only an admin of the same tenant is
+  granted anything. Scenario "Action with no matching rule is denied", and
+  spec "Public self sign-up is not available" scenarios "An org admin can
+  create a user" and "A member cannot create a user" at the policy level.
+tests:
+  # Scenario: Action with no matching rule is denied
+  # Scenario: A member cannot create a user
+  - name: Member can only view and list user, everything else is denied
+    input:
+      principals: [member_t1, member_platform_t1, member_moderator_service_t1]
+      resources: [user_t1]
+      actions: [view, list, create, update, delete, export]
+    expected:
+      - principal: member_t1
+        resource: user_t1
+        actions: &all_denied
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+          export: EFFECT_DENY
+      - principal: member_platform_t1
+        resource: user_t1
+        actions: *all_denied
+      - principal: member_moderator_service_t1
+        resource: user_t1
+        actions: *all_denied
+
+  # Scenario: An org admin can create a user
+  - name: Admin of the same tenant is allowed, admin of another tenant is denied
+    input:
+      principals: [admin_t1, admin_t2]
+      resources: [user_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: admin_t1
+        resource: user_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_ALLOW
+      - principal: admin_t2
+        resource: user_t1
+        actions:
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: Member of another tenant cannot view or list user
+    input:
+      principals: [member_platform_t2]
+      resources: [user_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: member_platform_t2
+        resource: user_t1
+        actions:
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY

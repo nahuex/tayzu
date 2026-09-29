@@ -292,10 +292,30 @@ tenant scope via `and(...)`).
 
 ### D8. Role and ownership policies
 
-Role policies (`r3-cerbos.md` §3.3): `admin` (`parentRoles: ["member"]`,
-`allowActions: ["*"]` on every resource kind) and `member` (`view`, `list`,
-`create`, `update` on `catalog_entity`; `view`, `list` only on
-`catalog_blueprint`). Moderator is a derived role, `moderates_blueprint`,
+Role policies (`r3-cerbos.md` §3.3) are a **ceiling**, not a grant: an action
+reaches a principal only if the role policy allows it *and* a resource-policy
+rule grants it. In Cerbos, `parentRoles` on a role policy *narrows* the role to
+its parent's permissions; it does not inherit them. So `admin.yaml` has no
+`parentRoles` and sets `allowActions: ["*"]` on every resource kind. `member.yaml`
+allows `view`, `list`, `create`, `update`, and `delete` on `catalog_entity` (the
+ceiling includes `delete` so that the Moderator grant and ABAC grants can reach
+it), `view` and `list` only on `catalog_blueprint`, and `view` and `list` only
+on `user` and `team` (Resolved decision Q24). No resource-policy rule grants
+`delete` to a plain member: it is reachable only through
+`moderates_blueprint` or an ABAC grant rule (D10).
+
+The default deny is Cerbos's implicit deny plus an explicit cross-tenant deny
+rule in every resource policy (`R.attr.tenantId != P.attr.tenantId`). A
+wildcard deny rule is not used because it would override `admin`.
+
+A resource policy for `catalog_entity` receives these attributes: `tenantId`,
+`blueprintId`, `ownerTeam`, `createdBy`, and `locked`. `ownerTeam` is *absent*
+(not null) when the entity has no owner (D9), so conditions test presence
+(`has(R.attr.ownerTeam)`) rather than comparing against null. Members may
+create and update an entity with no owner team; an entity with an owner team is
+updatable only by a member of that team (`owning_team_member`), a moderator of
+its blueprint (`moderates_blueprint`), or an admin (Resolved decision Q23).
+Moderator is a derived role, `moderates_blueprint`,
 condition `R.attr.blueprintId in P.attr.moderatedBlueprints`, imported by
 `catalog_entity`'s resource policy and granted every action there. Team
 ownership is a second derived role, `owning_team_member`, condition
@@ -337,10 +357,14 @@ The static-policy/dynamic-context pattern (`r3-cerbos.md` §3.1, §3.5): a
 tenant admin's rule is stored as a CEL condition attached to the existing
 `catalog_entity` resource policy at deploy time (Checkpoint 3, same as every
 other policy change) — there is no runtime "write a policy" API in Phase 1.
-This keeps the promise in the spec's Dynamic ABAC requirement (a rule adds to,
-never replaces, role/ownership checks) trivially true: it is one more `OR`ed
-rule in the same file, evaluated by the same engine, with the same
-default-deny fallback.
+This keeps the promise in the spec's Dynamic ABAC requirement consistent: a
+*grant* rule adds an allowance and stays inside the role-policy ceiling (D8), so
+it is one more allow rule in the same file, evaluated by the same engine, with
+the same default-deny fallback. A *deny* rule is an explicit, documented
+exception that removes an allowance, and must name the principals it exempts
+(an admin stays exempt). The two worked examples (Resolved decision Q22) are a
+grant of `delete` where `resource.createdBy == principal.id`, and a deny of
+`update` for non-admin principals where `resource.locked == true`.
 
 ### D11. Authorization wrapping the operation pipeline
 
@@ -1186,3 +1210,7 @@ counts as approved until the human answers").
 | Q21 | (2026-09-28) Does 002 also take on enforcing SSO per organization | No — out of scope, stays with `025-sso-and-identity-federation` (customer-brought SAML/OIDC, per-tenant enforcement, group-sync, SCIM). Visma Connect is Tayzu's own single primary IdP for every tenant, not a customer-configurable federation; `025` is unaffected in scope, only in sequencing relative to `002` (Non-Goals). |
 
 No open questions remain for this change.
+| Q22 | (Checkpoint 3, 2026-09-29) The worked dynamic-ABAC example | Replaces the region example with two scenarios: a grant (a member deletes an entity where `resource.createdBy == principal.id`, permitted although the member role alone does not grant `delete`) and a deny (non-admin `update` on `catalog_entity` where `resource.locked == true` fails with `AUTH_FORBIDDEN`, while an admin can still update). A grant adds within the role ceiling; a deny is an explicit, documented exception (D8, D10). |
+| Q23 | (Checkpoint 3, 2026-09-29) Who can update entities | An entity with no owner team can be created and updated by any member of the tenant. An entity with an owner team can be updated only by a member of that team or a moderator of its blueprint, plus admin. |
+| Q24 | (Checkpoint 3, 2026-09-29) Member access to users and teams | Members can view and list users and teams (resource kinds `user` and `team`) of their own tenant. Create, update, delete, and role changes stay admin-only. |
+| Q25 | (Checkpoint 3, 2026-09-29) Cerbos semantics corrections found by the policy-writer | Role policies are a ceiling; `parentRoles` narrows to the parent's permissions rather than inheriting, so `admin.yaml` has no `parentRoles`. `member.yaml`'s ceiling on `catalog_entity` includes `delete`, while no resource-policy rule grants `delete` to a plain member. The default deny is Cerbos's implicit deny plus an explicit cross-tenant deny rule in every resource policy (a wildcard deny would override admin). `catalog_entity` gains the attributes `createdBy` and `locked`; `ownerTeam` is absent, not null, without an owner (D8). |

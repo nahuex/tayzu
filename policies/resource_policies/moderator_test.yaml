@@ -1,0 +1,63 @@
+---
+name: ModeratorTest
+description: >-
+  Task 8.4, spec "Moderator grant": a member with a Moderator grant over a
+  blueprint may take every entity-level action on that blueprint's entities,
+  regardless of team ownership, and gains nothing on other blueprints.
+tests:
+  # Scenario: Moderator can update entities of a moderated blueprint
+  - name: Moderator of service can take every action on a service entity owned by another team
+    input:
+      principals: [member_moderator_service_t1]
+      resources: [entity_service_other_team_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: member_moderator_service_t1
+        resource: entity_service_other_team_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_ALLOW
+
+  # Scenario: Moderator has no extra permission on a non-moderated blueprint
+  - name: Moderator of service gets no write on a deployment entity it does not own
+    input:
+      principals: [member_moderator_service_t1]
+      resources: [entity_deployment_other_team_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: member_moderator_service_t1
+        resource: entity_deployment_other_team_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: A plain member with no grant cannot update the other team's service entity
+    input:
+      principals: [member_t1]
+      resources: [entity_service_other_team_t1]
+      actions: [update, delete]
+    expected:
+      - principal: member_t1
+        resource: entity_service_other_team_t1
+        actions:
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: Moderator of another tenant gains nothing on a same-named blueprint
+    input:
+      principals: [member_moderator_service_t2]
+      resources: [entity_service_other_team_t1]
+      actions: [view, update, delete]
+    expected:
+      - principal: member_moderator_service_t2
+        resource: entity_service_other_team_t1
+        actions:
+          view: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY

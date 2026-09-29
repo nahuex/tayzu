@@ -1,0 +1,29 @@
+# Resource kind `user` (design D7/D8; D22 `identity.users.create` requires the
+# `admin` role here). `admin` is granted everything; `member` may only view and list
+# (Checkpoint 3, Q3a). Deny by default; a tenant mismatch is denied explicitly.
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  resource: user
+  version: default
+  importDerivedRoles:
+    - same_tenant
+  rules:
+    - actions: ['*']
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          expr: R.attr.tenantId != P.attr.tenantId
+    - actions: ['*']
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          expr: '"admin" in P.roles'
+    - actions: [view, list]
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          expr: '"member" in P.roles'

@@ -1,0 +1,15 @@
+# Design D7 (openspec/changes/002-auth-and-rbac). Defense in depth on top of
+# Postgres RLS: every resource policy imports this role and requires it in
+# every allow rule, so a rule that forgets an explicit tenant check still
+# cannot cross tenants. `tenantId` is a plain attribute, never a Cerbos scope.
+---
+apiVersion: api.cerbos.dev/v1
+description: Principal and resource belong to the same tenant.
+derivedRoles:
+  name: same_tenant
+  definitions:
+    - name: same_tenant
+      parentRoles: ['*']
+      condition:
+        match:
+          expr: R.attr.tenantId == P.attr.tenantId

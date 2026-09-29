@@ -1,0 +1,118 @@
+---
+name: DynamicAbacTest
+description: >-
+  Task 8.6: attribute-based rules on catalog_entity. A member deletes an entity
+  they created (createdBy == P.id); a locked entity cannot be updated by
+  non-admins. Missing attributes never grant and never error.
+tests:
+  # Scenario: Attribute-based rule grants access a role alone would not
+  - name: Member deletes own entity, not someone else's or an unattributed one
+    input:
+      principals: [member_t1]
+      resources:
+        - entity_created_by_member_t1
+        - entity_created_by_other_t1
+        - entity_service_unowned_t1
+      actions: [delete]
+    expected:
+      - principal: member_t1
+        resource: entity_created_by_member_t1
+        actions:
+          delete: EFFECT_ALLOW
+      - principal: member_t1
+        resource: entity_created_by_other_t1
+        actions:
+          delete: EFFECT_DENY
+      # No createdBy attribute at all: fail closed, no error.
+      - principal: member_t1
+        resource: entity_service_unowned_t1
+        actions:
+          delete: EFFECT_DENY
+
+  - name: Creator grant does not cross tenants or extend to other principals
+    input:
+      principals: [member_platform_t1, member_platform_t2, unknown_role_t1]
+      resources: [entity_created_by_member_t1]
+      actions: [delete]
+    expected:
+      - principal: member_platform_t1
+        resource: entity_created_by_member_t1
+        actions:
+          delete: EFFECT_DENY
+      - principal: member_platform_t2
+        resource: entity_created_by_member_t1
+        actions:
+          delete: EFFECT_DENY
+      - principal: unknown_role_t1
+        resource: entity_created_by_member_t1
+        actions:
+          delete: EFFECT_DENY
+
+  # Scenario: Attribute-based rule denies access a role alone would have granted
+  - name: Locked entity cannot be updated by a member, admin still can
+    input:
+      principals: [member_t1, admin_t1, admin_t2, member_platform_t2]
+      resources: [entity_locked_unowned_t1]
+      actions: [update]
+    expected:
+      - principal: member_t1
+        resource: entity_locked_unowned_t1
+        actions:
+          update: EFFECT_DENY
+      - principal: admin_t1
+        resource: entity_locked_unowned_t1
+        actions:
+          update: EFFECT_ALLOW
+      - principal: admin_t2
+        resource: entity_locked_unowned_t1
+        actions:
+          update: EFFECT_DENY
+      - principal: member_platform_t2
+        resource: entity_locked_unowned_t1
+        actions:
+          update: EFFECT_DENY
+
+  - name: Lock cannot be bypassed by owning-team or moderator grants
+    input:
+      principals: [member_platform_t1, member_moderator_service_t1, admin_t1]
+      resources: [entity_locked_platform_service_t1]
+      actions: [update, view]
+    expected:
+      - principal: member_platform_t1
+        resource: entity_locked_platform_service_t1
+        actions:
+          update: EFFECT_DENY
+          view: EFFECT_ALLOW
+      - principal: member_moderator_service_t1
+        resource: entity_locked_platform_service_t1
+        actions:
+          update: EFFECT_DENY
+          view: EFFECT_ALLOW
+      - principal: admin_t1
+        resource: entity_locked_platform_service_t1
+        actions:
+          update: EFFECT_ALLOW
+          view: EFFECT_ALLOW
+
+  - name: Lock does not affect other actions, and absent or false lock does not deny
+    input:
+      principals: [member_t1]
+      resources: [entity_locked_unowned_t1, entity_unlocked_t1, entity_deployment_unowned_t1]
+      actions: [view, update]
+    expected:
+      - principal: member_t1
+        resource: entity_locked_unowned_t1
+        actions:
+          view: EFFECT_ALLOW
+          update: EFFECT_DENY
+      - principal: member_t1
+        resource: entity_unlocked_t1
+        actions:
+          view: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+      # No `locked` attribute: not locked, no error.
+      - principal: member_t1
+        resource: entity_deployment_unowned_t1
+        actions:
+          view: EFFECT_ALLOW
+          update: EFFECT_ALLOW

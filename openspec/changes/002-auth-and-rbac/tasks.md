@@ -226,37 +226,47 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 8. Role and ownership Cerbos policies
 
-- [ ] 8.1 Derived role `same_tenant` (`parentRoles: ["*"]`, condition
+- [x] 8.1 Derived role `same_tenant` (`parentRoles: ["*"]`, condition
   `R.attr.tenantId == P.attr.tenantId`), imported into every resource
   policy's rules. Verify: `same_tenant_test.yaml` covers a cross-tenant
   request being denied even when the principal otherwise holds a matching
   role.
-- [ ] 8.2 Resource policies `catalog_blueprint.yaml`, `catalog_entity.yaml`,
-  `team.yaml`, `user.yaml`, each with an explicit default-deny fallback rule.
-  Verify: each has a `*_test.yaml` covering "Action with no matching rule is
-  denied" for that resource kind.
-- [ ] 8.3 Role policies `admin.yaml` (`parentRoles: ["member"]`,
-  `allowActions: ["*"]` on every resource kind) and `member.yaml` (`view`,
-  `list`, `create`, `update` on `catalog_entity`; `view`, `list` only on
-  `catalog_blueprint`). Verify: `role_policies_test.yaml` covers "Admin can
-  manage blueprints", "Member cannot manage blueprints", and "Member can
-  create and update entities".
-- [ ] 8.4 Derived role `moderates_blueprint` (condition `R.attr.blueprintId in
+- [x] 8.2 Resource policies `catalog_blueprint.yaml`, `catalog_entity.yaml`,
+  `team.yaml`, `user.yaml`, each with Cerbos's implicit deny plus an explicit cross-tenant deny rule
+  (no wildcard deny, which would override admin; design D8). Verify: each has a
+  `*_test.yaml` covering "Action with no matching rule is denied" for that
+  resource kind.
+- [x] 8.3 Role policies are a ceiling; `parentRoles` narrows rather than
+  inherits. `admin.yaml` (no `parentRoles`, `allowActions: ["*"]` on every
+  resource kind) and `member.yaml` (`view`, `list`, `create`, `update`,
+  `delete` on `catalog_entity`, so moderator and ABAC grants can reach
+  `delete`; `view`, `list` only on `catalog_blueprint`, `user`, and `team`).
+  No resource-policy rule grants `delete` to a plain member. Verify:
+  `role_policies_test.yaml` covers "Admin can manage blueprints", "Member
+  cannot manage blueprints", "Member can create and update entities that have
+  no owner team", "Member can view and list users and teams", "Member cannot
+  create, update, or delete users or teams, or change roles", and "Member
+  cannot delete an entity by role alone".
+- [x] 8.4 Derived role `moderates_blueprint` (condition `R.attr.blueprintId in
   P.attr.moderatedBlueprints`), imported into `catalog_entity.yaml` and
   granted every action there. Verify: `moderator_test.yaml` covers "Moderator
   can update entities of a moderated blueprint" and "Moderator has no extra
   permission on a non-moderated blueprint".
-- [ ] 8.5 Derived role `owning_team_member` (condition `R.attr.ownerTeam in
+- [x] 8.5 Derived role `owning_team_member` (condition `R.attr.ownerTeam in
   P.attr.teams`) imported into `catalog_entity.yaml`, plus the `register`-time
-  rule restricting entity creation to a team the creator belongs to. Verify:
-  `ownership_test.yaml` covers "Owning team member can update an owned
-  entity", "Non-owning member cannot update another team's entity", and
-  "Creating an entity owned by a team the caller does not belong to is
+  rule restricting entity creation to a team the creator belongs to (or a
+  moderator of the blueprint, or an admin). `ownerTeam` is absent, not null,
+  for an entity with no owner. Verify: `ownership_test.yaml` covers "Owning
+  team member can update an owned entity", "Non-owning member cannot update
+  another team's entity", "Any member can update an entity with no owner
+  team", "Admin can update an owned entity", and "Creating an entity owned by a team the caller does not belong to is
   denied".
-- [ ] 8.6 One worked dynamic-ABAC resource-policy rule (an attribute
-  condition over `_user`/entity properties, per the static-policy/
-  dynamic-context pattern), documented as the pattern later blueprint-specific
-  rules follow. Verify: `dynamic_abac_test.yaml` covers "Attribute-based rule
+- [x] 8.6 Two worked dynamic-ABAC resource-policy rules on `catalog_entity`
+  (static-policy/dynamic-context pattern), documented as the pattern later
+  blueprint-specific rules follow: a grant permitting `delete` where
+  `resource.createdBy == principal.id`, and a deny of `update` for non-admin
+  principals where `resource.locked == true` (an explicit, documented
+  exception; an admin stays exempt). Verify: `dynamic_abac_test.yaml` covers "Attribute-based rule
   grants access a role alone would not" and "Attribute-based rule denies
   access a role alone would have granted". ⛔ **Stop here for Checkpoint 3
   approval of every policy file authored in 8.1-8.6 before continuing.**
