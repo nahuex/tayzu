@@ -201,7 +201,7 @@ policy diff shown in chat, separately from the rest of the PR.
   001's existing isolation tests (`isolation-blueprints.int.test.ts`,
   `isolation-entities.int.test.ts`, `db-isolation.int.test.ts`) pass unchanged
   against the new pool.
-- [ ] 6.4 New RLS-specific tests. Verify: `rls-isolation.int.test.ts` covers
+- [x] 6.4 New RLS-specific tests. Verify: `rls-isolation.int.test.ts` covers
   "Query without a tenant setting sees no rows" (read returns zero rows, a
   write affects zero rows, neither raises); `db-isolation.int.test.ts`
   (extended) covers "Runtime role cannot alter the change-event log" and

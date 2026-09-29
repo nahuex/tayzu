@@ -26,8 +26,15 @@ import { randomUUID } from 'node:crypto';
 
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+// Task 6.4 (design D6): the `tayzu_app`-role pool this package's own service
+// tests already use, aliased so it never collides with this file's own,
+// pre-existing `connect()` (the owner/`DATABASE_URL`-role connection above,
+// used only for setup below, exactly as that helper's own module doc
+// prescribes — task 6.3, design D6 Resolved decision Q1a).
+import { connect as connectAppRole } from '../service/__fixtures__/blueprint-test-helpers.js';
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -102,6 +109,13 @@ function pgErrorOf(error: unknown): PgError {
 
 /** SQLSTATE for a foreign-key-constraint violation (design D9). */
 const FK_VIOLATION_SQLSTATE = '23503';
+
+/**
+ * SQLSTATE Postgres raises for a privilege violation (design D6, task 6.4):
+ * an `UPDATE`/`DELETE`/`TRUNCATE` the runtime role has no grant for, or a
+ * `SET ROLE` to a role it is not a member of.
+ */
+const INSUFFICIENT_PRIVILEGE_SQLSTATE = '42501';
 
 interface BlueprintFixture {
   readonly tenantId: string;
@@ -265,5 +279,130 @@ describe('database-level tenant isolation (design D4, D9): raw inserts, no servi
        where tenant_id = ${tenantA} and source_entity_id = ${entityA.entityId}
     `);
     expect(edgeRows.rows, 'no edge row was persisted').toHaveLength(0);
+  });
+});
+
+/**
+ * Task 6.4 (design D6; spec "Tenant isolation is enforced by the database
+ * independent of application code"). The two remaining 6.4 scenarios this
+ * file's own Verify clause names, plus the negative-control assertion, all
+ * exercised against the real, running database — no service layer, no mocked
+ * Cerbos, nothing but Postgres's own privilege and RLS enforcement.
+ *
+ * `connectAppRole()` (imported above from this package's own
+ * `service/__fixtures__/blueprint-test-helpers.ts`) is used for every
+ * runtime-role check below: it runs `SET ROLE tayzu_app` on every connection
+ * it opens, so `current_user` really is `tayzu_app`, exactly like production
+ * (task 6.3, design D6 Resolved decision Q1a). The suite above's own `db`
+ * (the raw `DATABASE_URL`/owner connection, bypassing RLS) is reused only for
+ * the one setup step ("Runtime role cannot bypass row-level security" needs a
+ * `t2` row seeded outside any tenant context) — never for a runtime-role
+ * assertion itself.
+ */
+describe('Postgres-enforced isolation and privilege boundaries (task 6.4, design D6)', () => {
+  let db: Db;
+
+  beforeAll(async () => {
+    // Same owner/raw connection the suite above already established
+    // (bypasses RLS: superuser in CI, BYPASSRLS in the sandbox), reused here
+    // only to seed the cross-tenant row the RLS-bypass scenario below reads
+    // back against — never for a runtime-role assertion itself.
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  }, 60_000);
+
+  it('Runtime role cannot alter the change-event log', async () => {
+    const appPool = connectAppRole(databaseUrl()).$client;
+    try {
+      for (const statement of [
+        'update catalog_change_event set action = action where false',
+        'delete from catalog_change_event where false',
+        'truncate catalog_change_event',
+      ]) {
+        let caught: unknown;
+        try {
+          await appPool.query(statement);
+        } catch (error) {
+          caught = error;
+        }
+        expect(
+          caught,
+          `expected "${statement}" to be rejected on privilege grounds, but it did not raise`,
+        ).toBeDefined();
+        const pgError = pgErrorOf(caught);
+        expect(pgError.code, `SQLSTATE for "${statement}"`).toBe(INSUFFICIENT_PRIVILEGE_SQLSTATE);
+      }
+    } finally {
+      await endQuietly(appPool);
+    }
+  });
+
+  it('Runtime role cannot bypass row-level security', async () => {
+    const tenantA = randomTenantId();
+    const tenantB = randomTenantId();
+    // Setup only, through the owner connection: a row that belongs to tenant
+    // B, seeded with no tenant context needed (the owner bypasses RLS).
+    const blueprintB = await insertBlueprint(db, tenantB, 'other-tenant-blueprint');
+
+    const appPool = connectAppRole(databaseUrl()).$client;
+    try {
+      // The runtime role, with app.tenant_id set to tenant A
+      // (withTenantTransaction, production's own tenant seam, design D5),
+      // running a query with no tenant_id predicate of its own: RLS alone
+      // must be the thing filtering tenant B's row out.
+      const rows = await withTenantTransaction(appPool, { tenantId: tenantA }, async (client) => {
+        const result = await client.query<{ id: string }>('select id from catalog_blueprint');
+        return result.rows;
+      });
+
+      expect(
+        rows.some((row) => row.id === blueprintB.blueprintId),
+        "tenant B's row must not be returned while app.tenant_id is set to tenant A, even with no tenant_id predicate of its own",
+      ).toBe(false);
+    } finally {
+      await endQuietly(appPool);
+    }
+  });
+
+  it('negative control: tayzu_migrator is reachable from no runtime code path', async () => {
+    // tayzu_app (the role every production connection, and every runtime-role
+    // check above, actually runs as) must hold no membership, direct or
+    // indirect, in tayzu_migrator: that membership is the one thing that
+    // would let a `SET ROLE`, or ordinary privilege inheritance, reach it from
+    // a running application connection. 0006_catalog_role_grants.sql grants
+    // tayzu_app nothing on tayzu_migrator, and no runtime code path this
+    // package or `@tayzu/db`'s own production export (`./index.ts`) exposes
+    // ever names tayzu_migrator at all.
+    //
+    // Checked as a plain `pg_has_role` catalog lookup, through the owner
+    // connection (introspection, not a runtime-role action), rather than by
+    // literally attempting `SET ROLE tayzu_migrator` from a live connection:
+    // Postgres's own `SET ROLE` permission check is keyed to the
+    // *session_user* of the physical connection (the login role that
+    // authenticated it), not to whatever role a prior `SET ROLE` switched the
+    // session to. Every connection this whole test run opens authenticates as
+    // one shared sandbox/CI login role (`DATABASE_URL`), and `@tayzu/db`'s own
+    // test-only harness bootstrap (`packages/db/src/harness.ts`, a distinct
+    // package's test fixture, not reachable from this package — see
+    // `service/__fixtures__/blueprint-test-helpers.ts`'s own module doc)
+    // separately grants that shared login role membership in tayzu_migrator
+    // for its own, unrelated purpose (running migrations as it). A literal
+    // `SET ROLE tayzu_migrator` attempted here would therefore succeed for a
+    // reason that has nothing to do with tayzu_app's own grants, and would
+    // prove nothing about the production runtime role. The catalog-level
+    // membership check below is independent of that test-harness detail: it
+    // asks whether the role tayzu_app itself, not whichever login role
+    // happens to be running this test, could ever assume tayzu_migrator.
+    const result = await db.execute<{ is_member: boolean }>(sql`
+      select pg_has_role('tayzu_app', 'tayzu_migrator', 'MEMBER') as is_member
+    `);
+    expect(
+      result.rows[0]?.is_member,
+      'tayzu_app must hold no membership, direct or indirect, in tayzu_migrator',
+    ).toBe(false);
   });
 });
