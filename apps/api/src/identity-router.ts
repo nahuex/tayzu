@@ -15,7 +15,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { os } from '@orpc/server';
-import type { AuthInstance } from '@tayzu/auth';
+import type { AuthInstance, UserSyncPort } from '@tayzu/auth';
 import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 /** Same code and message as the catalog's `AuthorizationError` (design D11). */
@@ -40,6 +40,11 @@ class IdentityInputError extends Error {
 export interface CreateIdentityRouterOptions {
   readonly auth: AuthInstance;
   readonly authz: CerbosClient;
+  /**
+   * Task 18.5 (design D22): upserts the created user's `_user` entity through
+   * the `system` actor path, directly and not through a Better Auth hook.
+   */
+  readonly userSync?: UserSyncPort;
 }
 
 export interface CreateUserInput {
@@ -114,6 +119,11 @@ async function assertMayCreateUser(authz: CerbosClient, rawContext: RawContext):
   if (!allowed) throw new IdentityForbiddenError();
 }
 
+/** The tenant of the caller; `assertMayCreateUser` already proved it is a non-empty string. */
+function rawTenantId(context: RawContext): string {
+  return context['tenantId'] as string;
+}
+
 /** A single-use, system-generated temporary password (design D22's "shown once" discipline). */
 function generateTemporaryPassword(): string {
   return randomBytes(24).toString('base64url');
@@ -138,6 +148,13 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               password: temporaryPassword,
               role: input.role,
             },
+          });
+          await options.userSync?.upsertUser({
+            tenantId: rawTenantId(context),
+            email: user.email,
+            name: input.name,
+            portRole: input.role === 'admin' ? 'admin' : 'member',
+            status: 'Active',
           });
           return { userId: user.id, email: user.email, temporaryPassword };
         }),

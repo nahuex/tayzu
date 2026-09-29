@@ -40,7 +40,7 @@ import { createPool } from '@tayzu/db';
 import { isAPIError } from 'better-auth/api';
 import { drizzle } from 'drizzle-orm/node-postgres';
 
-import { createAuth, type AuthInstance } from '../src/auth.js';
+import { createAuth, type AuthInstance, type UserSyncPort } from '../src/auth.js';
 import * as authSchema from '../src/persistence/schema.js';
 
 export interface BootstrapAdminParams {
@@ -65,6 +65,11 @@ export interface BootstrapAdminResult {
    * task 18.3). Never logged, never re-derivable on a later, idempotent run.
    */
   readonly temporaryPassword?: string;
+}
+
+export interface BootstrapAdminOptions {
+  /** Task 18.5 (design D22): upserts the first admin's `_user` entity directly. */
+  readonly userSync?: UserSyncPort;
 }
 
 interface CreateUserApiSurface {
@@ -119,6 +124,7 @@ function generateTemporaryPassword(): string {
 export async function bootstrapAdmin(
   auth: AuthInstance,
   params: BootstrapAdminParams,
+  options: BootstrapAdminOptions = {},
 ): Promise<BootstrapAdminResult> {
   const noOp: BootstrapAdminResult = {
     organizationSlug: params.organizationSlug,
@@ -142,16 +148,26 @@ export async function bootstrapAdmin(
   }
 
   const organizationApi = auth.api as CreateOrganizationApiSurface;
+  let organizationId: string;
   try {
-    await organizationApi.createOrganization({
+    const organization = await organizationApi.createOrganization({
       body: { name: params.organizationName, slug: params.organizationSlug, userId },
     });
+    organizationId = organization.id;
   } catch (error) {
     if (errorCode(error) === ORGANIZATION_ALREADY_EXISTS_CODE) {
       return noOp;
     }
     throw error;
   }
+
+  await options.userSync?.upsertUser({
+    tenantId: organizationId,
+    email: params.adminEmail,
+    name: params.adminName,
+    portRole: 'admin',
+    status: 'Active',
+  });
 
   return { ...noOp, created: true, temporaryPassword };
 }

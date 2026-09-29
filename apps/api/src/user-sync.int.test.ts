@@ -36,6 +36,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
+import { createRouterClient } from '@orpc/server';
 import { bootstrapAdmin } from '../../../packages/auth/scripts/bootstrap-admin.js';
 import { createAuth, authSchema, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
@@ -46,6 +47,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
 import { harnessPools } from './__fixtures__/pools.js';
+import { createIdentityRouter } from './identity-router.js';
 import {
   createAdminUser,
   signInAdminUser,
@@ -207,4 +209,131 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
     await api.unbanUser({ body: { userId: created.userId }, headers: adminHeaders });
     expect((await readUser(organizationId, member.email)).spec.properties['status']).toBe('Active');
   });
+});
+
+/**
+ * Task 18.5 (design D22): `identity.users.create` and the bootstrap script
+ * upsert the `_user` entity themselves through the `system` actor path, no
+ * longer relying on a Better Auth hook.
+ *
+ * ## Production symbols assumed (task 18.5, none exist yet)
+ *
+ * - `createIdentityRouter({ auth, authz, userSync })` takes a `UserSync`
+ *   (`@tayzu/catalog`'s `createUserSync`) and, after `auth.api.createUser`
+ *   succeeds, calls `userSync.upsertUser({ tenantId: context.tenantId, email,
+ *   name, status: 'Active', ... })`, so a `_user` entity exists in the
+ *   caller's tenant. The `portRole` mapping of the input `role` is not
+ *   asserted (the spec leaves it open).
+ * - `bootstrapAdmin(auth, params, { userSync })` takes an optional third
+ *   argument carrying a `UserSync`; after creating the organization it
+ *   upserts the first admin's `_user` entity (`status` `Active`, `portRole`
+ *   `admin`) in that organization's tenant.
+ *
+ * To prove the wiring is direct and not the Better Auth hook, the `auth`
+ * instance below is built WITHOUT `userSync`, so no hook can create the entity.
+ */
+describe('Creating a user creates a matching `_user` entity, without a Better Auth hook (task 18.5)', () => {
+  let auth: AuthInstance;
+  let userSync: ReturnType<typeof createUserSync>;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+  let tryReadUser: (tenantId: string, email: string) => Promise<UserEntity | undefined>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    await runMigrations(pools.authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    auth = createAuth({
+      db: drizzle(pools.authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+    });
+    userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    client = createRouterClient(createIdentityRouter({ auth, authz: cerbos, userSync }), {
+      context: (raw: Record<string, unknown>) => raw,
+    });
+    const entities = createEntityService({ pool: pools.appPool, authz: cerbos });
+    tryReadUser = async (tenantId, email) => {
+      try {
+        return await entities.get(
+          {
+            tenantId,
+            actor: { type: 'system', id: 'user-sync-test' },
+            principal: { roles: ['admin'] },
+          },
+          { blueprint: '_user', identifier: email },
+        );
+      } catch (error) {
+        if ((error as { code?: unknown }).code === 'CATALOG_NOT_FOUND') return undefined;
+        throw error;
+      }
+    };
+  }, 60_000);
+
+  it('Creating a user creates a matching `_user` entity: identity.users.create by an org admin yields an Active `_user` entity', async () => {
+    const id = randomUUID();
+    const owner = await createAdminUser(auth, {
+      name: 'Tenant Owner',
+      email: `owner-${id}@example.test`,
+      password: 'correct-horse-battery-staple',
+    });
+    const org = await (auth.api as BetterAuthAdminSurface).createOrganization({
+      body: { name: 'Sync Org 18.5', slug: `sync-185-${id}`, userId: owner.userId },
+    });
+    const email = `created-${id}@example.test`;
+
+    await client.identity.users.create(
+      { email, name: 'Created By Admin', role: 'user' },
+      {
+        context: {
+          tenantId: org.id,
+          actor: { type: 'user', id: `caller-${id}` },
+          principal: { roles: ['admin'] },
+        },
+      },
+    );
+
+    const entity = await tryReadUser(org.id, email);
+    expect(entity, 'a `_user` entity exists for the created user').toBeDefined();
+    expect(entity?.title).toBe('Created By Admin');
+    expect(entity?.spec.properties['status']).toBe('Active');
+    expect(entity?.createdBy.type).toBe('system');
+  }, 60_000);
+
+  it('Creating a user creates a matching `_user` entity: the bootstrap script yields an Active admin `_user` entity', async () => {
+    const params = {
+      organizationName: 'Bootstrapped Org 18.5',
+      organizationSlug: `sync-boot-185-${randomUUID()}`,
+      adminName: 'First Admin',
+      adminEmail: `sync-boot-185-${randomUUID()}@example.test`,
+    };
+    await (
+      bootstrapAdmin as (
+        a: AuthInstance,
+        p: typeof params,
+        o: { userSync: typeof userSync },
+      ) => Promise<unknown>
+    )(auth, params, { userSync });
+
+    const org = await (
+      auth.$context as Promise<{
+        adapter: {
+          findOne(a: { model: string; where: unknown[] }): Promise<{ id: string } | null>;
+        };
+      }>
+    ).then((context) =>
+      context.adapter.findOne({
+        model: 'organization',
+        where: [{ field: 'slug', value: params.organizationSlug }],
+      }),
+    );
+    if (org === null) throw new Error('bootstrapped organization not found');
+
+    const entity = await tryReadUser(org.id, params.adminEmail);
+    expect(entity, 'a `_user` entity exists for the first admin').toBeDefined();
+    expect(entity?.title).toBe('First Admin');
+    expect(entity?.spec.properties['status']).toBe('Active');
+    expect(entity?.spec.properties['portRole']).toBe('admin');
+    expect(entity?.createdBy.type).toBe('system');
+  }, 60_000);
 });

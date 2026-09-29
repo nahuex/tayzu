@@ -556,7 +556,7 @@ policy diff shown in chat, separately from the rest of the PR.
   Verify: `bootstrap.int.test.ts` covers "Bootstrapping an organization's
   first admin is idempotent" (running it twice creates no duplicate
   organization or user).
-- [ ] 18.5 Wire `identity.users.create` and the bootstrap script to upsert
+- [x] 18.5 Wire `identity.users.create` and the bootstrap script to upsert
   the matching `_user` entity through the `system` actor path, replacing the
   sign-up-triggered hook task group 12 assumed (design D22, spec "User and
   Team system blueprints"). Verify: `user-sync.int.test.ts` covers "Creating
