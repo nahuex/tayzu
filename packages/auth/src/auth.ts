@@ -69,6 +69,7 @@ import {
   preAuthRateLimitPlugin,
   type PreAuthRateLimitOptions,
 } from './rate-limit/pre-auth-rate-limit.js';
+import { vismaConnect, type VismaConnectOptions } from './sso/visma-connect.js';
 import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
 import { logger, sessionEventsCounter } from './telemetry/instruments.js';
 
@@ -294,6 +295,11 @@ export interface CreateAuthOptions {
    * earlier tasks' `createAuth({ db, secret })` calls keep working.
    */
   readonly userSync?: UserSyncPort;
+  /**
+   * Task 19.2 (design D23, Q17): Visma Connect SSO. When set, registers the
+   * `genericOAuth` provider; otherwise no SSO plugin exists.
+   */
+  readonly sso?: VismaConnectOptions;
 }
 
 /** The structural slice of `@tayzu/catalog`'s `UserSync` this package calls. */
@@ -431,6 +437,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         enableMetadata: true,
       }),
       preAuthRateLimitPlugin(options),
+      ...(options.sso === undefined ? [] : [vismaConnect(options.sso)]),
     ],
     databaseHooks: {
       // Ban/unban: mirror `banned` onto every membership's `_user` entity.

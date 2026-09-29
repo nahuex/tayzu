@@ -570,7 +570,7 @@ policy diff shown in chat, separately from the rest of the PR.
   endpoints) so no test in this or later groups calls the real Visma
   Connect. Verify: `pnpm --filter @tayzu/auth test` runs the stub's own
   smoke test, standing it up and tearing it down cleanly.
-- [ ] 19.2 `packages/auth/src/sso/visma-connect.ts`: the `genericOAuth`
+- [x] 19.2 `packages/auth/src/sso/visma-connect.ts`: the `genericOAuth`
   plugin configured per design D23 (`providerId: "visma-connect"`,
   `discoveryUrl` pointed at the task-19.1 stub in tests, `requireIdToken
   Verification: true`, PKCE S256, `responseMode: "form_post"`, `scopes:
