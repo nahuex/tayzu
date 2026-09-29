@@ -152,6 +152,8 @@ relations.
   `ac`/custom roles do some authorization work directly. Rejected for the
   reason above.
 
+See [ADR-0013](../../../docs/adr/0013-cerbos-as-sole-authorization-engine.md).
+
 ### D3. Tenant and session resolution
 
 `tenantId = session.activeOrganizationId`, persisted on the session row (not
@@ -280,6 +282,8 @@ Cerbos's own "dynamic context" pattern for multi-tenancy
 `/policies` small enough to hand-review at Checkpoint 3 rather than minting a
 resource-kind file per blueprint.
 
+See [ADR-0015](../../../docs/adr/0015-cerbos-dynamic-context-not-scoped-policies.md).
+
 Resource kinds (Conventions in `specs/auth-and-rbac/spec.md`): `catalog_
 blueprint`, `catalog_entity`, `team`, `user`. A derived role `same_tenant`
 (`parentRoles: ["*"]`, condition `R.attr.tenantId == P.attr.tenantId`) is
@@ -336,6 +340,9 @@ resource-policy rule condition on any attribute the service layer passes in,
 so `043` adding a rule conditioning on the `_user` entity's `accountKind`
 attribute is exactly the pattern D10 already generalizes for, not a new
 mechanism this change must build.
+
+See [ADR-0013](../../../docs/adr/0013-cerbos-as-sole-authorization-engine.md)
+and [ADR-0015](../../../docs/adr/0015-cerbos-dynamic-context-not-scoped-policies.md).
 
 ### D9. Ownership resolution (None / Direct / Inherited)
 

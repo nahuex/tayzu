@@ -275,7 +275,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `packages/authz`, computed before every Cerbos call. Verify:
   `ownership-resolution.test.ts` is a pure unit test (no Cerbos) covering
   "Direct ownership wins over a conflicting inherited configuration".
-- [ ] 8.8 Write ADR `docs/adr/0013-cerbos-as-sole-authorization-engine.md` and
+- [x] 8.8 Write ADR `docs/adr/0013-cerbos-as-sole-authorization-engine.md` and
   `docs/adr/0015-cerbos-dynamic-context-not-scoped-policies.md`. Verify: both
   files exist with Context, Decision, Alternatives and Consequences sections,
   and design D2/D7/D8 link to them.
