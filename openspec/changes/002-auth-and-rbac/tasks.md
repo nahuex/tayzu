@@ -169,7 +169,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `revocation-schema.int.test.ts` asserts the table, its policy, and the
   `FORCE` flag via `pg_policy`/`information_schema`. ⛔ **Stop here for
   Checkpoint 3 approval of this migration's SQL before continuing.**
-- [ ] 5.6 The revoke procedure (5.2) additionally writes a
+- [x] 5.6 The revoke procedure (5.2) additionally writes a
   `machine_credential_revocation` row in the same operation that disables the
   underlying `apiKey` config row. Verify: `machine-credentials.int.test.ts`
   covers "Revocation is recorded in the revocation list, not only disabled at

@@ -103,7 +103,7 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -411,5 +411,159 @@ describe('Machine credentials (task 5.1, design D5)', () => {
       afterRevoke.valid,
       'the revoked credential no longer authenticates at the token endpoint’s own mechanism',
     ).toBe(false);
+  });
+});
+
+/**
+ * Task 5.6 (design D21; `specs/auth-and-rbac/spec.md`, "Machine credentials").
+ * Task 5.6's Verify clause (`tasks.md`): "`machine-credentials.int.test.ts`
+ * covers 'Revocation is recorded in the revocation list, not only disabled at
+ * the apiKey layer'." That scenario title does not appear verbatim in any
+ * `spec.md` under `specs/` (searched before writing this); the governing text
+ * is D21: "Revocation itself (D5's existing revoke procedure) writes one row
+ * here in the same operation that disables the underlying `apiKey` config
+ * row, so the two can never disagree about whether a credential is revoked."
+ *
+ * ## Production symbols expected (flagged for the green phase)
+ *
+ * `revokeMachineCredential(auth, params)` gains two REQUIRED-by-design
+ * params (see the conflict note in the task report about the untouched 5.2
+ * test, which calls it with `{ headers, id }` only):
+ * - `pool`: a `pg` `Pool` running as `tayzu_app`, used through
+ *   `withTenantTransaction(pool, { tenantId }, ...)`;
+ * - `tenantId`: from the trusted host context, never from input.
+ * The revocation insert is `INSERT INTO machine_credential_revocation
+ * (credential_id, revoked_at, tenant_id) ... ON CONFLICT DO NOTHING`
+ * (`tayzu_app` holds only SELECT/INSERT, migration 0009).
+ *
+ * ## Fail-closed ordering (asserted below)
+ *
+ * The apiKey row (`auth` schema, `tayzu_auth`) and the revocation row
+ * (`public`, `tayzu_app`) are on different pools/roles and cannot share one
+ * transaction, so the ordering is what keeps them from disagreeing in the
+ * dangerous direction: the revocation row must be written FIRST, then the
+ * apiKey disabled. If the insert fails, the operation rejects and the key
+ * must not have been disabled. The last test asserts "never disabled without
+ * a revocation row".
+ */
+describe('Machine credential revocation list (task 5.6, design D21)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    api = apiOf(auth);
+    // A pool that runs every query as `tayzu_app` (same technique as
+    // `@tayzu/db`'s own harness), so the row is written and read under the
+    // real `tenant_isolation` policy.
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  interface RevocationRow {
+    readonly credential_id: string;
+    readonly tenant_id: string;
+    readonly revoked_at: Date;
+  }
+
+  async function revocationRows(tenantId: string, id: string): Promise<readonly RevocationRow[]> {
+    return withTenantTransaction(appPool, { tenantId }, async (client) => {
+      const result = await client.query<RevocationRow>(
+        'select credential_id, tenant_id, revoked_at from machine_credential_revocation where credential_id = $1',
+        [id],
+      );
+      return result.rows;
+    });
+  }
+
+  async function newCredential(): Promise<{
+    headers: Headers;
+    tenantId: string;
+    created: CreatedMachineCredential;
+  }> {
+    const admin = await bootstrapTestTenant(auth, {
+      name: TEST_ADMIN_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Machine Credential Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const headers = new Headers({ cookie: admin.cookie });
+    const created = await createMachineCredential(auth, {
+      headers,
+      organizationId: admin.organizationId,
+      name: 'CI pipeline credential',
+      actorKind: 'integration',
+    });
+    return { headers, tenantId: admin.organizationId, created };
+  }
+
+  it('Revocation is recorded in the revocation list, not only disabled at the apiKey layer', async () => {
+    const { headers, tenantId, created } = await newCredential();
+    expect(
+      await revocationRows(tenantId, created.id),
+      'no revocation row exists before the credential is revoked',
+    ).toHaveLength(0);
+
+    // WHEN the admin revokes the credential.
+    await revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId });
+
+    // THEN the apiKey layer no longer verifies it ...
+    const verified = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(verified.valid, 'the apiKey row is disabled').toBe(false);
+
+    // AND the revocation list records it, under the host-supplied tenant.
+    const rows = await revocationRows(tenantId, created.id);
+    expect(rows, 'exactly one revocation row is written').toHaveLength(1);
+    expect(rows[0]?.credential_id).toBe(created.id);
+    expect(rows[0]?.tenant_id, 'the row carries the host-context tenant').toBe(tenantId);
+    expect(rows[0]?.revoked_at, 'revoked_at is set').toBeInstanceOf(Date);
+
+    // AND another tenant cannot see the row (RLS: looks like not found).
+    expect(await revocationRows(randomUUID(), created.id)).toHaveLength(0);
+  });
+
+  it('A repeated revoke does not fail and leaves a single revocation row', async () => {
+    const { headers, tenantId, created } = await newCredential();
+    await revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId });
+    await expect(
+      revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId }),
+    ).resolves.toBeUndefined();
+    expect(await revocationRows(tenantId, created.id)).toHaveLength(1);
+  });
+
+  it('Revocation fails closed: a failed revocation write never leaves the apiKey disabled without a row', async () => {
+    const { headers, tenantId, created } = await newCredential();
+    // A pool that can no longer run queries: the revocation insert must fail.
+    const brokenPool = connect(databaseUrl()).$client;
+    await endQuietly(brokenPool);
+
+    await expect(
+      revokeMachineCredential(auth, { headers, id: created.id, pool: brokenPool, tenantId }),
+      'the operation rejects when the revocation row cannot be written',
+    ).rejects.toThrow();
+
+    const rows = await revocationRows(tenantId, created.id);
+    const verified = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(
+      rows.length > 0 || verified.valid,
+      'the credential is never disabled at the apiKey layer while absent from the revocation list',
+    ).toBe(true);
   });
 });

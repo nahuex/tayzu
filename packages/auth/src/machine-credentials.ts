@@ -33,6 +33,8 @@
  * makes the key fail `auth.api.verifyApiKey` -- the exact call `POST
  * /v1/auth/token` (task 5.3) makes on every request.
  */
+import { withTenantTransaction, type createPool } from '@tayzu/db';
+
 import type { AuthInstance } from './auth.js';
 
 /** design D5: the fixed kinds a machine credential can be created with. */
@@ -137,6 +139,19 @@ export interface RevokeMachineCredentialParams {
   readonly id: string;
 }
 
+/** A `tayzu_app` pool (the type `@tayzu/db`'s `createPool` returns). */
+type AppPool = ReturnType<typeof createPool>;
+
+/**
+ * Where the revocation row is written (task 5.6, design D21): a `tayzu_app`
+ * pool and the tenant from the trusted host context, never from input. Both
+ * or neither; when omitted, only the apiKey layer is disabled (the pre-5.6
+ * behavior the earlier tests exercise).
+ */
+export type RevocationListTarget =
+  | { readonly pool: AppPool; readonly tenantId: string }
+  | { readonly pool?: undefined; readonly tenantId?: undefined };
+
 /**
  * Revokes a machine credential by disabling it through Better Auth's own
  * `updateApiKey`, scoped to the `machine-credential` config. Disabling a key
@@ -148,8 +163,24 @@ export interface RevokeMachineCredentialParams {
  */
 export async function revokeMachineCredential(
   auth: AuthInstance,
-  params: RevokeMachineCredentialParams,
+  params: RevokeMachineCredentialParams & RevocationListTarget,
 ): Promise<void> {
+  // Ordering (design D21): the apiKey row (`auth` schema, `tayzu_auth`) and
+  // the revocation row (`public`, `tayzu_app`) live on different roles and
+  // cannot share a transaction. The revocation row is written FIRST, so a
+  // failure there rejects the operation with the key still enabled, and a
+  // failure of the disable afterwards leaves the credential on the
+  // revocation list (rejected by the resolver), never the reverse. A repeat
+  // is idempotent (`ON CONFLICT DO NOTHING`; `tayzu_app` has no UPDATE).
+  if (params.pool !== undefined) {
+    await withTenantTransaction(params.pool, { tenantId: params.tenantId }, async (client) => {
+      await client.query(
+        `insert into machine_credential_revocation (credential_id, revoked_at, tenant_id)
+         values ($1, now(), $2) on conflict do nothing`,
+        [params.id, params.tenantId],
+      );
+    });
+  }
   await apiOf(auth).updateApiKey({
     headers: params.headers,
     body: {
