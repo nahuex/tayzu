@@ -394,7 +394,7 @@ policy diff shown in chat, separately from the rest of the PR.
   "Machine token exchange is rate-limited independently of the authenticated
   bucket".
 
-- [ ] 11.14 `apps/api/src/main.ts` and a `start` script: builds the app with
+- [x] 11.14 `apps/api/src/main.ts` and a `start` script: builds the app with
   `createAppFromEnv`, listens on `HOST`/`PORT` from the environment, and on
   `SIGTERM`/`SIGINT` closes the listener and then every pool (resolved
   decision Q30). Verify: `main.int.test.ts` covers "The process listens on

@@ -194,6 +194,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // Route-level limits only (`global: false`); registered before any route that opts in.
   await app.register(fastifyRateLimit, { global: false });
 
+  // Q33: liveness only. Unauthenticated, no dependency check, no detail.
+  app.get('/healthz', () => ({ status: 'ok' }));
+
   // D18: deny-by-default. An unlisted path gets Fastify's own 404, identical
   // to any unknown route, before Better Auth is reached.
   app.addHook('onRequest', async (request, reply) => {
