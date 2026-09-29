@@ -434,7 +434,7 @@ policy diff shown in chat, separately from the rest of the PR.
   script in `docs/catalog/auth-and-rbac.md` produces one exported trace
   spanning an inbound HTTP request through to its Postgres span.
 
-- [ ] 13.5 Extend `packages/authz/src/telemetry/contract.ts` with the SSO,
+- [x] 13.5 Extend `packages/authz/src/telemetry/contract.ts` with the SSO,
   account-linking, and back-channel-logout spans, metrics, and log events
   (design D23-D26: `auth.sso.callback`, `auth.backchannel_logout.received`,
   `tayzu.auth.sso.events`, `tayzu.auth.account_link.events`,

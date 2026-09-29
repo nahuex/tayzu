@@ -1366,3 +1366,303 @@ describe('otel-smoke-check, 002: forbidden values never reach a signal (task 13.
     }
   }, 60_000);
 });
+
+/**
+ * SSO / back-channel logout / step-up-insufficient leak extension (task 13.5).
+ *
+ * "`otel-smoke-check` (extended) exercises `auth.sso.callback`,
+ * `auth.backchannel_logout.received`, and the step-up-insufficient path once
+ * each, asserting the Visma Connect `sub`/`sid`/tokens/email/IP never appear on
+ * any of them."
+ *
+ * The contract half of 13.5 (`contract.ts` and `contract.test.ts`) already
+ * holds: 13.1 declared every SSO, account-link, back-channel-logout and
+ * step-up-insufficient name, and the 13.2 drive asserts they are emitted. These
+ * tests cover only what is left: that no forbidden value reaches those signals.
+ *
+ * ## Production symbols expected
+ *
+ * - Nothing new. Like the 13.3 tests, these pass when the existing
+ *   instrumentation is already clean, which is a valid outcome (not forced to
+ *   fail). Non-vacuity is asserted: the named span and log event must exist.
+ */
+describe('otel-smoke-check, 002: Visma Connect values never reach a signal (task 13.5)', () => {
+  let app: App;
+  let stub: OidcStub;
+  let authPool: Pool;
+  let handler: WebHandler;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    stub = await startOidcStub();
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: ['https://app.tayzu.test'],
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+    handler = handlerOf(app.auth);
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+  });
+
+  function newTenant(name: string) {
+    const suffix = randomUUID();
+    return bootstrapTestTenant(app.auth, {
+      name,
+      email: `sso-leak-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Sso Leak Org ${suffix}`,
+      organizationSlug: `sso-leak-org-${suffix}`,
+      ip: randomIp(),
+    });
+  }
+
+  async function expectNoLeak(markers: Readonly<Record<string, string>>): Promise<void> {
+    await harness.forceFlush();
+    const entries = exportedCorpus(harness);
+    expect(entries.length, 'the corpus is not empty').toBeGreaterThan(0);
+    for (const [label, marker] of Object.entries(markers)) {
+      expect(marker.length, `${label} marker is non-trivial`).toBeGreaterThanOrEqual(6);
+      expect(leaks(entries, marker), `${label} must never appear on any signal`).toEqual([]);
+    }
+  }
+
+  /** Markers for an email: the address, its lower-case form, and its local part. */
+  function emailMarkers(label: string, email: string): Record<string, string> {
+    const normalized = email.trim().toLowerCase();
+    return {
+      [`${label} email`]: email,
+      [`${label} normalized email`]: normalized,
+      [`${label} email local part`]: normalized.split('@')[0] ?? normalized,
+    };
+  }
+
+  function ipMarkers(label: string, ip: string): Record<string, string> {
+    return {
+      [`${label} IP`]: ip,
+      [`${label} IP /24 prefix`]: ip.split('.').slice(0, 3).join('.'),
+      [`${label} IP digest`]: sha256Hex(ip),
+    };
+  }
+
+  it('an auth.sso.callback, success and rejected, leaks no sub, sid, email, code, state or caller IP', async () => {
+    const ip = randomIp();
+    const seen: Record<string, string> = {};
+    const run = async (label: string, linkTo: string | null): Promise<void> => {
+      const sub = `leak-sub-${randomUUID()}`;
+      const sid = `leak-sid-${randomUUID()}`;
+      const email = `Leak-Sso-${randomUUID()}@Example.test`;
+      if (linkTo !== null) {
+        await authPool.query(
+          `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+           values ($1, $2, $3, $4, now(), now())`,
+          [randomUUID(), sub, PROVIDER_ID, linkTo],
+        );
+      }
+      stub.setSubject({ sub, email, name: `Leak Name ${randomUUID()}`, sid });
+
+      const initiated = await postJson(
+        handler,
+        '/sign-in/social',
+        { provider: PROVIDER_ID, callbackURL: '/' },
+        { 'x-forwarded-for': ip },
+      );
+      expect(initiated.status).toBe(200);
+      const { url } = (await initiated.json()) as { url: string };
+      const page = await (await fetch(url, { redirect: 'manual' })).text();
+      const inputs = Object.fromEntries(
+        [...page.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [
+          m[1] ?? '',
+          m[2] ?? '',
+        ]),
+      );
+      const { code, state, iss } = inputs;
+      if (code === undefined || state === undefined) {
+        throw new Error('the OIDC stub did not return code and state');
+      }
+      const params = new URLSearchParams({ code, state, ...(iss === undefined ? {} : { iss }) });
+      const headers = { 'x-forwarded-for': ip, cookie: cookieFrom(initiated) };
+      const posted = await handler(
+        new Request(`${AUTH_BASE_URL}/callback/${PROVIDER_ID}`, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'content-type': 'application/x-www-form-urlencoded',
+            origin: AUTH_ORIGIN,
+          },
+          body: params.toString(),
+        }),
+      );
+      const location = posted.headers.get('location');
+      if (
+        posted.status >= 300 &&
+        posted.status < 400 &&
+        location !== null &&
+        new URL(location, AUTH_BASE_URL).pathname.endsWith(`/callback/${PROVIDER_ID}`)
+      ) {
+        await handler(new Request(new URL(location, AUTH_BASE_URL), { headers }));
+      }
+      seen[`${label} sub`] = sub;
+      seen[`${label} sid`] = sid;
+      seen[`${label} authorization code`] = code;
+      seen[`${label} state`] = state;
+      Object.assign(seen, emailMarkers(label, email));
+    };
+
+    const linked = await newTenant('Leak Sso Linked');
+    await run('linked', linked.userId);
+    await run('unlinked', null);
+
+    await harness.forceFlush();
+    expect(
+      spansNamed(harness, 'auth.sso.callback').length,
+      'the callback span exists',
+    ).toBeGreaterThanOrEqual(2);
+    await expectNoLeak({ ...seen, ...ipMarkers('caller', ip) });
+  }, 60_000);
+
+  it('an auth.backchannel_logout.received, revoked, replay, no_match and invalid, leaks no sub, sid, jti, logout token or caller IP', async () => {
+    const ip = randomIp();
+    const sid = `leak-bcl-sid-${randomUUID()}`;
+    const target = await newTenant('Leak Backchannel');
+    await authPool.query('update auth.session set sso_sid = $1 where user_id = $2', [
+      sid,
+      target.userId,
+    ]);
+    const markers: Record<string, string> = { ...ipMarkers('caller', ip) };
+    const mint = (label: string, forSid: string): string => {
+      const now = Math.floor(Date.now() / 1000);
+      const sub = `leak-bcl-sub-${randomUUID()}`;
+      const jti = randomUUID();
+      const token = stub.signJwt(
+        {
+          iss: stub.issuer,
+          aud: stub.clientId,
+          sub,
+          sid: forSid,
+          iat: now,
+          exp: now + 300,
+          jti,
+          events: { [LOGOUT_EVENT]: {} },
+        },
+        { typ: 'logout+jwt' },
+      );
+      markers[`${label} sub`] = sub;
+      markers[`${label} sid`] = forSid;
+      markers[`${label} jti`] = jti;
+      markers[`${label} logout token`] = token;
+      markers[`${label} logout token signature`] = token.split('.')[2] ?? token;
+      return token;
+    };
+    const post = (token: string) =>
+      app.app.inject({
+        method: 'POST',
+        url: BACKCHANNEL_ROUTE,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'x-forwarded-for': ip,
+        },
+        payload: new URLSearchParams({ logout_token: token }).toString(),
+      });
+
+    const revokedToken = mint('valid', sid);
+    const responses = [
+      await post(revokedToken), // revoked
+      await post(revokedToken), // replay
+      await post(mint('no_match', `leak-bcl-missing-${randomUUID()}`)), // no_match
+      await post(`invalid.${randomUUID()}.marker`), // invalid
+    ];
+    for (const response of responses) {
+      expect(response.statusCode).toBe(200);
+    }
+
+    await harness.forceFlush();
+    expect(
+      spansNamed(harness, 'auth.backchannel_logout.received').length,
+      'the back-channel span exists',
+    ).toBeGreaterThanOrEqual(4);
+    expect(
+      logRecords(harness, 'auth.security.backchannel_logout_received').length,
+      'the back-channel log event exists',
+    ).toBeGreaterThanOrEqual(4);
+    await expectNoLeak(markers);
+  }, 60_000);
+
+  it('a step_up_insufficient re-authorization leaks no sub, sid, id token, email or session cookie', async () => {
+    const tenant = await newTenant('Leak Step-Up');
+    const sid = `leak-su-sid-${randomUUID()}`;
+    const sub = `leak-su-sub-${randomUUID()}`;
+    const claimEmail = `Leak-StepUp-${randomUUID()}@Example.test`;
+    await authPool.query('update auth.session set sso_sid = $1 where user_id = $2', [
+      sid,
+      tenant.userId,
+    ]);
+    const guard = createStepUpGuard({
+      auth: app.auth,
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+    const now = Math.floor(Date.now() / 1000);
+    const idToken = stub.signJwt({
+      iss: stub.issuer,
+      aud: stub.clientId,
+      sub,
+      sid,
+      email: claimEmail,
+      iat: now,
+      exp: now + 300,
+      auth_time: now - 10,
+      acr: 2,
+      amr: ['pwd'],
+    });
+    await expect(
+      guard({
+        headers: new Headers({ cookie: tenant.cookie }),
+        tenantId: tenant.organizationId,
+        actor: { type: 'user', id: tenant.userId },
+        route: HIGH_RISK_ROUTE,
+        operation: BLUEPRINT_DELETE_OPERATION,
+        reauthorization: { idToken },
+      }),
+    ).rejects.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+
+    await harness.forceFlush();
+    expect(
+      logRecords(harness, 'auth.security.step_up_insufficient').length,
+      'the step-up-insufficient log event exists',
+    ).toBeGreaterThanOrEqual(1);
+    const markers: Record<string, string> = {
+      'reauthorization sub': sub,
+      'reauthorization sid': sid,
+      'reauthorization id token': idToken,
+      'reauthorization id token signature': idToken.split('.')[2] ?? idToken,
+      ...emailMarkers('claim', claimEmail),
+      ...emailMarkers('account', tenant.email),
+    };
+    tenant.cookie
+      .split('; ')
+      .map((pair) => decodeURIComponent(pair.slice(pair.indexOf('=') + 1)))
+      .filter((value) => value.length >= 16)
+      .forEach((value, index) => {
+        markers[`session cookie value #${String(index)}`] = value;
+        markers[`session token #${String(index)}`] = value.split('.')[0] ?? value;
+      });
+    await expectNoLeak(markers);
+  }, 60_000);
+});
