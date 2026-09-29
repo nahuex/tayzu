@@ -360,7 +360,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `CatalogLimits` byte-size check. Verify: `body-limit.int.test.ts` covers an
   oversized request being rejected by Fastify before `CatalogLimits` runs (a
   spy shows the catalog validator is never invoked).
-- [ ] 11.8 `@fastify/rate-limit`, keyed by
+- [x] 11.8 `@fastify/rate-limit`, keyed by
   `${tenantId}:${actorType}:${actorId}`, never logged or exported as a
   telemetry attribute. Verify: `rate-limit.int.test.ts` covers one
   principal's requests being rate-limited (`AUTH_RATE_LIMITED`, 429) while a

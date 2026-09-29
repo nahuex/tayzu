@@ -11,7 +11,9 @@
  */
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
+import fastifyRateLimit from '@fastify/rate-limit';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
+import { ORPCError } from '@orpc/server';
 import { SimpleCsrfProtectionHandlerPlugin } from '@orpc/server/plugins';
 import {
   authSchema,
@@ -46,6 +48,11 @@ export interface CreateAppOptions {
    * any handler runs. Omitted: Fastify's default (1 MiB).
    */
   readonly bodyLimit?: number;
+  /**
+   * Per-principal budget for `/v1/*` (D13). The bucket key is
+   * `${tenantId}:${actor.type}:${actor.id}` from `resolveContext`; omitted: no limiter.
+   */
+  readonly rateLimit?: { readonly max: number; readonly timeWindowMs: number };
 }
 
 export interface App {
@@ -172,15 +179,54 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     return reply.send(Buffer.from(await response.arrayBuffer()));
   });
 
-  app.all('/v1/*', async (request, reply) => {
-    let context: Awaited<ReturnType<typeof resolveContext>>;
-    try {
-      context = await resolveContext(toWebHeaders(request));
-    } catch (error) {
+  // Resolved once per request: the rate-limit key generator and the handler share it.
+  type Resolution = { context: Awaited<ReturnType<typeof resolveContext>> } | { error: unknown };
+  const resolutions = new WeakMap<FastifyRequest, Promise<Resolution>>();
+  const resolveOnce = (request: FastifyRequest): Promise<Resolution> => {
+    let pending = resolutions.get(request);
+    if (pending === undefined) {
+      pending = resolveContext(toWebHeaders(request)).then(
+        (context): Resolution => ({ context }),
+        (error: unknown): Resolution => ({ error }),
+      );
+      resolutions.set(request, pending);
+    }
+    return pending;
+  };
+
+  let v1Config: { rateLimit?: object } = {};
+  if (options.rateLimit !== undefined) {
+    await app.register(fastifyRateLimit, { global: false });
+    const limited = new ORPCError('AUTH_RATE_LIMITED', {
+      status: 429,
+      message: 'Too many requests',
+    });
+    v1Config = {
+      rateLimit: {
+        max: options.rateLimit.max,
+        timeWindow: options.rateLimit.timeWindowMs,
+        // Internal bucket key only: never logged, returned or exported.
+        keyGenerator: async (request: FastifyRequest): Promise<string> => {
+          const resolved = await resolveOnce(request);
+          if ('error' in resolved) {
+            return `unauthenticated:${request.ip}`;
+          }
+          const { tenantId, actor } = resolved.context;
+          return `${tenantId}:${actor.type}:${actor.id}`;
+        },
+        errorResponseBuilder: () => ({ ...limited.toJSON(), statusCode: 429 }),
+      },
+    };
+  }
+
+  app.all('/v1/*', { config: v1Config }, async (request, reply) => {
+    const resolved = await resolveOnce(request);
+    if ('error' in resolved) {
       // Same mapping and body shape as any other error, via oRPC's own JSON.
-      const mapped = toOrpcError(error);
+      const mapped = toOrpcError(resolved.error);
       return reply.status(mapped.status).send(mapped.toJSON());
     }
+    const context = resolved.context;
     const result = await openApiHandler.handle(request, reply, {
       context: { ...context },
     });
