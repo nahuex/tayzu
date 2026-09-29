@@ -70,6 +70,12 @@ export const METRICS: readonly MetricContract[] = [
     unit: '{exchange}',
     attributes: ['tayzu.auth.credential.kind', 'tayzu.auth.exchange.outcome'],
   },
+  {
+    name: 'tayzu.auth.token.revocation_checks',
+    instrumentType: 'counter',
+    unit: '{check}',
+    attributes: ['tayzu.auth.credential.kind', 'tayzu.auth.revocation.result'],
+  },
 ];
 
 export type LogSeverity = 'INFO' | 'WARN' | 'ERROR';
@@ -120,6 +126,11 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'WARN',
     attributes: ['tayzu.auth.credential.kind'],
   },
+  {
+    name: 'auth.security.revoked_token_rejected',
+    severity: 'WARN',
+    attributes: [sharedAttributeKeys.tenantId, 'tayzu.auth.credential.kind'],
+  },
 ];
 
 /**
@@ -134,4 +145,5 @@ export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
   'auth.security.session_revoked',
   'auth.security.step_up_required',
   'auth.security.token_exchange_failed',
+  'auth.security.revoked_token_rejected',
 ];

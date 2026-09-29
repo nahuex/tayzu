@@ -81,9 +81,11 @@
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
  */
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import { withTenantTransaction, type createPool } from '@tayzu/db';
 
 import type { AuthInstance } from './auth.js';
+import { logger, revocationChecksCounter } from './telemetry/instruments.js';
 import { AuthContextError } from './errors.js';
 
 export interface ContextResolverOptions {
@@ -92,10 +94,9 @@ export interface ContextResolverOptions {
   /**
    * Task 5.7, design D21: a `tayzu_app` pool used to read
    * `machine_credential_revocation` on every machine-token request. When
-   * omitted, the machine-token branch performs no revocation check (the
-   * pre-5.7 behavior); every production caller must supply it.
+   * required, so no resolver can skip the revocation list.
    */
-  readonly revocationPool?: ReturnType<typeof createPool>;
+  readonly revocationPool: ReturnType<typeof createPool>;
 }
 
 export interface ResolvedActor {
@@ -262,15 +263,39 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   // token's own tenant claim, so RLS applies. Any lookup failure resolves to
   // "revoked" and is never cached: the token is rejected, never assumed
   // not revoked.
+  // Telemetry (design D21): one counter increment per check, and a WARN log
+  // on a revoked rejection; only the tenant and the credential kind, never
+  // the token, client id or secret.
   async function isCredentialRevoked(
     pool: ReturnType<typeof createPool>,
     tenantId: string,
     credentialId: string,
+    kind: string,
   ): Promise<boolean> {
+    const result = await lookupRevoked(pool, tenantId, credentialId);
+    revocationChecksCounter.add(1, {
+      'tayzu.auth.credential.kind': kind,
+      'tayzu.auth.revocation.result': result,
+    });
+    if (result === 'rejected') {
+      logger.emit({
+        eventName: 'auth.security.revoked_token_rejected',
+        severityNumber: SeverityNumber.WARN,
+        attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.auth.credential.kind': kind },
+      });
+    }
+    return result !== 'allowed';
+  }
+
+  async function lookupRevoked(
+    pool: ReturnType<typeof createPool>,
+    tenantId: string,
+    credentialId: string,
+  ): Promise<'allowed' | 'rejected' | 'lookup_failed'> {
     const now = Date.now();
     const cached = revocationCache.get(credentialId);
     if (cached !== undefined && cached.expiresAt > now) {
-      return cached.revoked;
+      return cached.revoked ? 'rejected' : 'allowed';
     }
 
     let revoked: boolean;
@@ -283,11 +308,11 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
         return result.rows.length > 0;
       });
     } catch {
-      return true;
+      return 'lookup_failed';
     }
 
     revocationCache.set(credentialId, { revoked, expiresAt: now + REVOCATION_CACHE_TTL_MS });
-    return revoked;
+    return revoked ? 'rejected' : 'allowed';
   }
 
   // Task 3.6, design D19: the independent membership re-check. A cache hit
@@ -339,8 +364,12 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
         rejectMissingContext();
       }
       if (
-        options.revocationPool !== undefined &&
-        (await isCredentialRevoked(options.revocationPool, resolved.tenantId, resolved.actor.id))
+        await isCredentialRevoked(
+          options.revocationPool,
+          resolved.tenantId,
+          resolved.actor.id,
+          resolved.actor.type,
+        )
       ) {
         rejectMissingContext();
       }

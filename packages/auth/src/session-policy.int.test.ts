@@ -309,15 +309,21 @@ describe('resolveContext: 12-hour idle timeout (task 3.2, design D3)', () => {
   let db: TestDb;
   let auth: AuthInstance;
   let resolveContext: ContextResolver;
+  let appPool: TestDb['$client'];
 
   beforeAll(async () => {
     db = connect(databaseUrl());
     await runMigrations(db.$client);
     auth = createAuth({ db, secret: TEST_SECRET });
-    resolveContext = createContextResolver({ auth });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = createContextResolver({ auth, revocationPool: appPool });
   }, 60_000);
 
   afterAll(async () => {
+    await endQuietly(appPool);
     await endQuietly(db.$client);
   });
 
@@ -521,6 +527,7 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
   let db: TestDb;
   let auth: AuthInstance;
   let resolveContext: ContextResolver;
+  let appPool: TestDb['$client'];
   let harness: TelemetryTestHarness;
 
   /** The harness `./__fixtures__/registered-harness.js` registered while the module graph loaded. */
@@ -538,7 +545,11 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
     db = connect(databaseUrl());
     await runMigrations(db.$client);
     auth = createAuth({ db, secret: TEST_SECRET });
-    resolveContext = createContextResolver({ auth });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = createContextResolver({ auth, revocationPool: appPool });
     harness = registeredHarness();
   }, 60_000);
 
@@ -547,6 +558,7 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
   });
 
   afterAll(async () => {
+    await endQuietly(appPool);
     await endQuietly(db.$client);
   });
 

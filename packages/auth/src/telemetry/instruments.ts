@@ -49,3 +49,8 @@ export const stepUpRequiredCounter = meter.createCounter('tayzu.auth.step_up.req
 export const tokenExchangesCounter = meter.createCounter('tayzu.auth.token.exchanges', {
   unit: '{exchange}',
 });
+
+/** design.md, Metrics table: "Revocation-check volume and fail-closed signal" (design D21). */
+export const revocationChecksCounter = meter.createCounter('tayzu.auth.token.revocation_checks', {
+  unit: '{check}',
+});

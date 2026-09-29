@@ -306,14 +306,22 @@ const exchange: (
 describe('Machine-credential token exchange (task 5.3, design D5)', () => {
   let db: TestDb;
   let auth: AuthInstance;
+  // Security fix-up (tasks 5.6/5.7): revocation always carries the `tayzu_app`
+  // pool and the host tenantId.
+  let appPool: TestDb['$client'];
 
   beforeAll(async () => {
     db = connect(databaseUrl());
     await runMigrations(db.$client);
     auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
   }, 60_000);
 
   afterAll(async () => {
+    await endQuietly(appPool);
     await endQuietly(db.$client);
   });
 
@@ -589,6 +597,8 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     await revokeMachineCredential(auth, {
       headers: new Headers({ cookie: admin.cookie }),
       id: created.id,
+      pool: appPool,
+      tenantId: admin.organizationId,
     });
 
     // Discard whatever admin bootstrap/credential-creation/revocation

@@ -115,7 +115,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // (erased at compile time, `verbatimModuleSyntax`), so it carries no runtime
 // ordering weight -- same reasoning as every other int test file in this
 // package.
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  createAdminUser,
+  signInAdminUser,
+} from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 5.1): does not exist yet (module doc comment,
@@ -204,6 +208,12 @@ interface VerifyApiKeyResult {
   readonly valid: boolean;
 }
 
+interface AddMemberApiSurface {
+  addMember(args: {
+    body: { userId: string; organizationId: string; role: string };
+  }): Promise<unknown>;
+}
+
 interface AuthApiSurface {
   getApiKey(args: {
     query: { readonly id: string; readonly configId?: string };
@@ -222,15 +232,23 @@ describe('Machine credentials (task 5.1, design D5)', () => {
   let db: TestDb;
   let auth: AuthInstance;
   let api: AuthApiSurface;
+  // Security fix-up (tasks 5.6/5.7): `revokeMachineCredential` requires the
+  // `tayzu_app` pool and the host tenantId, so every caller passes them.
+  let appPool: TestDb['$client'];
 
   beforeAll(async () => {
     db = connect(databaseUrl());
     await runMigrations(db.$client);
     auth = createAuth({ db, secret: TEST_SECRET });
     api = apiOf(auth);
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
   }, 60_000);
 
   afterAll(async () => {
+    await endQuietly(appPool);
     await endQuietly(db.$client);
   });
 
@@ -398,7 +416,12 @@ describe('Machine credentials (task 5.1, design D5)', () => {
     ).toBe(true);
 
     // WHEN "an admin revokes the credential" (task 5.2's own Verify clause).
-    await revokeMachineCredential(auth, { headers, id: created.id });
+    await revokeMachineCredential(auth, {
+      headers,
+      id: created.id,
+      pool: appPool,
+      tenantId: admin.organizationId,
+    });
 
     // THEN "a revoked credential's id can no longer authenticate at the
     // token endpoint" (task 5.2's own Verify clause) -- the same
@@ -565,5 +588,75 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
       rows.length > 0 || verified.valid,
       'the credential is never disabled at the apiKey layer while absent from the revocation list',
     ).toBe(true);
+  });
+
+  /**
+   * Security fix-up (task 5.6, design D21, review finding 2): "the revocation
+   * row is written in the same operation that disables the apiKey, so the two
+   * can never disagree". A caller who fails Better Auth's own admin-only
+   * `"update"` permission check must not be able to write a revocation row
+   * (a non-admin member could otherwise deny service to any credential of the
+   * organization). The rejection is the same one Better Auth raises today
+   * (`FORBIDDEN`, `INSUFFICIENT_API_KEY_PERMISSIONS`); the key stays enabled
+   * and no row exists.
+   */
+  it('A non-admin member calling revoke is rejected and leaves no revocation row', async () => {
+    const { tenantId, created } = await newCredential();
+
+    const memberEmail = randomEmail();
+    const member = await createAdminUser(auth, {
+      name: 'Plain Member',
+      email: memberEmail,
+      password: TEST_PASSWORD,
+    });
+    await (auth.api as AddMemberApiSurface).addMember({
+      body: { userId: member.userId, organizationId: tenantId, role: 'member' },
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email: memberEmail,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const memberHeaders = new Headers({ cookie: signedIn.cookie });
+
+    // WHEN the member (no apiKey "update" permission) revokes ...
+    // THEN it is rejected with Better Auth's own permission error, unchanged.
+    await expect(
+      revokeMachineCredential(auth, {
+        headers: memberHeaders,
+        id: created.id,
+        pool: appPool,
+        tenantId,
+      }),
+    ).rejects.toMatchObject({
+      status: 'FORBIDDEN',
+      body: { code: 'INSUFFICIENT_API_KEY_PERMISSIONS' },
+    });
+
+    // AND no revocation row was written ...
+    expect(
+      await revocationRows(tenantId, created.id),
+      'a rejected (non-admin) revoke leaves no revocation row',
+    ).toHaveLength(0);
+
+    // AND the key is still enabled.
+    const verified = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(verified.valid, 'the credential is still enabled').toBe(true);
+  });
+
+  /**
+   * Security fix-up (review finding 1): `pool` and `tenantId` are required,
+   * never optional, so an omitted revocation target cannot silently skip the
+   * revocation list. Compile-time check: `typecheck` must reject these calls
+   * once the production signature makes both required. (`@ts-expect-error`
+   * fails typecheck while the parameters are still optional.)
+   */
+  it('The revocation target is required by the type signature', () => {
+    const never = (): Promise<void> =>
+      // @ts-expect-error `pool` and `tenantId` are required
+      revokeMachineCredential(auth, { headers: new Headers(), id: 'x' });
+    expect(typeof never).toBe('function');
   });
 });

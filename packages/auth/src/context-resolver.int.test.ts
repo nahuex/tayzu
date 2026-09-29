@@ -151,6 +151,8 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import type { Attributes } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -169,7 +171,7 @@ import {
   createAdminUser,
   signInAdminUser,
 } from './__fixtures__/admin-user.js';
-import './__fixtures__/registered-harness.js';
+import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 3.1). Does not exist yet -- see this file's
 // own module doc comment, "Why this is expected to fail for the right
@@ -289,6 +291,7 @@ async function expectContextRequiredRejection(promise: Promise<unknown>): Promis
  */
 type ContextResolverFactory = (options: {
   readonly auth: AuthInstance;
+  readonly revocationPool: TestDb['$client'];
 }) => (headers: Headers) => Promise<unknown>;
 
 /**
@@ -353,15 +356,24 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
   let db: TestDb;
   let auth: AuthInstance;
   let resolveContext: (headers: Headers) => Promise<unknown>;
+  let appPool: TestDb['$client'];
 
   beforeAll(async () => {
     db = connect(databaseUrl());
     await runMigrations(db.$client);
     auth = createAuth({ db, secret: TEST_SECRET });
-    resolveContext = (createContextResolver as ContextResolverFactory)({ auth });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = (createContextResolver as ContextResolverFactory)({
+      auth,
+      revocationPool: appPool,
+    });
   }, 60_000);
 
   afterAll(async () => {
+    await endQuietly(appPool);
     await endQuietly(db.$client);
   });
 
@@ -958,5 +970,177 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
     // WHEN the token is used, THEN the unreachable check is never treated as
     // "not revoked": it fails exactly as `CATALOG_CONTEXT_REQUIRED`.
     await expectContextRequiredRejection(resolverWith(brokenPool)(bearer));
+  });
+
+  /**
+   * Security fix-up (review finding 3), design.md "Observability contract":
+   *
+   * | `tayzu.auth.token.revocation_checks` | Counter, `{check}` |
+   * `tayzu.auth.credential.kind`, `tayzu.auth.revocation.result`
+   * (`allowed`|`rejected`|`lookup_failed`) |
+   * | `auth.security.revoked_token_rejected` | WARN | `tayzu.tenant.id`,
+   * `tayzu.auth.credential.kind` |
+   *
+   * Every path of the revocation check increments the counter once with its
+   * result; a revoked-token rejection also emits the WARN log. Each case
+   * uses a fresh resolver (empty cache) so exactly one lookup happens. No
+   * token, client id or client secret reaches any signal.
+   */
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  // `@opentelemetry/sdk-metrics`'s `DataPointType.SUM`, inlined like every
+  // other int test file in this package.
+  const METRIC_DATA_POINT_TYPE_SUM = 3;
+
+  function checkPoints(harness: TelemetryTestHarness): { attributes: Attributes; value: number }[] {
+    const points: { attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === 'tayzu.auth.token.revocation_checks' &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  function rejectedLogs(
+    harness: TelemetryTestHarness,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']>[number][] {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'auth.security.revoked_token_rejected',
+    );
+  }
+
+  function expectNoSecrets(harness: TelemetryTestHarness, secrets: readonly string[]): void {
+    const logs = [...harness.logExporter.getFinishedLogRecords()].map((record) => ({
+      attributes: record.attributes,
+      body: record.body,
+    }));
+    const spans = [...harness.spanExporter.getFinishedSpans()].map((span) => span.attributes);
+    const metrics: Attributes[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          for (const dataPoint of metric.dataPoints) {
+            metrics.push(dataPoint.attributes);
+          }
+        }
+      }
+    }
+    const snapshot = JSON.stringify({ logs, spans, metrics });
+    for (const secret of secrets) {
+      expect(snapshot, `telemetry must never contain ${JSON.stringify(secret)}`).not.toContain(
+        secret,
+      );
+    }
+  }
+
+  it('A revoked token rejection increments the revocation-check counter and logs revoked_token_rejected', async () => {
+    const harness = registeredHarness();
+    const { headers, tenantId, credential, accessToken } = await issueToken();
+    await revokeMachineCredential(auth, {
+      headers,
+      id: credential.id,
+      pool: appPool,
+      tenantId,
+    });
+    await harness.reset();
+
+    await expectContextRequiredRejection(
+      resolverWith(appPool)(new Headers({ authorization: `Bearer ${accessToken}` })),
+    );
+    await harness.forceFlush();
+
+    const points = checkPoints(harness);
+    expect(points, 'exactly one revocation check was counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.auth.credential.kind': 'integration',
+      'tayzu.auth.revocation.result': 'rejected',
+    });
+
+    const logs = rejectedLogs(harness);
+    expect(logs, 'exactly one revoked_token_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual({
+      'tayzu.tenant.id': tenantId,
+      'tayzu.auth.credential.kind': 'integration',
+    });
+
+    expectNoSecrets(harness, [accessToken, credential.id, credential.secret]);
+  });
+
+  it('An active credential token counts an allowed revocation check and logs no rejection', async () => {
+    const harness = registeredHarness();
+    const { credential, accessToken } = await issueToken();
+    await harness.reset();
+
+    await resolverWith(appPool)(new Headers({ authorization: `Bearer ${accessToken}` }));
+    await harness.forceFlush();
+
+    const points = checkPoints(harness);
+    expect(points, 'exactly one revocation check was counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.auth.credential.kind': 'integration',
+      'tayzu.auth.revocation.result': 'allowed',
+    });
+    expect(rejectedLogs(harness), 'no revoked_token_rejected log for an active token').toHaveLength(
+      0,
+    );
+
+    expectNoSecrets(harness, [accessToken, credential.id, credential.secret]);
+  });
+
+  it('A revocation lookup failure counts lookup_failed and leaks nothing', async () => {
+    const harness = registeredHarness();
+    const { credential, accessToken } = await issueToken();
+    const brokenPool = newAppPool();
+    await endQuietly(brokenPool);
+    await harness.reset();
+
+    await expectContextRequiredRejection(
+      resolverWith(brokenPool)(new Headers({ authorization: `Bearer ${accessToken}` })),
+    );
+    await harness.forceFlush();
+
+    const points = checkPoints(harness);
+    expect(points, 'exactly one revocation check was counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.auth.credential.kind': 'integration',
+      'tayzu.auth.revocation.result': 'lookup_failed',
+    });
+
+    expectNoSecrets(harness, [accessToken, credential.id, credential.secret]);
+  });
+
+  /**
+   * Review finding 1, compile-time: `revocationPool` is required, so a
+   * resolver without it cannot silently skip the revocation list.
+   * `@ts-expect-error` fails typecheck while the option is still optional.
+   */
+  it('The revocation pool is required by the type signature', () => {
+    const never = (): unknown =>
+      // @ts-expect-error `revocationPool` is required
+      createContextResolver({ auth });
+    expect(typeof never).toBe('function');
   });
 });

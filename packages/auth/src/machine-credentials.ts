@@ -36,6 +36,7 @@
 import { withTenantTransaction, type createPool } from '@tayzu/db';
 
 import type { AuthInstance } from './auth.js';
+import { AuthContextError } from './errors.js';
 
 /** design D5: the fixed kinds a machine credential can be created with. */
 export type MachineCredentialActorKind = 'integration' | 'agent';
@@ -86,6 +87,10 @@ interface AuthApiSurface {
       metadata: Record<string, unknown>;
     };
   }): Promise<CreateApiKeyResult>;
+  getApiKey(args: {
+    headers: Headers;
+    query: { configId: string; id: string };
+  }): Promise<{ readonly referenceId: string }>;
   updateApiKey(args: {
     headers: Headers;
     body: {
@@ -145,42 +150,50 @@ type AppPool = ReturnType<typeof createPool>;
 /**
  * Where the revocation row is written (task 5.6, design D21): a `tayzu_app`
  * pool and the tenant from the trusted host context, never from input. Both
- * or neither; when omitted, only the apiKey layer is disabled (the pre-5.6
- * behavior the earlier tests exercise).
+ * are required: no call can skip the revocation list.
  */
-export type RevocationListTarget =
-  | { readonly pool: AppPool; readonly tenantId: string }
-  | { readonly pool?: undefined; readonly tenantId?: undefined };
+export interface RevocationListTarget {
+  readonly pool: AppPool;
+  readonly tenantId: string;
+}
 
 /**
  * Revokes a machine credential by disabling it through Better Auth's own
  * `updateApiKey`, scoped to the `machine-credential` config. Disabling a key
  * makes it fail `auth.api.verifyApiKey` (Better Auth's own behavior), which
  * `POST /v1/auth/token` (task 5.3) relies on as its own revocation check.
- * Throws whatever `auth.api.updateApiKey` throws on a non-admin/non-member
- * caller (Better Auth's own `checkOrgApiKeyPermission`, this time for the
- * `"update"` action) or an unknown credential id.
+ * Throws whatever Better Auth throws on a non-admin/non-member caller
+ * (`checkOrgApiKeyPermission`) or an unknown credential id.
  */
 export async function revokeMachineCredential(
   auth: AuthInstance,
   params: RevokeMachineCredentialParams & RevocationListTarget,
 ): Promise<void> {
+  // Authorize first: a caller Better Auth rejects must leave no revocation
+  // row (a non-admin could otherwise deny service to any credential).
+  // `getApiKey` runs the organization permission check scoped to the
+  // caller's session and to the credential's own organization, and throws
+  // Better Auth's own error. The credential must belong to the host tenant.
+  const existing = await apiOf(auth).getApiKey({
+    headers: params.headers,
+    query: { configId: MACHINE_CREDENTIAL_CONFIG_ID, id: params.id },
+  });
+  if (existing.referenceId !== params.tenantId) {
+    throw new AuthContextError();
+  }
   // Ordering (design D21): the apiKey row (`auth` schema, `tayzu_auth`) and
   // the revocation row (`public`, `tayzu_app`) live on different roles and
-  // cannot share a transaction. The revocation row is written FIRST, so a
-  // failure there rejects the operation with the key still enabled, and a
-  // failure of the disable afterwards leaves the credential on the
+  // cannot share a transaction. The revocation row is written BEFORE the
+  // disable, so a failure of the disable leaves the credential on the
   // revocation list (rejected by the resolver), never the reverse. A repeat
   // is idempotent (`ON CONFLICT DO NOTHING`; `tayzu_app` has no UPDATE).
-  if (params.pool !== undefined) {
-    await withTenantTransaction(params.pool, { tenantId: params.tenantId }, async (client) => {
-      await client.query(
-        `insert into machine_credential_revocation (credential_id, revoked_at, tenant_id)
-         values ($1, now(), $2) on conflict do nothing`,
-        [params.id, params.tenantId],
-      );
-    });
-  }
+  await withTenantTransaction(params.pool, { tenantId: params.tenantId }, async (client) => {
+    await client.query(
+      `insert into machine_credential_revocation (credential_id, revoked_at, tenant_id)
+       values ($1, now(), $2) on conflict do nothing`,
+      [params.id, params.tenantId],
+    );
+  });
   await apiOf(auth).updateApiKey({
     headers: params.headers,
     body: {
