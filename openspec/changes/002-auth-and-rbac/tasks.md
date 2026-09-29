@@ -347,7 +347,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `data`. Verify: `http-errors.int.test.ts` covers "HTTP error status matches
   the declared code" for every `CATALOG_*` and `AUTH_*` code in the design's
   mapping table.
-- [ ] 11.4 `CORSPlugin` with an explicit origin allowlist and
+- [x] 11.4 `CORSPlugin` with an explicit origin allowlist and
   `credentials: true`. Verify: `cors.int.test.ts` covers an allowed origin
   receiving CORS headers and a disallowed origin not receiving them.
 - [ ] 11.5 `SimpleCsrfProtectionHandlerPlugin` on every mutating route.

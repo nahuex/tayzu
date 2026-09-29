@@ -9,6 +9,7 @@
  * point hands it explicit options. Later group 11 tasks add CORS, CSRF,
  * headers, body limits, rate limiting, the route allowlist and error mapping.
  */
+import fastifyCors from '@fastify/cors';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
 import {
   authSchema,
@@ -36,7 +37,7 @@ export interface CreateAppOptions {
   readonly authSecret: string;
   /** `host:port` of the Cerbos gRPC endpoint. */
   readonly cerbosAddress: string;
-  /** Explicit CORS origin allowlist (wired by task 11.4). */
+  /** Explicit CORS origin allowlist: exact matches only, never `*` or a reflected origin. */
   readonly allowedOrigins: readonly string[];
 }
 
@@ -107,6 +108,19 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   const app = Fastify();
+  // Exact-match allowlist; `credentials` is required for Better Auth's cookie.
+  // A disallowed origin gets no CORS headers at all, not even `credentials`.
+  const allowedOrigins = new Set(options.allowedOrigins);
+  await app.register(fastifyCors, {
+    delegator: (request, callback) => {
+      const origin = request.headers.origin;
+      if (origin !== undefined && allowedOrigins.has(origin)) {
+        callback(null, { origin, credentials: true });
+      } else {
+        callback(null, { origin: false, credentials: false });
+      }
+    },
+  });
   // oRPC reads the raw body itself; keep Fastify from consuming other types.
   app.addContentTypeParser('*', (_request, _payload, done) => {
     done(null, undefined);
