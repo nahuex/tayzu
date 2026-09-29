@@ -409,7 +409,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 13. Telemetry contract enforcement
 
-- [ ] 13.1 `packages/authz/src/telemetry/contract.ts` mirrors this design's
+- [x] 13.1 `packages/authz/src/telemetry/contract.ts` mirrors this design's
   Observability contract (span names, metric names and units, allowed
   attribute keys, log event names), importing the shared keys from
   `@tayzu/observability/semconv`. Verify: `contract.test.ts` snapshot-asserts

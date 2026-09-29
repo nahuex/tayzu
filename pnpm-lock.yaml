@@ -139,6 +139,9 @@ importers:
       '@cerbos/orm-drizzle':
         specifier: 0.1.0
         version: 0.1.0(@bufbuild/protobuf@2.15.0)(@cerbos/api@0.11.1)(drizzle-orm@0.45.3(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.6)(pg@8.23.0))
+      '@tayzu/observability':
+        specifier: workspace:*
+        version: link:../observability
 
   packages/catalog:
     dependencies:
