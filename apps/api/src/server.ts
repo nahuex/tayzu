@@ -22,6 +22,7 @@ import {
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  emitRateLimited,
   isAllowedAuthPath,
   verifyLogoutToken,
   withBackchannelLogoutTelemetry,
@@ -380,6 +381,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       }
       const result = await check(request);
       if (!result.isAllowed && result.isExceeded) {
+        emitRateLimited('token_exchange');
         return reply.status(429).header('retry-after', result.ttlInSeconds).send(limited.toJSON());
       }
       return undefined;

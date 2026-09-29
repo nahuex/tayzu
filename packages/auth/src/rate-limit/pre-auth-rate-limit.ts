@@ -276,7 +276,7 @@ function rateLimitedResponse(retryAfterSeconds: number): Response {
 }
 
 /** design.md, Log events table `auth.security.rate_limited` / Metrics table `tayzu.auth.rate_limit.events` (design D20): no IP or email attribute, ever. */
-function emitRateLimited(scope: RateLimitScope): void {
+export function emitRateLimited(scope: RateLimitScope): void {
   logger.emit({
     eventName: 'auth.security.rate_limited',
     severityNumber: SeverityNumber.WARN,

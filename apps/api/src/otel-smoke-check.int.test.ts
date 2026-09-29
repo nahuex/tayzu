@@ -63,7 +63,7 @@
  * instrument in `@tayzu/auth` and `@tayzu/catalog` is created at import time
  * and the OTel metrics API has no proxy meter provider.
  */
-import { randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 
@@ -986,4 +986,383 @@ describe('otel-smoke-check, 002: every declared signal appears with its declared
       ).toContain('integration');
     });
   });
+});
+
+/**
+ * Marker-leak extension (task 13.3, design "Observability contract" > "Forbidden
+ * on any signal", and D20).
+ *
+ * "`otel-smoke-check` covers a forced sign-in failure, MFA failure, and
+ * token-exchange failure, and asserts client secrets, access tokens, session
+ * tokens, TOTP codes, and backup codes never appear in any exported span,
+ * metric, or log attribute; extended (design D20) to assert a rate-limited
+ * request's caller IP and submitted email never appear on
+ * `auth.security.rate_limited` or `tayzu.auth.rate_limit.events`."
+ *
+ * Every marker is a unique random value (or a real credential minted for this
+ * test), so a hit can only come from the code under test. Strings are compared
+ * against attribute keys and values, span event attributes, span status
+ * messages and log bodies, never against trace/span ids or timestamps (a
+ * six-digit TOTP code would otherwise collide with them by chance). Codes of
+ * six digits are matched exactly, every other marker by substring.
+ *
+ * ## Production symbols expected
+ *
+ * - Nothing new for the first three tests: they pass when the existing
+ *   instrumentation is already clean, which is a valid outcome.
+ * - `auth.security.rate_limited` / `tayzu.auth.rate_limit.events` with scope
+ *   `token_exchange`, emitted when `POST /v1/auth/token` answers 429 (design D20:
+ *   scope enum `sign_in | two_factor_verify | token_exchange`). Only the `sign_in`
+ *   scope is emitted today (`pre-auth-rate-limit.ts`); the token-exchange
+ *   limiter lives in `server.ts` and records nothing.
+ */
+interface CorpusEntry {
+  readonly signal: string;
+  readonly strings: readonly string[];
+}
+
+function stringsIn(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  return [];
+}
+
+function attributeStrings(attributes: Readonly<Record<string, unknown>>): string[] {
+  return Object.entries(attributes).flatMap(([key, value]) => [key, ...stringsIn(value)]);
+}
+
+/** Everything the harness exported so far, one entry per span, metric data point and log record. */
+function exportedCorpus(harness: TelemetryTestHarness): CorpusEntry[] {
+  const entries: CorpusEntry[] = [];
+  for (const span of harness.spanExporter.getFinishedSpans()) {
+    entries.push({
+      signal: `span ${span.name}`,
+      strings: [
+        span.name,
+        span.status.message ?? '',
+        ...attributeStrings(span.attributes),
+        ...span.events.flatMap((event) => [
+          event.name,
+          ...attributeStrings(event.attributes ?? {}),
+        ]),
+      ],
+    });
+  }
+  for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+    for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+      for (const metric of scopeMetrics.metrics) {
+        for (const point of metric.dataPoints) {
+          entries.push({
+            signal: `metric ${metric.descriptor.name}`,
+            strings: attributeStrings(point.attributes),
+          });
+        }
+      }
+    }
+  }
+  for (const record of harness.logExporter.getFinishedLogRecords()) {
+    entries.push({
+      signal: `log ${record.eventName ?? '(no event name)'}`,
+      strings: [...stringsIn(record.body), ...attributeStrings(record.attributes)],
+    });
+  }
+  return entries;
+}
+
+function leaks(entries: readonly CorpusEntry[], marker: string): string[] {
+  const exact = /^\d{6}$/.test(marker);
+  return entries
+    .filter((entry) =>
+      entry.strings.some((text) => (exact ? text === marker : text.includes(marker))),
+    )
+    .map((entry) => entry.signal);
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+describe('otel-smoke-check, 002: forbidden values never reach a signal (task 13.3)', () => {
+  let app: App;
+  let authPool: Pool;
+  let handler: WebHandler;
+  let harness: TelemetryTestHarness;
+  let totp: {
+    enableTwoFactor(args: {
+      body: { password: string; method: 'totp' };
+      headers: Headers;
+    }): Promise<{ totpURI: string; backupCodes: readonly string[] }>;
+    generateTOTP(args: { body: { secret: string } }): Promise<{ code: string }>;
+    verifyTOTP(args: { body: { code: string }; headers: Headers }): Promise<unknown>;
+  };
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: ['https://app.tayzu.test'],
+      tokenExchangeRateLimit: { max: 2, timeWindowMs: 60_000 },
+    });
+    handler = handlerOf(app.auth);
+    const api: unknown = app.auth.api;
+    totp = api as typeof totp;
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  function newTenant(name: string) {
+    const suffix = randomUUID();
+    return bootstrapTestTenant(app.auth, {
+      name,
+      email: `leak-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Leak Org ${suffix}`,
+      organizationSlug: `leak-org-${suffix}`,
+      ip: randomIp(),
+    });
+  }
+
+  async function expectNoLeak(markers: Readonly<Record<string, string>>): Promise<void> {
+    await harness.forceFlush();
+    const entries = exportedCorpus(harness);
+    expect(entries.length, 'the corpus is not empty').toBeGreaterThan(0);
+    for (const [label, marker] of Object.entries(markers)) {
+      expect(marker.length, `${label} marker is non-trivial`).toBeGreaterThanOrEqual(6);
+      expect(leaks(entries, marker), `${label} must never appear on any signal`).toEqual([]);
+    }
+  }
+
+  it('a forced sign-in failure leaks no session token or submitted password', async () => {
+    const tenant = await newTenant('Leak Sign-In');
+    const wrongPassword = `wrong-password-marker-${randomUUID()}`;
+    const failed = await postJson(handler, '/sign-in/email', {
+      email: tenant.email,
+      password: wrongPassword,
+    });
+    expect(failed.status, 'the sign-in is rejected').toBe(401);
+
+    const signedIn = await postJson(handler, '/sign-in/email', {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+    });
+    expect(signedIn.status).toBe(200);
+    const sessionCookieValues = [tenant.cookie, cookieFrom(signedIn)]
+      .flatMap((cookie) => cookie.split('; '))
+      .map((pair) => decodeURIComponent(pair.slice(pair.indexOf('=') + 1)))
+      .filter((value) => value.length >= 16);
+    const markers: Record<string, string> = { 'submitted password': wrongPassword };
+    sessionCookieValues.forEach((value, index) => {
+      markers[`session cookie value #${String(index)}`] = value;
+      markers[`session token #${String(index)}`] = value.split('.')[0] ?? value;
+    });
+    await expectNoLeak(markers);
+  }, 60_000);
+
+  it('a forced MFA failure leaks no TOTP code, backup code or session token', async () => {
+    const tenant = await newTenant('Leak Mfa');
+    const headers = new Headers({ cookie: tenant.cookie });
+    const enabled = await totp.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers,
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    const enrolmentCode = (await totp.generateTOTP({ body: { secret } })).code;
+    await totp.verifyTOTP({ body: { code: enrolmentCode }, headers });
+
+    const challenged = await postJson(handler, '/sign-in/email', {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+    });
+    expect(challenged.status, 'the sign-in is challenged').toBe(200);
+    const challengeCookie = cookieFrom(challenged);
+    const validCode = (await totp.generateTOTP({ body: { secret } })).code;
+    let wrongCode = validCode;
+    while (wrongCode === validCode || wrongCode === enrolmentCode) {
+      wrongCode = randomInt(0, 1_000_000).toString(10).padStart(6, '0');
+    }
+    const wrong = await postJson(
+      handler,
+      '/two-factor/verify-totp',
+      { code: wrongCode },
+      { cookie: challengeCookie },
+    );
+    expect(wrong.status, 'the wrong code is rejected').toBeGreaterThanOrEqual(400);
+    const verified = await postJson(
+      handler,
+      '/two-factor/verify-totp',
+      { code: validCode },
+      { cookie: challengeCookie },
+    );
+    expect(verified.status).toBe(200);
+
+    const markers: Record<string, string> = {
+      'wrong TOTP code': wrongCode,
+      'valid TOTP code': validCode,
+      'enrolment TOTP code': enrolmentCode,
+      'TOTP secret': secret,
+    };
+    enabled.backupCodes.forEach((code, index) => {
+      markers[`backup code #${String(index)}`] = code;
+    });
+    [tenant.cookie, challengeCookie, cookieFrom(verified)]
+      .flatMap((cookie) => cookie.split('; '))
+      .forEach((pair, index) => {
+        const value = decodeURIComponent(pair.slice(pair.indexOf('=') + 1));
+        // Cleared or short cookies (for example an emptied challenge cookie) carry no secret.
+        if (value.length < 16) return;
+        markers[`session cookie value #${String(index)}`] = value;
+        markers[`session token #${String(index)}`] = value.split('.')[0] ?? value;
+      });
+    await expectNoLeak(markers);
+  }, 60_000);
+
+  it('a forced token-exchange failure leaks no client secret or access token', async () => {
+    const tenant = await newTenant('Leak Token Exchange');
+    const headers = new Headers({ cookie: tenant.cookie });
+    const credential = await createMachineCredential(app.auth, {
+      headers,
+      organizationId: tenant.organizationId,
+      name: 'leak marker credential',
+      actorKind: 'integration',
+    });
+    const issued = await exchangeMachineToken(app.auth, {
+      clientId: credential.id,
+      clientSecret: credential.secret,
+    });
+    const wrongSecret = `wrong-secret-marker-${randomUUID()}`;
+    await expect(
+      exchangeMachineToken(app.auth, { clientId: credential.id, clientSecret: wrongSecret }),
+    ).rejects.toMatchObject({ code: 'AUTH_INVALID_CREDENTIALS' });
+
+    // Also through the HTTP route, where the secret is a request body field.
+    const viaHttp = await app.app.inject({
+      method: 'POST',
+      url: '/v1/auth/token',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'https://app.tayzu.test',
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({ clientId: credential.id, clientSecret: wrongSecret }),
+    });
+    expect(viaHttp.statusCode, 'the wrong secret is rejected').toBeGreaterThanOrEqual(400);
+
+    await expectNoLeak({
+      'client secret': credential.secret,
+      'submitted wrong client secret': wrongSecret,
+      'access token': issued.accessToken,
+      'access token signature': issued.accessToken.split('.')[2] ?? issued.accessToken,
+    });
+  }, 60_000);
+
+  it("a rate-limited sign-in's caller IP and submitted email never appear on auth.security.rate_limited or tayzu.auth.rate_limit.events", async () => {
+    const limitedAuth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      rateLimit: { signIn: { window: 60, max: 2 } },
+    });
+    const limitedHandler = handlerOf(limitedAuth);
+    const ip = randomIp();
+    const email = `Rate-Leak-${randomUUID()}@Example.test`;
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await postJson(
+        limitedHandler,
+        '/sign-in/email',
+        { email, password: 'definitely the wrong password, not correct' },
+        { 'x-forwarded-for': ip },
+      );
+      statuses.push(response.status);
+    }
+    expect(statuses, 'the third attempt is rate-limited').toEqual([401, 401, 429]);
+
+    await harness.forceFlush();
+    const normalizedEmail = email.trim().toLowerCase();
+    const [local = '', domain = ''] = normalizedEmail.split('@');
+    const octets = ip.split('.');
+    const forbidden = [
+      ip,
+      octets.slice(0, 3).join('.'),
+      email,
+      normalizedEmail,
+      local,
+      domain,
+      sha256Hex(ip),
+      sha256Hex(normalizedEmail),
+      sha256Hex(ip).slice(0, 8),
+      sha256Hex(normalizedEmail).slice(0, 8),
+    ];
+    const entries = exportedCorpus(harness).filter(
+      (entry) =>
+        entry.signal === 'log auth.security.rate_limited' ||
+        entry.signal === 'metric tayzu.auth.rate_limit.events',
+    );
+    expect(
+      entries.some((entry) => entry.signal === 'log auth.security.rate_limited'),
+      'the rate-limited log event was emitted',
+    ).toBe(true);
+    expect(
+      entries.some((entry) => entry.signal === 'metric tayzu.auth.rate_limit.events'),
+      'the rate-limit counter was recorded',
+    ).toBe(true);
+    for (const entry of entries) {
+      for (const text of entry.strings) {
+        for (const value of forbidden) {
+          expect(text, `${entry.signal} must not carry "${value}"`).not.toContain(value);
+        }
+      }
+    }
+  }, 60_000);
+
+  it("a rate-limited token exchange's caller IP and client id never appear on auth.security.rate_limited or tayzu.auth.rate_limit.events", async () => {
+    const ip = randomIp();
+    const clientId = `rate-leak-client-${randomUUID()}`;
+    const exchange = () =>
+      app.app.inject({
+        method: 'POST',
+        url: '/v1/auth/token',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://app.tayzu.test',
+          'x-forwarded-for': ip,
+          ...csrfHeaders('POST'),
+        },
+        payload: JSON.stringify({ clientId, clientSecret: `wrong-secret-${randomUUID()}` }),
+      });
+    await exchange();
+    await exchange();
+    const limited = await exchange();
+    expect(limited.statusCode, 'the third exchange is rate-limited').toBe(429);
+
+    await harness.forceFlush();
+    const entries = exportedCorpus(harness);
+    expect(
+      logValues(harness, 'auth.security.rate_limited', 'tayzu.auth.rate_limit.scope'),
+      'the token_exchange scope is recorded on the log event',
+    ).toContain('token_exchange');
+    expect(
+      metricValues(harness, 'tayzu.auth.rate_limit.events', 'tayzu.auth.rate_limit.scope'),
+      'the token_exchange scope is recorded on the counter',
+    ).toContain('token_exchange');
+    const onRateLimitSignals = entries.filter(
+      (entry) =>
+        entry.signal === 'log auth.security.rate_limited' ||
+        entry.signal === 'metric tayzu.auth.rate_limit.events',
+    );
+    for (const entry of onRateLimitSignals) {
+      for (const text of entry.strings) {
+        for (const value of [ip, ip.split('.').slice(0, 3).join('.'), clientId, sha256Hex(ip)]) {
+          expect(text, `${entry.signal} must not carry "${value}"`).not.toContain(value);
+        }
+      }
+    }
+  }, 60_000);
 });

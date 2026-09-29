@@ -421,7 +421,7 @@ policy diff shown in chat, separately from the rest of the PR.
   no undeclared attribute key appears on any `tayzu.auth.*`/`tayzu.authz.*`
   metric. Verify: `pnpm otel-smoke-check` is green, and a deliberately added
   disallowed attribute in a scratch branch makes it fail.
-- [ ] 13.3 Marker-leak test extension. Verify: `otel-smoke-check` covers a
+- [x] 13.3 Marker-leak test extension. Verify: `otel-smoke-check` covers a
   forced sign-in failure, MFA failure, and token-exchange failure, and
   asserts client secrets, access tokens, session tokens, TOTP codes, and
   backup codes never appear in any exported span, metric, or log attribute;

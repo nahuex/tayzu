@@ -35,3 +35,4 @@ export {
   withBackchannelLogoutTelemetry,
   type BackchannelLogoutOutcome,
 } from './backchannel-logout-telemetry.js';
+export { emitRateLimited, type RateLimitScope } from './rate-limit/pre-auth-rate-limit.js';
