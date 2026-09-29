@@ -398,8 +398,34 @@ policy diff shown in chat, separately from the rest of the PR.
   `createAppFromEnv`, listens on `HOST`/`PORT` from the environment, and on
   `SIGTERM`/`SIGINT` closes the listener and then every pool (resolved
   decision Q30). Verify: `main.int.test.ts` covers "The process listens on
-  the configured port and answers the health route" and "SIGTERM closes the
+  the configured port and answers `GET /healthz` (Q33)" and "SIGTERM closes the
   listener and the database pools", plus a missing `PORT` failing fast.
+
+- [ ] 11.15 Wire the step-up guard (4.2, 21.3) into every `/v1` route marked
+  `x-tayzu-risk: high` in the production app. Verify:
+  `bootstrap-wiring.int.test.ts` covers "A high-risk route without a fresh
+  MFA verification is blocked over HTTP" and "A high-risk route with a fresh
+  verification succeeds", on an app built by `createAppFromEnv`.
+- [ ] 11.16 `POST /v1/auth/token` handler calling `exchangeMachineToken`
+  behind its IP/client-id rate limit (5.3, 11.13), plus the JWKS route design
+  D5 names. Verify: `bootstrap-wiring.int.test.ts` covers "Machine token
+  exchange works over HTTP on the production app".
+- [ ] 11.17 `createAppFromEnv` wires Visma Connect SSO (from its environment
+  variables; absent configuration disables SSO explicitly and its routes
+  return 404), the pre-auth, per-principal and token-exchange rate limits,
+  the body limit and the back-channel logout processing. Verify:
+  `bootstrap-wiring.int.test.ts` covers each of these being active on the
+  production app.
+- [ ] 11.18 The pre-auth rate limiter covers `/two-factor/verify-*` and every
+  email-verification route with the D20 keys, and `createApp` passes the
+  configured limits. Verify: `pre-auth-rate-limit.int.test.ts` (extended)
+  covers "Repeated failed two-factor verifications are rate-limited".
+- [ ] 11.19 A wiring guard: a test that builds the app from a complete
+  environment and asserts every protection this design declares is active
+  (step-up, the four rate limiters, CSRF, CORS, helmet, body limit, route
+  allowlist, SSO, back-channel logout, health route). Verify:
+  `bootstrap-wiring.int.test.ts` fails if any of them is removed from
+  `createAppFromEnv`.
 
 ## 12. User and Team system blueprints
 
@@ -453,6 +479,14 @@ policy diff shown in chat, separately from the rest of the PR.
   (extended) exercises `auth.sso.callback`, `auth.backchannel_logout.
   received`, and the step-up-insufficient path once each, asserting the
   Visma Connect `sub`/`sid`/tokens/email/IP never appear on any of them.
+
+- [ ] 13.6 Reconcile `packages/auth/src/telemetry/contract.ts` with
+  `packages/authz/src/telemetry/contract.ts` and the design tables (missing
+  `auth.security.sso_sign_in_failed`, `auth.security.backchannel_logout_received`,
+  conditional `tayzu.auth.step_up.fresh`), and make every declared signal
+  emitted. Verify: `contract.test.ts` asserts both contracts agree with each
+  other and with the design, and `otel-smoke-check` covers the two log
+  events.
 
 ## 14. Secrets and Key Vault seam
 
