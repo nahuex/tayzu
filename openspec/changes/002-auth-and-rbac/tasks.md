@@ -428,7 +428,7 @@ policy diff shown in chat, separately from the rest of the PR.
   extended (design D20) to assert a rate-limited request's caller IP and
   submitted email never appear on `auth.security.rate_limited` or
   `tayzu.auth.rate_limit.events`.
-- [x] 13.4 Wire the OTel SDK and an OTLP exporter in `apps/api`, plus
+- [ ] 13.4 Wire the OTel SDK and an OTLP exporter in `apps/api`, plus
   `@opentelemetry/instrumentation-http`/`-pg` with
   `enhancedDatabaseReporting: false`. Verify: a documented manual smoke
   script in `docs/catalog/auth-and-rbac.md` produces one exported trace
