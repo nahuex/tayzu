@@ -449,7 +449,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 14. Secrets and Key Vault seam
 
-- [ ] 14.1 Runtime/migration DB role passwords, `BETTER_AUTH_SECRET`, and the
+- [x] 14.1 Runtime/migration DB role passwords, `BETTER_AUTH_SECRET`, and the
   `jwt` plugin's signing key are read from environment variables designed to
   be Key-Vault-referenced in the Azure Container Apps deployment
   configuration, and from `.env` locally. Verify: a config-loading test

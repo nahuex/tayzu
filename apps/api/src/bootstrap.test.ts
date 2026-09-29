@@ -12,7 +12,7 @@
  * ```
  *
  * Reads `DATABASE_URL` (runtime role `tayzu_app`), `AUTH_DATABASE_URL` (role
- * `tayzu_auth`), `AUTH_SECRET`, `CERBOS_ADDRESS`, `ALLOWED_ORIGINS`
+ * `tayzu_auth`), `BETTER_AUTH_SECRET`, `CERBOS_ADDRESS`, `ALLOWED_ORIGINS`
  * (comma-separated). It is what the process entry point (`main`/`start`) calls.
  * It builds both pools with `createPool` and injects them into `createApp`;
  * the returned `App.close()` also ends the pools it built.
@@ -46,7 +46,7 @@ function env(
   return {
     DATABASE_URL: APP_URL,
     AUTH_DATABASE_URL: AUTH_URL,
-    AUTH_SECRET: 'bootstrap-unit-test-only-secret-0123456789-abcdefghij',
+    BETTER_AUTH_SECRET: 'bootstrap-unit-test-only-secret-0123456789-abcdefghij',
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     ...overrides,

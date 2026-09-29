@@ -7,27 +7,17 @@
  */
 import { createPool } from '@tayzu/db';
 
+import { loadConfig } from './config.js';
 import { createApp, type App } from './server.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-function required(env: Env, name: string): string {
-  const value = env[name];
-  if (value === undefined || value.trim() === '') {
-    throw new Error(`${name} is required.`);
-  }
-  return value;
-}
-
 export async function createAppFromEnv(env: Env): Promise<App> {
-  const appUrl = required(env, 'DATABASE_URL');
-  const authUrl = required(env, 'AUTH_DATABASE_URL');
-  const authSecret = required(env, 'AUTH_SECRET');
-  const cerbosAddress = required(env, 'CERBOS_ADDRESS');
-  const allowedOrigins = required(env, 'ALLOWED_ORIGINS')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter((origin) => origin !== '');
+  const config = loadConfig(env);
+  const appUrl = config.appDatabaseUrl;
+  const authUrl = config.authDatabaseUrl;
+  const authSecret = config.betterAuthSecret;
+  const { cerbosAddress, allowedOrigins } = config;
 
   const appPool = createPool(appUrl);
   let authPool: ReturnType<typeof createPool> | undefined;
