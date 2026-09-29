@@ -13,3 +13,5 @@ export type {
   OwnershipConfig,
   ResolveOwnerInput,
 } from './ownership-resolution.js';
+export { planToFilter } from './plan-filter.js';
+export type { PlanColumnMapper, PlanFilter, QueryPlan } from './plan-filter.js';

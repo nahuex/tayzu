@@ -289,7 +289,7 @@ policy diff shown in chat, separately from the rest of the PR.
   Verify: `authz-pipeline.int.test.ts` covers "Action with no matching rule
   is denied" and "Denied action is distinct from not found", exercised
   end-to-end through a real catalog operation.
-- [ ] 9.2 A `PlanResources` + `@cerbos/orm-drizzle` wrapper for
+- [x] 9.2 A `PlanResources` + `@cerbos/orm-drizzle` wrapper for
   `entities.list`, composed with the existing tenant scope via `and(...)` in
   every plan-result branch. Verify: `authz-list.int.test.ts` covers "List
   results are filtered by the query plan, not by scanning and checking", and

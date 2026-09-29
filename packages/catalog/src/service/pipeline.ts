@@ -136,6 +136,13 @@ export interface AuthorizationDeclaration {
   readonly attributes?: Readonly<Record<string, string | number | boolean>>;
 }
 
+/**
+ * Declares an operation authorized by a Cerbos `PlanResources` query plan the
+ * handler folds into its own query (design D11), so the pipeline runs no
+ * `CheckResources` for it. Still an explicit, mandatory declaration (Q27).
+ */
+export const PLAN_AUTHORIZED = { mode: 'plan' } as const;
+
 export interface DefineCatalogOperationOptions<Input, Output> {
   /** For example `'entity.upsert'`: span `catalog.entity.upsert`, attribute value `'entity.upsert'`. */
   readonly name: string;
@@ -148,10 +155,12 @@ export interface DefineCatalogOperationOptions<Input, Output> {
    * Mandatory (design Q27): what the pipeline checks before the transaction.
    * Receives the still-untrusted input, so it must read it defensively.
    */
-  readonly authorization: (params: {
-    readonly ctx: CatalogContext;
-    readonly input: Input;
-  }) => AuthorizationDeclaration;
+  readonly authorization:
+    | ((params: {
+        readonly ctx: CatalogContext;
+        readonly input: Input;
+      }) => AuthorizationDeclaration)
+    | typeof PLAN_AUTHORIZED;
   /**
    * Overrides `withTenantTransaction`'s default 5 s `statement_timeout`
    * (design D5). Design Risks: "`statement_timeout` raised only for this
@@ -416,7 +425,9 @@ export function defineCatalogOperation<Input, Output>(
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
-        await authorize(authz, ctx, authorization({ ctx, input }));
+        if (typeof authorization === 'function') {
+          await authorize(authz, ctx, authorization({ ctx, input }));
+        }
         const result = await withTenantTransaction(
           pool,
           ctx,

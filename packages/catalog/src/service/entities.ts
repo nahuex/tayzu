@@ -34,6 +34,7 @@ import { parseSafeInput } from '../domain/safe-parse.js';
 import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
 import type { ValidatorCacheKey } from '../domain/validator-cache.js';
+import { catalogEntity } from '../persistence/schema.js';
 import { appendChangeEvent } from '../persistence/change-events.js';
 import {
   findBlueprintIdByIdentifier,
@@ -72,8 +73,14 @@ import {
 } from '../persistence/entities-repository.js';
 import type { LocalizedText } from '../domain/localized-text.js';
 import { entityMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
-import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
-import { defineCatalogOperation, inputString } from './pipeline.js';
+import {
+  RESOURCE_KINDS,
+  buildAttributes,
+  planToFilter,
+  type CerbosClient,
+  type PlanFilter,
+} from '@tayzu/authz';
+import { PLAN_AUTHORIZED, defineCatalogOperation, inputString } from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
 export interface EntitySpecWriteInput {
@@ -178,6 +185,35 @@ export interface EntityOutput {
   readonly createdBy: CatalogContext['actor'];
   readonly updatedAt: string;
   readonly updatedBy: CatalogContext['actor'];
+}
+
+/** Plan attribute references (the names in `policies/resource_policies/catalog_entity.yaml`) to `catalog_entity` columns. */
+const ENTITY_PLAN_MAPPER = {
+  'request.resource.attr.createdBy': catalogEntity.createdById,
+  'request.resource.attr.tenantId': catalogEntity.tenantId,
+};
+
+/**
+ * Design D11: `PlanResources` for `list`, folded into the page query. A plan
+ * that cannot be turned into a filter throws, which denies (never allows).
+ */
+async function planEntityList(authz: CerbosClient, ctx: CatalogContext): Promise<PlanFilter> {
+  const plan = await authz.planResources({
+    principal: {
+      id: ctx.actor.id,
+      roles: [...(ctx.principal?.roles ?? [])],
+      attr: buildAttributes(ctx.tenantId, {
+        teams: [...(ctx.principal?.teams ?? [])],
+        moderatedBlueprints: [...(ctx.principal?.moderatedBlueprints ?? [])],
+      }),
+    },
+    resource: {
+      kind: RESOURCE_KINDS.catalogEntity,
+      attr: buildAttributes(ctx.tenantId, {}),
+    },
+    action: 'list',
+  });
+  return planToFilter(plan, ENTITY_PLAN_MAPPER);
 }
 
 export interface CreateEntityServiceOptions {
@@ -1333,12 +1369,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     name: 'entity.list',
     pool,
     authz,
-    authorization: ({ input }) => ({
-      kind: RESOURCE_KINDS.catalogEntity,
-      action: 'list',
-      resourceId: '_',
-      attributes: { blueprintId: inputString(input, 'blueprint') },
-    }),
+    authorization: PLAN_AUTHORIZED,
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
 
@@ -1360,10 +1391,17 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       if (blueprintId === undefined)
         throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
+      const planFilter = await planEntityList(authz, ctx);
+      if (planFilter.kind === 'denied') {
+        trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', 0);
+        return { output: { items: [] } };
+      }
+
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintId);
       const rows = await selectEntitiesPage(tx, ctx.tenantId, blueprintId, {
         limit: pageSize,
         afterIdentifier,
+        authorizationFilter: planFilter.filter,
       });
       const hasMore = rows.length > pageSize;
       const pageRows = hasMore ? rows.slice(0, pageSize) : rows;

@@ -6,7 +6,7 @@
  * `sql.raw` is never used. Mirrors `blueprints-repository.ts`'s own
  * conventions and naming.
  */
-import { sql } from 'drizzle-orm';
+import { and, sql, type SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import type { Principal } from '../domain/context.js';
@@ -77,6 +77,8 @@ export interface EntitiesPageOptions {
   /** Fetches one row beyond `limit`, so the caller can tell whether a next page exists. */
   readonly limit: number;
   readonly afterIdentifier?: string;
+  /** The Cerbos query-plan filter, composed with the tenant scope by `and(...)` (design D7). */
+  readonly authorizationFilter?: SQL;
 }
 
 /** Up to `options.limit + 1` `catalog_entity` rows of `blueprintId`, ordered by `identifier` ascending (design D10). */
@@ -86,14 +88,18 @@ export async function selectEntitiesPage(
   blueprintId: string,
   options: EntitiesPageOptions,
 ): Promise<EntityRow[]> {
-  const cursorClause =
+  const scope = and(
+    sql`tenant_id = ${tenantId}`,
+    sql`blueprint_id = ${blueprintId}`,
     options.afterIdentifier !== undefined
-      ? sql`and identifier > ${options.afterIdentifier}`
-      : sql``;
+      ? sql`identifier > ${options.afterIdentifier}`
+      : undefined,
+    options.authorizationFilter,
+  );
   const result = await tx.execute<EntityRow>(sql`
     select ${ENTITY_COLUMNS}
     from catalog_entity
-    where tenant_id = ${tenantId} and blueprint_id = ${blueprintId} ${cursorClause}
+    where ${scope}
     order by identifier
     limit ${options.limit + 1}
   `);
