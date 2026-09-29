@@ -1,14 +1,14 @@
 /**
  * Process entry point (task 11.14, resolved decision Q30). Builds the app with
  * `createAppFromEnv`, listens on `HOST`/`PORT` and, on `SIGTERM`/`SIGINT`,
- * closes the listener and then every pool. It never calls `process.exit`: the
+ * closes the listener and then every pool, then flushes the OTel SDK. It never calls `process.exit`: the
  * process ends when its handles drain.
  */
 import { realpathSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
-import { createAppFromEnv } from './bootstrap.js';
+import { startTelemetry } from './telemetry.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -38,11 +38,22 @@ export async function start(env: Env): Promise<RunningServer> {
   const port = parsePort(env['PORT']);
   const host = env['HOST'] === undefined || env['HOST'] === '' ? DEFAULT_HOST : env['HOST'];
 
-  const built = await createAppFromEnv(env);
+  // The SDK starts before the app is built so instrumentation sees every import.
+  const telemetry = startTelemetry(env);
+  let built: Awaited<ReturnType<typeof import('./bootstrap.js').createAppFromEnv>>;
+  try {
+    // Imported after the SDK starts, so `http` and `pg` are patched on first load.
+    const { createAppFromEnv } = await import('./bootstrap.js');
+    built = await createAppFromEnv(env);
+  } catch (error) {
+    await telemetry?.shutdown();
+    throw error;
+  }
   try {
     await built.app.listen({ host, port });
   } catch (error) {
     await built.close();
+    await telemetry?.shutdown();
     throw error;
   }
   const address = built.app.server.address() as AddressInfo;
@@ -56,6 +67,7 @@ export async function start(env: Env): Promise<RunningServer> {
       process.off('SIGTERM', onSignal);
       process.off('SIGINT', onSignal);
       await built.close();
+      await telemetry?.shutdown();
     })();
     return closing;
   }

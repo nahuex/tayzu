@@ -254,3 +254,27 @@ cause of an SSO rejection is recorded, because the HTTP response never says.
 
 Every log event above, and the catalog's own `catalog.security.*` events,
 must never be sampled, filtered or dropped by a downstream pipeline.
+
+### Exporting traces (OpenTelemetry SDK)
+
+`apps/api` starts the OpenTelemetry SDK in `main.ts`, before the app is
+built, and only when `OTEL_EXPORTER_OTLP_ENDPOINT` (or one of the
+`OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT` variables) is set. It
+exports traces, metrics and logs over OTLP/HTTP. The HTTP instrumentation
+records no bodies and no headers, and the pg instrumentation runs with
+`enhancedDatabaseReporting: false`, so no bind value is exported.
+
+Manual smoke script (one trace from an inbound request to its Postgres span):
+
+1. Start any OTLP/HTTP collector or trace UI, for example Jaeger:
+   `docker run --rm -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one`.
+2. Start the API with the usual environment plus
+   `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and
+   `OTEL_SERVICE_NAME=tayzu-api`, with `pnpm --filter @tayzu/api start`.
+3. Send a request that reaches the database, for example
+   `curl -i -X POST http://localhost:3000/api/auth/sign-in/email -H 'content-type: application/json' -H 'origin: <allowed origin>' -d '{"email":"nobody@example.test","password":"x"}'`.
+4. Open the UI at `http://localhost:16686`, pick the `tayzu-api` service and
+   open the latest trace. It has one `POST` server span with a `pg.query`
+   child span below it, all in the same trace.
+5. Check that no span attribute holds the email, the password, a cookie or a
+   token.
