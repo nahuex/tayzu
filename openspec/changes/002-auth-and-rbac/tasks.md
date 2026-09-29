@@ -379,7 +379,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `auth-route-allowlist.test.ts` covers "An unlisted Better Auth route fails
   the allowlist test", introducing a scratch route in a throwaway branch and
   confirming the test fails, then reverting it.
-- [ ] 11.11 *(setup)* Verify the Better Auth `apiKey` plugin's hash-at-rest
+- [x] 11.11 *(setup)* Verify the Better Auth `apiKey` plugin's hash-at-rest
   algorithm against `@better-auth/api-key`'s installed source (not the docs
   site), resolving the open item design's Risks section flags (SEC05).
   Verify: a short note in `docs/security/dependencies.md` records the

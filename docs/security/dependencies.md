@@ -127,3 +127,35 @@ Every CI run produces an SPDX 2.3 JSON SBOM of the pnpm dependency tree
 artifact. `pnpm ci:local` produces the same file locally, written outside the
 repository (under the pinned-tool cache directory) so a local run never
 leaves an untracked file in the working tree.
+
+## API key storage at rest (`@better-auth/api-key`)
+
+Checked against the installed source of `@better-auth/api-key@1.7.6`
+(`node_modules/.pnpm/@better-auth+api-key@1.7.6_*/node_modules/@better-auth/api-key/dist/index.mjs`),
+not the documentation site.
+
+- **Algorithm**: unsalted, unpeppered SHA-256 of the UTF-8 key, encoded as
+  base64url without padding. `defaultKeyHasher` (L2310-L2313) calls
+  `createHash("SHA-256")` from `@better-auth/utils/hash`.
+- **Where it applies**: the hash is stored in the `key` column at creation
+  (L806) and recomputed to look the key up on verification (L1623). The
+  plaintext key is returned once and never stored.
+- **Not configurable**: the only option is `disableKeyHashing` (L2331), which
+  stores the plaintext key. It must never be enabled. There is no salt, pepper
+  or custom hasher option.
+- **Key material**: `defaultKeyGenerator` (L2358-L2361) draws
+  `defaultKeyLength` (64) characters from `a-z` and `A-Z` with
+  `generateRandomString` from `better-auth/crypto`, about 365 bits of entropy,
+  plus an optional prefix.
+- **Also stored in plaintext**: the first 6 characters of the key (`start`,
+  L2345-L2348, on by default). Set `startingCharactersConfig.shouldStore` to
+  `false` unless the UI needs it.
+
+**SEC05 verdict**: meets it for high-entropy random secrets. A fast unsalted
+hash is acceptable there because the key is not a human-chosen password, so
+dictionary and brute-force attacks are infeasible and rainbow tables cannot
+cover a 365-bit space. A slow password hash (Argon2id, bcrypt) is required
+only for low-entropy secrets such as user passwords. Conditions:
+`disableKeyHashing` stays `false`, `customKeyGenerator` is not used to shorten
+the key, and `defaultKeyLength` is not lowered. Re-verify on every upgrade of
+this package.
