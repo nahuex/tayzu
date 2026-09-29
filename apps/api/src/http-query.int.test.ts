@@ -42,17 +42,8 @@ import {
   bootstrapTestTenant,
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
-
-function databaseUrl(): string {
-  const url = process.env.DATABASE_URL;
-  if (url === undefined || url.trim() === '') {
-    throw new Error(
-      'DATABASE_URL is not set: the int project global setup should have stopped this run.',
-    );
-  }
-  return url;
-}
 
 const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_PASSWORD = 'correct horse battery staple';
@@ -139,7 +130,7 @@ describe('apps/api query-string input (task 11.2)', () => {
 
   beforeAll(async () => {
     app = await createApp({
-      databaseUrl: databaseUrl(),
+      ...(await harnessPools()),
       authSecret: TEST_SECRET,
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ALLOWED_ORIGIN],

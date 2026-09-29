@@ -24,6 +24,10 @@
     "@tayzu/catalog": "workspace:*",
     "@tayzu/db": "workspace:*",
     "drizzle-orm": "^0.45.3",
-    "fastify": "^5.12.5"
+    "fastify": "^5.12.5",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
   }
 }

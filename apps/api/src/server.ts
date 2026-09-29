@@ -18,15 +18,20 @@ import {
   type AuthInstance,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
+import type { createPool } from '@tayzu/db';
 import { createBlueprintService, createCatalogRouter, createEntityService } from '@tayzu/catalog';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 
+type Pool = ReturnType<typeof createPool>;
+
 export interface CreateAppOptions {
-  /** PostgreSQL connection string, from the host's environment. */
-  readonly databaseUrl: string;
+  /** Pool running as `tayzu_app` (RLS applies), built by the host. Not ended by `close`. */
+  readonly appPool: Pool;
+  /** Pool running as `tayzu_auth` (design D6), built by the host. Not ended by `close`. */
+  readonly authPool: Pool;
   /** Better Auth's secret, from the host's environment. */
   readonly authSecret: string;
   /** `host:port` of the Cerbos gRPC endpoint. */
@@ -40,7 +45,7 @@ export interface App {
   readonly app: FastifyInstance;
   /** The same Better Auth instance mounted at `/api/auth/*`. */
   readonly auth: AuthInstance;
-  /** Closes Fastify and every pool `createApp` opened. */
+  /** Closes Fastify only; the host owns the injected pools. */
   close(): Promise<void>;
 }
 
@@ -81,13 +86,10 @@ function toWebRequest(request: FastifyRequest): Request {
 }
 
 export async function createApp(options: CreateAppOptions): Promise<App> {
-  // The auth handle runs as the connecting role; the catalog and revocation
-  // pool run as `tayzu_app` so RLS applies (`SET ROLE` is a fixed literal).
-  const authDb = drizzle(options.databaseUrl, { schema: authSchema });
-  const appPool = drizzle(options.databaseUrl, { schema: authSchema }).$client;
-  appPool.on('connect', (client) => {
-    void client.query('SET ROLE tayzu_app');
-  });
+  // The auth handle runs on the host's `tayzu_auth` pool; the catalog and
+  // revocation pool run as `tayzu_app` so RLS applies.
+  const authDb = drizzle(options.authPool, { schema: authSchema });
+  const appPool = options.appPool;
 
   const auth = createAuth({ db: authDb, secret: options.authSecret });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
@@ -162,8 +164,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     auth,
     async close(): Promise<void> {
       await app.close();
-      await appPool.end();
-      await authDb.$client.end();
     },
   };
 }

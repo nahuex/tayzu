@@ -82,17 +82,8 @@ import {
 import { AuthInvalidCredentialsError, AuthStepUpError } from '../../../packages/auth/src/errors.js';
 import { AuthorizationError } from '../../../packages/catalog/src/domain/errors.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
+import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
-
-function databaseUrl(): string {
-  const url = process.env.DATABASE_URL;
-  if (url === undefined || url.trim() === '') {
-    throw new Error(
-      'DATABASE_URL is not set: the int project global setup should have stopped this run.',
-    );
-  }
-  return url;
-}
 
 const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_PASSWORD = 'correct horse battery staple';
@@ -178,7 +169,7 @@ describe('apps/api HTTP error status (task 11.3)', () => {
 
   beforeAll(async () => {
     app = await createApp({
-      databaseUrl: databaseUrl(),
+      ...(await harnessPools()),
       authSecret: TEST_SECRET,
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ALLOWED_ORIGIN],

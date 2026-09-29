@@ -56,17 +56,8 @@ import {
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 // The module under test (task 11.1). Does not exist yet.
+import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
-
-function databaseUrl(): string {
-  const url = process.env.DATABASE_URL;
-  if (url === undefined || url.trim() === '') {
-    throw new Error(
-      'DATABASE_URL is not set: the int project global setup should have stopped this run.',
-    );
-  }
-  return url;
-}
 
 const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_PASSWORD = 'correct horse battery staple';
@@ -129,7 +120,7 @@ describe('apps/api Fastify bootstrap (task 11.1)', () => {
 
   beforeAll(async () => {
     app = await createApp({
-      databaseUrl: databaseUrl(),
+      ...(await harnessPools()),
       authSecret: TEST_SECRET,
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ALLOWED_ORIGIN],
@@ -211,5 +202,26 @@ describe('apps/api Fastify bootstrap (task 11.1)', () => {
 
     expect(response.statusCode).toBe(401);
     expect(response.json<{ code: string }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
+  }, 60_000);
+});
+
+describe('createApp with host-injected pools (task 11.1 fix-up, design D6)', () => {
+  it('uses the injected pools and leaves them open: the host owns their lifecycle', async () => {
+    const pools = await harnessPools();
+    const built = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ALLOWED_ORIGIN],
+    });
+    // A request that touches the app pool (revocation lookup path) still fails closed as before.
+    const response = await built.app.inject({ method: 'GET', url: '/v1/blueprints' });
+    expect(response.statusCode).toBe(401);
+
+    await built.close();
+
+    // Closing the app must not end pools it did not build.
+    await expect(pools.appPool.query('select 1 as one')).resolves.toBeDefined();
+    await expect(pools.authPool.query('select 1 as one')).resolves.toBeDefined();
   }, 60_000);
 });
