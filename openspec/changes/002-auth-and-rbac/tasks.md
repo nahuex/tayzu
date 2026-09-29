@@ -538,7 +538,7 @@ policy diff shown in chat, separately from the rest of the PR.
 - [x] 16.5 Write ADR `docs/adr/0021-visma-connect-as-primary-idp.md`. Verify:
   the file exists with Context, Decision, Alternatives and Consequences
   sections, and design D23-D26 link to it.
-- [ ] 16.6 *(setup)* Write `docs/references/visma-connect/README.md`: a
+- [x] 16.6 *(setup)* Write `docs/references/visma-connect/README.md`: a
   concise summary of what Tayzu's implementation uses from the Visma Connect
   docs (server-side web applications, ID token, UserID/email, re
   -authentication and step-up, session management, single sign-out, security
