@@ -365,7 +365,7 @@ policy diff shown in chat, separately from the rest of the PR.
   telemetry attribute. Verify: `rate-limit.int.test.ts` covers one
   principal's requests being rate-limited (`AUTH_RATE_LIMITED`, 429) while a
   different principal's bucket is unaffected.
-- [ ] 11.9 A Fastify pre-handler allowlist for `/api/auth/*` (design D18):
+- [x] 11.9 A Fastify pre-handler allowlist for `/api/auth/*` (design D18):
   Better Auth's native organization-membership-mutation routes
   (`inviteMember`, `updateMemberRole`, `removeMember`, organization
   create/delete) and every `apiKey` plugin management route return `404`;

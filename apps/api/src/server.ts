@@ -15,6 +15,7 @@ import {
   createAuth,
   createContextResolver,
   AuthContextError,
+  isAllowedAuthPath,
   type AuthInstance,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
@@ -104,6 +105,18 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // oRPC reads the raw body itself; keep Fastify from consuming other types.
   app.addContentTypeParser('*', (_request, _payload, done) => {
     done(null, undefined);
+  });
+
+  // D18: deny-by-default. An unlisted path gets Fastify's own 404, identical
+  // to any unknown route, before Better Auth is reached.
+  app.addHook('onRequest', async (request, reply) => {
+    if (!request.url.startsWith('/api/auth')) {
+      return;
+    }
+    const pathname = request.url.split('?', 1)[0] ?? '';
+    if (!isAllowedAuthPath(pathname)) {
+      reply.callNotFound();
+    }
   });
 
   app.all('/api/auth/*', async (request, reply) => {
