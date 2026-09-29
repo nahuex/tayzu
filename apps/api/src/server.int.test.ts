@@ -56,6 +56,7 @@ import {
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 // The module under test (task 11.1). Does not exist yet.
+import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -140,7 +141,12 @@ describe('apps/api Fastify bootstrap (task 11.1)', () => {
     const created = await app.app.inject({
       method: 'POST',
       url: '/v1/blueprints',
-      headers: { cookie, 'content-type': 'application/json', origin: ALLOWED_ORIGIN },
+      headers: {
+        cookie,
+        'content-type': 'application/json',
+        origin: ALLOWED_ORIGIN,
+        ...csrfHeaders('POST'),
+      },
       payload: JSON.stringify({
         identifier: 'service',
         title: { en: 'Service' },
@@ -175,7 +181,12 @@ describe('apps/api Fastify bootstrap (task 11.1)', () => {
     const created = await app.app.inject({
       method: 'POST',
       url: '/v1/blueprints',
-      headers: { cookie: firstCookie, 'content-type': 'application/json', origin: ALLOWED_ORIGIN },
+      headers: {
+        cookie: firstCookie,
+        'content-type': 'application/json',
+        origin: ALLOWED_ORIGIN,
+        ...csrfHeaders('POST'),
+      },
       payload: JSON.stringify({
         identifier,
         title: { en: 'Isolated' },

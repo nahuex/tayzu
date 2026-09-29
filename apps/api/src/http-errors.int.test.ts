@@ -82,6 +82,7 @@ import {
 import { AuthInvalidCredentialsError, AuthStepUpError } from '../../../packages/auth/src/errors.js';
 import { AuthorizationError } from '../../../packages/catalog/src/domain/errors.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
+import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -151,6 +152,7 @@ describe('apps/api HTTP error status (task 11.3)', () => {
       headers: {
         cookie,
         origin: ALLOWED_ORIGIN,
+        ...csrfHeaders(method),
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       ...(body === undefined ? {} : { payload: JSON.stringify(body) }),

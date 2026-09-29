@@ -11,6 +11,7 @@
  */
 import fastifyCors from '@fastify/cors';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
+import { SimpleCsrfProtectionHandlerPlugin } from '@orpc/server/plugins';
 import {
   authSchema,
   createAuth,
@@ -105,6 +106,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const openApiHandler = new OpenAPIHandler(router, {
     clientInterceptors: [errorMappingInterceptor],
+    // D13: custom-header CSRF check (default `x-csrf-token: orpc`) on every
+    // mutating route. Fail closed: only an explicit GET/HEAD route is exempt.
+    plugins: [
+      new SimpleCsrfProtectionHandlerPlugin({
+        exclude: ({ procedure }) => {
+          const method = procedure['~orpc'].route.method;
+          return method === 'GET' || method === 'HEAD';
+        },
+      }),
+    ],
   });
 
   const app = Fastify();

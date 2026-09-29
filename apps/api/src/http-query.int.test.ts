@@ -42,6 +42,7 @@ import {
   bootstrapTestTenant,
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -88,7 +89,12 @@ async function post(app: App, cookie: string, url: string, body: unknown): Promi
   const response = await app.app.inject({
     method: 'POST',
     url,
-    headers: { cookie, 'content-type': 'application/json', origin: ALLOWED_ORIGIN },
+    headers: {
+      cookie,
+      'content-type': 'application/json',
+      origin: ALLOWED_ORIGIN,
+      ...csrfHeaders('POST'),
+    },
     payload: JSON.stringify(body),
   });
   expect(response.statusCode).toBe(200);
@@ -150,7 +156,7 @@ describe('apps/api query-string input (task 11.2)', () => {
     const deleted = await app.app.inject({
       method: 'DELETE',
       url: '/v1/blueprints/team/entities/team-a?detachReferences=true',
-      headers: { cookie, origin: ALLOWED_ORIGIN },
+      headers: { cookie, origin: ALLOWED_ORIGIN, ...csrfHeaders('DELETE') },
     });
 
     // THEN the operation runs with detachReferences true.
@@ -182,7 +188,7 @@ describe('apps/api query-string input (task 11.2)', () => {
     const deleted = await app.app.inject({
       method: 'DELETE',
       url: '/v1/blueprints/team/entities/team-a',
-      headers: { cookie, origin: ALLOWED_ORIGIN },
+      headers: { cookie, origin: ALLOWED_ORIGIN, ...csrfHeaders('DELETE') },
     });
 
     // The exact status/code mapping belongs to task 11.3; here only "rejected".

@@ -350,7 +350,7 @@ policy diff shown in chat, separately from the rest of the PR.
 - [x] 11.4 `CORSPlugin` with an explicit origin allowlist and
   `credentials: true`. Verify: `cors.int.test.ts` covers an allowed origin
   receiving CORS headers and a disallowed origin not receiving them.
-- [ ] 11.5 `SimpleCsrfProtectionHandlerPlugin` on every mutating route.
+- [x] 11.5 `SimpleCsrfProtectionHandlerPlugin` on every mutating route.
   Verify: `csrf.int.test.ts` covers a mutating request missing the required
   header being rejected, and one carrying it succeeding.
 - [ ] 11.6 `@fastify/helmet` registered with `contentSecurityPolicy: false`.
