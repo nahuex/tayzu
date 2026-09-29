@@ -126,6 +126,7 @@
  * entity *operations* (task 8.x) do not exist yet, but the six D4 tables
  * (task 5.1) do.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
@@ -172,7 +173,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 /** A minimal, valid blueprint input, with `overrides` shallow-merged on top. */
@@ -207,7 +208,7 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
     // Q1a).
     pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    service = createBlueprintService({ pool });
+    service = createBlueprintService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {

@@ -64,6 +64,7 @@
  * is imported first for the same import-order reason as every other int test
  * in this package (design D1).
  */
+import { authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -136,8 +137,8 @@ describe('Unsafe keys are rejected through the real services (spec Conventions, 
     // policy, exactly like production.
     pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    blueprints = createBlueprintService({ pool });
-    entities = createEntityService({ pool });
+    blueprints = createBlueprintService({ pool, authz });
+    entities = createEntityService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {

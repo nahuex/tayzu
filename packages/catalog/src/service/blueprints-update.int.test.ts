@@ -38,6 +38,7 @@
  * `seedEntity`), exactly like `blueprints.int.test.ts` does for task 7.5:
  * entity *operations* (task 8.x) do not exist yet.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -77,7 +78,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -118,7 +119,7 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
     // policy, exactly like production.
     pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    service = createBlueprintService({ pool });
+    service = createBlueprintService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {

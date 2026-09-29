@@ -253,6 +253,7 @@
  *    second is granted only once the first request's own transaction
  *    commits or rolls back.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -277,7 +278,7 @@ import type { CatalogContext } from '../domain/context.js';
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string): CatalogContext {
-  return { tenantId, actor: DEFAULT_ACTOR };
+  return { tenantId, actor: DEFAULT_ACTOR, principal: ADMIN_PRINCIPAL };
 }
 
 const TIER_ONLY_SCHEMA = {
@@ -301,8 +302,8 @@ describe('entity write racing a blueprint update (task 8.9; design D7)', () => {
     // The services under test run through the real tenant_isolation RLS
     // policy, exactly like production (task 6.3, design D6 Q1a).
     pool = connect(databaseUrl()).$client;
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {

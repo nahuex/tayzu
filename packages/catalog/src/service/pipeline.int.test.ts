@@ -126,6 +126,7 @@
  * (see `@tayzu/observability/src/harness.test.ts`'s identical pattern and its
  * own note on import order).
  */
+import { ADMIN_PRINCIPAL, authz, testAuthorization } from './__fixtures__/authz-test-helpers.js';
 import { randomUUID } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
@@ -389,6 +390,8 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
     dummyOperation = defineCatalogOperation<DummyInput, DummyOutput>({
       name: DUMMY_OPERATION_NAME,
       pool,
+      authz,
+      authorization: testAuthorization,
       handler: async ({ ctx, client, input }): Promise<CatalogOperationResult<DummyOutput>> => {
         handlerCalls.push(input);
 
@@ -543,7 +546,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   describe('successful operation (design D3 steps 2, 3, 6, 7)', () => {
     it('records the operation span with the common attributes, and operation.duration with outcome success and tayzu.actor.type', async () => {
       const tenantId = randomTenantId();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'user', id: 'user-1' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'user', id: 'user-1' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       const result = await dummyOperation(ctx, { mode: 'success' });
       expect(result).toEqual({ ok: true });
@@ -579,7 +586,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   describe('CATALOG_* error (design D3 step 5; Observability contract, "Errors")', () => {
     it('ends the span with ERROR status, error.type = the code, no exception event and no leaked message, and outcome client_error', async () => {
       const tenantId = randomTenantId();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'agent', id: 'agent-1' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'agent', id: 'agent-1' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       const thrown = await dummyOperation(ctx, { mode: 'catalog_error' }).catch(
         (error: unknown) => error,
@@ -620,7 +631,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   describe('unknown error: a forced DB error (design D3 step 5, D11; SSA B4)', () => {
     it('records a sanitized exception (type, SQLSTATE, constraint; no message, no detail; stack without its message line), outcome server_error, and catalog.internal_error, leaking neither the tenant value nor SQL text', async () => {
       const tenantId = randomTenantId();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'integration', id: 'integration-1' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'integration', id: 'integration-1' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       const thrown = await dummyOperation(ctx, { mode: 'db_error' }).catch(
         (error: unknown) => error,
@@ -712,6 +727,7 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
       const ctx: CatalogContext = {
         tenantId,
         actor: { type: 'agent', id: 'agent-1', onBehalfOf: { type: 'user', id: 'user-1' } },
+        principal: ADMIN_PRINCIPAL,
       };
 
       const result = await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
@@ -763,7 +779,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
     it('omits the on_behalf_of attributes entirely when the actor has no delegate', async () => {
       const tenantId = randomTenantId();
       const resourceIdentifier = randomResourceIdentifier();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'system', id: 'sys' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'system', id: 'sys' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
       await harness.forceFlush();

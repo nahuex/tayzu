@@ -231,6 +231,7 @@
  * Same reasoning as `isolation-blueprints.int.test.ts`: every assertion here
  * reads `EntityService`'s return values and thrown errors only.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -259,7 +260,7 @@ import type { CatalogContext } from '../domain/context.js';
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -305,8 +306,8 @@ describe('entity tenant isolation (task 8.8; spec "Tenant data isolation")', () 
     // two independent layers, application scoping and RLS.
     const db = connect(databaseUrl());
     pool = db.$client;
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {

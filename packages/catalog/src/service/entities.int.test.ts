@@ -191,6 +191,7 @@
  * builders, and `seedChangeEventSeqCollision` (used once, for the "unknown
  * constraint" case above).
  */
+import { authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -247,8 +248,8 @@ describe('entity operations: create, get, list (service; design D3-D5, D9-D11; t
     // policy, exactly like production.
     pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    blueprints = createBlueprintService({ pool });
-    entities = createEntityService({ pool });
+    blueprints = createBlueprintService({ pool, authz });
+    entities = createEntityService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {

@@ -62,7 +62,8 @@ import {
   pgErrorInfo,
 } from '../persistence/db-errors.js';
 import { blueprintMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
-import { defineCatalogOperation } from './pipeline.js';
+import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
+import { defineCatalogOperation, inputString } from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
 export interface CreateBlueprintInput {
@@ -123,6 +124,8 @@ export interface BlueprintOutput {
 
 export interface CreateBlueprintServiceOptions {
   readonly pool: Pool;
+  /** The Cerbos client every operation authorizes through (design Q27). */
+  readonly authz: CerbosClient;
   readonly limits?: CatalogLimits;
 }
 
@@ -481,12 +484,18 @@ async function runCompatibilityCheck(
 }
 
 export function createBlueprintService(options: CreateBlueprintServiceOptions): BlueprintService {
-  const { pool } = options;
+  const { pool, authz } = options;
   const limits = options.limits ?? defaultCatalogLimits;
 
   const create = defineCatalogOperation<CreateBlueprintInput, BlueprintOutput>({
     name: 'blueprint.create',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogBlueprint,
+      action: 'create',
+      resourceId: inputString(input, 'identifier'),
+    }),
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeBlueprintInput(rawInput, limits) as CreateBlueprintInput;
       const definition = parseBlueprintDefinition(input, limits);
@@ -570,6 +579,12 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
   const get = defineCatalogOperation<GetBlueprintInput, BlueprintOutput>({
     name: 'blueprint.get',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogBlueprint,
+      action: 'view',
+      resourceId: inputString(input, 'identifier'),
+    }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.identifier);
       const tx = drizzle(client);
@@ -584,6 +599,12 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
   const list = defineCatalogOperation<ListBlueprintsInput, ListBlueprintsOutput>({
     name: 'blueprint.list',
     pool,
+    authz,
+    authorization: () => ({
+      kind: RESOURCE_KINDS.catalogBlueprint,
+      action: 'list',
+      resourceId: '_',
+    }),
     handler: async ({ ctx, client, input }) => {
       const pageSize = input.pageSize ?? limits.pagination.defaultPageSize;
       // design.md, Spans table: tayzu.catalog.page.size is a *required*
@@ -622,6 +643,12 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
   const update = defineCatalogOperation<UpdateBlueprintInput, BlueprintOutput>({
     name: 'blueprint.update',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogBlueprint,
+      action: 'update',
+      resourceId: inputString(input, 'identifier'),
+    }),
     statementTimeoutMs: COMPATIBILITY_CHECK_STATEMENT_TIMEOUT_MS,
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeBlueprintInput(rawInput, limits) as UpdateBlueprintInput;
@@ -739,6 +766,12 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
   const doDelete = defineCatalogOperation<DeleteBlueprintInput, undefined>({
     name: 'blueprint.delete',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogBlueprint,
+      action: 'delete',
+      resourceId: inputString(input, 'identifier'),
+    }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.identifier);
       denyIfReserved(ctx, input.identifier, 'blueprint_write');

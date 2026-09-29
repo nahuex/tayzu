@@ -72,7 +72,8 @@ import {
 } from '../persistence/entities-repository.js';
 import type { LocalizedText } from '../domain/localized-text.js';
 import { entityMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
-import { defineCatalogOperation } from './pipeline.js';
+import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
+import { defineCatalogOperation, inputString } from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
 export interface EntitySpecWriteInput {
@@ -181,6 +182,8 @@ export interface EntityOutput {
 
 export interface CreateEntityServiceOptions {
   readonly pool: Pool;
+  /** The Cerbos client every operation authorizes through (design Q27). */
+  readonly authz: CerbosClient;
   readonly limits?: CatalogLimits;
 }
 
@@ -747,12 +750,19 @@ async function bumpReferrerAndAppendEvent(
 }
 
 export function createEntityService(options: CreateEntityServiceOptions): EntityService {
-  const { pool } = options;
+  const { pool, authz } = options;
   const limits = options.limits ?? defaultCatalogLimits;
 
   const create = defineCatalogOperation<CreateEntityInput, EntityOutput>({
     name: 'entity.create',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'create',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeEntityInput(rawInput, limits) as CreateEntityInput;
       const tx = drizzle(client);
@@ -877,6 +887,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const upsert = defineCatalogOperation<UpsertEntityInput, UpsertEntityOutput>({
     name: 'entity.upsert',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'update',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeEntityInput(rawInput, limits) as UpsertEntityInput;
       const tx = drizzle(client);
@@ -1128,6 +1145,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const writeStatus = defineCatalogOperation<WriteEntityStatusInput, EntityOutput>({
     name: 'entity.status.write',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'update',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeEntityInput(rawInput, limits) as WriteEntityStatusInput;
       const tx = drizzle(client);
@@ -1279,6 +1303,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const get = defineCatalogOperation<GetEntityInput, EntityOutput>({
     name: 'entity.get',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'view',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
@@ -1301,6 +1332,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const list = defineCatalogOperation<ListEntitiesInput, ListEntitiesOutput>({
     name: 'entity.list',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'list',
+      resourceId: '_',
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
 
@@ -1349,6 +1387,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const doDelete = defineCatalogOperation<DeleteEntityInput, undefined>({
     name: 'entity.delete',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'delete',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input }) => {
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
@@ -1469,6 +1514,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const listRelated = defineCatalogOperation<ListRelatedInput, ListRelatedOutput>({
     name: 'entity.related.list',
     pool,
+    authz,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'view',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);

@@ -55,3 +55,22 @@ export class CatalogError extends Error {
 export function isCatalogError(error: unknown): error is CatalogError {
   return error instanceof CatalogError;
 }
+
+/**
+ * Raised by the pipeline's authorization stage when Cerbos denies an action
+ * (002 design D11). Distinct from `CatalogError` and from
+ * `CATALOG_NOT_FOUND`: an in-tenant deny is visible as such. It carries no
+ * message detail beyond the fixed text.
+ */
+export class AuthorizationError extends Error {
+  readonly code = 'AUTH_FORBIDDEN' as const;
+
+  constructor() {
+    super('Action is not permitted');
+    this.name = 'AuthorizationError';
+  }
+}
+
+export function isAuthorizationError(error: unknown): error is AuthorizationError {
+  return error instanceof AuthorizationError;
+}

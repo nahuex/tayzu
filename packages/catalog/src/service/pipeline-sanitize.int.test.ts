@@ -49,6 +49,7 @@
  * import, before `./pipeline.js` creates its tracer, meter instruments and
  * logger at import time.
  */
+import { ADMIN_PRINCIPAL, authz, testAuthorization } from './__fixtures__/authz-test-helpers.js';
 import { randomUUID } from 'node:crypto';
 
 import { SpanStatusCode } from '@opentelemetry/api';
@@ -126,6 +127,8 @@ describe('defineCatalogOperation: sanitizing a real DrizzleQueryError (design D3
     leakOperation = defineCatalogOperation<Record<string, never>, DummyOutput>({
       name: DUMMY_OPERATION_NAME,
       pool,
+      authz,
+      authorization: testAuthorization,
       handler: async ({ ctx, client }) => {
         const tx = drizzle(client);
         const now = new Date();
@@ -163,7 +166,11 @@ describe('defineCatalogOperation: sanitizing a real DrizzleQueryError (design D3
 
   it('records only sanitized stack frames (no SQL, no "params:" line, no marker) in exception.stacktrace, and takes db.response.status_code / tayzu.db.constraint from the DrizzleQueryError.cause chain', async () => {
     const tenantId = randomTenantId();
-    const ctx: CatalogContext = { tenantId, actor: { type: 'user', id: 'user-1' } };
+    const ctx: CatalogContext = {
+      tenantId,
+      actor: { type: 'user', id: 'user-1' },
+      principal: ADMIN_PRINCIPAL,
+    };
 
     const thrown = await leakOperation(ctx, {}).then(
       () => undefined,

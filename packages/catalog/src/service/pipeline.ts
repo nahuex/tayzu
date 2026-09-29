@@ -14,6 +14,11 @@
  *    `tayzu.catalog.context.rejections`, emit the WARN log
  *    `catalog.security.context_rejected`, and rethrow. No span starts, and
  *    the handler never runs.
+ * 1b. Authorization (task 9.1, 002 design D10): Cerbos `CheckResources`,
+ *    before the tenant transaction opens. A deny throws `AUTH_FORBIDDEN`,
+ *    emits `catalog.security.authz_denied` and counts
+ *    `tayzu.authz.decisions`. A missing or empty principal is a deny, and a
+ *    Cerbos failure is never an allow.
  * 2. Start span `catalog.<name>` with the common attributes, and make it the
  *    active span for the rest of the operation.
  * 3. Run `withTenantTransaction(pool, ctx, (client) => handler({ ctx, client,
@@ -35,14 +40,23 @@
 import type { Attributes } from '@opentelemetry/api';
 import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
+import { buildAttributes, type CerbosClient, type ResourceKind } from '@tayzu/authz';
 import { withTenantTransaction } from '@tayzu/db';
 import type { Pool, PoolClient } from 'pg';
 
 import type { CatalogContext } from '../domain/context.js';
 import { parseCatalogContext } from '../domain/context.js';
-import { CatalogError, isCatalogError, type CatalogErrorCode } from '../domain/errors.js';
+import {
+  AuthorizationError,
+  CatalogError,
+  isAuthorizationError,
+  isCatalogError,
+  type CatalogErrorCode,
+} from '../domain/errors.js';
 import { pgErrorInfo } from '../persistence/db-errors.js';
 import {
+  authzCheckDurationHistogram,
+  authzDecisionsCounter,
   contextRejectionsCounter,
   logger,
   operationDurationHistogram,
@@ -58,6 +72,9 @@ const ACTOR_ON_BEHALF_OF_ID_ATTRIBUTE = 'tayzu.actor.on_behalf_of.id';
 const OPERATION_ATTRIBUTE = 'tayzu.catalog.operation';
 const OUTCOME_ATTRIBUTE = 'tayzu.catalog.outcome';
 const ERROR_TYPE_ATTRIBUTE = 'error.type';
+const AUTHZ_KIND_ATTRIBUTE = 'tayzu.authz.resource.kind';
+const AUTHZ_ACTION_ATTRIBUTE = 'tayzu.authz.action';
+const AUTHZ_DECISION_ATTRIBUTE = 'tayzu.authz.decision';
 const CONTEXT_REASON_ATTRIBUTE = 'tayzu.catalog.context.reason';
 
 /**
@@ -110,12 +127,31 @@ export type CatalogOperationHandler<Input, Output> = (
   params: CatalogOperationHandlerParams<Input>,
 ) => Promise<CatalogOperationResult<Output>>;
 
+/** What an operation asks Cerbos: one action on one resource (design Q27). */
+export interface AuthorizationDeclaration {
+  readonly kind: ResourceKind;
+  readonly action: string;
+  readonly resourceId: string;
+  /** Extra resource attributes; `tenantId` is always added from the context. */
+  readonly attributes?: Readonly<Record<string, string | number | boolean>>;
+}
+
 export interface DefineCatalogOperationOptions<Input, Output> {
   /** For example `'entity.upsert'`: span `catalog.entity.upsert`, attribute value `'entity.upsert'`. */
   readonly name: string;
   /** The production connection pool this operation runs against. */
   readonly pool: Pool;
   readonly handler: CatalogOperationHandler<Input, Output>;
+  /** The Cerbos client the authorization stage calls (design Q27). */
+  readonly authz: CerbosClient;
+  /**
+   * Mandatory (design Q27): what the pipeline checks before the transaction.
+   * Receives the still-untrusted input, so it must read it defensively.
+   */
+  readonly authorization: (params: {
+    readonly ctx: CatalogContext;
+    readonly input: Input;
+  }) => AuthorizationDeclaration;
   /**
    * Overrides `withTenantTransaction`'s default 5 s `statement_timeout`
    * (design D5). Design Risks: "`statement_timeout` raised only for this
@@ -260,6 +296,89 @@ function recordOperationDuration(params: RecordOperationDurationParams): void {
   operationDurationHistogram.record(params.durationSeconds, attributes);
 }
 
+/**
+ * A string field of the still-untrusted input, or `'_'` when it is not one.
+ * Cerbos needs a non-empty resource id; a malformed input is rejected by the
+ * handler's own validation once the check allows it.
+ */
+export function inputString(input: unknown, key: string): string {
+  if (typeof input !== 'object' || input === null) return '_';
+  const value = (input as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.length > 0 ? value : '_';
+}
+
+/**
+ * Design D10: `CheckResources` for one action. Never allows on a missing
+ * principal (no Cerbos call is made), and a Cerbos failure propagates as an
+ * unknown error, which the pipeline records sanitized and never turns into
+ * an allow.
+ */
+async function authorize(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  declaration: AuthorizationDeclaration,
+): Promise<void> {
+  const { kind, action } = declaration;
+  const roles = ctx.principal?.roles ?? [];
+  const startedAtMillis = Date.now();
+
+  let allowed = false;
+  if (roles.length > 0) {
+    const response = await tracer.startActiveSpan('authz.check', async (checkSpan) => {
+      checkSpan.setAttributes({ [AUTHZ_KIND_ATTRIBUTE]: kind, [AUTHZ_ACTION_ATTRIBUTE]: action });
+      try {
+        return await authz.checkResources({
+          principal: {
+            id: ctx.actor.id,
+            roles: [...roles],
+            attr: buildAttributes(ctx.tenantId, {
+              teams: [...(ctx.principal?.teams ?? [])],
+              moderatedBlueprints: [...(ctx.principal?.moderatedBlueprints ?? [])],
+            }),
+          },
+          resources: [
+            {
+              resource: {
+                kind,
+                id: declaration.resourceId,
+                attr: buildAttributes(ctx.tenantId, declaration.attributes),
+              },
+              actions: [action],
+            },
+          ],
+        });
+      } finally {
+        checkSpan.end();
+      }
+    });
+    allowed = response.results[0]?.isAllowed(action) === true;
+  }
+  authzCheckDurationHistogram.record(elapsedSeconds(startedAtMillis), {
+    [AUTHZ_KIND_ATTRIBUTE]: kind,
+  });
+
+  authzDecisionsCounter.add(1, {
+    [TENANT_ATTRIBUTE]: ctx.tenantId,
+    [AUTHZ_KIND_ATTRIBUTE]: kind,
+    [AUTHZ_ACTION_ATTRIBUTE]: action,
+    [AUTHZ_DECISION_ATTRIBUTE]: allowed ? 'allow' : 'deny',
+  });
+  if (allowed) return;
+
+  logger.emit({
+    eventName: 'catalog.security.authz_denied',
+    severityNumber: SeverityNumber.WARN,
+    attributes: {
+      [TENANT_ATTRIBUTE]: ctx.tenantId,
+      [ACTOR_TYPE_ATTRIBUTE]: ctx.actor.type,
+      [ACTOR_ID_ATTRIBUTE]: ctx.actor.id,
+      [AUTHZ_KIND_ATTRIBUTE]: kind,
+      [AUTHZ_ACTION_ATTRIBUTE]: action,
+    },
+  });
+  throw new AuthorizationError();
+}
+
 function elapsedSeconds(startedAtMillis: number): number {
   return (Date.now() - startedAtMillis) / 1000;
 }
@@ -271,7 +390,7 @@ function elapsedSeconds(startedAtMillis: number): number {
 export function defineCatalogOperation<Input, Output>(
   options: DefineCatalogOperationOptions<Input, Output>,
 ): (rawContext: unknown, input: Input) => Promise<Output> {
-  const { name, pool, handler, statementTimeoutMs } = options;
+  const { name, pool, handler, statementTimeoutMs, authz, authorization } = options;
   const spanName = `catalog.${name}`;
 
   return async function catalogOperation(rawContext: unknown, input: Input): Promise<Output> {
@@ -297,6 +416,7 @@ export function defineCatalogOperation<Input, Output>(
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
+        await authorize(authz, ctx, authorization({ ctx, input }));
         const result = await withTenantTransaction(
           pool,
           ctx,
@@ -320,7 +440,16 @@ export function defineCatalogOperation<Input, Output>(
       } catch (error) {
         span.setStatus({ code: SpanStatusCode.ERROR });
 
-        if (isCatalogError(error)) {
+        if (isAuthorizationError(error)) {
+          span.setAttribute(ERROR_TYPE_ATTRIBUTE, error.code);
+          recordOperationDuration({
+            operationName: name,
+            ctx,
+            outcome: 'client_error',
+            durationSeconds: elapsedSeconds(startedAtMillis),
+            errorType: error.code,
+          });
+        } else if (isCatalogError(error)) {
           span.setAttribute(ERROR_TYPE_ATTRIBUTE, error.code);
           if (VALIDATION_FAILURE_CODES.has(error.code)) {
             validationFailuresCounter.add(1, {

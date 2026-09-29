@@ -232,6 +232,7 @@
  * same as `blueprints.int.test.ts`), since it is harmless for the tests that
  * do not use it.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -275,7 +276,7 @@ function actorFor(kind: ActorKind): CatalogContext['actor'] {
 }
 
 function ctxFor(tenantId: string, kind: ActorKind): CatalogContext {
-  return { tenantId, actor: actorFor(kind) };
+  return { tenantId, actor: actorFor(kind), principal: ADMIN_PRINCIPAL };
 }
 
 interface MutationSucceedResult {
@@ -313,8 +314,8 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
     // policy, exactly like production (task 6.3, design D6 Q1a).
     pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {
@@ -666,6 +667,7 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
     const delegatedCtx: CatalogContext = {
       tenantId,
       actor: { type: 'agent', id: 'ag1', onBehalfOf: { type: 'user', id: 'u1' } },
+      principal: ADMIN_PRINCIPAL,
     };
 
     const output = await entityService.upsert(delegatedCtx, {

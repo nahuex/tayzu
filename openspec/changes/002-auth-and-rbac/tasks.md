@@ -282,7 +282,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 9. Authorization pipeline integration
 
-- [ ] 9.1 A Cerbos `CheckResources` stage inserted into
+- [x] 9.1 A Cerbos `CheckResources` stage inserted into
   `defineCatalogOperation` (001) immediately after context validation and
   before the tenant transaction opens, raising `AUTH_FORBIDDEN` on deny and
   emitting `catalog.security.authz_denied` plus `tayzu.authz.decisions`.

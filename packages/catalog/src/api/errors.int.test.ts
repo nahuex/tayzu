@@ -62,6 +62,7 @@
  * already annotated is still there -- it does not re-prove the pipeline's
  * own sanitization logic.
  */
+import { ADMIN_PRINCIPAL, authz } from '../service/__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -100,7 +101,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 /** The shape every thrown value from a router call is assumed to have (`ORPCError`, design D2/D11). */
@@ -158,8 +159,8 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
     const db = connect(databaseUrl());
     pool = db.$client;
     harness = registeredHarness();
-    blueprints = createBlueprintService({ pool });
-    entities = createEntityService({ pool });
+    blueprints = createBlueprintService({ pool, authz });
+    entities = createEntityService({ pool, authz });
     const router = createCatalogRouter({ blueprints, entities });
     client = createRouterClient(router, { context: (raw: Record<string, unknown>) => raw });
   }, 60_000);
@@ -321,8 +322,8 @@ describe('catalog API error mapping (design D3, D11; task 9.2)', () => {
       const brokenPool = brokenDb.$client;
       await brokenPool.end();
 
-      const brokenBlueprints = createBlueprintService({ pool: brokenPool });
-      const brokenEntities = createEntityService({ pool: brokenPool });
+      const brokenBlueprints = createBlueprintService({ pool: brokenPool, authz });
+      const brokenEntities = createEntityService({ pool: brokenPool, authz });
       const brokenRouter = createCatalogRouter({
         blueprints: brokenBlueprints,
         entities: brokenEntities,

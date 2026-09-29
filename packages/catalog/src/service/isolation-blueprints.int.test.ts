@@ -19,6 +19,7 @@
  * time simply run against whatever no-op providers are active, exactly as
  * they would in any other module that never registers a harness).
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -42,7 +43,7 @@ import {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -72,7 +73,7 @@ describe('blueprint tenant isolation (task 7.6; spec "Tenant data isolation")', 
     // policy, exactly like production: cross-tenant reads are now blocked by
     // two independent layers, application scoping and RLS.
     pool = connect(databaseUrl()).$client;
-    service = createBlueprintService({ pool });
+    service = createBlueprintService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {

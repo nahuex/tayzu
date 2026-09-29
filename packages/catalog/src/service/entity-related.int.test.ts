@@ -227,6 +227,7 @@
  * scenarios only assert `listRelated`'s return value. Same reasoning as
  * `entities-delete.int.test.ts`.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -254,7 +255,7 @@ import type { CatalogContext } from '../domain/context.js';
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -304,8 +305,8 @@ describe('entities.listRelated (task 8.7; spec "Related entities traversal")', (
     // policy, exactly like production.
     const db = connect(databaseUrl());
     pool = db.$client;
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {

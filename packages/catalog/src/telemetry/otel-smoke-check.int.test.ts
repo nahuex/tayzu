@@ -77,6 +77,7 @@
  * metrics API has no proxy meter provider, so any of that happening before
  * registration would make every later instrument a permanent no-op.
  */
+import { ADMIN_PRINCIPAL, authz } from '../service/__fixtures__/authz-test-helpers.js';
 import {
   registration,
   type TelemetryTestHarness,
@@ -132,7 +133,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'smoke-user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 /** Every data point of `name`, across every metric export collected so far, regardless of instrument type. */
@@ -308,8 +309,8 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
     // The services under test run through the real tenant_isolation RLS
     // policy, exactly like production.
     pool = connect(databaseUrl()).$client;
-    const blueprints: BlueprintService = createBlueprintService({ pool });
-    const entities: EntityService = createEntityService({ pool });
+    const blueprints: BlueprintService = createBlueprintService({ pool, authz });
+    const entities: EntityService = createEntityService({ pool, authz });
     const router = createCatalogRouter({ blueprints, entities });
     client = createRouterClient(router, { context: (raw: Record<string, unknown>) => raw });
   }, 60_000);

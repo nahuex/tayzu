@@ -18,6 +18,7 @@
  * `entity-related.int.test.ts`, `isolation-entities.int.test.ts`,
  * `concurrency.int.test.ts` and `actor-parity.int.test.ts`.
  */
+import { ADMIN_PRINCIPAL } from './authz-test-helpers.js';
 import { sql } from 'drizzle-orm';
 
 import type { CatalogContext } from '../../domain/context.js';
@@ -35,7 +36,7 @@ export function ctx(
   tenantId: string,
   actor: CatalogContext['actor'] = DEFAULT_ACTOR,
 ): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 /**

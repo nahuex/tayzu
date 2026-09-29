@@ -230,6 +230,7 @@
  * `catalog_change_event` rows. This mirrors `isolation-blueprints.int.test.ts`'s
  * own reasoning for skipping `./__fixtures__/registered-harness.js`.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -261,7 +262,7 @@ import type { CatalogContext } from '../domain/context.js';
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -319,8 +320,8 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     // The services under test run through the real tenant_isolation RLS
     // policy, exactly like production.
     pool = connect(databaseUrl()).$client;
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {

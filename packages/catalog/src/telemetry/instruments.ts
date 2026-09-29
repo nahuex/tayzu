@@ -70,3 +70,13 @@ export const schemaCompileDurationHistogram = meter.createHistogram(
     unit: 's',
   },
 );
+
+/** 002 design D14, Metrics table: authorization volume and deny rate. */
+export const authzDecisionsCounter = meter.createCounter('tayzu.authz.decisions', {
+  unit: '{decision}',
+});
+
+/** 002 design D14, Metrics table: Cerbos call latency. */
+export const authzCheckDurationHistogram = meter.createHistogram('tayzu.authz.check.duration', {
+  unit: 's',
+});

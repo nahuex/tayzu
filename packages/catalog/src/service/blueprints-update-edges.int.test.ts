@@ -31,6 +31,7 @@
  * d's compatible half) reach it -- which is exactly why they are the ones
  * this file expects to fail today.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -62,7 +63,7 @@ function registeredHarness(): TelemetryTestHarness {
 }
 
 function testCtx(tenantId: string): CatalogContext {
-  return { tenantId, actor: { type: 'user', id: 'user-1' } };
+  return { tenantId, actor: { type: 'user', id: 'user-1' }, principal: ADMIN_PRINCIPAL };
 }
 
 interface SchemaIncompatibleViolation {
@@ -131,8 +132,8 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
     // policy, exactly like production.
     pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    blueprints = createBlueprintService({ pool });
-    entities = createEntityService({ pool });
+    blueprints = createBlueprintService({ pool, authz });
+    entities = createEntityService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {
