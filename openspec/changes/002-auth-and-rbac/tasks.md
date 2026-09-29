@@ -394,6 +394,13 @@ policy diff shown in chat, separately from the rest of the PR.
   "Machine token exchange is rate-limited independently of the authenticated
   bucket".
 
+- [ ] 11.14 `apps/api/src/main.ts` and a `start` script: builds the app with
+  `createAppFromEnv`, listens on `HOST`/`PORT` from the environment, and on
+  `SIGTERM`/`SIGINT` closes the listener and then every pool (resolved
+  decision Q30). Verify: `main.int.test.ts` covers "The process listens on
+  the configured port and answers the health route" and "SIGTERM closes the
+  listener and the database pools", plus a missing `PORT` failing fast.
+
 ## 12. User and Team system blueprints
 
 - [x] 12.1 `_user` (identifier, title, status, portRole, moderatedBlueprints)
