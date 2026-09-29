@@ -480,7 +480,7 @@ policy diff shown in chat, separately from the rest of the PR.
   received`, and the step-up-insufficient path once each, asserting the
   Visma Connect `sub`/`sid`/tokens/email/IP never appear on any of them.
 
-- [ ] 13.6 Reconcile `packages/auth/src/telemetry/contract.ts` with
+- [x] 13.6 Reconcile `packages/auth/src/telemetry/contract.ts` with
   `packages/authz/src/telemetry/contract.ts` and the design tables (missing
   `auth.security.sso_sign_in_failed`, `auth.security.backchannel_logout_received`,
   conditional `tayzu.auth.step_up.fresh`), and make every declared signal

@@ -18,27 +18,33 @@ export const INSTRUMENTATION_SCOPE_NAME = '@tayzu/auth';
 
 export interface SpanContract {
   readonly name: string;
-  /** The *complete* allowed set of required attribute keys. */
-  readonly attributes: readonly string[];
+  /** Attribute keys every span of this name carries. */
+  readonly requiredAttributes: readonly string[];
+  /** Attribute keys recorded only when the operation reaches that outcome. */
+  readonly conditionalAttributes: readonly string[];
 }
 
 /** design.md, "Observability contract" -> Spans table. */
 export const SPANS: readonly SpanContract[] = [
   {
     name: 'auth.token.exchange',
-    attributes: ['tayzu.auth.credential.kind'],
+    requiredAttributes: ['tayzu.auth.credential.kind'],
+    conditionalAttributes: [],
   },
   {
     name: 'auth.session.step_up_check',
-    attributes: ['tayzu.auth.method', 'tayzu.auth.step_up.fresh'],
+    requiredAttributes: ['tayzu.auth.method'],
+    conditionalAttributes: ['tayzu.auth.step_up.fresh'],
   },
   {
     name: 'auth.sso.callback',
-    attributes: ['tayzu.auth.method', 'tayzu.auth.sso.outcome'],
+    requiredAttributes: ['tayzu.auth.method'],
+    conditionalAttributes: ['tayzu.auth.sso.outcome'],
   },
   {
     name: 'auth.backchannel_logout.received',
-    attributes: ['tayzu.auth.backchannel_logout.outcome'],
+    requiredAttributes: [],
+    conditionalAttributes: ['tayzu.auth.backchannel_logout.outcome'],
   },
 ];
 
@@ -54,6 +60,12 @@ export interface MetricContract {
 
 /** design.md, "Observability contract" -> Metrics table. */
 export const METRICS: readonly MetricContract[] = [
+  {
+    name: 'tayzu.auth.mfa.events',
+    instrumentType: 'counter',
+    unit: '{event}',
+    attributes: ['tayzu.auth.event'],
+  },
   {
     name: 'tayzu.auth.session.events',
     instrumentType: 'counter',
@@ -180,6 +192,16 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'WARN',
     attributes: [sharedAttributeKeys.tenantId, 'tayzu.auth.credential.kind'],
   },
+  {
+    name: 'auth.security.sso_sign_in_failed',
+    severity: 'WARN',
+    attributes: ['tayzu.auth.failure_reason'],
+  },
+  {
+    name: 'auth.security.backchannel_logout_received',
+    severity: 'INFO',
+    attributes: ['tayzu.auth.backchannel_logout.outcome'],
+  },
 ];
 
 /**
@@ -187,15 +209,4 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
  * from sampling and from filter or drop rules in any downstream telemetry
  * pipeline, the same rule 001's own `catalog.security.*` events follow.
  */
-export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
-  'auth.security.login_succeeded',
-  'auth.security.login_failed',
-  'auth.security.rate_limited',
-  'auth.security.session_revoked',
-  'auth.security.account_linked',
-  'auth.security.account_unlinked',
-  'auth.security.step_up_required',
-  'auth.security.step_up_insufficient',
-  'auth.security.token_exchange_failed',
-  'auth.security.revoked_token_rejected',
-];
+export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = LOG_EVENTS.map((event) => event.name);

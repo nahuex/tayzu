@@ -974,6 +974,28 @@ describe('otel-smoke-check, 002: every declared signal appears with its declared
       ).toEqual(new Set(['revoked', 'replay', 'invalid', 'no_match']));
     });
 
+    it('sso_sign_in_failed records the sso_unlinked reason, and only closed reasons (task 13.6)', () => {
+      const reasons = logValues(
+        harness,
+        'auth.security.sso_sign_in_failed',
+        'tayzu.auth.failure_reason',
+      );
+      expect(reasons).toContain('sso_unlinked');
+      for (const reason of reasons) {
+        expect(['sso_unlinked', 'sso_state_mismatch', 'sso_token_invalid']).toContain(reason);
+      }
+    });
+
+    it('auth.session.step_up_check records tayzu.auth.step_up.fresh as both true and false (task 13.6)', () => {
+      const fresh = new Set(
+        spansNamed(harness, 'auth.session.step_up_check').map(
+          (span) => span.attributes['tayzu.auth.step_up.fresh'],
+        ),
+      );
+      expect(fresh).toContain(true);
+      expect(fresh).toContain(false);
+    });
+
     it('step_up_insufficient records the Visma Connect method, account_linked the admin actor, token_exchange_failed the integration kind', () => {
       expect(logValues(harness, 'auth.security.step_up_insufficient', 'tayzu.auth.method')).toEqual(
         new Set(['visma_connect']),
