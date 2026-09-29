@@ -299,7 +299,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `authz-pipeline.int.test.ts` covers "Cerbos evaluation error denies rather
   than allows", using a scratch policy condition that raises a CEL error for
   the test's request shape.
-- [ ] 9.4 `authz.check`/`authz.plan` spans (with `cerbosCallId` correlation
+- [x] 9.4 `authz.check`/`authz.plan` spans (with `cerbosCallId` correlation
   onto the enclosing operation span) and the `tayzu.authz.check.duration`
   histogram. Verify: `otel-smoke-check` (extended) asserts both spans appear
   with their required attributes on a representative operation.

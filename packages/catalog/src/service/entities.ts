@@ -72,7 +72,12 @@ import {
   type EntityRow,
 } from '../persistence/entities-repository.js';
 import type { LocalizedText } from '../domain/localized-text.js';
-import { entityMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
+import {
+  authzCheckDurationHistogram,
+  entityMutationsCounter,
+  logger,
+  tracer,
+} from '../telemetry/instruments.js';
 import {
   RESOURCE_KINDS,
   buildAttributes,
@@ -198,6 +203,30 @@ const ENTITY_PLAN_MAPPER = {
  * that cannot be turned into a filter throws, which denies (never allows).
  */
 async function planEntityList(authz: CerbosClient, ctx: CatalogContext): Promise<PlanFilter> {
+  const startedAtMillis = Date.now();
+  return tracer.startActiveSpan('authz.plan', async (planSpan) => {
+    planSpan.setAttribute('tayzu.authz.resource.kind', RESOURCE_KINDS.catalogEntity);
+    try {
+      const filter = await runEntityListPlan(authz, ctx);
+      planSpan.setAttribute(
+        'tayzu.authz.plan.kind',
+        filter.kind === 'denied'
+          ? 'always_denied'
+          : filter.filter === undefined
+            ? 'always_allowed'
+            : 'conditional',
+      );
+      return filter;
+    } finally {
+      planSpan.end();
+      authzCheckDurationHistogram.record((Date.now() - startedAtMillis) / 1000, {
+        'tayzu.authz.resource.kind': RESOURCE_KINDS.catalogEntity,
+      });
+    }
+  });
+}
+
+async function runEntityListPlan(authz: CerbosClient, ctx: CatalogContext): Promise<PlanFilter> {
   const plan = await authz.planResources({
     principal: {
       id: ctx.actor.id,

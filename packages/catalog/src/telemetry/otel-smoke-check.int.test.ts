@@ -1090,4 +1090,98 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
       );
     }
   }, 60_000);
+
+  it('authz.check and authz.plan spans, the cerbos call id correlation and the tayzu.authz.check.duration histogram appear on a representative operation (design "Observability contract"; task 9.4)', async () => {
+    const tenantId = randomTenantId();
+    const hostContext = ctx(tenantId);
+
+    await client.blueprints.create(teamDefinition(), { context: hostContext });
+    await client.entities.create(
+      { blueprint: 'team', identifier: 'team-authz', title: 'Team Authz' },
+      { context: hostContext },
+    );
+
+    const parentSpanId = (span: ReadableSpanLike): string | undefined => {
+      const withParent = span as unknown as {
+        parentSpanContext?: { spanId?: string };
+        parentSpanId?: string;
+      };
+      return withParent.parentSpanContext?.spanId ?? withParent.parentSpanId;
+    };
+
+    // authz.check: child of the operation span, with its required attributes
+    // and the conditional Cerbos call id.
+    const checksBefore = finishedSpans(harness.spanExporter, 'authz.check').length;
+    const captureGet = spanTracker(harness.spanExporter, 'catalog.entity.get');
+    await client.entities.get(
+      { blueprint: 'team', identifier: 'team-authz' },
+      { context: hostContext },
+    );
+    const operationSpan = captureGet();
+    const checkSpans = finishedSpans(harness.spanExporter, 'authz.check').slice(checksBefore);
+    expect(checkSpans, 'exactly one authz.check span per operation').toHaveLength(1);
+    const checkSpan = checkSpans[0];
+    if (checkSpan === undefined) throw new Error('unreachable: length was just asserted');
+
+    expect(parentSpanId(checkSpan), 'authz.check must be a child of the operation span').toBe(
+      operationSpan.spanContext().spanId,
+    );
+    expect(checkSpan.attributes['tayzu.authz.resource.kind']).toBe('catalog_entity');
+    expect(checkSpan.attributes['tayzu.authz.action']).toBe('view');
+    const callId = checkSpan.attributes['tayzu.authz.cerbos.call_id'];
+    expect(typeof callId).toBe('string');
+    expect(callId).not.toBe('');
+
+    // cerbosCallId correlation onto the enclosing operation span (design D14).
+    expect(
+      operationSpan.attributes['tayzu.authz.cerbos.call_id'],
+      'the operation span must carry the same Cerbos call id as its authz.check child',
+    ).toBe(callId);
+
+    // authz.plan: child of entities.list only, with the plan kind.
+    const plansBefore = finishedSpans(harness.spanExporter, 'authz.plan').length;
+    const checksBeforeList = finishedSpans(harness.spanExporter, 'authz.check').length;
+    const captureList = spanTracker(harness.spanExporter, 'catalog.entity.list');
+    await client.entities.list({ blueprint: 'team', pageSize: 10 }, { context: hostContext });
+    const listSpan = captureList();
+    const planSpans = finishedSpans(harness.spanExporter, 'authz.plan').slice(plansBefore);
+    expect(planSpans, 'entities.list emits exactly one authz.plan span').toHaveLength(1);
+    const planSpan = planSpans[0];
+    if (planSpan === undefined) throw new Error('unreachable: length was just asserted');
+    expect(parentSpanId(planSpan), 'authz.plan must be a child of the list operation span').toBe(
+      listSpan.spanContext().spanId,
+    );
+    expect(planSpan.attributes['tayzu.authz.resource.kind']).toBe('catalog_entity');
+    expect(['always_allowed', 'always_denied', 'conditional']).toContain(
+      planSpan.attributes['tayzu.authz.plan.kind'],
+    );
+
+    // authz.plan is for entities.list only: no other operation emits one.
+    expect(
+      finishedSpans(harness.spanExporter, 'authz.check').length,
+      'entities.list still runs its authz.check',
+    ).toBeGreaterThanOrEqual(checksBeforeList);
+    const plansAfterList = finishedSpans(harness.spanExporter, 'authz.plan').length;
+    await client.entities.get(
+      { blueprint: 'team', identifier: 'team-authz' },
+      { context: hostContext },
+    );
+    expect(finishedSpans(harness.spanExporter, 'authz.plan')).toHaveLength(plansAfterList);
+
+    // tayzu.authz.check.duration: recorded, with only tayzu.authz.resource.kind.
+    await harness.forceFlush();
+    const durationPoints = allMetricDataPointAttributes(
+      harness.metricExporter,
+      'tayzu.authz.check.duration',
+    );
+    expect(durationPoints.length).toBeGreaterThan(0);
+    expect(
+      durationPoints.some(
+        (attributes) => attributes['tayzu.authz.resource.kind'] === 'catalog_entity',
+      ),
+    ).toBe(true);
+    for (const attributes of durationPoints) {
+      expect(Object.keys(attributes)).toEqual(['tayzu.authz.resource.kind']);
+    }
+  }, 60_000);
 });

@@ -73,6 +73,7 @@ const OPERATION_ATTRIBUTE = 'tayzu.catalog.operation';
 const OUTCOME_ATTRIBUTE = 'tayzu.catalog.outcome';
 const ERROR_TYPE_ATTRIBUTE = 'error.type';
 const AUTHZ_KIND_ATTRIBUTE = 'tayzu.authz.resource.kind';
+const AUTHZ_CALL_ID_ATTRIBUTE = 'tayzu.authz.cerbos.call_id';
 const AUTHZ_ACTION_ATTRIBUTE = 'tayzu.authz.action';
 const AUTHZ_DECISION_ATTRIBUTE = 'tayzu.authz.decision';
 const CONTEXT_REASON_ATTRIBUTE = 'tayzu.catalog.context.reason';
@@ -331,12 +332,13 @@ async function authorize(
   const roles = ctx.principal?.roles ?? [];
   const startedAtMillis = Date.now();
 
+  const parentContext = context.active();
   let allowed = false;
   if (roles.length > 0) {
     const response = await tracer.startActiveSpan('authz.check', async (checkSpan) => {
       checkSpan.setAttributes({ [AUTHZ_KIND_ATTRIBUTE]: kind, [AUTHZ_ACTION_ATTRIBUTE]: action });
       try {
-        return await authz.checkResources({
+        const checked = await authz.checkResources({
           principal: {
             id: ctx.actor.id,
             roles: [...roles],
@@ -356,6 +358,13 @@ async function authorize(
             },
           ],
         });
+        // Correlates the Cerbos decision log with the trace (design D14).
+        const callId = checked.cerbosCallId;
+        if (callId !== '') {
+          checkSpan.setAttribute(AUTHZ_CALL_ID_ATTRIBUTE, callId);
+          trace.getSpan(parentContext)?.setAttribute(AUTHZ_CALL_ID_ATTRIBUTE, callId);
+        }
+        return checked;
       } finally {
         checkSpan.end();
       }
