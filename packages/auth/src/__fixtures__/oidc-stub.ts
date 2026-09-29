@@ -46,7 +46,7 @@ export interface OidcStub {
   /** Sets the identity the next authorization requests sign in as. */
   setSubject: (subject: OidcStubSubject) => void;
   /** Signs any payload with the stub's key (RS256, `kid` header). */
-  signJwt: (payload: Record<string, unknown>) => string;
+  signJwt: (payload: Record<string, unknown>, header?: Record<string, unknown>) => string;
   /** Authorization requests received, oldest first. */
   readonly authorizationRequests: readonly Record<string, string>[];
   close: () => Promise<void>;
@@ -77,8 +77,11 @@ export async function startOidcStub(options: OidcStubOptions = {}): Promise<Oidc
   const authorizationRequests: Record<string, string>[] = [];
   let issuer = '';
 
-  const signJwt = (payload: Record<string, unknown>): string => {
-    const head = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid }));
+  const signJwt = (
+    payload: Record<string, unknown>,
+    header: Record<string, unknown> = {},
+  ): string => {
+    const head = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid, ...header }));
     const body = b64url(JSON.stringify(payload));
     const signature = createSign('RSA-SHA256').update(`${head}.${body}`).sign(privateKey);
     return `${head}.${body}.${b64url(signature)}`;

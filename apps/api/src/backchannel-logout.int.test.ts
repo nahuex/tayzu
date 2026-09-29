@@ -187,4 +187,57 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
       before,
     );
   });
+
+  /**
+   * Task 22.2 (design D26, "Where `jti` replay state lives"), scenario "A replayed
+   * logout token is rejected without revealing anything twice": GIVEN a logout
+   * token already processed once, WHEN the same token is received again, THEN it
+   * is rejected as a replay and no further session state changes.
+   *
+   * Production symbols expected: the route records one `auth.verification` row per
+   * accepted token (`identifier = "backchannel-logout:{aud}:{jti}"`, `expires_at`
+   * bounded by the token's `exp` plus the 30s skew) and, on a second delivery,
+   * answers the same 200 without touching sessions. No new table.
+   */
+  it('A replayed logout token is rejected without revoking anything twice', async () => {
+    const sid = `sid-${randomUUID()}`;
+    const firstUserId = await ssoSession(sid);
+    const claims = logoutClaims(sid);
+    const jti = claims['jti'] as string;
+    const exp = claims['exp'] as number;
+    const token = stub.signJwt(claims, { typ: 'logout+jwt' });
+
+    const first = await postLogout(token);
+    expect(first.statusCode).toBe(200);
+    expect(await sessionCount(firstUserId), 'first delivery revokes the matching session').toBe(0);
+
+    // The token is recorded in the existing verification table, bounded by exp + skew.
+    const identifier = `backchannel-logout:${stub.clientId}:${jti}`;
+    const recorded = await authPool.query<{ expires_at: Date }>(
+      'select expires_at from auth.verification where identifier = $1',
+      [identifier],
+    );
+    expect(recorded.rows, 'exactly one replay record for the accepted token').toHaveLength(1);
+    const expiresAtSeconds = (recorded.rows[0]?.expires_at.getTime() ?? 0) / 1000;
+    expect(expiresAtSeconds).toBeGreaterThanOrEqual(exp);
+    expect(expiresAtSeconds).toBeLessThanOrEqual(exp + 30 + 5);
+
+    // A new session with the same Visma Connect sid appears after the first delivery;
+    // a replay must not revoke it ("no further session state changes").
+    const secondUserId = await ssoSession(sid);
+    const secondBefore = await sessionCount(secondUserId);
+    expect(secondBefore).toBeGreaterThan(0);
+
+    const replay = await postLogout(token);
+    expect(replay.statusCode, 'a replay answers like every other outcome').toBe(200);
+    expect(replay.body).toBe(first.body);
+    expect(replay.headers['content-type']).toBe(first.headers['content-type']);
+    expect(await sessionCount(secondUserId), 'the replay revoked nothing').toBe(secondBefore);
+
+    const afterReplay = await authPool.query(
+      'select 1 from auth.verification where identifier = $1',
+      [identifier],
+    );
+    expect(afterReplay.rows, 'the replay record is not duplicated').toHaveLength(1);
+  });
 });

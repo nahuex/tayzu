@@ -662,7 +662,7 @@ policy diff shown in chat, separately from the rest of the PR.
   Verify: `backchannel-logout.int.test.ts` covers "An invalid signature is
   rejected without revealing session existence", using task 19.1's stub
   keys for both a validly-signed and a tampered token.
-- [ ] 22.2 `jti` replay protection reusing the existing `auth.verification`
+- [x] 22.2 `jti` replay protection reusing the existing `auth.verification`
   table (`identifier: "backchannel-logout:{aud}:{jti}"`, `expiresAt`
   bounded by the token's own `exp` plus skew) — no new table (design D26).
   Verify: `backchannel-logout.int.test.ts` covers "A replayed logout token

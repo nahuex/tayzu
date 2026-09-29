@@ -9,7 +9,7 @@
  * point hands it explicit options. Later group 11 tasks add CORS, CSRF,
  * headers, body limits, rate limiting, the route allowlist and error mapping.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
@@ -82,6 +82,8 @@ interface AuthHandlerSurface {
 }
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+/** Skew added to the token's `exp` for the replay record's lifetime (D26). */
+const LOGOUT_JTI_SKEW_SECONDS = 30;
 const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 
 function isTokenExchange(request: FastifyRequest): boolean {
@@ -253,10 +255,30 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
       }
       if (sso !== undefined) {
-        await verifyLogoutToken(token, {
+        const verified = await verifyLogoutToken(token, {
           discoveryUrl: sso.discoveryUrl,
           clientId: sso.clientId,
         });
+        if (verified?.jti !== undefined) {
+          // Replay state (D26): one `auth.verification` row per accepted token,
+          // recorded atomically; a second delivery inserts nothing and revokes nothing.
+          const recorded = await options.authPool.query(
+            `insert into auth.verification (id, identifier, value, expires_at)
+             select $1, $2, $3, to_timestamp($4)
+             where not exists (select 1 from auth.verification where identifier = $2)`,
+            [
+              randomUUID(),
+              `backchannel-logout:${sso.clientId}:${verified.jti}`,
+              'processed',
+              verified.exp + LOGOUT_JTI_SKEW_SECONDS,
+            ],
+          );
+          if (recorded.rowCount === 1 && verified.sid !== undefined) {
+            await options.authPool.query('delete from auth.session where sso_sid = $1', [
+              verified.sid,
+            ]);
+          }
+        }
       }
       return reply.status(200).send({});
     });
