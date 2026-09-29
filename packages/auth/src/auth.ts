@@ -363,7 +363,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // Task 5.4 fix (this file's own `MACHINE_TOKEN_ISSUER`/`_AUDIENCE` doc
       // comment): a fixed, non-empty `iss`/`aud` default, required for
       // `verifyJWT` to accept any token this plugin signs at all.
-      jwt({ jwt: { issuer: MACHINE_TOKEN_ISSUER, audience: MACHINE_TOKEN_AUDIENCE } }),
+      jwt({
+        jwt: { issuer: MACHINE_TOKEN_ISSUER, audience: MACHINE_TOKEN_AUDIENCE },
+        // Tayzu never uses the `set-auth-jwt` session response header, and
+        // it would sign a token (decrypting the JWKS private key) on every
+        // in-process `getSession` call `resolveContext` makes (task 11.1).
+        disableSettingJwtHeader: true,
+      }),
       // Task 5.1, design D5: the one `apiKey` plugin config machine
       // credentials use. `references: "organization"` makes
       // `checkOrgApiKeyPermission` (installed `@better-auth/api-key@1.7.6`

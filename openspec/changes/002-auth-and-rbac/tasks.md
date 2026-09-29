@@ -332,7 +332,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 11. HTTP listener
 
-- [ ] 11.1 `apps/api`'s Fastify bootstrap mounts Better Auth's `/api/auth/*`
+- [x] 11.1 `apps/api`'s Fastify bootstrap mounts Better Auth's `/api/auth/*`
   catch-all route and the catalog's `OpenAPIHandler` at `/v1/*`, with
   `resolveContext` (groups 3, 5) wired as the handler's `context` function.
   Verify: `server.int.test.ts` covers one full request round trip for a

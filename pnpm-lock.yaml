@@ -59,6 +59,27 @@ importers:
       '@fastify/rate-limit':
         specifier: ^11.2.0
         version: 11.2.0
+      '@orpc/openapi':
+        specifier: ^1.15.4
+        version: 1.15.4(@opentelemetry/api@1.9.1)(fastify@5.12.5)
+      '@orpc/server':
+        specifier: ^1.15.4
+        version: 1.15.4(@opentelemetry/api@1.9.1)(fastify@5.12.5)
+      '@tayzu/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@tayzu/authz':
+        specifier: workspace:*
+        version: link:../../packages/authz
+      '@tayzu/catalog':
+        specifier: workspace:*
+        version: link:../../packages/catalog
+      '@tayzu/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.6)(pg@8.23.0)
       fastify:
         specifier: ^5.12.5
         version: 5.12.5

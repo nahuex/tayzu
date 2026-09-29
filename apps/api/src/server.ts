@@ -1,0 +1,159 @@
+/**
+ * The Fastify bootstrap (task 11.1, design D13). One Fastify instance mounts
+ * two handlers: Better Auth's own catch-all route (`/api/auth/*`) and the
+ * catalog's `OpenAPIHandler` (`/v1/*`).
+ *
+ * Every `/v1/*` request's context comes only from `resolveContext`
+ * (`@tayzu/auth`); nothing in the body, path or query is ever read for
+ * `tenantId` or `actor`. `createApp` reads no environment: the process entry
+ * point hands it explicit options. Later group 11 tasks add CORS, CSRF,
+ * headers, body limits, rate limiting, the route allowlist and error mapping.
+ */
+import { OpenAPIHandler } from '@orpc/openapi/fastify';
+import {
+  authSchema,
+  createAuth,
+  createContextResolver,
+  AuthContextError,
+  type AuthInstance,
+} from '@tayzu/auth';
+import { createCerbosClient } from '@tayzu/authz';
+import { createBlueprintService, createCatalogRouter, createEntityService } from '@tayzu/catalog';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+
+export interface CreateAppOptions {
+  /** PostgreSQL connection string, from the host's environment. */
+  readonly databaseUrl: string;
+  /** Better Auth's secret, from the host's environment. */
+  readonly authSecret: string;
+  /** `host:port` of the Cerbos gRPC endpoint. */
+  readonly cerbosAddress: string;
+  /** Explicit CORS origin allowlist (wired by task 11.4). */
+  readonly allowedOrigins: readonly string[];
+}
+
+export interface App {
+  /** The Fastify instance; never listening until the host calls `listen`. */
+  readonly app: FastifyInstance;
+  /** The same Better Auth instance mounted at `/api/auth/*`. */
+  readonly auth: AuthInstance;
+  /** Closes Fastify and every pool `createApp` opened. */
+  close(): Promise<void>;
+}
+
+/** Better Auth's runtime `handler` (`AuthInstance` types its surface as `unknown`). */
+interface AuthHandlerSurface {
+  handler(request: Request): Promise<Response>;
+}
+
+const CERBOS_TLS_LOOPBACK_ONLY = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
+
+function toWebHeaders(request: FastifyRequest): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (typeof value === 'string') {
+      headers.set(name, value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        headers.append(name, item);
+      }
+    }
+  }
+  return headers;
+}
+
+function toWebRequest(request: FastifyRequest): Request {
+  const headers = toWebHeaders(request);
+  const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+  let body: string | undefined;
+  if (hasBody && request.body !== undefined && request.body !== null) {
+    body = typeof request.body === 'string' ? request.body : JSON.stringify(request.body);
+    headers.delete('content-length');
+  }
+  return new Request(`http://${request.headers.host ?? 'localhost'}${request.url}`, {
+    method: request.method,
+    headers,
+    ...(body === undefined ? {} : { body }),
+  });
+}
+
+export async function createApp(options: CreateAppOptions): Promise<App> {
+  // The auth handle runs as the connecting role; the catalog and revocation
+  // pool run as `tayzu_app` so RLS applies (`SET ROLE` is a fixed literal).
+  const authDb = drizzle(options.databaseUrl, { schema: authSchema });
+  const appPool = drizzle(options.databaseUrl, { schema: authSchema }).$client;
+  appPool.on('connect', (client) => {
+    void client.query('SET ROLE tayzu_app');
+  });
+
+  const auth = createAuth({ db: authDb, secret: options.authSecret });
+  const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+
+  const authz = createCerbosClient({
+    address: options.cerbosAddress,
+    tls: !CERBOS_TLS_LOOPBACK_ONLY.test(options.cerbosAddress),
+  });
+  const router = createCatalogRouter({
+    blueprints: createBlueprintService({ pool: appPool, authz }),
+    entities: createEntityService({ pool: appPool, authz }),
+  });
+  const openApiHandler = new OpenAPIHandler(router);
+
+  const app = Fastify();
+  // oRPC reads the raw body itself; keep Fastify from consuming other types.
+  app.addContentTypeParser('*', (_request, _payload, done) => {
+    done(null, undefined);
+  });
+
+  app.all('/api/auth/*', async (request, reply) => {
+    const response = await (auth as unknown as AuthHandlerSurface).handler(toWebRequest(request));
+    reply.status(response.status);
+    for (const [name, value] of response.headers) {
+      if (name !== 'set-cookie') {
+        reply.header(name, value);
+      }
+    }
+    const cookies = response.headers.getSetCookie();
+    if (cookies.length > 0) {
+      reply.header('set-cookie', cookies);
+    }
+    return reply.send(Buffer.from(await response.arrayBuffer()));
+  });
+
+  app.all('/v1/*', async (request, reply) => {
+    let context: Awaited<ReturnType<typeof resolveContext>>;
+    try {
+      context = await resolveContext(toWebHeaders(request));
+    } catch (error) {
+      if (error instanceof AuthContextError) {
+        return reply.status(401).send({
+          defined: false,
+          code: error.code,
+          status: 401,
+          message: error.message,
+        });
+      }
+      throw error;
+    }
+    const result = await openApiHandler.handle(request, reply, {
+      context: { ...context },
+    });
+    if (!result.matched) {
+      return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });
+    }
+    return undefined;
+  });
+
+  await app.ready();
+
+  return {
+    app,
+    auth,
+    async close(): Promise<void> {
+      await app.close();
+      await appPool.end();
+      await authDb.$client.end();
+    },
+  };
+}
