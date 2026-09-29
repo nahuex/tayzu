@@ -206,7 +206,16 @@ function parseMachineTokenPayload(payload: Record<string, unknown>): ResolvedCon
   if (!isMachineActorType(type) || typeof id !== 'string' || id.length === 0) {
     return null;
   }
-  return { tenantId, actor: { type, id } };
+  // Q28: every machine credential is `member`, carried as a signed claim.
+  // A missing or any other role fails closed; the principal never comes from input.
+  if (payload['role'] !== 'member') {
+    return null;
+  }
+  return {
+    tenantId,
+    actor: { type, id },
+    principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
+  };
 }
 
 /**

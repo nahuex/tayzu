@@ -97,6 +97,9 @@ const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
 /** design D5: the config `verifyApiKey` looks the credential up under. */
 const ACTOR_KIND_METADATA_KEY = 'actorKind';
 
+/** Q28: the credential's fixed role, stored next to `actorKind`. */
+const ROLE_METADATA_KEY = 'role';
+
 /** design D5: "a 1-hour access token." */
 const ONE_HOUR_SECONDS = 60 * 60;
 
@@ -281,12 +284,21 @@ export async function exchangeMachineToken(
     throw new AuthInvalidCredentialsError();
   }
 
+  // Q28: the role fixed on the credential is minted as a claim; anything but
+  // `member` (including a credential predating the role) fails closed.
+  const role = key.metadata?.[ROLE_METADATA_KEY];
+  if (role !== 'member') {
+    recordFailedExchange(actorKind);
+    throw new AuthInvalidCredentialsError();
+  }
+
   const nowSeconds = Math.floor(Date.now() / 1000);
   const signed = await api.signJWT({
     body: {
       payload: {
         tenantId: key.referenceId,
         actor: { type: actorKind, id: key.id },
+        role,
         sub: key.id,
         iat: nowSeconds,
         exp: nowSeconds + ONE_HOUR_SECONDS,

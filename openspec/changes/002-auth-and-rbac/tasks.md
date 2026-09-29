@@ -304,7 +304,7 @@ policy diff shown in chat, separately from the rest of the PR.
   histogram. Verify: `otel-smoke-check` (extended) asserts both spans appear
   with their required attributes on a representative operation.
 
-- [ ] 9.5 `resolveContext` fills `CatalogContext.principal` for every
+- [x] 9.5 `resolveContext` fills `CatalogContext.principal` for every
   resolved actor: a session user gets `roles` from the Better Auth member role
   (`owner`/`admin` -> `admin`, else `member`) and `teams`/`moderatedBlueprints`
   from its `_user` entity (empty until group 12 syncs them); a machine token

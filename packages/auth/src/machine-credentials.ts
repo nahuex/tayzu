@@ -47,6 +47,8 @@ export interface CreateMachineCredentialParams {
   readonly organizationId: string;
   readonly name: string;
   readonly actorKind: MachineCredentialActorKind;
+  /** Q28: every machine credential is `member`; any other value is rejected. */
+  readonly role?: 'member';
 }
 
 export interface CreatedMachineCredential {
@@ -64,6 +66,10 @@ const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
 
 /** design D5: `actorKind` is fixed at creation via the config's `metadata`. */
 const ACTOR_KIND_METADATA_KEY = 'actorKind';
+
+/** Q28: the fixed role, stored on the credential metadata next to `actorKind`. */
+const ROLE_METADATA_KEY = 'role';
+const MACHINE_CREDENTIAL_ROLE = 'member';
 
 /**
  * The narrow slice of `auth.api.createApiKey`'s installed response
@@ -115,13 +121,20 @@ export async function createMachineCredential(
   auth: AuthInstance,
   params: CreateMachineCredentialParams,
 ): Promise<CreatedMachineCredential> {
+  // Q28: fail closed before any row is written; a machine credential is never admin.
+  if (params.role !== undefined && (params.role as string) !== MACHINE_CREDENTIAL_ROLE) {
+    throw new AuthContextError();
+  }
   const created = await apiOf(auth).createApiKey({
     headers: params.headers,
     body: {
       configId: MACHINE_CREDENTIAL_CONFIG_ID,
       name: params.name,
       organizationId: params.organizationId,
-      metadata: { [ACTOR_KIND_METADATA_KEY]: params.actorKind },
+      metadata: {
+        [ACTOR_KIND_METADATA_KEY]: params.actorKind,
+        [ROLE_METADATA_KEY]: MACHINE_CREDENTIAL_ROLE,
+      },
     },
   });
   return {

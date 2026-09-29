@@ -149,7 +149,7 @@
  * own session cookie directly, with no organization ever created for that
  * user.
  */
-import { randomInt, randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomInt, randomUUID, sign } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
@@ -816,6 +816,8 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     expect(resolved).toEqual({
       tenantId: admin.organizationId,
       actor: { type: 'agent', id: credential.id },
+      // Q28: a machine credential is always `member`, carried in the token.
+      principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
     });
   });
 });
@@ -936,6 +938,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
     expect(await resolveContext(bearer)).toEqual({
       tenantId,
       actor: { type: 'integration', id: credential.id },
+      principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
     });
 
     // WHEN an admin revokes the credential ...
@@ -967,6 +970,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
     expect(await resolverWith(appPool)(bearer)).toEqual({
       tenantId,
       actor: { type: 'integration', id: credential.id },
+      principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
     });
 
     // GIVEN a simulated lookup error: a pool that has already been ended, so
@@ -1329,5 +1333,238 @@ describe('resolveContext: principal roles (task 9.5, Q26)', () => {
     expect(resolved.principal?.roles).toEqual(['member']);
     expect(resolved.principal?.teams ?? []).not.toContain('forged-team');
     expect(resolved.principal?.moderatedBlueprints ?? []).not.toContain('forged-blueprint');
+  });
+});
+
+/**
+ * Task 9.5, machine-token half (resolved decision Q28, design D5, D11;
+ * `specs/auth-and-rbac/spec.md`, requirements "Machine credentials" and
+ * "Three-tier role baseline").
+ *
+ * NOTE: no spec scenario carries these titles; they are the three behaviors
+ * the orchestrator fixed from Q28: "Every machine credential (integration or
+ * agent) is always `member`: the role is fixed at creation, stored on the
+ * credential, carried in the minted token, and never `admin` ...
+ * `resolveContext` builds the principal from the token's role, never from
+ * input." A token without a valid role claim fails closed.
+ *
+ * ## Production symbols expected
+ *
+ * - `createMachineCredential` stores `role: 'member'` in the apikey
+ *   `metadata` next to `actorKind`. Its params gain an optional `role`; any
+ *   value other than `'member'` (here `'admin'`) rejects and creates no row.
+ * - `exchangeMachineToken` mints a `role` claim (the string stored on the
+ *   credential) beside `tenantId` and `actor`.
+ * - `createContextResolver`'s bearer branch requires `role === 'member'` in
+ *   the verified payload (anything else, or a missing claim, rejects with
+ *   `CATALOG_CONTEXT_REQUIRED`) and returns `principal: { roles: ['member'],
+ *   teams: [], moderatedBlueprints: [] }`.
+ *
+ * ## Expected failures
+ *
+ * Assertion failures: the resolved value has no `principal`; a validly
+ * signed token with `role: 'admin'` or with no role claim still resolves;
+ * the credential with `role: 'admin'` is created. The token signed with a
+ * foreign key is rejected by `verifyJWT` already, so that one is expected to
+ * pass today (the library already behaves this way); it is kept as a
+ * regression guard.
+ *
+ * Existing machine-token tests above assert `toEqual({ tenantId, actor })`
+ * and will need the orchestrator to add `principal` once this is green.
+ */
+describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+  let resolveContext: (headers: Headers) => Promise<unknown>;
+
+  const MEMBER_PRINCIPAL = { roles: ['member'], teams: [], moderatedBlueprints: [] };
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = (createContextResolver as ContextResolverFactory)({
+      auth,
+      revocationPool: appPool,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  async function newAdmin(): Promise<{ cookie: string; organizationId: string }> {
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Machine Principal Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return { cookie: tenant.cookie, organizationId: tenant.organizationId };
+  }
+
+  /** A validly signed token (the instance's own jwt key) with caller-chosen claims. */
+  async function signWithInstanceKey(claims: Record<string, unknown>): Promise<string> {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const signed = await signJwtOf(auth).signJWT({
+      body: { payload: { exp: nowSeconds + ONE_HOUR_SECONDS, ...claims } },
+    });
+    return signed.token;
+  }
+
+  function base64url(value: string | Buffer): string {
+    return Buffer.from(value).toString('base64url');
+  }
+
+  /** A well-formed EdDSA JWT signed with a key this instance has never seen. */
+  function signWithForeignKey(claims: Record<string, unknown>): string {
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const header = base64url(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' }));
+    const payload = base64url(
+      JSON.stringify({
+        iss: 'tayzu-auth',
+        aud: 'tayzu-auth',
+        iat: nowSeconds,
+        exp: nowSeconds + ONE_HOUR_SECONDS,
+        ...claims,
+      }),
+    );
+    const signature = sign(null, Buffer.from(`${header}.${payload}`), privateKey);
+    return `${header}.${payload}.${base64url(signature)}`;
+  }
+
+  it('An integration token resolves the member role', async () => {
+    const admin = await newAdmin();
+    for (const actorKind of ['integration', 'agent'] as const) {
+      // GIVEN an active machine credential of each kind, created without any
+      // role choice, and its exchanged access token
+      const credential = await createMachineCredential(auth, {
+        headers: new Headers({ cookie: admin.cookie }),
+        organizationId: admin.organizationId,
+        name: `Principal ${actorKind} credential`,
+        actorKind,
+      });
+      const exchanged = await exchangeMachineToken(auth, {
+        clientId: credential.id,
+        clientSecret: credential.secret,
+      });
+
+      // WHEN the token is resolved
+      const resolved = await resolveContext(
+        new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+      );
+
+      // THEN the principal is exactly `member`, with empty teams and blueprints
+      expect(resolved).toEqual({
+        tenantId: admin.organizationId,
+        actor: { type: actorKind, id: credential.id },
+        principal: MEMBER_PRINCIPAL,
+      });
+    }
+  });
+
+  it('The role is stored on the credential metadata next to actorKind', async () => {
+    const admin = await newAdmin();
+    const credential = await createMachineCredential(auth, {
+      headers: new Headers({ cookie: admin.cookie }),
+      organizationId: admin.organizationId,
+      name: 'Metadata role credential',
+      actorKind: 'integration',
+    });
+    const result = await db.execute<{ metadata: string | null }>(sql`
+      select metadata from auth.apikey where id = ${credential.id}
+    `);
+    let metadata: unknown = JSON.parse(result.rows[0]?.metadata ?? 'null');
+    if (typeof metadata === 'string') {
+      metadata = JSON.parse(metadata);
+    }
+    expect(metadata).toMatchObject({ actorKind: 'integration', role: 'member' });
+  });
+
+  it('A token claim cannot be escalated to admin', async () => {
+    const admin = await newAdmin();
+    const credential = await createMachineCredential(auth, {
+      headers: new Headers({ cookie: admin.cookie }),
+      organizationId: admin.organizationId,
+      name: 'Escalation credential',
+      actorKind: 'integration',
+    });
+    const claims = {
+      sub: credential.id,
+      tenantId: admin.organizationId,
+      actor: { type: 'integration', id: credential.id },
+    };
+    const bearer = (token: string): Headers => new Headers({ authorization: `Bearer ${token}` });
+
+    // Control: the same claims with the member role resolve, so each rejection
+    // below can only come from its role claim or signature.
+    const control = (await resolveContext(
+      bearer(await signWithInstanceKey({ ...claims, role: 'member' })),
+    )) as { principal?: unknown };
+    expect(control.principal).toEqual(MEMBER_PRINCIPAL);
+
+    // A token signed with another key, forged with role admin, is rejected.
+    await expectContextRequiredRejection(
+      resolveContext(bearer(signWithForeignKey({ ...claims, role: 'admin' }))),
+    );
+    // A forged role claim (admin, an unknown role, a non-string) is rejected
+    // even under a valid signature: never resolved as admin.
+    for (const role of ['admin', 'owner', ['admin'], null]) {
+      await expectContextRequiredRejection(
+        resolveContext(bearer(await signWithInstanceKey({ ...claims, role }))),
+      );
+    }
+    // A token without any role claim fails closed.
+    await expectContextRequiredRejection(resolveContext(bearer(await signWithInstanceKey(claims))));
+    // Header-borne role input never changes the outcome.
+    const valid = await signWithInstanceKey({ ...claims, role: 'member' });
+    const withForgedHeaders = (await resolveContext(
+      new Headers({
+        authorization: `Bearer ${valid}`,
+        'x-tayzu-roles': 'admin',
+        'x-tayzu-principal': JSON.stringify({ roles: ['admin'] }),
+      }),
+    )) as { principal?: unknown };
+    expect(withForgedHeaders.principal).toEqual(MEMBER_PRINCIPAL);
+  });
+
+  it('A credential cannot be created with an admin role', async () => {
+    const admin = await newAdmin();
+    type CreateWithRole = (
+      auth: AuthInstance,
+      params: {
+        readonly headers: Headers;
+        readonly organizationId: string;
+        readonly name: string;
+        readonly actorKind: 'integration' | 'agent';
+        readonly role: string;
+      },
+    ) => Promise<unknown>;
+
+    // WHEN an org admin asks for a credential with the admin role
+    await expect(
+      (createMachineCredential as unknown as CreateWithRole)(auth, {
+        headers: new Headers({ cookie: admin.cookie }),
+        organizationId: admin.organizationId,
+        name: 'Admin role credential',
+        actorKind: 'integration',
+        role: 'admin',
+      }),
+    ).rejects.toBeDefined();
+
+    // THEN no credential exists for the organization
+    const rows = await db.execute<{ id: string }>(sql`
+      select id from auth.apikey where reference_id = ${admin.organizationId}
+    `);
+    expect(rows.rows).toHaveLength(0);
   });
 });
