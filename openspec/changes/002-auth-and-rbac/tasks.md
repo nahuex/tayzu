@@ -353,7 +353,7 @@ policy diff shown in chat, separately from the rest of the PR.
 - [x] 11.5 `SimpleCsrfProtectionHandlerPlugin` on every mutating route.
   Verify: `csrf.int.test.ts` covers a mutating request missing the required
   header being rejected, and one carrying it succeeding.
-- [ ] 11.6 `@fastify/helmet` registered with `contentSecurityPolicy: false`.
+- [x] 11.6 `@fastify/helmet` registered with `contentSecurityPolicy: false`.
   Verify: `headers.int.test.ts` asserts the expected security headers are
   present on a response.
 - [ ] 11.7 Fastify's native `bodyLimit` configured, composing with 001's

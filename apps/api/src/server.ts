@@ -10,6 +10,7 @@
  * headers, body limits, rate limiting, the route allowlist and error mapping.
  */
 import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
 import { SimpleCsrfProtectionHandlerPlugin } from '@orpc/server/plugins';
 import {
@@ -119,6 +120,8 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   const app = Fastify();
+  // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
+  await app.register(fastifyHelmet, { contentSecurityPolicy: false });
   // Exact-match allowlist; `credentials` is required for Better Auth's cookie.
   // A disallowed origin gets no CORS headers at all, not even `credentials`.
   const allowedOrigins = new Set(options.allowedOrigins);
