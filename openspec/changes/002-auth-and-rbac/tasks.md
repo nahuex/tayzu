@@ -565,7 +565,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 19. Visma Connect SSO
 
-- [ ] 19.1 *(setup)* A local OIDC provider test stub/fixture (its own RSA
+- [x] 19.1 *(setup)* A local OIDC provider test stub/fixture (its own RSA
   keypair, discovery document, JWKS, and authorization/token/userinfo
   endpoints) so no test in this or later groups calls the real Visma
   Connect. Verify: `pnpm --filter @tayzu/auth test` runs the stub's own
