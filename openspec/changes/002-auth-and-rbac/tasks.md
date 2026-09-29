@@ -174,7 +174,7 @@ policy diff shown in chat, separately from the rest of the PR.
   underlying `apiKey` config row. Verify: `machine-credentials.int.test.ts`
   covers "Revocation is recorded in the revocation list, not only disabled at
   the apiKey layer".
-- [ ] 5.7 The machine-token branch of `resolveContext` consults the
+- [x] 5.7 The machine-token branch of `resolveContext` consults the
   revocation list on every request through an in-process cache keyed by
   `credential_id` with a TTL of at most 5 seconds, failing closed (rejecting
   the token) on a lookup failure (design D21). Verify:

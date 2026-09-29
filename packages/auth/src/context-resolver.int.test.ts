@@ -154,7 +154,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 // Import order is load-bearing (task 2.4; design D1; `packages/observability/
 // CLAUDE.md`, "Import order"): the harness must register before `./auth.js`,
@@ -181,7 +181,7 @@ import { createContextResolver } from './context-resolver.js';
 // for a real access token -- neither import below is "the module under
 // test" for task 5.4 (that is still `./context-resolver.js`'s still-missing
 // access-token branch, see each new test's own doc comment).
-import { createMachineCredential } from './machine-credentials.js';
+import { createMachineCredential, revokeMachineCredential } from './machine-credentials.js';
 import type { CreatedMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
 import { exchangeMachineToken } from './token-exchange.js';
@@ -798,5 +798,165 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
       tenantId: admin.organizationId,
       actor: { type: 'agent', id: credential.id },
     });
+  });
+});
+
+/**
+ * Task 5.7 (design D21; `specs/auth-and-rbac/spec.md`, "Machine credentials"
+ * requirement and its revocation scenario), quoted:
+ *
+ * #### Scenario: A token issued before revocation is rejected within the revocation TTL
+ * - GIVEN an access token issued from an active machine credential, still
+ *   within its 1-hour lifetime
+ * - WHEN an admin revokes the credential, and the token is used again after
+ *   the revocation-check TTL has elapsed
+ * - THEN it fails exactly as `CATALOG_CONTEXT_REQUIRED`
+ *
+ * Requirement text: "a revocation-lookup failure (the revocation list is
+ * unreachable) MUST fail closed, rejecting the token, never treating an
+ * unreachable check as 'not revoked.'" (task 5.7's second Verify-named test,
+ * "Revocation-lookup failure fails closed", simulated lookup error).
+ *
+ * ## Production symbols expected (flagged for the green phase)
+ *
+ * `createContextResolver` gains one option, `revocationPool`: a `pg` `Pool`
+ * running as `tayzu_app` (the same pool type `revokeMachineCredential`'s
+ * `pool` param takes, task 5.6). The machine-token branch reads
+ * `machine_credential_revocation` through `withTenantTransaction(revocationPool,
+ * { tenantId: <token's own tenantId claim> }, ...)`, keyed by the token's
+ * `actor.id` (the credential id), through an in-process cache of at most 5
+ * seconds, measured with `Date.now()` (this test advances only the fake
+ * `Date`, via `vi.useFakeTimers({ toFake: ['Date'] })`). Any lookup error
+ * rejects with `CATALOG_CONTEXT_REQUIRED`.
+ *
+ * ## Why these are expected to fail right now
+ *
+ * The machine-token branch never consults any revocation list (its own doc
+ * comment: "a later task's own red/green cycle"), so the revoked token still
+ * resolves (assertion failure) and an unreachable pool is never touched, so
+ * the token still resolves instead of being rejected (assertion failure).
+ */
+describe('resolveContext: machine-token revocation list (task 5.7, design D21)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  type PoolResolverFactory = (options: {
+    readonly auth: AuthInstance;
+    readonly revocationPool: TestDb['$client'];
+  }) => (headers: Headers) => Promise<unknown>;
+
+  function resolverWith(pool: TestDb['$client']): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as unknown as PoolResolverFactory)({
+      auth,
+      revocationPool: pool,
+    });
+  }
+
+  function newAppPool(): TestDb['$client'] {
+    const pool = connect(databaseUrl()).$client;
+    pool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    return pool;
+  }
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = newAppPool();
+  }, 60_000);
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  async function issueToken(): Promise<{
+    headers: Headers;
+    tenantId: string;
+    credential: CreatedMachineCredential;
+    accessToken: string;
+  }> {
+    const admin = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Revocation Cache Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const headers = new Headers({ cookie: admin.cookie });
+    const credential = await createMachineCredential(auth, {
+      headers,
+      organizationId: admin.organizationId,
+      name: 'Revocation test credential',
+      actorKind: 'integration',
+    });
+    const exchanged = await exchangeMachineToken(auth, {
+      clientId: credential.id,
+      clientSecret: credential.secret,
+    });
+    return {
+      headers,
+      tenantId: admin.organizationId,
+      credential,
+      accessToken: exchanged.accessToken,
+    };
+  }
+
+  it('A token issued before revocation is rejected within the revocation TTL', async () => {
+    const { headers, tenantId, credential, accessToken } = await issueToken();
+    const resolveContext = resolverWith(appPool);
+    const bearer = new Headers({ authorization: `Bearer ${accessToken}` });
+
+    // GIVEN an active credential's token, within its 1-hour lifetime: it
+    // resolves (this also warms any revocation cache with "not revoked").
+    expect(await resolveContext(bearer)).toEqual({
+      tenantId,
+      actor: { type: 'integration', id: credential.id },
+    });
+
+    // WHEN an admin revokes the credential ...
+    await revokeMachineCredential(auth, {
+      headers,
+      id: credential.id,
+      pool: appPool,
+      tenantId,
+    });
+
+    // ... and the token is used again after the revocation-check TTL (at most
+    // 5 seconds) has elapsed. Only `Date` is faked; 10 s is far inside the
+    // token's own 1-hour lifetime, so only revocation can reject it.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 10_000 });
+    try {
+      // THEN it fails exactly as `CATALOG_CONTEXT_REQUIRED`.
+      await expectContextRequiredRejection(resolveContext(bearer));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Revocation-lookup failure fails closed', async () => {
+    const { tenantId, credential, accessToken } = await issueToken();
+    const bearer = new Headers({ authorization: `Bearer ${accessToken}` });
+
+    // Control: the same token resolves with a reachable revocation list, so
+    // the rejection below can only come from the lookup failure.
+    expect(await resolverWith(appPool)(bearer)).toEqual({
+      tenantId,
+      actor: { type: 'integration', id: credential.id },
+    });
+
+    // GIVEN a simulated lookup error: a pool that has already been ended, so
+    // every query against it throws.
+    const brokenPool = newAppPool();
+    await endQuietly(brokenPool);
+
+    // WHEN the token is used, THEN the unreachable check is never treated as
+    // "not revoked": it fails exactly as `CATALOG_CONTEXT_REQUIRED`.
+    await expectContextRequiredRejection(resolverWith(brokenPool)(bearer));
   });
 });

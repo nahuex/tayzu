@@ -74,19 +74,28 @@
  * still gets structurally checked before being trusted as a `ResolvedContext`)
  * -- "A valid machine access token MUST resolve to `{ tenantId, actor: {
  * type: 'integration'|'agent', id } }` per the token's own claims" (spec).
- * Revocation-list consultation (task 5.7, design D21) is a later task's own
- * red/green cycle, not implemented here.
+ * Revocation-list consultation (task 5.7, design D21) is described at
+ * `isCredentialRevoked` below.
  *
  * The `onBehalfOf` non-read guarantee this function already upholds by
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
  */
+import { withTenantTransaction, type createPool } from '@tayzu/db';
+
 import type { AuthInstance } from './auth.js';
 import { AuthContextError } from './errors.js';
 
 export interface ContextResolverOptions {
   /** The Better Auth instance whose session cookie `resolveContext` resolves against. */
   readonly auth: AuthInstance;
+  /**
+   * Task 5.7, design D21: a `tayzu_app` pool used to read
+   * `machine_credential_revocation` on every machine-token request. When
+   * omitted, the machine-token branch performs no revocation check (the
+   * pre-5.7 behavior); every production caller must supply it.
+   */
+  readonly revocationPool?: ReturnType<typeof createPool>;
 }
 
 export interface ResolvedActor {
@@ -216,6 +225,14 @@ const IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
  */
 const MEMBERSHIP_CACHE_TTL_MS = 5000;
 
+/** design D21: the revocation cache's TTL ("at most 5 seconds"). */
+const REVOCATION_CACHE_TTL_MS = 5000;
+
+interface RevocationCacheEntry {
+  readonly revoked: boolean;
+  readonly expiresAt: number;
+}
+
 interface MembershipCacheEntry {
   readonly isMember: boolean;
   readonly expiresAt: number;
@@ -238,6 +255,40 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   const api = apiOf(options.auth);
   const jwtApi = jwtApiOf(options.auth);
   const membershipCache = new Map<string, MembershipCacheEntry>();
+  const revocationCache = new Map<string, RevocationCacheEntry>();
+
+  // Task 5.7, design D21: consults `machine_credential_revocation` through
+  // an in-process cache keyed by `credential_id` (TTL 5 s). Read under the
+  // token's own tenant claim, so RLS applies. Any lookup failure resolves to
+  // "revoked" and is never cached: the token is rejected, never assumed
+  // not revoked.
+  async function isCredentialRevoked(
+    pool: ReturnType<typeof createPool>,
+    tenantId: string,
+    credentialId: string,
+  ): Promise<boolean> {
+    const now = Date.now();
+    const cached = revocationCache.get(credentialId);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.revoked;
+    }
+
+    let revoked: boolean;
+    try {
+      revoked = await withTenantTransaction(pool, { tenantId }, async (client) => {
+        const result = await client.query(
+          'select 1 from machine_credential_revocation where credential_id = $1 and tenant_id = $2',
+          [credentialId, tenantId],
+        );
+        return result.rows.length > 0;
+      });
+    } catch {
+      return true;
+    }
+
+    revocationCache.set(credentialId, { revoked, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+    return revoked;
+  }
 
   // Task 3.6, design D19: the independent membership re-check. A cache hit
   // (younger than `MEMBERSHIP_CACHE_TTL_MS`) skips the lookup; a miss
@@ -285,6 +336,12 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       }
       const resolved = parseMachineTokenPayload(verified.payload);
       if (resolved === null) {
+        rejectMissingContext();
+      }
+      if (
+        options.revocationPool !== undefined &&
+        (await isCredentialRevoked(options.revocationPool, resolved.tenantId, resolved.actor.id))
+      ) {
         rejectMissingContext();
       }
       return resolved;
