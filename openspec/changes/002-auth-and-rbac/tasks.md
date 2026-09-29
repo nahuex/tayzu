@@ -270,7 +270,7 @@ policy diff shown in chat, separately from the rest of the PR.
   grants access a role alone would not" and "Attribute-based rule denies
   access a role alone would have granted". ⛔ **Stop here for Checkpoint 3
   approval of every policy file authored in 8.1-8.6 before continuing.**
-- [ ] 8.7 Service-layer ownership resolution (`effectiveOwnerTeam`: None,
+- [x] 8.7 Service-layer ownership resolution (`effectiveOwnerTeam`: None,
   Direct, or Inherited, with the direct-relation-wins conflict rule) in
   `packages/authz`, computed before every Cerbos call. Verify:
   `ownership-resolution.test.ts` is a pure unit test (no Cerbos) covering
