@@ -215,7 +215,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `tenantId`-first attribute builder. Verify: `client.test.ts` asserts the
   client connects to the CI Cerbos container and a trivial `CheckResources`
   call round-trips.
-- [ ] 7.2 Cerbos deployment config with `engine.strictEvaluation: true`,
+- [x] 7.2 Cerbos deployment config with `engine.strictEvaluation: true`,
   `audit.decisionLogsEnabled: true`, `audit.accessLogsEnabled: false`.
   Verify: `config.test.ts` asserts the rendered configuration file matches
   these settings.
