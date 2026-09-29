@@ -25,3 +25,4 @@ export {
 } from './step-up.js';
 export { ALLOWED_AUTH_ROUTES, AUTH_BASE_PATH, isAllowedAuthPath } from './http/allowed-routes.js';
 export { wouldLeaveNoSignInMethod } from './sign-in-methods.js';
+export { emitAccountLinkEvent, type AccountLinkActor } from './account-link-telemetry.js';

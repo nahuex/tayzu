@@ -63,6 +63,12 @@ export const METRICS: readonly MetricContract[] = [
     attributes: ['tayzu.auth.event'],
   },
   {
+    name: 'tayzu.auth.account_link.events',
+    instrumentType: 'counter',
+    unit: '{event}',
+    attributes: ['tayzu.auth.event', 'tayzu.auth.link.actor'],
+  },
+  {
     name: 'tayzu.auth.rate_limit.events',
     instrumentType: 'counter',
     unit: '{event}',
@@ -132,6 +138,24 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     ],
   },
   {
+    name: 'auth.security.account_linked',
+    severity: 'INFO',
+    attributes: [
+      sharedAttributeKeys.tenantId,
+      sharedAttributeKeys.actorId,
+      'tayzu.auth.link.actor',
+    ],
+  },
+  {
+    name: 'auth.security.account_unlinked',
+    severity: 'INFO',
+    attributes: [
+      sharedAttributeKeys.tenantId,
+      sharedAttributeKeys.actorId,
+      'tayzu.auth.link.actor',
+    ],
+  },
+  {
     name: 'auth.security.token_exchange_failed',
     severity: 'WARN',
     attributes: ['tayzu.auth.credential.kind'],
@@ -153,6 +177,8 @@ export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
   'auth.security.login_failed',
   'auth.security.rate_limited',
   'auth.security.session_revoked',
+  'auth.security.account_linked',
+  'auth.security.account_unlinked',
   'auth.security.step_up_required',
   'auth.security.token_exchange_failed',
   'auth.security.revoked_token_rejected',

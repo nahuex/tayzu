@@ -15,7 +15,12 @@
 import { randomBytes } from 'node:crypto';
 
 import { os } from '@orpc/server';
-import { wouldLeaveNoSignInMethod, type AuthInstance, type UserSyncPort } from '@tayzu/auth';
+import {
+  emitAccountLinkEvent,
+  wouldLeaveNoSignInMethod,
+  type AuthInstance,
+  type UserSyncPort,
+} from '@tayzu/auth';
 import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 /** Same code and message as the catalog's `AuthorizationError` (design D11). */
@@ -189,6 +194,14 @@ function rawTenantId(context: RawContext): string {
   return context['tenantId'] as string;
 }
 
+/** Audit signal for an admin-recorded link/unlink (design D24); the context was validated by `authorizeTarget`. */
+function emitAdminLinkEvent(event: 'linked' | 'unlinked', context: RawContext): void {
+  emitAccountLinkEvent(event, 'admin', {
+    actorId: (context['actor'] as { id: string }).id,
+    tenantId: rawTenantId(context),
+  });
+}
+
 /** A single-use, system-generated temporary password (design D22's "shown once" discipline). */
 function generateTemporaryPassword(): string {
   return randomBytes(24).toString('base64url');
@@ -269,6 +282,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             providerId: SSO_PROVIDER_ID,
             accountId: input.subject,
           });
+          emitAdminLinkEvent('linked', context);
         }),
         unlinkSsoAccount: base.handler(async ({ context, input: rawInput }): Promise<void> => {
           const userId = parseLinkInputUserId(rawInput);
@@ -281,6 +295,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             throw new IdentityLinkRejectedError();
           }
           for (const account of sso) await adapter.deleteAccount(account.id);
+          if (sso.length > 0) emitAdminLinkEvent('unlinked', context);
         }),
       },
     },

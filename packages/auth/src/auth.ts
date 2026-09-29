@@ -76,7 +76,12 @@ import {
   ssoRejectedResponse,
   SSO_CALLBACK_PATH,
 } from './sso/callback-rejection.js';
-import { vismaConnect, type VismaConnectOptions } from './sso/visma-connect.js';
+import { emitAccountLinkEvent } from './account-link-telemetry.js';
+import {
+  VISMA_CONNECT_PROVIDER_ID,
+  vismaConnect,
+  type VismaConnectOptions,
+} from './sso/visma-connect.js';
 import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
 import { logger, sessionEventsCounter, ssoEventsCounter, tracer } from './telemetry/instruments.js';
 
@@ -279,6 +284,30 @@ function emitSessionRevoked(params: {
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'session_revoked' });
 }
 
+/** The `providerId` of the Visma Connect SSO account (design D23). */
+const SELF_LINK_PROVIDER_ID = VISMA_CONNECT_PROVIDER_ID;
+
+/** Emits the D24 audit signals for a self-service link/unlink; skips non-SSO accounts and direct adapter calls. */
+async function emitSelfLink(
+  event: 'linked' | 'unlinked',
+  account: { readonly providerId?: unknown; readonly userId?: unknown },
+  context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
+): Promise<void> {
+  if (!context || account.providerId !== SELF_LINK_PROVIDER_ID) {
+    return;
+  }
+  if (typeof account.userId !== 'string') {
+    return;
+  }
+  const session = await getSessionFromCtx(context).catch(() => null);
+  const tenantId = (session?.session as { activeOrganizationId?: string | null } | undefined)
+    ?.activeOrganizationId;
+  emitAccountLinkEvent(event, 'self', {
+    actorId: account.userId,
+    ...(typeof tenantId === 'string' ? { tenantId } : {}),
+  });
+}
+
 export interface CreateAuthOptions {
   /**
    * A `@better-auth/drizzle-adapter`-compatible DB handle. The adapter never
@@ -447,6 +476,22 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       ...(options.sso === undefined ? [] : [vismaConnect(options.sso)]),
     ],
     databaseHooks: {
+      // Task 20.4 (design D24): self-service link/unlink. The hooks run with an
+      // endpoint context only for Better Auth's own routes (`/link-social`
+      // callback, `/unlink-account`); the admin path calls the adapter
+      // directly (no context) and emits its own signal from the router.
+      account: {
+        create: {
+          after: async (account, context) => {
+            await emitSelfLink('linked', account, context);
+          },
+        },
+        delete: {
+          after: async (account, context) => {
+            await emitSelfLink('unlinked', account, context);
+          },
+        },
+      },
       // Ban/unban: mirror `banned` onto every membership's `_user` entity.
       user: {
         update: {

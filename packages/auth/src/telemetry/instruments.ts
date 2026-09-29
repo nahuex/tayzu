@@ -59,3 +59,8 @@ export const revocationChecksCounter = meter.createCounter('tayzu.auth.token.rev
 export const ssoEventsCounter = meter.createCounter('tayzu.auth.sso.events', {
   unit: '{event}',
 });
+
+/** design.md, Metrics table: "Account-linking audit signal" (design D24). */
+export const accountLinkEventsCounter = meter.createCounter('tayzu.auth.account_link.events', {
+  unit: '{event}',
+});

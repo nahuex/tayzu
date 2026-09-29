@@ -619,7 +619,7 @@ policy diff shown in chat, separately from the rest of the PR.
   paths, rejecting an unlink or password removal that would leave the user
   with zero sign-in methods (design D24). Verify: `account-linking.int.
   test.ts` covers "Unlinking the only sign-in method is rejected".
-- [ ] 20.4 `auth.security.account_linked`/`account_unlinked` log events and
+- [x] 20.4 `auth.security.account_linked`/`account_unlinked` log events and
   the `tayzu.auth.account_link.events` counter on both linking paths (design
   D24). Verify: `account-linking.int.test.ts` (extended) asserts both
   signals on the admin-recorded case, and `link-social-step-up.int.test.ts`

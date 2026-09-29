@@ -41,6 +41,14 @@
 import { randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
+// Import order is load-bearing (design D1): the telemetry harness must register
+// before `@tayzu/auth` creates its instruments (task 20.4).
+import {
+  linkCounterTotal,
+  linkLogEvents,
+  registration,
+  type TelemetryTestHarness,
+} from './__fixtures__/link-telemetry.js';
 import { authSchema, createAuth, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { runMigrations } from '@tayzu/db';
@@ -407,5 +415,115 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     expect(own?.principal.attr?.['tenantId']).toBe(tenantB);
     expect(own?.resources[0]?.resource.attr?.['tenantId']).toBe(tenantB);
     expect(await accountsOfUser(victim.userId)).toHaveLength(1);
+  }, 60_000);
+
+  // Task 20.4 (design D24; Observability contract). Expected production
+  // symbols: the `tayzu.auth.account_link.events` counter
+  // (`tayzu.auth.event` = linked|unlinked, `tayzu.auth.link.actor` =
+  // self|admin) and the INFO log events `auth.security.account_linked` /
+  // `auth.security.account_unlinked` (`tayzu.tenant.id`, `tayzu.actor.id`,
+  // `tayzu.auth.link.actor`), emitted by `identity.users.linkSsoAccount` /
+  // `unlinkSsoAccount` with `link.actor` = `admin`. `tayzu.actor.id` is the
+  // acting admin (the host context's actor), not the target user.
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(`telemetry harness failed to register: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    return registration.harness;
+  }
+
+  it('An admin-recorded link emits auth.security.account_linked and the account_link counter (actor admin)', async () => {
+    const harness = registeredHarness();
+    const tenantId = await freshTenantId();
+    const target = await newUser('audit-link');
+    await join(target.userId, tenantId);
+    const subject = `visma-sub-${randomUUID()}`;
+    const adminContext = context(tenantId, ['admin']);
+    const adminActorId = (adminContext['actor'] as { id: string }).id;
+    await harness.reset();
+
+    await client.identity.users.linkSsoAccount(
+      { userId: target.userId, subject },
+      { context: adminContext },
+    );
+
+    await harness.forceFlush();
+    const events = await linkLogEvents(harness, 'auth.security.account_linked');
+    expect(events).toHaveLength(1);
+    const attributes = events[0]?.attributes;
+    expect(attributes?.['tayzu.tenant.id']).toBe(tenantId);
+    expect(attributes?.['tayzu.actor.id']).toBe(adminActorId);
+    expect(attributes?.['tayzu.auth.link.actor']).toBe('admin');
+    expect(events[0]?.severityText, 'INFO').toBe('INFO');
+    const serialized = JSON.stringify(attributes);
+    expect(serialized, 'no Visma Connect sub in telemetry').not.toContain(subject);
+    expect(serialized, 'no email in telemetry').not.toContain(target.email);
+    expect(await linkLogEvents(harness, 'auth.security.account_unlinked')).toHaveLength(0);
+
+    expect(linkCounterTotal(harness, 'linked', 'admin')).toBe(1);
+    expect(linkCounterTotal(harness, 'unlinked', 'admin')).toBe(0);
+  }, 60_000);
+
+  it('An admin-recorded unlink emits auth.security.account_unlinked and the account_link counter (actor admin)', async () => {
+    const harness = registeredHarness();
+    const tenantId = await freshTenantId();
+    const target = await newUser('audit-unlink');
+    await join(target.userId, tenantId);
+    const adminContext = context(tenantId, ['admin']);
+    const adminActorId = (adminContext['actor'] as { id: string }).id;
+    await client.identity.users.linkSsoAccount(
+      { userId: target.userId, subject: `visma-sub-${randomUUID()}` },
+      { context: adminContext },
+    );
+    await harness.reset();
+
+    await client.identity.users.unlinkSsoAccount(
+      { userId: target.userId },
+      { context: adminContext },
+    );
+
+    const events = await linkLogEvents(harness, 'auth.security.account_unlinked');
+    expect(events).toHaveLength(1);
+    const attributes = events[0]?.attributes;
+    expect(attributes?.['tayzu.tenant.id']).toBe(tenantId);
+    expect(attributes?.['tayzu.actor.id']).toBe(adminActorId);
+    expect(attributes?.['tayzu.auth.link.actor']).toBe('admin');
+    expect(await linkLogEvents(harness, 'auth.security.account_linked')).toHaveLength(0);
+    expect(linkCounterTotal(harness, 'unlinked', 'admin')).toBe(1);
+    expect(linkCounterTotal(harness, 'linked', 'admin')).toBe(0);
+  }, 60_000);
+
+  it('A rejected link (sub already linked elsewhere) or unlink (last sign-in method) emits neither signal', async () => {
+    const harness = registeredHarness();
+    const tenantId = await freshTenantId();
+    const owner = await newUser('audit-owner');
+    const intruder = await newUser('audit-intruder');
+    await join(owner.userId, tenantId);
+    await join(intruder.userId, tenantId);
+    const subject = `visma-sub-${randomUUID()}`;
+    const admin = context(tenantId, ['admin']);
+    await client.identity.users.linkSsoAccount(
+      { userId: owner.userId, subject },
+      { context: admin },
+    );
+    await removePassword(owner.userId);
+    await harness.reset();
+
+    await rejection(
+      client.identity.users.linkSsoAccount(
+        { userId: intruder.userId, subject },
+        { context: admin },
+      ),
+    );
+    await rejection(
+      client.identity.users.unlinkSsoAccount({ userId: owner.userId }, { context: admin }),
+    );
+
+    expect(await linkLogEvents(harness, 'auth.security.account_linked')).toHaveLength(0);
+    expect(await linkLogEvents(harness, 'auth.security.account_unlinked')).toHaveLength(0);
+    expect(linkCounterTotal(harness, 'linked', 'admin')).toBe(0);
+    expect(linkCounterTotal(harness, 'unlinked', 'admin')).toBe(0);
   }, 60_000);
 });

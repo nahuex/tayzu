@@ -58,6 +58,14 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+// Import order is load-bearing (design D1): the telemetry harness must register
+// before `@tayzu/auth` creates its instruments (task 20.4).
+import {
+  linkCounterTotal,
+  linkLogEvents,
+  registration,
+  type TelemetryTestHarness,
+} from './__fixtures__/link-telemetry.js';
 import { authSchema } from '@tayzu/auth';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -374,5 +382,178 @@ describe('POST /api/auth/link-social step-up (task 20.2, design D24 path (a))', 
     expect(stub.authorizationRequests, 'the stub was never contacted').toHaveLength(requestsBefore);
     expect(await ssoAccountsOf(tenant.userId), 'nothing was linked').toHaveLength(0);
     expect(await ssoAccountsForSub(sub)).toHaveLength(0);
+  }, 60_000);
+
+  // Task 20.4 (design D24; Observability contract). Expected production
+  // symbols: the `tayzu.auth.account_link.events` counter and the INFO log
+  // events `auth.security.account_linked` / `auth.security.account_unlinked`
+  // (`tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.link.actor`), emitted
+  // with `link.actor` = `self` when a user links (`/link-social` callback) or
+  // unlinks (`/unlink-account`) their own account. `tayzu.actor.id` is the
+  // user's id and `tayzu.tenant.id` the session's active organization.
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(`telemetry harness failed to register: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    return registration.harness;
+  }
+
+  /** Completes the OAuth round trip of a self-service link for `cookie`'s user. */
+  async function completeSelfLink(cookie: string, email: string, sub: string): Promise<void> {
+    stub.setSubject({
+      sub,
+      email,
+      name: 'Link User',
+      sid: `sid-${randomUUID()}`,
+      claims: { email_verified: true },
+    });
+    const initiated = await linkSocial(cookie);
+    expect(initiated.statusCode, initiated.body).toBe(200);
+    const approval = await fetch(initiated.json<{ url: string }>().url, { redirect: 'manual' });
+    const page = await approval.text();
+    const inputs = Object.fromEntries(
+      [...page.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [
+        m[1] ?? '',
+        m[2] ?? '',
+      ]),
+    );
+    const code = inputs['code'];
+    const state = inputs['state'];
+    if (code === undefined || state === undefined) {
+      throw new Error('the OIDC stub did not return code and state');
+    }
+    const params = new URLSearchParams({
+      code,
+      state,
+      ...(inputs['iss'] === undefined ? {} : { iss: inputs['iss'] }),
+    });
+    const callbackCookie = [cookie, cookieFrom(initiated.headers['set-cookie'])]
+      .filter((part) => part !== '')
+      .join('; ');
+    const headers = (): Record<string, string> => ({
+      'x-forwarded-for': randomIp(),
+      cookie: callbackCookie,
+    });
+    const posted = await authHandler(
+      new Request(`${AUTH_BASE_URL}/callback/${PROVIDER_ID}`, {
+        method: 'POST',
+        headers: {
+          ...headers(),
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: ORIGIN,
+        },
+        body: params.toString(),
+      }),
+    );
+    const location = posted.headers.get('location');
+    if (
+      posted.status >= 300 &&
+      posted.status < 400 &&
+      location !== null &&
+      new URL(location, AUTH_BASE_URL).pathname.endsWith(`/callback/${PROVIDER_ID}`)
+    ) {
+      await authHandler(
+        new Request(new URL(location, AUTH_BASE_URL), { method: 'GET', headers: headers() }),
+      );
+    }
+  }
+
+  it('A self-service link emits auth.security.account_linked and the account_link counter (actor self)', async () => {
+    const harness = registeredHarness();
+    const { tenant, email, secret } = await enrolledUser();
+    const cookie = await freshMfaSessionCookie(email, secret);
+    const sub = `audit-sub-${randomUUID()}`;
+    await harness.reset();
+
+    await completeSelfLink(cookie, email, sub);
+
+    expect(await ssoAccountsOf(tenant.userId), 'precondition: the link happened').toHaveLength(1);
+    const events = await linkLogEvents(harness, 'auth.security.account_linked');
+    expect(events).toHaveLength(1);
+    const attributes = events[0]?.attributes;
+    expect(attributes?.['tayzu.auth.link.actor']).toBe('self');
+    expect(attributes?.['tayzu.actor.id']).toBe(tenant.userId);
+    expect(attributes?.['tayzu.tenant.id']).toBe(tenant.organizationId);
+    expect(events[0]?.severityText).toBe('INFO');
+    const serialized = JSON.stringify(attributes);
+    expect(serialized, 'no Visma Connect sub in telemetry').not.toContain(sub);
+    expect(serialized, 'no email in telemetry').not.toContain(email);
+    expect(linkCounterTotal(harness, 'linked', 'self')).toBe(1);
+    expect(linkCounterTotal(harness, 'linked', 'admin')).toBe(0);
+  }, 60_000);
+
+  it('A self-service unlink emits auth.security.account_unlinked and the account_link counter (actor self)', async () => {
+    const harness = registeredHarness();
+    const { tenant, email, secret } = await enrolledUser();
+    const cookie = await freshMfaSessionCookie(email, secret);
+    const sub = `audit-sub-${randomUUID()}`;
+    await completeSelfLink(cookie, email, sub);
+    expect(await ssoAccountsOf(tenant.userId), 'precondition: linked').toHaveLength(1);
+    await harness.reset();
+
+    const rowId = (
+      await db.execute<{ id: string }>(sql`
+        select id from auth.account
+        where user_id = ${tenant.userId} and provider_id = ${PROVIDER_ID}
+      `)
+    ).rows[0]?.id;
+    if (rowId === undefined) {
+      throw new Error('expected the linked account row');
+    }
+
+    // The user keeps their password, so the last-sign-in-method guard allows it.
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/unlink-account',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ORIGIN,
+        host: 'localhost:3000',
+        cookie,
+      },
+      payload: JSON.stringify({ providerId: PROVIDER_ID, accountId: rowId }),
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(await ssoAccountsOf(tenant.userId), 'precondition: unlinked').toHaveLength(0);
+
+    const events = await linkLogEvents(harness, 'auth.security.account_unlinked');
+    expect(events).toHaveLength(1);
+    const attributes = events[0]?.attributes;
+    expect(attributes?.['tayzu.auth.link.actor']).toBe('self');
+    expect(attributes?.['tayzu.actor.id']).toBe(tenant.userId);
+    expect(attributes?.['tayzu.tenant.id']).toBe(tenant.organizationId);
+    expect(await linkLogEvents(harness, 'auth.security.account_linked')).toHaveLength(0);
+    expect(linkCounterTotal(harness, 'unlinked', 'self')).toBe(1);
+    expect(linkCounterTotal(harness, 'unlinked', 'admin')).toBe(0);
+  }, 60_000);
+
+  it('A blocked self-service link (no fresh MFA) emits neither signal', async () => {
+    const harness = registeredHarness();
+    const { tenant, email, secret } = await enrolledUser();
+    const cookie = await freshMfaSessionCookie(email, secret);
+    const session = await (
+      app.auth.api as {
+        getSession(args: { headers: Headers }): Promise<{ session: { token: string } } | null>;
+      }
+    ).getSession({ headers: new Headers({ cookie }) });
+    if (session === null) {
+      throw new Error('expected the challenge-verified session to be valid');
+    }
+    await db.execute(sql`
+      delete from auth.verification
+      where identifier = ${`step-up-verified:${session.session.token}`}
+    `);
+    stub.setSubject({ sub: `blocked-audit-${randomUUID()}`, email, name: 'Link User' });
+    await harness.reset();
+
+    const response = await linkSocial(cookie);
+
+    expect(response.statusCode).toBe(403);
+    expect(await ssoAccountsOf(tenant.userId)).toHaveLength(0);
+    expect(await linkLogEvents(harness, 'auth.security.account_linked')).toHaveLength(0);
+    expect(linkCounterTotal(harness, 'linked', 'self')).toBe(0);
   }, 60_000);
 });
