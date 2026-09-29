@@ -219,7 +219,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `audit.decisionLogsEnabled: true`, `audit.accessLogsEnabled: false`.
   Verify: `config.test.ts` asserts the rendered configuration file matches
   these settings.
-- [ ] 7.3 Wire `pnpm policy:compile` as a required CI job, running before
+- [x] 7.3 Wire `pnpm policy:compile` as a required CI job, running before
   `pnpm --filter @tayzu/catalog test`. Verify: `pnpm ci:local` runs it, and
   it fails non-zero when a scratch policy file in a throwaway branch is made
   invalid.

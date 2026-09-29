@@ -24,8 +24,19 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
 
+  policy-compile:
+    name: Policy compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: pnpm policy:compile
+
   test:
     name: Test
+    needs: policy-compile
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -41,17 +52,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      cerbos:
-        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). No
-        # shell in this image, so its own container HEALTHCHECK can't run
-        # here (GitHub Actions' service `options` health-cmd always execs
-        # through /bin/sh); the "Wait for Cerbos" step below polls instead.
-        image: ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515
-        env:
-          CERBOS_NO_TELEMETRY: '1'
-        ports:
-          - 3592:3592
-          - 3593:3593
     env:
       DATABASE_URL: postgres://tayzu:tayzu@localhost:5432/tayzu_test
     steps:
@@ -59,6 +59,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Start Cerbos
+        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). Run
+        # after checkout so it serves the repo's policies/ and config/ (a
+        # service container cannot mount them). No shell in this image, so
+        # the "wait" loop polls the health endpoint from the runner.
+        run: |
+          docker run -d --name tayzu-cerbos \
+            -p 3592:3592 -p 3593:3593 \
+            -e CERBOS_NO_TELEMETRY=1 \
+            -v "$GITHUB_WORKSPACE/policies:/policies:ro" \
+            -v "$GITHUB_WORKSPACE/config/cerbos.yaml:/config/.cerbos.yaml:ro" \
+            ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515 \
+            server --config=/config/.cerbos.yaml
       - name: Wait for Cerbos
         run: |
           for _ in $(seq 1 30); do
@@ -96,15 +109,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      cerbos:
-        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). See the
-        # "Test" job above for why this can't carry its own health-cmd.
-        image: ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515
-        env:
-          CERBOS_NO_TELEMETRY: '1'
-        ports:
-          - 3592:3592
-          - 3593:3593
     env:
       DATABASE_URL: postgres://tayzu:tayzu@localhost:5432/tayzu_test
     steps:
@@ -112,6 +116,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Start Cerbos
+        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). Run
+        # after checkout so it serves the repo's policies/ and config/ (a
+        # service container cannot mount them). No shell in this image, so
+        # the "wait" loop polls the health endpoint from the runner.
+        run: |
+          docker run -d --name tayzu-cerbos \
+            -p 3592:3592 -p 3593:3593 \
+            -e CERBOS_NO_TELEMETRY=1 \
+            -v "$GITHUB_WORKSPACE/policies:/policies:ro" \
+            -v "$GITHUB_WORKSPACE/config/cerbos.yaml:/config/.cerbos.yaml:ro" \
+            ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515 \
+            server --config=/config/.cerbos.yaml
       - name: Wait for Cerbos
         run: |
           for _ in $(seq 1 30); do
