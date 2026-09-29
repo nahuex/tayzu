@@ -475,11 +475,11 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 16. Docs-as-Code, ADRs, and the system diagram
 
-- [ ] 16.1 Write ADR `docs/adr/0014-postgres-roles-and-forced-rls.md` and
+- [x] 16.1 Write ADR `docs/adr/0014-postgres-roles-and-forced-rls.md` and
   `docs/adr/0016-machine-credential-token-exchange.md`. Verify: both files
   exist with Context, Decision, Alternatives and Consequences sections, and
   design D5/D6 link to them.
-- [ ] 16.2 Update `docs/architecture/system-diagram.md`: add the Fastify
+- [x] 16.2 Update `docs/architecture/system-diagram.md`: add the Fastify
   listener (now live, not dashed), the Cerbos sidecar (no external arrow),
   Key Vault (an external actor feeding the deployment pipeline and the
   running container), and Visma Connect (a new external actor with an
@@ -488,12 +488,12 @@ policy diff shown in chat, separately from the rest of the PR.
   design D17/D23/D26). Verify: markdownlint passes, the Mermaid block
   renders, and every new attack-surface name in this design appears in the
   diagram.
-- [ ] 16.3 Write `docs/catalog/auth-and-rbac.md` (resource kinds, the
+- [x] 16.3 Write `docs/catalog/auth-and-rbac.md` (resource kinds, the
   role/ownership model, error codes, and the telemetry reference). Verify:
   `pnpm lint:md` passes, and every name in the doc exists in
   `packages/authz/src/telemetry/contract.ts` (checked by `contract.test.ts`,
   task 13.1).
-- [ ] 16.4 Write `docs/security/attack-surfaces.md`: every Better Auth
+- [x] 16.4 Write `docs/security/attack-surfaces.md`: every Better Auth
   allowlisted route, every catalog route, `/v1/auth/token`, the Visma
   Connect sign-in/callback/link/unlink routes, and the public back-channel
   logout endpoint, each with its actor category, authentication mechanism,
@@ -501,7 +501,7 @@ policy diff shown in chat, separately from the rest of the PR.
   D18/D23-D26). Verify: `pnpm lint:md` passes, and every route in the
   design's D13/D18/D23/D26 tables and `specs/auth-and-rbac/spec.md` appears
   in the doc.
-- [ ] 16.5 Write ADR `docs/adr/0021-visma-connect-as-primary-idp.md`. Verify:
+- [x] 16.5 Write ADR `docs/adr/0021-visma-connect-as-primary-idp.md`. Verify:
   the file exists with Context, Decision, Alternatives and Consequences
   sections, and design D23-D26 link to it.
 - [ ] 16.6 *(setup)* Write `docs/references/visma-connect/README.md`: a

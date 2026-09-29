@@ -222,6 +222,8 @@ hours. Mechanism:
   `enableSessionForAPIKeys` at all (`r2-better-auth.md` §6) — the exchange
   step is not optional here.
 
+See [ADR-0016](../../../docs/adr/0016-machine-credential-token-exchange.md).
+
 ### D6. Postgres roles, grants, and RLS
 
 Three roles (`r4-data-http.md` Part (a), Resolved decision Q9):
@@ -248,6 +250,8 @@ test queries, so 001's isolation tests become RLS tests unchanged (001 D5's
 stated precondition) plus one new test: a query with `app.tenant_id` unset
 returns/affects zero rows (never an error), and a negative-control test
 confirms `tayzu_migrator` itself is not reachable from any runtime code path.
+
+See [ADR-0014](../../../docs/adr/0014-postgres-roles-and-forced-rls.md).
 
 ### D7. Cerbos engine wiring
 
@@ -653,6 +657,8 @@ revoked.
   at the cost of one extra Postgres read per cache miss per replica, which
   is proportionate to "few known tenants."
 
+See [ADR-0016](../../../docs/adr/0016-machine-credential-token-exchange.md).
+
 ### D22. Public self sign-up is disabled; users are created only by an admin or a bootstrap script (Resolved decision Q16)
 
 The human decided (2026-09-28) that public self sign-up is disabled under
@@ -703,6 +709,8 @@ requirement is narrowed to sign-in only (spec updated below).
   here would create exactly the kind of drift `043`'s own design guards
   against (its Context, "Drift between this design and `002`'s
   implementation").
+
+See [ADR-0021](../../../docs/adr/0021-visma-connect-as-primary-idp.md).
 
 ### D23. Visma Connect SSO via Better Auth's `genericOAuth` plugin (Resolved decision Q17)
 
@@ -758,6 +766,8 @@ routes, so they do not reopen the SEC03 gap D18 closed.
   decision names `genericOAuth` explicitly (no new dependency), and it is
   already the bundled, source-verified mechanism for exactly this shape of
   provider (discovery-based OIDC, authorization code + PKCE).
+
+See [ADR-0021](../../../docs/adr/0021-visma-connect-as-primary-idp.md).
 
 ### D24. Account linking is explicit, sub-keyed, never email-keyed (Resolved decision Q18)
 
@@ -840,6 +850,8 @@ linked SSO account) — a user must always keep at least one way to sign in.
   anti-pattern Visma's own docs warn against, and the human's decision is
   explicit that email matching is forbidden, not merely discouraged.
 
+See [ADR-0021](../../../docs/adr/0021-visma-connect-as-primary-idp.md).
+
 ### D25. Step-up for a Visma-Connect-established session delegates to Visma Connect (Resolved decision Q19)
 
 D4's step-up guard (`twoFactorVerifiedAt` freshness, local TOTP) assumes
@@ -894,6 +906,8 @@ decides whether to retry" shape D4 already established. Local sessions
   would need to additionally enroll a Tayzu-local factor solely for
   step-up), and Visma Connect's own MFA is already a stronger,
   independently-audited control than anything 002 would build locally.
+
+See [ADR-0021](../../../docs/adr/0021-visma-connect-as-primary-idp.md).
 
 ### D26. Back-channel logout (Resolved decision Q20)
 
@@ -972,6 +986,8 @@ entirely) — never a status that would let a third party probe which `sid`/
   state is not tenant data, it belongs to the IdP relationship) with zero
   new schema surface and zero new Checkpoint-3 approval for this specific
   piece.
+
+See [ADR-0021](../../../docs/adr/0021-visma-connect-as-primary-idp.md).
 
 ## Observability contract
 
