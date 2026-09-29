@@ -410,9 +410,13 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // `{ tenantId: session.activeOrganizationId, actor: { type: 'user', id:
     // user.id } }`." Scenario THEN: "it runs with `actor.type` `user` and
     // `tenantId` equal to their active organization."
+    // Task 9.5, Q26: the organization creator is the Better Auth `owner`,
+    // which resolves the Cerbos role `admin`; teams and moderated blueprints
+    // stay empty until group 12.
     expect(resolved).toEqual({
       tenantId: tenant.organizationId,
       actor: { type: 'user', id: tenant.userId },
+      principal: { roles: ['admin'], teams: [], moderatedBlueprints: [] },
     });
   });
 
@@ -529,9 +533,12 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // actor (the real signed-in user) alone -- the identical shape the first
     // scenario in this file asserts for the same session, `onBehalfOf`
     // header or not.
+    // Task 9.5, Q26: the owner resolves `admin`; the forged header changes
+    // nothing.
     expect(resolved).toEqual({
       tenantId: tenant.organizationId,
       actor: { type: 'user', id: tenant.userId },
+      principal: { roles: ['admin'], teams: [], moderatedBlueprints: [] },
     });
     expect(tenant.token.length, 'sanity: sign-in produced a real session').toBeGreaterThan(0);
   });
@@ -1142,5 +1149,185 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
       // @ts-expect-error `revocationPool` is required
       createContextResolver({ auth });
     expect(typeof never).toBe('function');
+  });
+});
+
+/**
+ * Task 9.5 (design D11 "Principal and client wiring", resolved decisions Q2,
+ * Q26; `specs/auth-and-rbac/spec.md`, requirement "Three-tier role baseline":
+ * "The system MUST recognize two Cerbos roles derived from Better Auth
+ * organization membership: `admin` (organization `owner` or `admin`) and
+ * `member` (organization `member`)").
+ *
+ * NOTE: no scenario in the spec carries these three titles verbatim; they are
+ * the names task 9.5's Verify clause fixes. Their GIVEN/WHEN/THEN are derived
+ * from that requirement plus Q26: "a host-supplied `principal: { roles,
+ * teams?, moderatedBlueprints? }` field on `CatalogContext`, filled only by
+ * `resolveContext` ..., never from input."
+ *
+ * ## Production symbols expected
+ *
+ * The resolved value of the session-cookie branch gains
+ * `principal: { roles: ('admin' | 'member')[]; teams?: string[];
+ * moderatedBlueprints?: string[] }`. `roles` is derived from the user's
+ * `auth.member.role` in the active organization (`owner`/`admin` -> `admin`,
+ * otherwise `member`). `teams`/`moderatedBlueprints` come from the `_user`
+ * entity, empty (or absent) until group 12, so they are asserted only as
+ * "empty or absent".
+ *
+ * ## Expected failure
+ *
+ * Assertion failure: `resolved.principal` is `undefined` today.
+ *
+ * ## Existing tests
+ *
+ * The earlier tests in this file assert the resolved value with an exact
+ * `toEqual({ tenantId, actor })`. Once `principal` is added they will fail
+ * and must be updated by a human/orchestrator (this task may not change
+ * existing tests).
+ */
+describe('resolveContext: principal roles (task 9.5, Q26)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+  let resolveContext: (headers: Headers) => Promise<unknown>;
+
+  interface ResolvedPrincipal {
+    readonly roles?: readonly string[];
+    readonly teams?: readonly string[];
+    readonly moderatedBlueprints?: readonly string[];
+  }
+  interface ResolvedWithPrincipal {
+    readonly tenantId: string;
+    readonly principal?: ResolvedPrincipal;
+  }
+
+  interface AddMemberApiSurface {
+    addMember(args: {
+      body: { userId: string; organizationId: string; role: string };
+    }): Promise<unknown>;
+  }
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = (createContextResolver as ContextResolverFactory)({
+      auth,
+      revocationPool: appPool,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  /** A signed-in user whose only membership is `organizationId`, with `role`. */
+  async function signedInMember(organizationId: string, role: string): Promise<SignedInCookie> {
+    const email = randomEmail();
+    const created = await createAdminUser(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (auth.api as AddMemberApiSurface).addMember({
+      body: { userId: created.userId, organizationId, role },
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    return { cookie: signedIn.cookie, userId: signedIn.userId };
+  }
+
+  interface SignedInCookie {
+    readonly cookie: string;
+    readonly userId: string;
+  }
+
+  async function newTenant(): Promise<{ cookie: string; organizationId: string }> {
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Principal Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return { cookie: tenant.cookie, organizationId: tenant.organizationId };
+  }
+
+  function expectEmptyOrAbsent(value: readonly string[] | undefined, label: string): void {
+    expect(value ?? [], `${label} is empty until group 12 syncs it`).toEqual([]);
+  }
+
+  it('An admin session resolves the admin role', async () => {
+    // GIVEN the organization owner (Better Auth role `owner`) ...
+    const owner = await newTenant();
+    // ... and a second user holding the Better Auth role `admin`.
+    const adminMember = await signedInMember(owner.organizationId, 'admin');
+
+    // WHEN each session is resolved
+    const ownerResolved = (await resolveContext(
+      new Headers({ cookie: owner.cookie }),
+    )) as ResolvedWithPrincipal;
+    const adminResolved = (await resolveContext(
+      new Headers({ cookie: adminMember.cookie }),
+    )) as ResolvedWithPrincipal;
+
+    // THEN both resolve the Cerbos role `admin` (owner and admin -> admin)
+    expect(ownerResolved.principal?.roles).toEqual(['admin']);
+    expect(adminResolved.principal?.roles).toEqual(['admin']);
+    expectEmptyOrAbsent(ownerResolved.principal?.teams, 'teams');
+    expectEmptyOrAbsent(ownerResolved.principal?.moderatedBlueprints, 'moderatedBlueprints');
+  });
+
+  it('A member session resolves the member role', async () => {
+    // GIVEN a user whose Better Auth role in the active organization is `member`
+    const owner = await newTenant();
+    const member = await signedInMember(owner.organizationId, 'member');
+
+    // WHEN their session is resolved
+    const resolved = (await resolveContext(
+      new Headers({ cookie: member.cookie }),
+    )) as ResolvedWithPrincipal;
+
+    // THEN the principal carries exactly the `member` role, never `admin`
+    expect(resolved.tenantId).toBe(owner.organizationId);
+    expect(resolved.principal?.roles).toEqual(['member']);
+    expectEmptyOrAbsent(resolved.principal?.teams, 'teams');
+    expectEmptyOrAbsent(resolved.principal?.moderatedBlueprints, 'moderatedBlueprints');
+  });
+
+  it('A client cannot supply its own roles', async () => {
+    // GIVEN a valid `member` session
+    const owner = await newTenant();
+    const member = await signedInMember(owner.organizationId, 'member');
+
+    // WHEN the caller also supplies role/principal claims in headers (the only
+    // input `resolveContext` can see), under several plausible names
+    const resolved = (await resolveContext(
+      new Headers({
+        cookie: member.cookie,
+        'x-tayzu-roles': 'admin',
+        'x-tayzu-role': 'admin',
+        'x-tayzu-principal': JSON.stringify({
+          roles: ['admin'],
+          teams: ['forged-team'],
+          moderatedBlueprints: ['forged-blueprint'],
+        }),
+      }),
+    )) as ResolvedWithPrincipal;
+
+    // THEN the roles come from the membership alone, and nothing forged leaks
+    expect(resolved.principal?.roles).toEqual(['member']);
+    expect(resolved.principal?.teams ?? []).not.toContain('forged-team');
+    expect(resolved.principal?.moderatedBlueprints ?? []).not.toContain('forged-blueprint');
   });
 });

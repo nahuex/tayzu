@@ -434,6 +434,8 @@ describe('resolveContext: 12-hour idle timeout (task 3.2, design D3)', () => {
     expect(resolved).toEqual({
       tenantId: session.organizationId,
       actor: { type: 'user', id: session.userId },
+      // Task 9.5, Q26: the organization creator is the `owner` -> `admin`.
+      principal: { roles: ['admin'], teams: [], moderatedBlueprints: [] },
     });
   });
 });
@@ -637,6 +639,8 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
     expect(device2Before).toEqual({
       tenantId: organization.id,
       actor: { type: 'user', id: adminUser.userId },
+      // Task 9.5, Q26: the organization creator is the `owner` -> `admin`.
+      principal: { roles: ['admin'], teams: [], moderatedBlueprints: [] },
     });
 
     // Discard whatever admin-user-creation/organization-creation/sign-in emitted: only

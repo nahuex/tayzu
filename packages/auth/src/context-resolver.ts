@@ -104,9 +104,20 @@ export interface ResolvedActor {
   readonly id: string;
 }
 
+/**
+ * Task 9.5, resolved decision Q26: the host-supplied authorization principal.
+ * Filled only here, from the membership row, never from request input.
+ */
+export interface ResolvedPrincipal {
+  readonly roles: readonly ('admin' | 'member')[];
+  readonly teams?: readonly string[];
+  readonly moderatedBlueprints?: readonly string[];
+}
+
 export interface ResolvedContext {
   readonly tenantId: string;
   readonly actor: ResolvedActor;
+  readonly principal?: ResolvedPrincipal;
 }
 
 export type ContextResolver = (headers: Headers) => Promise<ResolvedContext>;
@@ -205,10 +216,10 @@ function parseMachineTokenPayload(payload: Record<string, unknown>): ResolvedCon
  */
 interface AuthContextSurface {
   readonly adapter: {
-    count(data: {
+    findOne(data: {
       readonly model: 'member';
       readonly where: ReadonlyArray<{ readonly field: string; readonly value: string }>;
-    }): Promise<number>;
+    }): Promise<{ readonly role?: unknown } | null>;
   };
 }
 
@@ -235,8 +246,18 @@ interface RevocationCacheEntry {
 }
 
 interface MembershipCacheEntry {
-  readonly isMember: boolean;
+  /** The Better Auth member role, or `null` for a non-member. */
+  readonly role: string | null;
   readonly expiresAt: number;
+}
+
+/**
+ * Better Auth `owner`/`admin` -> Cerbos `admin`; every other role -> `member`
+ * (design D11, Q26). Better Auth may store several roles comma-separated.
+ */
+function toCerbosRole(memberRole: string): 'admin' | 'member' {
+  const roles = memberRole.split(',').map((role) => role.trim());
+  return roles.includes('owner') || roles.includes('admin') ? 'admin' : 'member';
 }
 
 function membershipCacheKey(userId: string, organizationId: string): string {
@@ -321,31 +342,32 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   // (the table or the database is unreachable) resolves to `false` and is
   // never cached, so it fails closed for exactly this one request rather
   // than widening the fail-closed window past the failure itself.
-  async function isCurrentMember(userId: string, organizationId: string): Promise<boolean> {
+  // Resolves to the member's role, or `null` when not a member / on failure.
+  async function memberRoleOf(userId: string, organizationId: string): Promise<string | null> {
     const key = membershipCacheKey(userId, organizationId);
     const now = Date.now();
     const cached = membershipCache.get(key);
     if (cached !== undefined && cached.expiresAt > now) {
-      return cached.isMember;
+      return cached.role;
     }
 
-    let isMember: boolean;
+    let role: string | null;
     try {
       const context = await contextOf(options.auth);
-      const count = await context.adapter.count({
+      const member = await context.adapter.findOne({
         model: 'member',
         where: [
           { field: 'organizationId', value: organizationId },
           { field: 'userId', value: userId },
         ],
       });
-      isMember = count > 0;
+      role = member === null ? null : typeof member.role === 'string' ? member.role : 'member';
     } catch {
-      return false;
+      return null;
     }
 
-    membershipCache.set(key, { isMember, expiresAt: now + MEMBERSHIP_CACHE_TTL_MS });
-    return isMember;
+    membershipCache.set(key, { role, expiresAt: now + MEMBERSHIP_CACHE_TTL_MS });
+    return role;
   }
 
   return async (headers: Headers): Promise<ResolvedContext> => {
@@ -407,13 +429,17 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     // Task 3.6, design D19: independently re-verify the session's own
     // `activeOrganizationId` against a membership-row lookup, rather than
     // trusting the session row alone.
-    if (!(await isCurrentMember(result.user.id, tenantId))) {
+    const memberRole = await memberRoleOf(result.user.id, tenantId);
+    if (memberRole === null) {
       rejectMissingContext();
     }
 
+    // Task 9.5, Q26: teams and moderated blueprints stay empty until group 12
+    // syncs them from the `_user` entity.
     return {
       tenantId,
       actor: { type: 'user', id: result.user.id },
+      principal: { roles: [toCerbosRole(memberRole)], teams: [], moderatedBlueprints: [] },
     };
   };
 }
