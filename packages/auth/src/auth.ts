@@ -69,6 +69,12 @@ import {
   preAuthRateLimitPlugin,
   type PreAuthRateLimitOptions,
 } from './rate-limit/pre-auth-rate-limit.js';
+import {
+  callbackFailureCode,
+  recordSsoSignInFailed,
+  ssoRejectedResponse,
+  SSO_CALLBACK_PATH,
+} from './sso/callback-rejection.js';
 import { vismaConnect, type VismaConnectOptions } from './sso/visma-connect.js';
 import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
 import { logger, sessionEventsCounter } from './telemetry/instruments.js';
@@ -599,6 +605,21 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
   const signUpGuardedHandler = async (request: Request): Promise<Response> => {
     if (normalizedRequestPath(request) === SIGN_UP_EMAIL_PATH) {
       return unmatchedRouteResponse();
+    }
+    if (options.sso !== undefined && normalizedRequestPath(request) === SSO_CALLBACK_PATH) {
+      // Task 19.4, design D24: every callback failure becomes the same 401.
+      let response: Response | undefined;
+      try {
+        response = await baseHandler(request);
+      } catch {
+        response = undefined;
+      }
+      const failure = response === undefined ? { code: null } : callbackFailureCode(response);
+      if (failure === null) {
+        return response as Response;
+      }
+      recordSsoSignInFailed(failure.code);
+      return ssoRejectedResponse();
     }
     return baseHandler(request);
   };

@@ -585,7 +585,7 @@ policy diff shown in chat, separately from the rest of the PR.
   Verify: `auth-route-allowlist.int.test.ts` (extended) covers all five
   routes remaining reachable, and `auth-route-allowlist.test.ts` (extended,
   task 11.10's drift test) still fails when an unlisted route is introduced.
-- [ ] 19.4 The `/callback/visma-connect` handler maps every failure mode
+- [x] 19.4 The `/callback/visma-connect` handler maps every failure mode
   (unlinked `sub`, `state`/`nonce` mismatch, invalid or unverifiable
   `id_token`) to the same `AUTH_SSO_REJECTED` response, recording the
   internal cause only on `auth.security.sso_sign_in_failed` (design D24).
