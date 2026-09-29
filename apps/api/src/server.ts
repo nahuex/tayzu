@@ -23,6 +23,7 @@ import {
   createContextResolver,
   isAllowedAuthPath,
   type AuthInstance,
+  type CreateAuthOptions,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import type { createPool } from '@tayzu/db';
@@ -60,6 +61,8 @@ export interface CreateAppOptions {
    * bucket key is the caller's IP plus the body's client id; omitted: no limiter.
    */
   readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /** Visma Connect SSO (D23), forwarded to `createAuth`; omitted: SSO is not registered. */
+  readonly sso?: CreateAuthOptions['sso'];
 }
 
 export interface App {
@@ -119,7 +122,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const authDb = drizzle(options.authPool, { schema: authSchema });
   const appPool = options.appPool;
 
-  const auth = createAuth({ db: authDb, secret: options.authSecret });
+  const auth = createAuth({
+    db: authDb,
+    secret: options.authSecret,
+    ...(options.sso === undefined ? {} : { sso: options.sso }),
+  });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
 
   const authz = createCerbosClient({

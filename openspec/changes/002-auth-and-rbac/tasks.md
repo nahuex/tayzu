@@ -580,7 +580,7 @@ policy diff shown in chat, separately from the rest of the PR.
   provider's options match the design D23 table, and that no `accountSubject`
   resolver is configured (Better Auth's own discovery-default `sub`
   resolution is relied on, not reimplemented).
-- [ ] 19.3 Add `/sign-in/social`, `/callback/visma-connect`, `/link-social`,
+- [x] 19.3 Add `/sign-in/social`, `/callback/visma-connect`, `/link-social`,
   `/unlink-account`, and `/list-accounts` to D18's allowlist (design D23).
   Verify: `auth-route-allowlist.int.test.ts` (extended) covers all five
   routes remaining reachable, and `auth-route-allowlist.test.ts` (extended,

@@ -46,6 +46,7 @@ import {
   bootstrapTestTenant,
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -224,4 +225,103 @@ describe('apps/api /api/auth/* route allowlist (task 11.9)', () => {
     },
     60_000,
   );
+});
+
+describe('apps/api /api/auth/* allowlist: Visma Connect routes (task 19.3, design D23)', () => {
+  let app: App;
+  let stub: OidcStub;
+  let cookie: string;
+
+  beforeAll(async () => {
+    stub = await startOidcStub();
+    app = await createApp({
+      ...(await harnessPools()),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ALLOWED_ORIGIN],
+      // Expected new production option (forwarded to createAuth's `sso`).
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Sso Allowlist User',
+      email: `sso-allowlist-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Sso Allowlist Org ${suffix}`,
+      organizationSlug: `sso-allowlist-org-${suffix}`,
+      ip: randomIp(),
+    });
+    const signIn = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/email',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ALLOWED_ORIGIN,
+      },
+      payload: JSON.stringify({ email: tenant.email, password: TEST_PASSWORD }),
+    });
+    expect(signIn.statusCode).toBe(200);
+    const setCookie = signIn.headers['set-cookie'];
+    const cookies = Array.isArray(setCookie)
+      ? setCookie
+      : setCookie === undefined
+        ? []
+        : [setCookie];
+    cookie = cookies.map((raw) => raw.split(';')[0]).join('; ');
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+  }, 60_000);
+
+  it.each([
+    ['POST', '/api/auth/sign-in/social'],
+    ['GET', '/api/auth/callback/visma-connect'],
+    ['POST', '/api/auth/callback/visma-connect'],
+    ['POST', '/api/auth/link-social'],
+    ['POST', '/api/auth/unlink-account'],
+    ['GET', '/api/auth/list-accounts'],
+  ] as const)(
+    'The five Visma Connect routes remain reachable: %s %s is not a 404',
+    async (method, url) => {
+      const response = await probe(app, method, url, cookie);
+      expect(response.statusCode).not.toBe(404);
+    },
+    60_000,
+  );
+
+  it('Visma Connect sign-in initiation reaches the local stub, not the real provider', async () => {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/social',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ALLOWED_ORIGIN,
+      },
+      payload: JSON.stringify({ provider: 'visma-connect', callbackURL: '/' }),
+    });
+    expect(response.statusCode).not.toBe(404);
+    expect(response.body).toContain(stub.issuer);
+  }, 60_000);
+
+  it('Unlisted siblings of the Visma Connect routes stay a plain 404', async () => {
+    const unknownUrl = '/api/auth/definitely-not-a-route-' + randomUUID();
+    for (const url of [
+      '/api/auth/callback/other-provider',
+      '/api/auth/sign-in/oauth2',
+      '/api/auth/oauth2/link',
+    ]) {
+      const blocked = await probe(app, 'POST', url, cookie);
+      const unknown = await probe(app, 'POST', unknownUrl, cookie);
+      expect(blocked.statusCode).toBe(404);
+      expect(normalize(blocked.body, url)).toBe(normalize(unknown.body, unknownUrl));
+    }
+  }, 60_000);
 });

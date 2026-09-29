@@ -228,3 +228,68 @@ describe('apps/api /api/auth/* allowlist drift (task 11.10)', () => {
     }
   });
 });
+
+describe('apps/api /api/auth/* allowlist drift with Visma Connect SSO registered (task 19.3, design D23)', () => {
+  // Discovery is only stored at construction, never fetched (task 19.2's unit test does the same).
+  const SSO = {
+    discoveryUrl: 'http://127.0.0.1:1/.well-known/openid-configuration',
+    clientId: 'tayzu-test-client',
+    clientSecret: 'unit-test-only-client-secret',
+  } as const;
+
+  function enumerateWithSso(): readonly MountedRoute[] {
+    const auth = createAuth({ db: STUB_DB, secret: TEST_SECRET, sso: SSO });
+    const routes: MountedRoute[] = [];
+    for (const [handlerName, endpoint] of Object.entries(auth.api as Record<string, unknown>)) {
+      const path = (endpoint as { path?: unknown } | null | undefined)?.path;
+      if (typeof path === 'string') {
+        routes.push({ handlerName, path });
+      }
+    }
+    return routes;
+  }
+
+  const FIVE_SSO_ROUTES = [
+    '/sign-in/social',
+    '/callback/visma-connect',
+    '/link-social',
+    '/unlink-account',
+    '/list-accounts',
+  ] as const;
+
+  it('the five Visma Connect routes are allowlisted, and each is a mounted Better Auth route', () => {
+    const mountedPaths = enumerateWithSso().map((route) => route.path);
+    for (const path of FIVE_SSO_ROUTES) {
+      expect(ALLOWED_AUTH_ROUTES.has(path)).toBe(true);
+      expect(isAllowedAuthPath(`${AUTH_BASE_PATH}${path}`)).toBe(true);
+      expect(mountedPaths.some((mountedPath) => patternMatches(mountedPath, path))).toBe(true);
+    }
+  });
+
+  it('An unlisted Better Auth route fails the allowlist test: with SSO registered, every mounted route is still allowlisted or explicitly blocked', () => {
+    expect(unclassified(enumerateWithSso(), ALLOWED_AUTH_ROUTES, BLOCKED_AUTH_ROUTES)).toEqual([]);
+  });
+
+  it('An unlisted Better Auth route fails the allowlist test: with SSO registered, a route in neither set is still reported', () => {
+    const scratch: MountedRoute = { handlerName: 'scratchRoute', path: '/scratch/new-route' };
+
+    const reported = unclassified(
+      [...enumerateWithSso(), scratch],
+      ALLOWED_AUTH_ROUTES,
+      BLOCKED_AUTH_ROUTES,
+    );
+
+    expect(reported).toEqual(['scratchRoute /scratch/new-route']);
+  });
+
+  it('the SSO additions did not open a sibling route: a nearby unlisted path stays denied', () => {
+    for (const path of [
+      '/callback/other-provider',
+      '/oauth2/link',
+      '/sign-in/oauth2',
+      '/sign-up/social',
+    ]) {
+      expect(isAllowedAuthPath(`${AUTH_BASE_PATH}${path}`)).toBe(false);
+    }
+  });
+});
