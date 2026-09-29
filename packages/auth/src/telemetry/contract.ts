@@ -138,6 +138,11 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     ],
   },
   {
+    name: 'auth.security.step_up_insufficient',
+    severity: 'WARN',
+    attributes: [sharedAttributeKeys.tenantId, sharedAttributeKeys.actorId, 'tayzu.auth.method'],
+  },
+  {
     name: 'auth.security.account_linked',
     severity: 'INFO',
     attributes: [
@@ -180,6 +185,7 @@ export const SAMPLING_EXEMPT_SIGNALS: readonly string[] = [
   'auth.security.account_linked',
   'auth.security.account_unlinked',
   'auth.security.step_up_required',
+  'auth.security.step_up_insufficient',
   'auth.security.token_exchange_failed',
   'auth.security.revoked_token_rejected',
 ];

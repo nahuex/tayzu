@@ -54,6 +54,8 @@ import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 
 import type { AuthInstance } from './auth.js';
 import { AuthStepUpError } from './errors.js';
+import { isValidReauthorization } from './sso/reauthorization.js';
+import type { VismaConnectOptions } from './sso/visma-connect.js';
 import { logger, stepUpRequiredCounter, tracer } from './telemetry/instruments.js';
 
 /** design.md, Conventions/D4: "an MFA verification is 'fresh' for 5 minutes." */
@@ -74,6 +76,8 @@ const FRESHNESS_ATTRIBUTE = 'tayzu.auth.step_up.fresh';
  * implemented) -- `'local'` is the only value reachable today.
  */
 const LOCAL_AUTH_METHOD = 'local';
+/** design D25: the method recorded for a session established through Visma Connect. */
+const VISMA_CONNECT_AUTH_METHOD = 'visma_connect';
 
 const STEP_UP_VERIFICATION_IDENTIFIER_PREFIX = 'step-up-verified';
 
@@ -91,6 +95,8 @@ export function stepUpVerificationIdentifier(sessionToken: string): string {
 export interface StepUpGuardOptions {
   /** The Better Auth instance whose session/verification state the guard reads. */
   readonly auth: AuthInstance;
+  /** The Visma Connect settings `createAuth` takes; needed to verify re-authorization ID tokens (D25). */
+  readonly sso?: VismaConnectOptions;
 }
 
 export interface AssertStepUpParams {
@@ -107,6 +113,11 @@ export interface AssertStepUpParams {
   };
   /** `tayzu.catalog.operation`'s value on the blocked-case telemetry. */
   readonly operation: string;
+  /**
+   * design D25: the raw ID token the host's Visma Connect re-authorization
+   * callback received. Only consulted for a session with `ssoSid` set.
+   */
+  readonly reauthorization?: { readonly idToken: string };
 }
 
 /** Resolves when the operation may proceed; rejects with `AuthStepUpError` otherwise. */
@@ -116,6 +127,7 @@ export type StepUpGuard = (params: AssertStepUpParams) => Promise<void>;
 interface SessionResult {
   readonly session: {
     readonly token: string;
+    readonly ssoSid?: string | null;
   };
   readonly user?: {
     readonly twoFactorEnabled?: boolean | null;
@@ -163,16 +175,32 @@ function emitStepUpRequired(params: {
   stepUpRequiredCounter.add(1, { [OPERATION_ATTRIBUTE]: params.operation });
 }
 
+/** design.md, Log events table: `auth.security.step_up_insufficient` (design D25). */
+function emitStepUpInsufficient(params: {
+  readonly tenantId: string;
+  readonly actorId: string;
+}): void {
+  logger.emit({
+    eventName: 'auth.security.step_up_insufficient',
+    severityNumber: SeverityNumber.WARN,
+    attributes: {
+      [sharedAttributeKeys.tenantId]: params.tenantId,
+      [sharedAttributeKeys.actorId]: params.actorId,
+      [METHOD_ATTRIBUTE]: VISMA_CONNECT_AUTH_METHOD,
+    },
+  });
+}
+
 /**
  * design.md, Spans table: `auth.session.step_up_check` -- "any `x-tayzu-
  * risk: high` operation invoked by a `user` actor," unconditional on the
  * guard's own allow/block outcome (unlike `emitStepUpRequired` above, which
  * fires only on the blocked case).
  */
-function recordStepUpCheck(fresh: boolean): void {
+function recordStepUpCheck(fresh: boolean, method: string = LOCAL_AUTH_METHOD): void {
   tracer
     .startSpan('auth.session.step_up_check', {
-      attributes: { [METHOD_ATTRIBUTE]: LOCAL_AUTH_METHOD, [FRESHNESS_ATTRIBUTE]: fresh },
+      attributes: { [METHOD_ATTRIBUTE]: method, [FRESHNESS_ATTRIBUTE]: fresh },
     })
     .end();
 }
@@ -243,6 +271,31 @@ export function createStepUpGuard(options: StepUpGuardOptions): StepUpGuard {
     if (session === null) {
       recordStepUpCheck(false);
       rejectStepUp();
+    }
+    const { ssoSid } = session.session;
+
+    // design D25: a Visma-Connect-established session delegates step-up to
+    // Visma Connect; `twoFactorVerifiedAt` is not consulted at all.
+    if (typeof ssoSid === 'string' && ssoSid !== '') {
+      const idToken = params.reauthorization?.idToken;
+      const valid =
+        idToken !== undefined &&
+        options.sso !== undefined &&
+        (await isValidReauthorization(idToken, {
+          discoveryUrl: options.sso.discoveryUrl,
+          clientId: options.sso.clientId,
+          sid: ssoSid,
+        }));
+      recordStepUpCheck(valid, VISMA_CONNECT_AUTH_METHOD);
+      if (!valid) {
+        if (idToken === undefined) {
+          // No re-authorization returned yet: the caller must initiate one.
+          rejectStepUp();
+        }
+        emitStepUpInsufficient({ tenantId: params.tenantId, actorId: params.actor.id });
+        throw new AuthStepUpError();
+      }
+      return;
     }
     const sessionToken = session.session.token;
 

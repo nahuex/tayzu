@@ -640,7 +640,7 @@ policy diff shown in chat, separately from the rest of the PR.
   sessions (design D25). Verify: `session-schema.int.test.ts` asserts the
   column via `information_schema`. ⛔ **Stop here for Checkpoint 3 approval
   of this migration's SQL before continuing.**
-- [ ] 21.3 The step-up guard (task 4.2) branches on `ssoSid`: `null` keeps
+- [x] 21.3 The step-up guard (task 4.2) branches on `ssoSid`: `null` keeps
   D4's existing local `twoFactorVerifiedAt` check unchanged; non-null
   initiates a Visma Connect re-authorization
   (`max_age=300&prompt=login&acr_values=urn:idp:vismaconnect:mfa`) and
