@@ -48,6 +48,7 @@ import {
   selectBlueprintRow,
   selectBlueprintsPage,
   selectRelationDefinitions,
+  selectBlueprintEntityIdentifiers,
   streamBlueprintEntities,
   updateBlueprintRow,
   updateRelationDefinitionRow,
@@ -62,7 +63,7 @@ import {
   pgErrorInfo,
 } from '../persistence/db-errors.js';
 import { blueprintMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
-import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
+import { RESOURCE_KINDS, redactUnreadable, type CerbosClient } from '@tayzu/authz';
 import { defineCatalogOperation, inputString } from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
@@ -206,6 +207,36 @@ function throwMappedDeleteError(error: unknown): never {
     throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'Blueprint is still referenced');
   }
   throw error;
+}
+
+/** Most readable entity identifiers an error names; the rest are only counted (design D12). */
+const MAX_NAMED_IDENTIFIERS = 10;
+
+/** Most delete-blocking entities considered for redaction. */
+const MAX_REFERRER_CANDIDATES = 1000;
+
+/**
+ * design D12: one batch `CheckResources(read)` over `identifiers`. Returns the
+ * readable ones and the count of unreadable ones, which are never named.
+ */
+async function redactEntityIdentifiers(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  identifiers: readonly string[],
+): Promise<{ readable: Set<string>; notVisible: number }> {
+  const { readable, notVisible } = await redactUnreadable({
+    authz,
+    tenantId: ctx.tenantId,
+    actor: ctx.actor,
+    principal: {
+      roles: ctx.principal?.roles ?? [],
+      teams: ctx.principal?.teams ?? [],
+      moderatedBlueprints: ctx.principal?.moderatedBlueprints ?? [],
+    },
+    kind: RESOURCE_KINDS.catalogEntity,
+    candidates: identifiers.map((id) => ({ id })),
+  });
+  return { readable: new Set(readable), notVisible };
 }
 
 /** Resolves every relation's `target` to its blueprint id in this tenant, or fails with `CATALOG_REFERENCE_VIOLATION`. */
@@ -690,10 +721,18 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
             'tayzu.catalog.compatibility.violation.count',
             compatibility.violations.length,
           );
+        const { readable, notVisible } = await redactEntityIdentifiers(
+          authz,
+          ctx,
+          compatibility.violations.map((violation) => violation.entityIdentifier),
+        );
+        const violations = compatibility.violations.filter((violation) =>
+          readable.has(violation.entityIdentifier),
+        );
         throw new CatalogError(
           'CATALOG_SCHEMA_INCOMPATIBLE',
           'Blueprint update is incompatible with existing entities',
-          { details: { violations: compatibility.violations } },
+          { details: notVisible > 0 ? { violations, notVisible } : { violations } },
         );
       }
 
@@ -782,6 +821,22 @@ export function createBlueprintService(options: CreateBlueprintServiceOptions): 
 
       const { relations } = await loadRelations(tx, ctx.tenantId, row.id);
       const snapshot = buildSnapshot(toParsedDefinition(row, relations), row.version);
+
+      const candidates = await selectBlueprintEntityIdentifiers(
+        tx,
+        ctx.tenantId,
+        row.id,
+        MAX_REFERRER_CANDIDATES,
+      );
+      if (candidates.length > 0) {
+        const { readable, notVisible } = await redactEntityIdentifiers(authz, ctx, candidates);
+        const referrers = candidates
+          .filter((id) => readable.has(id))
+          .slice(0, MAX_NAMED_IDENTIFIERS);
+        throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'Blueprint is still referenced', {
+          details: notVisible > 0 ? { referrers, notVisible } : { referrers },
+        });
+      }
 
       try {
         await deleteBlueprintRow(tx, ctx.tenantId, row.id);

@@ -58,6 +58,7 @@ import {
   type TestDb,
 } from './__fixtures__/blueprint-test-helpers.js';
 import { onlySpan } from './__fixtures__/telemetry-assertions.js';
+import { redactingAuthz } from './__fixtures__/redaction-authz.js';
 import type { CatalogContext } from '../domain/context.js';
 import {
   createBlueprintService,
@@ -263,5 +264,64 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
       }),
       'CATALOG_VERSION_CONFLICT',
     );
+  });
+
+  it('Incompatible entities the caller cannot read are redacted', async () => {
+    // GIVEN blueprint `service` has 2 incompatible entities the caller can
+    // read and 3 incompatible entities the caller cannot read (task 10.2,
+    // design D12)
+    const tenantId = randomTenantId();
+    const c = ctx(tenantId);
+    await service.create(c, blueprintInput('service', { schema: LANGUAGE_ONLY_SCHEMA }));
+    const blueprintId = await blueprintRowId(db, tenantId, 'service');
+    const visible = ['visible-1', 'visible-2'];
+    const hidden = ['hidden-1', 'hidden-2', 'hidden-3'];
+    for (const identifier of [...visible, ...hidden]) {
+      await seedEntity(db, tenantId, blueprintId, identifier, {
+        specProperties: { language: 'go' },
+      });
+    }
+    const spy = redactingAuthz(new Set(visible));
+    const redacting = createBlueprintService({ pool, authz: spy.client });
+
+    // WHEN the caller updates it with an incompatible schema change
+    const error = await expectCatalogErrorCode(
+      redacting.update(c, {
+        identifier: 'service',
+        title: { en: 'service' },
+        schema: {
+          properties: {
+            language: { type: 'string', title: { en: 'Language' } },
+            tier: { type: 'string', title: { en: 'Tier' } },
+          },
+          required: ['tier'],
+        },
+      }),
+      'CATALOG_SCHEMA_INCOMPATIBLE',
+    );
+
+    // THEN the 2 readable entities are named and "+3 not visible" is reported
+    const violations = error.details?.['violations'] as
+      readonly SchemaIncompatibleViolation[] | undefined;
+    expect(violations?.map((violation) => violation.entityIdentifier).sort()).toEqual(visible);
+    expect(error.details?.['notVisible']).toBe(3);
+
+    // AND no unreadable identifier leaks anywhere in the error
+    const serialized = JSON.stringify({
+      message: error.message,
+      issues: error.issues,
+      details: error.details,
+    });
+    for (const identifier of hidden) {
+      expect(serialized).not.toContain(identifier);
+    }
+
+    // AND the redaction was one batch check over the offending entities, in this tenant
+    expect(spy.batches).toHaveLength(1);
+    expect([...(spy.batches[0]?.ids ?? [])].sort()).toEqual([...visible, ...hidden].sort());
+    expect(new Set(spy.batches[0]?.attrTenantIds)).toEqual(new Set([tenantId]));
+
+    // AND the blueprint is unchanged
+    expect((await service.get(c, { identifier: 'service' })).version).toBe(1);
   });
 });

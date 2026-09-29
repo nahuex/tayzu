@@ -320,7 +320,7 @@ policy diff shown in chat, separately from the rest of the PR.
   with a count. Verify: `redaction.test.ts` (a pure unit test against a
   mocked Cerbos client) covers "N identifiers become a count when
   unreadable".
-- [ ] 10.2 Wire the helper into blueprint deletion's referrer list and
+- [x] 10.2 Wire the helper into blueprint deletion's referrer list and
   blueprint update's compatibility-violation list. Verify:
   `blueprints.int.test.ts` gains "Referring entities the caller cannot read
   are redacted to a count", and `blueprints-update.int.test.ts` gains
