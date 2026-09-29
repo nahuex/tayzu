@@ -601,7 +601,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 20. Account linking
 
-- [ ] 20.1 `identity.users.linkSsoAccount` / `identity.users.
+- [x] 20.1 `identity.users.linkSsoAccount` / `identity.users.
   unlinkSsoAccount`: Cerbos-gated oRPC procedures (`admin` role) writing or
   removing an `account` row for a target user, keyed on the Visma Connect
   `sub`, using `@tayzu/auth`'s internal adapter directly rather than Better

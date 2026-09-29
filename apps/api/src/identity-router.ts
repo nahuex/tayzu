@@ -28,6 +28,26 @@ class IdentityForbiddenError extends Error {
   }
 }
 
+/** Same code as the catalog's not-found; a cross-tenant and a nonexistent target are indistinguishable. */
+class IdentityNotFoundError extends Error {
+  readonly code = 'CATALOG_NOT_FOUND' as const;
+
+  constructor() {
+    super('The requested resource was not found');
+    this.name = 'IdentityNotFoundError';
+  }
+}
+
+/** Generic on purpose: never says which user, if any, already holds the subject. */
+class IdentityLinkRejectedError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED' as const;
+
+  constructor() {
+    super('The account link was rejected');
+    this.name = 'IdentityLinkRejectedError';
+  }
+}
+
 class IdentityInputError extends Error {
   readonly code = 'CATALOG_VALIDATION_FAILED' as const;
 
@@ -80,8 +100,14 @@ function parseInput(raw: unknown): CreateUserInput {
   return { email, name, role };
 }
 
-/** Cerbos `user` / `create` for the host-supplied principal; anything but an explicit allow is a deny. */
-async function assertMayCreateUser(authz: CerbosClient, rawContext: RawContext): Promise<void> {
+/** Cerbos `user` / `<action>` for the host-supplied principal; anything but an explicit allow is a deny. */
+async function assertMayOnUser(
+  authz: CerbosClient,
+  rawContext: RawContext,
+  action: 'create' | 'update',
+  resourceId: string,
+  resourceTenantId?: string,
+): Promise<void> {
   const { tenantId, actor, principal } = rawContext as {
     tenantId?: unknown;
     actor?: { id?: unknown } | null;
@@ -105,18 +131,57 @@ async function assertMayCreateUser(authz: CerbosClient, rawContext: RawContext):
         {
           resource: {
             kind: RESOURCE_KINDS.user,
-            id: 'new',
-            attr: buildAttributes(tenantId, {}),
+            id: resourceId,
+            attr: buildAttributes(resourceTenantId ?? tenantId, {}),
           },
-          actions: ['create'],
+          actions: [action],
         },
       ],
     });
-    allowed = checked.results[0]?.isAllowed('create') === true;
+    allowed = checked.results[0]?.isAllowed(action) === true;
   } catch {
     allowed = false;
   }
   if (!allowed) throw new IdentityForbiddenError();
+}
+
+function parseLinkInputUserId(raw: unknown): string {
+  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
+  const { userId } = raw as Record<string, unknown>;
+  if (!isNonEmptyString(userId)) throw new IdentityInputError();
+  return userId;
+}
+
+/** The Visma Connect provider id of the `account` row (design D23/D24). */
+const SSO_PROVIDER_ID = 'visma-connect';
+
+export interface SsoLinkInput {
+  readonly userId: string;
+  readonly subject: string;
+}
+
+function parseLinkInput(raw: unknown): SsoLinkInput {
+  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
+  const { userId, subject } = raw as Record<string, unknown>;
+  if (!isNonEmptyString(userId) || !isNonEmptyString(subject)) throw new IdentityInputError();
+  return { userId, subject };
+}
+
+/** The slice of Better Auth's internal adapter the admin-recorded linking uses (design D24 path (b)). */
+interface AccountAdapterSurface {
+  readonly internalAdapter: {
+    linkAccount(account: {
+      userId: string;
+      providerId: string;
+      accountId: string;
+    }): Promise<unknown>;
+    findAccounts(userId: string): Promise<{ id: string; providerId: string }[]>;
+    findAccountByKey(key: { providerId: string; accountId: string }): Promise<unknown>;
+    deleteAccount(id: string): Promise<void>;
+  };
+  readonly adapter: {
+    findMany<T>(args: { model: string; where: { field: string; value: string }[] }): Promise<T[]>;
+  };
 }
 
 /** The tenant of the caller; `assertMayCreateUser` already proved it is a non-empty string. */
@@ -132,13 +197,45 @@ function generateTemporaryPassword(): string {
 export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   const base = os.$context<RawContext>();
   const userApi = options.auth.api as CreateUserApiSurface;
+  const authContext = (): Promise<AccountAdapterSurface> =>
+    options.auth.$context as Promise<AccountAdapterSurface>;
+
+  /**
+   * Design D24 / spec "cross-tenant looks like not found": the Cerbos resource
+   * carries the target's real tenant, resolved server-side from its
+   * memberships, never taken from input. The caller-tenant check runs first, so
+   * an unauthorized caller gets the same deny for any target; then, when the
+   * target is not a member of the caller's tenant, the check against the
+   * target's tenant denies and is reported as not-found (as is a nonexistent
+   * target).
+   */
+  async function authorizeTarget(context: RawContext, targetUserId: string): Promise<void> {
+    await assertMayOnUser(options.authz, context, 'update', targetUserId);
+    const callerTenant = rawTenantId(context);
+    const memberships = await (
+      await authContext()
+    ).adapter.findMany<{ organizationId: string }>({
+      model: 'member',
+      where: [{ field: 'userId', value: targetUserId }],
+    });
+    const tenants = memberships.map((m) => m.organizationId);
+    if (tenants.includes(callerTenant)) return;
+    const [targetTenant] = tenants;
+    if (targetTenant === undefined) throw new IdentityNotFoundError();
+    try {
+      await assertMayOnUser(options.authz, context, 'update', targetUserId, targetTenant);
+    } catch {
+      // Denied by the cross-tenant rule (or Cerbos failed): fail closed as not-found.
+    }
+    throw new IdentityNotFoundError();
+  }
 
   return {
     identity: {
       users: {
         // Authorization runs before input parsing: a denied caller learns nothing about validity.
         create: base.handler(async ({ context, input: rawInput }): Promise<CreateUserOutput> => {
-          await assertMayCreateUser(options.authz, context);
+          await assertMayOnUser(options.authz, context, 'create', 'new');
           const input = parseInput(rawInput);
           const temporaryPassword = generateTemporaryPassword();
           const { user } = await userApi.createUser({
@@ -157,6 +254,29 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             status: 'Active',
           });
           return { userId: user.id, email: user.email, temporaryPassword };
+        }),
+        // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.
+        linkSsoAccount: base.handler(async ({ context, input: rawInput }): Promise<void> => {
+          const input = parseLinkInput(rawInput);
+          await authorizeTarget(context, input.userId);
+          const adapter = (await authContext()).internalAdapter;
+          const key = { providerId: SSO_PROVIDER_ID, accountId: input.subject };
+          // NOTE: check-then-insert; atomic only once `auth.account` has a unique
+          // (provider_id, account_id) constraint (needs a migration, Checkpoint 3).
+          if ((await adapter.findAccountByKey(key)) != null) throw new IdentityLinkRejectedError();
+          await adapter.linkAccount({
+            userId: input.userId,
+            providerId: SSO_PROVIDER_ID,
+            accountId: input.subject,
+          });
+        }),
+        unlinkSsoAccount: base.handler(async ({ context, input: rawInput }): Promise<void> => {
+          const userId = parseLinkInputUserId(rawInput);
+          await authorizeTarget(context, userId);
+          const adapter = (await authContext()).internalAdapter;
+          for (const account of await adapter.findAccounts(userId)) {
+            if (account.providerId === SSO_PROVIDER_ID) await adapter.deleteAccount(account.id);
+          }
         }),
       },
     },
