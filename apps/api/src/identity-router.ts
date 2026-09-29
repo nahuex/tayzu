@@ -15,7 +15,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { os } from '@orpc/server';
-import type { AuthInstance, UserSyncPort } from '@tayzu/auth';
+import { wouldLeaveNoSignInMethod, type AuthInstance, type UserSyncPort } from '@tayzu/auth';
 import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 /** Same code and message as the catalog's `AuthorizationError` (design D11). */
@@ -274,9 +274,13 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           const userId = parseLinkInputUserId(rawInput);
           await authorizeTarget(context, userId);
           const adapter = (await authContext()).internalAdapter;
-          for (const account of await adapter.findAccounts(userId)) {
-            if (account.providerId === SSO_PROVIDER_ID) await adapter.deleteAccount(account.id);
+          const accounts = await adapter.findAccounts(userId);
+          const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);
+          // Design D24: never leave the user with no password and no linked SSO account.
+          if (sso.length > 0 && wouldLeaveNoSignInMethod(accounts, sso)) {
+            throw new IdentityLinkRejectedError();
           }
+          for (const account of sso) await adapter.deleteAccount(account.id);
         }),
       },
     },

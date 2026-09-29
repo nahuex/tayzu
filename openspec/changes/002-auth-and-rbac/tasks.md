@@ -614,7 +614,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `link-social-step-up.int.test.ts` covers "A signed-in user links their own
   Visma Connect account" and "Linking without a fresh MFA verification is
   blocked for an MFA-enrolled user" (`AUTH_STEP_UP_REQUIRED`).
-- [ ] 20.3 A last-sign-in-method guard, shared by `identity.users.
+- [x] 20.3 A last-sign-in-method guard, shared by `identity.users.
   unlinkSsoAccount` and Better Auth's own `/unlink-account`/password-removal
   paths, rejecting an unlink or password removal that would leave the user
   with zero sign-in methods (design D24). Verify: `account-linking.int.

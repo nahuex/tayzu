@@ -214,6 +214,72 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     expect(await accountsOfUser(other.userId), 'no other user is linked').toHaveLength(0);
   }, 60_000);
 
+  // Task 20.3 (design D24, "Unlinking and the last-method invariant"). Expected
+  // production change: `identity.users.unlinkSsoAccount` (and the shared guard)
+  // rejects when the user would be left with no password and no linked SSO account.
+  async function removePassword(userId: string): Promise<void> {
+    const db = drizzle(authPool, { schema: authSchema });
+    await db.execute(
+      sql`delete from auth.account where user_id = ${userId} and provider_id = 'credential'`,
+    );
+  }
+
+  async function credentialAccountsOf(userId: string): Promise<readonly AccountRow[]> {
+    const db = drizzle(authPool, { schema: authSchema });
+    const result = await db.execute<AccountRow>(sql`
+      select id, account_id, provider_id, user_id
+      from auth.account
+      where user_id = ${userId} and provider_id = 'credential'
+    `);
+    return result.rows;
+  }
+
+  it('Unlinking the only sign-in method is rejected: the request fails and the account remains linked', async () => {
+    const tenantId = await freshTenantId();
+    const target = await newUser('only-method');
+    await join(target.userId, tenantId);
+    const subject = `visma-sub-${randomUUID()}`;
+    const admin = context(tenantId, ['admin']);
+
+    // GIVEN a user whose only sign-in method is their linked Visma Connect
+    // account, with no password set.
+    await client.identity.users.linkSsoAccount(
+      { userId: target.userId, subject },
+      { context: admin },
+    );
+    await removePassword(target.userId);
+    expect(await credentialAccountsOf(target.userId), 'precondition: no password').toHaveLength(0);
+    const before = await accountsOfUser(target.userId);
+    expect(before, 'precondition: SSO linked').toHaveLength(1);
+
+    // WHEN an admin attempts to unlink it THEN the request is rejected...
+    await rejection(
+      client.identity.users.unlinkSsoAccount({ userId: target.userId }, { context: admin }),
+    );
+
+    // ...and the account remains linked.
+    const after = await accountsOfUser(target.userId);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.id).toBe(before[0]?.id);
+    expect(after[0]?.account_id).toBe(subject);
+  }, 60_000);
+
+  it('Unlinking SSO is still allowed when the user has a password (control for the last-method guard)', async () => {
+    const tenantId = await freshTenantId();
+    const target = await newUser('has-password');
+    await join(target.userId, tenantId);
+    const admin = context(tenantId, ['admin']);
+    await client.identity.users.linkSsoAccount(
+      { userId: target.userId, subject: `visma-sub-${randomUUID()}` },
+      { context: admin },
+    );
+
+    await client.identity.users.unlinkSsoAccount({ userId: target.userId }, { context: admin });
+
+    expect(await accountsOfUser(target.userId)).toHaveLength(0);
+    expect(await credentialAccountsOf(target.userId)).toHaveLength(1);
+  }, 60_000);
+
   it('Cross-tenant link and unlink look exactly like a nonexistent user, and write or delete nothing', async () => {
     const tenantA = await freshTenantId();
     const tenantB = await freshTenantId();
