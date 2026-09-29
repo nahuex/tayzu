@@ -14,6 +14,8 @@
     "test:unit": "vitest run --project \"*unit*\""
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.15.0",
+    "@cerbos/api": "0.11.1",
     "@cerbos/grpc": "0.29.1",
     "@cerbos/orm-drizzle": "0.1.0"
   }

@@ -210,7 +210,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 7. Cerbos engine wiring
 
-- [ ] 7.1 `packages/authz`: a Cerbos gRPC client wrapper, resource-kind
+- [x] 7.1 `packages/authz`: a Cerbos gRPC client wrapper, resource-kind
   constants (`catalog_blueprint`, `catalog_entity`, `team`, `user`), and a
   `tenantId`-first attribute builder. Verify: `client.test.ts` asserts the
   client connects to the CI Cerbos container and a trivial `CheckResources`
