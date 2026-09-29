@@ -416,7 +416,7 @@ policy diff shown in chat, separately from the rest of the PR.
   the body limit and the back-channel logout processing. Verify:
   `bootstrap-wiring.int.test.ts` covers each of these being active on the
   production app.
-- [ ] 11.18 The pre-auth rate limiter covers `/two-factor/verify-*` and every
+- [x] 11.18 The pre-auth rate limiter covers `/two-factor/verify-*` and every
   email-verification route with the D20 keys, and `createApp` passes the
   configured limits. Verify: `pre-auth-rate-limit.int.test.ts` (extended)
   covers "Repeated failed two-factor verifications are rate-limited".

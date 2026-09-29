@@ -476,3 +476,105 @@ describe('Pre-authentication sign-in rate limiting (task 2.5, design D20)', () =
     expectNoSecretsInTelemetry([...ipsUsed, ...caseVariants, paddedEmail]);
   });
 });
+
+/**
+ * Task 11.18 (design D20): the pre-auth limiter also covers
+ * `/two-factor/verify-*`. Named scenario: "Repeated failed two-factor
+ * verifications are rate-limited".
+ *
+ * Production symbol expected (test-writer design choice, like `signIn`
+ * above): `CreateAuthOptions.rateLimit.twoFactorVerify: { window: number;
+ * max: number }`, one bucket family shared by `/two-factor/verify-totp` and
+ * `/two-factor/verify-backup-code`, scope `two_factor_verify`.
+ *
+ * The verify bodies carry no email, so these tests exercise the IP key only.
+ * Requests carry no two-factor cookie, so Better Auth itself would answer
+ * with an ordinary non-429 failure while under the limit.
+ */
+const TWO_FACTOR_WINDOW_SECONDS = 60;
+const TWO_FACTOR_MAX = 3;
+
+interface TwoFactorCreateAuthOptions extends Omit<CreateAuthOptions, 'rateLimit'> {
+  readonly rateLimit: {
+    readonly twoFactorVerify: { readonly window: number; readonly max: number };
+  };
+}
+
+const TWO_FACTOR_PATHS = ['/two-factor/verify-totp', '/two-factor/verify-backup-code'] as const;
+
+describe('Pre-authentication two-factor verification rate limiting (task 11.18, design D20)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let harness: TelemetryTestHarness;
+
+  function postVerify(path: string, ip: string): Promise<Response> {
+    return handlerOf(auth)(
+      new Request(`http://localhost:3000/api/auth${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+        body: JSON.stringify({ code: '000000' }),
+      }),
+    );
+  }
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    const options: TwoFactorCreateAuthOptions = {
+      db,
+      secret: TEST_SECRET,
+      rateLimit: {
+        twoFactorVerify: { window: TWO_FACTOR_WINDOW_SECONDS, max: TWO_FACTOR_MAX },
+      },
+    };
+    auth = createAuth(options);
+    if ('error' in registration) {
+      throw new Error('telemetry harness registration failed', { cause: registration.error });
+    }
+    harness = registration.harness;
+  }, 60_000);
+
+  afterEach(async () => {
+    await harness.reset();
+  });
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  for (const path of TWO_FACTOR_PATHS) {
+    it(`Repeated failed two-factor verifications are rate-limited (${path})`, async () => {
+      const ip = randomIp();
+
+      for (let attempt = 0; attempt < TWO_FACTOR_MAX; attempt += 1) {
+        const response = await postVerify(path, ip);
+        expect(response.status, 'an attempt under the limit is not rate-limited').not.toBe(429);
+      }
+
+      const blocked = await postVerify(path, ip);
+      await harness.forceFlush();
+
+      await expectBlockedByRateLimit(blocked);
+
+      const logs = [...harness.logExporter.getFinishedLogRecords()].filter(
+        (record) => record.eventName === 'auth.security.rate_limited',
+      );
+      expect(logs, 'exactly one rate_limited log record').toHaveLength(1);
+      expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+      expect(logs[0]?.attributes).toEqual({ 'tayzu.auth.rate_limit.scope': 'two_factor_verify' });
+      const serialized = JSON.stringify(
+        [...harness.logExporter.getFinishedLogRecords()].map((r) => [r.attributes, r.body]),
+      );
+      expect(serialized, 'the caller IP never reaches telemetry').not.toContain(ip);
+    });
+  }
+
+  it('The two-factor limit is per caller: distinct IPs are not throttled by each other', async () => {
+    for (let attempt = 0; attempt <= TWO_FACTOR_MAX; attempt += 1) {
+      const response = await postVerify('/two-factor/verify-totp', randomIp());
+      expect(response.status, 'a first attempt from a fresh IP is never rate-limited').not.toBe(
+        429,
+      );
+    }
+  });
+});

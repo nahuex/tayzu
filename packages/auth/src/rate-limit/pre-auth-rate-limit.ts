@@ -77,6 +77,10 @@ export interface RateLimitRuleOptions {
  */
 export interface PreAuthRateLimitOptions {
   readonly signIn?: RateLimitRuleOptions;
+  /** One bucket family shared by every `/two-factor/verify-*` route (task 11.18). */
+  readonly twoFactorVerify?: RateLimitRuleOptions;
+  /** One bucket family shared by every email-verification route (task 11.18); scope `sign_in`-style keys, see rule table. */
+  readonly emailVerification?: RateLimitRuleOptions;
 }
 
 /** The narrow shape this module needs from `CreateAuthOptions` (avoids importing `../auth.ts`, which imports this module). */
@@ -88,6 +92,8 @@ interface PreAuthRateLimitRule {
   /** The path, normalized the same way Better Auth's own router normalizes it (relative to `ctx.baseURL`). */
   readonly path: string;
   readonly scope: RateLimitScope;
+  /** `false` for routes whose request carries no email: only the IP bucket applies (an empty-email bucket would be shared by every caller). */
+  readonly keyedByEmail: boolean;
   readonly ruleOptions: (options: PreAuthRateLimitHostOptions) => RateLimitRuleOptions | undefined;
 }
 
@@ -101,7 +107,38 @@ const PRE_AUTH_RATE_LIMIT_RULES: readonly PreAuthRateLimitRule[] = [
   {
     path: '/sign-in/email',
     scope: 'sign_in',
+    keyedByEmail: true,
     ruleOptions: (options) => options.rateLimit?.signIn,
+  },
+  {
+    path: '/two-factor/verify-totp',
+    scope: 'two_factor_verify',
+    keyedByEmail: false,
+    ruleOptions: (options) => options.rateLimit?.twoFactorVerify,
+  },
+  {
+    path: '/two-factor/verify-backup-code',
+    scope: 'two_factor_verify',
+    keyedByEmail: false,
+    ruleOptions: (options) => options.rateLimit?.twoFactorVerify,
+  },
+  {
+    path: '/two-factor/verify-otp',
+    scope: 'two_factor_verify',
+    keyedByEmail: false,
+    ruleOptions: (options) => options.rateLimit?.twoFactorVerify,
+  },
+  {
+    path: '/send-verification-email',
+    scope: 'sign_in',
+    keyedByEmail: true,
+    ruleOptions: (options) => options.rateLimit?.emailVerification,
+  },
+  {
+    path: '/verify-email',
+    scope: 'sign_in',
+    keyedByEmail: false,
+    ruleOptions: (options) => options.rateLimit?.emailVerification,
   },
 ];
 
@@ -307,11 +344,31 @@ export function preAuthRateLimitPlugin(options: PreAuthRateLimitHostOptions): Be
       }
 
       const ip = getIP(request, ctx.options) ?? FALLBACK_IP_KEY;
-      const email = await readNormalizedEmail(request);
-
+      const ipKey = hashBucketKey(rule.scope, 'ip', ip);
+      // Email-verification routes get their own key namespace so they never share a bucket with sign-in.
+      const namespace =
+        rule.path === '/send-verification-email' || rule.path === '/verify-email'
+          ? 'email_verification'
+          : rule.scope;
       const [ipResult, emailResult] = await Promise.all([
-        consumeRateLimitBucket(ctx.adapter, hashBucketKey(rule.scope, 'ip', ip), ruleOptions),
-        consumeRateLimitBucket(ctx.adapter, hashBucketKey(rule.scope, 'email', email), ruleOptions),
+        consumeRateLimitBucket(
+          ctx.adapter,
+          namespace === rule.scope ? ipKey : hashBucketKey(rule.scope, 'ip', `${namespace}:${ip}`),
+          ruleOptions,
+        ),
+        rule.keyedByEmail
+          ? readNormalizedEmail(request).then((email) =>
+              consumeRateLimitBucket(
+                ctx.adapter,
+                hashBucketKey(
+                  rule.scope,
+                  'email',
+                  namespace === rule.scope ? email : `${namespace}:${email}`,
+                ),
+                ruleOptions,
+              ),
+            )
+          : Promise.resolve<ConsumeResult>({ allowed: true, retryAfterSeconds: null }),
       ]);
 
       if (ipResult.allowed && emailResult.allowed) {

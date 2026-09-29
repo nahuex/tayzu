@@ -33,7 +33,14 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       ...(config.sso === undefined ? {} : { sso: config.sso }),
       ...(config.preAuthSignInRateLimit === undefined
         ? {}
-        : { preAuthRateLimit: { signIn: config.preAuthSignInRateLimit } }),
+        : {
+            // One configured pre-auth budget covers sign-in, two-factor verification and email verification (D20).
+            preAuthRateLimit: {
+              signIn: config.preAuthSignInRateLimit,
+              twoFactorVerify: config.preAuthSignInRateLimit,
+              emailVerification: config.preAuthSignInRateLimit,
+            },
+          }),
       ...(config.rateLimit === undefined ? {} : { rateLimit: config.rateLimit }),
       ...(config.tokenExchangeRateLimit === undefined
         ? {}
