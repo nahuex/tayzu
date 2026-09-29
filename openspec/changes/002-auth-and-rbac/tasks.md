@@ -420,7 +420,7 @@ policy diff shown in chat, separately from the rest of the PR.
   email-verification route with the D20 keys, and `createApp` passes the
   configured limits. Verify: `pre-auth-rate-limit.int.test.ts` (extended)
   covers "Repeated failed two-factor verifications are rate-limited".
-- [ ] 11.19 A wiring guard: a test that builds the app from a complete
+- [x] 11.19 A wiring guard: a test that builds the app from a complete
   environment and asserts every protection this design declares is active
   (step-up, the four rate limiters, CSRF, CORS, helmet, body limit, route
   allowlist, SSO, back-channel logout, health route). Verify:

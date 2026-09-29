@@ -825,3 +825,209 @@ describe('production app wiring: rate limits and body limit from the environment
     ).toBe(200);
   }, 60_000);
 });
+
+/**
+ * Task 11.19: the wiring guard (design D13, D18, D20, D23, D26, Q33).
+ *
+ * Task 11.19: "A wiring guard: a test that builds the app from a complete
+ * environment and asserts every protection this design declares is active
+ * (step-up, the four rate limiters, CSRF, CORS, helmet, body limit, route
+ * allowlist, SSO, back-channel logout, health route). Verify:
+ * `bootstrap-wiring.int.test.ts` fails if any of them is removed from
+ * `createAppFromEnv`."
+ *
+ * Coverage map on an app built by `createAppFromEnv` (earlier blocks in this
+ * file already cover step-up (11.15), the sign-in, per-principal, token-exchange
+ * and back-channel-logout limiters, body limit, SSO and back-channel logout
+ * (11.17)). This block adds the protections that had no wiring test on the
+ * production app: CSRF, CORS, helmet, the route allowlist, the health route and
+ * the two-factor and email-verification pre-auth limiters (11.18).
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createAppFromEnv` (`./bootstrap.js`) forwarding everything to
+ * `createApp`. These tests may already pass; they are a regression guard so
+ * that removing any of these from the production bootstrap fails the suite.
+ */
+describe('production app wiring guard: remaining protections (task 11.19)', () => {
+  const MAX = 2;
+  let app: App;
+  let stub: OidcStub;
+
+  beforeAll(async () => {
+    const { appPool, authPool } = await harnessPools();
+    state.pools.set('app', appPool);
+    state.pools.set('auth', authPool);
+    stub = await startOidcStub();
+    app = await createAppFromEnv({
+      ...ENV,
+      ...ssoEnv(stub),
+      PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX: String(MAX),
+      PRE_AUTH_SIGN_IN_RATE_LIMIT_WINDOW_SECONDS: '60',
+      RATE_LIMIT_MAX: '1000',
+      RATE_LIMIT_WINDOW_SECONDS: '60',
+      TOKEN_EXCHANGE_RATE_LIMIT_MAX: '1000',
+      TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS: '60',
+      BODY_LIMIT_BYTES: '1048576',
+      BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE: '1000',
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function newCookie(): Promise<string> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Guard Wiring',
+      email: `guard-wiring-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Guard Wiring Org ${suffix}`,
+      organizationSlug: `guard-wiring-${suffix}`,
+      ip: randomIp(),
+    });
+    return tenant.cookie;
+  }
+
+  it('The health route answers GET /healthz unauthenticated with only a status (Q33)', async () => {
+    const response = await app.app.inject({ method: 'GET', url: '/healthz' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: 'ok' });
+  }, 60_000);
+
+  it('helmet is active on the production app: security headers and HSTS are sent, no CSP', async () => {
+    const response = await app.app.inject({ method: 'GET', url: '/healthz' });
+
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['x-frame-options']).toBeDefined();
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.headers['strict-transport-security']).toMatch(/max-age=\d+/);
+    expect(response.headers['content-security-policy']).toBeUndefined();
+    expect(response.headers['x-powered-by']).toBeUndefined();
+  }, 60_000);
+
+  it('CORS is active on the production app: an allowed origin is echoed with credentials, a disallowed one gets nothing', async () => {
+    const allowed = await app.app.inject({
+      method: 'GET',
+      url: '/healthz',
+      headers: { origin: ORIGIN },
+    });
+    const denied = await app.app.inject({
+      method: 'GET',
+      url: '/healthz',
+      headers: { origin: 'https://evil.example' },
+    });
+
+    expect(allowed.headers['access-control-allow-origin']).toBe(ORIGIN);
+    expect(allowed.headers['access-control-allow-credentials']).toBe('true');
+    expect(denied.headers['access-control-allow-origin']).toBeUndefined();
+    expect(denied.headers['access-control-allow-credentials']).toBeUndefined();
+  }, 60_000);
+
+  it('CSRF protection is active on the production app: a mutating /v1 request without the header is 403 and does not run', async () => {
+    const cookie = await newCookie();
+    const identifier = `csrf-${randomUUID().slice(0, 8)}`;
+    const payload = JSON.stringify({
+      identifier,
+      title: { en: 'Csrf' },
+      schema: { properties: {}, required: [] },
+    });
+    const headers = { cookie, 'content-type': 'application/json', origin: ORIGIN };
+
+    const rejected = await app.app.inject({
+      method: 'POST',
+      url: '/v1/blueprints',
+      headers,
+      payload,
+    });
+    const accepted = await app.app.inject({
+      method: 'POST',
+      url: '/v1/blueprints',
+      headers: { ...headers, ...csrfHeaders('POST') },
+      payload,
+    });
+
+    expect(rejected.statusCode).toBe(403);
+    expect(accepted.statusCode, 'the same request with the header is accepted').toBe(200);
+  }, 60_000);
+
+  it.each([
+    '/api/auth/organization/invite-member',
+    '/api/auth/organization/create',
+    '/api/auth/api-key/create',
+    '/api/auth/sign-up/email',
+  ])(
+    'The route allowlist is active on the production app: %s is a plain 404',
+    async (url) => {
+      const cookie = await newCookie();
+      const unknown = await app.app.inject({
+        method: 'POST',
+        url: `/api/auth/definitely-not-a-route-${randomUUID()}`,
+        headers: { cookie, 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+        payload: '{}',
+      });
+
+      const blocked = await app.app.inject({
+        method: 'POST',
+        url,
+        headers: { cookie, 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+        payload: '{}',
+      });
+
+      expect(blocked.statusCode).toBe(404);
+      expect(unknown.statusCode).toBe(404);
+      expect(blocked.headers['content-type']).toEqual(unknown.headers['content-type']);
+    },
+    60_000,
+  );
+
+  it('Repeated failed two-factor verifications are rate-limited on the production app', async () => {
+    const ip = randomIp();
+    const verify = () =>
+      app.app.inject({
+        method: 'POST',
+        url: '/api/auth/two-factor/verify-totp',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://localhost:3000',
+          'x-forwarded-for': ip,
+        },
+        payload: JSON.stringify({ code: '000000' }),
+      });
+    for (let i = 0; i < MAX; i += 1) {
+      expect((await verify()).statusCode).not.toBe(429);
+    }
+
+    const limited = await verify();
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+  }, 60_000);
+
+  it('Repeated email-verification requests are rate-limited on the production app', async () => {
+    const ip = randomIp();
+    const send = () =>
+      app.app.inject({
+        method: 'POST',
+        url: '/api/auth/send-verification-email',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://localhost:3000',
+          'x-forwarded-for': ip,
+        },
+        payload: JSON.stringify({ email: `nobody-${randomUUID()}@example.test` }),
+      });
+    for (let i = 0; i < MAX; i += 1) {
+      expect((await send()).statusCode).not.toBe(429);
+    }
+
+    const limited = await send();
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+  }, 60_000);
+});
