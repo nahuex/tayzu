@@ -410,7 +410,7 @@ describe('0000_catalog_core migration (design D4)', () => {
     await endQuietly(admin.$client);
   }, 60_000);
 
-  it('creates exactly the six catalog tables in the public schema', async () => {
+  it('creates exactly the seven catalog tables in the public schema', async () => {
     const result = await db.execute<{ name: string }>(sql`
       select table_name as name
         from information_schema.tables
@@ -418,6 +418,11 @@ describe('0000_catalog_core migration (design D4)', () => {
        order by table_name
     `);
 
+    // Design D21 adds `machine_credential_revocation` as a seventh table in
+    // `public` (task 5.5), granted the same `tenant_isolation`/`FORCE ROW
+    // LEVEL SECURITY` treatment as the six D4 tables below, but its own
+    // columns/policy/FORCE flag are asserted separately in
+    // `revocation-schema.int.test.ts`, not here.
     expect(result.rows.map((row) => row.name)).toEqual([
       'catalog_blueprint',
       'catalog_change_event',
@@ -425,6 +430,7 @@ describe('0000_catalog_core migration (design D4)', () => {
       'catalog_entity_relation',
       'catalog_relation_definition',
       'catalog_tenant_sequence',
+      'machine_credential_revocation',
     ]);
   });
 

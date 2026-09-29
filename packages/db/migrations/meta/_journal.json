@@ -57,6 +57,20 @@
       "when": 1790636206467,
       "tag": "0007_catalog_tenant_isolation_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790641879619,
+      "tag": "0008_machine_credential_revocation",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790641900455,
+      "tag": "0009_machine_credential_revocation_grants",
+      "breakpoints": true
     }
   ]
 }
