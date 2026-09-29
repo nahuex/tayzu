@@ -674,7 +674,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `backchannel-logout.int.test.ts` covers "A valid logout token revokes the
   matching session", asserting the session fails as `CATALOG_CONTEXT_
   REQUIRED` afterward while a same-user local session remains valid.
-- [ ] 22.4 `@fastify/rate-limit` on this route keyed by source IP only
+- [x] 22.4 `@fastify/rate-limit` on this route keyed by source IP only
   (there is no caller identity to key on); every outcome (revoked, replay,
   invalid, no-match) returns the identical `200` response shape (design
   D26). Verify: `backchannel-logout.int.test.ts` (extended) asserts response

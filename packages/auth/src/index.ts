@@ -31,3 +31,7 @@ export {
   type LogoutTokenExpectation,
   type VerifiedLogoutToken,
 } from './sso/backchannel-logout.js';
+export {
+  withBackchannelLogoutTelemetry,
+  type BackchannelLogoutOutcome,
+} from './backchannel-logout-telemetry.js';

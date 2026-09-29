@@ -36,6 +36,10 @@ export const SPANS: readonly SpanContract[] = [
     name: 'auth.sso.callback',
     attributes: ['tayzu.auth.method', 'tayzu.auth.sso.outcome'],
   },
+  {
+    name: 'auth.backchannel_logout.received',
+    attributes: ['tayzu.auth.backchannel_logout.outcome'],
+  },
 ];
 
 export type MetricInstrumentType = 'counter' | 'histogram';
@@ -61,6 +65,12 @@ export const METRICS: readonly MetricContract[] = [
     instrumentType: 'counter',
     unit: '{event}',
     attributes: ['tayzu.auth.event'],
+  },
+  {
+    name: 'tayzu.auth.backchannel_logout.events',
+    instrumentType: 'counter',
+    unit: '{event}',
+    attributes: ['tayzu.auth.backchannel_logout.outcome'],
   },
   {
     name: 'tayzu.auth.account_link.events',

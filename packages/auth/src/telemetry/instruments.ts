@@ -64,3 +64,9 @@ export const ssoEventsCounter = meter.createCounter('tayzu.auth.sso.events', {
 export const accountLinkEventsCounter = meter.createCounter('tayzu.auth.account_link.events', {
   unit: '{event}',
 });
+
+/** design.md, Metrics table: "Back-channel logout volume and fail-closed signal" (design D26). */
+export const backchannelLogoutEventsCounter = meter.createCounter(
+  'tayzu.auth.backchannel_logout.events',
+  { unit: '{event}' },
+);

@@ -24,7 +24,9 @@ import {
   createEnrolledStepUpCheck,
   isAllowedAuthPath,
   verifyLogoutToken,
+  withBackchannelLogoutTelemetry,
   type AuthInstance,
+  type BackchannelLogoutOutcome,
   type CreateAuthOptions,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
@@ -84,6 +86,8 @@ interface AuthHandlerSurface {
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
 /** Skew added to the token's `exp` for the replay record's lifetime (D26). */
 const LOGOUT_JTI_SKEW_SECONDS = 30;
+/** Generous per-IP floor (D26): high enough not to drop legitimate logout bursts. */
+const BACKCHANNEL_LOGOUT_RATE_LIMIT = { max: 600, timeWindowMs: 60_000 };
 const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 
 function isTokenExchange(request: FastifyRequest): boolean {
@@ -186,6 +190,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     done(null, undefined);
   });
 
+  // Route-level limits only (`global: false`); registered before any route that opts in.
+  await app.register(fastifyRateLimit, { global: false });
+
   // D18: deny-by-default. An unlisted path gets Fastify's own 404, identical
   // to any unknown route, before Better Auth is reached.
   app.addHook('onRequest', async (request, reply) => {
@@ -234,6 +241,60 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // caller: no cookie, no CSRF header). Encapsulated so the form parser does
   // not change how any other route sees its body. Every well-formed request
   // answers the same 200, whatever the token's validity or session match.
+  /** Verifies, replay-guards and applies one logout token; the outcome is the only thing returned. */
+  async function handleLogoutToken(
+    token: string,
+    config: NonNullable<CreateAppOptions['sso']>,
+  ): Promise<BackchannelLogoutOutcome> {
+    const verified = await verifyLogoutToken(token, {
+      discoveryUrl: config.discoveryUrl,
+      clientId: config.clientId,
+    });
+    if (verified?.jti === undefined) {
+      return 'invalid';
+    }
+    // Replay state (D26): one `auth.verification` row per accepted token,
+    // recorded atomically; a second delivery inserts nothing and revokes nothing.
+    const recorded = await options.authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       select $1, $2, $3, to_timestamp($4)
+       where not exists (select 1 from auth.verification where identifier = $2)`,
+      [
+        randomUUID(),
+        `backchannel-logout:${config.clientId}:${verified.jti}`,
+        'processed',
+        verified.exp + LOGOUT_JTI_SKEW_SECONDS,
+      ],
+    );
+    if (recorded.rowCount !== 1) {
+      return 'replay';
+    }
+    let revoked = 0;
+    if (verified.sid !== undefined) {
+      revoked =
+        (
+          await options.authPool.query('delete from auth.session where sso_sid = $1', [
+            verified.sid,
+          ])
+        ).rowCount ?? 0;
+    } else if (verified.sub !== undefined) {
+      // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
+      // local sessions (`sso_sid` null) are never touched.
+      revoked =
+        (
+          await options.authPool.query(
+            `delete from auth.session
+           where sso_sid is not null
+             and user_id in (
+               select user_id from auth.account
+               where provider_id = 'visma-connect' and account_id = $1
+             )`,
+            [verified.sub],
+          )
+        ).rowCount ?? 0;
+    }
+    return revoked > 0 ? 'revoked' : 'no_match';
+  }
   const sso = options.sso;
   await app.register((scope, _opts, done) => {
     scope.addContentTypeParser(
@@ -249,51 +310,34 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         parsed(null, fields);
       },
     );
-    scope.post(BACKCHANNEL_LOGOUT_PATH, async (request, reply) => {
-      const token = (request.body as Record<string, string> | undefined)?.['logout_token'];
-      if (typeof token !== 'string' || token === '') {
-        return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
-      }
-      if (sso !== undefined) {
-        const verified = await verifyLogoutToken(token, {
-          discoveryUrl: sso.discoveryUrl,
-          clientId: sso.clientId,
-        });
-        if (verified?.jti !== undefined) {
-          // Replay state (D26): one `auth.verification` row per accepted token,
-          // recorded atomically; a second delivery inserts nothing and revokes nothing.
-          const recorded = await options.authPool.query(
-            `insert into auth.verification (id, identifier, value, expires_at)
-             select $1, $2, $3, to_timestamp($4)
-             where not exists (select 1 from auth.verification where identifier = $2)`,
-            [
-              randomUUID(),
-              `backchannel-logout:${sso.clientId}:${verified.jti}`,
-              'processed',
-              verified.exp + LOGOUT_JTI_SKEW_SECONDS,
-            ],
-          );
-          if (recorded.rowCount === 1 && verified.sid !== undefined) {
-            await options.authPool.query('delete from auth.session where sso_sid = $1', [
-              verified.sid,
-            ]);
-          } else if (recorded.rowCount === 1 && verified.sub !== undefined) {
-            // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
-            // local sessions (`sso_sid` null) are never touched.
-            await options.authPool.query(
-              `delete from auth.session
-               where sso_sid is not null
-                 and user_id in (
-                   select user_id from auth.account
-                   where provider_id = 'visma-connect' and account_id = $1
-                 )`,
-              [verified.sub],
-            );
+    scope.post(
+      BACKCHANNEL_LOGOUT_PATH,
+      {
+        config: {
+          // Floor against abuse, keyed by source IP only: the caller is Visma
+          // Connect's infrastructure, not a Tayzu principal (D26).
+          rateLimit: {
+            max: BACKCHANNEL_LOGOUT_RATE_LIMIT.max,
+            timeWindow: BACKCHANNEL_LOGOUT_RATE_LIMIT.timeWindowMs,
+            keyGenerator: (request: FastifyRequest): string => `backchannel-logout:${request.ip}`,
+          },
+        },
+      },
+      async (request, reply) => {
+        const token = (request.body as Record<string, string> | undefined)?.['logout_token'];
+        const malformed = typeof token !== 'string' || token === '';
+        await withBackchannelLogoutTelemetry(async () => {
+          if (malformed || sso === undefined) {
+            return 'invalid';
           }
+          return handleLogoutToken(token, sso);
+        });
+        if (malformed) {
+          return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
         }
-      }
-      return reply.status(200).send({});
-    });
+        return reply.status(200).send({});
+      },
+    );
     done();
   });
 
@@ -316,9 +360,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     status: 429,
     message: 'Too many requests',
   });
-  if (options.rateLimit !== undefined || options.tokenExchangeRateLimit !== undefined) {
-    await app.register(fastifyRateLimit, { global: false });
-  }
 
   // D20: token exchange has no tenant/actor yet, so it gets its own bucket
   // (IP + client id) and is exempt from the authenticated one below.

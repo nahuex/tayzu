@@ -41,6 +41,9 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+// Import order is load-bearing (design D1): the telemetry harness must register
+// before anything that loads `@tayzu/auth`, so this import stays first.
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import {
   bootstrapTestTenant,
   signInAdminUser,
@@ -348,5 +351,147 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
     expect(revoked.json<{ code: string }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
     expect((await useSession(localCookie)).statusCode, 'the local session remains valid').toBe(200);
     expect((await useSession(other.cookie)).statusCode, 'another user is untouched').toBe(200);
+  }, 60_000);
+
+  /**
+   * Task 22.4 (design D26 "Rate limiting and information exposure"; "Observability
+   * contract": span `auth.backchannel_logout.received`, counter
+   * `tayzu.auth.backchannel_logout.events`).
+   *
+   * Production symbols expected: every request to the route (whatever its outcome)
+   * answers the identical 200 (status, body, content type); it emits one
+   * `auth.backchannel_logout.received` span and one
+   * `tayzu.auth.backchannel_logout.events` increment, both carrying only the closed
+   * `tayzu.auth.backchannel_logout.outcome` attribute (`revoked` | `replay` |
+   * `invalid` | `no_match`), and no `sub`/`sid`/token/email/IP anywhere on them.
+   * The `@fastify/rate-limit` IP-keyed floor has no option name in the design, so
+   * it is not asserted here.
+   */
+  const SPAN_NAME = 'auth.backchannel_logout.received';
+  const COUNTER_NAME = 'tayzu.auth.backchannel_logout.events';
+  const OUTCOME_ATTRIBUTE = 'tayzu.auth.backchannel_logout.outcome';
+  const METRIC_DATA_POINT_TYPE_SUM = 3;
+
+  function harnessOrThrow(): TelemetryTestHarness {
+    if (!('harness' in registration)) {
+      throw new Error(`telemetry harness failed to register: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    return registration.harness;
+  }
+
+  function postLogoutFrom(logoutToken: string, ip: string) {
+    return app.app.inject({
+      method: 'POST',
+      url: ROUTE,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': ip },
+      payload: new URLSearchParams({ logout_token: logoutToken }).toString(),
+    });
+  }
+
+  function comparableHeaders(headers: Record<string, unknown>): string[] {
+    return Object.keys(headers)
+      .filter(
+        (name) => name !== 'date' && !name.startsWith('x-ratelimit') && name !== 'retry-after',
+      )
+      .sort();
+  }
+
+  it('Every outcome returns the identical 200 shape and emits the span and counter with only the closed outcome attribute', async () => {
+    const harness = harnessOrThrow();
+    const ip = randomIp();
+    const revokedSid = `sid-${randomUUID()}`;
+    await ssoSession(revokedSid);
+    const revokedToken = stub.signJwt(logoutClaims(revokedSid), { typ: 'logout+jwt' });
+    const invalidToken = tamperPayload(
+      stub.signJwt(logoutClaims(`sid-x-${randomUUID()}`), { typ: 'logout+jwt' }),
+      { sid: `sid-y-${randomUUID()}` },
+    );
+    const noMatchClaims = logoutClaims(`sid-missing-${randomUUID()}`);
+    const noMatchToken = stub.signJwt(noMatchClaims, { typ: 'logout+jwt' });
+
+    await harness.reset();
+
+    const revoked = await postLogoutFrom(revokedToken, ip);
+    const replay = await postLogoutFrom(revokedToken, ip);
+    const invalid = await postLogoutFrom(invalidToken, ip);
+    const noMatch = await postLogoutFrom(noMatchToken, ip);
+
+    for (const response of [revoked, replay, invalid, noMatch]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe(revoked.body);
+      expect(response.headers['content-type']).toBe(revoked.headers['content-type']);
+      expect(comparableHeaders(response.headers)).toEqual(comparableHeaders(revoked.headers));
+    }
+
+    await harness.forceFlush();
+
+    // Span: one per request, one per outcome, only the closed outcome attribute.
+    const spans = harness.spanExporter.getFinishedSpans().filter((span) => span.name === SPAN_NAME);
+    expect(spans, 'one span per request').toHaveLength(4);
+    expect(spans.map((span) => span.attributes[OUTCOME_ATTRIBUTE]).sort()).toEqual([
+      'invalid',
+      'no_match',
+      'replay',
+      'revoked',
+    ]);
+    for (const span of spans) {
+      expect(Object.keys(span.attributes)).toEqual([OUTCOME_ATTRIBUTE]);
+    }
+
+    // Counter: one increment per outcome, only the closed outcome attribute.
+    const points: { outcome: unknown; value: number; keys: string[] }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === COUNTER_NAME &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+          ) {
+            for (const point of metric.dataPoints) {
+              points.push({
+                outcome: point.attributes[OUTCOME_ATTRIBUTE],
+                value: point.value,
+                keys: Object.keys(point.attributes),
+              });
+            }
+          }
+        }
+      }
+    }
+    for (const outcome of ['revoked', 'replay', 'invalid', 'no_match']) {
+      const total = points
+        .filter((point) => point.outcome === outcome)
+        .reduce((sum, point) => sum + point.value, 0);
+      expect(total, `counter total for ${outcome}`).toBe(1);
+    }
+    for (const point of points) {
+      expect(point.keys).toEqual([OUTCOME_ATTRIBUTE]);
+    }
+
+    // No sub / sid / token / email / IP on either signal.
+    const serialized = JSON.stringify({
+      spans: spans.map((span) => ({
+        name: span.name,
+        attributes: span.attributes,
+        events: span.events,
+        status: span.status,
+      })),
+      points,
+    });
+    for (const secret of [
+      revokedSid,
+      String(noMatchClaims['sub']),
+      String(noMatchClaims['sid']),
+      revokedToken,
+      invalidToken,
+      noMatchToken,
+      ip,
+      '@example.test',
+    ]) {
+      expect(serialized, 'no sensitive value in the span or counter').not.toContain(secret);
+    }
   }, 60_000);
 });
