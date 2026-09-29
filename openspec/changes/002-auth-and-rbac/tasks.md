@@ -356,7 +356,7 @@ policy diff shown in chat, separately from the rest of the PR.
 - [x] 11.6 `@fastify/helmet` registered with `contentSecurityPolicy: false`.
   Verify: `headers.int.test.ts` asserts the expected security headers are
   present on a response.
-- [ ] 11.7 Fastify's native `bodyLimit` configured, composing with 001's
+- [x] 11.7 Fastify's native `bodyLimit` configured, composing with 001's
   `CatalogLimits` byte-size check. Verify: `body-limit.int.test.ts` covers an
   oversized request being rejected by Fastify before `CatalogLimits` runs (a
   spy shows the catalog validator is never invoked).

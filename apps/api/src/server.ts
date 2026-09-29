@@ -41,6 +41,11 @@ export interface CreateAppOptions {
   readonly cerbosAddress: string;
   /** Explicit CORS origin allowlist: exact matches only, never `*` or a reflected origin. */
   readonly allowedOrigins: readonly string[];
+  /**
+   * Maximum request body in bytes (D13), enforced by Fastify with a 413 before
+   * any handler runs. Omitted: Fastify's default (1 MiB).
+   */
+  readonly bodyLimit?: number;
 }
 
 export interface App {
@@ -119,7 +124,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ],
   });
 
-  const app = Fastify();
+  const app = Fastify(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit });
   // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
   await app.register(fastifyHelmet, { contentSecurityPolicy: false });
   // Exact-match allowlist; `credentials` is required for Better Auth's cookie.
