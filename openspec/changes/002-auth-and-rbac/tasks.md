@@ -384,7 +384,7 @@ policy diff shown in chat, separately from the rest of the PR.
   site), resolving the open item design's Risks section flags (SEC05).
   Verify: a short note in `docs/security/dependencies.md` records the
   confirmed algorithm and the source location checked.
-- [x] 11.12 TLS/HSTS posture on the public ACA ingress: HSTS present, TLS 1.0
+- [ ] 11.12 TLS/HSTS posture on the public ACA ingress: HSTS present, TLS 1.0
   and 1.1 disabled. Verify: `headers.int.test.ts` (extended) asserts the HSTS
   header on a response, and `docs/security/dependencies.md` records the
   manual SSL-Labs-equivalent check run once against the deployed ingress.
@@ -401,7 +401,7 @@ policy diff shown in chat, separately from the rest of the PR.
   at tenant bootstrap. Verify: `system-blueprints.int.test.ts` covers
   creation via the `system` actor succeeding and "Direct write to `_user` by
   a non-system actor is rejected" (`CATALOG_RESERVED_IDENTIFIER`).
-- [ ] 12.2 Better Auth hooks (sign-up, organization-member add, ban/unban)
+- [x] 12.2 Better Auth hooks (sign-up, organization-member add, ban/unban)
   upsert the matching `_user` entity through the `system` actor path.
   Verify: `user-sync.int.test.ts` covers "Signing up creates a matching
   `_user` entity" (with `status` `Active`) and "Disabling a user updates its

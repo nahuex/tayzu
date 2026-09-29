@@ -1,7 +1,12 @@
 /**
  * @tayzu/auth: Better Auth instance, schema and context resolver.
  */
-export { createAuth, type AuthInstance, type CreateAuthOptions } from './auth.js';
+export {
+  createAuth,
+  type AuthInstance,
+  type CreateAuthOptions,
+  type UserSyncPort,
+} from './auth.js';
 export {
   createContextResolver,
   type ContextResolver,

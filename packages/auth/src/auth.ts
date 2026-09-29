@@ -287,6 +287,37 @@ export interface CreateAuthOptions {
    * unchanged; a path with no configured rule here is never rate-limited.
    */
   readonly rateLimit?: PreAuthRateLimitOptions;
+  /**
+   * Task 12.2 (design D22, Q16): keeps the tenant's `_user` entity in step
+   * with Better Auth. Typed structurally so this package does not depend on
+   * `@tayzu/catalog`; the host passes `createUserSync(...)`. Optional so
+   * earlier tasks' `createAuth({ db, secret })` calls keep working.
+   */
+  readonly userSync?: UserSyncPort;
+}
+
+/** The structural slice of `@tayzu/catalog`'s `UserSync` this package calls. */
+export interface UserSyncPort {
+  upsertUser(input: {
+    readonly tenantId: string;
+    readonly email: string;
+    readonly name: string;
+    readonly portRole?: 'admin' | 'member';
+    readonly status?: 'Active' | 'Disabled';
+  }): Promise<void>;
+}
+
+/** The `auth.user` columns the `_user` sync reads. */
+interface SyncUserRow {
+  readonly id: string;
+  readonly email: string;
+  readonly name: string;
+  readonly banned?: boolean | null;
+}
+
+/** design Q2: Better Auth `owner`/`admin` organization roles map to `portRole` `admin`. */
+function portRoleFor(role: string): 'admin' | 'member' {
+  return role === 'owner' || role === 'admin' ? 'admin' : 'member';
 }
 
 export interface AuthInstance {
@@ -357,7 +388,24 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       storage: 'database',
     },
     plugins: [
-      organization(),
+      // Task 12.2 (design D22, Q16): organization-member add (including the
+      // owner membership `createOrganization` creates, so the bootstrap
+      // script is covered) upserts the tenant's `_user` entity. Better Auth's
+      // organization adapter writes members below `databaseHooks`, so the
+      // plugin's own `organizationHooks` is the hook point.
+      organization({
+        organizationHooks: {
+          afterAddMember: async ({ member, user }) => {
+            await options.userSync?.upsertUser({
+              tenantId: member.organizationId,
+              email: user.email,
+              name: user.name,
+              portRole: portRoleFor(member.role),
+              status: (user as { banned?: boolean | null }).banned === true ? 'Disabled' : 'Active',
+            });
+          },
+        },
+      }),
       admin(),
       twoFactor(),
       // Task 5.4 fix (this file's own `MACHINE_TOKEN_ISSUER`/`_AUDIENCE` doc
@@ -385,6 +433,32 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       preAuthRateLimitPlugin(options),
     ],
     databaseHooks: {
+      // Ban/unban: mirror `banned` onto every membership's `_user` entity.
+      user: {
+        update: {
+          after: async (user, context) => {
+            if (!context || options.userSync === undefined) {
+              return;
+            }
+            const row = user as unknown as SyncUserRow;
+            if (typeof row.banned !== 'boolean') {
+              return;
+            }
+            const memberships = await context.context.adapter.findMany<MembershipRow>({
+              model: 'member',
+              where: [{ field: 'userId', value: row.id }],
+            });
+            for (const membership of memberships) {
+              await options.userSync.upsertUser({
+                tenantId: membership.organizationId,
+                email: row.email,
+                name: row.name,
+                status: row.banned ? 'Disabled' : 'Active',
+              });
+            }
+          },
+        },
+      },
       session: {
         create: {
           before: async (session, context) => {
