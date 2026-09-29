@@ -84,9 +84,17 @@ import {
 } from './sso/visma-connect.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
 import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
-import { logger, sessionEventsCounter, ssoEventsCounter, tracer } from './telemetry/instruments.js';
+import {
+  logger,
+  mfaEventsCounter,
+  sessionEventsCounter,
+  ssoEventsCounter,
+  tracer,
+} from './telemetry/instruments.js';
 
 const SIGN_IN_EMAIL_PATH = '/sign-in/email';
+const SIGN_OUT_PATH = '/sign-out';
+const SIGN_IN_SOCIAL_PATH = '/sign-in/social';
 const CHANGE_PASSWORD_PATH = '/change-password';
 const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 /** design D4: every `two-factor` verify endpoint (`/two-factor/verify-totp`, `-backup-code`, `-otp`). */
@@ -199,7 +207,7 @@ interface ActiveOrganizationRow {
 /** `/sign-in/email`'s success body (Better Auth's own route, `sign-in.mjs`): the fields this file reads. */
 interface SignInEmailSuccessResponse {
   readonly token: string;
-  readonly user: { readonly id: string };
+  readonly user: { readonly id: string; readonly twoFactorEnabled?: boolean | null };
 }
 
 /**
@@ -252,11 +260,11 @@ function emitLoginSucceeded(params: {
  * other failure reason is reachable from this route yet (`mfa_failed`,
  * `account_disabled` are later tasks' concern).
  */
-function emitLoginFailed(): void {
+function emitLoginFailed(reason: 'bad_credentials' | 'mfa_failed' = 'bad_credentials'): void {
   logger.emit({
     eventName: 'auth.security.login_failed',
     severityNumber: SeverityNumber.WARN,
-    attributes: { [FAILURE_REASON_ATTRIBUTE]: 'bad_credentials' },
+    attributes: { [FAILURE_REASON_ATTRIBUTE]: reason },
   });
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'login_failed' });
 }
@@ -664,6 +672,12 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return;
           }
           const response = ctx.context.returned as SignInEmailSuccessResponse;
+          if (response.user.twoFactorEnabled === true) {
+            // Credentials accepted, second factor pending: the two-factor plugin's own
+            // after hook (it runs after this one) turns this into a challenge, not a session.
+            mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'challenge_issued' });
+            return;
+          }
           const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
             model: 'session',
             where: [{ field: 'token', value: response.token }],
@@ -672,6 +686,19 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
           });
+          return;
+        }
+        if (ctx.path === SIGN_OUT_PATH) {
+          if (!isAPIError(ctx.context.returned)) {
+            sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'logout' });
+          }
+          return;
+        }
+        if (ctx.path === SIGN_IN_SOCIAL_PATH) {
+          const body = ctx.body as { provider?: unknown } | null | undefined;
+          if (!isAPIError(ctx.context.returned) && body?.provider === SELF_LINK_PROVIDER_ID) {
+            ssoEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'sso_initiated' });
+          }
           return;
         }
         if (ctx.path === CHANGE_PASSWORD_PATH) {
@@ -697,8 +724,11 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           // own doc comment for why no built-in Better Auth mechanism does
           // this already).
           if (isAPIError(ctx.context.returned)) {
+            mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'failed' });
+            emitLoginFailed('mfa_failed');
             return;
           }
+          mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'verified' });
           const response = ctx.context.returned as TwoFactorVerifySuccessResponse;
           if (response.token === undefined || response.token === null) {
             return;

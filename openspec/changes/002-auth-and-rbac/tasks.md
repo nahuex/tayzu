@@ -415,7 +415,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `@tayzu/observability/semconv`. Verify: `contract.test.ts` snapshot-asserts
   every name in the design's tables, and the `observability-auditor` review
   compares the two.
-- [ ] 13.2 Extend `otel-smoke-check` to run every new auth/authz operation
+- [x] 13.2 Extend `otel-smoke-check` to run every new auth/authz operation
   once on success and once per new error class, asserting every declared
   span, metric, and log event appears with its required attributes, and that
   no undeclared attribute key appears on any `tayzu.auth.*`/`tayzu.authz.*`

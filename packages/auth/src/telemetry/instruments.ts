@@ -35,6 +35,11 @@ export const sessionEventsCounter = meter.createCounter('tayzu.auth.session.even
   unit: '{event}',
 });
 
+/** design.md, Metrics table: "Second-factor challenge and failure signal". */
+export const mfaEventsCounter = meter.createCounter('tayzu.auth.mfa.events', {
+  unit: '{event}',
+});
+
 /** design.md, Metrics table: "Pre-authentication brute-force signal (design D20)". */
 export const rateLimitEventsCounter = meter.createCounter('tayzu.auth.rate_limit.events', {
   unit: '{event}',
