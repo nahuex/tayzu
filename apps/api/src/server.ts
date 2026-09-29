@@ -23,6 +23,7 @@ import {
   createContextResolver,
   createEnrolledStepUpCheck,
   isAllowedAuthPath,
+  verifyLogoutToken,
   type AuthInstance,
   type CreateAuthOptions,
 } from '@tayzu/auth';
@@ -81,6 +82,7 @@ interface AuthHandlerSurface {
 }
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 
 function isTokenExchange(request: FastifyRequest): boolean {
   return request.method === 'POST' && request.url.split('?', 1)[0] === TOKEN_EXCHANGE_PATH;
@@ -224,6 +226,41 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       reply.header('set-cookie', cookies);
     }
     return reply.send(Buffer.from(await response.arrayBuffer()));
+  });
+
+  // D26: public back-channel logout (Visma Connect's infrastructure is the
+  // caller: no cookie, no CSRF header). Encapsulated so the form parser does
+  // not change how any other route sees its body. Every well-formed request
+  // answers the same 200, whatever the token's validity or session match.
+  const sso = options.sso;
+  await app.register((scope, _opts, done) => {
+    scope.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (_request, body, parsed) => {
+        const fields: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const [name, value] of new URLSearchParams(body as string)) {
+          if (name === 'logout_token') {
+            fields[name] = value;
+          }
+        }
+        parsed(null, fields);
+      },
+    );
+    scope.post(BACKCHANNEL_LOGOUT_PATH, async (request, reply) => {
+      const token = (request.body as Record<string, string> | undefined)?.['logout_token'];
+      if (typeof token !== 'string' || token === '') {
+        return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
+      }
+      if (sso !== undefined) {
+        await verifyLogoutToken(token, {
+          discoveryUrl: sso.discoveryUrl,
+          clientId: sso.clientId,
+        });
+      }
+      return reply.status(200).send({});
+    });
+    done();
   });
 
   // Resolved once per request: the rate-limit key generator and the handler share it.
