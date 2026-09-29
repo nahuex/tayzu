@@ -52,8 +52,7 @@ import {
   createAdminUser,
   signInAdminUser,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
-
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 interface BetterAuthAdminSurface {
   createOrganization(args: {

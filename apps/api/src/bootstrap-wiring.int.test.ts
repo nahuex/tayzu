@@ -50,8 +50,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { createMachineCredential } from '../../../packages/auth/src/machine-credentials.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 const state = vi.hoisted(() => ({ pools: new Map<string, unknown>() }));
 
@@ -87,7 +89,7 @@ const TEST_PASSWORD = 'correct horse battery staple';
 const ENV: Record<string, string> = {
   DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
   AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-  BETTER_AUTH_SECRET: 'bootstrap-wiring-int-test-only-secret-0123456789-abcdef',
+  BETTER_AUTH_SECRET: TEST_SECRET,
   CERBOS_ADDRESS: 'localhost:3593',
   ALLOWED_ORIGINS: ORIGIN,
 };
@@ -273,5 +275,167 @@ describe('production app wiring: step-up on high-risk /v1 routes (task 11.15, D4
     // THEN the deletion proceeds.
     expect(response.statusCode).toBeLessThan(300);
     expect((await getBlueprint(freshCookie, identifier)).statusCode).toBe(404);
+  }, 60_000);
+});
+
+/**
+ * Task 11.16 (design D5, D20; `specs/auth-and-rbac/spec.md`, requirement
+ * "Machine credentials").
+ *
+ * Task 11.16: "`POST /v1/auth/token` handler calling `exchangeMachineToken`
+ * behind its IP/client-id rate limit (5.3, 11.13), plus the JWKS route design
+ * D5 names. Verify: `bootstrap-wiring.int.test.ts` covers 'Machine token
+ * exchange works over HTTP on the production app'."
+ *
+ * Spec scenarios exercised over HTTP (verbatim):
+ * - "Valid client id and secret exchange for an access token": GIVEN an active
+ *   `integration`-kind machine credential, WHEN its client id and secret are
+ *   posted to `POST /v1/auth/token`, THEN an access token is returned that
+ *   resolves to `actor.type` `integration`.
+ * - "Wrong secret is rejected": WHEN a valid client id is posted with an
+ *   incorrect secret, THEN it fails with `AUTH_INVALID_CREDENTIALS`.
+ *
+ * ## Production symbols expected
+ *
+ * - `createApp`/`createAppFromEnv` mount `POST /v1/auth/token` (body
+ *   `{ clientId, clientSecret }`) calling `@tayzu/auth`'s `exchangeMachineToken`
+ *   with the Better Auth instance. Success: 200 `{ accessToken: string }`, no
+ *   refresh token. Failure: 401 with body `code: 'AUTH_INVALID_CREDENTIALS'`
+ *   (the mapping of `AuthInvalidCredentialsError`). The route is reachable
+ *   without a session and is behind the 11.13 limiter.
+ * - The `jwt` plugin's public key set is served at `GET /api/auth/jwks`
+ *   (design D5: "exposed at `/jwks`"; `/jwks` joins `ALLOWED_AUTH_ROUTES`).
+ *   The exact public path is an assumption (design gives only `/jwks`; the
+ *   Better Auth mount is `/api/auth`); confirm before implementing.
+ *
+ * ## Why this fails right now
+ *
+ * `server.ts` mounts no handler for `POST /v1/auth/token` (404) and the
+ * allowlist keeps `/jwks` unreachable (404): assertion failures.
+ */
+describe('production app wiring: machine token exchange (task 11.16, D5)', () => {
+  let app: App;
+
+  beforeAll(async () => {
+    const { appPool, authPool } = await harnessPools();
+    state.pools.set('app', appPool);
+    state.pools.set('auth', authPool);
+    app = await createAppFromEnv(ENV);
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function newIntegrationCredential(): Promise<{
+    id: string;
+    secret: string;
+    organizationId: string;
+  }> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Token Wiring Admin',
+      email: `token-wiring-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Token Wiring Org ${suffix}`,
+      organizationSlug: `token-wiring-${suffix}`,
+      ip: randomIp(),
+    });
+    const created = await createMachineCredential(app.auth, {
+      headers: new Headers({ cookie: tenant.cookie }),
+      organizationId: tenant.organizationId,
+      name: 'Token wiring credential',
+      actorKind: 'integration',
+    });
+    return { id: created.id, secret: created.secret, organizationId: tenant.organizationId };
+  }
+
+  function postToken(clientId: string, clientSecret: string) {
+    return app.app.inject({
+      method: 'POST',
+      url: '/v1/auth/token',
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({ clientId, clientSecret }),
+    });
+  }
+
+  function decodePayload(token: string): {
+    tenantId?: unknown;
+    actor?: { type?: unknown; id?: unknown };
+  } {
+    const segment = token.split('.')[1];
+    if (segment === undefined) {
+      throw new Error('expected a JWT');
+    }
+    return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8')) as {
+      tenantId?: unknown;
+      actor?: { type?: unknown; id?: unknown };
+    };
+  }
+
+  it('Machine token exchange works over HTTP on the production app', async () => {
+    // GIVEN an active integration-kind machine credential.
+    const credential = await newIntegrationCredential();
+
+    // WHEN its client id and secret are posted to POST /v1/auth/token.
+    const response = await postToken(credential.id, credential.secret);
+
+    // THEN an access token is returned...
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ accessToken?: unknown; refreshToken?: unknown }>();
+    expect(typeof body.accessToken).toBe('string');
+    expect(body.refreshToken, 'no refresh token is returned').toBeUndefined();
+    const accessToken = body.accessToken as string;
+
+    // ... that resolves to actor.type integration.
+    const payload = decodePayload(accessToken);
+    expect(payload.actor?.type).toBe('integration');
+    expect(payload.actor?.id).toBe(credential.id);
+    expect(payload.tenantId).toBe(credential.organizationId);
+
+    // The token is accepted as a bearer credential on /v1 (context resolves;
+    // the unknown blueprint is a plain 404, not a context failure).
+    const used = await app.app.inject({
+      method: 'GET',
+      url: `/v1/blueprints/token-wiring-${randomUUID().slice(0, 8)}`,
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(used.statusCode).toBe(404);
+  }, 60_000);
+
+  it('Machine token exchange rejects a wrong secret over HTTP with AUTH_INVALID_CREDENTIALS', async () => {
+    // GIVEN a valid client id; WHEN it is posted with an incorrect secret.
+    const credential = await newIntegrationCredential();
+    const wrongSecret = `wrong-secret-${randomUUID()}`;
+    const response = await postToken(credential.id, wrongSecret);
+
+    // THEN it fails with AUTH_INVALID_CREDENTIALS.
+    expect(response.statusCode).toBe(401);
+    expect(response.json<{ code?: unknown }>().code).toBe('AUTH_INVALID_CREDENTIALS');
+    expect(response.body).not.toContain(wrongSecret);
+    expect(response.body).not.toContain(credential.secret);
+  }, 60_000);
+
+  it('The JWKS route publishes the key that signed the exchanged token', async () => {
+    const credential = await newIntegrationCredential();
+    const exchanged = await postToken(credential.id, credential.secret);
+    expect(exchanged.statusCode, 'precondition: the exchange succeeds').toBe(200);
+    const token = exchanged.json<{ accessToken: string }>().accessToken;
+    const header = JSON.parse(
+      Buffer.from(token.split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as { kid?: unknown };
+
+    const jwks = await app.app.inject({ method: 'GET', url: '/api/auth/jwks' });
+
+    expect(jwks.statusCode).toBe(200);
+    const keys = jwks.json<{ keys?: { kid?: unknown }[] }>().keys ?? [];
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.map((key) => key.kid)).toContain(header.kid);
   }, 60_000);
 });

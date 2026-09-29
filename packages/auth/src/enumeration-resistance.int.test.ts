@@ -127,6 +127,7 @@ import { createAdminUser } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance, type CreateAuthOptions } from './auth.js';
 import * as authSchema from './persistence/schema.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -154,8 +155,6 @@ async function endQuietly(closeable: {
   });
   await closeable.end();
 }
-
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 
 /** A password long enough for Better Auth's default 8-character minimum. */
 const TEST_PASSWORD = 'correct horse battery staple';

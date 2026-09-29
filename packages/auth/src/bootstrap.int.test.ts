@@ -111,6 +111,7 @@ import * as authSchema from './persistence/schema.js';
 // The module under test (task 18.4): does not exist yet (module doc comment,
 // "Why this is expected to fail for the right reason right now").
 import { bootstrapAdmin } from '../scripts/bootstrap-admin.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -138,8 +139,6 @@ async function endQuietly(closeable: {
   });
   await closeable.end();
 }
-
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 
 function randomEmail(): string {
   return `bootstrap-${randomUUID()}@example.test`;

@@ -52,8 +52,8 @@ import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtu
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import type { Pool } from 'pg';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
-const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_PASSWORD = 'correct horse battery staple';
 const ROUTE = '/v1/auth/visma-connect/backchannel-logout';
 const LOGOUT_EVENT = 'http://schemas.openid.net/event/backchannel-logout';

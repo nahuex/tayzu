@@ -187,6 +187,7 @@ import { createMachineCredential, revokeMachineCredential } from './machine-cred
 import type { CreatedMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
 import { exchangeMachineToken } from './token-exchange.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -230,7 +231,6 @@ function randomSlug(): string {
 
 /** A password long enough for Better Auth's default 8-character minimum. */
 const TEST_PASSWORD = 'correct horse battery staple';
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_USER_NAME = 'Context Resolver Test User';
 
 // Task 18.1 (design D22): this file no longer drives `auth.handler`/

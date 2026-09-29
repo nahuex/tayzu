@@ -206,6 +206,7 @@ import { createAuth, type AuthInstance } from './auth.js';
 import { createStepUpGuard } from './step-up.js';
 import type { AssertStepUpParams, StepUpGuard } from './step-up.js';
 import * as authSchema from './persistence/schema.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -249,7 +250,6 @@ function randomSlug(): string {
 
 /** A password long enough for Better Auth's default 8-character minimum. */
 const TEST_PASSWORD = 'correct horse battery staple';
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_USER_NAME = 'Step-Up Test User';
 
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';

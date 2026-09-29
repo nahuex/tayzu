@@ -63,8 +63,7 @@ import {
 import { harnessPools } from './__fixtures__/pools.js';
 // The module under test (task 18.3): does not exist yet.
 import { createIdentityRouter } from './identity-router.js';
-
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 function randomIp(): string {
   const octet = (): string => String(1 + Math.floor(Math.random() * 254));

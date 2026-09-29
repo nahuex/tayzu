@@ -34,13 +34,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { createAuth } from './auth.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 // A `@better-auth/drizzle-adapter` `DB` handle is typed as `{[key: string]: any}`
 // (it is never queried while `betterAuth(...)` builds `auth.api`), so an empty
 // object stands in for a real Drizzle database in this unit test.
 const stubDb: Record<string, unknown> = {};
-
-const TEST_SECRET = 'unit-test-only-secret-not-used-for-anything-real';
 
 function buildAuthApi(): Record<string, unknown> {
   const auth = createAuth({ db: stubDb, secret: TEST_SECRET });

@@ -108,6 +108,7 @@ import { createAdminUser } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -146,7 +147,6 @@ function randomSlug(): string {
 
 /** A password long enough for Better Auth's default 8-character minimum. */
 const TEST_PASSWORD = 'correct horse battery staple';
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 
 interface SignInEmailResult {
   readonly token: string | null;

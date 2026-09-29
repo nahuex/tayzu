@@ -47,8 +47,8 @@ import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/adm
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
-const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_PASSWORD = 'correct horse battery staple';
 const ALLOWED_ORIGIN = 'https://app.tayzu.test';
 const TOKEN_MAX = 3;

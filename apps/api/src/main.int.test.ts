@@ -48,6 +48,7 @@ import { connect } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { harnessPools } from './__fixtures__/pools.js';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 const state = vi.hoisted(() => ({
   pools: new Map<string, unknown>(),
@@ -106,7 +107,7 @@ function env(
   return {
     DATABASE_URL: APP_URL,
     AUTH_DATABASE_URL: AUTH_URL,
-    BETTER_AUTH_SECRET: 'main-int-test-only-secret-0123456789-abcdefghijklmnop',
+    BETTER_AUTH_SECRET: TEST_SECRET,
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     HOST: '127.0.0.1',

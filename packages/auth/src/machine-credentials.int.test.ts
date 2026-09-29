@@ -132,6 +132,7 @@ import type { CreatedMachineCredential } from './machine-credentials.js';
 // `createMachineCredential`/`CreatedMachineCredential` above.
 import { revokeMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
 function databaseUrl(): string {
@@ -175,7 +176,6 @@ function randomSlug(): string {
 
 /** A password long enough for Better Auth's default 8-character minimum. */
 const TEST_PASSWORD = 'correct horse battery staple';
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_ADMIN_NAME = 'Machine Credential Test Admin';
 
 /**

@@ -30,8 +30,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
-const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
 const ALLOWED_ORIGIN = 'https://app.tayzu.test';
 const DISALLOWED_ORIGIN = 'https://evil.example.test';
 

@@ -406,7 +406,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `bootstrap-wiring.int.test.ts` covers "A high-risk route without a fresh
   MFA verification is blocked over HTTP" and "A high-risk route with a fresh
   verification succeeds", on an app built by `createAppFromEnv`.
-- [ ] 11.16 `POST /v1/auth/token` handler calling `exchangeMachineToken`
+- [x] 11.16 `POST /v1/auth/token` handler calling `exchangeMachineToken`
   behind its IP/client-id rate limit (5.3, 11.13), plus the JWKS route design
   D5 names. Verify: `bootstrap-wiring.int.test.ts` covers "Machine token
   exchange works over HTTP on the production app".

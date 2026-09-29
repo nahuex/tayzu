@@ -56,6 +56,7 @@ import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver } from './context-resolver.js';
 import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
 import * as authSchema from './persistence/schema.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -83,7 +84,6 @@ async function endQuietly(closeable: {
   await closeable.end();
 }
 
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
 const PROVIDER_ID = 'visma-connect';
 

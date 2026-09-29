@@ -17,6 +17,11 @@ export {
 export * as authSchema from './persistence/schema.js';
 export { AuthContextError, AuthStepUpError } from './errors.js';
 export {
+  exchangeMachineToken,
+  type ExchangeMachineTokenParams,
+  type ExchangedMachineToken,
+} from './token-exchange.js';
+export {
   createEnrolledStepUpCheck,
   createStepUpGuard,
   type AssertStepUpParams,

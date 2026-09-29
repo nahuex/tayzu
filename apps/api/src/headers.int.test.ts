@@ -32,8 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
-
-const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 function randomIp(): string {
   const octet = (): string => randomInt(1, 255).toString(10);

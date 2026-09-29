@@ -29,6 +29,8 @@ export const ALLOWED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   '/link-social',
   '/unlink-account',
   '/list-accounts',
+  // Public signing key set of the `jwt` plugin (D5).
+  '/jwks',
 ]);
 
 /** Whether a request path (no query string) under `/api/auth` is allowlisted. */

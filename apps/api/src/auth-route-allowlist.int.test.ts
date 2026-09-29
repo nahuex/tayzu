@@ -49,8 +49,8 @@ import {
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
-const TEST_SECRET = 'api-int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_PASSWORD = 'correct horse battery staple';
 const ALLOWED_ORIGIN = 'https://app.tayzu.test';
 
@@ -183,6 +183,23 @@ describe('apps/api /api/auth/* route allowlist (task 11.9)', () => {
     },
     60_000,
   );
+
+  it('GET /api/auth/jwks is reachable and returns public keys only (design D5)', async () => {
+    const response = await probe(app, 'GET', '/api/auth/jwks');
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as { keys?: Record<string, unknown>[] };
+    expect(Array.isArray(body.keys)).toBe(true);
+    expect((body.keys ?? []).length).toBeGreaterThan(0);
+    // RFC 7517 private-key members must never be published.
+    for (const key of body.keys ?? []) {
+      for (const member of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k', 'privateKey']) {
+        expect(key).not.toHaveProperty(member);
+      }
+      expect(key).toHaveProperty('kty');
+    }
+    expect(response.body).not.toMatch(/PRIVATE KEY/i);
+  }, 60_000);
 
   it('Self sign-up is not allowlisted (Q16): /sign-up/email is a plain 404 like any unknown route', async () => {
     const url = '/api/auth/sign-up/email';

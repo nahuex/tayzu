@@ -24,6 +24,7 @@ import {
   createEnrolledStepUpCheck,
   createStepUpGuard,
   emitRateLimited,
+  exchangeMachineToken,
   isAllowedAuthPath,
   verifyLogoutToken,
   withBackchannelLogoutTelemetry,
@@ -427,6 +428,26 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return undefined;
     });
   }
+
+  // D5: machine credentials exchange a client id and secret for an access
+  // token. No session: the credential is the authentication. Registered before
+  // the `/v1/*` catch-all, so it never reaches the per-principal limiter.
+  app.post(TOKEN_EXCHANGE_PATH, async (request, reply) => {
+    const body = request.body as { clientId?: unknown; clientSecret?: unknown } | null | undefined;
+    if (typeof body?.clientId !== 'string' || typeof body.clientSecret !== 'string') {
+      return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
+    }
+    try {
+      const { accessToken } = await exchangeMachineToken(auth, {
+        clientId: body.clientId,
+        clientSecret: body.clientSecret,
+      });
+      return await reply.status(200).send({ accessToken });
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return reply.status(mapped.status).send(mapped.toJSON());
+    }
+  });
 
   let v1Config: { rateLimit?: object } = {};
   if (options.rateLimit !== undefined) {

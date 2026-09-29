@@ -60,8 +60,8 @@ import type { Pool } from 'pg';
 import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createIdentityRouter } from './identity-router.js';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const PROVIDER_ID = 'visma-connect';
 
 interface CreateOrganizationSurface {

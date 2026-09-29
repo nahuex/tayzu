@@ -98,11 +98,11 @@ import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 // Same secret as `@tayzu/auth`'s machine-credential int tests: Better Auth's `jwks` row is
 // shared in the test database and encrypted with whichever secret created it first, so
 // the token-exchange drive below needs the secret those tests use.
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const TEST_PASSWORD = 'correct horse battery staple';
 const NEW_PASSWORD = 'a different correct horse battery staple';
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';

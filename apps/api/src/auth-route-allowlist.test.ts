@@ -43,11 +43,11 @@
  */
 import { ALLOWED_AUTH_ROUTES, AUTH_BASE_PATH, createAuth, isAllowedAuthPath } from '@tayzu/auth';
 import { describe, expect, it } from 'vitest';
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 // `betterAuth(...)` builds `auth.api` synchronously and never queries the
 // database while doing so, so an empty object stands in for the Drizzle handle.
 const STUB_DB: Record<string, unknown> = {};
-const TEST_SECRET = 'api-allowlist-drift-test-only-secret-0123456789';
 
 /**
  * Every Better Auth route that is mounted but deliberately NOT reachable.
@@ -118,8 +118,7 @@ const BLOCKED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   '/two-factor/send-otp',
   '/two-factor/verify-otp',
   '/two-factor/disable',
-  // JWT plugin.
-  '/jwks',
+  // JWT plugin (`/jwks` is allowlisted per design D5; `/token` stays blocked).
   '/token',
   // apiKey plugin management routes.
   '/api-key/create',
@@ -203,6 +202,13 @@ describe('apps/api /api/auth/* allowlist drift (task 11.10)', () => {
 
   it('a route named by neither set stays unreachable over HTTP until classified (deny by default)', () => {
     expect(isAllowedAuthPath(`${AUTH_BASE_PATH}/scratch/new-route`)).toBe(false);
+  });
+
+  it('the JWKS route is published (design D5): /jwks is mounted and allowlisted, not blocked', () => {
+    expect(mounted.map((route) => route.path)).toContain('/jwks');
+    expect(ALLOWED_AUTH_ROUTES.has('/jwks')).toBe(true);
+    expect(isAllowedAuthPath(`${AUTH_BASE_PATH}/jwks`)).toBe(true);
+    expect(BLOCKED_AUTH_ROUTES.has('/jwks')).toBe(false);
   });
 
   it('no route is both allowlisted and blocked', () => {

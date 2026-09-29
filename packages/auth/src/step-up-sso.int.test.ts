@@ -63,6 +63,7 @@ import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
 import { createStepUpGuard } from './step-up.js';
 import type { AssertStepUpParams, StepUpGuard } from './step-up.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -96,7 +97,6 @@ function randomIp(): string {
 }
 
 const TEST_PASSWORD = 'correct horse battery staple';
-const TEST_SECRET = 'int-test-only-secret-not-used-for-anything-real-0123456789';
 const HIGH_RISK_ROUTE = { riskLevel: 'high' } as const;
 const BLUEPRINT_DELETE_OPERATION = 'blueprint.delete';
 
