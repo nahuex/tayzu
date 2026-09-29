@@ -117,6 +117,9 @@ interface SessionResult {
   readonly session: {
     readonly token: string;
   };
+  readonly user?: {
+    readonly twoFactorEnabled?: boolean | null;
+  };
 }
 
 interface AuthApiSurface {
@@ -174,6 +177,46 @@ function recordStepUpCheck(fresh: boolean): void {
     .end();
 }
 
+/**
+ * The one freshness check: a lookup failure fails closed, exactly like
+ * `./context-resolver.ts`'s own membership re-check (treated as "no fresh
+ * verification" rather than allowing the operation through).
+ */
+async function isFresh(auth: AuthInstance, sessionToken: string): Promise<boolean> {
+  const verification = await contextOf(auth)
+    .then((context) =>
+      context.internalAdapter.findVerificationValue(stepUpVerificationIdentifier(sessionToken)),
+    )
+    .catch(() => null);
+  return verification !== null && verification.expiresAt.getTime() > Date.now();
+}
+
+/**
+ * Design D24 path (a): a session-level check for Better Auth's native
+ * `/link-social` route, which no oRPC procedure wraps. Resolves when the
+ * caller may proceed; rejects with `AuthStepUpError` when the caller has an
+ * enrolled MFA factor but no fresh verification, or no valid session at all
+ * (fail closed). A caller without an enrolled factor is not gated. Reuses
+ * the same freshness check as `createStepUpGuard`; no second implementation.
+ */
+export function createEnrolledStepUpCheck(
+  options: StepUpGuardOptions,
+): (headers: Headers) => Promise<void> {
+  const api = apiOf(options.auth);
+  return async (headers: Headers): Promise<void> => {
+    const session = await api.getSession({ headers });
+    if (session === null) {
+      throw new AuthStepUpError();
+    }
+    if (session.user?.twoFactorEnabled !== true) {
+      return;
+    }
+    if (!(await isFresh(options.auth, session.session.token))) {
+      throw new AuthStepUpError();
+    }
+  };
+}
+
 export function createStepUpGuard(options: StepUpGuardOptions): StepUpGuard {
   const api = apiOf(options.auth);
 
@@ -203,16 +246,7 @@ export function createStepUpGuard(options: StepUpGuardOptions): StepUpGuard {
     }
     const sessionToken = session.session.token;
 
-    // A lookup failure fails closed, exactly like `./context-resolver.ts`'s
-    // own membership re-check: treated as "no fresh verification" rather
-    // than allowing the operation through.
-    const verification = await contextOf(options.auth)
-      .then((context) =>
-        context.internalAdapter.findVerificationValue(stepUpVerificationIdentifier(sessionToken)),
-      )
-      .catch(() => null);
-
-    const fresh = verification !== null && verification.expiresAt.getTime() > Date.now();
+    const fresh = await isFresh(options.auth, sessionToken);
     recordStepUpCheck(fresh);
 
     if (!fresh) {

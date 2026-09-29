@@ -17,6 +17,7 @@ export {
 export * as authSchema from './persistence/schema.js';
 export { AuthContextError, AuthStepUpError } from './errors.js';
 export {
+  createEnrolledStepUpCheck,
   createStepUpGuard,
   type AssertStepUpParams,
   type StepUpGuard,

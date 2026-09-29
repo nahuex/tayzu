@@ -608,7 +608,7 @@ policy diff shown in chat, separately from the rest of the PR.
   Auth's session-scoped `/link-social` (design D24). Verify:
   `account-linking.int.test.ts` covers "An admin records a user's Visma
   Connect UserID".
-- [ ] 20.2 A Fastify pre-handler on `/link-social` reusing task 4.2's
+- [x] 20.2 A Fastify pre-handler on `/link-social` reusing task 4.2's
   `twoFactorVerifiedAt` freshness check, requiring a fresh MFA verification
   when the caller has an enrolled factor (design D24). Verify:
   `link-social-step-up.int.test.ts` covers "A signed-in user links their own

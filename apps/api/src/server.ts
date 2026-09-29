@@ -21,6 +21,7 @@ import {
   authSchema,
   createAuth,
   createContextResolver,
+  createEnrolledStepUpCheck,
   isAllowedAuthPath,
   type AuthInstance,
   type CreateAuthOptions,
@@ -191,6 +192,23 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     if (!isAllowedAuthPath(pathname)) {
       reply.callNotFound();
     }
+  });
+
+  // D24 path (a): `/link-social` is a Better Auth native route, so D4's
+  // procedure guard does not reach it; an MFA-enrolled caller needs a fresh
+  // verification before the request reaches Better Auth.
+  const assertLinkStepUp = createEnrolledStepUpCheck({ auth });
+  app.addHook('preHandler', async (request, reply) => {
+    if (request.method !== 'POST' || request.url.split('?', 1)[0] !== '/api/auth/link-social') {
+      return;
+    }
+    try {
+      await assertLinkStepUp(toWebHeaders(request));
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return reply.status(mapped.status).send(mapped.toJSON());
+    }
+    return undefined;
   });
 
   app.all('/api/auth/*', async (request, reply) => {
