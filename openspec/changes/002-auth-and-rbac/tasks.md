@@ -654,7 +654,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 22. Back-channel logout
 
-- [ ] 22.1 `POST /v1/auth/visma-connect/backchannel-logout`: a public route
+- [x] 22.1 `POST /v1/auth/visma-connect/backchannel-logout`: a public route
   outside `/api/auth/*`, parsing the `logout_token` form field and
   validating, in order, its signature (via the discovered JWKS), `typ`,
   `iss`, `aud`, `iat`/`exp` (±30s skew), `events`, and the absence of a
