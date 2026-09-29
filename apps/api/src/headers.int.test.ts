@@ -105,6 +105,19 @@ describe('apps/api security headers (task 11.6)', () => {
       it('does not advertise the framework via x-powered-by', async () => {
         expect((await get()).headers['x-powered-by']).toBeUndefined();
       });
+
+      // Task 11.12 (TLS/HSTS posture): HSTS with max-age >= 1 year and includeSubDomains.
+      it('sends strict-transport-security with max-age of at least one year and includeSubDomains (task 11.12)', async () => {
+        const hsts = (await get()).headers['strict-transport-security'];
+        expect(typeof hsts).toBe('string');
+        const directives = String(hsts)
+          .split(';')
+          .map((d) => d.trim().toLowerCase());
+        const maxAge = directives.find((d) => d.startsWith('max-age='));
+        expect(maxAge).toBeDefined();
+        expect(Number(maxAge?.slice('max-age='.length))).toBeGreaterThanOrEqual(31_536_000);
+        expect(directives).toContain('includesubdomains');
+      });
     });
   }
 });

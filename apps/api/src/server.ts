@@ -151,7 +151,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
   // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
-  await app.register(fastifyHelmet, { contentSecurityPolicy: false });
+  // HSTS (task 11.12): one year, subdomains included (helmet's default is 180 days).
+  await app.register(fastifyHelmet, {
+    contentSecurityPolicy: false,
+    strictTransportSecurity: { maxAge: 31_536_000, includeSubDomains: true },
+  });
   // Exact-match allowlist; `credentials` is required for Better Auth's cookie.
   // A disallowed origin gets no CORS headers at all, not even `credentials`.
   const allowedOrigins = new Set(options.allowedOrigins);

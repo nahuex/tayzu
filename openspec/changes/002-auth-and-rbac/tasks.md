@@ -384,7 +384,7 @@ policy diff shown in chat, separately from the rest of the PR.
   site), resolving the open item design's Risks section flags (SEC05).
   Verify: a short note in `docs/security/dependencies.md` records the
   confirmed algorithm and the source location checked.
-- [ ] 11.12 TLS/HSTS posture on the public ACA ingress: HSTS present, TLS 1.0
+- [x] 11.12 TLS/HSTS posture on the public ACA ingress: HSTS present, TLS 1.0
   and 1.1 disabled. Verify: `headers.int.test.ts` (extended) asserts the HSTS
   header on a response, and `docs/security/dependencies.md` records the
   manual SSL-Labs-equivalent check run once against the deployed ingress.

@@ -128,6 +128,33 @@ artifact. `pnpm ci:local` produces the same file locally, written outside the
 repository (under the pinned-tool cache directory) so a local run never
 leaves an untracked file in the working tree.
 
+## TLS and HSTS posture on the public ACA ingress (task 11.12, SEC05)
+
+The application half is automated: `apps/api/src/headers.int.test.ts` asserts
+that every response carries `Strict-Transport-Security` with a `max-age` of at
+least one year (31536000) and `includeSubDomains`.
+
+The ingress half is a manual, one-time check against the deployed Azure
+Container Apps ingress. **Status: pending until the first deployment**
+(nothing is deployed yet). Run these checks then, and record the outcome in
+the table below:
+
+1. Run an SSL Labs (or equivalent, for example `testssl.sh`) scan against the
+   public hostname. Record the grade and any weak cipher finding.
+2. Confirm TLS 1.0 is refused, for example
+   `openssl s_client -connect <host>:443 -tls1` must fail the handshake.
+3. Confirm TLS 1.1 is refused, for example
+   `openssl s_client -connect <host>:443 -tls1_1` must fail the handshake.
+4. Confirm TLS 1.2 and 1.3 are accepted.
+5. Confirm `curl -sI https://<host>/` returns `strict-transport-security`
+   with `max-age` of at least 31536000 and `includeSubDomains` (the header
+   must survive the ingress, not only the application).
+6. Open a ticket for every finding the scan reports.
+
+| Check date                     | Host | Grade | TLS 1.0/1.1 disabled | HSTS at ingress | Reviewer |
+| ------------------------------ | ---- | ----- | -------------------- | --------------- | -------- |
+| _(pending — first deployment)_ |      |       |                      |                 |          |
+
 ## API key storage at rest (`@better-auth/api-key`)
 
 Checked against the installed source of `@better-auth/api-key@1.7.6`
