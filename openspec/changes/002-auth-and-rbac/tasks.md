@@ -337,7 +337,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `resolveContext` (groups 3, 5) wired as the handler's `context` function.
   Verify: `server.int.test.ts` covers one full request round trip for a
   representative procedure, authenticated by a real session cookie.
-- [ ] 11.2 `inputStructure: 'detailed'` on `entities.delete`'s route;
+- [x] 11.2 `inputStructure: 'detailed'` on `entities.delete`'s route;
   `moveBodyFieldsToQuery` deleted. Verify: `http-query.int.test.ts` covers
   "Query-string input on a non-GET route is read from the query string"
   (`DELETE .../entities/{entity}?detachReferences=true` reaching the
