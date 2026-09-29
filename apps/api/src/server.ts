@@ -22,6 +22,7 @@ import {
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  createStepUpGuard,
   emitRateLimited,
   isAllowedAuthPath,
   verifyLogoutToken,
@@ -82,6 +83,14 @@ export interface App {
 /** Better Auth's runtime `handler` (`AuthInstance` types its surface as `unknown`). */
 interface AuthHandlerSurface {
   handler(request: Request): Promise<Response>;
+}
+
+const STEP_UP_HEADERS = '__stepUpHeaders';
+
+interface StepUpHandlerContext {
+  readonly [STEP_UP_HEADERS]: Headers;
+  readonly tenantId: string;
+  readonly actor: { readonly type: string; readonly id: string };
 }
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
@@ -147,8 +156,36 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     blueprints: createBlueprintService({ pool: appPool, authz }),
     entities: createEntityService({ pool: appPool, authz }),
   });
+  // D4: the guard runs after context resolution and before the operation, for
+  // every procedure whose route spec carries `x-tayzu-risk: high`. The caller's
+  // headers travel in the handler context, under a private key.
+  const stepUpGuard = createStepUpGuard({
+    auth,
+    ...(options.sso === undefined ? {} : { sso: options.sso }),
+  });
   const openApiHandler = new OpenAPIHandler(router, {
-    clientInterceptors: [errorMappingInterceptor],
+    clientInterceptors: [
+      errorMappingInterceptor,
+      async (interceptorOptions) => {
+        const { context, path, procedure } = interceptorOptions;
+        const route = procedure['~orpc'].route;
+        const resolvedSpec = typeof route.spec === 'function' ? route.spec({}) : route.spec;
+        const stepUpContext = context as unknown as StepUpHandlerContext;
+        await stepUpGuard({
+          headers: stepUpContext[STEP_UP_HEADERS],
+          tenantId: stepUpContext.tenantId,
+          actor: stepUpContext.actor,
+          route: {
+            ...(resolvedSpec !== undefined &&
+            (resolvedSpec as Record<string, unknown>)['x-tayzu-risk'] === 'high'
+              ? { riskLevel: 'high' as const }
+              : {}),
+          },
+          operation: path.join('.'),
+        });
+        return interceptorOptions.next();
+      },
+    ],
     // D13: custom-header CSRF check (default `x-csrf-token: orpc`) on every
     // mutating route. Fail closed: only an explicit GET/HEAD route is exempt.
     plugins: [
@@ -421,7 +458,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     }
     const context = resolved.context;
     const result = await openApiHandler.handle(request, reply, {
-      context: { ...context },
+      context: { ...context, [STEP_UP_HEADERS]: toWebHeaders(request) },
     });
     if (!result.matched) {
       return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });

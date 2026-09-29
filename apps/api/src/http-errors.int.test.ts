@@ -83,6 +83,7 @@ import { AuthInvalidCredentialsError, AuthStepUpError } from '../../../packages/
 import { AuthorizationError } from '../../../packages/catalog/src/domain/errors.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
+import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -188,6 +189,16 @@ describe('apps/api HTTP error status (task 11.3)', () => {
     cookie = await signInOverHttp(app, tenant.email);
   }
 
+  // High-risk routes (blueprints.update/delete, entities.delete) need a fresh MFA verification.
+  async function freshTenantWithFreshMfa(): Promise<void> {
+    const tenant = await provisionTenant(app);
+    cookie = await freshMfaSessionCookie(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+  }
+
   describe('HTTP error status matches the declared code', () => {
     it('CATALOG_NOT_FOUND -> 404 (the spec scenario)', async () => {
       await freshTenant();
@@ -245,7 +256,7 @@ describe('apps/api HTTP error status (task 11.3)', () => {
     }, 60_000);
 
     it('CATALOG_VERSION_CONFLICT -> 409', async () => {
-      await freshTenant();
+      await freshTenantWithFreshMfa();
       await createBlueprint('service');
       const response = await send('PUT', '/v1/blueprints/service', {
         title: { en: 'service' },
@@ -256,7 +267,7 @@ describe('apps/api HTTP error status (task 11.3)', () => {
     }, 60_000);
 
     it('CATALOG_SCHEMA_INCOMPATIBLE -> 409', async () => {
-      await freshTenant();
+      await freshTenantWithFreshMfa();
       const schema = {
         properties: { language: { type: 'string', title: { en: 'Language' } } },
         required: [],

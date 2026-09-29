@@ -401,7 +401,7 @@ policy diff shown in chat, separately from the rest of the PR.
   the configured port and answers `GET /healthz` (Q33)" and "SIGTERM closes the
   listener and the database pools", plus a missing `PORT` failing fast.
 
-- [ ] 11.15 Wire the step-up guard (4.2, 21.3) into every `/v1` route marked
+- [x] 11.15 Wire the step-up guard (4.2, 21.3) into every `/v1` route marked
   `x-tayzu-risk: high` in the production app. Verify:
   `bootstrap-wiring.int.test.ts` covers "A high-risk route without a fresh
   MFA verification is blocked over HTTP" and "A high-risk route with a fresh

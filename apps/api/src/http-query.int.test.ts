@@ -43,6 +43,7 @@ import {
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
+import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -149,7 +150,12 @@ describe('apps/api query-string input (task 11.2)', () => {
 
   it('Query-string input on a non-GET route is read from the query string', async () => {
     const tenant = await provisionTenant(app);
-    const cookie = await signInOverHttp(app, tenant.email);
+    // entities.delete is high-risk: the acting user needs a fresh MFA verification.
+    const cookie = await freshMfaSessionCookie(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
     await seedReferencedEntity(app, cookie);
 
     // WHEN DELETE .../entities/{entity}?detachReferences=true is called over HTTP (no body).
