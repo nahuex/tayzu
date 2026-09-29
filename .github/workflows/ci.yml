@@ -190,3 +190,76 @@ jobs:
           name: sbom-spdx
           path: ${{ runner.temp }}/sbom.spdx.json
           if-no-files-found: warn
+
+  dast-zap:
+    name: DAST (OWASP ZAP baseline)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tayzu
+          POSTGRES_PASSWORD: tayzu
+          POSTGRES_DB: tayzu_dast
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://tayzu:tayzu@localhost:5432/tayzu_dast
+      AUTH_DATABASE_URL: postgres://tayzu:tayzu@localhost:5432/tayzu_dast
+      CERBOS_ADDRESS: localhost:3593
+      ALLOWED_ORIGINS: http://localhost:3000
+      PORT: '3000'
+      HOST: 0.0.0.0
+      ZAP_TARGET_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Start Cerbos
+        # Same pinned image as the test job (design D7).
+        run: |
+          docker run -d --name tayzu-cerbos \
+            -p 3592:3592 -p 3593:3593 \
+            -e CERBOS_NO_TELEMETRY=1 \
+            -v "$GITHUB_WORKSPACE/policies:/policies:ro" \
+            -v "$GITHUB_WORKSPACE/config/cerbos.yaml:/config/.cerbos.yaml:ro" \
+            ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515 \
+            server --config=/config/.cerbos.yaml
+      - name: Wait for Cerbos
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3592/_cerbos/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Cerbos did not become healthy in time" >&2
+          exit 1
+      - name: Migrate database
+        run: pnpm db:migrate
+      - name: Generate a per-run auth secret
+        run: echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: Start apps/api
+        run: |
+          nohup pnpm --filter @tayzu/api start > "$RUNNER_TEMP/api.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:3000/; then exit 0; fi
+            sleep 1
+          done
+          echo "apps/api did not start in time" >&2
+          exit 1
+      - name: Seed a throwaway organization and session
+        run: pnpm exec tsx scripts/ci/zap-seed.ts
+      - name: ZAP baseline scan
+        # zaproxy/action-baseline v0.9.0, pinned by commit SHA. The seed
+        # step exports ZAP_AUTH_HEADER (the header name) and its value; the
+        # scan fails on any high-severity alert.
+        uses: zaproxy/action-baseline@41aee98ebc7cf2802c3beae4e7d4336413a21e43 # v0.9.0
+        with:
+          target: http://localhost:3000
+          fail_action: true
+          allow_issue_writing: false

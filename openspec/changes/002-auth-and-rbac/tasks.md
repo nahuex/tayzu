@@ -500,7 +500,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 15. DAST
 
-- [ ] 15.1 An OWASP ZAP baseline scan job in CI (`zaproxy/action-baseline`,
+- [x] 15.1 An OWASP ZAP baseline scan job in CI (`zaproxy/action-baseline`,
   pinned by commit SHA) against a running `apps/api` instance, using a
   throwaway test tenant/session via `ZAP_AUTH_HEADER`. Verify:
   `pnpm ci:local`'s equivalent job runs the scan, and it fails the build when

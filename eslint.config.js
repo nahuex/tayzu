@@ -80,7 +80,7 @@ export default defineConfig(
     extends: [js.configs.recommended, tseslint.configs.strictTypeChecked],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: { allowDefaultProject: ['scripts/ci/*.ts'] },
         tsconfigRootDir: import.meta.dirname,
       },
     },
