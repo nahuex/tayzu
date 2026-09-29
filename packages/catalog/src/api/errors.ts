@@ -26,7 +26,12 @@
  */
 import { ORPCError } from '@orpc/contract';
 
-import { isCatalogError, type CatalogError, type CatalogErrorCode } from '../domain/errors.js';
+import {
+  AuthorizationError,
+  isCatalogError,
+  type CatalogError,
+  type CatalogErrorCode,
+} from '../domain/errors.js';
 
 /** A `CatalogError`, augmented with the public fields `router.ts`'s callers read off a rejected call. */
 export type ApiCatalogError = CatalogError & {
@@ -67,7 +72,15 @@ export const INTERNAL_ERROR_MESSAGE = 'An internal error occurred';
  * generic `INTERNAL` `ORPCError`, reading nothing off it: not its
  * `.message`, not its `.stack`, not any other own property.
  */
-export function toApiError(error: unknown): ApiCatalogError | ORPCError<string, unknown> {
+export function toApiError(
+  error: unknown,
+): ApiCatalogError | AuthorizationError | ORPCError<string, unknown> {
+  // An in-tenant deny carries only a fixed message; the HTTP layer maps its
+  // `AUTH_FORBIDDEN` code (design D11), so it must not collapse to INTERNAL.
+  if (error instanceof AuthorizationError) {
+    return error;
+  }
+
   if (isCatalogError(error)) {
     return Object.assign(error, {
       status: CATALOG_ERROR_HTTP_STATUS[error.code],

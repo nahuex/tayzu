@@ -6,3 +6,4 @@
 export { createCatalogRouter, type CatalogRouterServices } from './api/router.js';
 export { createBlueprintService, type BlueprintService } from './service/blueprints.js';
 export { createEntityService, type EntityService } from './service/entities.js';
+export { CATALOG_ERROR_HTTP_STATUS } from './api/errors.js';

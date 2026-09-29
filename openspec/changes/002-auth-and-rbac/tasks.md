@@ -342,7 +342,7 @@ policy diff shown in chat, separately from the rest of the PR.
   "Query-string input on a non-GET route is read from the query string"
   (`DELETE .../entities/{entity}?detachReferences=true` reaching the
   service layer with the flag set).
-- [ ] 11.3 An `OpenAPIHandler`-level `clientInterceptors` entry converting a
+- [x] 11.3 An `OpenAPIHandler`-level `clientInterceptors` entry converting a
   thrown `CatalogError` into a real `ORPCError` carrying its `status`/`code`/
   `data`. Verify: `http-errors.int.test.ts` covers "HTTP error status matches
   the declared code" for every `CATALOG_*` and `AUTH_*` code in the design's

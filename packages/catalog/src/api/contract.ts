@@ -335,9 +335,37 @@ const upsertEntityInputSchema = withEntityPathParam({
   expectedVersion: z.number().int().optional(),
 });
 
-const deleteEntityInputSchema = withEntityPathParam({
-  detachReferences: z.boolean().optional(),
-});
+/**
+ * Query-string booleans arrive as the strings `"true"`/`"false"`; anything
+ * else is left for `z.boolean()` to reject. The preprocess keeps the JSON
+ * Schema type `boolean` in the generated document.
+ */
+const queryBooleanSchema = z.preprocess(
+  (raw) => (raw === 'true' ? true : raw === 'false' ? false : raw),
+  z.boolean(),
+);
+
+/**
+ * `entities.delete` uses `inputStructure: 'detailed'` (design D13): the
+ * runtime reads `params` and `query` separately, so `detachReferences` comes
+ * from the query string. The preprocess also accepts the flat shape every
+ * in-process caller uses (`blueprint`, `identifier`/`entity`,
+ * `detachReferences`) and rewrites it to `{ params, query }`.
+ */
+const deleteEntityInputSchema = z.preprocess(
+  (raw) => {
+    if (!isPlainObject(raw) || 'params' in raw || 'query' in raw) return raw;
+    const { blueprint, identifier, entity, detachReferences } = raw;
+    return {
+      params: { blueprint, entity: entity ?? identifier },
+      query: detachReferences === undefined ? {} : { detachReferences },
+    };
+  },
+  z.object({
+    params: z.object({ blueprint: z.string(), entity: z.string() }),
+    query: z.object({ detachReferences: queryBooleanSchema.optional() }).default({}),
+  }),
+);
 
 const writeEntityStatusInputSchema = withEntityPathParam({
   properties: z.record(z.string(), z.unknown()).optional(),
@@ -361,52 +389,6 @@ const listRelatedInputSchema = withEntityPathParam({
 function markHighRisk(current: OpenAPI.OperationObject): OpenAPI.OperationObject {
   const marked = { ...current, 'x-tayzu-risk': 'high' };
   return marked;
-}
-
-/**
- * Design D11: GET and DELETE operations never carry a request body -- many
- * HTTP clients and proxies drop a body on those methods, so every non-path
- * input field belongs in the query string instead. `OpenAPIGenerator`'s
- * default ("compact") input structure already does this for `GET` (every
- * non-path field becomes a query parameter), but for `DELETE` it puts the
- * remaining fields in a JSON request body (there is no route option to
- * change that for a non-`GET` method in this oRPC version). This is the
- * documented workaround: `route.spec`, already used for `markHighRisk`
- * above, runs after `OpenAPIGenerator` has built the operation, so it moves
- * the request body's top-level fields to `in: query` parameters and drops
- * the body. Used for `entities.delete`'s `detachReferences`.
- */
-function moveBodyFieldsToQuery(current: OpenAPI.OperationObject): OpenAPI.OperationObject {
-  const requestBody = toPlainObject(current.requestBody);
-  if (!requestBody) return current;
-  const content = toPlainObject(requestBody['content']);
-  if (!content) return current;
-  const mediaType = toPlainObject(content['application/json']);
-  if (!mediaType) return current;
-  const schema = toPlainObject(mediaType['schema']);
-  if (!schema) return current;
-  const properties = toPlainObject(schema['properties']);
-  if (!properties) return current;
-
-  const requiredFields = new Set(Array.isArray(schema['required']) ? schema['required'] : []);
-  const queryParameters = Object.entries(properties).map(([name, propertySchema]) => ({
-    name,
-    in: 'query',
-    required: requiredFields.has(name),
-    schema: propertySchema,
-  }));
-
-  const withoutRequestBody: Record<string, unknown> = { ...current };
-  delete withoutRequestBody['requestBody'];
-  return {
-    ...withoutRequestBody,
-    parameters: [...(current.parameters ?? []), ...queryParameters],
-  } as OpenAPI.OperationObject;
-}
-
-/** `value` cast to a plain object, or `undefined` when it is not one (used by `moveBodyFieldsToQuery` above). */
-function toPlainObject(value: unknown): Record<string, unknown> | undefined {
-  return isPlainObject(value) ? value : undefined;
 }
 
 export const catalogContract = oc.router({
@@ -453,7 +435,8 @@ export const catalogContract = oc.router({
       .route({
         method: 'DELETE',
         path: '/v1/blueprints/{blueprint}/entities/{entity}',
-        spec: (current) => markHighRisk(moveBodyFieldsToQuery(current)),
+        inputStructure: 'detailed',
+        spec: markHighRisk,
       })
       .input(deleteEntityInputSchema)
       .output(z.void()),

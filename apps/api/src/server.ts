@@ -14,7 +14,6 @@ import {
   authSchema,
   createAuth,
   createContextResolver,
-  AuthContextError,
   isAllowedAuthPath,
   type AuthInstance,
 } from '@tayzu/auth';
@@ -22,6 +21,8 @@ import { createCerbosClient } from '@tayzu/authz';
 import { createBlueprintService, createCatalogRouter, createEntityService } from '@tayzu/catalog';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+
+import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 
 export interface CreateAppOptions {
   /** PostgreSQL connection string, from the host's environment. */
@@ -99,7 +100,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     blueprints: createBlueprintService({ pool: appPool, authz }),
     entities: createEntityService({ pool: appPool, authz }),
   });
-  const openApiHandler = new OpenAPIHandler(router);
+  const openApiHandler = new OpenAPIHandler(router, {
+    clientInterceptors: [errorMappingInterceptor],
+  });
 
   const app = Fastify();
   // oRPC reads the raw body itself; keep Fastify from consuming other types.
@@ -139,15 +142,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     try {
       context = await resolveContext(toWebHeaders(request));
     } catch (error) {
-      if (error instanceof AuthContextError) {
-        return reply.status(401).send({
-          defined: false,
-          code: error.code,
-          status: 401,
-          message: error.message,
-        });
-      }
-      throw error;
+      // Same mapping and body shape as any other error, via oRPC's own JSON.
+      const mapped = toOrpcError(error);
+      return reply.status(mapped.status).send(mapped.toJSON());
     }
     const result = await openApiHandler.handle(request, reply, {
       context: { ...context },
