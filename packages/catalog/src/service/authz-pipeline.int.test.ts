@@ -30,6 +30,10 @@
  *   `tayzu.authz.decisions` (`tayzu.tenant.id`, `tayzu.authz.resource.kind`,
  *   `tayzu.authz.action`, `tayzu.authz.decision` = `allow` | `deny`).
  */
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+
 import { createCerbosClient } from '@tayzu/authz';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -259,5 +263,128 @@ describe('catalog authorization stage (task 9.1)', () => {
         'CATALOG_NOT_FOUND',
       );
     });
+  });
+});
+
+/**
+ * Task 9.3. Spec: "Cerbos evaluation error denies rather than allows".
+ *
+ * A throwaway Cerbos container (same pinned image and engine settings as
+ * `config/cerbos.yaml`, `strictEvaluation: true`) serves only the scratch
+ * policy in `__fixtures__/cerbos-scratch/`, on ports 13592/13593. Nothing is
+ * added to `policies/`. The scratch policy has an allow rule for admins plus a
+ * second allow rule whose CEL condition errors for tenant ids starting with
+ * `tboom`; only strict evaluation turns that error into a deny of the whole
+ * action. Production symbols assumed: the same as 9.1 (nothing new), and the
+ * pipeline must treat the Cerbos response as a deny when the action is not
+ * `EFFECT_ALLOW`, whatever the reason.
+ */
+describe('catalog authorization stage, evaluation errors (task 9.3)', () => {
+  const CERBOS_IMAGE =
+    'ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515';
+  const HTTP_PORT = 13592;
+  const GRPC_PORT = 13593;
+  const containerName = `tayzu-cerbos-scratch-${randomUUID()}`;
+  const scratchDir = fileURLToPath(new URL('./__fixtures__/cerbos-scratch/', import.meta.url));
+
+  const url = databaseUrl();
+  const pool = connect(url).$client;
+  const ownerDb = connectAsOwner(url);
+  const scratchAuthz = createCerbosClient({
+    address: `localhost:${String(GRPC_PORT)}`,
+    tls: false,
+  });
+  const blueprints = createBlueprintService({ pool, authz: scratchAuthz });
+
+  beforeAll(async () => {
+    execFileSync(
+      'docker',
+      [
+        'run',
+        '-d',
+        '--name',
+        containerName,
+        '-p',
+        `127.0.0.1:${String(HTTP_PORT)}:3592`,
+        '-p',
+        `127.0.0.1:${String(GRPC_PORT)}:3593`,
+        '-e',
+        'CERBOS_NO_TELEMETRY=1',
+        '-v',
+        `${scratchDir}policies:/policies:ro`,
+        '-v',
+        `${scratchDir}cerbos.yaml:/config/.cerbos.yaml:ro`,
+        CERBOS_IMAGE,
+        'server',
+        '--config=/config/.cerbos.yaml',
+      ],
+      { stdio: 'pipe' },
+    );
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const healthy = await fetch(`http://localhost:${String(HTTP_PORT)}/_cerbos/health`).then(
+        (response) => response.ok,
+        () => false,
+      );
+      if (healthy) break;
+      if (Date.now() > deadline) throw new Error('scratch Cerbos did not become healthy');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await runMigrations(ownerDb.$client);
+  }, 60_000);
+
+  afterAll(async () => {
+    scratchAuthz.close();
+    try {
+      execFileSync('docker', ['rm', '-f', containerName], { stdio: 'pipe' });
+    } finally {
+      await endQuietly(pool);
+      await endQuietly(ownerDb.$client);
+    }
+  });
+
+  beforeEach(async () => {
+    await harnessOrThrow().reset();
+  });
+
+  it('Cerbos evaluation error denies rather than allows: a condition that raises a CEL error fails with AUTH_FORBIDDEN and nothing is written', async () => {
+    const tenantId = `tboom${randomUUID().replaceAll('-', '')}`;
+
+    const code = await thrownCode(
+      blueprints.create(context(tenantId, ['admin']), blueprintInput('service')),
+    );
+    expect(code).toBe('AUTH_FORBIDDEN');
+    expect(code).not.toBe('CATALOG_NOT_FOUND');
+
+    // The handler never ran: the blueprint does not exist. Reading is allowed
+    // by the scratch policy (the erroring rule only covers `create`).
+    await expectCatalogErrorCode(
+      blueprints.get(context(tenantId, ['admin']), { identifier: 'service' }),
+      'CATALOG_NOT_FOUND',
+    );
+  });
+
+  it('Cerbos evaluation error denies rather than allows: the error is recorded as a deny decision and an authz_denied log', async () => {
+    const harness = harnessOrThrow();
+    const tenantId = `tboom${randomUUID().replaceAll('-', '')}`;
+
+    await thrownCode(blueprints.create(context(tenantId, ['admin']), blueprintInput('service')));
+    await harness.forceFlush();
+
+    expect(decisions(harness, tenantId, 'deny')).toHaveLength(1);
+    expect(decisions(harness, tenantId, 'allow')).toHaveLength(0);
+    expect(
+      finishedLogRecords(harness.logExporter, 'catalog.security.authz_denied').some(
+        (log) => log.attributes['tayzu.tenant.id'] === tenantId,
+      ),
+    ).toBe(true);
+  });
+
+  it('Cerbos evaluation error denies rather than allows: control, the same action without the error-raising shape is allowed', async () => {
+    const tenantId = randomTenantId();
+
+    await blueprints.create(context(tenantId, ['admin']), blueprintInput('service'));
+    const found = await blueprints.get(context(tenantId, ['admin']), { identifier: 'service' });
+    expect(found).toBeDefined();
   });
 });

@@ -295,7 +295,7 @@ policy diff shown in chat, separately from the rest of the PR.
   results are filtered by the query plan, not by scanning and checking", and
   a dedicated test asserting the `ALWAYS_ALLOWED` branch still carries the
   mandatory tenant `WHERE` clause.
-- [ ] 9.3 The evaluation-error path denies rather than allows. Verify:
+- [x] 9.3 The evaluation-error path denies rather than allows. Verify:
   `authz-pipeline.int.test.ts` covers "Cerbos evaluation error denies rather
   than allows", using a scratch policy condition that raises a CEL error for
   the test's request shape.
