@@ -374,7 +374,7 @@ policy diff shown in chat, separately from the rest of the PR.
   remains reachable. Verify: `auth-route-allowlist.int.test.ts` covers "A
   native organization-mutation route is not reachable" and "A native API-key
   management route is not reachable", both asserting a plain `404`.
-- [ ] 11.10 An allowlist-drift test enumerating Better Auth's actual mounted
+- [x] 11.10 An allowlist-drift test enumerating Better Auth's actual mounted
   routes against the allowlist constant. Verify:
   `auth-route-allowlist.test.ts` covers "An unlisted Better Auth route fails
   the allowlist test", introducing a scratch route in a throwaway branch and
