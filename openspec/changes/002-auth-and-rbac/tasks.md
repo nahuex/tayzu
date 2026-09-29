@@ -396,7 +396,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 12. User and Team system blueprints
 
-- [ ] 12.1 `_user` (identifier, title, status, portRole, moderatedBlueprints)
+- [x] 12.1 `_user` (identifier, title, status, portRole, moderatedBlueprints)
   and `_team` (identifier, title) blueprints, created by the `system` actor
   at tenant bootstrap. Verify: `system-blueprints.int.test.ts` covers
   creation via the `system` actor succeeding and "Direct write to `_user` by
