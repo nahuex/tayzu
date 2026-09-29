@@ -41,7 +41,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  signInAdminUser,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
@@ -240,4 +243,110 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
     );
     expect(afterReplay.rows, 'the replay record is not duplicated').toHaveLength(1);
   });
+
+  /**
+   * Task 22.3 (design D26, "Session matching and revocation"), scenario "A valid
+   * logout token revokes the matching session": GIVEN an active Tayzu session
+   * established through Visma Connect, WHEN a valid back-channel logout token
+   * naming that session's Visma Connect session id is received, THEN that session
+   * fails exactly as `CATALOG_CONTEXT_REQUIRED` on its next use.
+   *
+   * Production symbols expected: the route revokes every `auth.session` whose
+   * `sso_sid` equals the verified token's `sid`; when the token has no `sid`, it
+   * revokes the `sso_sid`-not-null sessions of the user linked through
+   * `auth.account` (`provider_id = 'visma-connect'`, `account_id = sub`). A
+   * same-user local session (`sso_sid` null) is never revoked.
+   */
+  async function signedInTenant(): Promise<{ userId: string; cookie: string; token: string }> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Backchannel Revocation',
+      email: `bcl-rev-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Backchannel Rev Org ${suffix}`,
+      organizationSlug: `bcl-rev-${suffix}`,
+      ip: randomIp(),
+    });
+    return { userId: tenant.userId, cookie: tenant.cookie, token: tenant.token };
+  }
+
+  async function markSso(token: string, sid: string): Promise<void> {
+    const result = await authPool.query('update auth.session set sso_sid = $1 where token = $2', [
+      sid,
+      token,
+    ]);
+    expect(result.rowCount, 'the session row to mark as SSO-established exists').toBe(1);
+  }
+
+  async function localSession(userId: string, email: string): Promise<string> {
+    const signedIn = await signInAdminUser(app.auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    expect(signedIn.userId).toBe(userId);
+    return signedIn.cookie;
+  }
+
+  function useSession(cookie: string) {
+    return app.app.inject({ method: 'GET', url: '/v1/blueprints', headers: { cookie } });
+  }
+
+  it('A valid logout token revokes the matching session: the SSO session fails as CATALOG_CONTEXT_REQUIRED afterward while a same-user local session remains valid', async () => {
+    const sso = await signedInTenant();
+    const sid = `sid-${randomUUID()}`;
+    await markSso(sso.token, sid);
+    const email = (
+      await authPool.query<{ email: string }>('select email from auth."user" where id = $1', [
+        sso.userId,
+      ])
+    ).rows[0]?.email;
+    const localCookie = await localSession(sso.userId, email ?? '');
+    expect((await useSession(sso.cookie)).statusCode, 'SSO session works before').toBe(200);
+    expect((await useSession(localCookie)).statusCode, 'local session works before').toBe(200);
+
+    // A bystander user's SSO session with a different sid must also survive.
+    const other = await signedInTenant();
+    await markSso(other.token, `sid-other-${randomUUID()}`);
+
+    const response = await postLogout(stub.signJwt(logoutClaims(sid), { typ: 'logout+jwt' }));
+    expect(response.statusCode).toBe(200);
+
+    const revoked = await useSession(sso.cookie);
+    expect(revoked.statusCode).toBe(401);
+    expect(revoked.json<{ code: string }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
+    expect((await useSession(localCookie)).statusCode, 'the local session remains valid').toBe(200);
+    expect((await useSession(other.cookie)).statusCode, 'a non-matching sid survives').toBe(200);
+  }, 60_000);
+
+  it('A valid logout token without sid revokes by sub only the linked user’s Visma Connect sessions, never their local sessions', async () => {
+    const sso = await signedInTenant();
+    const email = (
+      await authPool.query<{ email: string }>('select email from auth."user" where id = $1', [
+        sso.userId,
+      ])
+    ).rows[0]?.email;
+    const sub = `bcl-sub-${randomUUID()}`;
+    await authPool.query(
+      `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+       values ($1, $2, 'visma-connect', $3, now(), now())`,
+      [randomUUID(), sub, sso.userId],
+    );
+    await markSso(sso.token, `sid-${randomUUID()}`);
+    const localCookie = await localSession(sso.userId, email ?? '');
+    const other = await signedInTenant();
+    await markSso(other.token, `sid-other-${randomUUID()}`);
+
+    // A logout token that names only the user (no sid claim).
+    const claims: Record<string, unknown> = { ...logoutClaims('unused') };
+    Reflect.deleteProperty(claims, 'sid');
+    const response = await postLogout(stub.signJwt({ ...claims, sub }, { typ: 'logout+jwt' }));
+    expect(response.statusCode).toBe(200);
+
+    const revoked = await useSession(sso.cookie);
+    expect(revoked.statusCode).toBe(401);
+    expect(revoked.json<{ code: string }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
+    expect((await useSession(localCookie)).statusCode, 'the local session remains valid').toBe(200);
+    expect((await useSession(other.cookie)).statusCode, 'another user is untouched').toBe(200);
+  }, 60_000);
 });

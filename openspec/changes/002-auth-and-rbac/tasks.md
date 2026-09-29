@@ -667,7 +667,7 @@ policy diff shown in chat, separately from the rest of the PR.
   bounded by the token's own `exp` plus skew) — no new table (design D26).
   Verify: `backchannel-logout.int.test.ts` covers "A replayed logout token
   is rejected without revoking anything twice".
-- [ ] 22.3 Session revocation matching primarily by `sid` (via the `ssoSid`
+- [x] 22.3 Session revocation matching primarily by `sid` (via the `ssoSid`
   column, task 21.2) and, when the token omits `sid`, by `sub` via the
   linked `account` row — revoking only that user's Visma-Connect
   -established sessions, never their local sessions (design D26). Verify:

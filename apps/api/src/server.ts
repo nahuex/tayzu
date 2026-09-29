@@ -277,6 +277,18 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
             await options.authPool.query('delete from auth.session where sso_sid = $1', [
               verified.sid,
             ]);
+          } else if (recorded.rowCount === 1 && verified.sub !== undefined) {
+            // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
+            // local sessions (`sso_sid` null) are never touched.
+            await options.authPool.query(
+              `delete from auth.session
+               where sso_sid is not null
+                 and user_id in (
+                   select user_id from auth.account
+                   where provider_id = 'visma-connect' and account_id = $1
+                 )`,
+              [verified.sub],
+            );
           }
         }
       }
