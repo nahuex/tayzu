@@ -464,6 +464,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       provider: 'pg',
       schemaName: 'auth',
     }),
+    // Task 21.2, design D25: Visma Connect `sid`, null for local sessions. Never
+    // client-settable; the sign-in flow (D23) populates it server-side.
+    session: {
+      additionalFields: {
+        ssoSid: { type: 'string', required: false, input: false },
+      },
+    },
     // Email/password sign-up and sign-in (task 2.3). No `minPasswordLength`
     // override: Better Auth's own default (8 characters) is the policy this
     // change fixes; a stricter policy is not named anywhere in the design.

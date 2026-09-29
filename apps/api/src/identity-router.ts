@@ -53,6 +53,18 @@ class IdentityLinkRejectedError extends Error {
   }
 }
 
+const ACCOUNT_UNIQUE_CONSTRAINT = 'account_provider_account_uq';
+
+/** Matches by constraint name, never SQLSTATE alone; walks `cause` (drizzle wraps pg errors). */
+function isAccountUniqueViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && typeof current === 'object' && current !== null; depth += 1) {
+    if ((current as { constraint?: unknown }).constraint === ACCOUNT_UNIQUE_CONSTRAINT) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 class IdentityInputError extends Error {
   readonly code = 'CATALOG_VALIDATION_FAILED' as const;
 
@@ -274,14 +286,18 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           await authorizeTarget(context, input.userId);
           const adapter = (await authContext()).internalAdapter;
           const key = { providerId: SSO_PROVIDER_ID, accountId: input.subject };
-          // NOTE: check-then-insert; atomic only once `auth.account` has a unique
-          // (provider_id, account_id) constraint (needs a migration, Checkpoint 3).
           if ((await adapter.findAccountByKey(key)) != null) throw new IdentityLinkRejectedError();
-          await adapter.linkAccount({
-            userId: input.userId,
-            providerId: SSO_PROVIDER_ID,
-            accountId: input.subject,
-          });
+          try {
+            await adapter.linkAccount({
+              userId: input.userId,
+              providerId: SSO_PROVIDER_ID,
+              accountId: input.subject,
+            });
+          } catch (error) {
+            // A concurrent link of the same `sub` (Q29): same generic rejection.
+            if (isAccountUniqueViolation(error)) throw new IdentityLinkRejectedError();
+            throw error;
+          }
           emitAdminLinkEvent('linked', context);
         }),
         unlinkSsoAccount: base.handler(async ({ context, input: rawInput }): Promise<void> => {

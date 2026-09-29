@@ -526,4 +526,63 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     expect(linkCounterTotal(harness, 'linked', 'admin')).toBe(0);
     expect(linkCounterTotal(harness, 'unlinked', 'admin')).toBe(0);
   }, 60_000);
+
+  // Task 21.2 / Resolved decision Q29: `UNIQUE (provider_id, account_id)` on
+  // `auth.account` (constraint `account_provider_account_uq`); linkSsoAccount maps
+  // that constraint's violation (by name, never by SQLSTATE alone) to the same
+  // generic rejection as the check-then-insert path. Expected production change:
+  // `identity-router.ts` catches the violation and throws `IdentityLinkRejectedError`.
+  it('Two concurrent links of the same sub produce exactly one link, the loser gets the generic rejection', async () => {
+    const tenantId = await freshTenantId();
+    const admin = context(tenantId, ['admin']);
+
+    // The reference rejection: the sequential "already linked elsewhere" path.
+    const first = await newUser('ref-owner');
+    const second = await newUser('ref-intruder');
+    await join(first.userId, tenantId);
+    await join(second.userId, tenantId);
+    const refSubject = `visma-sub-${randomUUID()}`;
+    await client.identity.users.linkSsoAccount(
+      { userId: first.userId, subject: refSubject },
+      { context: admin },
+    );
+    const reference = shape(
+      await rejection(
+        client.identity.users.linkSsoAccount(
+          { userId: second.userId, subject: refSubject },
+          { context: admin },
+        ),
+      ),
+    );
+
+    // Several rounds, so that a check-then-insert race cannot pass by luck.
+    for (let round = 0; round < 5; round += 1) {
+      const a = await newUser(`race-a-${String(round)}`);
+      const b = await newUser(`race-b-${String(round)}`);
+      await join(a.userId, tenantId);
+      await join(b.userId, tenantId);
+      const subject = `visma-sub-${randomUUID()}`;
+
+      const results = await Promise.allSettled([
+        client.identity.users.linkSsoAccount({ userId: a.userId, subject }, { context: admin }),
+        client.identity.users.linkSsoAccount({ userId: b.userId, subject }, { context: admin }),
+      ]);
+
+      expect(
+        await ssoAccountsFor(subject),
+        `round ${String(round)}: exactly one link`,
+      ).toHaveLength(1);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      expect(rejected).toHaveLength(1);
+      // The same generic rejection, revealing neither the constraint nor the other user.
+      const loser = shape(rejected[0]?.reason as Error);
+      expect(loser).toEqual(reference);
+      const revealed = JSON.stringify(loser);
+      expect(revealed).not.toContain('account_provider_account_uq');
+      expect(revealed).not.toContain(subject);
+      expect(revealed).not.toContain(a.userId);
+      expect(revealed).not.toContain(b.userId);
+    }
+  }, 120_000);
 });

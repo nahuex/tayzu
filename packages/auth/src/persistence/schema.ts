@@ -92,6 +92,8 @@ export const session = authSchema.table(
     activeOrganizationId: text('active_organization_id'),
     // `admin` plugin field:
     impersonatedBy: text('impersonated_by'),
+    // Visma Connect `sid` for SSO-established sessions; null for local ones (design D25).
+    ssoSid: text('sso_sid'),
   },
   (t) => [
     unique('session_token_uq').on(t.token),
@@ -125,6 +127,8 @@ export const account = authSchema.table(
       .$onUpdate(() => new Date()),
   },
   (t) => [
+    // One Tayzu user per Visma Connect `sub` (Resolved decision Q29).
+    unique('account_provider_account_uq').on(t.providerId, t.accountId),
     index('account_user_id_idx').on(t.userId),
     foreignKey({
       name: 'account_user_id_fk',

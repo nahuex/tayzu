@@ -634,7 +634,7 @@ policy diff shown in chat, separately from the rest of the PR.
   `sso-jit-refresh.int.test.ts` covers "Display name and email are
   refreshed on sign-in" and "A changed Visma Connect email does not alter
   local sign-in identity".
-- [ ] 21.2 A migration adding `session.additionalFields.ssoSid` (nullable
+- [x] 21.2 A migration adding `session.additionalFields.ssoSid` (nullable
   text) to the already-migrated `auth.session` table, populated from the
   Visma Connect `sid` claim on sign-in/refresh and left `null` for local
   sessions (design D25). Verify: `session-schema.int.test.ts` asserts the

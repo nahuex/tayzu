@@ -71,6 +71,13 @@
       "when": 1790641900455,
       "tag": "0009_machine_credential_revocation_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790703061451,
+      "tag": "0010_auth_session_sso_sid",
+      "breakpoints": true
     }
   ]
 }
