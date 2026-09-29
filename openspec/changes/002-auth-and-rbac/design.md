@@ -392,6 +392,15 @@ principle intact: the wrapper runs identically for every `actor.type`; only
 the attributes Cerbos receives (role, team, moderatedBlueprints) differ, and
 they differ as data, never as a branch in code.
 
+
+**Principal and client wiring (resolved decisions Q26/Q27).** `CatalogContext`
+gains a host-supplied `principal` (`roles`, `teams`, `moderatedBlueprints`)
+that only `resolveContext` fills; every service factory takes the Cerbos
+client as its `authz` option; and every catalog operation declares its
+`authorization` (kind, action, id, attributes), which the pipeline checks
+right after context validation. A missing principal is a deny, never a
+default role.
+
 ### D12. Redaction of unreadable identifiers (R3)
 
 Where 001 already lists offending/referring entity identifiers
@@ -1221,3 +1230,5 @@ No open questions remain for this change.
 | Q23 | (Checkpoint 3, 2026-09-29) Who can update entities | An entity with no owner team can be created and updated by any member of the tenant. An entity with an owner team can be updated only by a member of that team or a moderator of its blueprint, plus admin. |
 | Q24 | (Checkpoint 3, 2026-09-29) Member access to users and teams | Members can view and list users and teams (resource kinds `user` and `team`) of their own tenant. Create, update, delete, and role changes stay admin-only. |
 | Q25 | (Checkpoint 3, 2026-09-29) Cerbos semantics corrections found by the policy-writer | Role policies are a ceiling; `parentRoles` narrows to the parent's permissions rather than inheriting, so `admin.yaml` has no `parentRoles`. `member.yaml`'s ceiling on `catalog_entity` includes `delete`, while no resource-policy rule grants `delete` to a plain member. The default deny is Cerbos's implicit deny plus an explicit cross-tenant deny rule in every resource policy (a wildcard deny would override admin). `catalog_entity` gains the attributes `createdBy` and `locked`; `ownerTeam` is absent, not null, without an owner (D8). |
+| Q26 | (Task 9.1, 2026-09-29) Where the principal's roles and attributes travel | A host-supplied `principal: { roles, teams?, moderatedBlueprints? }` field on `CatalogContext`, filled only by `resolveContext` (Better Auth member role mapped owner/admin -> `admin`, plus the `_user` entity's teams and moderated blueprints), never from input. Missing or empty `principal` makes Cerbos deny, so the operation fails closed with `AUTH_FORBIDDEN`. `actor` keeps its 002 shape. |
+| Q27 | (Task 9.1, 2026-09-29) How the pipeline reaches Cerbos | Each service factory receives the Cerbos client (`authz` option), and `defineCatalogOperation` requires an `authorization` declaration (resource kind, action, resource id and attributes) on every operation; the type makes it mandatory. Pipeline unit tests use an explicit test declaration. |

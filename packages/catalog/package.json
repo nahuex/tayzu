@@ -23,6 +23,7 @@
     "@orpc/openapi": "^1.15.4",
     "@orpc/server": "^1.15.4",
     "@orpc/zod": "^1.15.4",
+    "@tayzu/authz": "workspace:*",
     "@tayzu/db": "workspace:*",
     "@tayzu/observability": "workspace:*",
     "ajv": "^8.20.0",

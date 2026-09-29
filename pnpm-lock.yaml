@@ -125,6 +125,9 @@ importers:
       '@orpc/zod':
         specifier: ^1.15.4
         version: 1.15.4(@opentelemetry/api@1.9.1)(@orpc/contract@1.15.4(@opentelemetry/api@1.9.1))(@orpc/server@1.15.4(@opentelemetry/api@1.9.1)(fastify@5.12.5))(fastify@5.12.5)(zod@4.6.5)
+      '@tayzu/authz':
+        specifier: workspace:*
+        version: link:../authz
       '@tayzu/db':
         specifier: workspace:*
         version: link:../db
