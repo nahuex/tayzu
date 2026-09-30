@@ -1269,6 +1269,8 @@ No open questions remain for this change.
 | Q46 | (VCDM Q13, 2026-09-30) Temporary passwords cannot be rotated | `/change-password` is added to D18's allowlist (the revoke-other-sessions hook already exists); notifications for password, MFA and email changes are deferred to `043`/`044` (task 23.16). |
 | Q47 | (VCDM known item, 2026-09-30) Harness reassigns catalog tables but not the `auth` schema | The harness also reassigns schema `auth` and its tables to `tayzu_migrator`, with a test on a legacy-ownership database (task 23.17). |
 | Q48 | (Security review and VCDM low items, 2026-09-30) Small fixes versus residual risks | Small, migration-free fixes join group 23 (https validation of the discovery URL, `encryptOAuthTokens`, trusted-IP configuration, discovery failure fails startup: tasks 23.18-23.21). The rest is listed under "Known residual risks". |
+| Q49 | (Task 23.14, 2026-09-30) How a fresh password re-entry is recorded | Better Auth's `/verify-password` joins the D18 allowlist; a successful check on the current session writes the same `step-up-verified:<session token>` verification marker with the same 5-minute window as MFA, so one freshness check serves both factors. |
+| Q50 | (Task 23.14, 2026-09-30) Self-service mode for `identity.users.linkSsoAccount` / `unlinkSsoAccount` | None: they stay admin-only and are marked `x-tayzu-risk: high`, so 11.15's step-up already applies; the self-service path is `/link-social` and `/unlink-account`. |
 
 ## Known residual risks (2026-09-30)
 
