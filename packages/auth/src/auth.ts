@@ -419,6 +419,13 @@ export interface CreateAuthOptions {
   /** Better Auth's own `secret` option (`BETTER_AUTH_SECRET`, host-resolved). */
   readonly secret: string;
   /**
+   * Task 23.12 (design Q40): the public base URL Better Auth builds cookies
+   * and redirects on. Optional so the test harness can omit it.
+   */
+  readonly baseURL?: string;
+  /** Task 23.12 (Q40): origins whose cookie-bearing requests pass the origin check. */
+  readonly trustedOrigins?: readonly string[];
+  /**
    * Pre-authentication rate limiting (task 2.5, design D20). Optional so
    * every earlier task's `createAuth({ db, secret })` call keeps working
    * unchanged; a path with no configured rule here is never rate-limited.
@@ -503,6 +510,13 @@ interface AuthHandlerSurface {
 export function createAuth(options: CreateAuthOptions): AuthInstance {
   const auth = betterAuth({
     secret: options.secret,
+    ...(options.baseURL === undefined ? {} : { baseURL: options.baseURL }),
+    ...(options.trustedOrigins === undefined
+      ? {}
+      : { trustedOrigins: [...options.trustedOrigins] }),
+    // Task 23.12, design Q40: secure cookies and the origin check are pinned on
+    // in every environment (Better Auth skips the check when NODE_ENV=test).
+    advanced: { useSecureCookies: true, disableOriginCheck: false },
     database: drizzleAdapter(options.db, {
       provider: 'pg',
       schemaName: 'auth',

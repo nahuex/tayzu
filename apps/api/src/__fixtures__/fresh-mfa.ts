@@ -77,7 +77,13 @@ function cookieHeaderOf(response: Response): string {
  */
 export async function freshMfaSessionCookie(
   app: App,
-  args: { readonly email: string; readonly password: string; readonly enrollmentCookie: string },
+  args: {
+    readonly email: string;
+    readonly password: string;
+    readonly enrollmentCookie: string;
+    /** An allowed origin of the app under test, sent as `Origin` like a browser does (Q40). */
+    readonly origin: string;
+  },
 ): Promise<string> {
   const totp = app.auth.api as TwoFactorApiSurface;
   const authHandler = (app.auth as unknown as { handler: (request: Request) => Promise<Response> })
@@ -97,7 +103,11 @@ export async function freshMfaSessionCookie(
   const challenge = await authHandler(
     new Request(`${AUTH_BASE_URL}/sign-in/email`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: args.origin,
+      },
       body: JSON.stringify({ email: args.email, password: args.password }),
     }),
   );
@@ -109,6 +119,7 @@ export async function freshMfaSessionCookie(
         'content-type': 'application/json',
         'x-forwarded-for': randomIp(),
         cookie: cookieHeaderOf(challenge),
+        origin: args.origin,
       },
       body: JSON.stringify({ code: (await totp.generateTOTP({ body: { secret } })).code }),
     }),

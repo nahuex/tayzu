@@ -155,6 +155,7 @@ describe('apps/api query-string input (task 11.2)', () => {
       email: tenant.email,
       password: TEST_PASSWORD,
       enrollmentCookie: tenant.cookie,
+      origin: ALLOWED_ORIGIN,
     });
     await seedReferencedEntity(app, cookie);
 

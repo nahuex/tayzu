@@ -814,7 +814,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   Verify: `config.test.ts` and `bootstrap-wiring.int.test.ts` (extended)
   cover a minimal production environment still having every limiter and the
   body limit active, and an invalid override failing fast.
-- [ ] 23.12 `BETTER_AUTH_URL` is required (`https` outside test); Better Auth
+- [x] 23.12 `BETTER_AUTH_URL` is required (`https` outside test); Better Auth
   is given `baseURL`, `trustedOrigins` (the allowed origins) and
   `advanced.useSecureCookies: true`, and `toWebRequest` no longer hard-codes
   `http://` (design Q40, D2). Verify: `production-cookies.int.test.ts` runs

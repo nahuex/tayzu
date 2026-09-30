@@ -196,6 +196,7 @@ describe('apps/api HTTP error status (task 11.3)', () => {
       email: tenant.email,
       password: TEST_PASSWORD,
       enrollmentCookie: tenant.cookie,
+      origin: ALLOWED_ORIGIN,
     });
   }
 

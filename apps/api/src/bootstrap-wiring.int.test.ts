@@ -262,6 +262,7 @@ describe('production app wiring: step-up on high-risk /v1 routes (task 11.15, D4
           'content-type': 'application/json',
           'x-forwarded-for': randomIp(),
           cookie: cookieHeaderOf(challenge),
+          origin: ORIGIN,
         },
         body: JSON.stringify({ code: (await totp.generateTOTP({ body: { secret } })).code }),
       }),

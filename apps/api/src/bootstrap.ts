@@ -29,6 +29,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       authSecret,
       cerbosAddress,
       allowedOrigins,
+      ...(config.betterAuthUrl === undefined ? {} : { baseUrl: config.betterAuthUrl }),
       backchannelLogoutRateLimitPerMinute: config.backchannelLogoutRateLimitPerMinute,
       ...(config.sso === undefined ? {} : { sso: config.sso }),
       // One configured pre-auth budget covers sign-in, two-factor verification and email verification (D20).

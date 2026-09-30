@@ -12,6 +12,8 @@ export interface Config {
   readonly betterAuthSecret: string;
   readonly cerbosAddress: string;
   readonly allowedOrigins: readonly string[];
+  /** Public base URL of the API (Q40): `https` outside test; undefined only in test. */
+  readonly betterAuthUrl?: string;
   /** Visma Connect SSO (D23); undefined when none of its variables is set. */
   readonly sso?: {
     readonly discoveryUrl: string;
@@ -100,6 +102,25 @@ function loadSso(env: Env): Config['sso'] {
   };
 }
 
+/** `BETTER_AUTH_URL` (Q40): required outside test, and then it must be `https`. */
+function loadBetterAuthUrl(env: Env): string | undefined {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest && env['BETTER_AUTH_URL'] === undefined) {
+    return undefined;
+  }
+  const value = required(env, 'BETTER_AUTH_URL').trim();
+  let protocol: string;
+  try {
+    protocol = new URL(value).protocol;
+  } catch {
+    throw new Error('BETTER_AUTH_URL is malformed (an absolute URL is required).');
+  }
+  if (protocol !== 'https:' && !(isTest && protocol === 'http:')) {
+    throw new Error('BETTER_AUTH_URL is malformed (https is required).');
+  }
+  return value;
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
@@ -114,6 +135,7 @@ export function loadConfig(env: Env): Config {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin !== '');
+  const betterAuthUrl = loadBetterAuthUrl(env);
   const sso = loadSso(env);
   const signIn = limitWithDefaults(
     env,
@@ -143,6 +165,7 @@ export function loadConfig(env: Env): Config {
     betterAuthSecret,
     cerbosAddress,
     allowedOrigins,
+    ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
     backchannelLogoutRateLimitPerMinute,
     ...(sso === undefined ? {} : { sso }),
     preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds },

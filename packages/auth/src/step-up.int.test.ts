@@ -254,6 +254,9 @@ const TEST_USER_NAME = 'Step-Up Test User';
 
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
 
+/** The origin this test's `createAuth` trusts; a browser sends it as `Origin` on cookie-bearing POSTs (Q40). */
+const TRUSTED_ORIGIN = 'http://localhost:3000';
+
 /**
  * `./auth.ts`'s `AuthInstance.api` is typed `unknown`; `.handler` is Better
  * Auth's real, documented HTTP entry point -- same cast every other int test
@@ -449,7 +452,7 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
   beforeAll(async () => {
     db = connect(databaseUrl());
     await runMigrations(db.$client);
-    auth = createAuth({ db, secret: TEST_SECRET });
+    auth = createAuth({ db, secret: TEST_SECRET, trustedOrigins: [TRUSTED_ORIGIN] });
     api = apiOf(auth);
     guard = createStepUpGuard({ auth });
     harness = registeredHarness();
@@ -560,7 +563,7 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
       '/two-factor/verify-totp',
       { code: verifyCode },
       randomIp(),
-      { cookie: challengeCookie },
+      { cookie: challengeCookie, origin: TRUSTED_ORIGIN },
     );
     expect(verifyResponse.status, 'the TOTP challenge is verified').toBe(200);
     const verified = (await verifyResponse.json()) as VerifyTotpResponseBody;

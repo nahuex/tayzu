@@ -56,6 +56,11 @@ export interface CreateAppOptions {
   /** Explicit CORS origin allowlist: exact matches only, never `*` or a reflected origin. */
   readonly allowedOrigins: readonly string[];
   /**
+   * Public base URL (Q40): forwarded to `createAuth` as `baseURL` and used to
+   * build the web `Request` URL. Omitted only in the test harness.
+   */
+  readonly baseUrl?: string;
+  /**
    * Maximum request body in bytes (D13), enforced by Fastify with a 413 before
    * any handler runs. Omitted: Fastify's default (1 MiB).
    */
@@ -129,7 +134,7 @@ function toWebHeaders(request: FastifyRequest): Headers {
   return headers;
 }
 
-function toWebRequest(request: FastifyRequest): Request {
+function toWebRequest(request: FastifyRequest, baseUrl: string | undefined): Request {
   const headers = toWebHeaders(request);
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
   let body: string | undefined;
@@ -137,11 +142,14 @@ function toWebRequest(request: FastifyRequest): Request {
     body = typeof request.body === 'string' ? request.body : JSON.stringify(request.body);
     headers.delete('content-length');
   }
-  return new Request(`http://${request.headers.host ?? 'localhost'}${request.url}`, {
-    method: request.method,
-    headers,
-    ...(body === undefined ? {} : { body }),
-  });
+  return new Request(
+    new URL(request.url, baseUrl ?? `http://${request.headers.host ?? 'localhost'}`),
+    {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body }),
+    },
+  );
 }
 
 export async function createApp(options: CreateAppOptions): Promise<App> {
@@ -153,6 +161,8 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const auth = createAuth({
     db: authDb,
     secret: options.authSecret,
+    ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
+    trustedOrigins: options.allowedOrigins,
     ...(options.sso === undefined ? {} : { sso: options.sso }),
     ...(options.preAuthRateLimit === undefined ? {} : { rateLimit: options.preAuthRateLimit }),
   });
@@ -316,7 +326,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       },
     );
     scope.all('/api/auth/*', async (request, reply) => {
-      const response = await (auth as unknown as AuthHandlerSurface).handler(toWebRequest(request));
+      const response = await (auth as unknown as AuthHandlerSurface).handler(
+        toWebRequest(request, options.baseUrl),
+      );
       reply.status(response.status);
       for (const [name, value] of response.headers) {
         if (name !== 'set-cookie') {
