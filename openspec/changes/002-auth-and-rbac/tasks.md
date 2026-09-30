@@ -939,7 +939,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   added, and the design's residual-risk text about `same_tenant` is corrected
   (design Q56). Verify: every route `createApp` registers appears in
   `attack-surfaces.md`, and markdownlint passes.
-- [ ] 24.11 DAST finding (24.9): over HTTP, an integer query field such as
+- [x] 24.11 DAST finding (24.9): over HTTP, an integer query field such as
   `pageSize` arrives as a string and is rejected, and oRPC's input-validation
   error then leaves `apps/api` as `500 INTERNAL`. Integer query fields are
   read from the query string like `detachReferences` (design D13 query-string

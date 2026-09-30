@@ -196,3 +196,144 @@ describe('apps/api query-string input (task 11.2)', () => {
     expect(still.statusCode).toBe(200);
   }, 60_000);
 });
+
+/**
+ * Task 24.11 (design D11, D13; DAST finding from 24.9).
+ *
+ * Over HTTP an integer query field such as `pageSize` arrives as a string.
+ * Integer query fields must be read from the query string like
+ * `detachReferences`, and a request failing a procedure's input schema must
+ * answer `400 CATALOG_VALIDATION_FAILED` with the offending JSON Pointer
+ * paths, a fixed message and no submitted value.
+ *
+ * ## Production symbols expected
+ *
+ * - `@tayzu/catalog` contract: an integer query preprocess (like
+ *   `queryBooleanSchema`) on `pageSize` of the blueprint, entity and related
+ *   list procedures.
+ * - `apps/api/src/error-mapping.ts`: maps oRPC's input-validation
+ *   `ORPCError` (`BAD_REQUEST`) to `CATALOG_VALIDATION_FAILED` / 400 with
+ *   `data.issues[].path` JSON Pointers, a fixed message and no input value.
+ *
+ * ## Why this fails right now
+ *
+ * `?pageSize=1` is rejected as a string (so the list answers 500 `INTERNAL`
+ * instead of one item), and input-validation errors are not mapped.
+ */
+interface ListBody {
+  readonly items: readonly { readonly identifier: string }[];
+  readonly cursor?: string;
+}
+
+interface ErrBody {
+  readonly code: string;
+  readonly status: number;
+  readonly message: string;
+  readonly data?: { readonly issues?: readonly { readonly path: string }[] };
+}
+
+describe('apps/api integer query fields and input-validation errors (task 24.11)', () => {
+  let app: App;
+
+  beforeAll(async () => {
+    app = await createApp({
+      ...(await harnessPools()),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ALLOWED_ORIGIN],
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  async function session(): Promise<string> {
+    const tenant = await provisionTenant(app);
+    const { cookie } = await enrolledAdminSession(app, tenant, {
+      password: TEST_PASSWORD,
+      origin: ALLOWED_ORIGIN,
+    });
+    return cookie;
+  }
+
+  async function get(cookie: string, url: string) {
+    return app.app.inject({ method: 'GET', url, headers: { cookie } });
+  }
+
+  /** Pages through `url` with `pageSize=1`, returning every identifier in order. */
+  async function pageAll(cookie: string, url: string): Promise<string[]> {
+    const first = await get(cookie, `${url}?pageSize=1`);
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json<ListBody>();
+    expect(firstBody.items).toHaveLength(1);
+    expect(firstBody.cursor).toBeDefined();
+    const second = await get(
+      cookie,
+      `${url}?pageSize=10&cursor=${encodeURIComponent(firstBody.cursor ?? '')}`,
+    );
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json<ListBody>();
+    return [...firstBody.items, ...secondBody.items].map((item) => item.identifier);
+  }
+
+  it('GET /v1/blueprints?pageSize=1 returns one item and a cursor whose next page returns the rest', async () => {
+    const cookie = await session();
+    for (const identifier of ['alpha', 'beta', 'gamma']) {
+      await post(app, cookie, '/v1/blueprints', {
+        identifier,
+        title: { en: identifier },
+        schema: { properties: {}, required: [] },
+      });
+    }
+    const identifiers = await pageAll(cookie, '/v1/blueprints');
+    expect(identifiers.filter((id) => ['alpha', 'beta', 'gamma'].includes(id)).sort()).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+    ]);
+    expect(new Set(identifiers).size).toBe(identifiers.length);
+  }, 60_000);
+
+  it('GET /v1/blueprints/{blueprint}/entities?pageSize=1 returns one item and a cursor whose next page returns the rest', async () => {
+    const cookie = await session();
+    await post(app, cookie, '/v1/blueprints', {
+      identifier: 'team',
+      title: { en: 'Team' },
+      schema: { properties: {}, required: [] },
+    });
+    for (const identifier of ['team-a', 'team-b', 'team-c']) {
+      await post(app, cookie, '/v1/blueprints/team/entities', { identifier, title: identifier });
+    }
+    const identifiers = await pageAll(cookie, '/v1/blueprints/team/entities');
+    expect([...identifiers].sort()).toEqual(['team-a', 'team-b', 'team-c']);
+  }, 60_000);
+
+  it('?pageSize=abc answers 400 CATALOG_VALIDATION_FAILED naming /pageSize without echoing abc', async () => {
+    const cookie = await session();
+    const secret = 'abcSubmittedValue';
+    const response = await get(cookie, `/v1/blueprints?pageSize=${secret}`);
+    expect(response.statusCode).toBe(400);
+    const body = response.json<ErrBody>();
+    expect(body.code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(body.status).toBe(400);
+    expect(body.data?.issues?.map((issue) => issue.path)).toContain('/pageSize');
+    expect(response.body).not.toContain(secret);
+  }, 60_000);
+
+  it('a malformed JSON body on a POST answers 400, never 500', async () => {
+    const cookie = await session();
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/v1/blueprints',
+      headers: {
+        cookie,
+        'content-type': 'application/json',
+        origin: ALLOWED_ORIGIN,
+        ...csrfHeaders('POST'),
+      },
+      payload: '{"identifier": ',
+    });
+    expect(response.statusCode).toBe(400);
+  }, 60_000);
+});

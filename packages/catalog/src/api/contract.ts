@@ -292,8 +292,19 @@ const createBlueprintInputSchema = z.object({
   relations: relationsInputSchema,
 });
 
+/**
+ * Integer query fields arrive over HTTP as strings (design D13 query-string
+ * parity). Only a canonical decimal integer string is converted; anything
+ * else is left for `z.number().int()` to reject. The preprocess keeps the
+ * JSON Schema type `integer` in the generated document.
+ */
+const queryIntegerSchema = z.preprocess(
+  (raw) => (typeof raw === 'string' && /^-?\d{1,15}$/.test(raw) ? Number(raw) : raw),
+  z.number().int(),
+);
+
 const listBlueprintsInputSchema = z.object({
-  pageSize: z.number().int().optional(),
+  pageSize: queryIntegerSchema.optional(),
   cursor: z.string().optional(),
 });
 
@@ -321,7 +332,7 @@ const createEntityInputSchema = z.object({
 
 const listEntitiesInputSchema = z.object({
   blueprint: z.string(),
-  pageSize: z.number().int().optional(),
+  pageSize: queryIntegerSchema.optional(),
   cursor: z.string().optional(),
 });
 
@@ -377,7 +388,7 @@ const writeEntityStatusInputSchema = withEntityPathParam({
 const listRelatedInputSchema = withEntityPathParam({
   direction: z.enum(['forward', 'backward']),
   scope: z.enum(['spec', 'status', 'both']).optional(),
-  pageSize: z.number().int().optional(),
+  pageSize: queryIntegerSchema.optional(),
   cursor: z.string().optional(),
 });
 

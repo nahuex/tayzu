@@ -25,11 +25,50 @@ function internalError(): ORPCError<string, unknown> {
   return new ORPCError('INTERNAL', { status: 500, message: INTERNAL_MESSAGE });
 }
 
+const VALIDATION_MESSAGE = 'The request input is invalid';
+const ISSUE_MESSAGE = 'Invalid value';
+const MAX_ISSUES = 50;
+
+/** RFC 6901 escaping of one path segment. */
+function pointerSegment(segment: unknown): string {
+  const raw =
+    typeof segment === 'object' && segment !== null && 'key' in segment ? segment.key : segment;
+  const text = typeof raw === 'string' || typeof raw === 'number' ? String(raw) : '';
+  return text.replaceAll('~', '~0').replaceAll('/', '~1');
+}
+
+/**
+ * oRPC's input-validation failure (`BAD_REQUEST`, also raised for a malformed
+ * body) becomes `CATALOG_VALIDATION_FAILED` / 400. Only the JSON Pointer paths
+ * survive; validator messages and submitted values are dropped (design D11).
+ */
+function validationError(error: ORPCError<string, unknown>): ORPCError<string, unknown> {
+  const raw = (error.data as { issues?: unknown } | null | undefined)?.issues;
+  const issues = (Array.isArray(raw) ? (raw as unknown[]) : [])
+    .slice(0, MAX_ISSUES)
+    .map((issue) => {
+      const path = (issue as { path?: unknown } | null)?.path;
+      const segments = Array.isArray(path) ? (path as unknown[]) : [];
+      return {
+        path: segments.map((segment) => `/${pointerSegment(segment)}`).join(''),
+        message: ISSUE_MESSAGE,
+      };
+    });
+  return new ORPCError('CATALOG_VALIDATION_FAILED', {
+    status: 400,
+    message: VALIDATION_MESSAGE,
+    data: { issues, details: undefined },
+  });
+}
+
 export function toOrpcError(error: unknown): ORPCError<string, unknown> {
   // The SSO step-up interceptor (Q36) already built this one, carrying the
   // re-authorization URL as `data`; it holds no tenant text.
   if (error instanceof ORPCError && error.code === 'AUTH_STEP_UP_REQUIRED') {
     return error as ORPCError<string, unknown>;
+  }
+  if (error instanceof ORPCError && error.code === 'BAD_REQUEST') {
+    return validationError(error as ORPCError<string, unknown>);
   }
   if (typeof error !== 'object' || error === null || !(error instanceof Error)) {
     return internalError();
