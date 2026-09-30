@@ -1276,6 +1276,15 @@ No open questions remain for this change.
 | Q48 | (Security review and VCDM low items, 2026-09-30) Small fixes versus residual risks | Small, migration-free fixes join group 23 (https validation of the discovery URL, `encryptOAuthTokens`, trusted-IP configuration, discovery failure fails startup: tasks 23.18-23.21). The rest is listed under "Known residual risks". |
 | Q49 | (Task 23.14, 2026-09-30) How a fresh password re-entry is recorded | Better Auth's `/verify-password` joins the D18 allowlist; a successful check on the current session writes the same `step-up-verified:<session token>` verification marker with the same 5-minute window as MFA, so one freshness check serves both factors. |
 | Q50 | (Task 23.14, 2026-09-30) Self-service mode for `identity.users.linkSsoAccount` / `unlinkSsoAccount` | None: they stay admin-only and are marked `x-tayzu-risk: high`, so 11.15's step-up already applies; the self-service path is `/link-social` and `/unlink-account`. |
+| Q51 | (VCDM N1 and security review, 2026-09-30) Password re-entry as step-up for MFA-enrolled users | The step-up marker records its factor (`mfa` or `password`). A `password` marker satisfies step-up only for a user without an enrolled MFA factor; an enrolled user needs a fresh `mfa` marker (task 24.1, consistent with Q6 and Q43). |
+| Q52 | (VCDM N2 and security review, 2026-09-30) Unthrottled password-verifying routes and MFA material behind a password | Per-user and per-IP limits on every allowlisted route that checks the current password; `/two-factor/generate-backup-codes` requires a fresh MFA step-up; `/two-factor/get-totp-uri` leaves the D18 allowlist (`/two-factor/enable` already returns the URI) (tasks 24.2, 24.3). |
+| Q53 | (VCDM N3 and security review, 2026-09-30) `entities.upsert` creating a missing entity | When the entity does not exist, `upsert` authorizes `create` with the new entity's attributes, the same rule as `entities.create`; an `ownerTeam` value that is not a single entity identifier fails closed (task 24.4). |
+| Q54 | (VCDM N4, 2026-09-30) Login success not logged for MFA and SSO logins | `auth.security.login_succeeded` is also emitted when a two-factor verification creates the session and when the Visma Connect callback succeeds, with the same attributes (task 24.5). |
+| Q55 | (VCDM, 2026-09-30) Where the new blocking gaps land | A new group 24 in 002, then 17.2 and 17.3 re-run before Checkpoint 2. |
+| Q56 | (VCDM non-blocking items and security review low item, 2026-09-30) Which non-blocking items join group 24 | NB1 (an OpenAPI-driven, MFA-authenticated DAST scan with the runtime roles), NB5/NB6 (docs and the residual-risk text), NB7 (`ALLOWED_ORIGINS` validation), NB8 (verification-email routes leave the allowlist), the token-exchange limiter keyed by IP only, and NB11 (`postgres:16` pinned by digest). The rest become follow-up tickets. |
+| Q57 | (VCDM T16, 2026-09-30) Verification against the real Visma Connect | A human-owned pre-deploy check next to 11.12, against Visma's test environment: `sid` present and preserved on `prompt=login`, and the `form_post` callback under the production origin check. |
+| Q58 | (VCDM NB2-NB4, 2026-09-30) Deployment-coupled checks | Gating items for `010`'s first deploy, next to 11.12: a startup assertion that the runtime roles are not superuser, owner or `BYPASSRLS` plus the real `MIGRATION_DATABASE_URL`; a configurable `TRUST_PROXY` verified against the ACA ingress peer range; and the Cerbos audit log sent to stdout and Azure Monitor. |
+| Q59 | (VCDM SSA questions, 2026-09-30) Answers only the human can give | Previous-year improvement items: none (first assessment). SEC12 Q3 post-launch monitoring: Weak, with a ticket to `010`. DNS and DDoS protection, hours to provide logs, retention policy and the human attestations (off-boarding, training, access review, JIT and MFA for Azure admin access) are still to be answered by the human, at the latest in `010`'s SSA. |
 
 ## Known residual risks (2026-09-30)
 
@@ -1293,3 +1302,17 @@ Accepted for 002, each with the change that addresses it.
 | `BETTER_AUTH_SECRET` is one key for cookies, TOTP secrets, the JWKS private key and OAuth tokens. | Residual. Adopt Better Auth's versioned `secrets` array and document JWKS rotation with `010`. |
 | Email and `sub` existence oracles through `createUser` and `linkSsoAccount` errors (admin-only surfaces). | Residual while `identity.*` is unmounted; revisit in `043`. |
 | The DAST job, IaC and TLS minimum, 12-month security-log retention, alert rules, docs drift (`attack-surfaces.md`, `system-diagram.md`, `secrets.md`, crypto inventory), `MIGRATION_DATABASE_URL`/`AUTH_DATABASE_URL` wiring and bootstrap `userSync`. | Docs drift is refreshed under 16.x and 17.3; the remaining items belong to `010` (or to a follow-up ticket for the `MIGRATION_DATABASE_URL`/`AUTH_DATABASE_URL` wiring and bootstrap `userSync`). |
+
+### Gates for the first deployment (`010`)
+
+Human-owned, next to task 11.12 (Resolved decisions Q57, Q58):
+
+- The manual TLS minimum and HSTS check on the public ingress (task 11.12).
+- A run against Visma Connect's test environment: `sid` present and
+  preserved on `prompt=login`, and the `form_post` callback under the
+  production origin check.
+- A startup assertion that the runtime database roles are not superuser,
+  owner or `BYPASSRLS`, and the real `MIGRATION_DATABASE_URL` wiring.
+- `TRUST_PROXY` made configurable and verified against the ACA ingress peer
+  range.
+- The Cerbos audit log sent to stdout and on to Azure Monitor.

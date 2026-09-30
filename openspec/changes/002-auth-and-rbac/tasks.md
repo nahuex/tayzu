@@ -875,3 +875,68 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   startup.int.test.ts` covers an unreachable and a malformed discovery
   document each making `createApp`/`main` fail with a sanitized error and no
   listener bound, and a reachable stub starting normally.
+
+## 24. Final gaps (VCDM and security review re-run, 17.2 and 17.3)
+
+- [ ] 24.1 The step-up marker records its factor (`mfa` or `password`), and a
+  user with an enrolled MFA factor passes step-up only with a fresh `mfa`
+  marker: `/verify-password` alone no longer satisfies the `x-tayzu-risk:
+  high` operations, `/link-social` or `/unlink-account` for that user
+  (design Q51, Q6, Q43, D4). Verify: `step-up.int.test.ts` (extended) covers
+  an MFA-enrolled user with only a fresh password re-entry being refused, the
+  same user passing after `/two-factor/verify-totp`, and a user without MFA
+  still passing with a password re-entry; `link-social-step-up.int.test.ts`
+  covers the same refusal on `/link-social`.
+- [ ] 24.2 Every allowlisted route that checks the current password
+  (`/verify-password`, `/change-password`, `/two-factor/enable`,
+  `/two-factor/generate-backup-codes`, `/link-social`) is limited per user and
+  per IP by the pre-authentication limiter (design Q52, D20). Verify:
+  `pre-auth-rate-limit.int.test.ts` (extended) covers repeated wrong
+  passwords on `/verify-password` from one session being limited, the same
+  user from a second IP being limited by the per-user bucket, and another
+  user being unaffected.
+- [ ] 24.3 `/two-factor/generate-backup-codes` requires a fresh MFA step-up,
+  and `/two-factor/get-totp-uri` leaves the D18 allowlist (design Q52, D18).
+  Verify: `auth-route-allowlist.int.test.ts` and `auth-route-allowlist.test.ts`
+  (drift test) cover `get-totp-uri` answering `404`, and
+  `step-up.int.test.ts` covers backup-code regeneration refused with only a
+  password and allowed after a fresh `verify-totp`.
+- [ ] 24.4 `entities.upsert` of an entity that does not exist yet authorizes
+  `create` with the new entity's attributes, and an `ownerTeam` value that is
+  not a single entity identifier fails closed (design Q53, Q34). Verify:
+  `entity-authz-attributes.int.test.ts` (extended) covers "Creating an entity
+  owned by a team the caller does not belong to is denied" through
+  `entities.upsert`, an upsert-create for the caller's own team or with no
+  owner team allowed, and a list-valued `ownerTeam` denied on create and
+  upsert.
+- [ ] 24.5 `auth.security.login_succeeded` is also emitted when a two-factor
+  verification creates the session and when the Visma Connect callback
+  succeeds, with the design's attributes and nothing else (design Q54, log
+  events table). Verify: `auth-flow.int.test.ts` (extended) covers the MFA
+  login, and `sso-sign-in.int.test.ts` (extended) the SSO login, each
+  emitting exactly one record with `tayzu.actor.id` and no email, `sub` or IP.
+- [ ] 24.6 `ALLOWED_ORIGINS` must list only `https` origins with no wildcard
+  outside test (design Q56, Q40). Verify: `config.test.ts` covers an `http`
+  origin and a `*` rejected at startup outside test, and `http://localhost`
+  accepted in test.
+- [ ] 24.7 `/send-verification-email` and `/verify-email` leave the D18
+  allowlist, since 002 sends no email (design Q56, D18). Verify:
+  `auth-route-allowlist.int.test.ts` and the drift test cover both answering
+  `404`.
+- [ ] 24.8 The token-exchange rate limit is keyed by client IP only, so a
+  caller cannot get a fresh bucket by changing `clientId` (design Q56, D20).
+  Verify: `rate-limit.int.test.ts` (extended) covers requests from one IP
+  with a different `clientId` each time being limited.
+- [ ] 24.9 _(setup)_ The DAST job scans the catalog OpenAPI document
+  (`zap-api-scan.py -f openapi`) as an MFA-enrolled seeded admin with a fresh
+  MFA session, against a stack that connects as `tayzu_app` and `tayzu_auth`
+  rather than a superuser, and `postgres:16` is pinned by digest in CI and in
+  `scripts/ci/dast.sh` (design Q56, D16). Verify: the `dast-zap` job and
+  `pnpm ci:local` pass, and the ZAP report lists `/v1/*` requests answered
+  `2xx`.
+- [ ] 24.10 _(setup)_ Docs reconciliation: `docs/security/attack-surfaces.md`
+  and `docs/security/secrets.md` match the code, a crypto-inventory table is
+  added, and the design's residual-risk text about `same_tenant` is corrected
+  (design Q56). Verify: every route `createApp` registers appears in
+  `attack-surfaces.md`, and markdownlint passes.
+
