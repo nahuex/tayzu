@@ -30,6 +30,8 @@ export interface Config {
   readonly bodyLimit: number;
   /** Back-channel logout budget per source IP per minute (D26, Q32). */
   readonly backchannelLogoutRateLimitPerMinute: number;
+  /** Explicit opt-out of telemetry (Q41); only the exact `true` enables it. */
+  readonly telemetryDisabled: boolean;
 }
 
 interface RateLimit {
@@ -121,6 +123,14 @@ function loadBetterAuthUrl(env: Env): string | undefined {
   return value;
 }
 
+/** `TAYZU_TELEMETRY_DISABLED`: unset or `false` is off, `true` is on, anything else fails. */
+function loadTelemetryDisabled(env: Env): boolean {
+  const value = env['TAYZU_TELEMETRY_DISABLED'];
+  if (value === undefined || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error('TAYZU_TELEMETRY_DISABLED is malformed (true or false is required).');
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
@@ -172,5 +182,6 @@ export function loadConfig(env: Env): Config {
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
     bodyLimit,
+    telemetryDisabled: loadTelemetryDisabled(env),
   };
 }

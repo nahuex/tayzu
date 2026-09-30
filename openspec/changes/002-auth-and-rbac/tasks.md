@@ -822,7 +822,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   disallowed origin being rejected, one from an allowed origin passing, every
   session cookie being `Secure`, and a missing or `http` `BETTER_AUTH_URL`
   failing startup.
-- [ ] 23.13 Outside test, startup fails when no OTLP endpoint is configured
+- [x] 23.13 Outside test, startup fails when no OTLP endpoint is configured
   unless `TAYZU_TELEMETRY_DISABLED=true` is set explicitly (design Q41,
   D14). Verify: `telemetry.test.ts` covers startup failing with no endpoint,
   passing with an endpoint, and passing with the explicit disable flag (which

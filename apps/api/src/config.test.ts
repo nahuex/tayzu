@@ -224,3 +224,25 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     expect(doc.toLowerCase()).toMatch(/procedure|rotat/);
   });
 });
+
+describe('TAYZU_TELEMETRY_DISABLED parsing (task 23.13, Q41)', () => {
+  it('is false when unset', () => {
+    expect(loadConfig(env()).telemetryDisabled).toBe(false);
+  });
+
+  it('is true only for the exact value true', () => {
+    expect(loadConfig(env({ TAYZU_TELEMETRY_DISABLED: 'true' })).telemetryDisabled).toBe(true);
+  });
+
+  it('is false for the exact value false', () => {
+    expect(loadConfig(env({ TAYZU_TELEMETRY_DISABLED: 'false' })).telemetryDisabled).toBe(false);
+  });
+
+  it.each(['1', 'yes', 'TRUE', 'True', 'on', '', '  '])(
+    'TAYZU_TELEMETRY_DISABLED=%j is malformed and fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ TAYZU_TELEMETRY_DISABLED: value })));
+      expect(error.message).toContain('TAYZU_TELEMETRY_DISABLED');
+    },
+  );
+});

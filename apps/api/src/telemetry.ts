@@ -1,7 +1,8 @@
 /**
  * OpenTelemetry SDK bootstrap (task 13.4, resolved decision Q31). Configured
  * only through the standard `OTEL_*` variables, and started only when an OTLP
- * endpoint is set. HTTP instrumentation records no bodies or headers, and the
+ * endpoint is set (outside test, startup fails without one unless
+ * `TAYZU_TELEMETRY_DISABLED=true`, Q41). HTTP instrumentation records no bodies or headers, and the
  * pg instrumentation never records bind values.
  */
 import { createRequire } from 'node:module';
@@ -41,6 +42,16 @@ function signalUrl(env: Env, signal: 'traces' | 'metrics' | 'logs'): string | un
 
 export function startTelemetry(env: Env): Telemetry | undefined {
   if (!ENDPOINT_VARIABLES.some((name) => (env[name] ?? '') !== '')) {
+    if ((env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test') {
+      return undefined;
+    }
+    // Q41, D14: security logging must not be silently absent outside test.
+    if (env['TAYZU_TELEMETRY_DISABLED'] !== 'true') {
+      throw new Error(
+        'OTEL_EXPORTER_OTLP_ENDPOINT is required outside test; set TAYZU_TELEMETRY_DISABLED=true to run without telemetry explicitly.',
+      );
+    }
+    console.warn('TAYZU_TELEMETRY_DISABLED=true: telemetry is disabled, no signals are exported.');
     return undefined;
   }
   const sdk = new NodeSDK({
