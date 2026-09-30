@@ -43,6 +43,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -217,5 +218,111 @@ describe('Visma Connect SSO sign-in through Fastify (task 23.6, design Q35)', ()
       sql`select count(*)::text as n from auth.account where account_id = ${sub}`,
     );
     expect(Number(accounts.rows[0]?.n ?? 0), 'no account was created').toBe(0);
+  }, 60_000);
+
+  // ---- Task 25.1 (design Q60, D23, D24): client-submitted ID tokens are refused ----
+
+  function signedIdToken(sub: string): string {
+    const now = Math.floor(Date.now() / 1000);
+    return stub.signJwt({
+      iss: stub.issuer,
+      aud: stub.clientId,
+      sub,
+      iat: now,
+      exp: now + 300,
+      email: `idtoken-${randomUUID()}@example.test`,
+    });
+  }
+
+  async function countSessions(userId: string): Promise<number> {
+    const rows = await db.execute<{ n: string }>(
+      sql`select count(*)::text as n from auth.session where user_id = ${userId}`,
+    );
+    return Number(rows.rows[0]?.n ?? 0);
+  }
+
+  it('A body carrying idToken on /sign-in/social is refused with 400 and creates no session (Q60)', async () => {
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'IdToken Person',
+      email: `sso-idtoken-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'IdToken Org',
+      organizationSlug: `sso-idtoken-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const sub = `sso-idtoken-sub-${randomUUID()}`;
+    await db.insert(authSchema.account).values({
+      id: randomUUID(),
+      accountId: sub,
+      providerId: PROVIDER_ID,
+      userId: tenant.userId,
+    });
+    const sessionsBefore = await countSessions(tenant.userId);
+
+    const response = await post(
+      '/api/auth/sign-in/social',
+      { 'content-type': 'application/json' },
+      JSON.stringify({
+        provider: PROVIDER_ID,
+        callbackURL: '/',
+        idToken: { token: signedIdToken(sub) },
+      }),
+    );
+
+    expect(response.statusCode, response.body).toBe(400);
+    expect(cookieFrom(response.headers['set-cookie'])).not.toContain('session_token');
+    expect(await countSessions(tenant.userId), 'no session was created').toBe(sessionsBefore);
+  }, 60_000);
+
+  it('A body carrying idToken on /link-social is refused with 400 and links no account (Q60)', async () => {
+    const enrolled = await bootstrapTestTenant(app.auth, {
+      name: 'Link IdToken Person',
+      email: `sso-link-idtoken-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Link IdToken Org',
+      organizationSlug: `sso-link-idtoken-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    // The route is step-up gated (task 20.2): a fresh MFA session reaches the idToken check.
+    const tenant = {
+      cookie: await freshMfaSessionCookie(app, {
+        email: enrolled.email,
+        password: TEST_PASSWORD,
+        enrollmentCookie: enrolled.cookie,
+        origin: ORIGIN,
+      }),
+    };
+    const sub = `sso-link-idtoken-sub-${randomUUID()}`;
+
+    const response = await post(
+      '/api/auth/link-social',
+      { 'content-type': 'application/json', cookie: tenant.cookie },
+      JSON.stringify({
+        provider: PROVIDER_ID,
+        callbackURL: '/',
+        idToken: { token: signedIdToken(sub) },
+      }),
+    );
+
+    expect(response.statusCode, response.body).toBe(400);
+    const accounts = await db.execute<{ n: string }>(
+      sql`select count(*)::text as n from auth.account where account_id = ${sub}`,
+    );
+    expect(Number(accounts.rows[0]?.n ?? 0), 'no account was linked').toBe(0);
+  }, 60_000);
+
+  it('The normal redirect flow on /sign-in/social still starts without idToken (Q60)', async () => {
+    const response = await post(
+      '/api/auth/sign-in/social',
+      { 'content-type': 'application/json' },
+      JSON.stringify({ provider: PROVIDER_ID, callbackURL: '/' }),
+    );
+
+    expect(response.statusCode, response.body).toBe(200);
+    const { url } = response.json<{ url: string }>();
+    expect(url.startsWith(stub.issuer), 'redirects to the authorization endpoint').toBe(true);
+    const params = new URL(url).searchParams;
+    expect(params.get('state')).toBeTruthy();
+    expect(params.get('code_challenge')).toBeTruthy();
   }, 60_000);
 });

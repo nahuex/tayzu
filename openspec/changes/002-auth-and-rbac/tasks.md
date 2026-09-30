@@ -963,7 +963,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
 
 ## 25. Final gaps (VCDM re-run after group 24)
 
-- [ ] 25.1 `/sign-in/social` and `/link-social` reject a request body that
+- [x] 25.1 `/sign-in/social` and `/link-social` reject a request body that
   carries `idToken` with `400`, creating no session and linking no account
   (design Q60, D23, D24). Verify: `sso-http.int.test.ts` (extended) covers a
   validly signed Visma ID token for a linked `sub` posted to

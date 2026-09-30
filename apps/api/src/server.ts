@@ -321,6 +321,23 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     }
   });
 
+  // Q60: a client-submitted ID token would bypass the authorization-code callback
+  // (state, nonce, PKCE; D23-D26), so sign-in and linking refuse any body carrying one.
+  app.addHook('preHandler', async (request, reply) => {
+    const pathname = request.url.split('?', 1)[0];
+    if (
+      request.method !== 'POST' ||
+      (pathname !== '/api/auth/sign-in/social' && pathname !== '/api/auth/link-social')
+    ) {
+      return;
+    }
+    const body: unknown = request.body;
+    if (typeof body === 'object' && body !== null && Object.hasOwn(body, 'idToken')) {
+      return reply.status(400).send({ code: 'BAD_REQUEST', status: 400, message: 'Bad request' });
+    }
+    return undefined;
+  });
+
   // D24 path (a): `/link-social` is a Better Auth native route, so D4's
   // procedure guard does not reach it, nor `/unlink-account` (Q43); the caller
   // needs a fresh MFA verification or password re-entry (Q49) before the request
