@@ -16,7 +16,7 @@ function mockClient(readable: ReadonlySet<string>) {
       cerbosCallId: 'call-1',
       results: request.resources.map(({ resource }) => ({
         resource: { id: resource.id },
-        isAllowed: (action: string) => action === 'read' && readable.has(resource.id),
+        isAllowed: (action: string) => action === 'view' && readable.has(resource.id),
       })),
     }),
   );
@@ -62,7 +62,7 @@ describe('redactUnreadable', () => {
       candidates.map((candidate) => candidate.id),
     );
     for (const entry of request.resources) {
-      expect(entry.actions).toEqual(['read']);
+      expect(entry.actions).toEqual(['view']);
       expect(entry.resource.kind).toBe('catalog_entity');
       expect(Object.keys(entry.resource.attr)[0]).toBe('tenantId');
       expect(entry.resource.attr['tenantId']).toBe(TENANT_ID);

@@ -38,7 +38,7 @@ fills this in, task by task, per `tasks.md`.
 - No TLS on the Cerbos sidecar's loopback link in Azure Container Apps
   (Resolved decision Q8, explicit exception) — TLS stays mandatory for every
   other Cerbos link.
-- The redaction helper (`CheckResources(read)` in batch, replacing unreadable
+- The redaction helper (`CheckResources(view)` in batch, replacing unreadable
   identifiers in a candidate list with a count) is a pure, mockable unit
   against the Cerbos client — no live Cerbos call needed to test it.
 

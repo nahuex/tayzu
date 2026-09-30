@@ -761,7 +761,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `entities-list-query-plan.int.test.ts` covers a team member, a moderator
   and an admin listing entities, each seeing exactly the permitted rows, and
   an unsupported plan operator still failing closed.
-- [ ] 23.4 The redaction helper (D12) checks the `view` action, not `read`,
+- [x] 23.4 The redaction helper (D12) checks the `view` action, not `read`,
   which the policies do not define (design Q34). Verify: `redaction.int.
   test.ts` (extended) covers a member seeing the identifiers they may view in
   a delete-blocker list and only the unreadable ones redacted.

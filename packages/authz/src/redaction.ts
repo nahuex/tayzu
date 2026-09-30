@@ -6,7 +6,7 @@ import type { ResourceKind } from './resource-kinds.js';
 export type RedactionAttribute =
   string | number | boolean | null | RedactionAttribute[] | { [key: string]: RedactionAttribute };
 
-/** A candidate identifier plus the attributes Cerbos needs to decide `read`. */
+/** A candidate identifier plus the attributes Cerbos needs to decide `view`. */
 export interface RedactionCandidate {
   readonly id: string;
   readonly attributes?: Readonly<Record<string, RedactionAttribute>>;
@@ -32,7 +32,7 @@ export interface RedactionResult {
 }
 
 /**
- * One batch `CheckResources(read)` over the candidates (D12). Unreadable
+ * One batch `CheckResources(view)` over the candidates (D12). Unreadable
  * identifiers are never named: they only contribute to `notVisible`. A
  * candidate missing from the Cerbos response counts as unreadable (fail closed).
  */
@@ -57,13 +57,13 @@ export async function redactUnreadable(input: RedactUnreadableInput): Promise<Re
           candidate.attributes,
         ),
       },
-      actions: ['read'],
+      actions: ['view'],
     })),
   });
 
   const allowed = new Set<string>();
   for (const result of response.results) {
-    if (result.isAllowed('read') === true) allowed.add(result.resource.id);
+    if (result.isAllowed('view') === true) allowed.add(result.resource.id);
   }
   const readable = input.candidates.map((c) => c.id).filter((id) => allowed.has(id));
   return { readable, notVisible: input.candidates.length - readable.length };
