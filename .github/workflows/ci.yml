@@ -40,7 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # postgres:16, pinned by digest (task 24.9).
+        image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
         env:
           POSTGRES_USER: tayzu
           POSTGRES_PASSWORD: tayzu
@@ -97,7 +98,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # postgres:16, pinned by digest (task 24.9).
+        image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
         env:
           POSTGRES_USER: tayzu
           POSTGRES_PASSWORD: tayzu
@@ -242,6 +244,11 @@ jobs:
           cmd_options: -c .zap/rules.tsv
           fail_action: true
           allow_issue_writing: false
+      - name: ZAP API scan
+        # Task 24.9: every operation of openapi/catalog.openapi.json, sent with
+        # the seeded MFA session and passively scanned (safe mode, D16), with
+        # the same pinned image and rules file.
+        run: bash scripts/ci/dast.sh api-scan
       - name: Stop the DAST stack
         if: always()
         run: bash scripts/ci/dast.sh down

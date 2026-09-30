@@ -927,7 +927,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   caller cannot get a fresh bucket by changing `clientId` (design Q56, D20).
   Verify: `rate-limit.int.test.ts` (extended) covers requests from one IP
   with a different `clientId` each time being limited.
-- [ ] 24.9 _(setup)_ The DAST job scans the catalog OpenAPI document
+- [x] 24.9 _(setup)_ The DAST job scans the catalog OpenAPI document
   (`zap-api-scan.py -f openapi`) as an MFA-enrolled seeded admin with a fresh
   MFA session, against a stack that connects as `tayzu_app` and `tayzu_auth`
   rather than a superuser, and `postgres:16` is pinned by digest in CI and in
