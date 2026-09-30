@@ -88,7 +88,7 @@
  * session-level advisory lock every other int test file relies on to
  * serialize concurrent first-time appliers on a fresh database (design D12).
  */
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
@@ -104,7 +104,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 // tracer, meter and logger at import time -- exactly the rule
 // `packages/catalog/src/service/pipeline.int.test.ts` documents for its own
 // `./pipeline.js`. None of the imports above construct an OTel instrument.
-import { createAdminUser } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -603,4 +603,181 @@ describe('Sign-in telemetry: login_succeeded / login_failed (task 2.4, design D2
 
     expectNoSecretsInTelemetry([email, TEST_PASSWORD]);
   });
+});
+
+/**
+ * Task 24.5 (design Q54, Log events table): `auth.security.login_succeeded` is
+ * also emitted when a two-factor verification creates the session.
+ *
+ * GIVEN a user with an enrolled TOTP factor and one organization membership,
+ * WHEN they sign in (challenged, no session yet) and then complete
+ * `POST /two-factor/verify-totp`, THEN exactly one `login_succeeded` record
+ * exists, carrying only `tayzu.actor.id` and `tayzu.tenant.id` (the new
+ * session's active organization): no email, no IP.
+ *
+ * Expected production change: `auth.ts`'s `/two-factor/verify-*` after hook
+ * calls `emitLoginSucceeded` when the verification created a session. Today it
+ * records only the step-up marker and the MFA counter, so the record count is
+ * 0 and the assertion fails.
+ */
+describe('MFA login emits login_succeeded (task 24.5, design Q54)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let harness: TelemetryTestHarness;
+
+  const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
+  const TRUSTED_ORIGIN = 'http://localhost:3000';
+  const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+  interface TwoFactorApiSurface {
+    enableTwoFactor(args: {
+      body: { password: string; method: 'totp' };
+      headers: Headers;
+    }): Promise<{ totpURI: string }>;
+    generateTOTP(args: { body: { secret: string } }): Promise<{ code: string }>;
+    verifyTOTP(args: { body: { code: string }; headers: Headers }): Promise<unknown>;
+  }
+
+  function finishedLogRecords(
+    eventName: string,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']> {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === eventName,
+    );
+  }
+
+  function randomIp(): string {
+    const octet = (): string => randomInt(1, 255).toString(10);
+    return `10.${octet()}.${octet()}.${octet()}`;
+  }
+
+  function handlerOf(instance: AuthInstance): (request: Request) => Promise<Response> {
+    return (instance as unknown as { handler: (request: Request) => Promise<Response> }).handler;
+  }
+
+  function cookieHeaderFrom(response: Response): string {
+    return response.headers
+      .getSetCookie()
+      .map((raw) => raw.split(';')[0])
+      .join('; ');
+  }
+
+  function rawSecretFromTotpUri(totpURI: string): string {
+    const encoded = new URL(totpURI).searchParams.get('secret');
+    if (encoded === null) {
+      throw new Error('expected a secret query parameter on the TOTP URI');
+    }
+    const bytes: number[] = [];
+    let buffer = 0;
+    let bits = 0;
+    for (const char of encoded) {
+      if (char === '=') {
+        break;
+      }
+      buffer = (buffer << 5) | BASE32_ALPHABET.indexOf(char.toUpperCase());
+      bits += 5;
+      if (bits >= 8) {
+        bits -= 8;
+        bytes.push((buffer >> bits) & 0xff);
+      }
+    }
+    return new TextDecoder().decode(Uint8Array.from(bytes));
+  }
+
+  function postJson(
+    path: string,
+    body: Record<string, unknown>,
+    ip: string,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<Response> {
+    return handlerOf(auth)(
+      new Request(`${AUTH_BASE_URL}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': ip, ...extraHeaders },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+  }, 60_000);
+
+  afterEach(async () => {
+    await harness.reset();
+  });
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  it('A two-factor verification that creates the session emits exactly one login_succeeded with tayzu.actor.id and tayzu.tenant.id, and no email or IP', async () => {
+    const api = auth.api as TwoFactorApiSurface;
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: 'MFA Login Telemetry User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'MFA Login Telemetry Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+
+    // Enroll TOTP over the first session.
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    await api.verifyTOTP({
+      body: { code: (await api.generateTOTP({ body: { secret } })).code },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+
+    // The next sign-in is only a challenge: no session yet.
+    const signInIp = randomIp();
+    const challenge = await postJson(
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      signInIp,
+    );
+    expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
+
+    // Only the verification below is under test.
+    await harness.reset();
+
+    const verifyIp = randomIp();
+    const verified = await postJson(
+      '/two-factor/verify-totp',
+      { code: (await api.generateTOTP({ body: { secret } })).code },
+      verifyIp,
+      { cookie: cookieHeaderFrom(challenge), origin: TRUSTED_ORIGIN },
+    );
+    expect(verified.status, 'the TOTP challenge is verified').toBe(200);
+
+    await harness.forceFlush();
+
+    const logs = finishedLogRecords('auth.security.login_succeeded');
+    expect(logs, 'exactly one login_succeeded log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.INFO);
+    expect(logs[0]?.attributes).toEqual({
+      'tayzu.actor.id': tenant.userId,
+      'tayzu.tenant.id': tenant.organizationId,
+    });
+
+    const snapshot = JSON.stringify(
+      logs.map((record) => ({ attributes: record.attributes, body: record.body })),
+    );
+    for (const forbidden of [email, signInIp, verifyIp]) {
+      expect(snapshot, `the record never contains ${forbidden}`).not.toContain(forbidden);
+    }
+  }, 60_000);
 });

@@ -594,3 +594,88 @@ describe('Visma Connect implicit email linking is disabled (task 23.10, design Q
     ).toBe(0);
   }, 60_000);
 });
+
+/**
+ * Task 24.5 (design Q54, Log events table): `auth.security.login_succeeded` is
+ * also emitted when the Visma Connect callback succeeds.
+ *
+ * GIVEN a Tayzu user linked to a Visma Connect `sub`, WHEN that person
+ * completes sign-in through Visma Connect, THEN exactly one `login_succeeded`
+ * record exists, carrying only `tayzu.actor.id` and `tayzu.tenant.id`: no
+ * email, no `sub`, no IP.
+ *
+ * Expected production change: `auth.ts`'s callback handling calls
+ * `emitLoginSucceeded` once per completed sign-in (not for the `form_post`
+ * redirect hop, and never for a rejection).
+ */
+describe('Visma Connect login emits login_succeeded (task 24.5, design Q54)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let stub: OidcStub;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    stub = await startOidcStub();
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await stub.close();
+    await endQuietly(db.$client);
+  });
+
+  it('A successful Visma Connect callback emits exactly one login_succeeded with tayzu.actor.id and tayzu.tenant.id, and no email, sub or IP', async () => {
+    const harness = registeredHarness();
+    const email = `sso-login-${randomUUID()}@example.test`;
+    const tenant = await bootstrapTestTenant(auth, {
+      name: 'SSO Login Telemetry User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'SSO Login Telemetry Org',
+      organizationSlug: `sso-login-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const sub = `login-sub-${randomUUID()}`;
+    const idpEmail = `idp-${randomUUID()}@example.test`;
+    await db.insert(authSchema.account).values({
+      id: randomUUID(),
+      accountId: sub,
+      providerId: PROVIDER_ID,
+      userId: tenant.userId,
+    });
+    stub.setSubject({ sub, email: idpEmail, name: 'SSO Login Person', sid: `sid-${randomUUID()}` });
+
+    const { cookie, params } = await initiateSignIn(auth, stub);
+    // Only the callback is under test.
+    await harness.reset();
+    const response = await completeCallback(auth, cookie, params);
+    expect(response.status, 'not a rejection').toBeLessThan(400);
+
+    await harness.forceFlush();
+    const logs = [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'auth.security.login_succeeded',
+    );
+    expect(logs, 'exactly one login_succeeded log record').toHaveLength(1);
+    expect(logs[0]?.attributes).toEqual({
+      'tayzu.actor.id': tenant.userId,
+      'tayzu.tenant.id': tenant.organizationId,
+    });
+
+    const snapshot = JSON.stringify({ attributes: logs[0]?.attributes, body: logs[0]?.body });
+    for (const forbidden of [email, idpEmail, sub]) {
+      expect(snapshot, `the record never contains ${forbidden}`).not.toContain(forbidden);
+    }
+    expect(snapshot, 'no IP address in the record').not.toMatch(
+      /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/,
+    );
+  }, 60_000);
+});

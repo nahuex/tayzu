@@ -909,7 +909,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `entities.upsert`, an upsert-create for the caller's own team or with no
   owner team allowed, and a list-valued `ownerTeam` denied on create and
   upsert.
-- [ ] 24.5 `auth.security.login_succeeded` is also emitted when a two-factor
+- [x] 24.5 `auth.security.login_succeeded` is also emitted when a two-factor
   verification creates the session and when the Visma Connect callback
   succeeds, with the design's attributes and nothing else (design Q54, log
   events table). Verify: `auth-flow.int.test.ts` (extended) covers the MFA

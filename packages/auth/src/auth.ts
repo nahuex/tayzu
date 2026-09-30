@@ -714,6 +714,18 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               },
             };
           },
+          // Task 24.5, design Q54: a Visma Connect callback sign-in creates its
+          // session here (a `form_post` redirect hop creates none).
+          after: (session, context) => {
+            if (context?.path === GENERIC_OAUTH_CALLBACK_ROUTE) {
+              const row = session as { userId: string; activeOrganizationId?: string | null };
+              emitLoginSucceeded({
+                actorId: row.userId,
+                tenantId: row.activeOrganizationId ?? undefined,
+              });
+            }
+            return Promise.resolve();
+          },
         },
       },
     },
@@ -870,6 +882,19 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             value: 'mfa',
             expiresAt: new Date(Date.now() + STEP_UP_FRESHNESS_MS),
           });
+          // Task 24.5, design Q54: the verification created the session.
+          const sessionRow = await ctx.context.adapter.findOne<
+            ActiveOrganizationRow & { userId: string }
+          >({
+            model: 'session',
+            where: [{ field: 'token', value: response.token }],
+          });
+          if (sessionRow !== null) {
+            emitLoginSucceeded({
+              actorId: sessionRow.userId,
+              tenantId: sessionRow.activeOrganizationId ?? undefined,
+            });
+          }
         }
       }),
     },
