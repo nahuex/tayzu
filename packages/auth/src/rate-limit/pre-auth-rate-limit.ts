@@ -47,7 +47,7 @@
  * tasks' concern and extend `PRE_AUTH_RATE_LIMIT_RULES` and
  * `PreAuthRateLimitOptions` the same way, not a new mechanism.
  */
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import { getIP } from 'better-auth/api';
 import type { BetterAuthPlugin, DBAdapter } from 'better-auth/types';
@@ -81,6 +81,12 @@ export interface PreAuthRateLimitOptions {
   readonly twoFactorVerify?: RateLimitRuleOptions;
   /** One bucket family shared by every email-verification route (task 11.18); scope `sign_in`-style keys, see rule table. */
   readonly emailVerification?: RateLimitRuleOptions;
+  /**
+   * One bucket family shared by every allowlisted route that checks the
+   * current password (task 24.2, design Q52): per IP and per authenticated
+   * user id, resolved from the session cookie.
+   */
+  readonly passwordCheck?: RateLimitRuleOptions;
 }
 
 /** The narrow shape this module needs from `CreateAuthOptions` (avoids importing `../auth.ts`, which imports this module). */
@@ -94,8 +100,19 @@ interface PreAuthRateLimitRule {
   readonly scope: RateLimitScope;
   /** `false` for routes whose request carries no email: only the IP bucket applies (an empty-email bucket would be shared by every caller). */
   readonly keyedByEmail: boolean;
+  /** `true` for routes that carry no email but an authenticated session: a second bucket keyed by the session's user id (task 24.2). */
+  readonly keyedByUser?: boolean;
   readonly ruleOptions: (options: PreAuthRateLimitHostOptions) => RateLimitRuleOptions | undefined;
 }
+
+/** Allowlisted routes that check the current password (design Q52, task 24.2). */
+const PASSWORD_CHECK_PATHS: readonly string[] = [
+  '/verify-password',
+  '/change-password',
+  '/two-factor/enable',
+  '/two-factor/generate-backup-codes',
+  '/link-social',
+];
 
 /**
  * Extensible by design (task 2.5's own text): a later task adds one more
@@ -128,6 +145,13 @@ const PRE_AUTH_RATE_LIMIT_RULES: readonly PreAuthRateLimitRule[] = [
     keyedByEmail: false,
     ruleOptions: (options) => options.rateLimit?.twoFactorVerify,
   },
+  ...PASSWORD_CHECK_PATHS.map((path): PreAuthRateLimitRule => ({
+    path,
+    scope: 'sign_in',
+    keyedByEmail: false,
+    keyedByUser: true,
+    ruleOptions: (options) => options.rateLimit?.passwordCheck,
+  })),
   {
     path: '/send-verification-email',
     scope: 'sign_in',
@@ -161,7 +185,11 @@ interface ConsumeResult {
 }
 
 /** SHA-256 of `scope:kind:value`, hex-encoded: no IP address or email is ever persisted in clear (design D20). */
-function hashBucketKey(scope: RateLimitScope, kind: 'ip' | 'email', value: string): string {
+function hashBucketKey(
+  scope: RateLimitScope,
+  kind: 'ip' | 'email' | 'user',
+  value: string,
+): string {
   return createHash('sha256').update(`${scope}:${kind}:${value}`).digest('hex');
 }
 
@@ -202,6 +230,47 @@ async function readNormalizedEmail(request: Request): Promise<string> {
     // Malformed JSON: falls through to the empty-email bucket below.
   }
   return '';
+}
+
+/**
+ * Resolves the authenticated user id from the signed session cookie, or
+ * `null` (no cookie, bad signature, unknown or expired session). The HMAC is
+ * verified before any lookup so a forged cookie can never name another
+ * user's bucket. Better Auth's signed-cookie format: `value.base64(HMAC-SHA256)`,
+ * URL-encoded.
+ */
+async function resolveSessionUserId(
+  request: Request,
+  ctx: Parameters<NonNullable<BetterAuthPlugin['onRequest']>>[1],
+): Promise<string | null> {
+  const cookieName = ctx.authCookies.sessionToken.name;
+  const header = request.headers.get('cookie') ?? '';
+  for (const part of header.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator === -1 || part.slice(0, separator).trim() !== cookieName) {
+      continue;
+    }
+    let signed: string;
+    try {
+      signed = decodeURIComponent(part.slice(separator + 1).trim());
+    } catch {
+      return null;
+    }
+    const dot = signed.lastIndexOf('.');
+    if (dot < 1) {
+      return null;
+    }
+    const token = signed.slice(0, dot);
+    const expected = createHmac('sha256', ctx.secret).update(token).digest('base64');
+    const provided = Buffer.from(signed.slice(dot + 1));
+    const wanted = Buffer.from(expected);
+    if (provided.length !== wanted.length || !timingSafeEqual(provided, wanted)) {
+      return null;
+    }
+    const found = await ctx.internalAdapter.findSession(token);
+    return found?.session.userId ?? null;
+  }
+  return null;
 }
 
 /**
@@ -345,11 +414,13 @@ export function preAuthRateLimitPlugin(options: PreAuthRateLimitHostOptions): Be
 
       const ip = getIP(request, ctx.options) ?? FALLBACK_IP_KEY;
       const ipKey = hashBucketKey(rule.scope, 'ip', ip);
-      // Email-verification routes get their own key namespace so they never share a bucket with sign-in.
+      // Email-verification and password-check routes get their own key namespace so they never share a bucket with sign-in.
       const namespace =
         rule.path === '/send-verification-email' || rule.path === '/verify-email'
           ? 'email_verification'
-          : rule.scope;
+          : rule.keyedByUser === true
+            ? 'password_check'
+            : rule.scope;
       const [ipResult, emailResult] = await Promise.all([
         consumeRateLimitBucket(
           ctx.adapter,
@@ -370,14 +441,25 @@ export function preAuthRateLimitPlugin(options: PreAuthRateLimitHostOptions): Be
             )
           : Promise.resolve<ConsumeResult>({ allowed: true, retryAfterSeconds: null }),
       ]);
+      // An unauthenticated caller has no user bucket: the IP bucket above still applies.
+      const userId = rule.keyedByUser === true ? await resolveSessionUserId(request, ctx) : null;
+      const userResult =
+        userId === null
+          ? ({ allowed: true, retryAfterSeconds: null } satisfies ConsumeResult)
+          : await consumeRateLimitBucket(
+              ctx.adapter,
+              hashBucketKey(rule.scope, 'user', `password_check:${userId}`),
+              ruleOptions,
+            );
 
-      if (ipResult.allowed && emailResult.allowed) {
+      if (ipResult.allowed && emailResult.allowed && userResult.allowed) {
         return;
       }
 
       const retryAfterSeconds = Math.max(
         ipResult.retryAfterSeconds ?? 0,
         emailResult.retryAfterSeconds ?? 0,
+        userResult.retryAfterSeconds ?? 0,
         1,
       );
       emitRateLimited(rule.scope);

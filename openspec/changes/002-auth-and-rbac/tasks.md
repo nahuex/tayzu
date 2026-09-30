@@ -887,7 +887,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   same user passing after `/two-factor/verify-totp`, and a user without MFA
   still passing with a password re-entry; `link-social-step-up.int.test.ts`
   covers the same refusal on `/link-social`.
-- [ ] 24.2 Every allowlisted route that checks the current password
+- [x] 24.2 Every allowlisted route that checks the current password
   (`/verify-password`, `/change-password`, `/two-factor/enable`,
   `/two-factor/generate-backup-codes`, `/link-social`) is limited per user and
   per IP by the pre-authentication limiter (design Q52, D20). Verify:

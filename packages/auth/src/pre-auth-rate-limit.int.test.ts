@@ -127,6 +127,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance, type CreateAuthOptions } from './auth.js';
 import * as authSchema from './persistence/schema.js';
+import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
@@ -576,5 +577,132 @@ describe('Pre-authentication two-factor verification rate limiting (task 11.18, 
         429,
       );
     }
+  });
+});
+
+/**
+ * Task 24.2 (design Q52, D20): every allowlisted route that checks the
+ * current password (`/verify-password`, `/change-password`,
+ * `/two-factor/enable`, `/two-factor/generate-backup-codes`, `/link-social`)
+ * is limited per user and per IP by the pre-authentication limiter. Named
+ * checks (tasks.md Verify clause): repeated wrong passwords on
+ * `/verify-password` from one session being limited, the same user from a
+ * second IP being limited by the per-user bucket, and another user being
+ * unaffected. The other four routes share the same rule family and are not
+ * exercised here (the Verify clause names only `/verify-password`).
+ *
+ * Production symbol expected (test-writer design choice, like `signIn` and
+ * `twoFactorVerify` above): `CreateAuthOptions.rateLimit.passwordCheck:
+ * { window: number; max: number }`, one bucket family shared by every
+ * password-checking route, keyed by the IP and by the authenticated user id
+ * (resolved from the session cookie in the plugin's `onRequest` hook, since
+ * these bodies carry no email). Rejection is `429` + `AUTH_RATE_LIMITED` +
+ * `Retry-After`, exactly like the other scopes. The telemetry scope enum is
+ * left open, so it is not asserted here.
+ *
+ * Under the limit, Better Auth itself answers a wrong password on
+ * `/verify-password` with its ordinary non-429 failure.
+ */
+const PASSWORD_CHECK_WINDOW_SECONDS = 60;
+const PASSWORD_CHECK_MAX = 3;
+
+interface PasswordCheckCreateAuthOptions extends Omit<CreateAuthOptions, 'rateLimit'> {
+  readonly rateLimit: {
+    readonly passwordCheck: { readonly window: number; readonly max: number };
+  };
+}
+
+describe('Password-checking routes are rate-limited per user and per IP (task 24.2, design Q52, D20)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+
+  const TRUSTED_ORIGIN = 'http://localhost:3000';
+  const CORRECT_PASSWORD = 'correct horse battery staple';
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    const options: PasswordCheckCreateAuthOptions = {
+      db,
+      secret: TEST_SECRET,
+      trustedOrigins: [TRUSTED_ORIGIN],
+      rateLimit: {
+        passwordCheck: {
+          window: PASSWORD_CHECK_WINDOW_SECONDS,
+          max: PASSWORD_CHECK_MAX,
+        },
+      },
+    };
+    // `passwordCheck` is not on `PreAuthRateLimitOptions` yet (the green phase adds it), so widen explicitly.
+    auth = createAuth(options);
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  async function signedInCookie(): Promise<string> {
+    const tenant = await bootstrapTestTenant(auth, {
+      name: 'Password Check Test User',
+      email: randomEmail(),
+      password: CORRECT_PASSWORD,
+      organizationName: 'Password Check Test Org',
+      organizationSlug: `pwcheck-org-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    return tenant.cookie;
+  }
+
+  function verifyWrongPassword(cookie: string, ip: string): Promise<Response> {
+    return handlerOf(auth)(
+      new Request('http://localhost:3000/api/auth/verify-password', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': ip,
+          cookie,
+          origin: TRUSTED_ORIGIN,
+        },
+        body: JSON.stringify({ password: WRONG_PASSWORD }),
+      }),
+    );
+  }
+
+  async function consumeAllowedAttempts(cookie: string, ip: string): Promise<void> {
+    for (let attempt = 0; attempt < PASSWORD_CHECK_MAX; attempt += 1) {
+      const response = await verifyWrongPassword(cookie, ip);
+      expect(response.status, 'an attempt under the limit is not rate-limited').not.toBe(429);
+      expect(response.status, 'a wrong password is refused, never accepted').not.toBe(200);
+    }
+  }
+
+  it('Repeated wrong passwords on /verify-password from one session are rate-limited', async () => {
+    const cookie = await signedInCookie();
+    const ip = randomIp();
+
+    await consumeAllowedAttempts(cookie, ip);
+
+    await expectBlockedByRateLimit(await verifyWrongPassword(cookie, ip));
+  });
+
+  it('The same user from a second IP is limited by the per-user bucket', async () => {
+    const cookie = await signedInCookie();
+    await consumeAllowedAttempts(cookie, randomIp());
+
+    // A fresh IP has an untouched per-IP bucket: only the per-user bucket can block this.
+    await expectBlockedByRateLimit(await verifyWrongPassword(cookie, randomIp()));
+  });
+
+  it('Another user is unaffected by the first user being limited', async () => {
+    const firstCookie = await signedInCookie();
+    const firstIp = randomIp();
+    await consumeAllowedAttempts(firstCookie, firstIp);
+    await expectBlockedByRateLimit(await verifyWrongPassword(firstCookie, firstIp));
+
+    const otherCookie = await signedInCookie();
+    const response = await verifyWrongPassword(otherCookie, randomIp());
+
+    expect(response.status, 'a different user on a fresh IP is not rate-limited').not.toBe(429);
+    expect(response.status, 'a wrong password is refused, never accepted').not.toBe(200);
   });
 });
