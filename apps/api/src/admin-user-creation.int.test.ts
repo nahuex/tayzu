@@ -134,11 +134,12 @@ describe('identity.users.create (task 18.3, design D22)', () => {
 
     // GIVEN a caller with the `admin` role; WHEN they create a user.
     const result = await client.identity.users.create(
-      { email, name: 'Created By Admin', role: 'user' },
+      { email, name: 'Created By Admin', role: 'member' },
       { context: context(tenantId, ['admin']) },
     );
 
-    // THEN a Tayzu user account exists, with the fixed initial role...
+    // THEN a Tayzu user account exists, with the fixed global role `user`
+    // (design Q37: `member` is the organization role, not the global one)...
     const row = await findUser(email);
     expect(row, 'a user account exists for the email').toBeDefined();
     expect(row?.role).toBe('user');
@@ -163,7 +164,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     // GIVEN a caller with only the `member` role; WHEN they attempt to create a user.
     const thrown: unknown = await client.identity.users
       .create(
-        { email, name: 'Should Not Exist', role: 'user' },
+        { email, name: 'Should Not Exist', role: 'member' },
         { context: context(tenantId, ['member']) },
       )
       .then(
@@ -178,4 +179,69 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     // ...and nothing was created.
     expect(await findUser(email)).toBeUndefined();
   }, 60_000);
+
+  // Task 23.9 (design Q37, D22): `role` is an ORGANIZATION role (`member` or
+  // `admin`); the global Better Auth role is always `user`; the membership is
+  // added in the same operation. Expected production behavior: `role` outside
+  // {member, admin} is rejected with `CATALOG_VALIDATION_FAILED` before any
+  // user is created; `identity.users.create` adds an `auth.member` row.
+  async function findMemberships(
+    userId: string,
+  ): Promise<readonly { organizationId: string; role: string }[]> {
+    const db = drizzle(authPool, { schema: authSchema });
+    const result = await db.execute<{ organizationId: string; role: string }>(sql`
+      select organization_id as "organizationId", role from auth.member where user_id = ${userId}
+    `);
+    return result.rows;
+  }
+
+  it('Task 23.9: role "admin" creates a user whose global role is `user` with an org `admin` membership', async () => {
+    const tenantId = await freshTenantId();
+    const email = `org-admin-${randomUUID()}@example.test`;
+
+    const result = await client.identity.users.create(
+      { email, name: 'Org Admin', role: 'admin' },
+      { context: context(tenantId, ['admin']) },
+    );
+
+    const row = await findUser(email);
+    expect(row?.role, 'global auth.user.role is always `user`').toBe('user');
+    const memberships = await findMemberships(result.userId);
+    expect(memberships).toEqual([{ organizationId: tenantId, role: 'admin' }]);
+  }, 60_000);
+
+  it('Task 23.9: role "member" creates a user whose global role is `user` with an org `member` membership', async () => {
+    const tenantId = await freshTenantId();
+    const email = `org-member-${randomUUID()}@example.test`;
+
+    const result = await client.identity.users.create(
+      { email, name: 'Org Member', role: 'member' },
+      { context: context(tenantId, ['admin']) },
+    );
+
+    const row = await findUser(email);
+    expect(row?.role).toBe('user');
+    const memberships = await findMemberships(result.userId);
+    expect(memberships).toEqual([{ organizationId: tenantId, role: 'member' }]);
+  }, 60_000);
+
+  it.each(['user', 'owner', 'user,admin', ''])(
+    'Task 23.9: role %j is rejected as invalid input and no user is created',
+    async (role) => {
+      const tenantId = await freshTenantId();
+      const email = `invalid-role-${randomUUID()}@example.test`;
+
+      const thrown: unknown = await client.identity.users
+        .create({ email, name: 'Invalid Role', role }, { context: context(tenantId, ['admin']) })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+      expect(thrown, 'the call must be rejected').toBeDefined();
+      expect((thrown as { code?: unknown }).code).toBe('CATALOG_VALIDATION_FAILED');
+      expect(await findUser(email)).toBeUndefined();
+    },
+    60_000,
+  );
 });

@@ -87,7 +87,7 @@ export interface CreateIdentityRouterOptions {
 export interface CreateUserInput {
   readonly email: string;
   readonly name: string;
-  readonly role: string;
+  readonly role: AssignableOrgRole;
 }
 
 export interface CreateUserOutput {
@@ -100,7 +100,17 @@ interface CreateUserApiSurface {
   createUser(args: {
     body: { name: string; email: string; password: string; role: string };
   }): Promise<{ user: { id: string; email: string } }>;
+  addMember(args: {
+    body: { userId: string; role: 'member' | 'admin'; organizationId: string };
+  }): Promise<unknown>;
 }
+
+/** Design Q37: `role` is an organization role; the global adminRoles are never assignable. */
+const ASSIGNABLE_ORG_ROLES = ['member', 'admin'] as const;
+type AssignableOrgRole = (typeof ASSIGNABLE_ORG_ROLES)[number];
+
+/** The fixed global Better Auth role every created user gets (design Q37). */
+const GLOBAL_USER_ROLE = 'user';
 
 type RawContext = Record<string, unknown>;
 
@@ -114,7 +124,8 @@ function parseInput(raw: unknown): CreateUserInput {
   if (!isNonEmptyString(email) || !isNonEmptyString(name) || !isNonEmptyString(role)) {
     throw new IdentityInputError();
   }
-  return { email, name, role };
+  if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
+  return { email, name, role: role as AssignableOrgRole };
 }
 
 /** Cerbos `user` / `<action>` for the host-supplied principal; anything but an explicit allow is a deny. */
@@ -268,8 +279,12 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               name: input.name,
               email: input.email,
               password: temporaryPassword,
-              role: input.role,
+              role: GLOBAL_USER_ROLE,
             },
+          });
+          // Same operation: the org plugin's member hooks keep syncing `_user`.
+          await userApi.addMember({
+            body: { userId: user.id, role: input.role, organizationId: rawTenantId(context) },
           });
           await options.userSync?.upsertUser({
             tenantId: rawTenantId(context),

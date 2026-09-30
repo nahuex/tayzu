@@ -282,7 +282,7 @@ describe('Creating a user creates a matching `_user` entity, without a Better Au
     const email = `created-${id}@example.test`;
 
     await client.identity.users.create(
-      { email, name: 'Created By Admin', role: 'user' },
+      { email, name: 'Created By Admin', role: 'member' },
       {
         context: {
           tenantId: org.id,

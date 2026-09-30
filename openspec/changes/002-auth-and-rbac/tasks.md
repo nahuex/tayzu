@@ -793,7 +793,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   MFA method satisfies step-up" and "A Visma Connect re-authorization without
   a qualifying MFA claim does not satisfy step-up" through `createApp`, on an
   `x-tayzu-risk: high` operation.
-- [ ] 23.9 `identity.users.create` accepts only the organization roles
+- [x] 23.9 `identity.users.create` accepts only the organization roles
   `member` or `admin`, always creates the Better Auth user with global role
   `user`, adds the organization membership in the same operation, and no
   input can assign `adminRoles` (design Q37, D22). Verify: `admin-user-
