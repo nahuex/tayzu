@@ -33,6 +33,8 @@ API_PORT="${DAST_API_PORT:-3000}"
 CERBOS_ADDRESS="${CERBOS_ADDRESS:-localhost:3593}"
 CERBOS_HEALTH_URL="${DAST_CERBOS_HEALTH_URL:-http://localhost:3592/_cerbos/health}"
 STATE_DIR="${DAST_STATE_DIR:-${RUNNER_TEMP:-/tmp}/tayzu-dast}"
+# Relative to the repository root, and to /zap/wrk inside the ZAP container.
+RULES_FILE=".zap/rules.tsv"
 
 log() {
   echo "dast: $*"
@@ -173,7 +175,9 @@ scan() {
   local env_file="$STATE_DIR/zap.env"
   [ -f "$env_file" ] || fail "run 'dast.sh up' first (no seeded session)"
   local work="$STATE_DIR/zap"
-  mkdir -p "$work"
+  mkdir -p "$work/.zap"
+  # Same relative path as in CI, where the action mounts the workspace.
+  cp "$REPO_ROOT/$RULES_FILE" "$work/$RULES_FILE"
   touch "$work/report_json.json" "$work/report_md.md" "$work/report_html.html"
   chmod -R a+rwX "$work"
 
@@ -183,12 +187,15 @@ scan() {
   set +a
   export ZAP_AUTH_HEADER_SITE="localhost"
 
+  # zap-baseline.py first installs the beta passive rules from the ZAP
+  # marketplace, as in CI; where the marketplace is unreachable (a sandbox
+  # with a restrictive network policy), ZAP runs its bundled rules only.
   docker pull -q "$ZAP_IMAGE" >/dev/null
   local code=0
   docker run --rm -v "$work:/zap/wrk/:rw" --network=host \
     -e ZAP_AUTH_HEADER -e ZAP_AUTH_HEADER_VALUE -e ZAP_AUTH_HEADER_SITE \
     "$ZAP_IMAGE" zap-baseline.py -t "http://localhost:${API_PORT}" \
-    -J report_json.json -w report_md.md -r report_html.html || code=$?
+    -J report_json.json -w report_md.md -r report_html.html -c "$RULES_FILE" || code=$?
   # zap-baseline.py: 1 = a FAIL alert, 2 = a WARN alert, 3 = the scan failed.
   # The CI action (fail_action: true) fails the job on 1 and 2, and so does this.
   case "$code" in
