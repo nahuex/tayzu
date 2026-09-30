@@ -118,6 +118,9 @@ const BLOCKED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   // Leaves the allowlist (Q52): `/two-factor/enable` already returns the URI.
   '/two-factor/get-totp-uri',
   '/two-factor/disable',
+  // Leaves the allowlist (Q56): 002 sends no email.
+  '/send-verification-email',
+  '/verify-email',
   // JWT plugin (`/jwks` is allowlisted per design D5; `/token` stays blocked).
   '/token',
   // apiKey plugin management routes.
@@ -346,6 +349,18 @@ describe('apps/api /api/auth/* allowlist: /two-factor/get-totp-uri (task 24.3, d
       '/two-factor/verify-backup-code',
     ]) {
       expect(ALLOWED_AUTH_ROUTES.has(path)).toBe(true);
+    }
+  });
+});
+
+describe('apps/api /api/auth/* allowlist: verification-email routes (task 24.7, design Q56 and D18)', () => {
+  const mounted = enumerateMountedRoutes();
+
+  it('/send-verification-email and /verify-email are still mounted Better Auth routes, but no longer allowlisted (Q56)', () => {
+    for (const path of ['/send-verification-email', '/verify-email']) {
+      expect(mounted.map((route) => route.path)).toContain(path);
+      expect(ALLOWED_AUTH_ROUTES.has(path)).toBe(false);
+      expect(isAllowedAuthPath(`${AUTH_BASE_PATH}${path}`)).toBe(false);
     }
   });
 });

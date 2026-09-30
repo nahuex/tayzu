@@ -919,7 +919,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   outside test (design Q56, Q40). Verify: `config.test.ts` covers an `http`
   origin and a `*` rejected at startup outside test, and `http://localhost`
   accepted in test.
-- [ ] 24.7 `/send-verification-email` and `/verify-email` leave the D18
+- [x] 24.7 `/send-verification-email` and `/verify-email` leave the D18
   allowlist, since 002 sends no email (design Q56, D18). Verify:
   `auth-route-allowlist.int.test.ts` and the drift test cover both answering
   `404`.

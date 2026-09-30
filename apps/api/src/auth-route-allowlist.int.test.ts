@@ -229,6 +229,27 @@ describe('apps/api /api/auth/* route allowlist (task 11.9)', () => {
     60_000,
   );
 
+  it.each([
+    ['POST', '/api/auth/send-verification-email'],
+    ['GET', '/api/auth/verify-email'],
+    ['POST', '/api/auth/verify-email'],
+  ] as const)(
+    'Verification-email routes leave the allowlist (Q56, D18): %s %s is a plain 404 identical to an unknown path',
+    async (method, url) => {
+      const unknownUrl = '/api/auth/definitely-not-a-route-' + randomUUID();
+      // Even a fully signed-in caller gets the same 404: the route is absent, not forbidden.
+      for (const credential of [undefined, cookie]) {
+        const blocked = await probe(app, method, url, credential);
+        const unknown = await probe(app, method, unknownUrl, credential);
+
+        expect(blocked.statusCode).toBe(404);
+        expect(blocked.contentType).toEqual(unknown.contentType);
+        expect(normalize(blocked.body, url)).toBe(normalize(unknown.body, unknownUrl));
+      }
+    },
+    60_000,
+  );
+
   it('GET /api/auth/jwks is reachable and returns public keys only (design D5)', async () => {
     const response = await probe(app, 'GET', '/api/auth/jwks');
 
@@ -275,8 +296,6 @@ describe('apps/api /api/auth/* route allowlist (task 11.9)', () => {
     ['POST', '/api/auth/two-factor/enable'],
     ['POST', '/api/auth/two-factor/verify-totp'],
     ['POST', '/api/auth/organization/set-active'],
-    ['POST', '/api/auth/send-verification-email'],
-    ['GET', '/api/auth/verify-email'],
     ['POST', '/api/auth/sign-in/social'],
     ['GET', '/api/auth/list-accounts'],
   ] as const)(

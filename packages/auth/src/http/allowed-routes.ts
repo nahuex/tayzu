@@ -20,9 +20,6 @@ export const ALLOWED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   '/two-factor/verify-backup-code',
   // Self-service tenant switch (D19).
   '/organization/set-active',
-  // Email verification.
-  '/send-verification-email',
-  '/verify-email',
   // Visma Connect sign-in and account linking (D23, D24).
   '/sign-in/social',
   '/callback/visma-connect',

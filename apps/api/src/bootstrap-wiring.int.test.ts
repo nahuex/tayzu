@@ -1036,18 +1036,19 @@ describe('production app wiring guard: remaining protections (task 11.19)', () =
     expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
   }, 60_000);
 
-  it('Repeated email-verification requests are rate-limited on the production app', async () => {
+  it('Repeated wrong-password sign-ins are rate-limited on the production app', async () => {
     const ip = randomIp();
+    const email = `nobody-${randomUUID()}@example.test`;
     const send = () =>
       app.app.inject({
         method: 'POST',
-        url: '/api/auth/send-verification-email',
+        url: '/api/auth/sign-in/email',
         headers: {
           'content-type': 'application/json',
           origin: 'http://localhost:3000',
           'x-forwarded-for': ip,
         },
-        payload: JSON.stringify({ email: `nobody-${randomUUID()}@example.test` }),
+        payload: JSON.stringify({ email, password: `wrong-${randomUUID()}` }),
       });
     for (let i = 0; i < MAX; i += 1) {
       expect((await send()).statusCode).not.toBe(429);
