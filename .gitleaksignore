@@ -1,0 +1,7 @@
+# Findings reviewed and accepted (gitleaks fingerprints: commit:file:rule:line).
+# Both are a dummy password for users created by integration tests, never a
+# real credential. The literal has since been replaced by TEST_PASSWORD
+# (packages/auth/src/__fixtures__/test-secret.ts, generated per test run);
+# these entries cover only the historical commits that still contain it.
+06d1891360da5b9563b16a1145913814b6e50a09:apps/api/src/sso-jit-refresh.int.test.ts:generic-api-key:60
+c2e94f55011ca699bdc7f69c74bac39905b8a462:packages/auth/src/sso-sign-in.int.test.ts:generic-api-key:425

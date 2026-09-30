@@ -60,7 +60,7 @@ import type { Pool } from 'pg';
 import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createIdentityRouter } from './identity-router.js';
-import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 const PROVIDER_ID = 'visma-connect';
 
@@ -119,7 +119,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     const owner = await createAdminUser(auth, {
       name: 'Tenant Owner',
       email: `owner-${id}@example.test`,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     const org = await (auth.api as CreateOrganizationSurface).createOrganization({
       body: { name: 'Account Linking Org', slug: `account-linking-${id}`, userId: owner.userId },
@@ -146,7 +146,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     return createAdminUser(auth, {
       name: label,
       email,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
   }
 
@@ -193,12 +193,12 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     const target = await createAdminUser(auth, {
       name: 'Link Target',
       email: `target-${randomUUID()}@example.test`,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     const other = await createAdminUser(auth, {
       name: 'Bystander',
       email: `bystander-${randomUUID()}@example.test`,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     await join(target.userId, tenantId);
     const subject = `visma-sub-${randomUUID()}`;

@@ -63,7 +63,7 @@ import {
 import { harnessPools } from './__fixtures__/pools.js';
 // The module under test (task 18.3): does not exist yet.
 import { createIdentityRouter } from './identity-router.js';
-import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 function randomIp(): string {
   const octet = (): string => String(1 + Math.floor(Math.random() * 254));
@@ -104,7 +104,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     const owner = await createAdminUser(auth, {
       name: 'Tenant Owner',
       email: `owner-${id}@example.test`,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     const org = await (auth.api as CreateOrganizationSurface).createOrganization({
       body: { name: 'Admin Creation Org', slug: `admin-creation-${id}`, userId: owner.userId },

@@ -56,7 +56,7 @@ import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver } from './context-resolver.js';
 import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
 import * as authSchema from './persistence/schema.js';
-import { TEST_SECRET } from './__fixtures__/test-secret.js';
+import { TEST_SECRET, TEST_PASSWORD } from './__fixtures__/test-secret.js';
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -422,7 +422,7 @@ describe('Visma Connect linked sign-in (task 19.5, design D23/D24)', () => {
     const tenant = await bootstrapTestTenant(auth, {
       name: 'Linked Person',
       email: `linked-${randomUUID()}@example.test`,
-      password: 'correct-horse-battery-staple-1',
+      password: TEST_PASSWORD,
       organizationName: 'Linked Org',
       organizationSlug: `linked-${randomUUID()}`,
       ip: randomIp(),

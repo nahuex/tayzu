@@ -52,7 +52,7 @@ import {
   createAdminUser,
   signInAdminUser,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
-import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 interface BetterAuthAdminSurface {
   createOrganization(args: {
@@ -113,7 +113,7 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
     const ownerUser = await createAdminUser(auth, {
       name: 'Org Owner',
       email: owner.email,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     const org = await api.createOrganization({
       body: { name: 'Sync Org', slug: owner.slug, userId: ownerUser.userId },
@@ -127,7 +127,7 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
     const created = await createAdminUser(auth, {
       name: 'Created Member',
       email: member.email,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     await api.addMember({ body: { userId: created.userId, organizationId, role: 'member' } });
 
@@ -172,7 +172,7 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
     // Better Auth's admin plugin requires an authenticated admin session on
     // banUser / unbanUser (adminMiddleware): sign in a real admin of the org.
     const adminCreds = fresh();
-    const adminPassword = 'correct-horse-battery-staple';
+    const adminPassword = TEST_PASSWORD;
     const admin = await api.createUser({
       body: {
         name: 'Org Admin',
@@ -195,7 +195,7 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
     const created = await createAdminUser(auth, {
       name: 'Ban Target',
       email: member.email,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     await api.addMember({ body: { userId: created.userId, organizationId, role: 'member' } });
     expect((await readUser(organizationId, member.email)).spec.properties['status']).toBe('Active');
@@ -274,7 +274,7 @@ describe('Creating a user creates a matching `_user` entity, without a Better Au
     const owner = await createAdminUser(auth, {
       name: 'Tenant Owner',
       email: `owner-${id}@example.test`,
-      password: 'correct-horse-battery-staple',
+      password: TEST_PASSWORD,
     });
     const org = await (auth.api as BetterAuthAdminSurface).createOrganization({
       body: { name: 'Sync Org 18.5', slug: `sync-185-${id}`, userId: owner.userId },
