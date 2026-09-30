@@ -973,7 +973,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   reject `trustDevice: true` with `400` (design Q61, Q43). Verify:
   `mfa.int.test.ts` (extended) covers the refusal, no trust-device cookie
   being set, and verification without it still succeeding.
-- [ ] 25.3 Outside test, `createAppFromEnv` fails startup when the role
+- [x] 25.3 Outside test, `createAppFromEnv` fails startup when the role
   behind `DATABASE_URL` or `AUTH_DATABASE_URL` is a superuser, has
   `BYPASSRLS`, or owns a catalog table (design Q62, D6). Verify:
   `bootstrap-wiring.int.test.ts` (extended) covers a superuser URL and a

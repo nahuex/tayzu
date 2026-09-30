@@ -12,6 +12,25 @@ import { createApp, type App } from './server.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
+/**
+ * Startup assertion on a runtime database role (design Q62, D6): the role in
+ * effect must not be a superuser, must not have BYPASSRLS and must own no
+ * catalog table. Judges `current_user`, and throws a fixed message so nothing
+ * from the connection (host, password, role name) reaches the error.
+ */
+async function assertRuntimeRole(pool: ReturnType<typeof createPool>): Promise<void> {
+  const result = await pool.query<{ privileged: boolean }>(
+    `select (r.rolsuper or r.rolbypassrls or exists (
+       select 1 from pg_class c
+       where c.relowner = r.oid and c.relkind in ('r', 'p') and c.relname like 'catalog\\_%'
+     )) as privileged
+     from pg_roles r where r.rolname = current_user`,
+  );
+  if (result.rows[0]?.privileged !== false) {
+    throw new Error('A runtime database role is privileged: startup aborted');
+  }
+}
+
 export async function createAppFromEnv(env: Env): Promise<App> {
   const config = loadConfig(env);
   const appUrl = config.appDatabaseUrl;
@@ -23,6 +42,10 @@ export async function createAppFromEnv(env: Env): Promise<App> {
   let authPool: ReturnType<typeof createPool> | undefined;
   try {
     authPool = createPool(authUrl);
+    if ((env['NODE_ENV'] ?? process.env['NODE_ENV']) !== 'test') {
+      await assertRuntimeRole(appPool);
+      await assertRuntimeRole(authPool);
+    }
     const built = await createApp({
       appPool,
       authPool,

@@ -46,7 +46,9 @@
  * returning 403 (assertion failure). The fresh-verification test already passes.
  */
 import { randomInt, randomUUID } from 'node:crypto';
+import { connect, createServer } from 'node:net';
 
+import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
@@ -1321,4 +1323,230 @@ describe('production app wiring: password-check limiter (task 24.12, Q39, Q52)',
       expect(limitedAt, 'a 429 within the ceiling').toBeDefined();
     }, 120_000);
   });
+});
+
+/**
+ * Task 25.3 (design Q62, D6): outside test, startup fails when the role behind
+ * `DATABASE_URL` or `AUTH_DATABASE_URL` is a superuser, has `BYPASSRLS`, or
+ * owns a catalog table. The task cites no spec scenario; the behavior comes
+ * from design Q62 and D6 (`tayzu_app` and `tayzu_auth` own nothing and bypass
+ * nothing).
+ *
+ * ## Harness
+ *
+ * "Outside test" is `NODE_ENV=production` in the passed env (the signal
+ * `config.ts`/`telemetry.ts` already use); the rest of the production
+ * environment is complete (https `BETTER_AUTH_URL` and origins, telemetry
+ * explicitly disabled). `createPool` is mocked as above, so the pool the
+ * bootstrap receives stands for the role behind each URL; each pool is a real
+ * connection as that role:
+ * - `tayzu_app` / `tayzu_auth`: pools running `SET ROLE` to them (the harness
+ *   pattern), so `current_user` is the role.
+ * - A role that bypasses RLS: the plain `DATABASE_URL` owner pool. That role
+ *   is a superuser in CI and `BYPASSRLS` (not a superuser) in the sandbox, so
+ *   the superuser and BYPASSRLS tests use the same pool and each fails startup
+ *   in whichever way the cluster makes that role privileged.
+ * - A role owning catalog tables: a pool running `SET ROLE tayzu_migrator`
+ *   (owns the catalog tables; neither superuser nor BYPASSRLS).
+ * The check must therefore judge `current_user`, not the login role.
+ *
+ * "No listener bound" is observed through `start` (main.ts) on a pre-picked
+ * free port that must still refuse connections. The URL passwords are
+ * distinctive, and the error must not contain them, the host or any URL.
+ *
+ * ## Production symbols expected
+ *
+ * `createAppFromEnv` (`./bootstrap.js`) rejects, when `NODE_ENV` is not `test`
+ * and before `createApp` or any listener, with an `Error` whose message holds
+ * no connection string, password or host, if either pool's current role is a
+ * superuser, has `BYPASSRLS`, or owns a catalog table. The pools it opened are
+ * closed (`end`) on that failure. It is a startup check in the same spirit as
+ * the ones in `config.ts`/`telemetry.ts`; no migration.
+ *
+ * ## Why this fails right now
+ *
+ * Nothing inspects the roles, so `createAppFromEnv` starts with a privileged
+ * role behind either URL (assertion failure: "started"). The `tayzu_app` and
+ * `tayzu_auth` test already passes.
+ */
+describe('production app wiring: runtime database roles are checked at startup (task 25.3, Q62, D6)', () => {
+  const APP_PASSWORD = `app-pw-${randomUUID()}`;
+  const AUTH_PASSWORD = `auth-pw-${randomUUID()}`;
+  const PRODUCTION_ENV: Record<string, string> = {
+    ...ENV,
+    DATABASE_URL: `postgres://tayzu_app:${APP_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
+    AUTH_DATABASE_URL: `postgres://tayzu_auth:${AUTH_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
+    NODE_ENV: 'production',
+    BETTER_AUTH_URL: 'https://api.tayzu.test',
+    TAYZU_TELEMETRY_DISABLED: 'true',
+  };
+
+  let appRole: import('pg').Pool;
+  let authRole: import('pg').Pool;
+  let migratorRole: import('pg').Pool;
+  let bypassingRole: import('pg').Pool;
+  const ownPools: import('pg').Pool[] = [];
+
+  function poolAs(role: string | undefined): import('pg').Pool {
+    const pool = new Pool({ connectionString: process.env['DATABASE_URL'], max: 2 });
+    if (role !== undefined) {
+      pool.on('connect', (client) => {
+        void client.query(`SET ROLE ${role}`).catch(() => undefined);
+      });
+    }
+    ownPools.push(pool);
+    return pool;
+  }
+
+  beforeAll(async () => {
+    const { authPool } = await harnessPools();
+    bypassingRole = authPool;
+    // Test-only: the cluster role may only inherit tayzu_auth; acting as it needs the SET option.
+    await authPool.query(
+      `do $$ begin execute format('grant tayzu_auth to %I with set true', current_user); end $$`,
+    );
+    appRole = poolAs('tayzu_app');
+    authRole = poolAs('tayzu_auth');
+    migratorRole = poolAs('tayzu_migrator');
+    for (const [pool, expected] of [
+      [appRole, 'tayzu_app'],
+      [authRole, 'tayzu_auth'],
+      [migratorRole, 'tayzu_migrator'],
+    ] as const) {
+      const row = await pool.query<{ current_user: string }>('select current_user');
+      expect(row.rows[0]?.current_user, 'precondition: the pool acts as the role').toBe(expected);
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    state.pools.clear();
+    await Promise.all(ownPools.map((pool) => pool.end()));
+  }, 60_000);
+
+  async function startOutcome(): Promise<{ started: boolean; message: string }> {
+    return createAppFromEnv(PRODUCTION_ENV).then(
+      async (app) => {
+        await app.close();
+        return { started: true, message: '' };
+      },
+      (error: unknown) => ({
+        started: false,
+        message: error instanceof Error ? error.message : 'non-error rejection',
+      }),
+    );
+  }
+
+  function expectSanitized(message: string): void {
+    expect(message).not.toBe('');
+    expect(message).not.toBe('non-error rejection');
+    expect(message).not.toContain(APP_PASSWORD);
+    expect(message).not.toContain(AUTH_PASSWORD);
+    expect(message).not.toContain('db.invalid');
+    expect(message).not.toContain('postgres://');
+  }
+
+  it.each([
+    ['DATABASE_URL', 'app'],
+    ['AUTH_DATABASE_URL', 'auth'],
+  ] as const)(
+    'a superuser role behind %s fails startup with a sanitized error',
+    async (_variable, slot) => {
+      state.pools.set('app', appRole);
+      state.pools.set('auth', authRole);
+      state.pools.set(slot, bypassingRole);
+
+      const outcome = await startOutcome();
+
+      expect(outcome.started, 'startup fails instead of starting').toBe(false);
+      expectSanitized(outcome.message);
+    },
+    60_000,
+  );
+
+  it.each([
+    ['DATABASE_URL', 'app'],
+    ['AUTH_DATABASE_URL', 'auth'],
+  ] as const)(
+    'a BYPASSRLS role behind %s fails startup with a sanitized error',
+    async (_variable, slot) => {
+      state.pools.set('app', appRole);
+      state.pools.set('auth', authRole);
+      state.pools.set(slot, bypassingRole);
+
+      const outcome = await startOutcome();
+
+      expect(outcome.started, 'startup fails instead of starting').toBe(false);
+      expectSanitized(outcome.message);
+    },
+    60_000,
+  );
+
+  it.each([
+    ['DATABASE_URL', 'app'],
+    ['AUTH_DATABASE_URL', 'auth'],
+  ] as const)(
+    'a role owning a catalog table behind %s fails startup with a sanitized error',
+    async (_variable, slot) => {
+      state.pools.set('app', appRole);
+      state.pools.set('auth', authRole);
+      state.pools.set(slot, migratorRole);
+
+      const outcome = await startOutcome();
+
+      expect(outcome.started, 'startup fails instead of starting').toBe(false);
+      expectSanitized(outcome.message);
+    },
+    60_000,
+  );
+
+  it('a failed role check binds no listener', async () => {
+    const probe = createServer();
+    const port = await new Promise<number>((resolve) => {
+      probe.listen(0, '127.0.0.1', () => {
+        resolve((probe.address() as { port: number }).port);
+      });
+    });
+    await new Promise<void>((resolve) => {
+      probe.close(() => {
+        resolve();
+      });
+    });
+    state.pools.set('app', bypassingRole);
+    state.pools.set('auth', authRole);
+    const { start } = await import('./main.js');
+
+    const outcome = await start({ ...PRODUCTION_ENV, HOST: '127.0.0.1', PORT: String(port) }).then(
+      async (server) => {
+        await server.close();
+        return 'started';
+      },
+      (error: unknown) => (error instanceof Error ? error.message : 'non-error rejection'),
+    );
+
+    expect(outcome, 'startup fails instead of starting').not.toBe('started');
+    expectSanitized(outcome);
+    const refused = await new Promise<boolean>((resolve) => {
+      const socket = connect({ host: '127.0.0.1', port });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.once('error', () => {
+        resolve(true);
+      });
+    });
+    expect(refused, 'nothing listens on the configured port').toBe(true);
+  }, 60_000);
+
+  it('tayzu_app and tayzu_auth start normally', async () => {
+    state.pools.set('app', appRole);
+    state.pools.set('auth', authRole);
+
+    const outcome = await startOutcome();
+
+    expect(outcome, 'startup succeeds with the two runtime roles').toEqual({
+      started: true,
+      message: '',
+    });
+  }, 60_000);
 });
