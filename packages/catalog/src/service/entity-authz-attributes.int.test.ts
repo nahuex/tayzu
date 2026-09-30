@@ -386,6 +386,97 @@ describe('entity operations authorize with entity attributes (task 23.2, Q34, D9
     await update(tenantId, ctx(tenantId, 'admin-2', ADMIN), 'service', 'frozen');
   });
 
+  describe('an update that changes ownerTeam is also authorized with create against the new owner team (task 25.4, Q63, Q34)', () => {
+    const reassign = (who: Record<string, unknown>, identifier: string, relations: unknown) =>
+      entities.upsert(who, {
+        blueprint: 'service',
+        identifier,
+        title: `${identifier} reassigned`,
+        mode: 'merge',
+        spec: { properties: {}, relations },
+      } as never);
+
+    /** The owner team Cerbos sees for the stored entity, read through a real `get`. */
+    const storedOwner = async (tenantId: string, identifier: string): Promise<unknown> => {
+      recorded.length = 0;
+      await entities.get(ctx(tenantId, 'admin-1', ADMIN), { blueprint: 'service', identifier });
+      const view = recorded.find((entry) => entry.action === 'view' && entry.id === identifier);
+      expect(view, 'a view check for the entity').toBeDefined();
+      return view?.attr.ownerTeam;
+    };
+
+    it('a member of team A re-assigning an entity it may update to team B is denied', async () => {
+      const tenantId = await newTenant();
+      await createOwned(tenantId, 'service', 'payments', { team: 'platform' });
+      const member = ctx(tenantId, 'member-a', { roles: ['member'], teams: ['platform'] });
+
+      expect(await thrownCode(reassign(member, 'payments', { ownerTeam: 'other' }))).toBe(
+        'AUTH_FORBIDDEN',
+      );
+      // Nothing was written: the entity still belongs to `platform`.
+      expect(await storedOwner(tenantId, 'payments')).toBe('platform');
+    });
+
+    it('a member re-assigning an unowned entity it may update to a foreign team is denied', async () => {
+      const tenantId = await newTenant();
+      await createOwned(tenantId, 'service', 'unowned');
+      const member = ctx(tenantId, 'member-a', { roles: ['member'], teams: ['platform'] });
+
+      expect(await thrownCode(reassign(member, 'unowned', { ownerTeam: 'other' }))).toBe(
+        'AUTH_FORBIDDEN',
+      );
+      expect(await storedOwner(tenantId, 'unowned')).toBeUndefined();
+    });
+
+    it('a member re-assigning an entity to its own team is allowed', async () => {
+      const tenantId = await newTenant();
+      await createOwned(tenantId, 'service', 'payments', { team: 'other' });
+      // Member of both teams: may update (owns `other`) and may create for `platform`.
+      const member = ctx(tenantId, 'member-ab', {
+        roles: ['member'],
+        teams: ['platform', 'other'],
+      });
+
+      await reassign(member, 'payments', { ownerTeam: 'platform' });
+      expect(await storedOwner(tenantId, 'payments')).toBe('platform');
+    });
+
+    it('a member keeping the owner team is allowed (explicitly and by omission)', async () => {
+      const tenantId = await newTenant();
+      await createOwned(tenantId, 'service', 'payments', { team: 'platform' });
+      const member = ctx(tenantId, 'member-a', { roles: ['member'], teams: ['platform'] });
+
+      await reassign(member, 'payments', { ownerTeam: 'platform' });
+      await reassign(member, 'payments', {});
+      expect(await storedOwner(tenantId, 'payments')).toBe('platform');
+    });
+
+    it('an admin re-assigning an entity to another team is allowed', async () => {
+      const tenantId = await newTenant();
+      await createOwned(tenantId, 'service', 'payments', { team: 'platform' });
+
+      await reassign(ctx(tenantId, 'admin-2', ADMIN), 'payments', { ownerTeam: 'other' });
+      expect(await storedOwner(tenantId, 'payments')).toBe('other');
+    });
+
+    it('the extra check is a create check carrying the new owner team', async () => {
+      const tenantId = await newTenant();
+      await createOwned(tenantId, 'service', 'payments', { team: 'platform' });
+      const admin = ctx(tenantId, 'admin-2', ADMIN);
+
+      recorded.length = 0;
+      await reassign(admin, 'payments', { ownerTeam: 'other' });
+      const create = recorded.find((entry) => entry.action === 'create' && entry.id === 'payments');
+      expect(create, 'a create check for the new owner team').toBeDefined();
+      expect(create?.attr).toMatchObject({ tenantId, blueprintId: 'service', ownerTeam: 'other' });
+
+      // No create check when the owner does not change.
+      recorded.length = 0;
+      await reassign(admin, 'payments', { ownerTeam: 'other' });
+      expect(recorded.some((entry) => entry.action === 'create')).toBe(false);
+    });
+  });
+
   it('a cross-tenant id stays CATALOG_NOT_FOUND', async () => {
     const tenantId = await newTenant();
     await createOwned(tenantId, 'service', 'payments', { team: 'platform' });

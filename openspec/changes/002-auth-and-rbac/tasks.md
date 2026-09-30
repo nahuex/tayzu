@@ -979,7 +979,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `bootstrap-wiring.int.test.ts` (extended) covers a superuser URL and a
   `BYPASSRLS` role each failing startup with a sanitized error and no
   listener bound, and `tayzu_app` and `tayzu_auth` starting normally.
-- [ ] 25.4 An entity update that changes `ownerTeam` (through
+- [x] 25.4 An entity update that changes `ownerTeam` (through
   `entities.upsert` or `entities.writeStatus`, whichever can change it) is
   also authorized against the new owner team with the `create` rule (design
   Q63, Q34). Verify: `entity-authz-attributes.int.test.ts` (extended) covers a

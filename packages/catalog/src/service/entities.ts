@@ -1081,6 +1081,19 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         ...newEntityAuthzAttributes({ ctx, input }),
       },
     }),
+    // Design Q63: handing an entity to another team also needs `create` for it.
+    additionalAuthorization: ({ ctx, input, stored }) => {
+      const next = newEntityAuthzAttributes({ ctx, input });
+      const replaces = (input as { mode?: unknown }).mode === 'replace';
+      if (next['ownerTeam'] === undefined && !replaces) return undefined;
+      if (next['ownerTeam'] === stored['ownerTeam']) return undefined;
+      return {
+        kind: RESOURCE_KINDS.catalogEntity,
+        action: 'create',
+        resourceId: inputString(input, 'identifier'),
+        attributes: { blueprintId: inputString(input, 'blueprint'), ...next },
+      };
+    },
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',

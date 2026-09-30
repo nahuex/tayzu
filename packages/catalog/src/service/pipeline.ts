@@ -189,6 +189,17 @@ export interface DefineCatalogOperationOptions<Input, Output> {
     readonly ctx: CatalogContext;
     readonly input: Input;
   }) => AuthorizationDeclaration;
+  /**
+   * Optional (design Q63): an additional check run after the main one, only
+   * when `loadAttributes` found an entity. `stored` are the loaded
+   * attributes. Return `undefined` when no extra check applies. It may throw
+   * to fail closed.
+   */
+  readonly additionalAuthorization?: (params: {
+    readonly ctx: CatalogContext;
+    readonly input: Input;
+    readonly stored: NonNullable<AuthorizationDeclaration['attributes']>;
+  }) => AuthorizationDeclaration | undefined;
 }
 
 /** Reads `error.details.reason`, falling back to `'invalid_actor'` if it is ever missing. */
@@ -437,6 +448,7 @@ export function defineCatalogOperation<Input, Output>(
     authorization,
     loadAttributes,
     authorizationWhenMissing,
+    additionalAuthorization,
   } = options;
   const spanName = `catalog.${name}`;
 
@@ -484,6 +496,10 @@ export function defineCatalogOperation<Input, Output>(
                 ? declaration
                 : { ...declaration, attributes: { ...declaration.attributes, ...loaded } },
           );
+          if (loaded !== undefined && additionalAuthorization !== undefined) {
+            const extra = additionalAuthorization({ ctx, input, stored: loaded });
+            if (extra !== undefined) await authorize(authz, ctx, extra);
+          }
         }
         const result = await withTenantTransaction(
           pool,
