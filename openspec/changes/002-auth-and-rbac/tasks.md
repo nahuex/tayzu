@@ -550,7 +550,7 @@ policy diff shown in chat, separately from the rest of the PR.
 
 ## 17. Integration checks before the PR (Checkpoint 2 readiness)
 
-- [ ] 17.1 `pnpm ci:local` is fully green (lint, typecheck, unit and
+- [x] 17.1 `pnpm ci:local` is fully green (lint, typecheck, unit and
   integration tests, contract-check, `policy:compile`, otel-smoke-check,
   audit, gitleaks, ZAP baseline). Verify: attach the command output to the
   PR description.
