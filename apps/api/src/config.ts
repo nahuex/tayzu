@@ -92,13 +92,29 @@ const SSO_VARIABLES = [
   'VISMA_CONNECT_CLIENT_SECRET',
 ] as const;
 
+/** `VISMA_CONNECT_DISCOVERY_URL` (Q48, D23): `https` outside test; the value is never echoed. */
+function loadDiscoveryUrl(env: Env): string {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  const value = required(env, 'VISMA_CONNECT_DISCOVERY_URL');
+  let protocol: string;
+  try {
+    protocol = new URL(value.trim()).protocol;
+  } catch {
+    throw new Error('VISMA_CONNECT_DISCOVERY_URL is malformed (an absolute URL is required).');
+  }
+  if (protocol !== 'https:' && !(isTest && protocol === 'http:')) {
+    throw new Error('VISMA_CONNECT_DISCOVERY_URL is malformed (https is required).');
+  }
+  return value;
+}
+
 function loadSso(env: Env): Config['sso'] {
   const present = SSO_VARIABLES.filter((name) => env[name] !== undefined);
   if (present.length === 0) {
     return undefined;
   }
   return {
-    discoveryUrl: required(env, SSO_VARIABLES[0]),
+    discoveryUrl: loadDiscoveryUrl(env),
     clientId: required(env, SSO_VARIABLES[1]),
     clientSecret: required(env, SSO_VARIABLES[2]),
   };

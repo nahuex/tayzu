@@ -855,7 +855,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   the bootstrap role, runs the harness, asserts `pg_class.relowner` and the
   schema owner are `tayzu_migrator`, and applies a later `ALTER TABLE auth.
   session` migration as `tayzu_migrator` successfully.
-- [ ] 23.18 `VISMA_CONNECT_DISCOVERY_URL` must be `https` outside test
+- [x] 23.18 `VISMA_CONNECT_DISCOVERY_URL` must be `https` outside test
   (design Q48, D23). Verify: `config.test.ts` covers `http` rejected at
   startup outside test and the test stub's loopback URL accepted in test.
 - [ ] 23.19 `account.encryptOAuthTokens: true`, so Visma access and ID tokens

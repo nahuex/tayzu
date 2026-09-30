@@ -246,3 +246,38 @@ describe('TAYZU_TELEMETRY_DISABLED parsing (task 23.13, Q41)', () => {
     },
   );
 });
+
+describe('VISMA_CONNECT_DISCOVERY_URL must be https outside test (task 23.18, Q48, D23)', () => {
+  const sso = (url: string, nodeEnv: string): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      VISMA_CONNECT_DISCOVERY_URL: url,
+      VISMA_CONNECT_CLIENT_ID: 'client-id',
+      VISMA_CONNECT_CLIENT_SECRET: 'client-secret-value',
+    });
+
+  it('rejects an http discovery URL outside test, naming the variable and not echoing the URL', () => {
+    const url = 'http://connect.example.invalid/.well-known/openid-configuration';
+    const error = thrown(() => loadConfig(sso(url, 'production')));
+    expect(error.message).toContain('VISMA_CONNECT_DISCOVERY_URL');
+    expect(error.message).not.toContain(url);
+  });
+
+  it('rejects an http loopback discovery URL outside test', () => {
+    const error = thrown(() =>
+      loadConfig(sso('http://127.0.0.1:4010/.well-known/openid-configuration', 'production')),
+    );
+    expect(error.message).toContain('VISMA_CONNECT_DISCOVERY_URL');
+  });
+
+  it('accepts an https discovery URL outside test', () => {
+    const url = 'https://connect.example.invalid/.well-known/openid-configuration';
+    expect(loadConfig(sso(url, 'production')).sso?.discoveryUrl).toBe(url);
+  });
+
+  it("accepts the test stub's http loopback discovery URL in test", () => {
+    const url = 'http://127.0.0.1:4010/.well-known/openid-configuration';
+    expect(loadConfig(sso(url, 'test')).sso?.discoveryUrl).toBe(url);
+  });
+});
