@@ -200,9 +200,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ...(options.sso === undefined ? {} : { sso: options.sso }),
   });
   // Q36: the SSO step-up flow. The callback's absolute URL is built on the
-  // host's first allowed origin, never on a request header.
+  // host's `BETTER_AUTH_URL` (Q64), falling back to the first allowed origin
+  // only when it is unset (test); never on a request header.
+  const callbackBase = options.baseUrl ?? options.allowedOrigins[0];
   const reauthorization: Reauthorization | undefined =
-    options.sso === undefined || options.allowedOrigins[0] === undefined
+    options.sso === undefined || callbackBase === undefined
       ? undefined
       : createReauthorization({
           auth,
@@ -210,7 +212,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           discoveryUrl: options.sso.discoveryUrl,
           clientId: options.sso.clientId,
           clientSecret: options.sso.clientSecret,
-          redirectUri: new URL(REAUTH_CALLBACK_PATH, options.allowedOrigins[0]).toString(),
+          redirectUri: new URL(REAUTH_CALLBACK_PATH, callbackBase).toString(),
         });
   const openApiHandler = new OpenAPIHandler(router, {
     clientInterceptors: [

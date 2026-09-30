@@ -328,3 +328,123 @@ describe('SSO step-up satisfied over HTTP (task 23.8, design Q36 and D25)', () =
     expect((await getBlueprint(user.cookie, identifier)).statusCode).toBe(200);
   }, 60_000);
 });
+
+/**
+ * Task 25.5 (design Q64, Q36): the SSO step-up re-authorization callback URL is
+ * built from `BETTER_AUTH_URL` when it is set, and from the first allowed origin
+ * only in test (when `BETTER_AUTH_URL` is unset). The task cites no spec
+ * scenario; the behavior comes from design Q64 and Q36.
+ *
+ * ## Production symbols expected
+ *
+ * - `createApp` / `createAppFromEnv` build the `redirectUri` handed to
+ *   `createReauthorization` (`server.ts`) from `BETTER_AUTH_URL` (the host's
+ *   configured public base URL) plus the re-auth callback path, instead of from
+ *   `allowedOrigins[0]`. `allowedOrigins[0]` remains the fallback when
+ *   `BETTER_AUTH_URL` is unset (test only). No new export is needed.
+ */
+describe('SSO step-up callback URL base (task 25.5, design Q64 and Q36)', () => {
+  const API_URL = 'https://api.tayzu.test';
+  const CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
+
+  let stub: OidcStub;
+  let closers: (() => Promise<void>)[] = [];
+  let authPool: Awaited<ReturnType<typeof harnessPools>>['authPool'];
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+    stub = await startOidcStub();
+  }, 60_000);
+
+  afterAll(async () => {
+    for (const close of closers) {
+      await close();
+    }
+    closers = [];
+    await stub.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function buildApp(extra: Record<string, string>): Promise<App> {
+    const built = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: ORIGIN,
+      VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
+      VISMA_CONNECT_CLIENT_ID: stub.clientId,
+      VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
+      ...extra,
+    });
+    closers.push(() => built.close());
+    return built;
+  }
+
+  /** The `redirect_uri` the step-up refusal sends to Visma Connect for an SSO-session owner. */
+  async function redirectUriSentToVisma(app: App): Promise<string | null> {
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Sso Callback Base User',
+      email: `sso-callback-base-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Sso Callback Base Org',
+      organizationSlug: `sso-callback-base-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const totpSecret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      secret: totpSecret,
+      origin: ORIGIN,
+    });
+    await authPool.query('update auth.session set sso_sid = $1 where user_id = $2', [
+      `sid-${randomUUID()}`,
+      tenant.userId,
+    ]);
+    // The step-up interceptor runs before the operation, so the blueprint need not exist.
+    const refused = await app.app.inject({
+      method: 'DELETE',
+      url: `/v1/blueprints/cb-base-${randomUUID().slice(0, 8)}`,
+      headers: {
+        cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('DELETE'),
+      },
+    });
+    expect(refused.statusCode, refused.body).toBe(403);
+    const body = refused.json<{ code?: unknown; data?: { reauthorizationUrl?: unknown } }>();
+    expect(body.code).toBe('AUTH_STEP_UP_REQUIRED');
+    const raw = body.data?.reauthorizationUrl;
+    return typeof raw === 'string' ? (new URL(raw).searchParams.get('redirect_uri') ?? null) : null;
+  }
+
+  it('the redirect_uri sent to Visma Connect is under BETTER_AUTH_URL when it differs from the allowed origin', async () => {
+    const app = await buildApp({ BETTER_AUTH_URL: API_URL });
+
+    const redirectUri = await redirectUriSentToVisma(app);
+
+    expect(redirectUri, 'the authorization URL carries a redirect_uri').not.toBeNull();
+    const parsed = new URL(redirectUri ?? '');
+    expect(parsed.origin, 'built on BETTER_AUTH_URL, not on the allowed origin').toBe(API_URL);
+    expect(parsed.pathname).toBe(CALLBACK_PATH);
+  }, 60_000);
+
+  it('the redirect_uri falls back to the first allowed origin only when BETTER_AUTH_URL is unset (test)', async () => {
+    const app = await buildApp({});
+
+    const redirectUri = await redirectUriSentToVisma(app);
+
+    expect(redirectUri, 'the authorization URL carries a redirect_uri').not.toBeNull();
+    const parsed = new URL(redirectUri ?? '');
+    expect(parsed.origin).toBe(ORIGIN);
+    expect(parsed.pathname).toBe(CALLBACK_PATH);
+  }, 60_000);
+});

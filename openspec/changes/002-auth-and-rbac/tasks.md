@@ -986,7 +986,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   member of team A re-assigning an entity it may update to team B being
   denied, re-assigning to its own team or keeping the owner allowed, and an
   admin allowed.
-- [ ] 25.5 The SSO step-up re-authorization callback URL is built from
+- [x] 25.5 The SSO step-up re-authorization callback URL is built from
   `BETTER_AUTH_URL` when it is set, and from the first allowed origin only in
   test (design Q64, Q36). Verify: `sso-step-up-http.int.test.ts` or the
   existing re-authorization test (extended) covers the `redirect_uri` sent to
