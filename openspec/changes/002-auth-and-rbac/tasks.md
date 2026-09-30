@@ -801,7 +801,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   whose global `auth.user.role` is `user` with an org `admin` membership,
   `role: "member"` producing a `member` membership, and `role: "owner"`,
   `"user,admin"` and `""` rejected as invalid input with no user created.
-- [ ] 23.10 `account.accountLinking.disableImplicitLinking: true` on the
+- [x] 23.10 `account.accountLinking.disableImplicitLinking: true` on the
   Better Auth instance (design Q38, D24). Verify: `sso-sign-in.int.test.ts`
   (extended) covers an unlinked `sub` whose `email_verified` email matches a
   verified local user: rejected with `AUTH_SSO_REJECTED`, byte-identical to

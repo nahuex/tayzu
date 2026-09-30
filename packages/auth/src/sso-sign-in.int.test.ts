@@ -54,7 +54,7 @@ import { registration, type TelemetryTestHarness } from './__fixtures__/register
 import { startOidcStub, type OidcStub } from './__fixtures__/oidc-stub.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver } from './context-resolver.js';
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
 import * as authSchema from './persistence/schema.js';
 import { TEST_SECRET, TEST_PASSWORD } from './__fixtures__/test-secret.js';
 
@@ -500,5 +500,97 @@ describe('Visma Connect linked sign-in (task 19.5, design D23/D24)', () => {
     });
     expect(ssoEventCount(harness, 'sso_rejected')).toBe(1);
     expect(ssoEventCount(harness, 'sso_succeeded')).toBe(0);
+  }, 60_000);
+});
+
+/**
+ * Task 23.10 (design Q38, D24; spec "Sign-in with an unlinked Visma Connect
+ * account is rejected generically").
+ *
+ * GIVEN an unlinked `sub` whose `email_verified` email matches a verified
+ * local user, WHEN that person completes sign-in through Visma Connect, THEN
+ * it is rejected with `AUTH_SSO_REJECTED`, byte-identical to the plain
+ * unlinked rejection, and no `auth.account` row is written.
+ *
+ * Expected production symbol: `account.accountLinking.disableImplicitLinking:
+ * true` on the Better Auth instance in `auth.ts`. Today Better Auth links a
+ * trusted, verified email implicitly, so this fails on plain assertions.
+ */
+describe('Visma Connect implicit email linking is disabled (task 23.10, design Q38)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let stub: OidcStub;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    stub = await startOidcStub();
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await stub.close();
+    await endQuietly(db.$client);
+  });
+
+  it('An unlinked sub whose email_verified email matches a verified local user is rejected as AUTH_SSO_REJECTED, byte-identical to the plain unlinked rejection, with no auth.account row written', async () => {
+    // Reference: a plain unlinked rejection.
+    stub.setSubject({
+      sub: `unlinked-${randomUUID()}`,
+      email: `sso-plain-${randomUUID()}@example.test`,
+      name: 'Plain Person',
+    });
+    const plainInit = await initiateSignIn(auth, stub);
+    const plain = await shapeOf(await completeCallback(auth, plainInit.cookie, plainInit.params));
+
+    // A verified local user.
+    const email = `verified-${randomUUID()}@example.test`;
+    const local = await createAdminUser(auth, {
+      name: 'Verified Local',
+      email,
+      password: TEST_PASSWORD,
+    });
+    await db.execute(sql`update auth."user" set email_verified = true where id = ${local.userId}`);
+
+    const sub = `victim-match-${randomUUID()}`;
+    stub.setSubject({
+      sub,
+      email,
+      name: 'Verified Local',
+      sid: `sid-${randomUUID()}`,
+      claims: { email_verified: true },
+    });
+    const { cookie, params } = await initiateSignIn(auth, stub);
+    const attempt = await shapeOf(await completeCallback(auth, cookie, params));
+
+    expect(attempt.status).toBe(401);
+    expect(attempt.code).toBe('AUTH_SSO_REJECTED');
+    expect(attempt.sessionCookie, 'no session is established').toBe(false);
+    expect(attempt.status).toBe(plain.status);
+    expect(attempt.contentType).toBe(plain.contentType);
+    expect(attempt.bodyText, 'byte-identical body').toBe(plain.bodyText);
+
+    expect(
+      await countRows(
+        db,
+        sql`select count(*)::text as n from auth.account where account_id = ${sub}`,
+      ),
+      'no auth.account row for the unlinked sub',
+    ).toBe(0);
+    expect(
+      await countRows(
+        db,
+        sql`select count(*)::text as n from auth.account where user_id = ${local.userId} and provider_id = ${PROVIDER_ID}`,
+      ),
+      'no visma-connect account linked to the local user',
+    ).toBe(0);
   }, 60_000);
 });

@@ -514,6 +514,11 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         ssoSid: { type: 'string', required: false, input: false },
       },
     },
+    // Task 23.10, design Q38/D24: a matching verified email never links an
+    // unlinked Visma Connect `sub` implicitly; only explicit self-link does.
+    account: {
+      accountLinking: { disableImplicitLinking: true },
+    },
     // Email/password sign-up and sign-in (task 2.3). No `minPasswordLength`
     // override: Better Auth's own default (8 characters) is the policy this
     // change fixes; a stricter policy is not named anywhere in the design.
