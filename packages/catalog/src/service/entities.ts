@@ -16,6 +16,7 @@
  */
 import { trace } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
+import { sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 import { uuidv7 } from 'uuidv7';
@@ -197,10 +198,74 @@ export interface EntityOutput {
   readonly updatedBy: CatalogContext['actor'];
 }
 
-/** Plan attribute references (the names in `policies/resource_policies/catalog_entity.yaml`) to `catalog_entity` columns. */
+type PlanOperator = 'eq' | 'ne' | 'in' | 'isSet';
+type PlanTransformArgs = { readonly operator: string; readonly value: unknown };
+
+/**
+ * A mapper entry for a text-valued SQL expression. Only `eq`, `ne`, `in` and
+ * `isSet` are supported: any other operator throws, which denies the list.
+ */
+function textPlanTransform(expression: SQL) {
+  return ({ operator, value }: PlanTransformArgs): SQL => {
+    switch (operator as PlanOperator) {
+      case 'eq':
+        return sql`${expression} = ${String(value)}`;
+      case 'ne':
+        return sql`${expression} is distinct from ${String(value)}`;
+      case 'in':
+        if (!Array.isArray(value)) throw new Error('Unsupported plan value');
+        return sql`${expression} = any(${sql.param(value.map(String))}::text[])`;
+      case 'isSet':
+        return value === true ? sql`${expression} is not null` : sql`${expression} is null`;
+      default:
+        throw new Error('Unsupported plan operator');
+    }
+  };
+}
+
+/** A mapper entry for a boolean SQL expression (`eq`/`ne` against a boolean only). */
+function booleanPlanTransform(expression: SQL) {
+  return ({ operator, value }: PlanTransformArgs): SQL => {
+    if (typeof value !== 'boolean') throw new Error('Unsupported plan value');
+    switch (operator as PlanOperator) {
+      case 'eq':
+        return sql`${expression} = ${value}`;
+      case 'ne':
+        return sql`${expression} <> ${value}`;
+      default:
+        throw new Error('Unsupported plan operator');
+    }
+  };
+}
+
+/** The blueprint identifier of the row (the value `moderatedBlueprints` holds). */
+const BLUEPRINT_IDENTIFIER_SQL = sql`(
+  select b.identifier from catalog_blueprint b
+  where b.tenant_id = ${catalogEntity.tenantId} and b.id = ${catalogEntity.blueprintId}
+)`;
+
+/** The direct `ownerTeam` relation target's identifier, or NULL when the row has none. */
+const OWNER_TEAM_SQL = sql`(
+  select t.identifier
+  from catalog_entity_relation r
+  join catalog_relation_definition d
+    on d.tenant_id = r.tenant_id and d.id = r.relation_definition_id
+  join catalog_entity t on t.tenant_id = r.tenant_id and t.id = r.target_entity_id
+  where r.tenant_id = ${catalogEntity.tenantId} and r.source_entity_id = ${catalogEntity.id}
+    and r.scope = 'spec' and d.identifier = 'ownerTeam'
+  order by r.position
+  limit 1
+)`;
+
+const LOCKED_SQL = sql`coalesce(${catalogEntity.specProperties} -> 'locked' = 'true'::jsonb, false)`;
+
+/** Plan attribute references (the names in `policies/resource_policies/catalog_entity.yaml`) to `catalog_entity` columns or SQL expressions. */
 const ENTITY_PLAN_MAPPER = {
   'request.resource.attr.createdBy': catalogEntity.createdById,
   'request.resource.attr.tenantId': catalogEntity.tenantId,
+  'request.resource.attr.blueprintId': textPlanTransform(BLUEPRINT_IDENTIFIER_SQL),
+  'request.resource.attr.ownerTeam': textPlanTransform(OWNER_TEAM_SQL),
+  'request.resource.attr.locked': booleanPlanTransform(LOCKED_SQL),
 };
 
 /**

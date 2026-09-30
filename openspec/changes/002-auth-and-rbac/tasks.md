@@ -755,7 +755,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   and "Attribute-based rule denies access a role alone would have granted"
   (`locked`, admin still allowed); a cross-tenant id stays `CATALOG_NOT_
   FOUND`.
-- [ ] 23.3 The `entities.list` Cerbos query-plan mapper handles `blueprintId`,
+- [x] 23.3 The `entities.list` Cerbos query-plan mapper handles `blueprintId`,
   `ownerTeam`, `createdBy` and `locked`, so a moderator or team plan filters
   instead of throwing and denying (design Q34, D11). Verify:
   `entities-list-query-plan.int.test.ts` covers a team member, a moderator
