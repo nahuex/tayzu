@@ -951,4 +951,13 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   for an entity list, `?pageSize=abc` answering `400` naming `/pageSize`
   without echoing `abc`, and a malformed JSON body on a `POST` answering `400`,
   never `500`.
+- [ ] 24.12 `createAppFromEnv` enables 24.2's password-check limiter by
+  default, like the sign-in limiter (design Q39, Q52): its limits come from
+  `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX` and
+  `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_WINDOW_SECONDS` with safe defaults, and
+  `bootstrap.ts` stops wiring the email-verification limits for routes 24.7
+  removed. Verify: `bootstrap-wiring.int.test.ts` (extended) covers repeated
+  wrong passwords on `/verify-password` on the app `createAppFromEnv` builds
+  being answered `429 AUTH_RATE_LIMITED`, and `config.test.ts` covers the
+  defaults and a malformed value rejected at startup.
 
