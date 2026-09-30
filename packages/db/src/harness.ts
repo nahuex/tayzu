@@ -127,19 +127,39 @@ const CATALOG_TABLES = [
  * connection.
  */
 async function ensureMigratorRole(bootstrap: Client): Promise<void> {
+  // Roles are cluster-wide, but the bootstrap lock only serializes callers on
+  // one database: a caller bootstrapping a scratch database can race this one
+  // (or a migration creating the same role), so losing that race is caught
+  // instead of failing (`duplicate_object` when the other creator already
+  // committed, `unique_violation` when it committed while this one waited).
   await bootstrap.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${MIGRATOR_ROLE}') THEN
         CREATE ROLE ${MIGRATOR_ROLE} LOGIN;
       END IF;
+    EXCEPTION
+      WHEN duplicate_object OR unique_violation THEN NULL;
     END
     $$;
   `);
   // Test-only: lets tayzu_migrator itself pass through 0002/0003/0006's own
   // idempotent `CREATE ROLE IF NOT EXISTS` guards for tayzu_auth/tayzu_app on
-  // a from-scratch database. Never granted to the production role.
-  await bootstrap.query(`ALTER ROLE ${MIGRATOR_ROLE} CREATEROLE;`);
+  // a from-scratch database. Never granted to the production role. Guarded,
+  // so the role's catalog row is only rewritten once per cluster: two
+  // concurrent unguarded `ALTER ROLE`s on one row can fail with "tuple
+  // concurrently updated".
+  await bootstrap.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${MIGRATOR_ROLE}' AND rolcreaterole
+      ) THEN
+        ALTER ROLE ${MIGRATOR_ROLE} CREATEROLE;
+      END IF;
+    END
+    $$;
+  `);
   // Lets the bootstrap connection SET ROLE to tayzu_migrator for the
   // migration run below (a bare GRANT, unlike the admin-only membership a
   // role automatically gets over a role it creates, carries INHERIT and SET,
@@ -161,9 +181,21 @@ async function ensureMigratorRole(bootstrap: Client): Promise<void> {
     END
     $$;
   `);
-  await bootstrap.query(
-    `GRANT CREATE, USAGE ON SCHEMA public TO ${MIGRATOR_ROLE} WITH GRANT OPTION;`,
-  );
+  // Guarded: once tayzu_migrator holds these grant options, the bootstrap
+  // role inherits them through its membership, and a repeated GRANT may pick
+  // tayzu_migrator itself as the grantor ("grant options cannot be granted
+  // back to your own grantor") when the bootstrap role owns the database.
+  await bootstrap.query(`
+    DO $$
+    BEGIN
+      IF NOT has_schema_privilege(
+        '${MIGRATOR_ROLE}', 'public', 'CREATE WITH GRANT OPTION, USAGE WITH GRANT OPTION'
+      ) THEN
+        GRANT CREATE, USAGE ON SCHEMA public TO ${MIGRATOR_ROLE} WITH GRANT OPTION;
+      END IF;
+    END
+    $$;
+  `);
   // drizzle-orm's own migrator creates schema `drizzle` and
   // `drizzle.__drizzle_migrations` the first time any migration runs
   // (`runMigrations`, production code, unchanged). On a database this
@@ -316,10 +348,12 @@ async function grantAppRoleJournalAccess(bootstrap: Client): Promise<void> {
   `);
 }
 
-async function initializeTestDatabase(): Promise<TestDatabase> {
-  const url = requireDatabaseUrl();
-  assertVerifiedTlsOrLocal(url);
-
+/**
+ * Bootstraps the roles and applies every pending migration to the database
+ * `url` names, then brings ownership and memberships to the state design D6
+ * describes. Idempotent, and safe for concurrent callers on the same database.
+ */
+async function migrateTestDatabase(url: string): Promise<void> {
   const bootstrap = new Client({ connectionString: url });
   await bootstrap.connect();
   try {
@@ -342,6 +376,28 @@ async function initializeTestDatabase(): Promise<TestDatabase> {
   } finally {
     await postMigration.end();
   }
+}
+
+/**
+ * Migrates the database named by `DATABASE_URL` without keeping any
+ * connection open. The `int` projects' global setup (`vitest.int.setup.ts`)
+ * runs this before any test file starts: the roles the migrations create are
+ * cluster-wide, and a test file migrating a fresh scratch database in
+ * parallel with the first migration of the cluster would otherwise race it
+ * on `CREATE ROLE` (the migration lock is per database, not per cluster).
+ * Once this resolves, every role exists, so every later migration, on any
+ * database of the cluster, skips its role-creation guard.
+ */
+export async function prepareTestDatabase(): Promise<void> {
+  const url = requireDatabaseUrl();
+  assertVerifiedTlsOrLocal(url);
+  await migrateTestDatabase(url);
+}
+
+async function initializeTestDatabase(): Promise<TestDatabase> {
+  const url = requireDatabaseUrl();
+  assertVerifiedTlsOrLocal(url);
+  await migrateTestDatabase(url);
 
   const pool = new Pool({ connectionString: url });
   pool.on('connect', (client) => {
