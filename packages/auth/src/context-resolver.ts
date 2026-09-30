@@ -133,7 +133,7 @@ interface SessionResult {
     readonly activeOrganizationId?: string | null;
     readonly updatedAt: Date;
   };
-  readonly user: { readonly id: string };
+  readonly user: { readonly id: string; readonly email?: string };
 }
 
 interface AuthApiSurface {
@@ -267,6 +267,57 @@ interface MembershipCacheEntry {
 function toCerbosRole(memberRole: string): 'admin' | 'member' {
   const roles = memberRole.split(',').map((role) => role.trim());
   return roles.includes('owner') || roles.includes('admin') ? 'admin' : 'member';
+}
+
+/** design Q34, D8: the `_user` entity's teams and moderated blueprints. */
+interface UserEntityGrants {
+  readonly teams: readonly string[];
+  readonly moderatedBlueprints: readonly string[];
+}
+
+function stringsOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/**
+ * Reads the caller's `_user` entity (identifier = the user's email) and its
+ * `teams` relation under the caller's tenant. An absent entity means no
+ * grants; a read failure throws, and the caller fails closed.
+ */
+async function readUserEntityGrants(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+  email: string,
+): Promise<UserEntityGrants> {
+  return withTenantTransaction(pool, { tenantId }, async (client) => {
+    const entity = await client.query<{ id: string; spec_properties: unknown }>(
+      `select e.id, e.spec_properties
+         from catalog_entity e
+         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+        where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+      [tenantId, email],
+    );
+    const row = entity.rows[0];
+    if (row === undefined) {
+      return { teams: [], moderatedBlueprints: [] };
+    }
+    const properties = row.spec_properties as Record<string, unknown> | null;
+    const teams = await client.query<{ identifier: string }>(
+      `select t.identifier
+         from catalog_entity_relation r
+         join catalog_relation_definition d
+           on d.tenant_id = r.tenant_id and d.id = r.relation_definition_id
+         join catalog_entity t on t.tenant_id = r.tenant_id and t.id = r.target_entity_id
+        where r.tenant_id = $1 and r.source_entity_id = $2
+          and r.scope = 'spec' and d.identifier = 'teams'
+        order by r.position`,
+      [tenantId, row.id],
+    );
+    return {
+      teams: teams.rows.map((team) => team.identifier),
+      moderatedBlueprints: stringsOf(properties?.['moderatedBlueprints']),
+    };
+  });
 }
 
 function membershipCacheKey(userId: string, organizationId: string): string {
@@ -443,12 +494,27 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       rejectMissingContext();
     }
 
-    // Task 9.5, Q26: teams and moderated blueprints stay empty until group 12
-    // syncs them from the `_user` entity.
-    return {
-      tenantId,
-      actor: { type: 'user', id: result.user.id },
-      principal: { roles: [toCerbosRole(memberRole)], teams: [], moderatedBlueprints: [] },
-    };
+    // Task 23.1, Q34: teams and moderated blueprints come from the caller's
+    // `_user` entity. If it cannot be read the principal is left absent, so
+    // Cerbos denies (fail closed) instead of assuming empty grants.
+    const actor = { type: 'user', id: result.user.id } as const;
+    const email = result.user.email;
+    if (typeof email !== 'string' || email.length === 0) {
+      return { tenantId, actor };
+    }
+    try {
+      const grants = await readUserEntityGrants(options.revocationPool, tenantId, email);
+      return {
+        tenantId,
+        actor,
+        principal: {
+          roles: [toCerbosRole(memberRole)],
+          teams: grants.teams,
+          moderatedBlueprints: grants.moderatedBlueprints,
+        },
+      };
+    } catch {
+      return { tenantId, actor };
+    }
   };
 }

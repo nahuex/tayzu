@@ -733,7 +733,7 @@ group before 17.2 is re-run. Every task is one red-green-refactor cycle. No
 task here changes a migration or a Cerbos policy; if one turns out to need
 either, stop for Checkpoint 3 (⛔) before continuing.
 
-- [ ] 23.1 `resolveContext` builds `principal.teams` and
+- [x] 23.1 `resolveContext` builds `principal.teams` and
   `principal.moderatedBlueprints` from the caller's `_user` entity and its
   team relations, replacing the hard-coded empty arrays, and fails closed
   (`principal` absent, so Cerbos denies) when the entity or relations are
