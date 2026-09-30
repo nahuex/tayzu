@@ -26,10 +26,12 @@
  *
  * Every request uses a fresh random IP so the rate limiters never interfere.
  */
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -119,4 +121,93 @@ describe('apps/api security headers (task 11.6)', () => {
       });
     });
   }
+});
+
+/**
+ * DAST finding "Storable and Cacheable Content [10049]" (design D13 HTTP
+ * hardening, D16 DAST; OWASP ASVS V8.2.1): every response carries
+ * `Cache-Control: no-store` unless the route handler set its own Cache-Control.
+ *
+ * ## Production behavior expected
+ *
+ * `createApp` adds a global default (for example an `onSend` hook, or helmet's
+ * `noCache`-style option) that sets `cache-control: no-store` on any reply that
+ * has no Cache-Control yet: Fastify's own 404, `/healthz`, `/v1/*` (success and
+ * error) and `/api/auth/*`. A Cache-Control set by a handler (or copied from
+ * Better Auth's response) is left untouched. Nothing is required here of
+ * routes that set their own.
+ */
+describe('apps/api anti-caching default (ASVS V8.2.1, ZAP 10049)', () => {
+  const ORIGIN = 'https://app.tayzu.test';
+  const PASSWORD = 'correct horse battery staple';
+  let app: App;
+
+  beforeAll(async () => {
+    app = await createApp({
+      ...(await harnessPools()),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  it('sends cache-control: no-store on Fastify 404 for an unknown path', async () => {
+    const response = await app.app.inject({
+      method: 'GET',
+      url: '/robots.txt',
+      headers: { 'x-forwarded-for': randomIp() },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('sends cache-control: no-store on GET /healthz', async () => {
+    const response = await app.app.inject({
+      method: 'GET',
+      url: '/healthz',
+      headers: { 'x-forwarded-for': randomIp() },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('sends cache-control: no-store on an authenticated /v1 catalog response', async () => {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Cache Header User',
+      email: `cache-${suffix}@example.test`,
+      password: PASSWORD,
+      organizationName: `Cache Org ${suffix}`,
+      organizationSlug: `cache-org-${suffix}`,
+      ip: randomIp(),
+    });
+    // An org admin needs an enrolled factor to reach /v1 (Q43).
+    const cookie = await freshMfaSessionCookie(app, {
+      email: tenant.email,
+      password: PASSWORD,
+      enrollmentCookie: tenant.cookie,
+      origin: ORIGIN,
+    });
+    const response = await app.app.inject({
+      method: 'GET',
+      url: '/v1/blueprints',
+      headers: { cookie, origin: ORIGIN, 'x-forwarded-for': randomIp() },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+  }, 60_000);
+
+  it('sends cache-control: no-store on a Better Auth route response', async () => {
+    const response = await app.app.inject({
+      method: 'GET',
+      url: '/api/auth/get-session',
+      headers: { 'x-forwarded-for': randomIp() },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
 });

@@ -277,6 +277,14 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     contentSecurityPolicy: false,
     strictTransportSecurity: { maxAge: 31_536_000, includeSubDomains: true },
   });
+  // D13, ZAP finding [10049] (Storable and Cacheable Content): default to
+  // `no-store` on every response, including Fastify's 404, unless the handler
+  // (e.g. Better Auth's get-session) already set its own Cache-Control.
+  app.addHook('onSend', async (_request, reply) => {
+    if (!reply.hasHeader('cache-control')) {
+      reply.header('cache-control', 'no-store');
+    }
+  });
   // Exact-match allowlist; `credentials` is required for Better Auth's cookie.
   // A disallowed origin gets no CORS headers at all, not even `credentials`.
   const allowedOrigins = new Set(options.allowedOrigins);

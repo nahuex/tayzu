@@ -443,6 +443,11 @@ source, not the docs site's v2-beta default):
   `SameSite=Lax`.
 - **Security headers**: `@fastify/helmet`, `contentSecurityPolicy: false`
   (this is a JSON API; CSP is `003`'s concern).
+- **Anti-caching default** (implementation finding, task 17.4, 2026-09-30):
+  the first end-to-end DAST run (D16) reported ZAP [10049] "Storable and
+  Cacheable Content", so every response carries `Cache-Control: no-store`
+  unless its handler sets its own (OWASP ASVS V8.2.1). Better Auth already
+  sets `no-store` on its session routes and keeps it.
 - **Body size limits**: Fastify's native `bodyLimit` (oRPC's own
   `BodyLimitPlugin` does not exist for the Fastify adapter, confirmed against
   installed package exports), composing with 001's own `CatalogLimits`
