@@ -858,7 +858,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
 - [x] 23.18 `VISMA_CONNECT_DISCOVERY_URL` must be `https` outside test
   (design Q48, D23). Verify: `config.test.ts` covers `http` rejected at
   startup outside test and the test stub's loopback URL accepted in test.
-- [ ] 23.19 `account.encryptOAuthTokens: true`, so Visma access and ID tokens
+- [x] 23.19 `account.encryptOAuthTokens: true`, so Visma access and ID tokens
   are encrypted at rest in `auth.account` (design Q48, D23). Verify:
   `sso-token-storage.int.test.ts` covers a real SSO sign-in leaving no
   plaintext token in `auth.account`, and the tokens still decrypting for the

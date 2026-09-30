@@ -63,6 +63,7 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
 import { createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
+import { decryptOAuthToken, setTokenUtil } from 'better-auth/oauth2';
 import { admin, jwt, organization, twoFactor } from 'better-auth/plugins';
 
 import {
@@ -323,6 +324,21 @@ async function emitSelfLink(
 const GENERIC_OAUTH_CALLBACK_ROUTE = '/callback/:id';
 
 /**
+ * Task 23.19, design Q48: Better Auth's `encryptOAuthTokens` covers the access
+ * and refresh tokens but stores the ID token as issued, so it is encrypted here
+ * with the same primitive. Only a plaintext JWT is encrypted (never twice).
+ */
+async function encryptIdToken<T extends { readonly idToken?: unknown }>(
+  account: T,
+  context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
+): Promise<{ data: T }> {
+  if (!context || typeof account.idToken !== 'string' || account.idToken.split('.').length !== 3) {
+    return { data: account };
+  }
+  return { data: { ...account, idToken: await setTokenUtil(account.idToken, context.context) } };
+}
+
+/**
  * Task 23.5, design Q35/D25: the `sid` claim of the Visma Connect ID token, for
  * the session a callback sign-in is about to create. Better Auth has already
  * verified the token and stored it on the linked account (the update precedes
@@ -344,7 +360,11 @@ async function ssoSidForSignIn(
         { field: 'providerId', value: VISMA_CONNECT_PROVIDER_ID },
       ],
     });
-    const payload = account?.idToken?.split('.')[1];
+    // Tokens are encrypted at rest (design Q48): decrypt before parsing.
+    const idToken = account?.idToken
+      ? await decryptOAuthToken(account.idToken, context.context)
+      : undefined;
+    const payload = idToken?.split('.')[1];
     if (payload === undefined) {
       return undefined;
     }
@@ -385,7 +405,9 @@ async function refreshDisplayData(
     return;
   }
   try {
-    const info = await fetchVismaUserInfo(options.sso.discoveryUrl, account.accessToken);
+    // The update payload carries the encrypted token (design Q48).
+    const accessToken = await decryptOAuthToken(account.accessToken, context.context);
+    const info = await fetchVismaUserInfo(options.sso.discoveryUrl, accessToken);
     if (info === null || (info.name === undefined && info.email === undefined)) {
       return;
     }
@@ -532,7 +554,9 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
     },
     // Task 23.10, design Q38/D24: a matching verified email never links an
     // unlinked Visma Connect `sub` implicitly; only explicit self-link does.
+    // Task 23.19, design Q48/D23: provider tokens are encrypted at rest.
     account: {
+      encryptOAuthTokens: true,
       accountLinking: { disableImplicitLinking: true },
     },
     // Email/password sign-up and sign-in (task 2.3). No `minPasswordLength`
@@ -612,6 +636,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // directly (no context) and emits its own signal from the router.
       account: {
         create: {
+          before: (account, context) => encryptIdToken(account, context),
           after: async (account, context) => {
             await emitSelfLink('linked', account, context);
           },
@@ -625,6 +650,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         // tokens on every successful callback sign-in; that update is the hook
         // point for the JIT display-data refresh.
         update: {
+          before: (account, context) => encryptIdToken(account, context),
           after: async (account, context) => {
             await refreshDisplayData(options, account, context);
           },
