@@ -228,6 +228,47 @@ async function reassignCatalogTableOwnership(bootstrap: Client): Promise<void> {
 }
 
 /**
+ * Task 23.17 (design Q47, D6): also reassigns schema `auth`, its tables and
+ * sequences, and `machine_credential_revocation` to `tayzu_migrator`, so a
+ * later `ALTER TABLE auth.*` migration run as `tayzu_migrator` succeeds on a
+ * database first migrated under the bootstrap role. Tables go first: a
+ * sequence owned by a table column follows its table's owner, and cannot be
+ * reassigned on its own. Fixed literals only; idempotent.
+ */
+async function reassignAuthOwnership(bootstrap: Client): Promise<void> {
+  await bootstrap.query(`
+    DO $$
+    DECLARE
+      obj record;
+    BEGIN
+      ALTER SCHEMA auth OWNER TO ${MIGRATOR_ROLE};
+      FOR obj IN
+        SELECT n.nspname AS schema_name, c.relname AS rel_name, c.relkind AS kind
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'p')
+          AND c.relowner <> '${MIGRATOR_ROLE}'::regrole
+          AND (n.nspname = 'auth'
+               OR (n.nspname = 'public' AND c.relname = 'machine_credential_revocation'))
+      LOOP
+        EXECUTE format('ALTER TABLE %I.%I OWNER TO ${MIGRATOR_ROLE}', obj.schema_name, obj.rel_name);
+      END LOOP;
+      FOR obj IN
+        SELECT n.nspname AS schema_name, c.relname AS rel_name
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'S'
+          AND c.relowner <> '${MIGRATOR_ROLE}'::regrole
+          AND n.nspname = 'auth'
+      LOOP
+        EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO ${MIGRATOR_ROLE}', obj.schema_name, obj.rel_name);
+      END LOOP;
+    END
+    $$;
+  `);
+}
+
+/**
  * Grants the bootstrap connection's role plain membership in `tayzu_app`
  * (inherited privilege, not `SET ROLE`): every pool this harness returns, and
  * every other test file that connects directly with `DATABASE_URL`, becomes
@@ -294,6 +335,7 @@ async function initializeTestDatabase(): Promise<TestDatabase> {
   try {
     await withBootstrapLock(postMigration, async () => {
       await reassignCatalogTableOwnership(postMigration);
+      await reassignAuthOwnership(postMigration);
       await grantAppRoleMembership(postMigration);
       await grantAppRoleJournalAccess(postMigration);
     });

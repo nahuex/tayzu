@@ -848,7 +848,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   cover the route being reachable with the current password and rejecting a
   wrong one, and `session-policy.int.test.ts` covers other sessions being
   revoked afterwards.
-- [ ] 23.17 `packages/db/src/harness.ts` also reassigns schema `auth`, its
+- [x] 23.17 `packages/db/src/harness.ts` also reassigns schema `auth`, its
   tables and sequences, and `machine_credential_revocation` to
   `tayzu_migrator`, like the catalog tables (design Q47, D6). Verify:
   `harness-ownership.int.test.ts` builds a database whose objects are owned by
