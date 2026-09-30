@@ -181,10 +181,14 @@ scan() {
   touch "$work/report_json.json" "$work/report_md.md" "$work/report_html.html"
   chmod -R a+rwX "$work"
 
-  set -a
-  # shellcheck disable=SC1090
-  . "$env_file"
-  set +a
+  # KEY=value lines in the GITHUB_ENV format. A cookie header holds `; `, so
+  # the file is parsed, never sourced.
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      ZAP_AUTH_HEADER=* | ZAP_AUTH_HEADER_VALUE=*) export "${line%%=*}=${line#*=}" ;;
+    esac
+  done <"$env_file"
   export ZAP_AUTH_HEADER_SITE="localhost"
 
   # zap-baseline.py first installs the beta passive rules from the ZAP
