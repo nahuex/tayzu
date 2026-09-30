@@ -863,7 +863,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `sso-token-storage.int.test.ts` covers a real SSO sign-in leaving no
   plaintext token in `auth.account`, and the tokens still decrypting for the
   step-up flow.
-- [ ] 23.20 Better Auth `advanced.ipAddress` is configured with an explicit
+- [x] 23.20 Better Auth `advanced.ipAddress` is configured with an explicit
   trusted-proxy and header setting, so a caller-supplied `X-Forwarded-For`
   cannot pick or rotate its rate-limit bucket and the shared `no-trusted-ip`
   bucket is not reachable by a multi-hop header (design Q48, D20). Verify:

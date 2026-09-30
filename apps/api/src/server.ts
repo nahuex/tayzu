@@ -143,6 +143,10 @@ function toWebHeaders(request: FastifyRequest): Headers {
 
 function toWebRequest(request: FastifyRequest, baseUrl: string | undefined): Request {
   const headers = toWebHeaders(request);
+  // Better Auth keys its pre-auth rate-limit buckets by `x-forwarded-for`. Replace
+  // whatever the caller sent with the address Fastify resolved from the real peer
+  // (honoring `trustProxy`), so a spoofed or multi-hop header cannot pick a bucket.
+  headers.set('x-forwarded-for', request.ip);
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
   let body: string | undefined;
   if (hasBody && request.body !== undefined && request.body !== null) {
