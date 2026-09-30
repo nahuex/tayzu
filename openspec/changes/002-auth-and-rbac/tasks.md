@@ -961,3 +961,39 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   being answered `429 AUTH_RATE_LIMITED`, and `config.test.ts` covers the
   defaults and a malformed value rejected at startup.
 
+## 25. Final gaps (VCDM re-run after group 24)
+
+- [ ] 25.1 `/sign-in/social` and `/link-social` reject a request body that
+  carries `idToken` with `400`, creating no session and linking no account
+  (design Q60, D23, D24). Verify: `sso-http.int.test.ts` (extended) covers a
+  validly signed Visma ID token for a linked `sub` posted to
+  `/api/auth/sign-in/social` being refused with no session cookie, the same
+  on `/api/auth/link-social`, and the normal redirect flow still starting.
+- [ ] 25.2 `/two-factor/verify-totp` and `/two-factor/verify-backup-code`
+  reject `trustDevice: true` with `400` (design Q61, Q43). Verify:
+  `mfa.int.test.ts` (extended) covers the refusal, no trust-device cookie
+  being set, and verification without it still succeeding.
+- [ ] 25.3 Outside test, `createAppFromEnv` fails startup when the role
+  behind `DATABASE_URL` or `AUTH_DATABASE_URL` is a superuser, has
+  `BYPASSRLS`, or owns a catalog table (design Q62, D6). Verify:
+  `bootstrap-wiring.int.test.ts` (extended) covers a superuser URL and a
+  `BYPASSRLS` role each failing startup with a sanitized error and no
+  listener bound, and `tayzu_app` and `tayzu_auth` starting normally.
+- [ ] 25.4 An entity update that changes `ownerTeam` (through
+  `entities.upsert` or `entities.writeStatus`, whichever can change it) is
+  also authorized against the new owner team with the `create` rule (design
+  Q63, Q34). Verify: `entity-authz-attributes.int.test.ts` (extended) covers a
+  member of team A re-assigning an entity it may update to team B being
+  denied, re-assigning to its own team or keeping the owner allowed, and an
+  admin allowed.
+- [ ] 25.5 The SSO step-up re-authorization callback URL is built from
+  `BETTER_AUTH_URL` when it is set, and from the first allowed origin only in
+  test (design Q64, Q36). Verify: `sso-step-up-http.int.test.ts` or the
+  existing re-authorization test (extended) covers the `redirect_uri` sent to
+  Visma Connect being under `BETTER_AUTH_URL` when it differs from the
+  allowed origin.
+- [ ] 25.6 _(setup)_ `docs/architecture/system-diagram.md` and ADR 0013/0015
+  match the code (the `same_tenant` qualification, TLS to Cerbos except
+  loopback, the DAST job) (design Q64). Verify: markdownlint passes and the
+  diagram lists every surface in `attack-surfaces.md`.
+
