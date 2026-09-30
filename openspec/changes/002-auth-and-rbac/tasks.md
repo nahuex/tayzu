@@ -915,7 +915,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   events table). Verify: `auth-flow.int.test.ts` (extended) covers the MFA
   login, and `sso-sign-in.int.test.ts` (extended) the SSO login, each
   emitting exactly one record with `tayzu.actor.id` and no email, `sub` or IP.
-- [ ] 24.6 `ALLOWED_ORIGINS` must list only `https` origins with no wildcard
+- [x] 24.6 `ALLOWED_ORIGINS` must list only `https` origins with no wildcard
   outside test (design Q56, Q40). Verify: `config.test.ts` covers an `http`
   origin and a `*` rejected at startup outside test, and `http://localhost`
   accepted in test.

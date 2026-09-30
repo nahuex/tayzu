@@ -281,3 +281,55 @@ describe('VISMA_CONNECT_DISCOVERY_URL must be https outside test (task 23.18, Q4
     expect(loadConfig(sso(url, 'test')).sso?.discoveryUrl).toBe(url);
   });
 });
+
+/**
+ * Task 24.6 (design Q56, Q40): `ALLOWED_ORIGINS` lists only `https` origins
+ * with no wildcard outside test. Production symbol: `loadConfig` in
+ * `config.ts` throws an `Error` naming `ALLOWED_ORIGINS` and never echoing the
+ * offending origin; in test, `http://localhost` stays accepted.
+ */
+describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.6, Q56, Q40)', () => {
+  const origins = (value: string, nodeEnv: string): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      ALLOWED_ORIGINS: value,
+    });
+
+  it('rejects an http origin outside test, naming the variable and not echoing the origin', () => {
+    const origin = 'http://app.tayzu.invalid';
+    const error = thrown(() => loadConfig(origins(origin, 'production')));
+    expect(error.message).toContain('ALLOWED_ORIGINS');
+    expect(error.message).not.toContain(origin);
+  });
+
+  it('rejects an http origin among valid https origins outside test', () => {
+    const error = thrown(() =>
+      loadConfig(origins('https://app.tayzu.test, http://other.tayzu.invalid', 'production')),
+    );
+    expect(error.message).toContain('ALLOWED_ORIGINS');
+  });
+
+  it('rejects a * wildcard outside test, naming the variable', () => {
+    const error = thrown(() => loadConfig(origins('*', 'production')));
+    expect(error.message).toContain('ALLOWED_ORIGINS');
+  });
+
+  it('rejects a * wildcard listed next to an https origin outside test', () => {
+    const error = thrown(() => loadConfig(origins('https://app.tayzu.test,*', 'production')));
+    expect(error.message).toContain('ALLOWED_ORIGINS');
+  });
+
+  it('accepts https origins outside test', () => {
+    expect(
+      loadConfig(origins('https://app.tayzu.test,https://admin.tayzu.test', 'production'))
+        .allowedOrigins,
+    ).toEqual(['https://app.tayzu.test', 'https://admin.tayzu.test']);
+  });
+
+  it('accepts http://localhost in test', () => {
+    expect(loadConfig(origins('http://localhost', 'test')).allowedOrigins).toEqual([
+      'http://localhost',
+    ]);
+  });
+});

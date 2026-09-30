@@ -139,6 +139,25 @@ function loadBetterAuthUrl(env: Env): string | undefined {
   return value;
 }
 
+/** `ALLOWED_ORIGINS` (Q56, Q40): `https` and wildcard-free outside test; origins are never echoed. */
+function validateAllowedOrigins(env: Env, origins: readonly string[]): void {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest) {
+    return;
+  }
+  for (const origin of origins) {
+    let protocol: string | undefined;
+    try {
+      protocol = origin.includes('*') ? undefined : new URL(origin).protocol;
+    } catch {
+      protocol = undefined;
+    }
+    if (protocol !== 'https:') {
+      throw new Error('ALLOWED_ORIGINS is malformed (https origins without wildcards only).');
+    }
+  }
+}
+
 /** `TAYZU_TELEMETRY_DISABLED`: unset or `false` is off, `true` is on, anything else fails. */
 function loadTelemetryDisabled(env: Env): boolean {
   const value = env['TAYZU_TELEMETRY_DISABLED'];
@@ -161,6 +180,7 @@ export function loadConfig(env: Env): Config {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin !== '');
+  validateAllowedOrigins(env, allowedOrigins);
   const betterAuthUrl = loadBetterAuthUrl(env);
   const sso = loadSso(env);
   const signIn = limitWithDefaults(
