@@ -82,15 +82,35 @@ export async function signInForSessionCookie(params: {
   password: string;
   fetch: typeof fetch;
 }): Promise<string> {
+  // Node's fetch sends `Sec-Fetch-Mode`, so Better Auth's form CSRF check
+  // requires a trusted `Origin`, exactly as for a same-origin browser request.
   const response = await params.fetch(`${params.baseUrl}/api/auth/sign-in/email`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: new URL(params.baseUrl).origin },
     body: JSON.stringify({ email: params.email, password: params.password }),
   });
   if (!response.ok) {
-    throw new Error(`Sign-in failed with status ${String(response.status)}.`);
+    const code = await readErrorCode(response);
+    throw new Error(
+      `Sign-in failed with status ${String(response.status)}${code === undefined ? '' : ` (${code})`}.`,
+    );
   }
   return buildZapAuthHeader(response.headers.getSetCookie()).value;
+}
+
+/**
+ * Better Auth's stable error code (for example `EMAIL_NOT_VERIFIED`), so a
+ * failed seed names its cause. Only an upper-case identifier is kept: never
+ * a message, never anything echoed from the request.
+ */
+async function readErrorCode(response: Response): Promise<string | undefined> {
+  try {
+    const body = (await response.json()) as { code?: unknown } | null;
+    const code = body?.code;
+    return typeof code === 'string' && /^[A-Z0-9_]{1,64}$/.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

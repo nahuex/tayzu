@@ -193,16 +193,81 @@ describe('ZAP seed script: session cookie handed to ZAP_AUTH_HEADER', () => {
     expect(message).not.toBe('');
     expect(message).not.toContain('one-time-pw-MARKER');
   });
+
+  it('sends an Origin header equal to the origin of baseUrl (Better Auth form CSRF check)', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response('{}', {
+          status: 200,
+          headers: { 'set-cookie': 'better-auth.session_token=tok.sig; Path=/; HttpOnly' },
+        }),
+      ),
+    );
+    await signInForSessionCookie({
+      baseUrl: 'http://127.0.0.1:3000',
+      email: 'zap-admin@example.test',
+      password: 'one-time-pw',
+      fetch: fetchMock,
+    });
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const headers = new Headers(init?.headers);
+    expect(headers.get('origin')).toBe('http://127.0.0.1:3000');
+  });
+
+  async function refusalMessage(body: string, password: string): Promise<string> {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(body, { status: 403 })));
+    try {
+      await signInForSessionCookie({
+        baseUrl: 'http://127.0.0.1:3000',
+        email: 'zap-admin@example.test',
+        password,
+        fetch: fetchMock,
+      });
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    return '';
+  }
+
+  it("names Better Auth's stable error code from the JSON body when sign-in is refused", async () => {
+    const message = await refusalMessage(
+      JSON.stringify({ code: 'MISSING_OR_NULL_ORIGIN', message: 'Missing or null Origin' }),
+      'one-time-pw-MARKER',
+    );
+    expect(message).toContain('403');
+    expect(message).toContain('MISSING_OR_NULL_ORIGIN');
+    expect(message).not.toContain('one-time-pw-MARKER');
+  });
+
+  it.each([
+    'Invalid origin with spaces',
+    'lower_case_code',
+    'one-time-pw-MARKER',
+    'CODE WITH SPACES',
+    'MIXED_case',
+  ])('never echoes a body code that is not an upper-case identifier: %s', async (code) => {
+    const message = await refusalMessage(JSON.stringify({ code }), 'one-time-pw-MARKER');
+    expect(message).not.toBe('');
+    expect(message).not.toContain(code);
+    expect(message).not.toContain('one-time-pw-MARKER');
+  });
 });
 
 describe('ZAP baseline workflow pin (Q30)', () => {
-  it('pins zaproxy/action-baseline by the v0.9.0 commit SHA', () => {
+  it('pins zaproxy/action-baseline by the v0.15.0 commit SHA and the ZAP image by digest', () => {
     const workflow = readFileSync(
       fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url)),
       'utf8',
     );
-    expect(workflow).toContain('zaproxy/action-baseline@41aee98ebc7cf2802c3beae4e7d4336413a21e43');
+    expect(workflow).toContain('zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25');
+    expect(workflow).not.toContain('41aee98ebc7cf2802c3beae4e7d4336413a21e43');
     expect(workflow).not.toMatch(/zaproxy\/action-baseline@(?![0-9a-f]{40}\b)/);
+    expect(workflow).toContain(
+      'ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef',
+    );
+    expect(workflow).toMatch(
+      /docker_name:\s*['"]?ghcr\.io\/zaproxy\/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef['"]?/,
+    );
     expect(workflow).toContain('ZAP_AUTH_HEADER');
   });
 });

@@ -228,7 +228,9 @@ outside the trust boundary talks to it, and it shares a network namespace with
 `Web UI` and the rest of the platform are still planned. The pipeline is
 guarded as a supply-chain control (SEC07, SEC13): `permissions:
 contents: read`, actions pinned by SHA, `pnpm audit` and gitleaks. The OWASP
-ZAP baseline job (task 15.1) does not exist yet.
+ZAP baseline job (task 15.1, `scripts/ci/dast.sh`) scans a running `apps/api`
+with one seeded session, against a throwaway PostgreSQL reached over verified
+TLS (a per-run CA); it fails on any alert.
 
 ### Planned
 
