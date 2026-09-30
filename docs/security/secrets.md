@@ -40,13 +40,14 @@ topology or trust configuration, so it is still never logged or echoed.
 Settings, not secrets. Each one only tunes a limiter that is on by default
 (Q39), and a set value must be a positive integer, else startup fails.
 
-| Variable                                                | Default      | What it tunes                                                        |
-| ------------------------------------------------------- | ------------ | -------------------------------------------------------------------- |
-| `PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 10 per 60 s  | Sign-in, and the same budget for the two-factor verification routes. |
-| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`           | 600 per 60 s | Per-principal budget on `/v1/*`.                                     |
-| `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`   | 30 per 60 s  | `POST /v1/auth/token`, per IP.                                       |
-| `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`              | 600          | Back-channel logout, per source IP.                                  |
-| `BODY_LIMIT_BYTES`                                      | 1,048,576    | Maximum request body.                                                |
+| Variable                                                       | Default      | What it tunes                                                        |
+| -------------------------------------------------------------- | ------------ | -------------------------------------------------------------------- |
+| `PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s  | Sign-in, and the same budget for the two-factor verification routes. |
+| `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 10 per 60 s  | Routes that check the current password, per IP and per user.         |
+| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`                  | 600 per 60 s | Per-principal budget on `/v1/*`.                                     |
+| `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`          | 30 per 60 s  | `POST /v1/auth/token`, per IP.                                       |
+| `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`                     | 600          | Back-channel logout, per source IP.                                  |
+| `BODY_LIMIT_BYTES`                                             | 1,048,576    | Maximum request body.                                                |
 
 ### Migrations
 

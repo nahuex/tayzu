@@ -1219,3 +1219,106 @@ describe('production app wiring: invalid limit overrides fail startup (task 23.1
     60_000,
   );
 });
+
+/**
+ * Task 24.12 (design Q39, Q52, D20): `createAppFromEnv` enables the
+ * password-check limiter of 24.2 (`rateLimit.passwordCheck`) from
+ * `Config.preAuthPasswordCheckRateLimit`, by default and tuned by
+ * `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX` / `_WINDOW_SECONDS`. Repeated wrong
+ * passwords on `/verify-password` are answered `429 AUTH_RATE_LIMITED`.
+ * Requests carry a fresh random `x-forwarded-for`, so the per-user bucket is
+ * what limits (the IP bucket never reaches its ceiling).
+ *
+ * Production symbols expected: `createAppFromEnv` forwards
+ * `preAuthRateLimit.passwordCheck` to `createApp`.
+ */
+describe('production app wiring: password-check limiter (task 24.12, Q39, Q52)', () => {
+  const MAX = 2;
+
+  async function verifyWrongPassword(app: App, cookie: string) {
+    return app.app.inject({
+      method: 'POST',
+      url: '/api/auth/verify-password',
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        cookie,
+      },
+      payload: JSON.stringify({ password: `wrong-${randomUUID()}` }),
+    });
+  }
+
+  async function signedInCookie(app: App): Promise<string> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Password Check Wiring',
+      email: `pwcheck-wiring-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Password Check Wiring Org ${suffix}`,
+      organizationSlug: `pwcheck-wiring-${suffix}`,
+      ip: randomIp(),
+    });
+    return tenant.cookie;
+  }
+
+  describe('with the limit tuned by the environment', () => {
+    let app: App;
+
+    beforeAll(async () => {
+      const { appPool, authPool } = await harnessPools();
+      state.pools.set('app', appPool);
+      state.pools.set('auth', authPool);
+      app = await createAppFromEnv({
+        ...ENV,
+        PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX: String(MAX),
+        PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_WINDOW_SECONDS: '60',
+      });
+    }, 60_000);
+
+    afterAll(async () => {
+      await app.close();
+      state.pools.clear();
+    }, 60_000);
+
+    it('Repeated wrong passwords on /verify-password are answered 429 AUTH_RATE_LIMITED', async () => {
+      const cookie = await signedInCookie(app);
+      for (let i = 0; i < MAX; i += 1) {
+        expect((await verifyWrongPassword(app, cookie)).statusCode).not.toBe(429);
+      }
+
+      const limited = await verifyWrongPassword(app, cookie);
+
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+      expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    }, 60_000);
+  });
+
+  describe('with no password-check variable set', () => {
+    let app: App;
+
+    beforeAll(async () => {
+      const { appPool, authPool } = await harnessPools();
+      state.pools.set('app', appPool);
+      state.pools.set('auth', authPool);
+      app = await createAppFromEnv(ENV);
+    }, 60_000);
+
+    afterAll(async () => {
+      await app.close();
+      state.pools.clear();
+    }, 60_000);
+
+    it('the password-check limiter is active by default', async () => {
+      const cookie = await signedInCookie(app);
+      let limitedAt: number | undefined;
+      for (let i = 1; i <= 200 && limitedAt === undefined; i += 1) {
+        if ((await verifyWrongPassword(app, cookie)).statusCode === 429) {
+          limitedAt = i;
+        }
+      }
+      expect(limitedAt, 'a 429 within the ceiling').toBeDefined();
+    }, 120_000);
+  });
+});

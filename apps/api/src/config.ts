@@ -22,6 +22,8 @@ export interface Config {
   };
   /** Pre-auth sign-in limit (D20); window in seconds. Enabled by default (Q39). */
   readonly preAuthSignInRateLimit: { readonly max: number; readonly window: number };
+  /** Pre-auth password-check limit (Q52); window in seconds. Enabled by default (Q39). */
+  readonly preAuthPasswordCheckRateLimit: { readonly max: number; readonly window: number };
   /** Per-principal `/v1/*` limit (D13). */
   readonly rateLimit: RateLimit;
   /** `POST /v1/auth/token` limit (D20). */
@@ -43,6 +45,7 @@ const DEFAULT_BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE = 600;
 
 // Enabled defaults (Q39); the environment only tunes them.
 const DEFAULT_SIGN_IN_LIMIT = { max: 10, windowSeconds: 60 };
+const DEFAULT_PASSWORD_CHECK_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
 const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
@@ -189,6 +192,12 @@ export function loadConfig(env: Env): Config {
     'PRE_AUTH_SIGN_IN_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_SIGN_IN_LIMIT,
   );
+  const passwordCheck = limitWithDefaults(
+    env,
+    'PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX',
+    'PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_PASSWORD_CHECK_LIMIT,
+  );
   const perPrincipal = limitWithDefaults(
     env,
     'RATE_LIMIT_MAX',
@@ -215,6 +224,7 @@ export function loadConfig(env: Env): Config {
     backchannelLogoutRateLimitPerMinute,
     ...(sso === undefined ? {} : { sso }),
     preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds },
+    preAuthPasswordCheckRateLimit: { max: passwordCheck.max, window: passwordCheck.windowSeconds },
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
     bodyLimit,

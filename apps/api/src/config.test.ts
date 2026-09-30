@@ -333,3 +333,50 @@ describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.
     ]);
   });
 });
+
+/**
+ * Task 24.12 (design Q39, Q52, D20): the password-check limiter of 24.2 is
+ * enabled by default like the sign-in limiter, and its two variables only
+ * tune it.
+ *
+ * Production symbol expected: `Config.preAuthPasswordCheckRateLimit:
+ * { max: number; window: number }` (window in seconds, like
+ * `preAuthSignInRateLimit`), built with `limitWithDefaults` from
+ * `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX` and
+ * `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_WINDOW_SECONDS`. The design states no
+ * numeric defaults, so only "a positive integer" is asserted.
+ */
+describe('pre-auth password-check limit from the environment (task 24.12, Q39, Q52)', () => {
+  const MAX = 'PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX';
+  const WINDOW = 'PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_WINDOW_SECONDS';
+
+  it('defaults to an enabled limit when neither variable is set', () => {
+    const limit = (
+      loadConfig(env()) as unknown as Partial<Record<string, { max?: unknown; window?: unknown }>>
+    )['preAuthPasswordCheckRateLimit'];
+    for (const value of [limit?.max, limit?.window]) {
+      expect(Number.isSafeInteger(value) && (value as number) > 0, `value ${String(value)}`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('the environment only tunes the limit', () => {
+    const config = loadConfig(env({ [MAX]: '4', [WINDOW]: '45' })) as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(config['preAuthPasswordCheckRateLimit']).toEqual({ max: 4, window: 45 });
+  });
+
+  it.each(
+    [MAX, WINDOW].flatMap((name) =>
+      ['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'].map(
+        (value) => [name, value] as const,
+      ),
+    ),
+  )('%s=%j (disabled or malformed) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});

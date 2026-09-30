@@ -951,7 +951,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   for an entity list, `?pageSize=abc` answering `400` naming `/pageSize`
   without echoing `abc`, and a malformed JSON body on a `POST` answering `400`,
   never `500`.
-- [ ] 24.12 `createAppFromEnv` enables 24.2's password-check limiter by
+- [x] 24.12 `createAppFromEnv` enables 24.2's password-check limiter by
   default, like the sign-in limiter (design Q39, Q52): its limits come from
   `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX` and
   `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_WINDOW_SECONDS` with safe defaults, and

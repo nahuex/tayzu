@@ -32,11 +32,12 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       ...(config.betterAuthUrl === undefined ? {} : { baseUrl: config.betterAuthUrl }),
       backchannelLogoutRateLimitPerMinute: config.backchannelLogoutRateLimitPerMinute,
       ...(config.sso === undefined ? {} : { sso: config.sso }),
-      // One configured pre-auth budget covers sign-in, two-factor verification and email verification (D20).
+      // One configured pre-auth budget covers sign-in and two-factor verification (D20);
+      // password checks have their own budget (Q52).
       preAuthRateLimit: {
         signIn: config.preAuthSignInRateLimit,
         twoFactorVerify: config.preAuthSignInRateLimit,
-        emailVerification: config.preAuthSignInRateLimit,
+        passwordCheck: config.preAuthPasswordCheckRateLimit,
       },
       rateLimit: config.rateLimit,
       tokenExchangeRateLimit: config.tokenExchangeRateLimit,
