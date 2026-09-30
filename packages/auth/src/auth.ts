@@ -107,6 +107,11 @@ const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 /** Q49: a successful password re-entry is the step-up for a user without MFA. */
 const VERIFY_PASSWORD_PATH = '/verify-password';
 const GENERATE_BACKUP_CODES_PATH = '/two-factor/generate-backup-codes';
+/** Q61, Q43: the two-factor verification paths that must never set a trust-device cookie. */
+const VERIFY_TWO_FACTOR_PATHS: readonly string[] = [
+  '/two-factor/verify-totp',
+  '/two-factor/verify-backup-code',
+];
 
 /** design D5, task 5.1: the one `apiKey` plugin config machine credentials use (`./machine-credentials.ts`). */
 const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
@@ -766,6 +771,18 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             throw new APIError('FORBIDDEN', {
               code: 'AUTH_STEP_UP_REQUIRED',
               message: 'AUTH_STEP_UP_REQUIRED',
+            });
+          }
+          return undefined;
+        }
+        if (VERIFY_TWO_FACTOR_PATHS.includes(ctx.path)) {
+          // Q61, Q43: refuse `trustDevice: true` so every sign-in of an enrolled
+          // user is MFA-checked; nothing is verified and no cookie is set.
+          const body = ctx.body as { trustDevice?: unknown } | null | undefined;
+          if (body?.trustDevice === true) {
+            throw new APIError('BAD_REQUEST', {
+              code: 'TRUST_DEVICE_NOT_SUPPORTED',
+              message: 'TRUST_DEVICE_NOT_SUPPORTED',
             });
           }
           return undefined;

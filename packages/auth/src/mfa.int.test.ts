@@ -488,3 +488,169 @@ describe('Multi-factor authentication: TOTP enrollment and backup codes (task 4.
     expect(body.user?.email).toBe(user.email);
   });
 });
+
+/**
+ * Task 25.2 (design Q61, Q43; tasks.md): `/two-factor/verify-totp` and
+ * `/two-factor/verify-backup-code` reject `trustDevice: true` with `400`, so
+ * every sign-in of an enrolled user is MFA-checked. Design Q61: "`trustDevice:
+ * true` on `/two-factor/verify-*` answers `400`, so every sign-in of an
+ * enrolled user is MFA-checked (Q43)".
+ *
+ * Better Auth 1.7.6's `verify-two-factor.mjs` honors `trustDevice` by setting
+ * a signed `trust_device` cookie (`better-auth.trust_device`) that lets the
+ * next sign-in skip the second factor, so these are expected RED today. No
+ * older test in this repo sends `trustDevice`, so none contradicts Q61.
+ *
+ * Expected production change: `createAuth` (or the host HTTP layer) refuses a
+ * body with `trustDevice === true` on both verify paths before Better Auth
+ * verifies anything.
+ */
+describe('Two-factor verification rejects trustDevice (task 25.2, design Q61, Q43)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  /** An enrolled TOTP user: returns the raw secret, the backup codes and credentials. */
+  async function enrolledUser(): Promise<{
+    email: string;
+    secret: string;
+    backupCodes: readonly string[];
+  }> {
+    const email = randomEmail();
+    await createAdminUser(auth, { name: TEST_USER_NAME, email, password: TEST_PASSWORD });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const api = twoFactorApiOf(auth);
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: signedIn.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    const { code } = await api.generateTOTP({ body: { secret } });
+    await api.verifyTOTP({ body: { code }, headers: new Headers({ cookie: signedIn.cookie }) });
+    return { email, secret, backupCodes: enabled.backupCodes };
+  }
+
+  /** A fresh password sign-in: the pending `two_factor` challenge cookie. */
+  async function challengeCookie(email: string): Promise<string> {
+    const response = await postJson(
+      handlerOf(auth),
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(response.status).toBe(200);
+    return cookieHeaderFrom(response);
+  }
+
+  function verify(
+    path: '/two-factor/verify-totp' | '/two-factor/verify-backup-code',
+    cookie: string,
+    body: Record<string, unknown>,
+  ): Promise<Response> {
+    return handlerOf(auth)(
+      new Request(`${AUTH_BASE_URL}${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          // Better Auth's origin check requires an Origin on cookie-bearing POSTs.
+          origin: 'http://localhost:3000',
+          cookie,
+        },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  function setsTrustDeviceCookie(response: Response): boolean {
+    return response.headers.getSetCookie().some((raw) => raw.includes('trust_device'));
+  }
+
+  it('verify-totp rejects trustDevice: true with 400 and sets no trust-device cookie', async () => {
+    const user = await enrolledUser();
+    const cookie = await challengeCookie(user.email);
+    const { code } = await twoFactorApiOf(auth).generateTOTP({ body: { secret: user.secret } });
+
+    const response = await verify('/two-factor/verify-totp', cookie, {
+      code,
+      trustDevice: true,
+    });
+
+    expect(response.status).toBe(400);
+    expect(setsTrustDeviceCookie(response), 'no trust-device cookie is set').toBe(false);
+  });
+
+  it('verify-backup-code rejects trustDevice: true with 400 and sets no trust-device cookie', async () => {
+    const user = await enrolledUser();
+    const backupCode = user.backupCodes[0];
+    if (backupCode === undefined) {
+      throw new Error('expected at least one backup code from enrollment');
+    }
+    const cookie = await challengeCookie(user.email);
+
+    const response = await verify('/two-factor/verify-backup-code', cookie, {
+      code: backupCode,
+      trustDevice: true,
+    });
+
+    expect(response.status).toBe(400);
+    expect(setsTrustDeviceCookie(response), 'no trust-device cookie is set').toBe(false);
+  });
+
+  it('a refused trustDevice request does not make the next sign-in skip the second factor', async () => {
+    const user = await enrolledUser();
+    const cookie = await challengeCookie(user.email);
+    const { code } = await twoFactorApiOf(auth).generateTOTP({ body: { secret: user.secret } });
+    const refused = await verify('/two-factor/verify-totp', cookie, { code, trustDevice: true });
+    expect(refused.status).toBe(400);
+
+    const next = await postJson(
+      handlerOf(auth),
+      '/sign-in/email',
+      { email: user.email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    const body = (await next.json()) as Partial<SignInTwoFactorChallengeBody>;
+    expect(body.twoFactorRedirect, 'the second factor is still requested').toBe(true);
+  });
+
+  it('verify-totp without trustDevice still succeeds and sets no trust-device cookie', async () => {
+    const user = await enrolledUser();
+    const cookie = await challengeCookie(user.email);
+    const { code } = await twoFactorApiOf(auth).generateTOTP({ body: { secret: user.secret } });
+
+    const response = await verify('/two-factor/verify-totp', cookie, { code });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
+    expect(setsTrustDeviceCookie(response)).toBe(false);
+  });
+
+  it('verify-backup-code without trustDevice still succeeds and sets no trust-device cookie', async () => {
+    const user = await enrolledUser();
+    const backupCode = user.backupCodes[0];
+    if (backupCode === undefined) {
+      throw new Error('expected at least one backup code from enrollment');
+    }
+    const cookie = await challengeCookie(user.email);
+
+    const response = await verify('/two-factor/verify-backup-code', cookie, { code: backupCode });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
+    expect(setsTrustDeviceCookie(response)).toBe(false);
+  });
+});

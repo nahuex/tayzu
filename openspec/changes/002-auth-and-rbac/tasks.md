@@ -969,7 +969,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   validly signed Visma ID token for a linked `sub` posted to
   `/api/auth/sign-in/social` being refused with no session cookie, the same
   on `/api/auth/link-social`, and the normal redirect flow still starting.
-- [ ] 25.2 `/two-factor/verify-totp` and `/two-factor/verify-backup-code`
+- [x] 25.2 `/two-factor/verify-totp` and `/two-factor/verify-backup-code`
   reject `trustDevice: true` with `400` (design Q61, Q43). Verify:
   `mfa.int.test.ts` (extended) covers the refusal, no trust-device cookie
   being set, and verification without it still succeeding.
