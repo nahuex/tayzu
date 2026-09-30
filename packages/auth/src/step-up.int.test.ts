@@ -189,6 +189,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type { Attributes } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
+import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -740,4 +741,188 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
       'no step_up_check span for a non-user actor',
     ).toHaveLength(0);
   });
+});
+
+/**
+ * Task 24.1 (design Q51, Q6, Q43, D4; `specs/auth-and-rbac/spec.md`,
+ * requirements "Step-up authentication for high-risk operations" and "Account
+ * linking to Visma Connect is explicit and keyed on the Visma Connect UserID").
+ *
+ * Task 24.1: "The step-up marker records its factor (`mfa` or `password`), and
+ * a user with an enrolled MFA factor passes step-up only with a fresh `mfa`
+ * marker: `/verify-password` alone no longer satisfies the `x-tayzu-risk: high`
+ * operations."
+ *
+ * Covered:
+ * - An MFA-enrolled user with only a fresh password re-entry is refused with
+ *   `AUTH_STEP_UP_REQUIRED` (spec: "a fresh MFA verification when the caller
+ *   has an enrolled MFA factor, otherwise a fresh password re-entry").
+ * - The same user passes after a real `/two-factor/verify-totp`.
+ * - A user without MFA still passes with a fresh password re-entry.
+ *
+ * "Only a fresh password re-entry" is set up by signing the MFA user in through
+ * a real TOTP challenge, deleting that session's `step-up-verified:<token>`
+ * marker (the one `/two-factor/verify-totp` wrote), and then calling Better
+ * Auth's real `POST /verify-password`, which writes the password marker (Q49).
+ *
+ * ## Production symbols expected
+ *
+ * - `createStepUpGuard` (`./step-up.js`) and the `hooks.after` of `./auth.ts`:
+ *   the marker row's factor (`mfa` | `password`) is recorded by whichever hook
+ *   wrote it, and the guard accepts a `password` marker only when the session's
+ *   user does not have `twoFactorEnabled`. The tests observe only behavior
+ *   (guard accept/refuse), never the marker's storage format.
+ */
+describe('Step-up factor for MFA-enrolled users (task 24.1, design Q51)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+  let guard: StepUpGuard;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET, trustedOrigins: [TRUSTED_ORIGIN] });
+    api = apiOf(auth);
+    guard = createStepUpGuard({ auth });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  function cookieOfSessionToken(cookie: string): string {
+    const pair = cookie.split('; ').find((entry) => entry.includes('session_token='));
+    const signed = decodeURIComponent(pair?.slice(pair.indexOf('=') + 1) ?? '');
+    return signed.split('.')[0] ?? '';
+  }
+
+  async function dropMarker(cookie: string): Promise<void> {
+    await db.execute(sql`
+      delete from auth.verification
+      where identifier = ${`step-up-verified:${cookieOfSessionToken(cookie)}`}
+    `);
+  }
+
+  async function verifyPassword(cookie: string): Promise<void> {
+    const response = await postJson(
+      handlerOf(auth),
+      '/verify-password',
+      { password: TEST_PASSWORD },
+      randomIp(),
+      { cookie, origin: TRUSTED_ORIGIN },
+    );
+    expect(response.status, 'the password re-entry is accepted').toBe(200);
+  }
+
+  function paramsFor(cookie: string, tenant: { userId: string; organizationId: string }) {
+    return {
+      headers: new Headers({ cookie }),
+      tenantId: tenant.organizationId,
+      actor: { type: 'user', id: tenant.userId },
+      route: HIGH_RISK_ROUTE,
+      operation: BLUEPRINT_DELETE_OPERATION,
+    } satisfies AssertStepUpParams;
+  }
+
+  /** An MFA-enrolled user, plus a function signing them in through a real TOTP challenge. */
+  async function enrolledUser(): Promise<{
+    tenant: { userId: string; organizationId: string };
+    signInWithTotp(): Promise<string>;
+  }> {
+    const handler = handlerOf(auth);
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Step-Up Factor Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    await api.verifyTOTP({
+      body: { code: (await api.generateTOTP({ body: { secret } })).code },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    return {
+      tenant,
+      signInWithTotp: async () => {
+        const challenge = await postJson(
+          handler,
+          '/sign-in/email',
+          { email, password: TEST_PASSWORD },
+          randomIp(),
+        );
+        expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
+        const verified = await postJson(
+          handler,
+          '/two-factor/verify-totp',
+          { code: (await api.generateTOTP({ body: { secret } })).code },
+          randomIp(),
+          { cookie: cookieHeaderFrom(challenge), origin: TRUSTED_ORIGIN },
+        );
+        expect(verified.status, 'the TOTP challenge is verified').toBe(200);
+        return cookieHeaderFrom(verified);
+      },
+    };
+  }
+
+  it('An MFA-enrolled user with only a fresh password re-entry is refused with AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await enrolledUser();
+    const cookie = await user.signInWithTotp();
+    // GIVEN a session with no fresh MFA verification, only a fresh password re-entry.
+    await dropMarker(cookie);
+    await verifyPassword(cookie);
+
+    // WHEN they call a high-risk operation, THEN it fails and the handler never runs.
+    const handler = vi.fn();
+    await expect(
+      (async () => {
+        await guard(paramsFor(cookie, user.tenant));
+        handler();
+      })(),
+    ).rejects.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    expect(handler, 'the deletion handler never runs').not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('The same MFA-enrolled user passes step-up after /two-factor/verify-totp', async () => {
+    const user = await enrolledUser();
+    const weakCookie = await user.signInWithTotp();
+    await dropMarker(weakCookie);
+    await verifyPassword(weakCookie);
+    await expect(guard(paramsFor(weakCookie, user.tenant))).rejects.toMatchObject({
+      code: 'AUTH_STEP_UP_REQUIRED',
+    });
+
+    // A real TOTP verification satisfies step-up.
+    const freshCookie = await user.signInWithTotp();
+    const handler = vi.fn();
+    await guard(paramsFor(freshCookie, user.tenant));
+    handler();
+    expect(handler, 'the deletion proceeds').toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it('A user without MFA still passes step-up with a fresh password re-entry', async () => {
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Step-Up Factor Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    await expect(
+      guard(paramsFor(tenant.cookie, tenant)),
+      'precondition: no marker, refused',
+    ).rejects.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+
+    await verifyPassword(tenant.cookie);
+
+    await expect(guard(paramsFor(tenant.cookie, tenant))).resolves.toBeUndefined();
+  }, 60_000);
 });

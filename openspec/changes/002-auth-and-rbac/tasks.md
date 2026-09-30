@@ -878,7 +878,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
 
 ## 24. Final gaps (VCDM and security review re-run, 17.2 and 17.3)
 
-- [ ] 24.1 The step-up marker records its factor (`mfa` or `password`), and a
+- [x] 24.1 The step-up marker records its factor (`mfa` or `password`), and a
   user with an enrolled MFA factor passes step-up only with a fresh `mfa`
   marker: `/verify-password` alone no longer satisfies the `x-tayzu-risk:
   high` operations, `/link-social` or `/unlink-account` for that user

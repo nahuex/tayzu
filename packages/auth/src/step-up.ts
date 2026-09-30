@@ -92,6 +92,9 @@ export function stepUpVerificationIdentifier(sessionToken: string): string {
   return `${STEP_UP_VERIFICATION_IDENTIFIER_PREFIX}:${sessionToken}`;
 }
 
+/** design Q51: the factor a step-up marker records (its `verification.value`). */
+export type StepUpFactor = 'mfa' | 'password';
+
 export interface StepUpGuardOptions {
   /** The Better Auth instance whose session/verification state the guard reads. */
   readonly auth: AuthInstance;
@@ -149,7 +152,9 @@ function apiOf(auth: AuthInstance): AuthApiSurface {
  */
 interface AuthContextSurface {
   readonly internalAdapter: {
-    findVerificationValue(identifier: string): Promise<{ readonly expiresAt: Date } | null>;
+    findVerificationValue(
+      identifier: string,
+    ): Promise<{ readonly expiresAt: Date; readonly value: string } | null>;
   };
 }
 
@@ -208,15 +213,46 @@ function recordStepUpCheck(fresh: boolean, method: string = LOCAL_AUTH_METHOD): 
 /**
  * The one freshness check: a lookup failure fails closed, exactly like
  * `./context-resolver.ts`'s own membership re-check (treated as "no fresh
- * verification" rather than allowing the operation through).
+ * verification" rather than allowing the operation through). Design Q51: a
+ * user with an enrolled MFA factor needs a fresh `mfa` marker; a `password`
+ * marker (or an unrecognized value) satisfies step-up only without MFA.
  */
-async function isFresh(auth: AuthInstance, sessionToken: string): Promise<boolean> {
-  const verification = await contextOf(auth)
-    .then((context) =>
-      context.internalAdapter.findVerificationValue(stepUpVerificationIdentifier(sessionToken)),
-    )
+async function isFresh(
+  auth: AuthInstance,
+  sessionToken: string,
+  mfaEnrolled: boolean,
+): Promise<boolean> {
+  const factor = await contextOf(auth)
+    .then((context) => currentFreshFactor(context.internalAdapter, sessionToken))
     .catch(() => null);
-  return verification !== null && verification.expiresAt.getTime() > Date.now();
+  return factor === 'mfa' || (factor === 'password' && !mfaEnrolled);
+}
+
+/** The slice of Better Auth's internal adapter the marker lookup needs. */
+export interface StepUpMarkerReader {
+  findVerificationValue(
+    identifier: string,
+  ): Promise<{ readonly expiresAt: Date; readonly value: string } | null>;
+}
+
+/**
+ * The session's fresh marker factor, or `null` when absent, expired,
+ * unrecognized or unreadable (fail closed). Exported so `./auth.ts`'s hook
+ * reads markers exactly as the guard does.
+ */
+export async function currentFreshFactor(
+  reader: StepUpMarkerReader,
+  sessionToken: string,
+): Promise<StepUpFactor | null> {
+  const verification = await reader
+    .findVerificationValue(stepUpVerificationIdentifier(sessionToken))
+    .catch(() => null);
+  if (verification === null || verification.expiresAt.getTime() <= Date.now()) {
+    return null;
+  }
+  return verification.value === 'mfa' || verification.value === 'password'
+    ? verification.value
+    : null;
 }
 
 /**
@@ -238,7 +274,9 @@ export function createEnrolledStepUpCheck(
     }
     // Q43, Q49: with or without MFA the caller needs the freshness marker, written
     // by a fresh MFA verification or, without MFA, a fresh password re-entry.
-    if (!(await isFresh(options.auth, session.session.token))) {
+    if (
+      !(await isFresh(options.auth, session.session.token, session.user?.twoFactorEnabled === true))
+    ) {
       throw new AuthStepUpError();
     }
   };
@@ -298,7 +336,11 @@ export function createStepUpGuard(options: StepUpGuardOptions): StepUpGuard {
     }
     const sessionToken = session.session.token;
 
-    const fresh = await isFresh(options.auth, sessionToken);
+    const fresh = await isFresh(
+      options.auth,
+      sessionToken,
+      session.user?.twoFactorEnabled === true,
+    );
     recordStepUpCheck(fresh);
 
     if (!fresh) {

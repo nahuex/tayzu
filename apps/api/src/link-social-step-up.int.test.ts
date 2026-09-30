@@ -1028,6 +1028,44 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
     expect(await linkedAccountCount(user.userId)).toBe(0);
   }, 60_000);
 
+  // Task 24.1 (design Q51, Q6, Q43): the step-up marker records its factor, and
+  // a user with an enrolled MFA factor passes only with a fresh `mfa` marker.
+  // Expected production symbols: the `/link-social` and `/unlink-account`
+  // pre-handler (via `@tayzu/auth`'s `step-up.ts` freshness check) refuses a
+  // session for a `twoFactorEnabled` user whose only marker is a `password` one
+  // (written by `/verify-password`), with `403` and body code
+  // `AUTH_STEP_UP_REQUIRED`. Only behavior is observed, never the storage format.
+  it('Linking with only a fresh password re-entry is blocked for an MFA-enrolled user: AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await mfaUser();
+    // GIVEN the MFA verification marker is gone and only a password re-entry is fresh.
+    await dropMarker(user.cookie);
+    const verified = await postAuth(user.cookie, '/verify-password', { password: TEST_PASSWORD });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect(await markerOf(user.cookie), 'precondition: a fresh marker exists').toBeDefined();
+    stub.setSubject({ sub: `mfa-pw-only-${randomUUID()}`, email: user.email, name: 'Link User' });
+    const requestsBefore = stub.authorizationRequests.length;
+
+    const response = await linkSocialRequest(user.cookie);
+
+    expectBlocked(response);
+    expect(response.json<{ url?: unknown }>().url).toBeUndefined();
+    expect(stub.authorizationRequests, 'the stub was never contacted').toHaveLength(requestsBefore);
+    expect(await linkedAccountCount(user.userId)).toBe(0);
+  }, 60_000);
+
+  it('Unlinking with only a fresh password re-entry is blocked for an MFA-enrolled user: AUTH_STEP_UP_REQUIRED, the account stays linked', async () => {
+    const user = await mfaUser();
+    const rowId = await seedLinkedAccount(user.userId);
+    await dropMarker(user.cookie);
+    const verified = await postAuth(user.cookie, '/verify-password', { password: TEST_PASSWORD });
+    expect(verified.statusCode, verified.body).toBe(200);
+
+    const response = await unlinkRequest(user.cookie, rowId);
+
+    expectBlocked(response);
+    expect(await linkedAccountCount(user.userId), 'the account is still linked').toBe(1);
+  }, 60_000);
+
   it('identity.users.linkSsoAccount and unlinkSsoAccount are marked x-tayzu-risk: high (step-up applies)', () => {
     const router = createIdentityRouter({
       auth: app.auth,

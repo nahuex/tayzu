@@ -84,7 +84,11 @@ import {
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
-import { STEP_UP_FRESHNESS_MS, stepUpVerificationIdentifier } from './step-up.js';
+import {
+  STEP_UP_FRESHNESS_MS,
+  currentFreshFactor,
+  stepUpVerificationIdentifier,
+} from './step-up.js';
 import {
   logger,
   mfaEventsCounter,
@@ -815,10 +819,14 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return;
           }
           const session = await getSessionFromCtx(ctx).catch(() => null);
-          if (session) {
+          // Q51: never shadow a still-fresh `mfa` marker with a weaker `password` one.
+          if (
+            session &&
+            (await currentFreshFactor(ctx.context.internalAdapter, session.session.token)) !== 'mfa'
+          ) {
             await ctx.context.internalAdapter.createVerificationValue({
               identifier: stepUpVerificationIdentifier(session.session.token),
-              value: 'verified',
+              value: 'password',
               expiresAt: new Date(Date.now() + STEP_UP_FRESHNESS_MS),
             });
           }
@@ -843,7 +851,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           }
           await ctx.context.internalAdapter.createVerificationValue({
             identifier: stepUpVerificationIdentifier(response.token),
-            value: 'verified',
+            value: 'mfa',
             expiresAt: new Date(Date.now() + STEP_UP_FRESHNESS_MS),
           });
         }
