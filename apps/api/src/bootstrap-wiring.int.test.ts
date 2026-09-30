@@ -1031,3 +1031,162 @@ describe('production app wiring guard: remaining protections (task 11.19)', () =
     expect(limited.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
   }, 60_000);
 });
+
+/**
+ * Task 23.11 (design Q39, D20, D13): a minimal production environment (no limit
+ * variables at all) still has every limiter and the body limit active, and an
+ * invalid override fails startup.
+ *
+ * ## Production symbols expected
+ *
+ * `loadConfig` supplies enabled defaults for the pre-auth sign-in, per-principal
+ * and token-exchange limiters and the body limit, so `createAppFromEnv` always
+ * forwards them. The design states no numeric values, so bursts here use
+ * generous ceilings (sign-in 200, others 2000 requests in a minute); a default
+ * above these would fail the test and must then be reported.
+ */
+describe('production app wiring: minimal environment keeps every limiter active (task 23.11, Q39)', () => {
+  let app: App;
+
+  beforeAll(async () => {
+    const { appPool, authPool } = await harnessPools();
+    state.pools.set('app', appPool);
+    state.pools.set('auth', authPool);
+    app = await createAppFromEnv(ENV);
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function firstLimited(
+    ceiling: number,
+    send: () => Promise<{ statusCode: number }>,
+  ): Promise<number | undefined> {
+    for (let i = 1; i <= ceiling; i += 1) {
+      if ((await send()).statusCode === 429) {
+        return i;
+      }
+    }
+    return undefined;
+  }
+
+  it('the pre-auth sign-in limiter is active with no limit variables set', async () => {
+    const ip = randomIp();
+    const email = `nobody-${randomUUID()}@example.test`;
+    const limitedAt = await firstLimited(200, () =>
+      app.app.inject({
+        method: 'POST',
+        url: '/api/auth/sign-in/email',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://localhost:3000',
+          'x-forwarded-for': ip,
+        },
+        payload: JSON.stringify({ email, password: `wrong-${randomUUID()}` }),
+      }),
+    );
+    expect(limitedAt, 'a 429 within the ceiling').toBeDefined();
+  }, 120_000);
+
+  it('the token-exchange limiter is active with no limit variables set', async () => {
+    const ip = randomIp();
+    const clientId = `client-${randomUUID()}`;
+    const limitedAt = await firstLimited(2000, () =>
+      app.app.inject({
+        method: 'POST',
+        url: '/v1/auth/token',
+        headers: {
+          'content-type': 'application/json',
+          origin: ORIGIN,
+          'x-forwarded-for': ip,
+          ...csrfHeaders('POST'),
+        },
+        payload: JSON.stringify({ clientId, clientSecret: `wrong-${randomUUID()}` }),
+      }),
+    );
+    expect(limitedAt, 'a 429 within the ceiling').toBeDefined();
+  }, 120_000);
+
+  it('the per-principal limiter is active with no limit variables set', async () => {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Default Limits',
+      email: `default-limits-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Default Limits Org ${suffix}`,
+      organizationSlug: `default-limits-${suffix}`,
+      ip: randomIp(),
+    });
+    const limitedAt = await firstLimited(2000, () =>
+      app.app.inject({
+        method: 'GET',
+        url: `/v1/blueprints/limits-probe-${randomUUID()}`,
+        headers: { cookie: tenant.cookie },
+      }),
+    );
+    expect(limitedAt, 'a 429 within the ceiling').toBeDefined();
+  }, 120_000);
+
+  it('the body limit is active with no BODY_LIMIT_BYTES set', async () => {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Default Body',
+      email: `default-body-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Default Body Org ${suffix}`,
+      organizationSlug: `default-body-${suffix}`,
+      ip: randomIp(),
+    });
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/v1/blueprints',
+      headers: {
+        cookie: tenant.cookie,
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({
+        identifier: `big-${randomUUID().slice(0, 8)}`,
+        title: { en: 'x'.repeat(64 * 1024 * 1024) },
+        schema: { properties: {}, required: [] },
+      }),
+    });
+    expect(response.statusCode).toBe(413);
+  }, 120_000);
+});
+
+describe('production app wiring: invalid limit overrides fail startup (task 23.11, Q39)', () => {
+  beforeAll(async () => {
+    const { appPool, authPool } = await harnessPools();
+    state.pools.set('app', appPool);
+    state.pools.set('auth', authPool);
+  }, 60_000);
+
+  afterAll(() => {
+    state.pools.clear();
+  });
+
+  it.each([
+    ['PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX', '0'],
+    ['RATE_LIMIT_MAX', 'off'],
+    ['TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS', '-1'],
+    ['BODY_LIMIT_BYTES', '0'],
+  ])(
+    '%s=%j fails startup naming the variable',
+    async (name, value) => {
+      const outcome = await createAppFromEnv({ ...ENV, [name]: value }).then(
+        async (started) => {
+          await started.close();
+          return 'started';
+        },
+        (error: unknown) => (error instanceof Error ? error.message : 'non-error rejection'),
+      );
+      expect(outcome, 'startup fails instead of starting').not.toBe('started');
+      expect(outcome).toContain(name);
+    },
+    60_000,
+  );
+});

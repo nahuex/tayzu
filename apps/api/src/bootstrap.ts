@@ -31,21 +31,15 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       allowedOrigins,
       backchannelLogoutRateLimitPerMinute: config.backchannelLogoutRateLimitPerMinute,
       ...(config.sso === undefined ? {} : { sso: config.sso }),
-      ...(config.preAuthSignInRateLimit === undefined
-        ? {}
-        : {
-            // One configured pre-auth budget covers sign-in, two-factor verification and email verification (D20).
-            preAuthRateLimit: {
-              signIn: config.preAuthSignInRateLimit,
-              twoFactorVerify: config.preAuthSignInRateLimit,
-              emailVerification: config.preAuthSignInRateLimit,
-            },
-          }),
-      ...(config.rateLimit === undefined ? {} : { rateLimit: config.rateLimit }),
-      ...(config.tokenExchangeRateLimit === undefined
-        ? {}
-        : { tokenExchangeRateLimit: config.tokenExchangeRateLimit }),
-      ...(config.bodyLimit === undefined ? {} : { bodyLimit: config.bodyLimit }),
+      // One configured pre-auth budget covers sign-in, two-factor verification and email verification (D20).
+      preAuthRateLimit: {
+        signIn: config.preAuthSignInRateLimit,
+        twoFactorVerify: config.preAuthSignInRateLimit,
+        emailVerification: config.preAuthSignInRateLimit,
+      },
+      rateLimit: config.rateLimit,
+      tokenExchangeRateLimit: config.tokenExchangeRateLimit,
+      bodyLimit: config.bodyLimit,
     });
     const ownedAuthPool = authPool;
     return {

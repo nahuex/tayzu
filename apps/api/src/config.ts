@@ -18,14 +18,14 @@ export interface Config {
     readonly clientId: string;
     readonly clientSecret: string;
   };
-  /** Better Auth's pre-auth sign-in limit (D20); window in seconds. */
-  readonly preAuthSignInRateLimit?: { readonly max: number; readonly window: number };
+  /** Pre-auth sign-in limit (D20); window in seconds. Enabled by default (Q39). */
+  readonly preAuthSignInRateLimit: { readonly max: number; readonly window: number };
   /** Per-principal `/v1/*` limit (D13). */
-  readonly rateLimit?: RateLimit;
+  readonly rateLimit: RateLimit;
   /** `POST /v1/auth/token` limit (D20). */
-  readonly tokenExchangeRateLimit?: RateLimit;
+  readonly tokenExchangeRateLimit: RateLimit;
   /** Maximum request body in bytes (D13). */
-  readonly bodyLimit?: number;
+  readonly bodyLimit: number;
   /** Back-channel logout budget per source IP per minute (D26, Q32). */
   readonly backchannelLogoutRateLimitPerMinute: number;
 }
@@ -36,6 +36,12 @@ interface RateLimit {
 }
 
 const DEFAULT_BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE = 600;
+
+// Enabled defaults (Q39); the environment only tunes them.
+const DEFAULT_SIGN_IN_LIMIT = { max: 10, windowSeconds: 60 };
+const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
+const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
+const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 
 const MIN_SECRET_LENGTH = 32;
 
@@ -63,24 +69,17 @@ function optionalPositiveInt(env: Env, name: string): number | undefined {
   return parsed;
 }
 
-/** A max/window pair: both variables or neither. */
-function optionalLimit(
+/** A max/window pair; each variable only tunes its enabled default (Q39). */
+function limitWithDefaults(
   env: Env,
   maxName: string,
   windowName: string,
-): { max: number; windowSeconds: number } | undefined {
-  const max = optionalPositiveInt(env, maxName);
-  const windowSeconds = optionalPositiveInt(env, windowName);
-  if (max === undefined && windowSeconds === undefined) {
-    return undefined;
-  }
-  if (max === undefined) {
-    throw new Error(`${maxName} is required when ${windowName} is set.`);
-  }
-  if (windowSeconds === undefined) {
-    throw new Error(`${windowName} is required when ${maxName} is set.`);
-  }
-  return { max, windowSeconds };
+  defaults: { max: number; windowSeconds: number },
+): { max: number; windowSeconds: number } {
+  return {
+    max: optionalPositiveInt(env, maxName) ?? defaults.max,
+    windowSeconds: optionalPositiveInt(env, windowName) ?? defaults.windowSeconds,
+  };
 }
 
 const SSO_VARIABLES = [
@@ -116,18 +115,25 @@ export function loadConfig(env: Env): Config {
     .map((origin) => origin.trim())
     .filter((origin) => origin !== '');
   const sso = loadSso(env);
-  const signIn = optionalLimit(
+  const signIn = limitWithDefaults(
     env,
     'PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX',
     'PRE_AUTH_SIGN_IN_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_SIGN_IN_LIMIT,
   );
-  const perPrincipal = optionalLimit(env, 'RATE_LIMIT_MAX', 'RATE_LIMIT_WINDOW_SECONDS');
-  const exchange = optionalLimit(
+  const perPrincipal = limitWithDefaults(
+    env,
+    'RATE_LIMIT_MAX',
+    'RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_PER_PRINCIPAL_LIMIT,
+  );
+  const exchange = limitWithDefaults(
     env,
     'TOKEN_EXCHANGE_RATE_LIMIT_MAX',
     'TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_TOKEN_EXCHANGE_LIMIT,
   );
-  const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES');
+  const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const backchannelLogoutRateLimitPerMinute =
     optionalPositiveInt(env, 'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE') ??
     DEFAULT_BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE;
@@ -139,20 +145,9 @@ export function loadConfig(env: Env): Config {
     allowedOrigins,
     backchannelLogoutRateLimitPerMinute,
     ...(sso === undefined ? {} : { sso }),
-    ...(signIn === undefined
-      ? {}
-      : { preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds } }),
-    ...(perPrincipal === undefined
-      ? {}
-      : { rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 } }),
-    ...(exchange === undefined
-      ? {}
-      : {
-          tokenExchangeRateLimit: {
-            max: exchange.max,
-            timeWindowMs: exchange.windowSeconds * 1000,
-          },
-        }),
-    ...(bodyLimit === undefined ? {} : { bodyLimit }),
+    preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds },
+    rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
+    tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
+    bodyLimit,
   };
 }

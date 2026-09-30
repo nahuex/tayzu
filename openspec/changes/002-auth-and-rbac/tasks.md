@@ -807,7 +807,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   verified local user: rejected with `AUTH_SSO_REJECTED`, byte-identical to
   "Sign-in with an unlinked Visma Connect account is rejected generically",
   and no `auth.account` row written.
-- [ ] 23.11 The pre-auth limiter, the per-principal limiter, the
+- [x] 23.11 The pre-auth limiter, the per-principal limiter, the
   token-exchange limiter and the body limit have enabled defaults in
   `loadConfig` (the values in D20 and D13); the environment only tunes them,
   and a disabled or non-positive value fails startup (design Q39, D20).

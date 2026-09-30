@@ -44,7 +44,7 @@ import { createPool } from '@tayzu/db';
 
 import { createAppFromEnv } from './bootstrap.js';
 // The module under test. Does not exist yet.
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
 
 const APP_URL = 'postgres://tayzu_app:app-pw-s3cret@db.invalid:5432/tayzu?sslmode=verify-full';
 const AUTH_URL = 'postgres://tayzu_auth:auth-pw-s3cret@db.invalid:5432/tayzu?sslmode=verify-full';
@@ -154,6 +154,66 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
       expect(error.message).toContain('BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE');
     },
   );
+
+  /**
+   * Task 23.11 (design Q39, D20, D13): limiters and body limit are on by default.
+   * Production symbols: `Config.preAuthSignInRateLimit`, `Config.rateLimit`,
+   * `Config.tokenExchangeRateLimit`, `Config.bodyLimit` become always defined
+   * (enabled defaults in `loadConfig`). The design gives no numeric values, so
+   * the tests assert only "defined and a positive integer".
+   */
+  it('a minimal production environment still has every limiter and the body limit active (Q39)', () => {
+    const config: Partial<Config> = loadConfig(env());
+    const numbers = [
+      config.preAuthSignInRateLimit?.max,
+      config.preAuthSignInRateLimit?.window,
+      config.rateLimit?.max,
+      config.rateLimit?.timeWindowMs,
+      config.tokenExchangeRateLimit?.max,
+      config.tokenExchangeRateLimit?.timeWindowMs,
+      config.bodyLimit,
+    ];
+    for (const value of numbers) {
+      expect(Number.isSafeInteger(value) && (value ?? 0) > 0, `value ${String(value)}`).toBe(true);
+    }
+  });
+
+  it('the environment only tunes the limits (Q39)', () => {
+    const config = loadConfig(
+      env({
+        PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX: '7',
+        PRE_AUTH_SIGN_IN_RATE_LIMIT_WINDOW_SECONDS: '30',
+        RATE_LIMIT_MAX: '8',
+        RATE_LIMIT_WINDOW_SECONDS: '20',
+        TOKEN_EXCHANGE_RATE_LIMIT_MAX: '9',
+        TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS: '10',
+        BODY_LIMIT_BYTES: '2048',
+      }),
+    );
+    expect(config.preAuthSignInRateLimit).toEqual({ max: 7, window: 30 });
+    expect(config.rateLimit).toEqual({ max: 8, timeWindowMs: 20_000 });
+    expect(config.tokenExchangeRateLimit).toEqual({ max: 9, timeWindowMs: 10_000 });
+    expect(config.bodyLimit).toBe(2048);
+  });
+
+  const LIMIT_VARIABLES = [
+    'PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX',
+    'PRE_AUTH_SIGN_IN_RATE_LIMIT_WINDOW_SECONDS',
+    'RATE_LIMIT_MAX',
+    'RATE_LIMIT_WINDOW_SECONDS',
+    'TOKEN_EXCHANGE_RATE_LIMIT_MAX',
+    'TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS',
+    'BODY_LIMIT_BYTES',
+  ] as const;
+
+  it.each(
+    LIMIT_VARIABLES.flatMap((name) =>
+      ['0', '-1', 'false', 'off', 'disabled', 'abc', ''].map((value) => [name, value] as const),
+    ),
+  )('%s=%j (disabled or non-positive) fails startup naming the variable (Q39)', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
 
   it('documents the change procedure for every secret in docs/security/secrets.md', async () => {
     const path = fileURLToPath(new URL('../../../docs/security/secrets.md', import.meta.url));
