@@ -26,6 +26,11 @@ function internalError(): ORPCError<string, unknown> {
 }
 
 export function toOrpcError(error: unknown): ORPCError<string, unknown> {
+  // The SSO step-up interceptor (Q36) already built this one, carrying the
+  // re-authorization URL as `data`; it holds no tenant text.
+  if (error instanceof ORPCError && error.code === 'AUTH_STEP_UP_REQUIRED') {
+    return error as ORPCError<string, unknown>;
+  }
   if (typeof error !== 'object' || error === null || !(error instanceof Error)) {
     return internalError();
   }

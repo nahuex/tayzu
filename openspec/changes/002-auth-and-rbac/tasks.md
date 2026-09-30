@@ -785,7 +785,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   HTTP: SSO sign-in, then a signed logout token for its `sid`, then the same
   cookie failing as `CATALOG_CONTEXT_REQUIRED`, while a same-user local
   session stays valid.
-- [ ] 23.8 SSO step-up can be satisfied over HTTP: the step-up interceptor
+- [x] 23.8 SSO step-up can be satisfied over HTTP: the step-up interceptor
   starts the Visma re-authorization and a re-auth callback route validates
   `auth_time`, `acr` and `amr` server-side per D25 and hands the result to
   the guard as `reauthorization` (design Q36, D25). Verify: `step-up-sso-

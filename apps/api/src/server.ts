@@ -25,6 +25,7 @@ import {
   createStepUpGuard,
   emitRateLimited,
   exchangeMachineToken,
+  AuthStepUpError,
   isAllowedAuthPath,
   verifyLogoutToken,
   withBackchannelLogoutTelemetry,
@@ -39,6 +40,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
+import { createReauthorization, type Reauthorization } from './reauthorization.js';
 
 type Pool = ReturnType<typeof createPool>;
 
@@ -104,6 +106,8 @@ const LOGOUT_JTI_SKEW_SECONDS = 30;
 /** Generous per-IP floor (D26): high enough not to drop legitimate logout bursts. */
 const DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE = 600;
 const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
+/** Q36: where Visma Connect returns from a step-up re-authorization. */
+const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
 
 function isTokenExchange(request: FastifyRequest): boolean {
   return request.method === 'POST' && request.url.split('?', 1)[0] === TOKEN_EXCHANGE_PATH;
@@ -169,6 +173,19 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     auth,
     ...(options.sso === undefined ? {} : { sso: options.sso }),
   });
+  // Q36: the SSO step-up flow. The callback's absolute URL is built on the
+  // host's first allowed origin, never on a request header.
+  const reauthorization: Reauthorization | undefined =
+    options.sso === undefined || options.allowedOrigins[0] === undefined
+      ? undefined
+      : createReauthorization({
+          auth,
+          authPool: options.authPool,
+          discoveryUrl: options.sso.discoveryUrl,
+          clientId: options.sso.clientId,
+          clientSecret: options.sso.clientSecret,
+          redirectUri: new URL(REAUTH_CALLBACK_PATH, options.allowedOrigins[0]).toString(),
+        });
   const openApiHandler = new OpenAPIHandler(router, {
     clientInterceptors: [
       errorMappingInterceptor,
@@ -177,18 +194,36 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         const route = procedure['~orpc'].route;
         const resolvedSpec = typeof route.spec === 'function' ? route.spec({}) : route.spec;
         const stepUpContext = context as unknown as StepUpHandlerContext;
-        await stepUpGuard({
-          headers: stepUpContext[STEP_UP_HEADERS],
-          tenantId: stepUpContext.tenantId,
-          actor: stepUpContext.actor,
-          route: {
-            ...(resolvedSpec !== undefined &&
-            (resolvedSpec as Record<string, unknown>)['x-tayzu-risk'] === 'high'
-              ? { riskLevel: 'high' as const }
-              : {}),
-          },
-          operation: path.join('.'),
-        });
+        const highRisk =
+          resolvedSpec !== undefined &&
+          (resolvedSpec as Record<string, unknown>)['x-tayzu-risk'] === 'high';
+        const headers = stepUpContext[STEP_UP_HEADERS];
+        // A result recorded by the re-auth callback reaches the guard (D25, Q36).
+        const returned =
+          highRisk && reauthorization !== undefined ? await reauthorization.lookup(headers) : null;
+        try {
+          await stepUpGuard({
+            headers,
+            tenantId: stepUpContext.tenantId,
+            actor: stepUpContext.actor,
+            route: { ...(highRisk ? { riskLevel: 'high' as const } : {}) },
+            operation: path.join('.'),
+            ...(returned === null ? {} : { reauthorization: returned }),
+          });
+        } catch (error) {
+          const reauthorizationUrl =
+            error instanceof AuthStepUpError && reauthorization !== undefined
+              ? await reauthorization.start(headers)
+              : null;
+          if (reauthorizationUrl === null) {
+            throw error;
+          }
+          throw new ORPCError('AUTH_STEP_UP_REQUIRED', {
+            status: 403,
+            message: error instanceof Error ? error.message : 'Step-up required',
+            data: { reauthorizationUrl },
+          });
+        }
         return interceptorOptions.next();
       },
     ],
@@ -409,6 +444,42 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         return reply.status(200).send({});
       },
     );
+    done();
+  });
+
+  // Q36: the re-authorization callback (query redirect or `form_post`). The
+  // single-use `state` binds it to the session; it answers a bare 200 or 400.
+  await app.register((scope, _opts, done) => {
+    scope.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (_request, body, parsed) => {
+        const fields: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const [name, value] of new URLSearchParams(body as string)) {
+          if (name === 'code' || name === 'state') {
+            fields[name] = value;
+          }
+        }
+        parsed(null, fields);
+      },
+    );
+    const handle = async (
+      params: { code?: unknown; state?: unknown },
+      reply: import('fastify').FastifyReply,
+    ): Promise<unknown> => {
+      const ok = reauthorization !== undefined && (await reauthorization.complete(params));
+      return ok
+        ? reply.status(200).send({})
+        : reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
+    };
+    scope.get(REAUTH_CALLBACK_PATH, (request, reply) => {
+      const query = request.query as Record<string, unknown>;
+      return handle({ code: query['code'], state: query['state'] }, reply);
+    });
+    scope.post(REAUTH_CALLBACK_PATH, (request, reply) => {
+      const body = request.body as Record<string, unknown> | undefined;
+      return handle({ code: body?.['code'], state: body?.['state'] }, reply);
+    });
     done();
   });
 
