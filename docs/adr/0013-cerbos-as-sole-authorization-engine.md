@@ -55,3 +55,20 @@ the parent's permissions instead of inheriting them.
 - Every new resource kind needs its own cross-tenant deny rule.
 - Better Auth roles are inputs; changing what a role may do is a Cerbos
   policy change, never a Better Auth configuration change.
+
+## Update (2026-09-30)
+
+The decision stands. Two facts about the shipped code qualify it:
+
+- Point 4's cross-tenant deny compares `R.attr.tenantId` with
+  `P.attr.tenantId`. For catalog operations both come from the host-resolved
+  `ctx.tenantId` (`buildAttributes` in `packages/authz/src/attributes.ts`
+  drops any `tenantId` in the extra attributes), and the loaded entity row
+  supplies only `ownerTeam`, `createdBy` and `locked`. The deny therefore
+  never fires for them. Postgres RLS and the repository `tenant_id` filters
+  are the real tenant barriers there. Only `identity.*` passes the target's
+  real tenant as the resource tenant. A full fix comes with Cerbos scopes
+  (`042`).
+- The gRPC link from `apps/api` to Cerbos uses TLS, except when
+  `CERBOS_ADDRESS` is `localhost`, `127.0.0.1` or `[::1]` (the sidecar and
+  the CI container).

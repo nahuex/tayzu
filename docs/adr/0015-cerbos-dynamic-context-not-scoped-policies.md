@@ -59,3 +59,17 @@ attribute-based rules, for example ownership and locking, without a runtime
   condition, not a new mechanism.
 - Per-tenant customization of rules needs a design change and a new
   Checkpoint 3 approval until a runtime policy story exists.
+
+## Update (2026-09-30)
+
+The decision stands, with one qualification to point 2 and to the
+"three layers" consequence. The catalog pipeline and the `entities.list` plan
+send the host-resolved `ctx.tenantId` as both `R.attr.tenantId` and
+`P.attr.tenantId` (`buildAttributes` in `packages/authz/src/attributes.ts`
+drops any `tenantId` in the extra attributes). For catalog operations,
+`same_tenant` is therefore always true and the explicit cross-tenant deny
+never fires: Postgres RLS and the repository `tenant_id` filters are the real
+barriers. The "defense in depth" holds only for `identity.*`, which passes the
+target's real tenant, resolved from its memberships, as the resource tenant.
+A full fix comes with Cerbos scopes (`042`). Read point 2 and the
+Consequences with this in mind.

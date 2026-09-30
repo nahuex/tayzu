@@ -992,7 +992,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   existing re-authorization test (extended) covers the `redirect_uri` sent to
   Visma Connect being under `BETTER_AUTH_URL` when it differs from the
   allowed origin.
-- [ ] 25.6 _(setup)_ `docs/architecture/system-diagram.md` and ADR 0013/0015
+- [x] 25.6 _(setup)_ `docs/architecture/system-diagram.md` and ADR 0013/0015
   match the code (the `same_tenant` qualification, TLS to Cerbos except
   loopback, the DAST job) (design Q64). Verify: markdownlint passes and the
   diagram lists every surface in `attack-surfaces.md`.

@@ -148,8 +148,9 @@ Agents and integrations are never gated by step-up.
 | Established through Visma Connect (`ssoSid` is set) | An ID token from a Visma Connect re-authorization (`max_age=300`, `prompt=login`, `acr_values=urn:idp:vismaconnect:mfa`) whose `auth_time`, `acr`, `amr` and `sid` pass. |
 
 A failure is `403 AUTH_STEP_UP_REQUIRED`. For a Visma Connect session, when SSO
-is configured, the error carries `data.reauthorizationUrl`, built on the first
-entry of `ALLOWED_ORIGINS`, never on a request header. A marker is keyed by the
+is configured, the error carries `data.reauthorizationUrl`, built on
+`BETTER_AUTH_URL` (the first entry of `ALLOWED_ORIGINS` only when it is unset,
+in test), never on a request header (Q64). A marker is keyed by the
 session token, so it never carries over to another session.
 
 ## Health, machine credential, back-channel and re-authorization routes
