@@ -269,19 +269,32 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     return undefined;
   });
 
-  app.all('/api/auth/*', async (request, reply) => {
-    const response = await (auth as unknown as AuthHandlerSurface).handler(toWebRequest(request));
-    reply.status(response.status);
-    for (const [name, value] of response.headers) {
-      if (name !== 'set-cookie') {
-        reply.header(name, value);
+  // Q35, D23: Visma Connect's `form_post` callback arrives as
+  // `application/x-www-form-urlencoded`. Only this scope keeps that body (as the raw
+  // string Better Auth re-reads); the catch-all `*` parser stays for other routes.
+  await app.register((scope, _opts, done) => {
+    scope.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (_request, body, parsed) => {
+        parsed(null, body);
+      },
+    );
+    scope.all('/api/auth/*', async (request, reply) => {
+      const response = await (auth as unknown as AuthHandlerSurface).handler(toWebRequest(request));
+      reply.status(response.status);
+      for (const [name, value] of response.headers) {
+        if (name !== 'set-cookie') {
+          reply.header(name, value);
+        }
       }
-    }
-    const cookies = response.headers.getSetCookie();
-    if (cookies.length > 0) {
-      reply.header('set-cookie', cookies);
-    }
-    return reply.send(Buffer.from(await response.arrayBuffer()));
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length > 0) {
+        reply.header('set-cookie', cookies);
+      }
+      return reply.send(Buffer.from(await response.arrayBuffer()));
+    });
+    done();
   });
 
   // D26: public back-channel logout (Visma Connect's infrastructure is the

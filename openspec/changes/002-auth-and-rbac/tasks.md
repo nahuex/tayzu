@@ -772,7 +772,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `auth.handler` (no raw SQL) producing a session with the token's `sid`, a
   local sign-in leaving it `null`, and the step-up guard taking the SSO
   branch for that session.
-- [ ] 23.6 The Fastify app parses the `application/x-www-form-urlencoded`
+- [x] 23.6 The Fastify app parses the `application/x-www-form-urlencoded`
   `form_post` callback body before it reaches the Better Auth handler, without
   loosening the catch-all parser for other routes (design Q35, D23). Verify:
   `sso-http.int.test.ts` covers "Sign-in with a linked Visma Connect account
