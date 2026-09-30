@@ -557,6 +557,8 @@ policy diff shown in chat, separately from the rest of the PR.
 - [ ] 17.2 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against
   the implemented code, and resolve or explicitly defer every blocking GAP.
   Verify: the report is attached to the PR, with zero open blocking GAPs.
+  The first run's blocking gaps are fixed by group 23; complete group 23
+  before re-running this check.
 - [ ] 17.3 Run `/security-review` on the branch and fix or justify every
   finding, then re-check `docs/architecture/system-diagram.md` against the
   implementation. Verify: the review output and any diagram diff are
@@ -722,3 +724,154 @@ policy diff shown in chat, separately from the rest of the PR.
   -shape identity across all four outcomes, plus the `auth.backchannel_
   logout.received` span and `tayzu.auth.backchannel_logout.events` counter,
   with no `sub`/`sid`/token/email/IP attribute on either signal.
+
+## 23. Final hardening (VCDM re-assessment 17.2)
+
+Fixes for the blocking and high gaps of the task 17.2 re-assessment and the
+security review, decided in chat on 2026-09-30 (design Q34-Q48). Execute this
+group before 17.2 is re-run. Every task is one red-green-refactor cycle. No
+task here changes a migration or a Cerbos policy; if one turns out to need
+either, stop for Checkpoint 3 (⛔) before continuing.
+
+- [ ] 23.1 `resolveContext` builds `principal.teams` and
+  `principal.moderatedBlueprints` from the caller's `_user` entity and its
+  team relations, replacing the hard-coded empty arrays, and fails closed
+  (`principal` absent, so Cerbos denies) when the entity or relations are
+  unreadable (design Q34, D8, D9). Verify: `context-resolver-principal.int.
+  test.ts` covers a member of two teams, a moderator of one blueprint, and an
+  unreadable `_user` entity yielding `AUTH_FORBIDDEN` on the next operation.
+- [ ] 23.2 Entity operations (get, create, update, delete, writeStatus,
+  listRelated) load the entity row inside the tenant-scoped authorization
+  step and send `ownerTeam` (resolved with `resolveEffectiveOwnerTeam`, a
+  direct relation wins), `createdBy` and `locked` to Cerbos, plus
+  `R.attr.tenantId` from the loaded row; for create, they send the
+  attributes of the entity being created (design Q34, D9, D10, D11). Verify:
+  `entity-authz-attributes.int.test.ts` runs through the real catalog
+  operation and covers "Non-owning member cannot update another team's
+  entity", "Creating an entity owned by a team the caller does not belong
+  to is denied", "Moderator can update entities of a moderated blueprint",
+  "Moderator has no extra permission on a non-moderated blueprint",
+  "Attribute-based rule grants access a role alone would not" (delete-own)
+  and "Attribute-based rule denies access a role alone would have granted"
+  (`locked`, admin still allowed); a cross-tenant id stays `CATALOG_NOT_
+  FOUND`.
+- [ ] 23.3 The `entities.list` Cerbos query-plan mapper handles `blueprintId`,
+  `ownerTeam`, `createdBy` and `locked`, so a moderator or team plan filters
+  instead of throwing and denying (design Q34, D11). Verify:
+  `entities-list-query-plan.int.test.ts` covers a team member, a moderator
+  and an admin listing entities, each seeing exactly the permitted rows, and
+  an unsupported plan operator still failing closed.
+- [ ] 23.4 The redaction helper (D12) checks the `view` action, not `read`,
+  which the policies do not define (design Q34). Verify: `redaction.int.
+  test.ts` (extended) covers a member seeing the identifiers they may view in
+  a delete-blocker list and only the unreadable ones redacted.
+- [ ] 23.5 The Visma sign-in populates `session.ssoSid` from the ID token
+  `sid` (left `null` for local sessions and when the token omits `sid`), so
+  the D25 SSO step-up branch is reachable (design Q35, D25). Verify:
+  `sso-sid-population.int.test.ts` covers a real SSO sign-in through
+  `auth.handler` (no raw SQL) producing a session with the token's `sid`, a
+  local sign-in leaving it `null`, and the step-up guard taking the SSO
+  branch for that session.
+- [ ] 23.6 The Fastify app parses the `application/x-www-form-urlencoded`
+  `form_post` callback body before it reaches the Better Auth handler, without
+  loosening the catch-all parser for other routes (design Q35, D23). Verify:
+  `sso-http.int.test.ts` covers "Sign-in with a linked Visma Connect account
+  succeeds" and "Sign-in with an unlinked Visma Connect account is rejected
+  generically" through `createApp` and the task 19.1 stub, and
+  `link-social-step-up.int.test.ts` drops its direct-`auth.handler` workaround.
+- [ ] 23.7 Back-channel logout revokes a session created by the real SSO
+  sign-in of 23.6 (design Q35, D26). Verify: `backchannel-logout-http.int.
+  test.ts` covers "A valid logout token revokes the matching session" over
+  HTTP: SSO sign-in, then a signed logout token for its `sid`, then the same
+  cookie failing as `CATALOG_CONTEXT_REQUIRED`, while a same-user local
+  session stays valid.
+- [ ] 23.8 SSO step-up can be satisfied over HTTP: the step-up interceptor
+  starts the Visma re-authorization and a re-auth callback route validates
+  `auth_time`, `acr` and `amr` server-side per D25 and hands the result to
+  the guard as `reauthorization` (design Q36, D25). Verify: `step-up-sso-
+  http.int.test.ts` covers "A fresh Visma Connect re-authorization with an
+  MFA method satisfies step-up" and "A Visma Connect re-authorization without
+  a qualifying MFA claim does not satisfy step-up" through `createApp`, on an
+  `x-tayzu-risk: high` operation.
+- [ ] 23.9 `identity.users.create` accepts only the organization roles
+  `member` or `admin`, always creates the Better Auth user with global role
+  `user`, adds the organization membership in the same operation, and no
+  input can assign `adminRoles` (design Q37, D22). Verify: `admin-user-
+  creation.int.test.ts` (extended) covers `role: "admin"` producing a user
+  whose global `auth.user.role` is `user` with an org `admin` membership,
+  `role: "member"` producing a `member` membership, and `role: "owner"`,
+  `"user,admin"` and `""` rejected as invalid input with no user created.
+- [ ] 23.10 `account.accountLinking.disableImplicitLinking: true` on the
+  Better Auth instance (design Q38, D24). Verify: `sso-sign-in.int.test.ts`
+  (extended) covers an unlinked `sub` whose `email_verified` email matches a
+  verified local user: rejected with `AUTH_SSO_REJECTED`, byte-identical to
+  "Sign-in with an unlinked Visma Connect account is rejected generically",
+  and no `auth.account` row written.
+- [ ] 23.11 The pre-auth limiter, the per-principal limiter, the
+  token-exchange limiter and the body limit have enabled defaults in
+  `loadConfig` (the values in D20 and D13); the environment only tunes them,
+  and a disabled or non-positive value fails startup (design Q39, D20).
+  Verify: `config.test.ts` and `bootstrap-wiring.int.test.ts` (extended)
+  cover a minimal production environment still having every limiter and the
+  body limit active, and an invalid override failing fast.
+- [ ] 23.12 `BETTER_AUTH_URL` is required (`https` outside test); Better Auth
+  is given `baseURL`, `trustedOrigins` (the allowed origins) and
+  `advanced.useSecureCookies: true`, and `toWebRequest` no longer hard-codes
+  `http://` (design Q40, D2). Verify: `production-cookies.int.test.ts` runs
+  with Better Auth's origin check on and covers a cookie-bearing POST from a
+  disallowed origin being rejected, one from an allowed origin passing, every
+  session cookie being `Secure`, and a missing or `http` `BETTER_AUTH_URL`
+  failing startup.
+- [ ] 23.13 Outside test, startup fails when no OTLP endpoint is configured
+  unless `TAYZU_TELEMETRY_DISABLED=true` is set explicitly (design Q41,
+  D14). Verify: `telemetry.test.ts` covers startup failing with no endpoint,
+  passing with an endpoint, and passing with the explicit disable flag (which
+  logs one startup warning), and `config.test.ts` covers the flag's parsing.
+- [ ] 23.14 `/link-social` and `/unlink-account`, and
+  `identity.users.linkSsoAccount` / `unlinkSsoAccount` for the caller's own
+  account, require step-up: a fresh MFA verification, or a fresh password
+  re-entry for a user without MFA (design Q43, D24). Verify:
+  `link-social-step-up.int.test.ts` (extended) covers "Linking without a
+  fresh MFA verification is blocked for an MFA-enrolled user", "Linking
+  without a fresh password re-entry is blocked for a user without MFA", and
+  unlinking blocked and allowed the same way (`AUTH_STEP_UP_REQUIRED`).
+- [ ] 23.15 A user with the organization role `admin` or `owner` who has no
+  enrolled MFA factor gets a session limited to MFA enrollment; every other
+  operation fails with `AUTH_STEP_UP_REQUIRED` until a factor is enrolled
+  (design Q43, D4). Verify: `admin-mfa-enrollment.int.test.ts` covers "An
+  unenrolled admin is limited to MFA enrollment" and "Unenrolled user signs in
+  with password alone" (a `member`), and an admin passing after enrolling.
+- [ ] 23.16 `/change-password` is added to D18's allowlist, still revoking
+  all other sessions; notifications for password, MFA and email changes are
+  deferred to `043`/`044` (design Q46, D18). Verify: `auth-route-allowlist.
+  int.test.ts` (extended) and `auth-route-allowlist.test.ts` (drift test)
+  cover the route being reachable with the current password and rejecting a
+  wrong one, and `session-policy.int.test.ts` covers other sessions being
+  revoked afterwards.
+- [ ] 23.17 `packages/db/src/harness.ts` also reassigns schema `auth`, its
+  tables and sequences, and `machine_credential_revocation` to
+  `tayzu_migrator`, like the catalog tables (design Q47, D6). Verify:
+  `harness-ownership.int.test.ts` builds a database whose objects are owned by
+  the bootstrap role, runs the harness, asserts `pg_class.relowner` and the
+  schema owner are `tayzu_migrator`, and applies a later `ALTER TABLE auth.
+  session` migration as `tayzu_migrator` successfully.
+- [ ] 23.18 `VISMA_CONNECT_DISCOVERY_URL` must be `https` outside test
+  (design Q48, D23). Verify: `config.test.ts` covers `http` rejected at
+  startup outside test and the test stub's loopback URL accepted in test.
+- [ ] 23.19 `account.encryptOAuthTokens: true`, so Visma access and ID tokens
+  are encrypted at rest in `auth.account` (design Q48, D23). Verify:
+  `sso-token-storage.int.test.ts` covers a real SSO sign-in leaving no
+  plaintext token in `auth.account`, and the tokens still decrypting for the
+  step-up flow.
+- [ ] 23.20 Better Auth `advanced.ipAddress` is configured with an explicit
+  trusted-proxy and header setting, so a caller-supplied `X-Forwarded-For`
+  cannot pick or rotate its rate-limit bucket and the shared `no-trusted-ip`
+  bucket is not reachable by a multi-hop header (design Q48, D20). Verify:
+  `pre-auth-rate-limit.int.test.ts` (extended) covers a spoofed single-value
+  and a multi-hop `X-Forwarded-For` from an untrusted peer both being limited
+  by the real peer address, and a trusted proxy's client address being used.
+- [ ] 23.21 A failed Visma Connect discovery at startup fails startup instead
+  of silently skipping the provider (design Q48, D23). Verify: `sso-
+  startup.int.test.ts` covers an unreachable and a malformed discovery
+  document each making `createApp`/`main` fail with a sanitized error and no
+  listener bound, and a reachable stub starting normally.

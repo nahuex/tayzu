@@ -185,8 +185,9 @@ of two explicit paths: a user, signed in locally, linking their own account;
 or an org admin recording a user's Visma Connect UserID on that user's
 account. Neither path, nor any sign-in flow, MUST link or match an account by
 email. The link MUST be keyed on the Visma Connect account's immutable
-UserID. Linking from an authenticated session MUST require a fresh MFA
-verification when the caller has an enrolled MFA factor. An admin MUST be
+UserID. Linking from an authenticated session MUST require step-up: a fresh MFA
+verification when the caller has an enrolled MFA factor, otherwise a fresh
+password re-entry. Unlinking MUST require the same step-up. An admin MUST be
 able to unlink an account. Neither linking nor unlinking MUST be permitted to
 leave a user with no sign-in method at all.
 
@@ -198,6 +199,11 @@ leave a user with no sign-in method at all.
 #### Scenario: Linking without a fresh MFA verification is blocked for an MFA-enrolled user
 - **GIVEN** a user signed in locally with an enrolled MFA factor but no fresh verification
 - **WHEN** they attempt to link their Visma Connect account
+- **THEN** it fails with `AUTH_STEP_UP_REQUIRED`
+
+#### Scenario: Linking without a fresh password re-entry is blocked for a user without MFA
+- **GIVEN** a user signed in locally with no enrolled MFA factor and no fresh password re-entry
+- **WHEN** they attempt to link or unlink a Visma Connect account
 - **THEN** it fails with `AUTH_STEP_UP_REQUIRED`
 
 #### Scenario: An admin records a user's Visma Connect UserID
@@ -270,9 +276,14 @@ usable more than once.
 - **THEN** the first attempt succeeds and the second is rejected
 
 #### Scenario: Unenrolled user signs in with password alone
-- **GIVEN** a user has no enrolled MFA factor
+- **GIVEN** a user with the organization role `member` and no enrolled MFA factor
 - **WHEN** they sign in with the correct password
 - **THEN** sign-in completes with no additional factor requested
+
+#### Scenario: An unenrolled admin is limited to MFA enrollment
+- **GIVEN** a user with the organization role `admin` or `owner` and no enrolled MFA factor
+- **WHEN** they sign in with the correct password
+- **THEN** the session may only reach MFA enrollment, and every other operation fails with `AUTH_STEP_UP_REQUIRED` until a factor is enrolled
 
 ### Requirement: Authentication responses resist account enumeration
 Sign-in responses MUST NOT reveal whether an email address has an account. A
