@@ -58,6 +58,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -150,12 +151,25 @@ describe('SSO step-up satisfied over HTTP (task 23.8, design Q36 and D25)', () =
       organizationSlug: `sso-step-up-http-${randomUUID()}`,
       ip: randomIp(),
     });
+    // Q43: an unenrolled admin/owner is limited to MFA enrollment on /v1, so enroll TOTP.
+    // Enrolling revokes the bootstrap session; the session that follows is marked as the SSO one
+    // below, so step-up is still decided by its MFA claim.
+    const totpSecret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      secret: totpSecret,
+      origin: ORIGIN,
+    });
     const sid = `sid-${randomUUID()}`;
     await authPool.query('update auth.session set sso_sid = $1 where user_id = $2', [
       sid,
       tenant.userId,
     ]);
-    return { cookie: tenant.cookie, sid };
+    return { cookie, sid };
   }
 
   async function createBlueprint(cookie: string): Promise<string> {

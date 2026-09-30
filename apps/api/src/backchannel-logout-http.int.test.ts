@@ -28,12 +28,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import {
-  bootstrapTestTenant,
-  signInAdminUser,
-} from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAppFromEnv } from './bootstrap.js';
 import type { App } from './server.js';
@@ -213,6 +211,11 @@ describe('back-channel logout over HTTP after a real SSO sign-in (task 23.7, des
       organizationSlug: `bcl-http-${suffix}`,
       ip: randomIp(),
     });
+    // Q43: an unenrolled admin/owner is limited to MFA enrollment on /v1, so enroll TOTP first.
+    const totpSecret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
     const sub = `bcl-http-link-${suffix}`;
     await pools.authPool.query(
       `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
@@ -234,15 +237,23 @@ describe('back-channel logout over HTTP after a real SSO sign-in (task 23.7, des
     expect(Number(stored.rows[0]?.n ?? 0), 'the SSO session carries the token sid').toBe(1);
 
     // AND a same-user local session.
-    const local = await signInAdminUser(app.auth, {
+    const localCookie = await signInWithTotp(app, {
       email,
       password: TEST_PASSWORD,
-      ip: randomIp(),
+      secret: totpSecret,
+      origin: ORIGIN,
     });
-    expect(local.userId).toBe(tenant.userId);
+    const localSessions = await pools.authPool.query<{ n: string }>(
+      'select count(*)::text as n from auth.session where user_id = $1 and sso_sid is null',
+      [tenant.userId],
+    );
+    expect(
+      Number(localSessions.rows[0]?.n ?? 0),
+      'the local session belongs to the same user',
+    ).toBeGreaterThan(0);
 
     expect((await useSession(ssoCookie)).statusCode, 'the SSO session works before').toBe(200);
-    expect((await useSession(local.cookie)).statusCode, 'the local session works before').toBe(200);
+    expect((await useSession(localCookie)).statusCode, 'the local session works before').toBe(200);
 
     // WHEN a valid back-channel logout token naming that sid is received.
     const response = await app.app.inject({
@@ -262,6 +273,6 @@ describe('back-channel logout over HTTP after a real SSO sign-in (task 23.7, des
     const revoked = await useSession(ssoCookie);
     expect(revoked.statusCode).toBe(401);
     expect(revoked.json<{ code: string }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
-    expect((await useSession(local.cookie)).statusCode, 'the local session stays valid').toBe(200);
+    expect((await useSession(localCookie)).statusCode, 'the local session stays valid').toBe(200);
   }, 60_000);
 });

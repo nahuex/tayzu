@@ -97,6 +97,13 @@ interface AuthHandlerSurface {
   handler(request: Request): Promise<Response>;
 }
 
+/** The slice of `auth.api.getSession` the MFA enrollment gate reads. */
+interface AuthSessionSurface {
+  getSession(args: {
+    headers: Headers;
+  }): Promise<{ user?: { twoFactorEnabled?: boolean | null } } | null>;
+}
+
 const STEP_UP_HEADERS = '__stepUpHeaders';
 
 interface StepUpHandlerContext {
@@ -590,6 +597,18 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return reply.status(mapped.status).send(mapped.toJSON());
     }
     const context = resolved.context;
+    // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
+    // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
+    // principals are always `member` (Q28), so only a user can carry `admin` here.
+    if (context.principal?.roles.includes('admin') === true) {
+      const session = await (auth.api as AuthSessionSurface).getSession({
+        headers: toWebHeaders(request),
+      });
+      if (session?.user?.twoFactorEnabled !== true) {
+        const mapped = toOrpcError(new AuthStepUpError());
+        return reply.status(mapped.status).send(mapped.toJSON());
+      }
+    }
     const result = await openApiHandler.handle(request, reply, {
       context: { ...context, [STEP_UP_HEADERS]: toWebHeaders(request) },
     });

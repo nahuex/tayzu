@@ -835,7 +835,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   fresh MFA verification is blocked for an MFA-enrolled user", "Linking
   without a fresh password re-entry is blocked for a user without MFA", and
   unlinking blocked and allowed the same way (`AUTH_STEP_UP_REQUIRED`).
-- [ ] 23.15 A user with the organization role `admin` or `owner` who has no
+- [x] 23.15 A user with the organization role `admin` or `owner` who has no
   enrolled MFA factor gets a session limited to MFA enrollment; every other
   operation fails with `AUTH_STEP_UP_REQUIRED` until a factor is enrolled
   (design Q43, D4). Verify: `admin-mfa-enrollment.int.test.ts` covers "An

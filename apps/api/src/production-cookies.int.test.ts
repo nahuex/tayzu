@@ -65,6 +65,7 @@ vi.mock('@tayzu/db', async (importActual) => {
   };
 });
 
+import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { createAppFromEnv } from './bootstrap.js';
 import type { App } from './server.js';
 
@@ -98,6 +99,7 @@ function setCookiesOf(response: { headers: Record<string, unknown> }): string[] 
 describe('production cookies and origin check (task 23.12, Q40, D2)', () => {
   let app: App;
   let email: string;
+  let totpSecret: string;
 
   beforeAll(async () => {
     const { appPool, authPool } = await harnessPools();
@@ -106,7 +108,7 @@ describe('production cookies and origin check (task 23.12, Q40, D2)', () => {
     app = await createAppFromEnv(ENV);
     const suffix = randomUUID();
     email = `cookies-${suffix}@example.test`;
-    await bootstrapTestTenant(app.auth, {
+    const tenant = await bootstrapTestTenant(app.auth, {
       name: 'Cookies User',
       email,
       password: TEST_PASSWORD,
@@ -114,6 +116,11 @@ describe('production cookies and origin check (task 23.12, Q40, D2)', () => {
       organizationSlug: `cookies-${suffix}`,
       ip: randomIp(),
       authBaseUrl: `${AUTH_URL}/api/auth`,
+    });
+    // Q43: an unenrolled admin/owner is limited to MFA enrollment on /v1, so enroll TOTP once.
+    totpSecret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
     });
   }, 60_000);
 
@@ -134,12 +141,14 @@ describe('production cookies and origin check (task 23.12, Q40, D2)', () => {
     });
   }
 
-  async function newSessionCookie(): Promise<string> {
-    const response = await signIn();
-    expect(response.statusCode, 'precondition: the sign-in succeeds').toBe(200);
-    return setCookiesOf(response)
-      .map((raw) => raw.split(';')[0])
-      .join('; ');
+  function newSessionCookie(): Promise<string> {
+    return signInWithTotp(app, {
+      email,
+      password: TEST_PASSWORD,
+      secret: totpSecret,
+      origin: ALLOWED_ORIGIN,
+      authBaseUrl: `${AUTH_URL}/api/auth`,
+    });
   }
 
   function signOut(cookie: string, origin: string) {

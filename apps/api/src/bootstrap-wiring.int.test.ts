@@ -80,6 +80,7 @@ vi.mock('@tayzu/db', async (importActual) => {
   };
 });
 
+import { enrolledAdminSession, sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
 import { createAppFromEnv } from './bootstrap.js';
 import type { App } from './server.js';
 
@@ -151,12 +152,14 @@ function cookieHeaderOf(response: Response): string {
 describe('production app wiring: step-up on high-risk /v1 routes (task 11.15, D4)', () => {
   let app: App;
   let totp: TwoFactorApiSurface;
+  let stepUpAuthPool: import('pg').Pool;
   let authHandler: (request: Request) => Promise<Response>;
 
   beforeAll(async () => {
     const { appPool, authPool } = await harnessPools();
     state.pools.set('app', appPool);
     state.pools.set('auth', authPool);
+    stepUpAuthPool = authPool;
     app = await createAppFromEnv(ENV);
     totp = app.auth.api as TwoFactorApiSurface;
     authHandler = (app.auth as unknown as { handler: (request: Request) => Promise<Response> })
@@ -168,6 +171,7 @@ describe('production app wiring: step-up on high-risk /v1 routes (task 11.15, D4
     state.pools.clear();
   }, 60_000);
 
+  /** An unenrolled org owner, as `bootstrapTestTenant` creates it. */
   async function newAdmin(): Promise<{ email: string; cookie: string }> {
     const suffix = randomUUID();
     const email = `wiring-${suffix}@example.test`;
@@ -180,6 +184,22 @@ describe('production app wiring: step-up on high-risk /v1 routes (task 11.15, D4
       ip: randomIp(),
     });
     return { email, cookie: tenant.cookie };
+  }
+
+  /**
+   * Q43: an MFA-enrolled org admin whose session carries no fresh verification: enrolled and
+   * signed in through a TOTP challenge, then its freshness marker is expired.
+   */
+  async function newEnrolledAdminWithoutFreshMfa(): Promise<{ cookie: string }> {
+    const admin = await newAdmin();
+    const enrolled = await enrolledAdminSession(app, admin, {
+      password: TEST_PASSWORD,
+      origin: ORIGIN,
+    });
+    await stepUpAuthPool.query('delete from auth.verification where identifier = $1', [
+      `step-up-verified:${sessionTokenOfCookie(enrolled.cookie)}`,
+    ]);
+    return { cookie: enrolled.cookie };
   }
 
   async function createBlueprint(cookie: string): Promise<string> {
@@ -221,7 +241,7 @@ describe('production app wiring: step-up on high-risk /v1 routes (task 11.15, D4
 
   it('A high-risk route without a fresh MFA verification is blocked over HTTP', async () => {
     // GIVEN a user signed in without verifying MFA in the last 5 minutes.
-    const { cookie } = await newAdmin();
+    const { cookie } = await newEnrolledAdminWithoutFreshMfa();
     const identifier = await createBlueprint(cookie);
 
     // WHEN they call blueprints.delete over HTTP.
@@ -527,11 +547,16 @@ describe('production app wiring: Visma Connect SSO and back-channel logout (task
       organizationSlug: `wiring-sso-${suffix}`,
       ip: randomIp(),
     });
+    // Q43: enrolling revokes the bootstrap session, so the SSO-marked one comes from a TOTP sign-in.
+    const enrolled = await enrolledAdminSession(app, tenant, {
+      password: TEST_PASSWORD,
+      origin: ORIGIN,
+    });
     await authPool.query('update auth.session set sso_sid = $1 where token = $2', [
       sid,
-      tenant.token,
+      sessionTokenOfCookie(enrolled.cookie),
     ]);
-    return tenant.cookie;
+    return enrolled.cookie;
   }
 
   it('Visma Connect SSO is registered from its environment variables: sign-in initiation redirects to the discovered provider', async () => {
@@ -700,7 +725,8 @@ describe('production app wiring: rate limits and body limit from the environment
       organizationSlug: `limits-wiring-${suffix}`,
       ip: randomIp(),
     });
-    return tenant.cookie;
+    return (await enrolledAdminSession(app, tenant, { password: TEST_PASSWORD, origin: ORIGIN }))
+      .cookie;
   }
 
   it('Repeated failed sign-ins from the same source are rate-limited over HTTP', async () => {
@@ -890,7 +916,8 @@ describe('production app wiring guard: remaining protections (task 11.19)', () =
       organizationSlug: `guard-wiring-${suffix}`,
       ip: randomIp(),
     });
-    return tenant.cookie;
+    return (await enrolledAdminSession(app, tenant, { password: TEST_PASSWORD, origin: ORIGIN }))
+      .cookie;
   }
 
   it('The health route answers GET /healthz unauthenticated with only a status (Q33)', async () => {

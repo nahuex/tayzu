@@ -83,7 +83,7 @@ import { AuthInvalidCredentialsError, AuthStepUpError } from '../../../packages/
 import { AuthorizationError } from '../../../packages/catalog/src/domain/errors.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
-import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
+import { enrolledAdminSession, freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -185,8 +185,12 @@ describe('apps/api HTTP error status (task 11.3)', () => {
 
   // Each test gets its own tenant, so blueprints never collide.
   async function freshTenant(): Promise<void> {
-    const tenant = await provisionTenant(app);
-    cookie = await signInOverHttp(app, tenant.email);
+    // Q43: an unenrolled admin/owner is limited to MFA enrollment, so the acting admin is enrolled.
+    const tenant = await enrolledAdminSession(app, await provisionTenant(app), {
+      password: TEST_PASSWORD,
+      origin: ALLOWED_ORIGIN,
+    });
+    cookie = tenant.cookie;
   }
 
   // High-risk routes (blueprints.update/delete, entities.delete) need a fresh MFA verification.

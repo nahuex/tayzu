@@ -45,6 +45,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
+import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -86,24 +87,9 @@ describe('apps/api POST /v1/auth/token rate limit (task 11.13)', () => {
       organizationSlug: `token-rate-limit-org-${suffix}`,
       ip: randomIp(),
     });
-    const response = await app.app.inject({
-      method: 'POST',
-      url: '/api/auth/sign-in/email',
-      headers: {
-        'content-type': 'application/json',
-        'x-forwarded-for': randomIp(),
-        origin: ALLOWED_ORIGIN,
-      },
-      payload: JSON.stringify({ email: tenant.email, password: TEST_PASSWORD }),
-    });
-    expect(response.statusCode).toBe(200);
-    const setCookie = response.headers['set-cookie'];
-    const cookies = Array.isArray(setCookie)
-      ? setCookie
-      : setCookie === undefined
-        ? []
-        : [setCookie];
-    return cookies.map((raw) => raw.split(';')[0]).join('; ');
+    return (
+      await enrolledAdminSession(app, tenant, { password: TEST_PASSWORD, origin: ALLOWED_ORIGIN })
+    ).cookie;
   }
 
   beforeAll(async () => {

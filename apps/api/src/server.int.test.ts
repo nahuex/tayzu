@@ -57,6 +57,7 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 // The module under test (task 11.1). Does not exist yet.
 import { csrfHeaders } from './__fixtures__/csrf.js';
+import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -84,26 +85,12 @@ async function provisionTenant(app: App): Promise<Tenant> {
     organizationSlug: `http-org-${suffix}`,
     ip: randomIp(),
   });
-  return { ...tenant, password: TEST_PASSWORD };
-}
-
-/** Signs in through the mounted `/api/auth/*` route and returns a real `cookie` header value. */
-async function signInOverHttp(app: App, email: string, password: string): Promise<string> {
-  const response = await app.app.inject({
-    method: 'POST',
-    url: '/api/auth/sign-in/email',
-    headers: {
-      'content-type': 'application/json',
-      'x-forwarded-for': randomIp(),
-      origin: ALLOWED_ORIGIN,
-    },
-    payload: JSON.stringify({ email, password }),
+  // Q43: an unenrolled admin/owner is limited to MFA enrollment, so the acting admin is enrolled.
+  const enrolled = await enrolledAdminSession(app, tenant, {
+    password: TEST_PASSWORD,
+    origin: ALLOWED_ORIGIN,
   });
-  expect(response.statusCode).toBe(200);
-  const setCookie = response.headers['set-cookie'];
-  const cookies = Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [setCookie];
-  expect(cookies.length).toBeGreaterThan(0);
-  return cookies.map((raw) => raw.split(';')[0]).join('; ');
+  return { ...enrolled, password: TEST_PASSWORD };
 }
 
 interface BlueprintBody {
@@ -135,7 +122,7 @@ describe('apps/api Fastify bootstrap (task 11.1)', () => {
   it('Session cookie resolves a human context: a full round trip through /api/auth/* and /v1/*', async () => {
     const tenant = await provisionTenant(app);
     // GIVEN a signed-in user with an active organization, through the real mounted Better Auth route.
-    const cookie = await signInOverHttp(app, tenant.email, tenant.password);
+    const cookie = tenant.cookie;
 
     // WHEN they call a catalog operation over HTTP (POST /v1/blueprints).
     const created = await app.app.inject({
@@ -174,8 +161,8 @@ describe('apps/api Fastify bootstrap (task 11.1)', () => {
   it("resolves tenantId from the session's active organization: another tenant's user never sees the blueprint", async () => {
     const first = await provisionTenant(app);
     const second = await provisionTenant(app);
-    const firstCookie = await signInOverHttp(app, first.email, first.password);
-    const secondCookie = await signInOverHttp(app, second.email, second.password);
+    const firstCookie = first.cookie;
+    const secondCookie = second.cookie;
     const identifier = `isolated-${randomUUID().slice(0, 8)}`;
 
     const created = await app.app.inject({

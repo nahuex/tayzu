@@ -69,6 +69,77 @@ function cookieHeaderOf(response: Response): string {
     .join('; ');
 }
 
+function authHandlerOf(app: App): (request: Request) => Promise<Response> {
+  return (app.auth as unknown as { handler: (request: Request) => Promise<Response> }).handler;
+}
+
+/** Enrolls TOTP for the user behind `enrollmentCookie` and returns the raw TOTP secret. */
+export async function enrollTotp(
+  app: App,
+  args: { readonly password: string; readonly enrollmentCookie: string },
+): Promise<string> {
+  const totp = app.auth.api as TwoFactorApiSurface;
+  const enrollHeaders = new Headers({ cookie: args.enrollmentCookie });
+  const enabled = await totp.enableTwoFactor({
+    body: { password: args.password, method: 'totp' },
+    headers: enrollHeaders,
+  });
+  const secret = rawSecretFromTotpUri(enabled.totpURI);
+  await totp.verifyTOTP({
+    body: { code: (await totp.generateTOTP({ body: { secret } })).code },
+    headers: enrollHeaders,
+  });
+  return secret;
+}
+
+/**
+ * Signs an MFA-enrolled user in through a real TOTP challenge and returns the
+ * session cookie, which carries a fresh MFA verification.
+ */
+export async function signInWithTotp(
+  app: App,
+  args: {
+    readonly email: string;
+    readonly password: string;
+    readonly secret: string;
+    readonly origin: string;
+    /** Defaults to the harness Better Auth base URL. */
+    readonly authBaseUrl?: string;
+  },
+): Promise<string> {
+  const totp = app.auth.api as TwoFactorApiSurface;
+  const authHandler = authHandlerOf(app);
+  const baseUrl = args.authBaseUrl ?? AUTH_BASE_URL;
+  const challenge = await authHandler(
+    new Request(`${baseUrl}/sign-in/email`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: args.origin,
+      },
+      body: JSON.stringify({ email: args.email, password: args.password }),
+    }),
+  );
+  expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
+  const verified = await authHandler(
+    new Request(`${baseUrl}/two-factor/verify-totp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        cookie: cookieHeaderOf(challenge),
+        origin: args.origin,
+      },
+      body: JSON.stringify({
+        code: (await totp.generateTOTP({ body: { secret: args.secret } })).code,
+      }),
+    }),
+  );
+  expect(verified.status, 'the TOTP challenge is verified').toBe(200);
+  return cookieHeaderOf(verified);
+}
+
 /**
  * Enrolls TOTP for the user behind `enrollmentCookie` (a signed-in session, for
  * example `BootstrappedTenant.cookie`), then signs in again through a real TOTP
@@ -83,47 +154,38 @@ export async function freshMfaSessionCookie(
     readonly enrollmentCookie: string;
     /** An allowed origin of the app under test, sent as `Origin` like a browser does (Q40). */
     readonly origin: string;
+    readonly authBaseUrl?: string;
   },
 ): Promise<string> {
-  const totp = app.auth.api as TwoFactorApiSurface;
-  const authHandler = (app.auth as unknown as { handler: (request: Request) => Promise<Response> })
-    .handler;
+  const secret = await enrollTotp(app, args);
+  return signInWithTotp(app, { ...args, secret });
+}
 
-  const enrollHeaders = new Headers({ cookie: args.enrollmentCookie });
-  const enabled = await totp.enableTwoFactor({
-    body: { password: args.password, method: 'totp' },
-    headers: enrollHeaders,
+/**
+ * Task 23.15 (Q43): an unenrolled organization admin/owner is limited to MFA
+ * enrollment on `/v1`. Takes the tenant from `bootstrapTestTenant` and returns
+ * it with an MFA-enrolled session cookie for the same admin (the cookie also
+ * carries a fresh MFA verification).
+ */
+export async function enrolledAdminSession<
+  T extends { readonly email: string; readonly cookie: string },
+>(
+  app: App,
+  tenant: T,
+  args: { readonly password: string; readonly origin: string; readonly authBaseUrl?: string },
+): Promise<T> {
+  const cookie = await freshMfaSessionCookie(app, {
+    email: tenant.email,
+    password: args.password,
+    enrollmentCookie: tenant.cookie,
+    origin: args.origin,
   });
-  const secret = rawSecretFromTotpUri(enabled.totpURI);
-  await totp.verifyTOTP({
-    body: { code: (await totp.generateTOTP({ body: { secret } })).code },
-    headers: enrollHeaders,
-  });
+  return { ...tenant, cookie };
+}
 
-  const challenge = await authHandler(
-    new Request(`${AUTH_BASE_URL}/sign-in/email`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-forwarded-for': randomIp(),
-        origin: args.origin,
-      },
-      body: JSON.stringify({ email: args.email, password: args.password }),
-    }),
-  );
-  expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
-  const verified = await authHandler(
-    new Request(`${AUTH_BASE_URL}/two-factor/verify-totp`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-forwarded-for': randomIp(),
-        cookie: cookieHeaderOf(challenge),
-        origin: args.origin,
-      },
-      body: JSON.stringify({ code: (await totp.generateTOTP({ body: { secret } })).code }),
-    }),
-  );
-  expect(verified.status, 'the TOTP challenge is verified').toBe(200);
-  return cookieHeaderOf(verified);
+/** The session token inside a `cookie` header value (the signed cookie value minus its signature). */
+export function sessionTokenOfCookie(cookie: string): string {
+  const pair = cookie.split('; ').find((entry) => entry.includes('session_token='));
+  const signed = decodeURIComponent(pair?.slice(pair.indexOf('=') + 1) ?? '');
+  return signed.split('.')[0] ?? '';
 }

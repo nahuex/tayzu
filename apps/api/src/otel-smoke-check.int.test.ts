@@ -95,6 +95,7 @@ import {
 import { exchangeMachineToken } from '../../../packages/auth/src/token-exchange.js';
 import { LOG_EVENTS, METRICS, SPANS } from '../../../packages/authz/src/telemetry/contract.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
+import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
@@ -286,7 +287,11 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
       }),
       { context: (raw: Record<string, unknown>) => raw },
     );
-    admin = await newTenant('Smoke Admin');
+    // Q43: an unenrolled admin/owner is limited to MFA enrollment on /v1, so the acting admin is enrolled.
+    admin = await enrolledAdminSession(app, await newTenant('Smoke Admin'), {
+      password: TEST_PASSWORD,
+      origin: 'https://app.tayzu.test',
+    });
   }, 60_000);
 
   afterAll(async () => {

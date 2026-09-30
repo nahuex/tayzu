@@ -44,11 +44,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 // Import order is load-bearing (design D1): the telemetry harness must register
 // before anything that loads `@tayzu/auth`, so this import stays first.
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
-import {
-  bootstrapTestTenant,
-  signInAdminUser,
-} from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
+import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import { createAppFromEnv } from './bootstrap.js';
@@ -286,7 +284,13 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
    * `auth.account` (`provider_id = 'visma-connect'`, `account_id = sub`). A
    * same-user local session (`sso_sid` null) is never revoked.
    */
-  async function signedInTenant(): Promise<{ userId: string; cookie: string; token: string }> {
+  async function signedInTenant(): Promise<{
+    userId: string;
+    cookie: string;
+    token: string;
+    email: string;
+    totpSecret: string;
+  }> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
       name: 'Backchannel Revocation',
@@ -296,7 +300,27 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
       organizationSlug: `bcl-rev-${suffix}`,
       ip: randomIp(),
     });
-    return { userId: tenant.userId, cookie: tenant.cookie, token: tenant.token };
+    // Q43: an unenrolled admin/owner is limited to MFA enrollment on /v1, so enroll TOTP.
+    // Enrolling revokes the bootstrap session, so the usable session comes from a TOTP sign-in.
+    const totpSecret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      secret: totpSecret,
+      origin: 'https://app.tayzu.test',
+    });
+    const sessionCookie = cookie.split('; ').find((pair) => pair.includes('session_token='));
+    const signedToken = decodeURIComponent(sessionCookie?.split('=')[1] ?? '');
+    return {
+      userId: tenant.userId,
+      cookie,
+      token: signedToken.split('.')[0] ?? '',
+      email: tenant.email,
+      totpSecret,
+    };
   }
 
   async function markSso(token: string, sid: string): Promise<void> {
@@ -307,14 +331,22 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
     expect(result.rowCount, 'the session row to mark as SSO-established exists').toBe(1);
   }
 
-  async function localSession(userId: string, email: string): Promise<string> {
-    const signedIn = await signInAdminUser(app.auth, {
-      email,
+  async function localSession(
+    userId: string,
+    sso: { email: string; totpSecret: string },
+  ): Promise<string> {
+    const cookie = await signInWithTotp(app, {
+      email: sso.email,
       password: TEST_PASSWORD,
-      ip: randomIp(),
+      secret: sso.totpSecret,
+      origin: 'https://app.tayzu.test',
     });
-    expect(signedIn.userId).toBe(userId);
-    return signedIn.cookie;
+    const owner = await authPool.query<{ id: string }>(
+      'select id from auth."user" where email = $1',
+      [sso.email],
+    );
+    expect(owner.rows[0]?.id).toBe(userId);
+    return cookie;
   }
 
   function useSession(cookie: string) {
@@ -325,12 +357,7 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
     const sso = await signedInTenant();
     const sid = `sid-${randomUUID()}`;
     await markSso(sso.token, sid);
-    const email = (
-      await authPool.query<{ email: string }>('select email from auth."user" where id = $1', [
-        sso.userId,
-      ])
-    ).rows[0]?.email;
-    const localCookie = await localSession(sso.userId, email ?? '');
+    const localCookie = await localSession(sso.userId, sso);
     expect((await useSession(sso.cookie)).statusCode, 'SSO session works before').toBe(200);
     expect((await useSession(localCookie)).statusCode, 'local session works before').toBe(200);
 
@@ -350,11 +377,6 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
 
   it('A valid logout token without sid revokes by sub only the linked user’s Visma Connect sessions, never their local sessions', async () => {
     const sso = await signedInTenant();
-    const email = (
-      await authPool.query<{ email: string }>('select email from auth."user" where id = $1', [
-        sso.userId,
-      ])
-    ).rows[0]?.email;
     const sub = `bcl-sub-${randomUUID()}`;
     await authPool.query(
       `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
@@ -362,7 +384,7 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
       [randomUUID(), sub, sso.userId],
     );
     await markSso(sso.token, `sid-${randomUUID()}`);
-    const localCookie = await localSession(sso.userId, email ?? '');
+    const localCookie = await localSession(sso.userId, sso);
     const other = await signedInTenant();
     await markSso(other.token, `sid-other-${randomUUID()}`);
 
