@@ -765,7 +765,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   which the policies do not define (design Q34). Verify: `redaction.int.
   test.ts` (extended) covers a member seeing the identifiers they may view in
   a delete-blocker list and only the unreadable ones redacted.
-- [ ] 23.5 The Visma sign-in populates `session.ssoSid` from the ID token
+- [x] 23.5 The Visma sign-in populates `session.ssoSid` from the ID token
   `sid` (left `null` for local sessions and when the token omits `sid`), so
   the D25 SSO step-up branch is reachable (design Q35, D25). Verify:
   `sso-sid-population.int.test.ts` covers a real SSO sign-in through

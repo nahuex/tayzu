@@ -321,6 +321,41 @@ async function emitSelfLink(
 const GENERIC_OAUTH_CALLBACK_ROUTE = '/callback/:id';
 
 /**
+ * Task 23.5, design Q35/D25: the `sid` claim of the Visma Connect ID token, for
+ * the session a callback sign-in is about to create. Better Auth has already
+ * verified the token and stored it on the linked account (the update precedes
+ * session creation), so the payload is read from there. `undefined` for local
+ * sessions, a missing account or token, or a token without a string `sid`.
+ */
+async function ssoSidForSignIn(
+  userId: string,
+  context: Parameters<typeof getSessionFromCtx>[0],
+): Promise<string | undefined> {
+  if (context.path !== GENERIC_OAUTH_CALLBACK_ROUTE) {
+    return undefined;
+  }
+  try {
+    const account = await context.context.adapter.findOne<{ idToken?: string | null }>({
+      model: 'account',
+      where: [
+        { field: 'userId', value: userId },
+        { field: 'providerId', value: VISMA_CONNECT_PROVIDER_ID },
+      ],
+    });
+    const payload = account?.idToken?.split('.')[1];
+    if (payload === undefined) {
+      return undefined;
+    }
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      sid?: unknown;
+    };
+    return typeof claims.sid === 'string' && claims.sid !== '' ? claims.sid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Task 21.1, design D24: after a Visma Connect callback sign-in, writes the
  * userinfo `name`/`email` to the linked user's `_user` entity (`title` /
  * `contactEmail`) through the `system`-actor user sync. The entity is
@@ -606,16 +641,26 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             if (!context) {
               return;
             }
+            const ssoSid = await ssoSidForSignIn(session.userId, context);
             const rows = await context.context.adapter.findMany<MembershipRow>({
               model: 'member',
               where: [{ field: 'userId', value: session.userId }],
               limit: 2,
             });
             const [onlyMembership] = rows;
-            if (rows.length !== 1 || onlyMembership === undefined) {
+            const activeOrganizationId =
+              rows.length === 1 && onlyMembership !== undefined
+                ? onlyMembership.organizationId
+                : undefined;
+            if (ssoSid === undefined && activeOrganizationId === undefined) {
               return;
             }
-            return { data: { activeOrganizationId: onlyMembership.organizationId } };
+            return {
+              data: {
+                ...(activeOrganizationId === undefined ? {} : { activeOrganizationId }),
+                ...(ssoSid === undefined ? {} : { ssoSid }),
+              },
+            };
           },
         },
       },
