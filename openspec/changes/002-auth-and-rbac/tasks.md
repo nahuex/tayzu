@@ -934,7 +934,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `scripts/ci/dast.sh` (design Q56, D16). Verify: the `dast-zap` job and
   `pnpm ci:local` pass, and the ZAP report lists `/v1/*` requests answered
   `2xx`.
-- [ ] 24.10 _(setup)_ Docs reconciliation: `docs/security/attack-surfaces.md`
+- [x] 24.10 _(setup)_ Docs reconciliation: `docs/security/attack-surfaces.md`
   and `docs/security/secrets.md` match the code, a crypto-inventory table is
   added, and the design's residual-risk text about `same_tenant` is corrected
   (design Q56). Verify: every route `createApp` registers appears in
