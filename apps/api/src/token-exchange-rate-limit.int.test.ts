@@ -130,8 +130,9 @@ describe('apps/api POST /v1/auth/token rate limit (task 11.13)', () => {
     // Still limited on the next attempt.
     expect((await exchange(clientId, ip)).statusCode).toBe(429);
 
-    // Keyed by IP AND client id: another client id, or another IP, has a fresh bucket.
-    expect((await exchange(`client-${randomUUID()}`, ip)).statusCode).not.toBe(429);
+    // Keyed by client IP only (design Q56, D20): a new client id from the same IP
+    // does not get a fresh bucket. Another IP does.
+    expect((await exchange(`client-${randomUUID()}`, ip)).statusCode).toBe(429);
     expect((await exchange(clientId, randomIp())).statusCode).not.toBe(429);
   }, 120_000);
 

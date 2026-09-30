@@ -9,7 +9,7 @@
  * point hands it explicit options. Later group 11 tasks add CORS, CSRF,
  * headers, body limits, rate limiting, the route allowlist and error mapping.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet from '@fastify/helmet';
@@ -545,17 +545,13 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   // D20: token exchange has no tenant/actor yet, so it gets its own bucket
-  // (IP + client id) and is exempt from the authenticated one below.
+  // (IP only, so varying `clientId` cannot mint a fresh bucket; Q56) and is exempt from the authenticated one below.
   if (options.tokenExchangeRateLimit !== undefined) {
     const check = app.createRateLimit({
       max: options.tokenExchangeRateLimit.max,
       timeWindow: options.tokenExchangeRateLimit.timeWindowMs,
-      // Internal bucket key only: hashed to bound its size, never logged or returned.
-      keyGenerator: (request: FastifyRequest): string => {
-        const body = request.body as { clientId?: unknown } | null | undefined;
-        const clientId = typeof body?.clientId === 'string' ? body.clientId : '';
-        return `token:${request.ip}:${createHash('sha256').update(clientId).digest('hex')}`;
-      },
+      // Internal bucket key only: never logged or returned.
+      keyGenerator: (request: FastifyRequest): string => `token:${request.ip}`,
     });
     app.addHook('preHandler', async (request, reply) => {
       if (!isTokenExchange(request)) {

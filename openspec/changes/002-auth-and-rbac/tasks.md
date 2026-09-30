@@ -923,7 +923,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   allowlist, since 002 sends no email (design Q56, D18). Verify:
   `auth-route-allowlist.int.test.ts` and the drift test cover both answering
   `404`.
-- [ ] 24.8 The token-exchange rate limit is keyed by client IP only, so a
+- [x] 24.8 The token-exchange rate limit is keyed by client IP only, so a
   caller cannot get a fresh bucket by changing `clientId` (design Q56, D20).
   Verify: `rate-limit.int.test.ts` (extended) covers requests from one IP
   with a different `clientId` each time being limited.
