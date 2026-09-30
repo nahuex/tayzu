@@ -827,7 +827,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   D14). Verify: `telemetry.test.ts` covers startup failing with no endpoint,
   passing with an endpoint, and passing with the explicit disable flag (which
   logs one startup warning), and `config.test.ts` covers the flag's parsing.
-- [ ] 23.14 `/link-social` and `/unlink-account`, and
+- [x] 23.14 `/link-social` and `/unlink-account`, and
   `identity.users.linkSsoAccount` / `unlinkSsoAccount` for the caller's own
   account, require step-up: a fresh MFA verification, or a fresh password
   re-entry for a user without MFA (design Q43, D24). Verify:

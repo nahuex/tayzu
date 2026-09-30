@@ -99,6 +99,8 @@ const CHANGE_PASSWORD_PATH = '/change-password';
 const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 /** design D4: every `two-factor` verify endpoint (`/two-factor/verify-totp`, `-backup-code`, `-otp`). */
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
+/** Q49: a successful password re-entry is the step-up for a user without MFA. */
+const VERIFY_PASSWORD_PATH = '/verify-password';
 
 /** design D5, task 5.1: the one `apiKey` plugin config machine credentials use (`./machine-credentials.ts`). */
 const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
@@ -778,6 +780,22 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
           });
+          return;
+        }
+        if (ctx.path === VERIFY_PASSWORD_PATH) {
+          // Q49: same marker and 5-minute window as an MFA verification, keyed
+          // by the current session's token.
+          if (isAPIError(ctx.context.returned)) {
+            return;
+          }
+          const session = await getSessionFromCtx(ctx).catch(() => null);
+          if (session) {
+            await ctx.context.internalAdapter.createVerificationValue({
+              identifier: stepUpVerificationIdentifier(session.session.token),
+              value: 'verified',
+              expiresAt: new Date(Date.now() + STEP_UP_FRESHNESS_MS),
+            });
+          }
           return;
         }
         if (ctx.path.startsWith(TWO_FACTOR_VERIFY_PATH_PREFIX)) {

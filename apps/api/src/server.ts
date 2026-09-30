@@ -305,11 +305,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   // D24 path (a): `/link-social` is a Better Auth native route, so D4's
-  // procedure guard does not reach it; an MFA-enrolled caller needs a fresh
-  // verification before the request reaches Better Auth.
+  // procedure guard does not reach it, nor `/unlink-account` (Q43); the caller
+  // needs a fresh MFA verification or password re-entry (Q49) before the request
+  // reaches Better Auth.
   const assertLinkStepUp = createEnrolledStepUpCheck({ auth });
   app.addHook('preHandler', async (request, reply) => {
-    if (request.method !== 'POST' || request.url.split('?', 1)[0] !== '/api/auth/link-social') {
+    const pathname = request.url.split('?', 1)[0];
+    if (
+      request.method !== 'POST' ||
+      (pathname !== '/api/auth/link-social' && pathname !== '/api/auth/unlink-account')
+    ) {
       return;
     }
     try {

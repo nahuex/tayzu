@@ -69,16 +69,47 @@ import {
 import { authSchema } from '@tayzu/auth';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createCerbosClient } from '@tayzu/authz';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import {
   bootstrapTestTenant,
+  createAdminUser,
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { enrollTotp, sessionTokenOfCookie, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAppFromEnv } from './bootstrap.js';
+import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+
+const poolState = vi.hoisted(() => ({ pools: new Map<string, unknown>() }));
+
+// Task 23.14 builds its app through `createAppFromEnv`, whose pools are the
+// harness pools (the same seam `admin-mfa-enrollment.int.test.ts` uses).
+vi.mock('@tayzu/db', async (importActual) => {
+  const actual = await importActual<typeof import('@tayzu/db')>();
+  return {
+    ...actual,
+    createPool: vi.fn((url: string) => {
+      const role = url.includes('tayzu_auth') ? 'auth' : 'app';
+      const real = poolState.pools.get(role) as object;
+      return new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'end') {
+            return () => Promise.resolve();
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function'
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      });
+    }),
+  };
+});
 
 const TEST_PASSWORD = 'correct horse battery staple';
 const ORIGIN = 'http://localhost:3000';
@@ -557,4 +588,461 @@ describe('POST /api/auth/link-social step-up (task 20.2, design D24 path (a))', 
     expect(await linkLogEvents(harness, 'auth.security.account_linked')).toHaveLength(0);
     expect(linkCounterTotal(harness, 'linked', 'self')).toBe(0);
   }, 60_000);
+});
+
+/**
+ * Task 23.14 (design Q43, Q49, Q50, D24; `specs/auth-and-rbac/spec.md`,
+ * requirement "Account linking to Visma Connect is explicit and keyed on the
+ * Visma Connect UserID").
+ *
+ * Task 23.14: "`/link-social` and `/unlink-account`, and `identity.users.
+ * linkSsoAccount` / `unlinkSsoAccount` for the caller's own account, require
+ * step-up: a fresh MFA verification, or a fresh password re-entry for a user
+ * without MFA."
+ *
+ * Scenarios covered:
+ * - "Linking without a fresh MFA verification is blocked for an MFA-enrolled
+ *   user" (link, and unlinking the same way: `AUTH_STEP_UP_REQUIRED`; allowed
+ *   with a fresh MFA verification).
+ * - "Linking without a fresh password re-entry is blocked for a user without
+ *   MFA" (link or unlink, marker absent or expired: `AUTH_STEP_UP_REQUIRED`;
+ *   allowed right after `/verify-password`).
+ * - Q50: the admin procedures are marked `x-tayzu-risk: high`, so 11.15's
+ *   step-up applies to them.
+ *
+ * ## Harness
+ *
+ * The app is built by the production bootstrap, `createAppFromEnv(env)`, with
+ * Visma Connect pointed at the task-19.1 local OIDC stub. Every request has a
+ * fresh random `x-forwarded-for`, and every cookie-bearing POST sends `Origin`.
+ * A user without MFA is a `member` (an unenrolled admin/owner is limited to MFA
+ * enrollment, task 23.15) that signs in with the password alone: that session
+ * has no freshness marker. An MFA user's "no fresh verification" state is the
+ * same as in the first block of this file: the marker row is deleted.
+ *
+ * ## Production symbols expected
+ *
+ * - `POST /api/auth/verify-password` (Better Auth's own route, body
+ *   `{ password }`) is reachable: it joins `ALLOWED_AUTH_ROUTES`
+ *   (`packages/auth/src/http/allowed-routes.ts`, D18). A successful check on
+ *   the current session writes the `step-up-verified:<session token>`
+ *   `auth.verification` marker with a 5-minute window (Q49).
+ * - The Fastify pre-handler of `POST /api/auth/link-social` also covers
+ *   `POST /api/auth/unlink-account` and, for a user without an enrolled MFA
+ *   factor, requires that same marker (a fresh password re-entry). Blocked
+ *   requests answer `403` with body code `AUTH_STEP_UP_REQUIRED` before
+ *   Better Auth runs.
+ * - `createIdentityRouter` (`./identity-router.js`): `identity.users.
+ *   linkSsoAccount` and `unlinkSsoAccount` have a route spec carrying
+ *   `x-tayzu-risk: 'high'`.
+ */
+describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50, D24)', () => {
+  const ENV_ORIGIN = 'https://app.tayzu.test';
+  const STEP_UP_WINDOW_MS = 5 * 60 * 1000;
+  let app: App;
+  let stub: OidcStub;
+  let db: ReturnType<typeof drizzle<typeof authSchema>>;
+  let authHandler: (request: Request) => Promise<Response>;
+
+  type MarkerRow = { readonly expires_at: Date | string };
+  type LinkedRow = { readonly id: string };
+
+  interface MemberApiSurface {
+    addMember(args: {
+      body: { userId: string; organizationId: string; role: 'member' };
+    }): Promise<unknown>;
+    getSession(args: { headers: Headers }): Promise<{ session: { token: string } } | null>;
+  }
+
+  interface LinkAdapterSurface {
+    internalAdapter: {
+      linkAccount(args: {
+        userId: string;
+        providerId: string;
+        accountId: string;
+      }): Promise<unknown>;
+    };
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    poolState.pools.set('app', pools.appPool);
+    poolState.pools.set('auth', pools.authPool);
+    stub = await startOidcStub();
+    app = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: ENV_ORIGIN,
+      // The link is initiated through Fastify and the callback goes to this same
+      // origin, so the redirect_uri the OIDC stub sees is identical in both steps.
+      BETTER_AUTH_URL: ENV_ORIGIN,
+      VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
+      VISMA_CONNECT_CLIENT_ID: stub.clientId,
+      VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
+    });
+    db = drizzle(pools.authPool, { schema: authSchema });
+    authHandler = authHandlerOf(app);
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+    poolState.pools.clear();
+  }, 60_000);
+
+  function postAuth(cookie: string, path: string, body: Record<string, unknown>) {
+    return app.app.inject({
+      method: 'POST',
+      url: `/api/auth${path}`,
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ENV_ORIGIN,
+        host: 'localhost:3000',
+        cookie,
+      },
+      payload: JSON.stringify(body),
+    });
+  }
+
+  function linkSocialRequest(cookie: string) {
+    return postAuth(cookie, '/link-social', { provider: PROVIDER_ID, callbackURL: '/' });
+  }
+
+  function unlinkRequest(cookie: string, accountRowId: string) {
+    return postAuth(cookie, '/unlink-account', {
+      providerId: PROVIDER_ID,
+      accountId: accountRowId,
+    });
+  }
+
+  function codeOf(response: { body: string }): unknown {
+    try {
+      return (JSON.parse(response.body) as { code?: unknown }).code;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** An owner with an enrolled TOTP factor, and a session with a fresh MFA verification. */
+  async function mfaUser(): Promise<{
+    userId: string;
+    email: string;
+    secret: string;
+    cookie: string;
+  }> {
+    const email = `link-mfa-${randomUUID()}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Link Mfa User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Link Mfa Org',
+      organizationSlug: `link-mfa-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const secret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(app, {
+      email,
+      password: TEST_PASSWORD,
+      secret,
+      origin: ENV_ORIGIN,
+    });
+    return { userId: tenant.userId, email, secret, cookie };
+  }
+
+  /** A `member` without MFA, signed in with the password alone. */
+  async function passwordUser(): Promise<{ userId: string; email: string; cookie: string }> {
+    const owner = await bootstrapTestTenant(app.auth, {
+      name: 'Link Owner',
+      email: `link-owner-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Link Pw Org',
+      organizationSlug: `link-pw-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const email = `link-pw-${randomUUID()}@example.test`;
+    const created = await createAdminUser(app.auth, {
+      name: 'Link Pw User',
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (app.auth.api as MemberApiSurface).addMember({
+      body: { userId: created.userId, organizationId: owner.organizationId, role: 'member' },
+    });
+    const signedIn = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/email',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ENV_ORIGIN,
+        host: 'localhost:3000',
+      },
+      payload: JSON.stringify({ email, password: TEST_PASSWORD }),
+    });
+    expect(signedIn.statusCode, signedIn.body).toBe(200);
+    expect(
+      signedIn.json<{ twoFactorRedirect?: unknown }>().twoFactorRedirect,
+      'no additional factor is requested',
+    ).toBeUndefined();
+    return { userId: created.userId, email, cookie: cookieFrom(signedIn.headers['set-cookie']) };
+  }
+
+  async function dropMarker(cookie: string): Promise<void> {
+    await db.execute(sql`
+      delete from auth.verification
+      where identifier = ${`step-up-verified:${sessionTokenOfCookie(cookie)}`}
+    `);
+  }
+
+  async function markerOf(cookie: string): Promise<MarkerRow | undefined> {
+    const result = await db.execute<MarkerRow>(sql`
+      select expires_at from auth.verification
+      where identifier = ${`step-up-verified:${sessionTokenOfCookie(cookie)}`}
+    `);
+    return result.rows[0];
+  }
+
+  /** A linked account row for `userId`, recorded without going through the self-service path. */
+  async function seedLinkedAccount(userId: string): Promise<string> {
+    const context = (await app.auth.$context) as LinkAdapterSurface;
+    await context.internalAdapter.linkAccount({
+      userId,
+      providerId: PROVIDER_ID,
+      accountId: `seed-sub-${randomUUID()}`,
+    });
+    const result = await db.execute<LinkedRow>(sql`
+      select id from auth.account
+      where user_id = ${userId} and provider_id = ${PROVIDER_ID}
+    `);
+    const id = result.rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('expected the seeded linked account row');
+    }
+    return id;
+  }
+
+  async function linkedAccountCount(userId: string): Promise<number> {
+    const result = await db.execute<{ n: string }>(sql`
+      select count(*)::text as n from auth.account
+      where user_id = ${userId} and provider_id = ${PROVIDER_ID}
+    `);
+    return Number(result.rows[0]?.n ?? '0');
+  }
+
+  /** Runs the OAuth round trip of a self-service link that the pre-handler let start. */
+  async function completeLink(cookie: string, email: string, sub: string): Promise<void> {
+    stub.setSubject({
+      sub,
+      email,
+      name: 'Link User',
+      sid: `sid-${randomUUID()}`,
+      claims: { email_verified: true },
+    });
+    const initiated = await linkSocialRequest(cookie);
+    expect(initiated.statusCode, initiated.body).toBe(200);
+    const approval = await fetch(initiated.json<{ url: string }>().url, { redirect: 'manual' });
+    const page = await approval.text();
+    const inputs = Object.fromEntries(
+      [...page.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [
+        m[1] ?? '',
+        m[2] ?? '',
+      ]),
+    );
+    const code = inputs['code'];
+    const state = inputs['state'];
+    if (code === undefined || state === undefined) {
+      throw new Error('the OIDC stub did not return code and state');
+    }
+    const params = new URLSearchParams({
+      code,
+      state,
+      ...(inputs['iss'] === undefined ? {} : { iss: inputs['iss'] }),
+    });
+    const callbackCookie = [cookie, cookieFrom(initiated.headers['set-cookie'])]
+      .filter((part) => part !== '')
+      .join('; ');
+    const headers = (): Record<string, string> => ({
+      'x-forwarded-for': randomIp(),
+      cookie: callbackCookie,
+    });
+    const callbackBase = `${ENV_ORIGIN}/api/auth`;
+    const posted = await authHandler(
+      new Request(`${callbackBase}/callback/${PROVIDER_ID}`, {
+        method: 'POST',
+        headers: {
+          ...headers(),
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: ENV_ORIGIN,
+        },
+        body: params.toString(),
+      }),
+    );
+    const location = posted.headers.get('location');
+    if (
+      posted.status >= 300 &&
+      posted.status < 400 &&
+      location !== null &&
+      new URL(location, callbackBase).pathname.endsWith(`/callback/${PROVIDER_ID}`)
+    ) {
+      await authHandler(
+        new Request(new URL(location, callbackBase), { method: 'GET', headers: headers() }),
+      );
+    }
+  }
+
+  function expectBlocked(response: { statusCode: number; body: string }): void {
+    expect(response.statusCode, response.body).toBe(403);
+    expect(codeOf(response)).toBe('AUTH_STEP_UP_REQUIRED');
+  }
+
+  it('Linking without a fresh MFA verification is blocked for an MFA-enrolled user (link): AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await mfaUser();
+    await dropMarker(user.cookie);
+    stub.setSubject({ sub: `mfa-blocked-${randomUUID()}`, email: user.email, name: 'Link User' });
+    const requestsBefore = stub.authorizationRequests.length;
+
+    const response = await linkSocialRequest(user.cookie);
+
+    expectBlocked(response);
+    expect(stub.authorizationRequests, 'the stub was never contacted').toHaveLength(requestsBefore);
+    expect(await linkedAccountCount(user.userId)).toBe(0);
+  }, 60_000);
+
+  it('Unlinking without a fresh MFA verification is blocked for an MFA-enrolled user: AUTH_STEP_UP_REQUIRED, the account stays linked', async () => {
+    const user = await mfaUser();
+    const rowId = await seedLinkedAccount(user.userId);
+    await dropMarker(user.cookie);
+
+    const response = await unlinkRequest(user.cookie, rowId);
+
+    expectBlocked(response);
+    expect(await linkedAccountCount(user.userId), 'the account is still linked').toBe(1);
+  }, 60_000);
+
+  it('Unlinking with a fresh MFA verification is allowed for an MFA-enrolled user', async () => {
+    const user = await mfaUser();
+    const rowId = await seedLinkedAccount(user.userId);
+
+    // The user keeps their password, so the last-sign-in-method guard allows it.
+    const response = await unlinkRequest(user.cookie, rowId);
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(await linkedAccountCount(user.userId)).toBe(0);
+  }, 60_000);
+
+  it('Linking without a fresh password re-entry is blocked for a user without MFA (link, marker absent): AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await passwordUser();
+    stub.setSubject({ sub: `pw-blocked-${randomUUID()}`, email: user.email, name: 'Link User' });
+    const requestsBefore = stub.authorizationRequests.length;
+
+    expect(await markerOf(user.cookie), 'precondition: no freshness marker').toBeUndefined();
+    const response = await linkSocialRequest(user.cookie);
+
+    expectBlocked(response);
+    expect(stub.authorizationRequests, 'the stub was never contacted').toHaveLength(requestsBefore);
+    expect(await linkedAccountCount(user.userId)).toBe(0);
+  }, 60_000);
+
+  it('Linking without a fresh password re-entry is blocked for a user without MFA (link, marker expired): AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await passwordUser();
+    const verified = await postAuth(user.cookie, '/verify-password', { password: TEST_PASSWORD });
+    expect(verified.statusCode, verified.body).toBe(200);
+    await db.execute(sql`
+      update auth.verification
+      set expires_at = now() - interval '1 minute'
+      where identifier = ${`step-up-verified:${sessionTokenOfCookie(user.cookie)}`}
+    `);
+    stub.setSubject({ sub: `pw-expired-${randomUUID()}`, email: user.email, name: 'Link User' });
+
+    const response = await linkSocialRequest(user.cookie);
+
+    expectBlocked(response);
+    expect(await linkedAccountCount(user.userId)).toBe(0);
+  }, 60_000);
+
+  it('Unlinking without a fresh password re-entry is blocked for a user without MFA (marker absent): AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await passwordUser();
+    const rowId = await seedLinkedAccount(user.userId);
+
+    const response = await unlinkRequest(user.cookie, rowId);
+
+    expectBlocked(response);
+    expect(await linkedAccountCount(user.userId), 'the account is still linked').toBe(1);
+  }, 60_000);
+
+  it('Unlinking without a fresh password re-entry is blocked for a user without MFA (marker expired): AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await passwordUser();
+    const rowId = await seedLinkedAccount(user.userId);
+    const verified = await postAuth(user.cookie, '/verify-password', { password: TEST_PASSWORD });
+    expect(verified.statusCode, verified.body).toBe(200);
+    await db.execute(sql`
+      update auth.verification
+      set expires_at = now() - interval '1 minute'
+      where identifier = ${`step-up-verified:${sessionTokenOfCookie(user.cookie)}`}
+    `);
+
+    const response = await unlinkRequest(user.cookie, rowId);
+
+    expectBlocked(response);
+    expect(await linkedAccountCount(user.userId), 'the account is still linked').toBe(1);
+  }, 60_000);
+
+  it('Linking right after a password re-entry is allowed for a user without MFA, and /verify-password records the same 5-minute marker', async () => {
+    const user = await passwordUser();
+    const before = Date.now();
+
+    const verified = await postAuth(user.cookie, '/verify-password', { password: TEST_PASSWORD });
+    expect(verified.statusCode, verified.body).toBe(200);
+
+    const marker = await markerOf(user.cookie);
+    expect(marker, 'the step-up marker is written for the current session').toBeDefined();
+    const expiresAt = new Date(marker?.expires_at ?? 0).getTime();
+    expect(expiresAt).toBeGreaterThan(before + STEP_UP_WINDOW_MS - 60_000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + STEP_UP_WINDOW_MS + 5_000);
+
+    const sub = `pw-allowed-${randomUUID()}`;
+    await completeLink(user.cookie, user.email, sub);
+    const linked = await db.execute<{ account_id: string }>(sql`
+      select account_id from auth.account
+      where user_id = ${user.userId} and provider_id = ${PROVIDER_ID}
+    `);
+    expect(linked.rows.map((row) => row.account_id)).toEqual([sub]);
+  }, 60_000);
+
+  it('Unlinking right after a password re-entry is allowed for a user without MFA', async () => {
+    const user = await passwordUser();
+    const rowId = await seedLinkedAccount(user.userId);
+    const verified = await postAuth(user.cookie, '/verify-password', { password: TEST_PASSWORD });
+    expect(verified.statusCode, verified.body).toBe(200);
+
+    // The user keeps their password, so the last-sign-in-method guard allows it.
+    const response = await unlinkRequest(user.cookie, rowId);
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(await linkedAccountCount(user.userId)).toBe(0);
+  }, 60_000);
+
+  it('identity.users.linkSsoAccount and unlinkSsoAccount are marked x-tayzu-risk: high (step-up applies)', () => {
+    const router = createIdentityRouter({
+      auth: app.auth,
+      authz: createCerbosClient({ address: 'localhost:3593', tls: false }),
+    });
+    const riskOf = (procedure: unknown): unknown => {
+      const route = (procedure as { '~orpc': { route: { spec?: unknown } } })['~orpc'].route;
+      const spec =
+        typeof route.spec === 'function'
+          ? (route.spec as (operation: object) => unknown)({})
+          : route.spec;
+      return (spec as Record<string, unknown> | undefined)?.['x-tayzu-risk'];
+    };
+
+    expect(riskOf(router.identity.users.linkSsoAccount)).toBe('high');
+    expect(riskOf(router.identity.users.unlinkSsoAccount)).toBe('high');
+  });
 });

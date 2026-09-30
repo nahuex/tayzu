@@ -14,7 +14,7 @@
  */
 import { randomBytes } from 'node:crypto';
 
-import { os } from '@orpc/server';
+import { os, type Route } from '@orpc/server';
 import {
   emitAccountLinkEvent,
   wouldLeaveNoSignInMethod,
@@ -230,6 +230,16 @@ function generateTemporaryPassword(): string {
   return randomBytes(24).toString('base64url');
 }
 
+type OperationObject = Parameters<Extract<Route['spec'], (...args: never[]) => unknown>>[0];
+
+/** Q50: `x-tayzu-risk: high`, so the D4 step-up guard applies to the procedure. */
+const HIGH_RISK_ROUTE = {
+  spec: (current: OperationObject): OperationObject => {
+    const marked = { ...current, 'x-tayzu-risk': 'high' };
+    return marked;
+  },
+};
+
 export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   const base = os.$context<RawContext>();
   const userApi = options.auth.api as CreateUserApiSurface;
@@ -296,38 +306,43 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           return { userId: user.id, email: user.email, temporaryPassword };
         }),
         // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.
-        linkSsoAccount: base.handler(async ({ context, input: rawInput }): Promise<void> => {
-          const input = parseLinkInput(rawInput);
-          await authorizeTarget(context, input.userId);
-          const adapter = (await authContext()).internalAdapter;
-          const key = { providerId: SSO_PROVIDER_ID, accountId: input.subject };
-          if ((await adapter.findAccountByKey(key)) != null) throw new IdentityLinkRejectedError();
-          try {
-            await adapter.linkAccount({
-              userId: input.userId,
-              providerId: SSO_PROVIDER_ID,
-              accountId: input.subject,
-            });
-          } catch (error) {
-            // A concurrent link of the same `sub` (Q29): same generic rejection.
-            if (isAccountUniqueViolation(error)) throw new IdentityLinkRejectedError();
-            throw error;
-          }
-          emitAdminLinkEvent('linked', context);
-        }),
-        unlinkSsoAccount: base.handler(async ({ context, input: rawInput }): Promise<void> => {
-          const userId = parseLinkInputUserId(rawInput);
-          await authorizeTarget(context, userId);
-          const adapter = (await authContext()).internalAdapter;
-          const accounts = await adapter.findAccounts(userId);
-          const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);
-          // Design D24: never leave the user with no password and no linked SSO account.
-          if (sso.length > 0 && wouldLeaveNoSignInMethod(accounts, sso)) {
-            throw new IdentityLinkRejectedError();
-          }
-          for (const account of sso) await adapter.deleteAccount(account.id);
-          if (sso.length > 0) emitAdminLinkEvent('unlinked', context);
-        }),
+        linkSsoAccount: base
+          .route(HIGH_RISK_ROUTE)
+          .handler(async ({ context, input: rawInput }): Promise<void> => {
+            const input = parseLinkInput(rawInput);
+            await authorizeTarget(context, input.userId);
+            const adapter = (await authContext()).internalAdapter;
+            const key = { providerId: SSO_PROVIDER_ID, accountId: input.subject };
+            if ((await adapter.findAccountByKey(key)) != null)
+              throw new IdentityLinkRejectedError();
+            try {
+              await adapter.linkAccount({
+                userId: input.userId,
+                providerId: SSO_PROVIDER_ID,
+                accountId: input.subject,
+              });
+            } catch (error) {
+              // A concurrent link of the same `sub` (Q29): same generic rejection.
+              if (isAccountUniqueViolation(error)) throw new IdentityLinkRejectedError();
+              throw error;
+            }
+            emitAdminLinkEvent('linked', context);
+          }),
+        unlinkSsoAccount: base
+          .route(HIGH_RISK_ROUTE)
+          .handler(async ({ context, input: rawInput }): Promise<void> => {
+            const userId = parseLinkInputUserId(rawInput);
+            await authorizeTarget(context, userId);
+            const adapter = (await authContext()).internalAdapter;
+            const accounts = await adapter.findAccounts(userId);
+            const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);
+            // Design D24: never leave the user with no password and no linked SSO account.
+            if (sso.length > 0 && wouldLeaveNoSignInMethod(accounts, sso)) {
+              throw new IdentityLinkRejectedError();
+            }
+            for (const account of sso) await adapter.deleteAccount(account.id);
+            if (sso.length > 0) emitAdminLinkEvent('unlinked', context);
+          }),
       },
     },
   };

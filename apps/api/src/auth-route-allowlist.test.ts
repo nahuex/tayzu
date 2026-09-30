@@ -58,7 +58,6 @@ const BLOCKED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   // Core.
   '/sign-up/email',
   '/reset-password',
-  '/verify-password',
   '/change-email',
   '/change-password',
   '/update-session',
@@ -209,6 +208,13 @@ describe('apps/api /api/auth/* allowlist drift (task 11.10)', () => {
     expect(ALLOWED_AUTH_ROUTES.has('/jwks')).toBe(true);
     expect(isAllowedAuthPath(`${AUTH_BASE_PATH}/jwks`)).toBe(true);
     expect(BLOCKED_AUTH_ROUTES.has('/jwks')).toBe(false);
+  });
+
+  it('/verify-password is mounted and allowlisted, not blocked (Q49: it records the step-up marker)', () => {
+    expect(mounted.map((route) => route.path)).toContain('/verify-password');
+    expect(ALLOWED_AUTH_ROUTES.has('/verify-password')).toBe(true);
+    expect(isAllowedAuthPath(`${AUTH_BASE_PATH}/verify-password`)).toBe(true);
+    expect(BLOCKED_AUTH_ROUTES.has('/verify-password')).toBe(false);
   });
 
   it('no route is both allowlisted and blocked', () => {

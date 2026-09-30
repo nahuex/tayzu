@@ -222,9 +222,9 @@ async function isFresh(auth: AuthInstance, sessionToken: string): Promise<boolea
 /**
  * Design D24 path (a): a session-level check for Better Auth's native
  * `/link-social` route, which no oRPC procedure wraps. Resolves when the
- * caller may proceed; rejects with `AuthStepUpError` when the caller has an
- * enrolled MFA factor but no fresh verification, or no valid session at all
- * (fail closed). A caller without an enrolled factor is not gated. Reuses
+ * caller may proceed; rejects with `AuthStepUpError` when the caller has no fresh
+ * verification (MFA, or password re-entry for a user without MFA, Q49), or no
+ * valid session at all (fail closed). Reuses
  * the same freshness check as `createStepUpGuard`; no second implementation.
  */
 export function createEnrolledStepUpCheck(
@@ -236,9 +236,8 @@ export function createEnrolledStepUpCheck(
     if (session === null) {
       throw new AuthStepUpError();
     }
-    if (session.user?.twoFactorEnabled !== true) {
-      return;
-    }
+    // Q43, Q49: with or without MFA the caller needs the freshness marker, written
+    // by a fresh MFA verification or, without MFA, a fresh password re-entry.
     if (!(await isFresh(options.auth, session.session.token))) {
       throw new AuthStepUpError();
     }
