@@ -895,7 +895,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   passwords on `/verify-password` from one session being limited, the same
   user from a second IP being limited by the per-user bucket, and another
   user being unaffected.
-- [ ] 24.3 `/two-factor/generate-backup-codes` requires a fresh MFA step-up,
+- [x] 24.3 `/two-factor/generate-backup-codes` requires a fresh MFA step-up,
   and `/two-factor/get-totp-uri` leaves the D18 allowlist (design Q52, D18).
   Verify: `auth-route-allowlist.int.test.ts` and `auth-route-allowlist.test.ts`
   (drift test) cover `get-totp-uri` answering `404`, and

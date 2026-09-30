@@ -115,6 +115,8 @@ const BLOCKED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   // Two-factor plugin (enable/verify/get-totp-uri/backup codes are allowlisted).
   '/two-factor/send-otp',
   '/two-factor/verify-otp',
+  // Leaves the allowlist (Q52): `/two-factor/enable` already returns the URI.
+  '/two-factor/get-totp-uri',
   '/two-factor/disable',
   // JWT plugin (`/jwks` is allowlisted per design D5; `/token` stays blocked).
   '/token',
@@ -323,6 +325,27 @@ describe('apps/api /api/auth/* allowlist drift with Visma Connect SSO registered
       '/sign-up/social',
     ]) {
       expect(isAllowedAuthPath(`${AUTH_BASE_PATH}${path}`)).toBe(false);
+    }
+  });
+});
+
+describe('apps/api /api/auth/* allowlist: /two-factor/get-totp-uri (task 24.3, design Q52 and D18)', () => {
+  const mounted = enumerateMountedRoutes();
+
+  it('/two-factor/get-totp-uri is still a mounted Better Auth route, but no longer allowlisted (Q52)', () => {
+    expect(mounted.map((route) => route.path)).toContain('/two-factor/get-totp-uri');
+    expect(ALLOWED_AUTH_ROUTES.has('/two-factor/get-totp-uri')).toBe(false);
+    expect(isAllowedAuthPath(`${AUTH_BASE_PATH}/two-factor/get-totp-uri`)).toBe(false);
+  });
+
+  it('the rest of the two-factor allowlist is unchanged: enable, verify-totp, generate-backup-codes and verify-backup-code stay allowlisted', () => {
+    for (const path of [
+      '/two-factor/enable',
+      '/two-factor/verify-totp',
+      '/two-factor/generate-backup-codes',
+      '/two-factor/verify-backup-code',
+    ]) {
+      expect(ALLOWED_AUTH_ROUTES.has(path)).toBe(true);
     }
   });
 });

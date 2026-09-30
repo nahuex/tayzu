@@ -62,7 +62,7 @@ import { drizzleAdapter, type DB } from '@better-auth/drizzle-adapter';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
-import { createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
 import { decryptOAuthToken, setTokenUtil } from 'better-auth/oauth2';
 import { admin, jwt, organization, twoFactor } from 'better-auth/plugins';
 
@@ -106,6 +106,7 @@ const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 /** Q49: a successful password re-entry is the step-up for a user without MFA. */
 const VERIFY_PASSWORD_PATH = '/verify-password';
+const GENERATE_BACKUP_CODES_PATH = '/two-factor/generate-backup-codes';
 
 /** design D5, task 5.1: the one `apiKey` plugin config machine credentials use (`./machine-credentials.ts`). */
 const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
@@ -738,6 +739,21 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               sessionToken: session.session.token,
               previousActiveOrganizationId:
                 (session.session.activeOrganizationId as string | null | undefined) ?? null,
+            });
+          }
+          return undefined;
+        }
+        if (ctx.path === GENERATE_BACKUP_CODES_PATH) {
+          // Q52, D18: regenerating backup codes needs a fresh `mfa` marker; a
+          // password alone (even the correct one) never suffices (Q51).
+          const session = await getSessionFromCtx(ctx).catch(() => null);
+          const factor = session
+            ? await currentFreshFactor(ctx.context.internalAdapter, session.session.token)
+            : null;
+          if (factor !== 'mfa') {
+            throw new APIError('FORBIDDEN', {
+              code: 'AUTH_STEP_UP_REQUIRED',
+              message: 'AUTH_STEP_UP_REQUIRED',
             });
           }
           return undefined;

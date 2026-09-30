@@ -211,6 +211,24 @@ describe('apps/api /api/auth/* route allowlist (task 11.9)', () => {
     60_000,
   );
 
+  it.each(['GET', 'POST'] as const)(
+    '/two-factor/get-totp-uri leaves the allowlist (Q52): %s is a plain 404 identical to an unknown path',
+    async (method) => {
+      const url = '/api/auth/two-factor/get-totp-uri';
+      const unknownUrl = '/api/auth/definitely-not-a-route-' + randomUUID();
+      // Even a fully signed-in caller gets the same 404: the route is absent, not forbidden.
+      for (const credential of [undefined, cookie]) {
+        const blocked = await probe(app, method, url, credential);
+        const unknown = await probe(app, method, unknownUrl, credential);
+
+        expect(blocked.statusCode).toBe(404);
+        expect(blocked.contentType).toEqual(unknown.contentType);
+        expect(normalize(blocked.body, url)).toBe(normalize(unknown.body, unknownUrl));
+      }
+    },
+    60_000,
+  );
+
   it('GET /api/auth/jwks is reachable and returns public keys only (design D5)', async () => {
     const response = await probe(app, 'GET', '/api/auth/jwks');
 

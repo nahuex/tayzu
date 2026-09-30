@@ -12,9 +12,9 @@ export const ALLOWED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   '/sign-in/email',
   '/sign-out',
   '/get-session',
-  // Two-factor enrollment and verification.
+  // Two-factor enrollment and verification (`/two-factor/get-totp-uri` is not
+  // allowlisted, Q52: `/enable` already returns the URI).
   '/two-factor/enable',
-  '/two-factor/get-totp-uri',
   '/two-factor/verify-totp',
   '/two-factor/generate-backup-codes',
   '/two-factor/verify-backup-code',

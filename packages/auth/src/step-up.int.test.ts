@@ -926,3 +926,152 @@ describe('Step-up factor for MFA-enrolled users (task 24.1, design Q51)', () => 
     await expect(guard(paramsFor(tenant.cookie, tenant))).resolves.toBeUndefined();
   }, 60_000);
 });
+
+/**
+ * Task 24.3 (design Q52, D18): `/two-factor/generate-backup-codes` requires a
+ * fresh MFA step-up. Driven through Better Auth's real HTTP entry point
+ * (`auth.handler`), so the requirement is enforced by the auth instance itself
+ * and not only by a Fastify pre-handler. A fresh random IP per request keeps
+ * the 2.5 rate limiter out of the way.
+ *
+ * Production behavior expected (does not exist yet): the `createAuth` instance
+ * answers `403` with body code `AUTH_STEP_UP_REQUIRED` to
+ * `/two-factor/generate-backup-codes` unless the session carries a fresh `mfa`
+ * step-up marker (Q51: a password marker never suffices for an enrolled user),
+ * before any backup code is regenerated.
+ */
+describe('Backup-code regeneration requires a fresh MFA step-up (task 24.3, design Q52)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET, trustedOrigins: [TRUSTED_ORIGIN] });
+    api = apiOf(auth);
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  function sessionTokenOf(cookie: string): string {
+    const pair = cookie.split('; ').find((entry) => entry.includes('session_token='));
+    const signed = decodeURIComponent(pair?.slice(pair.indexOf('=') + 1) ?? '');
+    return signed.split('.')[0] ?? '';
+  }
+
+  async function dropMarker(cookie: string): Promise<void> {
+    await db.execute(sql`
+      delete from auth.verification
+      where identifier = ${`step-up-verified:${sessionTokenOf(cookie)}`}
+    `);
+  }
+
+  async function firstBackupCodeHash(userId: string): Promise<string | null> {
+    const result = await db.execute(sql`
+      select backup_codes as "backupCodes" from auth.two_factor where user_id = ${userId}
+    `);
+    const row = result.rows[0] as { backupCodes?: string } | undefined;
+    return row?.backupCodes ?? null;
+  }
+
+  async function enrolledUser(): Promise<{
+    userId: string;
+    signInWithTotp(): Promise<string>;
+  }> {
+    const handler = handlerOf(auth);
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Backup Code Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    await api.verifyTOTP({
+      body: { code: (await api.generateTOTP({ body: { secret } })).code },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    return {
+      userId: tenant.userId,
+      signInWithTotp: async () => {
+        const challenge = await postJson(
+          handler,
+          '/sign-in/email',
+          { email, password: TEST_PASSWORD },
+          randomIp(),
+        );
+        expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
+        const verified = await postJson(
+          handler,
+          '/two-factor/verify-totp',
+          { code: (await api.generateTOTP({ body: { secret } })).code },
+          randomIp(),
+          { cookie: cookieHeaderFrom(challenge), origin: TRUSTED_ORIGIN },
+        );
+        expect(verified.status, 'the TOTP challenge is verified').toBe(200);
+        return cookieHeaderFrom(verified);
+      },
+    };
+  }
+
+  function regenerate(cookie: string): Promise<Response> {
+    return postJson(
+      handlerOf(auth),
+      '/two-factor/generate-backup-codes',
+      { password: TEST_PASSWORD },
+      randomIp(),
+      { cookie, origin: TRUSTED_ORIGIN },
+    );
+  }
+
+  it('Backup-code regeneration with only a password is refused with AUTH_STEP_UP_REQUIRED and leaves the codes unchanged', async () => {
+    const user = await enrolledUser();
+    const cookie = await user.signInWithTotp();
+    // GIVEN a session with no fresh MFA verification, only the current password.
+    await dropMarker(cookie);
+    const before = await firstBackupCodeHash(user.userId);
+
+    // WHEN the user regenerates backup codes with the correct password.
+    const response = await regenerate(cookie);
+
+    // THEN it is refused with AUTH_STEP_UP_REQUIRED (403) and nothing is regenerated.
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { code?: unknown }).code).toBe('AUTH_STEP_UP_REQUIRED');
+    expect(await firstBackupCodeHash(user.userId), 'the stored backup codes are unchanged').toBe(
+      before,
+    );
+  }, 60_000);
+
+  it('Backup-code regeneration is allowed after a fresh /two-factor/verify-totp', async () => {
+    const user = await enrolledUser();
+    const weakCookie = await user.signInWithTotp();
+    await dropMarker(weakCookie);
+    expect((await regenerate(weakCookie)).status, 'precondition: refused without a fresh MFA').toBe(
+      403,
+    );
+
+    // GIVEN a fresh TOTP verification on a new session.
+    const freshCookie = await user.signInWithTotp();
+    const before = await firstBackupCodeHash(user.userId);
+
+    // WHEN the user regenerates backup codes, THEN it succeeds with new codes.
+    const response = await regenerate(freshCookie);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { status?: unknown; backupCodes?: unknown };
+    expect(Array.isArray(body.backupCodes)).toBe(true);
+    expect((body.backupCodes as unknown[]).length).toBeGreaterThan(0);
+    expect(
+      await firstBackupCodeHash(user.userId),
+      'the stored backup codes were replaced',
+    ).not.toBe(before);
+  }, 60_000);
+});
