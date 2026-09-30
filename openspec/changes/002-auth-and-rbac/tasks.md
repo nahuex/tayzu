@@ -779,7 +779,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   succeeds" and "Sign-in with an unlinked Visma Connect account is rejected
   generically" through `createApp` and the task 19.1 stub, and
   `link-social-step-up.int.test.ts` drops its direct-`auth.handler` workaround.
-- [ ] 23.7 Back-channel logout revokes a session created by the real SSO
+- [x] 23.7 Back-channel logout revokes a session created by the real SSO
   sign-in of 23.6 (design Q35, D26). Verify: `backchannel-logout-http.int.
   test.ts` covers "A valid logout token revokes the matching session" over
   HTTP: SSO sign-in, then a signed logout token for its `sid`, then the same
