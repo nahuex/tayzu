@@ -227,6 +227,101 @@ describe('entity operations authorize with entity attributes (task 23.2, Q34, D9
     await create(insider, 'payments');
   });
 
+  describe('upsert of an entity that does not exist yet authorizes create (task 24.4, Q53, Q34)', () => {
+    const upsertNew = (
+      who: Record<string, unknown>,
+      identifier: string,
+      relations: Record<string, unknown>,
+    ) =>
+      entities.upsert(who, {
+        blueprint: 'service',
+        identifier,
+        title: identifier,
+        mode: 'merge',
+        spec: { properties: {}, relations },
+      } as never);
+
+    const exists = async (tenantId: string, identifier: string): Promise<boolean> => {
+      const found = await entities
+        .get(ctx(tenantId, 'admin-1', ADMIN), { blueprint: 'service', identifier })
+        .then(
+          () => true,
+          (error: unknown) => {
+            expect((error as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+            return false;
+          },
+        );
+      return found;
+    };
+
+    it('Creating an entity owned by a team the caller does not belong to is denied (through entities.upsert)', async () => {
+      const tenantId = await newTenant();
+      const outsider = ctx(tenantId, 'member-outsider', { roles: ['member'], teams: ['other'] });
+
+      expect(await thrownCode(upsertNew(outsider, 'payments', { ownerTeam: 'platform' }))).toBe(
+        'AUTH_FORBIDDEN',
+      );
+      // Nothing was written.
+      expect(await exists(tenantId, 'payments')).toBe(false);
+
+      // Control: a member of `platform` may create it through the same upsert.
+      const insider = ctx(tenantId, 'member-insider', { roles: ['member'], teams: ['platform'] });
+      await upsertNew(insider, 'payments', { ownerTeam: 'platform' });
+      expect(await exists(tenantId, 'payments')).toBe(true);
+    });
+
+    it('an upsert-create with no owner team is allowed for a member', async () => {
+      const tenantId = await newTenant();
+      const member = ctx(tenantId, 'member-1', { roles: ['member'], teams: ['other'] });
+      await upsertNew(member, 'unowned', {});
+      expect(await exists(tenantId, 'unowned')).toBe(true);
+    });
+
+    it('an upsert-create sends a create check with the new entity attributes to Cerbos', async () => {
+      const tenantId = await newTenant();
+      const member = ctx(tenantId, 'member-1', { roles: ['member'], teams: ['platform'] });
+      recorded.length = 0;
+      await upsertNew(member, 'fresh', { ownerTeam: 'platform' });
+
+      const create = recorded.find((entry) => entry.action === 'create' && entry.id === 'fresh');
+      expect(create, 'a create check for the new entity').toBeDefined();
+      expect(create?.attr).toMatchObject({
+        tenantId,
+        blueprintId: 'service',
+        ownerTeam: 'platform',
+        createdBy: 'member-1',
+        locked: false,
+      });
+    });
+
+    it('a list-valued ownerTeam is denied on create', async () => {
+      const tenantId = await newTenant();
+      const member = ctx(tenantId, 'member-1', { roles: ['member'], teams: ['platform'] });
+
+      expect(
+        await thrownCode(
+          entities.create(member, {
+            blueprint: 'service',
+            identifier: 'listed',
+            title: 'listed',
+            spec: { properties: {}, relations: { ownerTeam: ['platform', 'other'] } },
+          }),
+        ),
+      ).toBe('AUTH_FORBIDDEN');
+      expect(await exists(tenantId, 'listed')).toBe(false);
+    });
+
+    it('a list-valued ownerTeam is denied on upsert-create', async () => {
+      const tenantId = await newTenant();
+      const member = ctx(tenantId, 'member-1', { roles: ['member'], teams: ['platform'] });
+
+      expect(
+        await thrownCode(upsertNew(member, 'listed', { ownerTeam: ['platform', 'other'] })),
+      ).toBe('AUTH_FORBIDDEN');
+      expect(await exists(tenantId, 'listed')).toBe(false);
+    });
+  });
+
   it('Moderator can update entities of a moderated blueprint', async () => {
     const tenantId = await newTenant();
     await createOwned(tenantId, 'service', 'payments', { team: 'platform' });

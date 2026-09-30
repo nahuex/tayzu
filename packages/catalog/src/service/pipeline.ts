@@ -180,6 +180,15 @@ export interface DefineCatalogOperationOptions<Input, Output> {
     readonly client: PoolClient;
     readonly input: Input;
   }) => Promise<AuthorizationDeclaration['attributes']>;
+  /**
+   * Optional (design Q53): when `loadAttributes` finds no entity, the check
+   * uses this declaration instead (for `upsert`, a `create` with the new
+   * entity's attributes). It may throw to fail closed.
+   */
+  readonly authorizationWhenMissing?: (params: {
+    readonly ctx: CatalogContext;
+    readonly input: Input;
+  }) => AuthorizationDeclaration;
 }
 
 /** Reads `error.details.reason`, falling back to `'invalid_actor'` if it is ever missing. */
@@ -419,7 +428,16 @@ function elapsedSeconds(startedAtMillis: number): number {
 export function defineCatalogOperation<Input, Output>(
   options: DefineCatalogOperationOptions<Input, Output>,
 ): (rawContext: unknown, input: Input) => Promise<Output> {
-  const { name, pool, handler, statementTimeoutMs, authz, authorization, loadAttributes } = options;
+  const {
+    name,
+    pool,
+    handler,
+    statementTimeoutMs,
+    authz,
+    authorization,
+    loadAttributes,
+    authorizationWhenMissing,
+  } = options;
   const spanName = `catalog.${name}`;
 
   return async function catalogOperation(rawContext: unknown, input: Input): Promise<Output> {
@@ -453,12 +471,18 @@ export function defineCatalogOperation<Input, Output>(
               : await withTenantTransaction(pool, ctx, (client) =>
                   loadAttributes({ ctx, client, input }),
                 );
+          const missing =
+            loadAttributes !== undefined &&
+            loaded === undefined &&
+            authorizationWhenMissing !== undefined;
           await authorize(
             authz,
             ctx,
-            loaded === undefined
-              ? declaration
-              : { ...declaration, attributes: { ...declaration.attributes, ...loaded } },
+            missing
+              ? authorizationWhenMissing({ ctx, input })
+              : loaded === undefined
+                ? declaration
+                : { ...declaration, attributes: { ...declaration.attributes, ...loaded } },
           );
         }
         const result = await withTenantTransaction(

@@ -1072,6 +1072,15 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     pool,
     authz,
     loadAttributes: loadEntityAttributes,
+    authorizationWhenMissing: ({ ctx, input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'create',
+      resourceId: inputString(input, 'identifier'),
+      attributes: {
+        blueprintId: inputString(input, 'blueprint'),
+        ...newEntityAuthzAttributes({ ctx, input }),
+      },
+    }),
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',

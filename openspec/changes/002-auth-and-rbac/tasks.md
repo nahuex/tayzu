@@ -901,7 +901,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   (drift test) cover `get-totp-uri` answering `404`, and
   `step-up.int.test.ts` covers backup-code regeneration refused with only a
   password and allowed after a fresh `verify-totp`.
-- [ ] 24.4 `entities.upsert` of an entity that does not exist yet authorizes
+- [x] 24.4 `entities.upsert` of an entity that does not exist yet authorizes
   `create` with the new entity's attributes, and an `ownerTeam` value that is
   not a single entity identifier fails closed (design Q53, Q34). Verify:
   `entity-authz-attributes.int.test.ts` (extended) covers "Creating an entity

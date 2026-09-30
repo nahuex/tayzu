@@ -13,6 +13,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import type { PoolClient } from 'pg';
 
 import type { CatalogContext } from '../domain/context.js';
+import { AuthorizationError } from '../domain/errors.js';
 import { inputString } from './pipeline.js';
 
 /** The relation naming an entity's direct owner team. */
@@ -97,8 +98,10 @@ export function newEntityAuthzAttributes(params: {
     relations !== undefined && Object.hasOwn(relations, OWNER_TEAM_RELATION)
       ? relations[OWNER_TEAM_RELATION]
       : undefined;
+  // Fail closed (design Q53): an owner that is not a single identifier is never "no owner".
+  if (owner !== undefined && typeof owner !== 'string') throw new AuthorizationError();
   return toAttributes({
-    ownerTeam: typeof owner === 'string' ? owner : undefined,
+    ownerTeam: owner,
     createdBy: ctx.actor.id,
     locked:
       properties !== undefined && Object.hasOwn(properties, 'locked')
