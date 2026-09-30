@@ -86,6 +86,10 @@ import {
   type CerbosClient,
   type PlanFilter,
 } from '@tayzu/authz';
+import {
+  loadEntityAuthzAttributes as loadEntityAttributes,
+  newEntityAuthzAttributes,
+} from './entity-authz-attributes.js';
 import { PLAN_AUTHORIZED, defineCatalogOperation, inputString } from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
@@ -870,6 +874,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     name: 'entity.create',
     pool,
     authz,
+    loadAttributes: ({ ctx, input }) => Promise.resolve(newEntityAuthzAttributes({ ctx, input })),
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'create',
@@ -1001,6 +1006,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     name: 'entity.upsert',
     pool,
     authz,
+    loadAttributes: loadEntityAttributes,
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',
@@ -1259,6 +1265,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     name: 'entity.status.write',
     pool,
     authz,
+    loadAttributes: loadEntityAttributes,
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',
@@ -1417,6 +1424,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     name: 'entity.get',
     pool,
     authz,
+    loadAttributes: loadEntityAttributes,
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'view',
@@ -1503,6 +1511,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     name: 'entity.delete',
     pool,
     authz,
+    loadAttributes: loadEntityAttributes,
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'delete',
@@ -1632,6 +1641,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     name: 'entity.related.list',
     pool,
     authz,
+    loadAttributes: loadEntityAttributes,
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'view',

@@ -740,7 +740,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   unreadable (design Q34, D8, D9). Verify: `context-resolver-principal.int.
   test.ts` covers a member of two teams, a moderator of one blueprint, and an
   unreadable `_user` entity yielding `AUTH_FORBIDDEN` on the next operation.
-- [ ] 23.2 Entity operations (get, create, update, delete, writeStatus,
+- [x] 23.2 Entity operations (get, create, update, delete, writeStatus,
   listRelated) load the entity row inside the tenant-scoped authorization
   step and send `ownerTeam` (resolved with `resolveEffectiveOwnerTeam`, a
   direct relation wins), `createdBy` and `locked` to Cerbos, plus

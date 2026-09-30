@@ -169,6 +169,17 @@ export interface DefineCatalogOperationOptions<Input, Output> {
    * (design D7), which streams every entity of a blueprint.
    */
   readonly statementTimeoutMs?: number;
+  /**
+   * Optional (design Q34): runs in its own tenant-scoped transaction before
+   * the check and returns the entity attributes the check sends. Its
+   * attributes win over the declaration's, except `tenantId`. Any failure
+   * propagates, so the operation fails closed.
+   */
+  readonly loadAttributes?: (params: {
+    readonly ctx: CatalogContext;
+    readonly client: PoolClient;
+    readonly input: Input;
+  }) => Promise<AuthorizationDeclaration['attributes']>;
 }
 
 /** Reads `error.details.reason`, falling back to `'invalid_actor'` if it is ever missing. */
@@ -408,7 +419,7 @@ function elapsedSeconds(startedAtMillis: number): number {
 export function defineCatalogOperation<Input, Output>(
   options: DefineCatalogOperationOptions<Input, Output>,
 ): (rawContext: unknown, input: Input) => Promise<Output> {
-  const { name, pool, handler, statementTimeoutMs, authz, authorization } = options;
+  const { name, pool, handler, statementTimeoutMs, authz, authorization, loadAttributes } = options;
   const spanName = `catalog.${name}`;
 
   return async function catalogOperation(rawContext: unknown, input: Input): Promise<Output> {
@@ -435,7 +446,20 @@ export function defineCatalogOperation<Input, Output>(
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
         if (typeof authorization === 'function') {
-          await authorize(authz, ctx, authorization({ ctx, input }));
+          const declaration = authorization({ ctx, input });
+          const loaded =
+            loadAttributes === undefined
+              ? undefined
+              : await withTenantTransaction(pool, ctx, (client) =>
+                  loadAttributes({ ctx, client, input }),
+                );
+          await authorize(
+            authz,
+            ctx,
+            loaded === undefined
+              ? declaration
+              : { ...declaration, attributes: { ...declaration.attributes, ...loaded } },
+          );
         }
         const result = await withTenantTransaction(
           pool,
