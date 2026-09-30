@@ -41,6 +41,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
+import { assertDiscoverable } from './sso-discovery.js';
 
 type Pool = ReturnType<typeof createPool>;
 
@@ -164,6 +165,10 @@ function toWebRequest(request: FastifyRequest, baseUrl: string | undefined): Req
 }
 
 export async function createApp(options: CreateAppOptions): Promise<App> {
+  // Q48, D23: a configured provider that cannot be discovered fails startup.
+  if (options.sso !== undefined) {
+    await assertDiscoverable(options.sso.discoveryUrl);
+  }
   // The auth handle runs on the host's `tayzu_auth` pool; the catalog and
   // revocation pool run as `tayzu_app` so RLS applies.
   const authDb = drizzle(options.authPool, { schema: authSchema });

@@ -870,7 +870,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `pre-auth-rate-limit.int.test.ts` (extended) covers a spoofed single-value
   and a multi-hop `X-Forwarded-For` from an untrusted peer both being limited
   by the real peer address, and a trusted proxy's client address being used.
-- [ ] 23.21 A failed Visma Connect discovery at startup fails startup instead
+- [x] 23.21 A failed Visma Connect discovery at startup fails startup instead
   of silently skipping the provider (design Q48, D23). Verify: `sso-
   startup.int.test.ts` covers an unreachable and a malformed discovery
   document each making `createApp`/`main` fail with a sanitized error and no
