@@ -841,7 +841,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   (design Q43, D4). Verify: `admin-mfa-enrollment.int.test.ts` covers "An
   unenrolled admin is limited to MFA enrollment" and "Unenrolled user signs in
   with password alone" (a `member`), and an admin passing after enrolling.
-- [ ] 23.16 `/change-password` is added to D18's allowlist, still revoking
+- [x] 23.16 `/change-password` is added to D18's allowlist, still revoking
   all other sessions; notifications for password, MFA and email changes are
   deferred to `043`/`044` (design Q46, D18). Verify: `auth-route-allowlist.
   int.test.ts` (extended) and `auth-route-allowlist.test.ts` (drift test)

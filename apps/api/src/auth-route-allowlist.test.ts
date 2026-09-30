@@ -59,7 +59,6 @@ const BLOCKED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   '/sign-up/email',
   '/reset-password',
   '/change-email',
-  '/change-password',
   '/update-session',
   '/update-user',
   '/delete-user',
@@ -236,6 +235,28 @@ describe('apps/api /api/auth/* allowlist drift (task 11.10)', () => {
     for (const path of mustStayBlocked) {
       expect(mounted.map((route) => route.path)).toContain(path);
       expect(ALLOWED_AUTH_ROUTES.has(path)).toBe(false);
+      expect(isAllowedAuthPath(`${AUTH_BASE_PATH}${path}`)).toBe(false);
+    }
+  });
+});
+
+describe('apps/api /api/auth/* allowlist: /change-password (task 23.16, design Q46 and D18)', () => {
+  const mounted = enumerateMountedRoutes();
+
+  it('/change-password is a mounted Better Auth route and is allowlisted (Q46)', () => {
+    expect(mounted.map((route) => route.path)).toContain('/change-password');
+    expect(ALLOWED_AUTH_ROUTES.has('/change-password')).toBe(true);
+    expect(isAllowedAuthPath(`${AUTH_BASE_PATH}/change-password`)).toBe(true);
+  });
+
+  it('the sibling password routes stay unlisted: only /change-password was added', () => {
+    for (const path of [
+      '/reset-password',
+      '/request-password-reset',
+      '/reset-password/some-token',
+      '/change-email',
+      '/admin/set-user-password',
+    ]) {
       expect(isAllowedAuthPath(`${AUTH_BASE_PATH}${path}`)).toBe(false);
     }
   });

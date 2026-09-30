@@ -40,7 +40,7 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
@@ -48,8 +48,35 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAppFromEnv } from './bootstrap.js';
 import { createApp, type App } from './server.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+
+const poolState = vi.hoisted(() => ({ pools: new Map<string, unknown>() }));
+
+// Task 23.16 builds its app through `createAppFromEnv`, whose pools are the
+// harness pools (the same seam `admin-mfa-enrollment.int.test.ts` uses).
+vi.mock('@tayzu/db', async (importActual) => {
+  const actual = await importActual<typeof import('@tayzu/db')>();
+  return {
+    ...actual,
+    createPool: vi.fn((url: string) => {
+      const role = url.includes('tayzu_auth') ? 'auth' : 'app';
+      const real = poolState.pools.get(role) as object;
+      return new Proxy(real, {
+        get(target, prop) {
+          if (prop === 'end') {
+            return () => Promise.resolve();
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function'
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      });
+    }),
+  };
+});
 
 const TEST_PASSWORD = 'correct horse battery staple';
 const ALLOWED_ORIGIN = 'https://app.tayzu.test';
@@ -340,5 +367,124 @@ describe('apps/api /api/auth/* allowlist: Visma Connect routes (task 19.3, desig
       expect(blocked.statusCode).toBe(404);
       expect(normalize(blocked.body, url)).toBe(normalize(unknown.body, unknownUrl));
     }
+  }, 60_000);
+});
+
+describe('apps/api /api/auth/change-password (task 23.16, design Q46 and D18)', () => {
+  let app: App;
+  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    poolState.pools.set('app', pools.appPool);
+    poolState.pools.set('auth', pools.authPool);
+    app = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: ALLOWED_ORIGIN,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    poolState.pools.clear();
+  }, 60_000);
+
+  async function post(
+    url: string,
+    payload: Record<string, unknown>,
+    cookie?: string,
+  ): Promise<{ statusCode: number; cookie: string }> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ALLOWED_ORIGIN,
+        ...(cookie === undefined ? {} : { cookie }),
+      },
+      payload: JSON.stringify(payload),
+    });
+    const setCookie = response.headers['set-cookie'];
+    const cookies = Array.isArray(setCookie)
+      ? setCookie
+      : typeof setCookie === 'string'
+        ? [setCookie]
+        : [];
+    return {
+      statusCode: response.statusCode,
+      cookie: cookies.map((raw) => raw.split(';')[0]).join('; '),
+    };
+  }
+
+  async function newUser(): Promise<{ email: string; cookie: string }> {
+    const email = `change-password-${randomUUID()}@example.test`;
+    await bootstrapTestTenant(app.auth, {
+      name: 'Change Password User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Change Password Org',
+      organizationSlug: `change-password-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const signIn = await post('/api/auth/sign-in/email', { email, password: TEST_PASSWORD });
+    expect(signIn.statusCode).toBe(200);
+    return { email, cookie: signIn.cookie };
+  }
+
+  it('/change-password is reachable with the current password: it succeeds and the new password signs in', async () => {
+    const user = await newUser();
+
+    const changed = await post(
+      '/api/auth/change-password',
+      { currentPassword: TEST_PASSWORD, newPassword: NEW_PASSWORD },
+      user.cookie,
+    );
+
+    expect(changed.statusCode).toBe(200);
+    const withNew = await post('/api/auth/sign-in/email', {
+      email: user.email,
+      password: NEW_PASSWORD,
+    });
+    expect(withNew.statusCode).toBe(200);
+    const withOld = await post('/api/auth/sign-in/email', {
+      email: user.email,
+      password: TEST_PASSWORD,
+    });
+    expect(withOld.statusCode).toBe(401);
+  }, 60_000);
+
+  it('/change-password rejects a wrong current password (not a 404) and leaves the password unchanged', async () => {
+    const user = await newUser();
+
+    const rejected = await post(
+      '/api/auth/change-password',
+      { currentPassword: 'not the current password', newPassword: NEW_PASSWORD },
+      user.cookie,
+    );
+
+    expect(rejected.statusCode).toBe(400);
+    const withOld = await post('/api/auth/sign-in/email', {
+      email: user.email,
+      password: TEST_PASSWORD,
+    });
+    expect(withOld.statusCode).toBe(200);
+    const withNew = await post('/api/auth/sign-in/email', {
+      email: user.email,
+      password: NEW_PASSWORD,
+    });
+    expect(withNew.statusCode).toBe(401);
+  }, 60_000);
+
+  it('/change-password without a session is rejected as unauthenticated, not a 404', async () => {
+    const response = await post('/api/auth/change-password', {
+      currentPassword: TEST_PASSWORD,
+      newPassword: NEW_PASSWORD,
+    });
+
+    expect(response.statusCode).toBe(401);
   }, 60_000);
 });

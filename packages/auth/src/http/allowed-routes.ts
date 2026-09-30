@@ -31,6 +31,8 @@ export const ALLOWED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   '/list-accounts',
   // Fresh password re-entry for a user without MFA (Q49): records the step-up marker.
   '/verify-password',
+  // Password change with the current password; other sessions are revoked (Q46, D3).
+  '/change-password',
   // Public signing key set of the `jwt` plugin (D5).
   '/jwks',
 ]);

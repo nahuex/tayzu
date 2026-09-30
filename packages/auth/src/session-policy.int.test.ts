@@ -677,3 +677,81 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
     });
   });
 });
+
+/**
+ * Task 23.16 (design Q46, D3, D18): `/change-password` becomes reachable over
+ * HTTP, and it must still revoke every other session. This drives the HTTP
+ * route (`auth.handler`), without `revokeOtherSessions` in the body, exactly as
+ * an allowlisted browser call would.
+ */
+describe('POST /change-password over HTTP revokes other sessions (task 23.16, design Q46)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let resolveContext: ContextResolver;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = createContextResolver({ auth, revocationPool: appPool });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  it('Password change revokes other sessions: the second device fails after the first changes the password over HTTP', async () => {
+    const handler = handlerOf(auth);
+    const email = randomEmail();
+    const adminUser = await createAdminUser(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+    });
+    await apiOf(auth).createOrganization({
+      body: { name: 'Http Password Change Org', slug: randomSlug(), userId: adminUser.userId },
+    });
+    const device1SignIn = await postJson(
+      handler,
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(device1SignIn.status).toBe(200);
+    const device1Cookie = cookieHeaderFrom(device1SignIn);
+    const device2SignIn = await postJson(
+      handler,
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(device2SignIn.status).toBe(200);
+    const device2Cookie = cookieHeaderFrom(device2SignIn);
+    await expect(resolveContext(new Headers({ cookie: device2Cookie }))).resolves.toBeDefined();
+
+    const changed = await handler(
+      new Request(`${AUTH_BASE_URL}/change-password`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: 'http://localhost:3000',
+          cookie: device1Cookie,
+        },
+        body: JSON.stringify({
+          currentPassword: TEST_PASSWORD,
+          newPassword: 'a brand new correct horse battery staple',
+        }),
+      }),
+    );
+    expect(changed.status).toBe(200);
+
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie: device2Cookie })));
+  });
+});
