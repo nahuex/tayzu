@@ -279,6 +279,13 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   character, a bidi override and a zero-width character refused, a
   denylisted password refused, a compliant 20-character password accepted,
   and the refusal naming only the failed rule, never the password.
+- [ ] 8.1b Breached-password check (design Q23): Better Auth's built-in
+  `haveIBeenPwned` plugin is enabled for every path the policy covers, with
+  a sanitized refusal and fail-closed behavior. Verify:
+  `password-breach.int.test.ts`, against a local stub of the range API, covers
+  a password whose SHA-1 suffix is in the stub's range being refused, a clean
+  one accepted, only the 5-character prefix ever being sent, and an
+  unreachable service refusing the password with a generic retryable error.
 - [ ] 8.2 `identity.users.acceptInvitation` for an email with no account: verifies
   the token, creates the user (global role `user`), sets the password the
   invitee supplied under the policy, marks the email verified, adds the

@@ -602,3 +602,12 @@ echo the password.
 - **WHEN** a password contains a NUL, a control character, a bidirectional override or a zero-width character
 - **THEN** it is refused naming the character rule, without echoing the password
 
+#### Scenario: A breached password is refused
+- **WHEN** a password appears in the Pwned Passwords corpus
+- **THEN** it is refused naming the breached-password rule, without echoing the password
+- **AND** only the first five characters of its SHA-1 hash left the system
+
+#### Scenario: The breach check fails closed
+- **WHEN** the Pwned Passwords service is unreachable
+- **THEN** the password is not set and the caller gets a generic retryable error
+
