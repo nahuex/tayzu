@@ -1290,6 +1290,15 @@ No open questions remain for this change.
 | Q62 | (VCDM, 2026-09-30) Startup assertion on the runtime database roles | Pulled forward from Q58: outside test, `createAppFromEnv` fails startup when the role behind `DATABASE_URL` or `AUTH_DATABASE_URL` is a superuser or has `BYPASSRLS`, or owns a catalog table; the first-deployment gate stays as the deployment check (task 25.3). |
 | Q63 | (VCDM NB-C, 2026-09-30) Re-assigning `ownerTeam` on update | An update that changes `ownerTeam` is also authorized against the new value with the `create` rule, so a caller cannot hand an entity to a team they could not create it for (task 25.4). |
 | Q64 | (VCDM, 2026-09-30) Human attestations and small follow-ups | The attestations stay for `010`'s SSA (Q59). Group 25 also builds the SSO step-up callback URL from `BETTER_AUTH_URL` and reconciles `system-diagram.md` and ADR 0013/0015 (tasks 25.5, 25.6); the other non-blocking items become tickets for `043` and `010`. |
+| Q65 | (VCDM B1, 2026-10-01) `entities.delete` with `detachReferences` | Each distinct referrer whose edge is detached is authorized for `update` with its loaded attributes before any write; any deny fails closed with the existing redacted reference violation. No policy change (task 26.1). |
+| Q66 | (VCDM M1, 2026-10-01) Body limit bypass on `/v1/*` for non-JSON bodies | A body-bearing `/v1/*` request whose content type is not `application/json` answers `415` before any body is read (task 26.2). |
+| Q67 | (VCDM M2, M7, 2026-10-01) Unsanitized errors and logs | A Fastify error handler answers a generic `500 INTERNAL` for any error not already mapped, with no message, and Better Auth's logger is routed through the sanitized path; HTTP telemetry drops `url.query` and the query part of `url.full` (tasks 26.3, 26.4). |
+| Q68 | (Security review, 2026-10-01) Allowlist hook after `callNotFound()` | The hook returns the reply after `callNotFound()`, and a test proves an unlisted mutating route has no side effect (task 26.5). |
+| Q69 | (VCDM M6, 2026-10-01) Idle timeout versus `updateAge` | `session.updateAge` is one hour, so both the 12-hour idle rule and the 7-day rolling rule (Q7) hold (task 26.6). |
+| Q70 | (VCDM M16, 2026-10-01) `/change-password` for MFA-enrolled users | It requires a fresh `mfa` step-up marker for a user with an enrolled factor, the Q51 rule (task 26.7). |
+| Q71 | (VCDM M3, 2026-10-01) SSO step-up callback not bound to the browser | A first-deployment gate, tested against Visma Connect's test environment with Q57: `nonce`, `response_mode=query` and the session cookie required at the callback. |
+| Q72 | (VCDM, 2026-10-01) Admin MFA gate versus SSO-only admins | Kept fail-closed (Q43): an organization admin needs a local TOTP factor; SSO-only admins are unsupported until `025`. |
+| Q73 | (VCDM M5, M9-M15, M17-M20, 2026-10-01) Hand-offs | They become tasks in `043` and first-deployment gates in `010`. Hard rule: `identity.*` and the machine-credential routes are not mounted over HTTP before `043`'s group 14 (hand-offs from `002`) is done. |
 
 ## Known residual risks (2026-09-30)
 
@@ -1321,3 +1330,9 @@ Human-owned, next to task 11.12 (Resolved decisions Q57, Q58):
 - `TRUST_PROXY` made configurable and verified against the ACA ingress peer
   range.
 - The Cerbos audit log sent to stdout and on to Azure Monitor.
+- The SSO step-up callback bound to the browser that started it: `nonce`,
+  `response_mode=query` and the session cookie at the callback (Q71).
+- Confirm Visma Connect sends `typ: logout+jwt` on back-channel logout, and
+  that the rate-limit stores are shared across replicas (Q73).
+- Dependabot or an equivalent tracks the pinned image digests (`postgres`,
+  Cerbos, ZAP) (Q73).

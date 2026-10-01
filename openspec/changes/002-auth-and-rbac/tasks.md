@@ -997,3 +997,46 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   loopback, the DAST job) (design Q64). Verify: markdownlint passes and the
   diagram lists every surface in `attack-surfaces.md`.
 
+## 26. Final gaps (VCDM and security review re-run after group 25)
+
+- [ ] 26.1 `entities.delete` with `detachReferences: true` authorizes
+  `update` on every distinct referrer before detaching any edge, and a deny
+  fails closed with the existing redacted reference violation (design Q65).
+  Verify: `entity-authz-attributes.int.test.ts` (extended) covers a member
+  deleting its own entity with a referrer owned by another team or locked
+  being refused with nothing detached, and the same delete allowed when every
+  referrer may be updated.
+- [ ] 26.2 A body-bearing `/v1/*` request whose content type is not
+  `application/json` answers `415` before the body is read (design Q66, D13).
+  Verify: `body-limit.int.test.ts` (extended) covers an oversized
+  `text/plain`, `multipart/form-data` and `application/octet-stream` body each
+  answering `415`, and a JSON body still answering normally.
+- [ ] 26.3 `createApp` sets a Fastify error handler: an error not already
+  mapped answers `500` with `code: INTERNAL` and a fixed message, never the
+  thrown message (design Q67, D11). Verify: `http-errors.int.test.ts`
+  (extended) covers a database failure on the admin-MFA gate and on the
+  re-authorization callback answering the generic body with no driver text.
+- [ ] 26.4 Better Auth's logger goes through the sanitized logging path, and
+  HTTP telemetry drops `url.query` and the query of `url.full` (design Q67).
+  Verify: `otel-export.int.test.ts` (extended) covers a request with
+  `?code=...&state=...` exporting no query, and `auth-flow.int.test.ts` or a
+  new test covers a Better Auth internal error writing no raw error text.
+- [ ] 26.5 The `/api/auth/*` allowlist hook returns the reply after
+  `callNotFound()` (design Q68, D18). Verify: `auth-route-allowlist.int.test.ts`
+  (extended) covers an organization owner calling an unlisted mutating route
+  (for example `/api/auth/revoke-other-sessions` without a body) getting `404`
+  with the other sessions still valid.
+- [ ] 26.6 `session.updateAge` is one hour (design Q69, Q7). Verify:
+  `session-policy.int.test.ts` (extended) covers a session used within the
+  idle window staying valid past 12 hours of age, and an idle session still
+  rejected after 12 hours.
+- [ ] 26.7 `/change-password` requires a fresh `mfa` step-up for a user with
+  an enrolled factor (design Q70, Q51). Verify: `step-up.int.test.ts`
+  (extended) covers an enrolled user refused with only a password, allowed
+  after `verify-totp`, and a user without MFA unaffected.
+- [ ] 26.8 _(setup)_ Docs: `attack-surfaces.md` and `secrets.md` reflect 25.3
+  and group 26, task 23.20's text matches the implementation, SSO-only admins
+  are documented as unsupported until `025` (Q72), and the Q73 hand-offs are
+  added to `043/tasks.md`. Verify: markdownlint and `openspec validate --strict`
+  for both changes pass.
+
