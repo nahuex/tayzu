@@ -1059,7 +1059,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   test file covers each guard still applying to its route when the request
   carries a query string, and the token-exchange limiter answering `429` on
   the routed path.
-- [ ] 27.3 The 12-hour idle check also applies to session-bearing
+- [x] 27.3 The 12-hour idle check also applies to session-bearing
   `/api/auth/*` routes except sign-in (design Q75, Q7). Verify:
   `session-policy.int.test.ts` (extended) covers a session idle for more than
   12 hours being refused on `/api/auth/get-session` without its `updatedAt`

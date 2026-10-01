@@ -83,6 +83,7 @@ import {
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import { isIdle } from './session-idle.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
 import {
   STEP_UP_FRESHNESS_MS,
@@ -98,6 +99,8 @@ import {
 } from './telemetry/instruments.js';
 
 const SIGN_IN_EMAIL_PATH = '/sign-in/email';
+/** Task 27.3: sign-in routes (including the SSO callback) are exempt from the idle check. */
+const SIGN_IN_PATH_PREFIXES: readonly string[] = ['/sign-in/', '/callback/'];
 const SIGN_OUT_PATH = '/sign-out';
 const SIGN_IN_SOCIAL_PATH = '/sign-in/social';
 const CHANGE_PASSWORD_PATH = '/change-password';
@@ -763,6 +766,20 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // Better Auth's own `dispatchAuthEndpoint`, both verified against the
       // installed source), leaving `currentPassword`/`newPassword` untouched.
       before: createAuthMiddleware(async (ctx) => {
+        // Task 27.3, design Q75, Q7: the 12-hour idle check on every
+        // session-bearing route except sign-in, so a stale cookie cannot
+        // reach Better Auth's refresh-on-read and reset the idle clock.
+        if (!SIGN_IN_PATH_PREFIXES.some((prefix) => ctx.path.startsWith(prefix))) {
+          const peek = await getSessionFromCtx(ctx, { disableRefresh: true }).catch(() => null);
+          // Drop the cached peek so the endpoint reads (and refreshes) normally.
+          ctx.context.session = null;
+          if (peek && isIdle(peek.session.updatedAt)) {
+            throw new APIError('UNAUTHORIZED', {
+              code: 'UNAUTHORIZED',
+              message: 'UNAUTHORIZED',
+            });
+          }
+        }
         if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
           // Task 3.5, design D19: snapshot the session's current active
           // organization before Better Auth's own route runs, so

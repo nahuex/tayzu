@@ -87,6 +87,7 @@ import { withTenantTransaction, type createPool } from '@tayzu/db';
 import type { AuthInstance } from './auth.js';
 import { logger, revocationChecksCounter } from './telemetry/instruments.js';
 import { AuthContextError } from './errors.js';
+import { isIdle } from './session-idle.js';
 
 export interface ContextResolverOptions {
   /** The Better Auth instance whose session cookie `resolveContext` resolves against. */
@@ -235,9 +236,6 @@ interface AuthContextSurface {
 function contextOf(auth: AuthInstance): Promise<AuthContextSurface> {
   return auth.$context as Promise<AuthContextSurface>;
 }
-
-/** design D3, Resolved decision Q7: the idle-timeout window, in milliseconds. */
-const IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 
 /**
  * design D19: "using a cache no older than a few seconds," bounded the same
@@ -464,12 +462,15 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     // effect a plain `getSession` call could otherwise trigger (see this
     // module's own doc comment). Checked against last use (`updatedAt`),
     // never against `createdAt`.
-    const idlePeek = await api.getSession({ headers, query: { disableRefresh: true } });
+    // The `/get-session` before hook (task 27.3) refuses an idle session
+    // with an `APIError`; that refusal is the same context rejection.
+    const idlePeek = await api
+      .getSession({ headers, query: { disableRefresh: true } })
+      .catch(() => rejectMissingContext());
     if (idlePeek === null) {
       rejectMissingContext();
     }
-    const idleFor = Date.now() - idlePeek.session.updatedAt.getTime();
-    if (idleFor > IDLE_TIMEOUT_MS) {
+    if (isIdle(idlePeek.session.updatedAt)) {
       rejectMissingContext();
     }
 

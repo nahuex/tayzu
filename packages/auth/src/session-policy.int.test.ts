@@ -895,3 +895,99 @@ describe('session.updateAge is one hour (task 26.6, design Q69, Q7)', () => {
     await expectContextRequiredRejection(resolveContext(new Headers({ cookie: session.cookie })));
   });
 });
+
+/**
+ * Task 27.3 (design Q75, Q7): the 12-hour idle check also applies to
+ * session-bearing `/api/auth/*` routes (sign-in excluded), with the same peek
+ * as `resolveContext`. Without it, any `/api/auth/*` call that carries a stale
+ * session cookie (here `GET /get-session`) is a path Better Auth's own
+ * `updateAge` refresh-on-read uses to rewrite `updatedAt`, resetting the idle
+ * clock of a session `resolveContext` would have refused.
+ *
+ * "Time passes" is emulated by moving the row's `updated_at` back (13 hours,
+ * `expires_at` still 6 days out), exactly as the task 3.2 block above does.
+ * The request goes through `auth.handler` with a fresh random
+ * `x-forwarded-for` IP, so the pre-auth rate limiter never interferes.
+ *
+ * Only what the task fixes is asserted: the idle session is not served (the
+ * body carries neither the user id nor a session token) and its `updated_at`
+ * is byte-for-byte unchanged. The exact refusal status is left open.
+ */
+describe('idle check on /api/auth/get-session (task 27.3, design Q75, Q7)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  async function signUpWithOrganization(): Promise<{
+    readonly cookie: string;
+    readonly token: string;
+    readonly userId: string;
+  }> {
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Idle Get Session Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return { cookie: tenant.cookie, token: tenant.token, userId: tenant.userId };
+  }
+
+  function getSession(cookie: string): Promise<Response> {
+    return handlerOf(auth)(
+      new Request(`${AUTH_BASE_URL}/get-session`, {
+        method: 'GET',
+        headers: { cookie, 'x-forwarded-for': randomIp() },
+      }),
+    );
+  }
+
+  it('a session idle for more than 12 hours is refused on /api/auth/get-session and its updatedAt is not refreshed', async () => {
+    const session = await signUpWithOrganization();
+
+    // GIVEN a session last used 13 hours ago, within its 7-day window.
+    const now = Date.now();
+    await setSessionTimestamps(db, session.token, {
+      updatedAt: new Date(now - 13 * HOUR_MS),
+      expiresAt: new Date(now + 6 * DAY_MS),
+    });
+    const before: SessionTimestampRow = await readSessionTimestamps(db, session.token);
+
+    // WHEN get-session is called with its cookie.
+    const response: Response = await getSession(session.cookie);
+    const body: string = await response.text();
+
+    // THEN the session is not served.
+    expect(body, 'the idle session must not be returned').not.toContain(session.userId);
+    expect(body, 'the idle session must not be returned').not.toContain(session.token);
+
+    // AND its updatedAt is not refreshed.
+    const after: SessionTimestampRow = await readSessionTimestamps(db, session.token);
+    expect(new Date(after.updated_at).getTime()).toBe(new Date(before.updated_at).getTime());
+    expect(now - new Date(after.updated_at).getTime()).toBeGreaterThanOrEqual(13 * HOUR_MS - 1000);
+  });
+
+  it('a fresh session is unaffected on /api/auth/get-session', async () => {
+    const session = await signUpWithOrganization();
+
+    const response: Response = await getSession(session.cookie);
+    expect(response.status).toBe(200);
+    const parsed = JSON.parse(await response.text()) as {
+      readonly user?: { readonly id?: string };
+    } | null;
+    expect(parsed?.user?.id).toBe(session.userId);
+  });
+});
