@@ -42,8 +42,12 @@ created.
   with a breached-password check. A person who already has an account accepts with
   their own session plus the token (CSRF header, its own origin check, matching
   email, step-up for an `admin` role) and only gains the membership. Every other
-  admin is notified when an `admin` invitation is accepted. This is the
-  first unauthenticated route and needs its own SSA row.
+  admin is notified when an `admin` invitation is accepted. The creation of the user
+  and the membership shares one transaction with the consumption of the token, and
+  the `_user` write fails closed. An SSO link that an admin recorded for one tenant is
+  shed when its user joins a second tenant, so an invitation cannot turn it into a
+  way into the second tenant. This is the first unauthenticated route and needs its
+  own SSA row.
 - **Invitation email (SEC11-hardened).** A new outbound-email capability with a
   fixed template and subject, exactly one recipient and one link, the link
   origin from a dedicated trusted setting (`INVITATION_LINK_BASE_URL`), and caps per
@@ -51,8 +55,8 @@ created.
   kill switch, on the existing DB-backed rate-limit store (a bucket resets only after a
 full window with no allowed request, which is stricter than the nominal rate), and
 every limiter answers with `Retry-After`. Outside production a real sender needs a
-mandatory recipient-domain allowlist; CI, DAST and demo tenants use a non-sending
-sender. A second fixed template notifies the admins of a pending org
+mandatory recipient-domain allowlist; CI and DAST use a non-sending sender, and a list
+of disabled tenants keeps demo tenants from sending real mail. A second fixed template notifies the admins of a pending org
   deletion and a third tells the other admins of an accepted `admin` invitation;
   all three share the kill switch and the per-recipient bucket, with a per-tenant
   notice cap and at most 20 recipients per notice, and the invitation caps answer
@@ -80,13 +84,15 @@ sender. A second fixed template notifies the admins of a pending org
   compensating revoke on failure.
 - **Immediate effect of disable and deletion.** `resolveContext` and token
   exchange reject a banned user, a human disabled in the active tenant (disabling
-  is tenant-scoped, so a member of two tenants can be off-boarded by either), a
+  is tenant-scoped, so a member of two tenants can be off-boarded by either; the
+  answer is `CATALOG_CONTEXT_REQUIRED`, 401), a
   machine principal whose service account is `Disabled`, and any principal of a
   tenant pending deletion, through the existing 5-second cache, failing closed.
 - **Every member has a `_user` row.** A member with no `_user` row is rejected
   (reason `user_missing`), and a repeatable reconcile, run through the reviewed
-  workflow, creates every missing row through the state machine; it is also the
-  repair path for a lost write. A banned user's sign-in fails exactly like any other
+  workflow, creates every missing row through the state machine and removes an orphan
+  row that a rolled-back acceptance leaves; it is also the repair path for a member
+  that predates this change. A banned user's sign-in fails exactly like any other
   failure, and every identity procedure parses its input strictly.
 - **Data retention and org deletion, in two phases.** A documented retention
   policy (`docs/security/data-retention.md`) and an admin-only, step-up-gated
@@ -103,13 +109,16 @@ sender. A second fixed template notifies the admins of a pending org
   and relies on GitHub and Azure settings the human applies from a checklist; its inputs
   reach the job only through `env`, its actions are pinned by SHA and `CODEOWNERS` covers
   it. Recovery is the pending window, not point-in-time
-  restore.
+  restore. Each maintenance script starts telemetry and flushes it before it exits,
+  so its audit events are exported.
 - **Mandatory authorization.** Every procedure of the identity router is built with
   one wrapper that checks the caller's role first, resolves the target, calls Cerbos,
   fails closed and emits `authz_denied`, and a route-table-driven HTTP matrix proves
   each of the fourteen oRPC routes. One repository module in `apps/api` serves every
-  identity read of `apikey`, `invitation` and `member`, requiring the tenant, with a lint
-  ban on direct adapter access. Their OpenAPI document is committed
+  identity read of `apikey`, `invitation`, `member`, `session`, `user` and `account`,
+  requiring the tenant wherever the model has one, with a lint ban on direct adapter
+  access. The machine-credential functions are exported only on a package subpath and
+  importable only from the identity code. Their OpenAPI document is committed
   (`openapi/identity.openapi.json`, paths and risk markers only) with its own drift
   check.
 - **Tenant binding and mount gate.** Every target of every route is resolved on
@@ -174,14 +183,22 @@ multi-org UX (`042`).
   bootstrap CLI, with `bootstrapAdmin()` moving into `packages/auth/src/`), a GitHub
   Actions maintenance workflow and a `CODEOWNERS` file. It also edits
   `packages/catalog/src/service/user-sync.ts` (the four-value status and
-  `onBehalfOf`) and the shared test fixtures, which gain a `_user` row per member.
-- **Database**: **three migrations, each a Checkpoint 3 item.** `0011` adds a
+  `onBehalfOf`), `packages/catalog/src/service/system-blueprints.ts` and the catalog
+  index (which export `USER_BLUEPRINT` with its input builder and
+  `ENTITY_IDENTIFIER_PATTERN`), `packages/authz/src/resource-kinds.ts` (three new
+  kinds), `packages/auth/package.json` (the `@tayzu/auth/machine-credentials` subpath
+  export), a new identity contract module under `packages/auth/src/telemetry/`, the
+  shared test fixtures, which gain a `_user` row per member, `scripts/ci/dast.sh` and
+  `scripts/ci/zap-seed.ts`, and the stale statements of `packages/authz/CLAUDE.md` and
+  `apps/api/CLAUDE.md`.
+- **Database**: **four migrations, each a Checkpoint 3 item.** `0011` adds a
   composite `(tenant_id, credential_id)` key to
   `machine_credential_revocation`; `0012` adds the tenant-deletion marker table;
-  `0013` adds its grants, the dedicated `tayzu_purge` role, the row-level policies
-  of the catalog and Better Auth rows and the amended append-only trigger (an
-  explicit, narrow exception for the append-only rows); it creates no function. The `_user` blueprint gains
-  `accountKind` and a four-value `status` through the catalog's
+  `0013` adds its grants, the dedicated `tayzu_purge` and `tayzu_deletion_admin`
+  roles, the row-level policies of the catalog rows and the amended append-only
+  trigger (an explicit, narrow exception for the append-only rows); `0014` adds the
+  row-level policies of the Better Auth rows. None creates a function. The `_user`
+  blueprint gains `accountKind` and a four-value `status` through the catalog's
   blueprint-update operation, run once per existing tenant (a data-plane
   change, not DDL, per `001` design D7). Everything else reuses tables `002`
   creates (Better Auth's `organization`, `invitation`, `apikey`,
@@ -208,10 +225,13 @@ multi-org UX (`042`).
   authorization), a fourth pass that found fourteen non-blocking gaps, and a fifth pass
   that found three blocking ones (a service-account route accepting a human target, an
   invitation outliving its inviter's authority, and the maintenance workflow's inputs and
-  cloud role), eight non-blocking ones and four questions. All are folded into
+  cloud role), eight non-blocking ones and four questions, and a sixth pass that found
+  one blocking one (an SSO link recorded by one tenant's admin surviving into a second
+  tenant), fourteen non-blocking ones and three questions. All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks.
   New surface: the first public route, the first outbound email, a privileged
   purge role and the Pwned Passwords egress.
 - **Docs**: `docs/security/data-retention.md` (new), and updates to
   `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`,
-  `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`.
+  `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`, and an
+  amendment of `docs/adr/0014-postgres-roles-and-forced-rls.md`.

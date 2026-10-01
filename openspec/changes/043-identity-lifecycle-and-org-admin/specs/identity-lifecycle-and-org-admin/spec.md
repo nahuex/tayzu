@@ -186,7 +186,8 @@ is that tenant MUST it also ban the user and revoke all their sessions. The ban
 MUST NOT use Better Auth's admin-plugin ban routes, which the global role `user`
 cannot call. `resolveContext` MUST reject a banned user, and MUST reject a human
 whose `_user` status in the active tenant is `Disabled`, and a human member with no
-`_user` row in the active tenant (reason `user_missing`), so that an existing
+`_user` row in the active tenant (reason `user_missing`), with the answer
+`CATALOG_CONTEXT_REQUIRED` (401) and the reason only in the log, so that an existing
 session and any new sign-in, local or through SSO, stop granting access. A banned user's
 sign-in MUST fail exactly like any other sign-in failure, locally and through SSO,
 so that a correct password is never confirmed. Enabling
@@ -197,7 +198,7 @@ these checks MUST be logged as `catalog.security.principal_rejected` and counted
 
 - **GIVEN** an `Active` user with a single membership and a live session
 - **WHEN** an admin disables the user
-- **THEN** the next request on that session is rejected, a new sign-in (local or SSO) is refused, and `catalog.security.principal_rejected` is logged
+- **THEN** the next request on that session is rejected with `CATALOG_CONTEXT_REQUIRED` (401) and no reason in the body, a new sign-in (local or SSO) is refused, and `catalog.security.principal_rejected` is logged with the reason
 
 #### Scenario: A banned user's sign-in is indistinguishable from a wrong password
 
@@ -228,11 +229,15 @@ these checks MUST be logged as `catalog.security.principal_rejected` and counted
 ### Requirement: Every member has a `_user` row
 
 A human member with no `_user` row in the active tenant MUST be rejected by
-`resolveContext` and logged with the reason `user_missing`. A repeatable reconcile,
-run only through the reviewed maintenance workflow, MUST create the `_user` entity
-of every member that has none, through the state machine as `created_active`, MUST leave an existing row untouched (a second run changes nothing), MUST create a
-`Disabled` row for a member whose user is banned, and MUST attribute its writes to the
-operator whose id the workflow supplies.
+`resolveContext` (`CATALOG_CONTEXT_REQUIRED`, 401) and logged with the reason
+`user_missing`. A repeatable reconcile, run only through the reviewed maintenance
+workflow, MUST create the `_user` entity of every member that has none, through the
+state machine as `created_active`, MUST leave an existing row untouched (a second run
+changes nothing), MUST create a `Disabled` row for a member whose user is banned, MUST
+remove an orphan (a human `_user` that is `Active` and has no membership in its tenant,
+which a rolled-back acceptance leaves behind; never an `Invited` or `Staged` row or a
+service account), and MUST attribute its writes to the operator whose id the workflow
+supplies.
 
 #### Scenario: A member with no `_user` row is rejected
 
@@ -245,6 +250,12 @@ operator whose id the workflow supplies.
 - **GIVEN** a banned member with no `_user` row
 - **WHEN** the reconcile runs
 - **THEN** the member's row is created and ends `Disabled`, not `Active`
+
+#### Scenario: The reconcile removes an orphan
+
+- **GIVEN** an `Active` human `_user` with no member in its tenant, an `Invited` one, a `Staged` one and a service account
+- **WHEN** the reconcile runs
+- **THEN** only the `Active` human row is removed, the removal is attributed to the operator, and a later invitation of that email succeeds
 
 #### Scenario: The reconcile repairs a member and is repeatable
 
@@ -342,10 +353,14 @@ For an invited email with no account,
 acceptance MUST create the user with the least global role, set the password the
 invitee supplied under the password policy, mark the email verified (the token is
 proof of mailbox control), add the membership with the invited role, write the
-status through the state machine, and MUST NOT create a session. For an email that
+status through the state machine, and MUST NOT create a session. The consumption of
+the token and the creation of the `auth` rows MUST share one transaction, and the
+`_user` write MUST fail closed: if it fails, the user, the membership and the token
+consumption MUST be rolled back. For an email that
 already has an account, acceptance MUST require a valid session of that same
-account, which MUST pass the idle-timeout and banned checks that the authenticated
-pipeline applies, and whose email MUST equal the invitation email (there is no
+account, which MUST pass the idle-timeout and banned checks and the
+temporary-password marker check that the authenticated pipeline applies, and whose
+email MUST equal the invitation email (there is no
 verified-email condition, because no account's email is verified by anything else),
 together with the token; the request MUST carry the CSRF custom header and an
 `Origin` header that is present and in the allowed origins; when the invited role is
@@ -353,7 +368,9 @@ together with the token; the request MUST carry the CSRF custom header and an
 the identity provider, its re-authorization), checked only after the session, the
 email and the token have matched. It MUST add only the membership, activate the
 `_user` and mark the email verified, and MUST NOT set, change or compare a
-password, the session, the active organization or any linked account. Acceptance
+password, the session or the active organization, and MUST NOT touch a linked
+account except to shed an SSO link that an admin recorded for another tenant (see the
+requirement on admin-recorded SSO links). Acceptance
 MUST NOT link an account by the email claim from Visma Connect. The body MUST be an
 allowlist of the invitation id, the token and, for a new account, the password; any
 other field MUST be rejected with `CATALOG_VALIDATION_FAILED`, and an invitation id
@@ -377,6 +394,12 @@ MUST be logged.
 - **WHEN** `bob` presents the invitation id, the token and a policy-compliant password
 - **THEN** `bob` has an account with a verified email, a membership with the invited role and status `Active`, and no session exists
 - **AND** the token cannot be used a second time
+
+#### Scenario: A failed `_user` write rolls the acceptance back
+
+- **GIVEN** a pending invitation to `bob@example.com`, who has no account, and a `_user` write that fails
+- **WHEN** `bob` presents the invitation id, the token and a policy-compliant password
+- **THEN** no user and no membership exist, the token is not consumed and still verifies, and the answer is the sanitized generic server error
 
 #### Scenario: Unknown body fields are rejected
 
@@ -408,10 +431,10 @@ MUST be logged.
 - **WHEN** it is accepted with the valid token and a session of another user
 - **THEN** the answer is the uniform rejection and nothing changes
 
-#### Scenario: A banned or idle session cannot accept
+#### Scenario: A banned, idle or temporary-password session cannot accept
 
 - **GIVEN** a pending invitation to `carol@example.com`
-- **WHEN** it is accepted with the valid token and a session of `carol` that is banned or past its idle timeout
+- **WHEN** it is accepted with the valid token and a session of `carol` that is banned, past its idle timeout or held by a user with an unexpired temporary-password marker
 - **THEN** the answer is the uniform rejection and nothing changes
 
 #### Scenario: An admin invitation to an existing account needs step-up
@@ -481,6 +504,36 @@ MUST be logged.
 - **WHEN** a caller exceeds the configured acceptance rate
 - **THEN** further requests fail with `AUTH_RATE_LIMITED` and a `Retry-After` header before any invitation lookup, and the count is shared across replicas
 
+### Requirement: An admin-recorded SSO link does not survive into a second tenant
+
+When an admin links an identity-provider `sub` to a user, the platform MUST record the
+tenant that linked it, and MUST remove that record with the link when it is unlinked. A
+link that the user made through the self-service link route MUST NOT carry such a record.
+At existing-account acceptance, and whenever a membership is added to a user who already
+belongs to another tenant, every admin-recorded link whose recorded tenant is not the
+tenant being joined MUST be deleted, in the same transaction, and
+`catalog.security.sso_link_shed` MUST be logged with opaque identifiers only. The user MAY
+link the identity again through the self-service route, which requires a fresh step-up
+verification.
+
+#### Scenario: An admin-recorded SSO link does not survive into a second tenant
+
+- **GIVEN** a user who belongs only to `t1`, with an SSO link recorded by an admin of `t1`
+- **WHEN** the user accepts an invitation of `t2` on the existing-account path, or a membership of `t2` is added to them directly
+- **THEN** the link and its record are gone, `catalog.security.sso_link_shed` is logged once, and signing in with that `sub` no longer reaches the user
+
+#### Scenario: A link the user made survives
+
+- **GIVEN** a user with an SSO link made through the self-service link route
+- **WHEN** the user joins a second tenant
+- **THEN** the link is unchanged and nothing is logged
+
+#### Scenario: The user can link again
+
+- **GIVEN** a user whose admin-recorded link was shed
+- **WHEN** the user links the identity through the self-service route with a fresh step-up verification
+- **THEN** the link exists and carries no admin record
+
 ### Requirement: Invitation email is fixed and capped
 
 The invitation email MUST be sent to exactly one recipient, a single plain
@@ -499,8 +552,10 @@ or invitee free text. Both notices MUST go through the same global kill switch a
 per-recipient cap as the invitation email, MUST be capped per tenant, and MUST go to
 at most 20 recipients, the administrators who have been members the longest; a
 suppressed or truncated notice MUST NOT block the operation that triggered it and
-MUST be logged as `catalog.security.notice_suppressed`. The provider MUST NOT track clicks or engagement, and the
-message MUST have no Reply-To. Creating and resending invitations MUST be capped at 30 per hour
+MUST be logged as `catalog.security.notice_suppressed`. The token and the link MUST NOT appear in the response of the operation
+that sends an invitation or resends it, in any log record, or in anything the
+non-sending sender keeps, because the token proves mailbox control. The provider MUST
+NOT track clicks or engagement, and the message MUST have no Reply-To. Creating and resending invitations MUST be capped at 30 per hour
 per tenant, 3 per 24 hours per recipient across all tenants (keyed by a digest
 of the normalized email, never the address), and by a global kill switch. A
 disabled or zero cap MUST fail startup. A bucket MUST reset only after a full window with
@@ -512,8 +567,22 @@ every invitation cap, send no email, and log
 startup MUST fail without a real email provider. Outside production a real provider
 MUST be configured only together with a recipient-domain allowlist, startup MUST fail
 without it, a recipient whose domain is not on it MUST be refused like a provider failure
-and logged as `catalog.security.email_recipient_blocked`, and CI, DAST and demo tenants
-MUST use a non-sending sender.
+and logged as `catalog.security.email_recipient_blocked`, and CI and DAST MUST use a
+non-sending sender. An email of a tenant on the configured list of disabled tenants (the
+demo tenants) MUST be suppressed before any cap is consumed, MUST NOT block the operation,
+and MUST be logged as `catalog.security.email_tenant_blocked` with the tenant and the
+template.
+
+#### Scenario: The invitation link never leaves the email
+
+- **WHEN** an admin invites or resends an invitation to `bob@example.com`
+- **THEN** the response, every log record and anything the non-sending sender keeps contain neither the token nor the id-plus-token link, which only the email carries
+
+#### Scenario: A demo tenant sends no email
+
+- **GIVEN** a tenant on the list of disabled tenants and a real sender
+- **WHEN** an admin of that tenant invites a user, or an organization deletion is requested
+- **THEN** nothing reaches the sender, no cap bucket is consumed, the operation succeeds, and `catalog.security.email_tenant_blocked` is logged with the tenant and the template and no address
 
 #### Scenario: Injection through the invited address is impossible
 
@@ -726,21 +795,31 @@ user's role or `moderatedBlueprints`.
 ### Requirement: Org API-credentials viewer never re-exposes a secret
 
 Listing an organization's API credentials (service accounts, integrations and
-agents) MUST return, per credential: a name, its kind, a non-secret
-prefix, creation time, last-used time (when known), enabled/disabled state,
+agents) MUST return, per credential: its opaque id (the identifier that rotate and
+revoke take), a name, its kind, a non-secret prefix (a constant, because no leading
+characters of a secret are stored), creation time, last-used time (when known), enabled/disabled state,
 whether it is past its rotation-due threshold, and the opaque id of the admin who
 created it (when known). A credential MUST be shown
 disabled when its key is disabled, it is revoked, or its bound service account
 is `Disabled`. It MUST NOT return the secret value or any stored secret
 characters under any circumstance after creation. This listing MUST be
 authorized to admins only and MUST contain only credentials of the caller's
-tenant.
+tenant. A page MUST be at least as large as the credential cap and MUST list the
+non-revoked credentials before the revoked ones, so that no credential a tenant can hold
+is hidden from an admin who needs to revoke it, and MUST say when revoked ones were left
+out.
 
 #### Scenario: Listing never includes the secret
 
 - **GIVEN** an organization with 3 API credentials
 - **WHEN** an admin lists them
 - **THEN** each entry has a prefix, not the full secret, and no field in the response ever equals a credential's secret value
+
+#### Scenario: The viewer shows every credential a tenant can hold
+
+- **GIVEN** a tenant with 200 non-revoked and 30 revoked credentials
+- **WHEN** an admin lists them
+- **THEN** all 200 non-revoked credentials are listed, each with an id that `rotate` accepts, and the page says that revoked ones were left out
 
 #### Scenario: The viewer shows who created a credential
 
@@ -996,7 +1075,7 @@ starting the named jobs.
 
 - **GIVEN** `t1`'s purge date is in the future and `t2` has no marker
 - **WHEN** the purge job runs
-- **THEN** nothing of `t1` or `t2` is deleted, and the purge function refuses to delete the append-only rows of either
+- **THEN** nothing of `t1` or `t2` is deleted, and the purge role is refused when it tries to delete the append-only rows of either
 
 #### Scenario: Users with no other membership are removed, others are kept
 
@@ -1018,8 +1097,10 @@ starting the named jobs.
 
 ### Requirement: The deletion marker and the purge are protected from the request path
 
-The deletion marker MUST be insert-only for the role that serves requests: its
-`requested_at` MUST be set by the database, a database constraint MUST keep
+The deletion marker MUST be insert-only for the role that serves requests, and that role
+MUST have no privilege on any marker column other than the tenant, the purge date and the
+requesting actor, so that `requested_at`, the state, the purge-step timestamps and the
+cancellation fields always take the database's own values; a database constraint MUST keep
 `purge_after` between 7 and 14 days after `requested_at`, and only one pending
 marker per tenant MAY exist. The purge MUST run as a dedicated role, used only by
 the purge job with its own secret, that can act only on tenants with a due pending
@@ -1034,8 +1115,8 @@ table carrying tenant data is neither purged nor explicitly exempted.
 
 #### Scenario: The request role cannot back-date a marker
 
-- **WHEN** the role that serves requests inserts a marker with a past or caller-supplied `requested_at`, or a `purge_after` outside 7 to 14 days
-- **THEN** the database ignores the first and refuses the second, and the request role can neither update nor delete a marker
+- **WHEN** the role that serves requests inserts a marker that names `requested_at`, a `state` or a purge-step timestamp, or a `purge_after` outside 7 to 14 days
+- **THEN** the database refuses each, and the request role can neither update nor delete a marker
 
 #### Scenario: The Better Auth rows of a tenant that is not due cannot be purged
 
@@ -1052,7 +1133,7 @@ table carrying tenant data is neither purged nor explicitly exempted.
 #### Scenario: No role can become the purge role
 
 - **WHEN** any other role of the platform attempts `SET ROLE` to the purge role
-- **THEN** it is refused, and no role membership grants it
+- **THEN** it is refused, and no role membership grants it the ability (the creating role's admin-only membership has no set or inherit option)
 
 #### Scenario: A new table cannot escape the purge
 
@@ -1112,7 +1193,8 @@ it off, every such route MUST answer exactly as an unknown `/v1` path does: 401
 `CATALOG_CONTEXT_REQUIRED` for an unauthenticated caller and 404 for an authenticated
 one. The routes are the fifteen of this capability: the machine-credential create and
 revoke operations are library functions with no route of their own, reachable only
-through them. The task that
+through them, exported only on a package subpath and importable only from the identity
+code. The task that
 registers the routes MUST come after every hand-off task from `002`. With the
 switch on, every Fastify route outside an explicit public allowlist MUST be behind
 the authenticated context resolution.
@@ -1140,7 +1222,8 @@ Every Cerbos deny, status change, service-account disable, enable and
 deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
 excess, and org-deletion request, repeated request, completion, failure, cancellation and notice failure, a failed admin-accepted notice, a suppressed or truncated notice, a
-recipient refused by the non-production allowlist, a banned user's sign-in attempt and a
+recipient refused by the non-production allowlist, an email suppressed for a disabled
+tenant, an admin-recorded SSO link shed, a banned user's sign-in attempt and a
 reconcile run, MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
@@ -1157,11 +1240,18 @@ write. A failed org deletion MUST NOT be invisible.
 - **WHEN** a purge step fails
 - **THEN** `catalog.security.org_deletion_failed` is logged with the step
 
+#### Scenario: A maintenance script's audit event is exported before it exits
+
+- **WHEN** the purge, the reversal or the reconcile script emits its `catalog.audit.*` event and finishes, or fails
+- **THEN** the event has been exported (flushed) by the time the script's process ends
+
 ### Requirement: Telemetry contract
 
 Every operation added by this capability MUST emit the spans, metrics, and
 log events declared in this change's Observability contract, using the
-declared names and attributes. Telemetry MUST NOT contain invited email
+declared names and attributes. The names MUST be declared in a contract module of their
+own that the telemetry smoke check also enforces, and the authentication contract of
+`002` MUST stay unchanged. Telemetry MUST NOT contain invited email
 addresses, invitation tokens, credential names, credential secrets, `_user`
 identifiers, or any other tenant-supplied free text, and no identifier in a URL
 path (an email, an invitation id or a credential id) MUST reach any exported
@@ -1196,7 +1286,7 @@ and bootstrap passwords, `/change-password`) MUST be NFC-normalized, and every
 password verification MUST normalize the same way, inside the password hash and
 verify functions themselves so that no entry point (sign-in, `/verify-password`,
 `/two-factor/enable`, `/change-password`, `/two-factor/generate-backup-codes` or a
-future one) can be missed, and then be 20 to 128 characters long, contain an upper-case letter, a lower-case
+future one) can be missed, and then be 20 to 128 characters long (counted as Unicode code points), contain an upper-case letter, a lower-case
 letter, a digit and a symbol, contain no control character, unpaired
 surrogate or Unicode format character, and not appear on the bundled
 common-password denylist. The breached-password check MUST see the NFC form, so the
@@ -1242,7 +1332,7 @@ echo the password.
 #### Scenario: The breach check fails closed
 
 - **WHEN** the Pwned Passwords service is unreachable
-- **THEN** the password is not set and the caller gets a generic retryable error
+- **THEN** the password is not set and the caller gets the sanitized generic server error, with no provider text
 
 ### Requirement: Identity procedures parse untrusted input strictly
 
