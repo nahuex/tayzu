@@ -145,6 +145,11 @@ export interface LogEventContract {
 /** design.md, "Observability contract" -> Log events table. */
 export const LOG_EVENTS: readonly LogEventContract[] = [
   { name: 'auth.security.login_succeeded', severity: 'INFO', attributes: [ACTOR_ID, TENANT] },
+  {
+    name: 'auth.security.step_up_succeeded',
+    severity: 'INFO',
+    attributes: [TENANT, ACTOR_ID, METHOD],
+  },
   { name: 'auth.security.login_failed', severity: 'WARN', attributes: [FAILURE_REASON] },
   {
     name: 'auth.security.session_revoked',

@@ -268,6 +268,25 @@ function emitLoginSucceeded(params: {
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'login_succeeded' });
 }
 
+/** design.md, Log events table (Q77): `auth.security.step_up_succeeded`. */
+function emitStepUpSucceeded(params: {
+  readonly actorId: string;
+  readonly tenantId?: string;
+}): void {
+  const attributes: Record<string, string> = {
+    [sharedAttributeKeys.actorId]: params.actorId,
+    'tayzu.auth.method': 'local',
+  };
+  if (params.tenantId !== undefined) {
+    attributes[sharedAttributeKeys.tenantId] = params.tenantId;
+  }
+  logger.emit({
+    eventName: 'auth.security.step_up_succeeded',
+    severityNumber: SeverityNumber.INFO,
+    attributes,
+  });
+}
+
 /**
  * design.md, Log events table: `auth.security.login_failed`. Wrong password
  * and an unknown email both reach here as the identical `bad_credentials`
@@ -957,7 +976,16 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             where: [{ field: 'token', value: response.token }],
           });
           if (sessionRow !== null) {
-            emitLoginSucceeded({
+            // Task 27.5, design Q77: Better Auth answers with the existing
+            // session's token when the request already carried a valid session
+            // cookie; that is a step-up, not a login.
+            const requestSessionToken: string | false | null = await ctx.getSignedCookie(
+              ctx.context.authCookies.sessionToken.name,
+              ctx.context.secret,
+            );
+            const emit =
+              requestSessionToken === response.token ? emitStepUpSucceeded : emitLoginSucceeded;
+            emit({
               actorId: sessionRow.userId,
               tenantId: sessionRow.activeOrganizationId ?? undefined,
             });

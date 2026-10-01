@@ -783,6 +783,262 @@ describe('MFA login emits login_succeeded (task 24.5, design Q54)', () => {
 });
 
 /**
+ * Task 27.5 (design Q77, Log events table): `auth.security.login_succeeded` is
+ * emitted only when a two-factor verification creates a new session; a
+ * verification on an existing session emits `auth.security.step_up_succeeded`
+ * (INFO, `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.method` = `local`).
+ *
+ * ## Production symbols expected
+ *
+ * - `auth.ts`'s `/two-factor/verify-*` after hook distinguishes a verification
+ *   that created a session (the request carried only the pending-challenge
+ *   cookie) from one made with an already-valid session cookie (Better Auth
+ *   answers with the existing session's token). The first keeps emitting
+ *   `login_succeeded`; the second emits `auth.security.step_up_succeeded` and
+ *   no `login_succeeded`.
+ * - `packages/authz/src/telemetry/contract.ts` and
+ *   `packages/auth/src/telemetry/contract.ts` declare the new event.
+ */
+describe('Step-up verification is not logged as a login (task 27.5, design Q77)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let harness: TelemetryTestHarness;
+
+  const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
+  const TRUSTED_ORIGIN = 'http://localhost:3000';
+  const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+  interface TwoFactorApiSurface {
+    enableTwoFactor(args: {
+      body: { password: string; method: 'totp' };
+      headers: Headers;
+    }): Promise<{ totpURI: string }>;
+    generateTOTP(args: { body: { secret: string } }): Promise<{ code: string }>;
+    verifyTOTP(args: { body: { code: string }; headers: Headers }): Promise<unknown>;
+  }
+
+  function finishedLogRecords(
+    eventName: string,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']> {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === eventName,
+    );
+  }
+
+  function randomIp(): string {
+    const octet = (): string => randomInt(1, 255).toString(10);
+    return `10.${octet()}.${octet()}.${octet()}`;
+  }
+
+  function handlerOf(instance: AuthInstance): (request: Request) => Promise<Response> {
+    return (instance as unknown as { handler: (request: Request) => Promise<Response> }).handler;
+  }
+
+  function cookieHeaderFrom(response: Response): string {
+    return response.headers
+      .getSetCookie()
+      .map((raw) => raw.split(';')[0])
+      .join('; ');
+  }
+
+  function rawSecretFromTotpUri(totpURI: string): string {
+    const encoded = new URL(totpURI).searchParams.get('secret');
+    if (encoded === null) {
+      throw new Error('expected a secret query parameter on the TOTP URI');
+    }
+    const bytes: number[] = [];
+    let buffer = 0;
+    let bits = 0;
+    for (const char of encoded) {
+      if (char === '=') {
+        break;
+      }
+      buffer = (buffer << 5) | BASE32_ALPHABET.indexOf(char.toUpperCase());
+      bits += 5;
+      if (bits >= 8) {
+        bits -= 8;
+        bytes.push((buffer >> bits) & 0xff);
+      }
+    }
+    return new TextDecoder().decode(Uint8Array.from(bytes));
+  }
+
+  function postJson(
+    path: string,
+    body: Record<string, unknown>,
+    ip: string,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<Response> {
+    return handlerOf(auth)(
+      new Request(`${AUTH_BASE_URL}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': ip, ...extraHeaders },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+  }, 60_000);
+
+  afterEach(async () => {
+    await harness.reset();
+  });
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  /** An enrolled user, signed in through a challenge: a full session cookie plus the TOTP secret. */
+  async function enrolledSignedInUser(): Promise<{
+    readonly email: string;
+    readonly secret: string;
+    readonly userId: string;
+    readonly organizationId: string;
+    readonly challengeCookie: string;
+    readonly sessionCookie: string;
+    readonly api: TwoFactorApiSurface;
+  }> {
+    const api = auth.api as TwoFactorApiSurface;
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: 'Step-Up Event User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Step-Up Event Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    await api.verifyTOTP({
+      body: { code: (await api.generateTOTP({ body: { secret } })).code },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+
+    const challenge = await postJson(
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
+    const challengeCookie = cookieHeaderFrom(challenge);
+    const verified = await postJson(
+      '/two-factor/verify-totp',
+      { code: (await api.generateTOTP({ body: { secret } })).code },
+      randomIp(),
+      { cookie: challengeCookie, origin: TRUSTED_ORIGIN },
+    );
+    expect(verified.status, 'the challenge is verified').toBe(200);
+    return {
+      email,
+      secret,
+      userId: tenant.userId,
+      organizationId: tenant.organizationId,
+      challengeCookie,
+      sessionCookie: cookieHeaderFrom(verified),
+      api,
+    };
+  }
+
+  it('A verification that creates a new session emits exactly one login_succeeded and no step_up_succeeded', async () => {
+    const api = auth.api as TwoFactorApiSurface;
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: 'Step-Up Event Login User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Step-Up Event Login Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    await api.verifyTOTP({
+      body: { code: (await api.generateTOTP({ body: { secret } })).code },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const challenge = await postJson(
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(challenge.status).toBe(200);
+    await harness.reset();
+
+    const verified = await postJson(
+      '/two-factor/verify-totp',
+      { code: (await api.generateTOTP({ body: { secret } })).code },
+      randomIp(),
+      { cookie: cookieHeaderFrom(challenge), origin: TRUSTED_ORIGIN },
+    );
+    expect(verified.status).toBe(200);
+    await harness.forceFlush();
+
+    const logins = finishedLogRecords('auth.security.login_succeeded');
+    expect(logins, 'exactly one login_succeeded').toHaveLength(1);
+    expect(logins[0]?.attributes).toEqual({
+      'tayzu.actor.id': tenant.userId,
+      'tayzu.tenant.id': tenant.organizationId,
+    });
+    expect(
+      finishedLogRecords('auth.security.step_up_succeeded'),
+      'a verification that creates the session is not a step-up',
+    ).toHaveLength(0);
+  }, 60_000);
+
+  it('A verification on an existing session emits exactly one step_up_succeeded and no login_succeeded', async () => {
+    const user = await enrolledSignedInUser();
+    await harness.reset();
+
+    const verifyIp = randomIp();
+    const stepUp = await postJson(
+      '/two-factor/verify-totp',
+      { code: (await user.api.generateTOTP({ body: { secret: user.secret } })).code },
+      verifyIp,
+      { cookie: user.sessionCookie, origin: TRUSTED_ORIGIN },
+    );
+    expect(stepUp.status, 'the step-up verification succeeds').toBe(200);
+    await harness.forceFlush();
+
+    expect(
+      finishedLogRecords('auth.security.login_succeeded'),
+      'a step-up on an existing session is not a login',
+    ).toHaveLength(0);
+    const events = finishedLogRecords('auth.security.step_up_succeeded');
+    expect(events, 'exactly one step_up_succeeded').toHaveLength(1);
+    expect(events[0]?.severityNumber).toBe(SeverityNumber.INFO);
+    expect(events[0]?.attributes).toEqual({
+      'tayzu.actor.id': user.userId,
+      'tayzu.tenant.id': user.organizationId,
+      'tayzu.auth.method': 'local',
+    });
+
+    const snapshot = JSON.stringify(
+      events.map((record) => ({ attributes: record.attributes, body: record.body })),
+    );
+    for (const forbidden of [user.email, verifyIp]) {
+      expect(snapshot, `the record never contains ${forbidden}`).not.toContain(forbidden);
+    }
+  }, 60_000);
+});
+
+/**
  * Task 26.4 (design Q67, VCDM M7): Better Auth's own logger goes through the
  * sanitized logging path. By default it writes `console.error(message, ...args)`
  * with the raw error (message, stack, driver text), which can carry tenant data

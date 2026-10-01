@@ -499,6 +499,26 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
     ).rejects.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
   }, 60_000);
 
+  it('step-up success (task 27.5, design Q77): a TOTP verification on an existing session is driven', async () => {
+    const { tenant, email, secret } = await enrolledUser();
+    const sessionCookie = await (async (): Promise<string> => {
+      const cookie = await challenge(email);
+      const code: string = (await totp.generateTOTP({ body: { secret } })).code;
+      const verified = await postJson(handler, '/two-factor/verify-totp', { code }, { cookie });
+      expect(verified.status).toBe(200);
+      return cookieFrom(verified);
+    })();
+    const code: string = (await totp.generateTOTP({ body: { secret } })).code;
+    const stepUp = await postJson(
+      handler,
+      '/two-factor/verify-totp',
+      { code },
+      { cookie: sessionCookie },
+    );
+    expect(stepUp.status, 'the step-up verification succeeds').toBe(200);
+    expect(tenant.userId).toBeTruthy();
+  }, 60_000);
+
   it('step-up: a Visma Connect session is satisfied by an MFA re-authorization and rejected by an insufficient one', async () => {
     const guard = createStepUpGuard({
       auth: app.auth,
@@ -1021,6 +1041,12 @@ describe('otel-smoke-check, 002: every declared signal appears with its declared
       );
       expect(fresh).toContain(true);
       expect(fresh).toContain(false);
+    });
+
+    it('step_up_succeeded records the local method (task 27.5, design Q77)', () => {
+      expect(logValues(harness, 'auth.security.step_up_succeeded', 'tayzu.auth.method')).toContain(
+        'local',
+      );
     });
 
     it('step_up_insufficient records the Visma Connect method, account_linked the admin actor, token_exchange_failed the integration kind', () => {

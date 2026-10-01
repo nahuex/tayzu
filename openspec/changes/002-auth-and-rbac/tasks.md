@@ -1070,7 +1070,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `http-errors.int.test.ts` (extended) covers a database failure emitting one
   record with no message, stack text or bind value, and `otel-smoke-check`
   knows the new name.
-- [ ] 27.5 `auth.security.login_succeeded` is emitted only when a two-factor
+- [x] 27.5 `auth.security.login_succeeded` is emitted only when a two-factor
   verification creates a new session; a verification on an existing session
   emits `auth.security.step_up_succeeded` (design Q77). Verify:
   `auth-flow.int.test.ts` and `step-up.int.test.ts` (extended) cover both

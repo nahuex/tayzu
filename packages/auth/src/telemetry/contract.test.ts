@@ -199,3 +199,17 @@ describe('auth telemetry/contract.ts agrees with authz telemetry/contract.ts and
     }
   });
 });
+
+/**
+ * Task 27.5 (design Q77, "Observability contract" -> Log events): the
+ * `auth.security.step_up_succeeded` row, transcribed verbatim:
+ * `| auth.security.step_up_succeeded | INFO | tayzu.tenant.id, tayzu.actor.id,
+ * tayzu.auth.method (local|visma_connect) |`.
+ */
+describe('auth.security.step_up_succeeded is declared (task 27.5, design Q77)', () => {
+  it('declares auth.security.step_up_succeeded: INFO, tenant id, actor id and method', () => {
+    const actual = LOG_EVENTS.find((event) => event.name === 'auth.security.step_up_succeeded');
+    expect(actual?.severity).toBe('INFO');
+    expect(sorted(actual?.attributes)).toEqual(sorted([TENANT, ACTOR_ID, METHOD]));
+  });
+});

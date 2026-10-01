@@ -132,6 +132,11 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     attributes: [sharedAttributeKeys.tenantId, sharedAttributeKeys.actorId],
   },
   {
+    name: 'auth.security.step_up_succeeded',
+    severity: 'INFO',
+    attributes: [sharedAttributeKeys.tenantId, sharedAttributeKeys.actorId, 'tayzu.auth.method'],
+  },
+  {
     name: 'auth.security.login_failed',
     severity: 'WARN',
     attributes: ['tayzu.auth.failure_reason'],

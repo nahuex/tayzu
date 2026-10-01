@@ -1270,3 +1270,187 @@ describe('/change-password requires a fresh MFA step-up for enrolled users (task
     expect(await canSignInWith(email, NEW_PASSWORD), 'the new password works').toBe(true);
   }, 60_000);
 });
+
+/**
+ * Task 27.5 (design Q77, Log events table): a two-factor verification on an
+ * EXISTING session is a step-up, so it emits `auth.security.step_up_succeeded`
+ * (INFO; `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.method` = `local`)
+ * and never `auth.security.login_succeeded`. A verification that creates a new
+ * session keeps emitting `login_succeeded` and no `step_up_succeeded`.
+ *
+ * ## Production symbols expected
+ *
+ * - `auth.ts`'s `/two-factor/verify-*` after hook tells the two cases apart
+ *   (Better Auth's verify handler returns the existing session's token when
+ *   the request already carries a valid session cookie) and emits
+ *   `auth.security.step_up_succeeded` for the second one only.
+ * - Both telemetry contract modules declare `auth.security.step_up_succeeded`.
+ */
+describe('A step-up verification emits step_up_succeeded, a login emits login_succeeded (task 27.5, design Q77)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+  let guard: StepUpGuard;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET, trustedOrigins: [TRUSTED_ORIGIN] });
+    api = apiOf(auth);
+    guard = createStepUpGuard({ auth });
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+  }, 60_000);
+
+  afterEach(async () => {
+    await harness.reset();
+  });
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  function logsNamed(
+    eventName: string,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']> {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === eventName,
+    );
+  }
+
+  function sessionTokenOf(cookie: string): string {
+    const pair = cookie.split('; ').find((entry) => entry.includes('session_token='));
+    const signed = decodeURIComponent(pair?.slice(pair.indexOf('=') + 1) ?? '');
+    return signed.split('.')[0] ?? '';
+  }
+
+  async function enrolledUser(): Promise<{
+    readonly email: string;
+    readonly secret: string;
+    readonly userId: string;
+    readonly organizationId: string;
+  }> {
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Step-Up Event Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    await api.verifyTOTP({
+      body: { code: (await api.generateTOTP({ body: { secret } })).code },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    return { email, secret, userId: tenant.userId, organizationId: tenant.organizationId };
+  }
+
+  async function challengeCookieFor(email: string): Promise<string> {
+    const challenge = await postJson(
+      handlerOf(auth),
+      '/sign-in/email',
+      { email, password: TEST_PASSWORD },
+      randomIp(),
+    );
+    expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
+    return cookieHeaderFrom(challenge);
+  }
+
+  it('A verification that creates a new session emits login_succeeded and no step_up_succeeded', async () => {
+    const user = await enrolledUser();
+    const challengeCookie = await challengeCookieFor(user.email);
+    await harness.reset();
+
+    const verified = await postJson(
+      handlerOf(auth),
+      '/two-factor/verify-totp',
+      { code: (await api.generateTOTP({ body: { secret: user.secret } })).code },
+      randomIp(),
+      { cookie: challengeCookie, origin: TRUSTED_ORIGIN },
+    );
+    expect(verified.status, 'the TOTP challenge is verified').toBe(200);
+    await harness.forceFlush();
+
+    expect(logsNamed('auth.security.login_succeeded'), 'exactly one login_succeeded').toHaveLength(
+      1,
+    );
+    expect(
+      logsNamed('auth.security.step_up_succeeded'),
+      'a verification that creates the session is not a step-up',
+    ).toHaveLength(0);
+  }, 60_000);
+
+  it('A verification on an existing session whose step-up marker lapsed emits step_up_succeeded, no login_succeeded, and satisfies the guard', async () => {
+    const user = await enrolledUser();
+    const sessionResponse = await postJson(
+      handlerOf(auth),
+      '/two-factor/verify-totp',
+      { code: (await api.generateTOTP({ body: { secret: user.secret } })).code },
+      randomIp(),
+      { cookie: await challengeCookieFor(user.email), origin: TRUSTED_ORIGIN },
+    );
+    expect(sessionResponse.status).toBe(200);
+    const sessionCookie = cookieHeaderFrom(sessionResponse);
+
+    // GIVEN the session's step-up marker has lapsed.
+    await db.execute(sql`
+      delete from auth.verification
+      where identifier = ${`step-up-verified:${sessionTokenOf(sessionCookie)}`}
+    `);
+    const params: AssertStepUpParams = {
+      headers: new Headers({ cookie: sessionCookie }),
+      tenantId: user.organizationId,
+      actor: { type: 'user', id: user.userId },
+      route: HIGH_RISK_ROUTE,
+      operation: BLUEPRINT_DELETE_OPERATION,
+    };
+    await expect(guard(params)).rejects.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    await harness.reset();
+
+    // WHEN they verify TOTP again on that same, existing session.
+    const verifyIp = randomIp();
+    const stepUp = await postJson(
+      handlerOf(auth),
+      '/two-factor/verify-totp',
+      { code: (await api.generateTOTP({ body: { secret: user.secret } })).code },
+      verifyIp,
+      { cookie: sessionCookie, origin: TRUSTED_ORIGIN },
+    );
+    expect(stepUp.status, 'the step-up verification succeeds').toBe(200);
+    await harness.forceFlush();
+
+    // THEN exactly one step_up_succeeded and no login_succeeded.
+    expect(
+      logsNamed('auth.security.login_succeeded'),
+      'a step-up on an existing session is not a login',
+    ).toHaveLength(0);
+    const events = logsNamed('auth.security.step_up_succeeded');
+    expect(events, 'exactly one step_up_succeeded').toHaveLength(1);
+    expect(events[0]?.severityNumber).toBe(SeverityNumber.INFO);
+    expect(events[0]?.attributes).toEqual({
+      'tayzu.actor.id': user.userId,
+      'tayzu.tenant.id': user.organizationId,
+      'tayzu.auth.method': 'local',
+    });
+    const snapshot = JSON.stringify(
+      events.map((record) => ({ attributes: record.attributes, body: record.body })),
+    );
+    for (const forbidden of [user.email, verifyIp]) {
+      expect(snapshot, `the record never contains ${forbidden}`).not.toContain(forbidden);
+    }
+
+    // AND the verification refreshed the marker: the guard now passes.
+    await guard(params);
+  }, 60_000);
+});

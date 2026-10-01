@@ -231,6 +231,11 @@ const DESIGN_LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'ERROR',
     attributes: ['error.type', 'db.response.status_code'],
   },
+  {
+    name: 'auth.security.step_up_succeeded',
+    severity: 'INFO',
+    attributes: [TENANT, ACTOR_ID, METHOD],
+  },
 ];
 
 /**
@@ -314,7 +319,7 @@ describe('authz telemetry/contract.ts mirrors design.md, "Observability contract
   });
 
   describe('Log events', () => {
-    it('declares exactly the 14 log events design.md names, no more and no fewer', () => {
+    it('declares exactly the 15 log events design.md names, no more and no fewer', () => {
       expect(sorted(LOG_EVENTS.map((event) => event.name))).toEqual(
         sorted(DESIGN_LOG_EVENTS.map((event) => event.name)),
       );
