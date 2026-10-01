@@ -191,7 +191,10 @@ up() {
   log "seeding an organization and a session"
   # The bootstrap writes only the auth schema, so it runs as tayzu_auth.
   (cd "$REPO_ROOT" && DATABASE_URL="$AUTH_DATABASE_URL" ZAP_ENV_FILE="$STATE_DIR/zap.env" \
-    pnpm exec tsx scripts/ci/zap-seed.ts)
+    ZAP_TOTP_SECRET_FILE="$STATE_DIR/totp.secret" pnpm exec tsx scripts/ci/zap-seed.ts)
+  # What `api-scan` needs to renew the step-up in a later CI step.
+  printf '%s\n' "ZAP_TARGET_URL=$ZAP_TARGET_URL" "ZAP_SEED_ORIGIN=$ZAP_SEED_ORIGIN" \
+    >"$STATE_DIR/seed.env"
   if [ -n "${GITHUB_ENV:-}" ]; then
     cat "$STATE_DIR/zap.env" >>"$GITHUB_ENV"
   fi
@@ -254,10 +257,28 @@ scan() {
 # Task 24.9: every operation of the catalog OpenAPI document, requested with
 # the seeded MFA session and passively scanned. `-S` (safe mode) skips the
 # active scan: D16 is a passive scan, and active DAST belongs to `022`.
+#
+# Task 28.3 (design Q82): oRPC's CSRF header is added to every request by a
+# ZAP replacer rule, so mutating operations reach their handlers instead of
+# the CSRF refusal, and the seeded session's MFA step-up is renewed first,
+# so `x-tayzu-risk: high` operations run too.
 api_scan() {
   prepare_zap
+  local line
+  while IFS= read -r line; do
+    export "${line%%=*}=${line#*=}"
+  done <"$STATE_DIR/seed.env"
+  (cd "$REPO_ROOT" && ZAP_TOTP_SECRET_FILE="$STATE_DIR/totp.secret" \
+    DATABASE_URL=unused BETTER_AUTH_SECRET=unused \
+    pnpm exec tsx scripts/ci/zap-seed.ts --refresh)
+  local csrf="-config replacer.full_list(0).description=csrf"
+  csrf+=" -config replacer.full_list(0).enabled=true"
+  csrf+=" -config replacer.full_list(0).matchtype=REQ_HEADER"
+  csrf+=" -config replacer.full_list(0).matchstr=x-csrf-token"
+  csrf+=" -config replacer.full_list(0).regex=false"
+  csrf+=" -config replacer.full_list(0).replacement=orpc"
   run_zap "API scan" zap-api-scan.py -t catalog.openapi.json -f openapi -S \
-    -O "http://localhost:${API_PORT}" \
+    -O "http://localhost:${API_PORT}" -z "$csrf" \
     -J api_report_json.json -w api_report_md.md -r api_report_html.html
 }
 

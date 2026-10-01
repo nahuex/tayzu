@@ -8,7 +8,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -249,7 +249,7 @@ async function waitForNextTotpStep(): Promise<number> {
 export async function mfaSessionCookie(
   client: SeedClient,
   credentials: { readonly email: string; readonly password: string },
-): Promise<string> {
+): Promise<{ readonly cookie: string; readonly secret: string }> {
   const enrollment = await signInForSessionCookie({ ...client, ...credentials });
   const enabled = await postAuth(
     client,
@@ -278,7 +278,7 @@ export async function mfaSessionCookie(
     { code: totpCode(secret, now) },
     cookiesOf(challenge, ''),
   );
-  return cookiesOf(verified, '');
+  return { cookie: cookiesOf(verified, ''), secret };
 }
 
 /** Fails the seed unless the cookie really reaches the catalog, as the scan will. */
@@ -294,21 +294,42 @@ async function assertCatalogReachable(client: SeedClient, cookie: string): Promi
   }
 }
 
+/**
+ * Task 28.3 (design Q82): the TOTP secret of the throwaway seed admin is kept
+ * in the stack's private state directory (mode 0700, deleted with the stack),
+ * so `--refresh` can renew the step-up marker right before the API scan.
+ */
+function secretFile(env: Env): string {
+  return required(env, 'ZAP_TOTP_SECRET_FILE');
+}
+
 async function main(): Promise<void> {
   const config = parseZapSeedConfig(process.env);
   const client: SeedClient = { baseUrl: config.baseUrl, origin: config.origin, fetch };
-  const cookie = await mfaSessionCookie(client, {
+  const { cookie, secret } = await mfaSessionCookie(client, {
     email: config.adminEmail,
     password: bootstrapFirstAdmin(config),
   });
   await assertCatalogReachable(client, cookie);
+  writeFileSync(secretFile(process.env), secret, { mode: 0o600 });
   publishHeader(process.env, cookie);
   console.log('ZAP session seeded (MFA-enrolled admin, catalog reachable).');
+}
+
+/** Renews the seeded session's MFA step-up marker (a fresh TOTP verification). */
+async function refresh(): Promise<void> {
+  const config = parseZapSeedConfig(process.env);
+  const client: SeedClient = { baseUrl: config.baseUrl, origin: config.origin, fetch };
+  const cookie = required(process.env, 'ZAP_AUTH_HEADER_VALUE');
+  const secret = readFileSync(secretFile(process.env), 'utf8').trim();
+  const now = await waitForNextTotpStep();
+  await postAuth(client, '/two-factor/verify-totp', { code: totpCode(secret, now) }, cookie);
+  console.log('ZAP session step-up renewed.');
 }
 
 const isDirectlyExecuted =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isDirectlyExecuted) {
-  await main();
+  await (process.argv.includes('--refresh') ? refresh() : main());
 }

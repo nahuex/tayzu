@@ -1095,7 +1095,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   member deleting its entity observed through a status relation by an entity
   of another team succeeding, while a spec-scope referrer of another team
   still blocks it.
-- [ ] 28.3 _(setup)_ The DAST API scan sends `x-csrf-token: orpc` through a
+- [x] 28.3 _(setup)_ The DAST API scan sends `x-csrf-token: orpc` through a
   ZAP replacer rule, and `dast.sh` renews the MFA session right before
   `api-scan` (design Q82, D16). Verify: the `dast-zap` job and `pnpm
   ci:local` pass, and the API scan's log shows mutating operations answered
