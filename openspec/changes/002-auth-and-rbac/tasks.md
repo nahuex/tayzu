@@ -1026,7 +1026,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   (extended) covers an organization owner calling an unlisted mutating route
   (for example `/api/auth/revoke-other-sessions` without a body) getting `404`
   with the other sessions still valid.
-- [ ] 26.6 `session.updateAge` is one hour (design Q69, Q7). Verify:
+- [x] 26.6 `session.updateAge` is one hour (design Q69, Q7). Verify:
   `session-policy.int.test.ts` (extended) covers a session used within the
   idle window staying valid past 12 hours of age, and an idle session still
   rejected after 12 hours.

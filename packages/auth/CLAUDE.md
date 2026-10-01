@@ -31,7 +31,7 @@ disagree, stop and ask.
 
 ## Conventions
 
-- Session policy: Better Auth's own 7-day `expiresIn` / 1-day `updateAge`,
+- Session policy: Better Auth's own 7-day `expiresIn` / 1-hour `updateAge` (Q69),
   plus a 12-hour idle timeout layered on top (checked against the session
   row's `updatedAt`, not a Better Auth option). `changePassword` always calls
   `revokeOtherSessions: true` (D3).

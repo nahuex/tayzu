@@ -755,3 +755,143 @@ describe('POST /change-password over HTTP revokes other sessions (task 23.16, de
     await expectContextRequiredRejection(resolveContext(new Headers({ cookie: device2Cookie })));
   });
 });
+
+/**
+ * Task 26.6 (design Q69, Q7): `session.updateAge` is one hour, so the 12-hour
+ * idle rule (which reads `updatedAt`) and the 7-day rolling rule both hold.
+ *
+ * With Better Auth's default 1-day `updateAge`, a session used every hour
+ * never has `updatedAt` rewritten before the 12-hour idle check trips, so an
+ * actively used session dies at 12 hours of age. Real time cannot pass in a
+ * test, so "time advances" is emulated by shifting the session row's
+ * `created_at`, `updated_at` and `expires_at` back together; every
+ * `resolveContext` call then runs against the real wall clock, and Better
+ * Auth's own refresh-on-read decides whether `updated_at` moves forward.
+ */
+describe('session.updateAge is one hour (task 26.6, design Q69, Q7)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let resolveContext: ContextResolver;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    resolveContext = createContextResolver({ auth, revocationPool: appPool });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  async function signUpWithOrganization(): Promise<{
+    readonly cookie: string;
+    readonly token: string;
+    readonly userId: string;
+    readonly organizationId: string;
+  }> {
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Session Update Age Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return {
+      cookie: tenant.cookie,
+      token: tenant.token,
+      userId: tenant.userId,
+      organizationId: tenant.organizationId,
+    };
+  }
+
+  /** Emulates elapsed time: moves every timestamp of the session row back by `ms`. */
+  async function advanceTime(token: string, ms: number): Promise<void> {
+    const seconds = ms / 1000;
+    await db.execute(sql`
+      update auth.session
+      set created_at = created_at - make_interval(secs => ${seconds}),
+          updated_at = updated_at - make_interval(secs => ${seconds}),
+          expires_at = expires_at - make_interval(secs => ${seconds})
+      where token = ${token}
+    `);
+  }
+
+  it('a session used within the idle window stays valid past 12 hours of age', async () => {
+    const session = await signUpWithOrganization();
+    const expected = {
+      tenantId: session.organizationId,
+      actor: { type: 'user', id: session.userId },
+      principal: { roles: ['admin'], teams: [], moderatedBlueprints: [] },
+    };
+
+    // GIVEN a session used about once an hour (every gap is 61 minutes, well
+    // under the 12-hour idle timeout) for 13 hours of total age.
+    const step = 61 * 60 * 1000;
+    const steps = 13;
+    for (let i = 1; i <= steps; i += 1) {
+      await advanceTime(session.token, step);
+      // WHEN it is used again, THEN it is still valid at every step.
+      await expect(
+        resolveContext(new Headers({ cookie: session.cookie })),
+        `use #${i.toString()}, ${((i * step) / HOUR_MS).toFixed(1)} hours after sign-in`,
+      ).resolves.toEqual(expected);
+    }
+
+    // The session really is older than 12 hours, yet still valid.
+    const result = await db.execute<{ age_ms: string }>(sql`
+      select (extract(epoch from (now() - created_at)) * 1000)::bigint as age_ms
+      from auth.session where token = ${session.token}
+    `);
+    expect(Number(result.rows[0]?.age_ms)).toBeGreaterThan(12 * HOUR_MS);
+    await expect(resolveContext(new Headers({ cookie: session.cookie }))).resolves.toEqual(
+      expected,
+    );
+  });
+
+  it('a use older than one hour refreshes the session last-used time', async () => {
+    const session = await signUpWithOrganization();
+
+    // GIVEN a session last touched two hours ago (past one hour, well under the idle timeout).
+    await advanceTime(session.token, 2 * HOUR_MS);
+    const before = await readSessionTimestamps(db, session.token);
+
+    // WHEN it is used.
+    await resolveContext(new Headers({ cookie: session.cookie }));
+
+    // THEN `updated_at` rolled forward to about now (updateAge = 1 hour).
+    const after = await readSessionTimestamps(db, session.token);
+    expect(Date.now() - new Date(after.updated_at).getTime()).toBeLessThan(5 * 60 * 1000);
+    expect(new Date(after.updated_at).getTime()).toBeGreaterThan(
+      new Date(before.updated_at).getTime() + HOUR_MS,
+    );
+    // The 7-day expiry rolled forward with it, still capped at 7 days from last use.
+    expect(new Date(after.expires_at).getTime()).toBeGreaterThan(
+      new Date(after.updated_at).getTime() + 7 * DAY_MS - 60 * 1000,
+    );
+    expect(new Date(after.expires_at).getTime()).toBeLessThanOrEqual(
+      new Date(after.updated_at).getTime() + 7 * DAY_MS + 60 * 1000,
+    );
+  });
+
+  it('an idle session is still rejected after 12 hours', async () => {
+    const session = await signUpWithOrganization();
+
+    // GIVEN a session used once within the idle window...
+    await advanceTime(session.token, 2 * HOUR_MS);
+    await expect(resolveContext(new Headers({ cookie: session.cookie }))).resolves.toBeDefined();
+
+    // ...then left unused for 12.5 hours, still within its 7-day window.
+    await advanceTime(session.token, 12.5 * HOUR_MS);
+
+    // WHEN it is used again, THEN it fails exactly as `CATALOG_CONTEXT_REQUIRED`.
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie: session.cookie })));
+  });
+});

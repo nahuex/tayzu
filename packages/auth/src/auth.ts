@@ -573,7 +573,11 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
     }),
     // Task 21.2, design D25: Visma Connect `sid`, null for local sessions. Never
     // client-settable; the sign-in flow (D23) populates it server-side.
+    // Task 26.6, design Q69/Q7: a one-hour `updateAge` keeps `updatedAt` fresh
+    // for active sessions, so the 12-hour idle rule and the 7-day rolling
+    // expiry both hold (the default 1-day value would kill active sessions at 12h).
     session: {
+      updateAge: 60 * 60,
       additionalFields: {
         ssoSid: { type: 'string', required: false, input: false },
       },
