@@ -1260,11 +1260,11 @@ done" therefore covers all of them.
 | M5 | Password policy: the minimum was 8, no breached-password check, only a rate limit | Resolved decisions Q22, Q23; tasks 8.1, 8.1b, 8.1c, 8.1d, 14.5 |
 | M9 | Composite `(tenant_id, credential_id)` key, credential routes behind Cerbos, create/link existence oracles, the Q42 audit events | Tasks 11.1, 14.1, 14.3, 16.6 |
 | M10 | Identity operations assume one tenant per user; a two-tenant user lets an admin link an SSO `sub` and take the account over | Task 14.2 (D14) |
-| M11 | Temporary passwords have no forced change or expiry | Tasks 14.5 and 14.5b (Open Question 2) |
+| M11 | Temporary passwords have no forced change or expiry | Tasks 14.5 and 14.5b (Q36) |
 | M12 | `NODE_ENV=test` relaxes the https, role-assertion and OTLP guards | Task 14.8 |
 | M13 | Per-replica in-memory limiters; the re-auth callback has no limiter and deletes a row per hit; `reauthorization.start` inserts a row per blocked attempt | Tasks 14.9 (the callback) and 14.9b (`start`); **deferred** to `010` for the in-memory `@fastify/rate-limit` budgets of `/v1`, token exchange and back-channel logout: the multiplication by replica count is a deployment fact, there is no behavior to build here, and the shared-store check is a first-deployment gate (Gates) |
 | M14 | A back-channel logout token with neither `sid` nor `sub` is accepted and consumes its `jti`; discovery and JWKS are fetched before the cheap claim checks; `typ: logout+jwt` is unconfirmed | Tasks 14.10, 14.11; the `typ` confirmation is added to the Q57 pre-deployment checklist (Gates) |
-| M15 | `Inherited` ownership is unreachable and a `replace`-mode upsert without `ownerTeam` releases ownership | Task 14.6b (the upsert part); the `Inherited` part is Open Question 3, task 14.6c |
+| M15 | `Inherited` ownership is unreachable and a `replace`-mode upsert without `ownerTeam` releases ownership | Task 14.6b (the upsert part); the `Inherited` part is Q37, task 14.6c |
 | M17 | The pinned image digests (`postgres`, Cerbos, ZAP) are not tracked by Dependabot | Task 14.12 |
 | M18 | DAST scope: no `VISMA_CONNECT_*`, so the SSO, back-channel and re-auth surfaces are unscanned; nothing asserts the API scan got 2xx | Task 14.13 for the assertion; **deferred** to `010` for the SSO surfaces: they need Visma Connect's test environment (`002` Q57), which this change cannot provide |
 | M19 | The diagram is Mermaid only (SEC01 wants a png or jpg), has no distinct Administrator, Support or Operations actors, and omits the `ghcr.io` pulls and the OTLP export | Tasks 17.7, 17.13 |
@@ -1381,57 +1381,10 @@ Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 | Q32 | (Drift Q-D, 2026-10-01) Invitation link origin | `INVITATION_LINK_BASE_URL` (https outside test, must be one of `ALLOWED_ORIGINS`) with a fixed path; the link stays inert until `003` builds the page, documented. |
 | Q33 | (Drift Q-E, 2026-10-01) Emails the entity identifier cannot hold | Rejected with `CATALOG_VALIDATION_FAILED` in `invite` and `create`, documented; no `001` change. |
 | Q34 | (VCDM re-run Q7, 2026-10-01) SEC11 answers | Q1 yes. Q2: one clickable link, the invitation-accept link, unavoidable for a no-account invitee, mitigated by a fragment token, single use, 48-hour expiry and a configured origin. Q3 yes, only the recipient address varies. Q4 no attachments. Q5 fixed template, validated recipient. |
+| Q35 | (Amendment Open Question 1, 2026-10-01) Role for the deletion-reversal script | A dedicated `tayzu_deletion_admin` role that may only tombstone a pending marker (update `state` and the cancellation fields), created in migration `0013` (Checkpoint 3). |
+| Q36 | (Amendment Open Question 2, M11, 2026-10-01) Forcing change and expiry of temporary and bootstrap passwords | A marker row in `auth.verification` (no migration), read by the resolver: a session whose user holds an unexpired marker reaches only `/change-password`; an expired marker blocks sign-in. |
+| Q37 | (Amendment Open Question 3, M15, 2026-10-01) Unreachable `Inherited` ownership | Fail closed: a non-admin cannot update an entity whose ownership is declared inherited until the chain is implemented; the catalog spec is corrected afterwards. |
 
 ## Open Questions
 
-Three questions remain that only the human can answer. Each is asked in chat
-with its options; nothing here is approved until the human answers, and the
-answer is then recorded in "Resolved decisions". The tasks are written to the
-recommended option.
-
-**Open Question 1. Which database role runs the reversal script (D9)?**
-Resolved decision Q26 makes `tayzu_purge` "used only by the purge job", and Q27
-adds an operator script that tombstones a marker, so the script needs a role.
-
-1. A dedicated `tayzu_deletion_admin` role whose only privilege is to update the
-   marker's `state` and `cancelled_at` of a pending marker, with its own secret
-   held under the JIT access of the runbook. **Recommended**: least privilege; the
-   operator can undo a deletion but can never delete or read tenant data, and it
-   keeps `tayzu_purge` exclusive to the job. Costs one more role in `0013`.
-2. The script runs as `tayzu_purge` through its secret under JIT access. No new
-   role, but the operator then holds the privilege that deletes the append-only
-   rows (only for due tenants, but still), and `tayzu_purge` is no longer
-   exclusive to the job.
-3. A third `SECURITY DEFINER` function that tombstones a marker, executable only
-   by a named operator login. Same least privilege as option 1, but it needs a
-   per-person database login and a new function to harden.
-
-**Open Question 2. How do temporary and bootstrap passwords force a change and
-expire (task 14.5, M11)?** Better Auth has no such mechanism, and Resolved
-decision Q22 sets only the policy.
-
-1. A marker row in `auth.verification` (identifier `temp-password:<userId>`,
-   `expiresAt` equal to the expiry), checked by the resolver and the route
-   allowlist so a session of that user reaches only `/change-password` until it is
-   cleared. **Recommended**: no migration, and it reuses the table `002` already
-   reuses for `jti` and invitation tokens.
-2. A column on `auth.user` (`must_change_password`, `password_expires_at`). Simple
-   to read, but it is a fourth migration and a Better Auth schema change.
-3. Remove temporary passwords: `identity.users.create` creates a user with no
-   usable password and the person sets one through an invitation. Smallest
-   surface, but it changes the behavior `002` ships for `create` and the
-   bootstrap admin.
-
-**Open Question 3. What happens to `Inherited` ownership, which is unreachable
-today (task 14.6, M15)?** `readInherited` returns nothing and no blueprint can
-declare a chain, so an entity meant to inherit is treated as unowned and any
-member may update it.
-
-1. Fail closed now: until a chain can be declared, an entity whose ownership is
-   `Inherited` is not updatable by a non-admin, and the `002` spec lines that
-   promise it are corrected in a `002` follow-up. **Recommended**: it removes the
-   silent privilege widening without building a feature nothing asks for.
-2. Implement the chain read (a blueprint-declared parent relation). Honors the
-   spec as written, but it is a new feature across `001` and `002`.
-3. Defer it as a ticket and a first-deployment gate and accept today's behavior
-   until then. Cheapest, but the widening stays live behind the mount switch.
+None. The amendment's three questions were answered on 2026-10-01 (Q35-Q37).

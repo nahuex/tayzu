@@ -18,12 +18,8 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks are written to the **recommended** option of each of the three Open
-Questions in `design.md`. If the human picks another option, only the tasks the
-question names change: 12.1b and 12.14 and Open Question 1 (the role of the
-reversal script), 14.5 and Open Question 2 (the temporary-password mechanism),
-14.6c and Open Question 3 (`Inherited` ownership). Everything else follows the
-Resolved decisions Q1-Q34.
+Tasks follow the Resolved decisions Q1-Q37 in `design.md`; there are no open
+questions.
 
 Migrations follow the repo's pairing of a table migration with a hand-written
 grants migration and start at `0011`; every migration and every Cerbos task is
@@ -641,8 +637,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   refused. ⛔ **Stop for Checkpoint 3 approval of the SQL before continuing.**
 - [ ] 12.1b (Checkpoint 3) Migration `0013_tenant_deletion_grants`
   (hand-written, like `0009`): creates the `tayzu_purge` role (own pool and secret,
-  used only by the purge job) and the role of Open Question 1 (recommended:
-  `tayzu_deletion_admin`, only able to update `state` and the cancellation
+  used only by the purge job) and the `tayzu_deletion_admin` role (Q35, only able to update `state` and the cancellation
   timestamp of a pending marker); grants `tayzu_app` `INSERT` and `SELECT` on the
   marker under a tenant-isolation policy and **no** `UPDATE` or `DELETE`;
   `FORCE ROW LEVEL SECURITY`; gives `tayzu_purge` `DELETE` on the tenant's
@@ -735,7 +730,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   deletion" with the recording fake (an owner and two admins each receive exactly
   one email, a plain member none) and a failing sender not stopping the request.
 - [ ] 12.14 The reversal script (`tsx`, run by a platform operator, with the role
-  of Open Question 1) tombstones a pending marker (`state = 'cancelled'`, a
+  of Q35) tombstones a pending marker (`state = 'cancelled'`, a
   timestamp; the row is never deleted) and refuses a tenant with no pending
   marker. Verify: `cancel-org-deletion.int.test.ts` covers "A platform operator
   reverses a pending deletion": the tenant's principals are accepted again, the
@@ -845,7 +840,7 @@ SSO surfaces of M18) are recorded there with their justification.
   and at the SSO callback.
 - [ ] 14.5 Temporary and bootstrap passwords force a change at first sign-in and
   expire, through a marker row in `auth.verification` (identifier
-  `temp-password:<userId>`, `expiresAt` equal to the expiry; Open Question 2,
+  `temp-password:<userId>`, `expiresAt` equal to the expiry; Q36,
   recommended option, no migration) that the resolver and the route allowlist
   honor so the session reaches only the change-password route until it is cleared
   (`002` VCDM M11). Verify: `temporary-password.int.test.ts` covers that a
@@ -868,7 +863,7 @@ SSO surfaces of M18) are recorded there with their justification.
   refused or keeping the owner, per `001`'s ownership spec.
 - [ ] 14.6c `Inherited` ownership is unreachable today (`readInherited` returns
   nothing); until a chain can be declared, an entity whose ownership is `Inherited`
-  is not updatable by a non-admin (fail closed; Open Question 3, recommended
+  is not updatable by a non-admin (fail closed; Q37, recommended
   option) and the `002` spec correction is recorded for a `002` follow-up (`002`
   VCDM M15). Verify: `inherited-ownership.int.test.ts` covers a non-admin member's
   update of such an entity being denied and an admin's allowed.
