@@ -2236,34 +2236,10 @@ Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 | Q67 | (VCDM Q-B, 2026-10-01) Email outside production | A real sender outside production requires a mandatory recipient-domain allowlist (startup fails without it); CI, DAST and demo tenants use the non-sending sender. |
 | Q68 | (VCDM Q-C, 2026-10-01) Pre-purge warning and orphan-marker alert | A first-deployment gate for `010`, which owns alerting. |
 | Q69 | (VCDM Q-D, 2026-10-01) Hand-written `auth`-schema readers | One `auth-repository.ts` in `apps/api` requiring `tenantId` on every read of `apikey`, `invitation` and `member`, plus a lint ban on direct adapter access to those models from the identity code. |
+| Q70 | (Amendment Open Question 1, 2026-10-01) `onBehalfOf` principal for maintenance scripts | `gh:<numeric GitHub actor id>` with actor type `user`; it fits 002's id pattern, is authenticated by the workflow and changes nothing in 002. |
+| Q71 | (Amendment Open Question 2, 2026-10-01) DAST seed and the breached-password check | The CI step injects the range-API stub with `NODE_OPTIONS=--import`; no seam in production code. |
+| Q72 | (Amendment, 2026-10-01) CODEOWNERS owner | `@nahuex` (the repository owner) owns the maintenance workflow and `apps/api/scripts/**`. |
 
 ## Open Questions
 
-Asked in chat and still pending the human. The tasks use the recommended option
-until the human answers, and the answer is then recorded in the Resolved decisions.
-
-1. **What principal does a maintenance-script write carry as `onBehalfOf`?** (D9,
-   tasks 2.2b, 12.14, 12.15.) The operator is authenticated by the workflow, but the
-   catalog `Principal` takes an actor type from a closed set of four and an id
-   matching `[A-Za-z0-9_.:-]{1,128}`, so a GitHub login such as `x[bot]` does not
-   fit and the type is unspecified.
-   - **Option A (recommended): `gh:<numeric GitHub actor id>` with actor type
-     `user`.** It fits the id pattern, is authenticated by the workflow, survives a
-     rename, and needs no change to `002`'s code.
-   - Option B: `onBehalfOf` stays absent and the operator id appears only in the
-     audit event and the span. It needs nothing from the id pattern, but the change
-     events of a reconcile no longer name who ran it.
-   - Option C: add an `operator` actor type to the closed set. It reads best, but it
-     changes `002`'s context contract and the lint-guarded files.
-2. **How does the DAST seed satisfy the breached-password check?** (tasks 4.6b,
-   8.1a.) `scripts/ci/zap-seed.ts` runs the bootstrap in a child process, which
-   never inherits the in-worker stub, and the check fails closed when Pwned
-   Passwords is unreachable.
-   - **Option A (recommended): the CI step injects the same stub through
-     `NODE_OPTIONS=--import`.** CI is deterministic, no production code gains a seam,
-     and the stub file is never present in the deployed image.
-   - Option B: the seed calls the real service. No stub, but a CI outage of a third
-     party fails the DAST job.
-   - Option C: the seed writes a pre-hashed password straight to the database. It
-     avoids the check, but it bypasses the password policy and the bootstrap path the
-     scan is meant to exercise.
+None. The amendment's questions were answered on 2026-10-01 (Q70-Q72).

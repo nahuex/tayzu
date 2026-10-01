@@ -118,7 +118,7 @@ identity:reconcile-users`; Resolved decision Q50) creates the `_user` entity
       `tayzu_app`, as its own Container Apps Job (Resolved decision Q49). Its change
       events carry the operator id as `onBehalfOf`, taken from the environment the
       maintenance workflow sets (12.14b; `gh:<numeric actor id>`, actor type `user`,
-      Open Question 1, recommended option), and the script refuses to run without it.
+      Q70), and the script refuses to run without it.
       It emits the span `identity.user.reconcile` and the audit event
       `catalog.audit.users_reconciled` per tenant (declared in 16.1). In production
       it runs only through the maintenance workflow, before the release that carries
@@ -258,8 +258,7 @@ identity:reconcile-users`; Resolved decision Q50) creates the `_user` entity
       `scripts/ci/zap-seed.ts` and its test follow the new location, the seed using a
       password that satisfies the policy of 8.1 (the generator of 14.5b) and honoring
       the forced change of 14.5. The seed's child process gets the breached-password
-      stub through `NODE_OPTIONS=--import` in the CI step (8.1a; Open Question 2,
-      recommended option). Verify: `bootstrap-admin.int.test.ts` (in `apps/api/src/`,
+      stub through `NODE_OPTIONS=--import` in the CI step (8.1a; Q71). Verify: `bootstrap-admin.int.test.ts` (in `apps/api/src/`,
       importing `../scripts/bootstrap-admin.js`) runs `main()` and covers that the
       bootstrap `_user` exists, is `Active` through the state machine and was written
       once, and that `packages/auth` contains neither the script nor its package script;
@@ -1347,7 +1346,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       OIDC (`id-token: write`, no stored cloud secret) to start an Azure Container Apps
       Job, and passes `gh:` plus the numeric actor id (`github.actor_id`, never the login, which
       can be a bot name such as `x[bot]` that the catalog id pattern rejects) to the job
-      through `env` as the operator id (Open Question 1, recommended option). Verify: `identity-maintenance-workflow.test.ts` (in `apps/api/src`, like
+      through `env` as the operator id (Q70). Verify: `identity-maintenance-workflow.test.ts` (in `apps/api/src`, like
       `zap-seed.test.ts`, because `.github` is outside every package) reads the file as
       text and fails unless the only trigger is `workflow_dispatch`, a condition restricts the job
       to `refs/heads/master`, an `environment` is declared, `id-token: write` is the only elevated permission, no `secrets.` value
@@ -1358,8 +1357,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       fails the run) and reaches the job only through `env` or the job's
       environment-variable arguments; every `uses:` is pinned by a 40-character commit
       SHA; and `.github/CODEOWNERS` covers `.github/workflows/identity-maintenance.yml`
-      and `apps/api/scripts/**` (the owner handle is the one the human supplies with the
-      Q55 checklist, because the repository has no `CODEOWNERS` today). Verify:
+      and `apps/api/scripts/**` (owner `@nahuex`, Q72; the repository has no `CODEOWNERS` today). Verify:
       `identity-maintenance-workflow.test.ts` (in `apps/api/src`, 12.14b) gains cases that
       fail on `${{ inputs.* }}`, `github.event.*` or `github.head_ref` inside any `run:`
       (a scratch workflow text with each is rejected), on a `uses:` pinned by a tag or a
@@ -1815,7 +1813,7 @@ SSO surfaces of M18) are recorded there with their justification.
       self-review", deployment branches limited to `master`, the OIDC federated
       credential's subject pinned to the environment, and, Resolved decision Q64, the
       federated identity's Azure role limited to the action that starts the named jobs,
-      with the `CODEOWNERS` owner handle the human supplies), each with owner and rotation, the
+      with `@nahuex` as the `CODEOWNERS` owner, Q72), each with owner and rotation, the
       credential lifecycle) and `docs/security/crypto-inventory.md` (the invitation
       token, the SHA-1 prefix sent to the Pwned Passwords range query, the sha256 of the
       per-recipient cap key and the authentication to ACS). Verify: `pnpm lint` passes
