@@ -1081,3 +1081,26 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   on `/api/auth/*`, and the two new log events. Verify: markdownlint and
   `openspec validate --strict` pass.
 
+## 28. Final gaps (VCDM and security review re-run after group 27)
+
+- [ ] 28.1 The two-factor verify routes carrying a session cookie are also
+  limited per session user, 5 failures in 5 minutes, on top of the per-IP
+  bucket (design Q80, D20). Verify: `pre-auth-rate-limit.int.test.ts`
+  (extended) covers wrong step-up TOTP codes for one session from two IPs
+  being answered `429` after the fifth failure, another user unaffected, and
+  sign-in challenges keeping their current limits.
+- [ ] 28.2 `entities.delete` with `detachReferences` detaches status-scope
+  edges without an `update` check on their observers, as decided (design
+  Q81, Q65). Verify: `entity-authz-attributes.int.test.ts` (extended) pins a
+  member deleting its entity observed through a status relation by an entity
+  of another team succeeding, while a spec-scope referrer of another team
+  still blocks it.
+- [ ] 28.3 _(setup)_ The DAST API scan sends `x-csrf-token: orpc` through a
+  ZAP replacer rule, and `dast.sh` renews the MFA session right before
+  `api-scan` (design Q82, D16). Verify: the `dast-zap` job and `pnpm
+  ci:local` pass, and the API scan's log shows mutating operations answered
+  other than `403`.
+- [ ] 28.4 _(setup)_ Docs: `attack-surfaces.md` reflects 28.1 and Q81, and
+  the design's residual-risk and gate lists include Q83 and Q84. Verify:
+  markdownlint and `openspec validate --strict` pass.
+

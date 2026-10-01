@@ -1307,6 +1307,11 @@ No open questions remain for this change.
 | Q77 | (VCDM, 2026-10-01) Step-up verification logged as a login | `login_succeeded` only when the verification creates a new session; a step-up on an existing session emits `auth.security.step_up_succeeded` (task 27.5). |
 | Q78 | (VCDM NB-E, 2026-10-01) scrypt cost and password policy | Better Auth's default is accepted for the 002 merge; the hash parameters are a first-deployment gate (no users exist before `010`). |
 | Q79 | (VCDM, 2026-10-01) Human attestations H1-H9 | Deferred to `010`'s SSA, as Q59; task 11.12 stays the first-deployment gate. |
+| Q80 | (VCDM N5 and security review F1, 2026-10-01) Step-up TOTP brute force on an existing session | `/two-factor/verify-totp`, `/verify-backup-code` and `/verify-otp` carrying a session are also limited per session user, 5 failures in 5 minutes, in addition to the per-IP bucket (task 28.1). |
+| Q81 | (VCDM T2, 2026-10-01) Status-scope edges detached on delete | Accepted and documented: status edges are system-written and point at the entity being deleted, so detaching them needs no `update` on each observer; a test pins the behavior (task 28.2). |
+| Q82 | (VCDM T3, 2026-10-01) DAST coverage of mutating operations | The API scan sends the CSRF header through a ZAP replacer rule and the seed renews the MFA session right before `api-scan`, so every operation is exercised (task 28.3). |
+| Q83 | (VCDM T4, 2026-10-01) SSO `sid` and `sub` hardening | Decided after the Q57 run against Visma Connect's test environment shows whether `sid` is present and preserved; a first-deployment gate. |
+| Q84 | (VCDM and security review, 2026-10-01) Remaining low and informational items and attestations | Attestations stay for `010`'s SSA (Q59, Q79). `NODE_ENV=test` relaxing production checks, `trustProxy` trusting whole private ranges, per-candidate `view` redaction, and the non-atomic back-channel replay guard become first-deployment gates or `043` tickets; the multi-tenant identity case is `043` task 14.2. |
 
 ## Known residual risks (2026-09-30)
 
@@ -1345,3 +1350,7 @@ Human-owned, next to task 11.12 (Resolved decisions Q57, Q58):
 - Dependabot or an equivalent tracks the pinned image digests (`postgres`,
   Cerbos, ZAP) (Q73).
 - scrypt cost parameters set to current OWASP guidance before the first user exists (Q78).
+- SSO `sid`/`sub` hardening decided from the Q57 run (Q83).
+- `NODE_ENV=test` refused outside a local database, `trustProxy` set to the
+  exact ingress hop count, and the back-channel replay guard made atomic
+  (Q84).
