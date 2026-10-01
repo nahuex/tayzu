@@ -46,15 +46,19 @@ immediately after `002`, before `003` builds catalog UI on top of the
   origin from a dedicated trusted setting (`INVITATION_LINK_BASE_URL`), and caps per
   tenant (30 per hour), per recipient across tenants (3 per 24 hours) and a global
   kill switch, on the existing DB-backed rate-limit store, and every limiter answers
-  with `Retry-After`. A second fixed template notifies every admin of a pending org
-  deletion and a third tells the other admins of an accepted `admin` invitation.
+  with `Retry-After`. A second fixed template notifies the admins of a pending org
+  deletion and a third tells the other admins of an accepted `admin` invitation;
+  all three share the kill switch and the per-recipient bucket, with a per-tenant
+  notice cap and at most 20 recipients per notice, and the invitation caps answer
+  with one uniform `Retry-After`.
 - **Service accounts.** A `_user` sub-kind for non-human actors, API-only
   creation (admin only, step-up), `Active` at creation with no invitation
   email, backed by an organization-owned machine credential whose
   `clientId`/`clientSecret` are returned exactly once. A service account is
   always `member` with no teams and no moderated blueprints, taken from the
   signed machine claim (never from its `_user`), with an independent Cerbos
-  deny rule as a second layer. A service account holds exactly one active credential.
+  deny rule as a second layer. A service account holds exactly one active credential, and a tenant holds at most
+  50 service accounts and 200 credentials.
   Disable is enforced on the request path within seconds and is reversible; delete
   is an explicit operation that revokes every bound credential, and a token whose
   service account is absent or not `Active` is rejected.
@@ -71,22 +75,30 @@ immediately after `002`, before `003` builds catalog UI on top of the
   is tenant-scoped, so a member of two tenants can be off-boarded by either), a
   machine principal whose service account is `Disabled`, and any principal of a
   tenant pending deletion, through the existing 5-second cache, failing closed.
+- **Every member has a `_user` row.** A member with no `_user` row is rejected
+  (reason `user_missing`), and a repeatable reconcile, run through the reviewed
+  workflow, creates every missing row through the state machine; it is also the
+  repair path for a lost write. A banned user's sign-in fails exactly like any other
+  failure, and every identity procedure parses its input strictly.
 - **Data retention and org deletion, in two phases.** A documented retention
   policy (`docs/security/data-retention.md`) and an admin-only, step-up-gated
   org deletion that revokes access immediately and marks the tenant, then
   purges after a 7-to-14-day window through a scheduled job in two idempotent
   steps (catalog data, then Better Auth rows). The purge runs as a dedicated
-  `tayzu_purge` role under a row-level policy limited to due tenants, the marker is
-  insert-only for the request role, and the append-only trigger admits only the
-  purge role. Every admin is notified, and reversal is an audited operator script
+  `tayzu_purge` role under row-level policies limited to due tenants, for the
+  catalog rows and for the Better Auth rows alike, with no `SECURITY DEFINER`
+  function; the marker is insert-only for the request role, and the append-only
+  trigger admits only the purge role. The admins are notified, and reversal is an audited operator script
   that runs only through a reviewed manual workflow (the same one that runs the
-  one-off `_user` backfill). Recovery is the pending window, not point-in-time
+  one-off `_user` backfill and reconcile), refuses a tenant whose purge has begun,
+  and relies on GitHub settings the human applies from a checklist. Recovery is the pending window, not point-in-time
   restore.
 - **Mandatory authorization.** Every procedure of the identity router is built with
-  one wrapper that resolves the target, calls Cerbos and emits `authz_denied`, and a
-  route-table-driven HTTP matrix proves each of the fourteen oRPC routes. Their
-  OpenAPI document is committed (`openapi/identity.openapi.json`) with its own
-  drift check.
+  one wrapper that checks the caller's role first, resolves the target, calls Cerbos,
+  fails closed and emits `authz_denied`, and a route-table-driven HTTP matrix proves
+  each of the fourteen oRPC routes. Their OpenAPI document is committed
+  (`openapi/identity.openapi.json`, paths and risk markers only) with its own drift
+  check.
 - **Tenant binding and mount gate.** Every target of every route is resolved on
   the server and must belong to the caller's tenant; each route has a
   cross-tenant test. The routes are not mounted over HTTP until `002`'s
@@ -143,16 +155,16 @@ multi-org UX (`042`).
   Communication Services adapter), and the orchestration and the routers live in
   `apps/api` (`@tayzu/auth` has no `@orpc/server` or `@tayzu/catalog` dependency):
   invitations, service accounts, credential viewer and rotation, org deletion, the
-  purge job and the reversal script. Adds oRPC procedures to the identity router
-  `002` already has, plus one plain Fastify route (the invitation accept), three
-  `tsx` scripts under `apps/api/scripts/` and a GitHub Actions maintenance
-  workflow.
+  purge job, the `_user` reconcile and the reversal script. Adds oRPC procedures to
+  the identity router `002` already has, plus one plain Fastify route (the
+  invitation accept), four `tsx` scripts under `apps/api/scripts/` (and the moved
+  bootstrap CLI) and a GitHub Actions maintenance workflow.
 - **Database**: **three migrations, each a Checkpoint 3 item.** `0011` adds a
   composite `(tenant_id, credential_id)` key to
   `machine_credential_revocation`; `0012` adds the tenant-deletion marker table;
-  `0013` adds its grants, the dedicated `tayzu_purge` role, the row-level policies,
-  the amended append-only trigger and the hardened purge and lister functions (an
-  explicit, narrow exception for the append-only rows). The `_user` blueprint gains
+  `0013` adds its grants, the dedicated `tayzu_purge` role, the row-level policies
+  of the catalog and Better Auth rows and the amended append-only trigger (an
+  explicit, narrow exception for the append-only rows); it creates no function. The `_user` blueprint gains
   `accountKind` and a four-value `status` through the catalog's
   blueprint-update operation, run once per existing tenant (a data-plane
   change, not DDL, per `001` design D7). Everything else reuses tables `002`
@@ -176,8 +188,8 @@ multi-org UX (`042`).
   newly exercises in depth, plus a second, adversarial pass run jointly with
   `002` (`002/ssa-pre-assessment.md`) and a Mode A pre-assessment against the
   merged `002` (2026-10-01) that found eleven blocking gaps (B1-B11), a second
-  pass over the amended change that found five more (NB1-NB5), and a third pass
-  that found two more (service-account lifecycle and mandatory authorization). All are folded into
+  pass over the amended change that found five more (NB1-NB5), a third pass that found two more (service-account lifecycle and mandatory
+  authorization), and a fourth pass that found fourteen non-blocking gaps. All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks.
   New surface: the first public route, the first outbound email, a privileged
   purge role and the Pwned Passwords egress.
