@@ -1044,7 +1044,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
 
 ## 27. Final gaps (VCDM and security review re-run after group 26)
 
-- [ ] 27.1 A first `onRequest` hook in `createApp`, ahead of every other
+- [x] 27.1 A first `onRequest` hook in `createApp`, ahead of every other
   hook, answers `404` (the allowlist's own response) to any request whose
   target is not origin-form or whose path (before the query) contains `%`,
   `//` or a backslash (design Q74, D18). Verify: a new

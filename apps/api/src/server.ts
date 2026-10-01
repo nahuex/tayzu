@@ -273,6 +273,18 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
+  // Q74, D18: first hook of all. A target that is not origin-form, or whose
+  // path (before the query) holds `%`, `//` or a backslash, answers the
+  // allowlist's own 404 before any other hook or the router can normalize it.
+  app.addHook('onRequest', async (request, reply) => {
+    const url: string = request.url;
+    const pathname: string = url.split('?', 1)[0] ?? '';
+    const originForm: boolean = url.startsWith('/') && !url.startsWith('//');
+    if (!originForm || /[%\\]|\/\//.test(pathname)) {
+      reply.callNotFound();
+      return reply;
+    }
+  });
   // Q67, D11: an error that reaches Fastify unmapped answers the generic
   // `INTERNAL` body, never the thrown message. Client errors Fastify and its
   // plugins raise on purpose (4xx) keep their own status and body.
