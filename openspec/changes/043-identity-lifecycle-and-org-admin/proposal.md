@@ -37,29 +37,33 @@ immediately after `002`, before `003` builds catalog UI on top of the
   single-use token in the link proves mailbox control, the tenant comes from the
   invitation record, and the invitee sets a password under a 20-character policy
   with a breached-password check. A person who already has an account accepts with
-  their own session plus the token (CSRF header, origin check, matching verified
-  email, step-up for an `admin` role) and only gains the membership. This is the
+  their own session plus the token (CSRF header, its own origin check, matching
+  email, step-up for an `admin` role) and only gains the membership. Every other
+  admin is notified when an `admin` invitation is accepted. This is the
   first unauthenticated route and needs its own SSA row.
 - **Invitation email (SEC11-hardened).** A new outbound-email capability with a
   fixed template and subject, exactly one recipient and one link, the link
   origin from a dedicated trusted setting (`INVITATION_LINK_BASE_URL`), and caps per
   tenant (30 per hour), per recipient across tenants (3 per 24 hours) and a global
-  kill switch, on the existing DB-backed rate-limit store. A second fixed template
-  notifies every admin of a pending org deletion.
+  kill switch, on the existing DB-backed rate-limit store, and every limiter answers
+  with `Retry-After`. A second fixed template notifies every admin of a pending org
+  deletion and a third tells the other admins of an accepted `admin` invitation.
 - **Service accounts.** A `_user` sub-kind for non-human actors, API-only
   creation (admin only, step-up), `Active` at creation with no invitation
   email, backed by an organization-owned machine credential whose
   `clientId`/`clientSecret` are returned exactly once. A service account is
   always `member` with no teams and no moderated blueprints, taken from the
   signed machine claim (never from its `_user`), with an independent Cerbos
-  deny rule as a second layer. Disable is enforced on the request path within
-  seconds and is reversible; delete is an explicit operation that revokes the
-  credential.
+  deny rule as a second layer. A service account holds exactly one active credential.
+  Disable is enforced on the request path within seconds and is reversible; delete
+  is an explicit operation that revokes every bound credential, and a token whose
+  service account is absent or not `Active` is rejected.
 - **Org API-credentials viewer.** A read surface over org-scoped API keys
   (service accounts and integrations) showing name, kind, prefix, created,
   last used, enabled/disabled and rotation-due status, never a secret.
 - **Credential create, rotate and revoke.** Create and rotate set a per-key
-  rate limit explicitly; rotate and revoke both write the revocation list, so
+  rate limit explicitly (60 per hour, configurable), and rotation is serialized per
+  service account; rotate and revoke both write the revocation list, so
   they take effect within seconds; rotation is an immediate cutover with a
   compensating revoke on failure.
 - **Immediate effect of disable and deletion.** `resolveContext` and token
@@ -75,8 +79,14 @@ immediately after `002`, before `003` builds catalog UI on top of the
   `tayzu_purge` role under a row-level policy limited to due tenants, the marker is
   insert-only for the request role, and the append-only trigger admits only the
   purge role. Every admin is notified, and reversal is an audited operator script
-  under just-in-time access. Recovery is the pending window, not point-in-time
+  that runs only through a reviewed manual workflow (the same one that runs the
+  one-off `_user` backfill). Recovery is the pending window, not point-in-time
   restore.
+- **Mandatory authorization.** Every procedure of the identity router is built with
+  one wrapper that resolves the target, calls Cerbos and emits `authz_denied`, and a
+  route-table-driven HTTP matrix proves each of the fourteen oRPC routes. Their
+  OpenAPI document is committed (`openapi/identity.openapi.json`) with its own
+  drift check.
 - **Tenant binding and mount gate.** Every target of every route is resolved on
   the server and must belong to the caller's tenant; each route has a
   cross-tenant test. The routes are not mounted over HTTP until `002`'s
@@ -97,7 +107,7 @@ immediately after `002`, before `003` builds catalog UI on top of the
 Out of scope, staying with `002`: Better Auth bootstrap itself, MFA, DB roles
 and RLS, the first HTTP listener, Cerbos engine wiring, the three-tier RBAC
 baseline, `$team`/ownership, and the machine-token exchange mechanism itself
-(043 only *consumes* it for service accounts and adds the resolver checks
+(043 only _consumes_ it for service accounts and adds the resolver checks
 above). Also out of scope: role or Moderator editing, member removal and
 `setActiveOrganization` (deferred, off-boarding is `Disabled`), a last-active-
 admin guard, "view as a different user" (later-UI, `003`/`014`), SSO/SCIM-
@@ -108,6 +118,7 @@ multi-org UX (`042`).
 ## Capabilities
 
 ### New Capabilities
+
 - `identity-lifecycle-and-org-admin`: the full user status lifecycle and
   invitations, service accounts, the org API-credentials viewer, credential
   rotation, and org deletion — all as tenant-scoped, actor-attributed
@@ -115,6 +126,7 @@ multi-org UX (`042`).
   Better Auth wiring.
 
 ### Modified Capabilities
+
 <!-- None. 002-auth-and-rbac has not been archived yet at the time this change
      is authored, so there is no existing `openspec/specs/` capability path to
      target with a MODIFIED delta. 043 only ever ADDs: an optional property and a
@@ -132,7 +144,9 @@ multi-org UX (`042`).
   `apps/api` (`@tayzu/auth` has no `@orpc/server` or `@tayzu/catalog` dependency):
   invitations, service accounts, credential viewer and rotation, org deletion, the
   purge job and the reversal script. Adds oRPC procedures to the identity router
-  `002` already has, plus one plain Fastify route (the invitation accept).
+  `002` already has, plus one plain Fastify route (the invitation accept), three
+  `tsx` scripts under `apps/api/scripts/` and a GitHub Actions maintenance
+  workflow.
 - **Database**: **three migrations, each a Checkpoint 3 item.** `0011` adds a
   composite `(tenant_id, credential_id)` key to
   `machine_credential_revocation`; `0012` adds the tenant-deletion marker table;
@@ -161,8 +175,9 @@ multi-org UX (`042`).
   `vcdm-ssa-validator` agent, with SEC11 (phishing) as the section this change
   newly exercises in depth, plus a second, adversarial pass run jointly with
   `002` (`002/ssa-pre-assessment.md`) and a Mode A pre-assessment against the
-  merged `002` (2026-10-01) that found eleven blocking gaps (B1-B11), and a second
-  pass over the amended change that found five more (NB1-NB5). All are folded into
+  merged `002` (2026-10-01) that found eleven blocking gaps (B1-B11), a second
+  pass over the amended change that found five more (NB1-NB5), and a third pass
+  that found two more (service-account lifecycle and mandatory authorization). All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks.
   New surface: the first public route, the first outbound email, a privileged
   purge role and the Pwned Passwords egress.
