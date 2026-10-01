@@ -554,16 +554,16 @@ policy diff shown in chat, separately from the rest of the PR.
   integration tests, contract-check, `policy:compile`, otel-smoke-check,
   audit, gitleaks, ZAP baseline). Verify: attach the command output to the
   PR description.
-- [ ] 17.2 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against
+- [x] 17.2 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against
   the implemented code, and resolve or explicitly defer every blocking GAP.
   Verify: the report is attached to the PR, with zero open blocking GAPs.
   The first run's blocking gaps are fixed by group 23; complete group 23
   before re-running this check.
-- [ ] 17.3 Run `/security-review` on the branch and fix or justify every
+- [x] 17.3 Run `/security-review` on the branch and fix or justify every
   finding, then re-check `docs/architecture/system-diagram.md` against the
   implementation. Verify: the review output and any diagram diff are
   attached to the PR.
-- [ ] 17.4 `openspec validate 002-auth-and-rbac --strict` passes, and the
+- [x] 17.4 `openspec validate 002-auth-and-rbac --strict` passes, and the
   design, specs and code agree (update the design only if an implementation
   finding forced a change, and note it in the PR). Verify: the command
   output is attached to the PR.
