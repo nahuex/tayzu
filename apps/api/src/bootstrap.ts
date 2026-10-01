@@ -61,6 +61,8 @@ export async function createAppFromEnv(env: Env): Promise<App> {
         signIn: config.preAuthSignInRateLimit,
         twoFactorVerify: config.preAuthSignInRateLimit,
         passwordCheck: config.preAuthPasswordCheckRateLimit,
+        // Step-up TOTP brute force on an existing session: 5 failures in 5 minutes per user (Q80).
+        twoFactorVerifyUser: { max: 5, window: 300 },
       },
       rateLimit: config.rateLimit,
       tokenExchangeRateLimit: config.tokenExchangeRateLimit,

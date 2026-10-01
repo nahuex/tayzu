@@ -706,3 +706,148 @@ describe('Password-checking routes are rate-limited per user and per IP (task 24
     expect(response.status, 'a wrong password is refused, never accepted').not.toBe(200);
   });
 });
+
+/**
+ * Task 28.1 (design Q80, D20): the two-factor verify routes carrying a session
+ * cookie are also limited per session user, 5 failures in 5 minutes, on top of
+ * the per-IP bucket. Named checks (tasks.md Verify clause): wrong step-up TOTP
+ * codes for one session from two IPs answered `429` after the fifth failure,
+ * another user unaffected, and sign-in challenges keeping their current limits.
+ *
+ * Production symbol expected (test-writer design choice, like `passwordCheck`
+ * above): `CreateAuthOptions.rateLimit.twoFactorVerifyUser: { window: number;
+ * max: number }` (`PreAuthRateLimitOptions`), applied by the plugin in
+ * `rate-limit/pre-auth-rate-limit.ts` to `/two-factor/verify-totp`,
+ * `/two-factor/verify-backup-code` and `/two-factor/verify-otp` as a second
+ * bucket keyed by the user id resolved with `resolveSessionUserId`. Its key
+ * namespace must be its own, never shared with the `passwordCheck` user bucket
+ * or the per-IP bucket. A request with no valid session cookie (a sign-in
+ * challenge) gets no user bucket. The production default (5 / 300 s) is wired
+ * in `apps/api` like 24.12; this file passes it explicitly.
+ *
+ * The per-IP `twoFactorVerify` limit is set to 3 per 60 s here, so each of
+ * the two IPs below stays under it: only the per-user bucket can block the
+ * sixth attempt, which comes from a third, fresh IP.
+ *
+ * The test user has no two-factor enrolled, so Better Auth itself answers
+ * every code with an ordinary non-429, non-200 failure while under the limits.
+ */
+const STEP_UP_USER_WINDOW_SECONDS = 300;
+const STEP_UP_USER_MAX = 5;
+const STEP_UP_IP_MAX = 3;
+
+interface StepUpCreateAuthOptions extends Omit<CreateAuthOptions, 'rateLimit'> {
+  readonly rateLimit: {
+    readonly twoFactorVerify: { readonly window: number; readonly max: number };
+    readonly twoFactorVerifyUser: { readonly window: number; readonly max: number };
+  };
+}
+
+describe('Step-up TOTP verification is limited per session user (task 28.1, design Q80, D20)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+
+  const TRUSTED_ORIGIN = 'http://localhost:3000';
+  const CORRECT_PASSWORD = 'correct horse battery staple';
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    const options: StepUpCreateAuthOptions = {
+      db,
+      secret: TEST_SECRET,
+      trustedOrigins: [TRUSTED_ORIGIN],
+      rateLimit: {
+        twoFactorVerify: { window: 60, max: STEP_UP_IP_MAX },
+        twoFactorVerifyUser: {
+          window: STEP_UP_USER_WINDOW_SECONDS,
+          max: STEP_UP_USER_MAX,
+        },
+      },
+    };
+    auth = createAuth(options);
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  async function signedInCookie(): Promise<string> {
+    const tenant = await bootstrapTestTenant(auth, {
+      name: 'Step-up Limit Test User',
+      email: randomEmail(),
+      password: CORRECT_PASSWORD,
+      organizationName: 'Step-up Limit Test Org',
+      organizationSlug: `stepup-org-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    return tenant.cookie;
+  }
+
+  function verifyWrongTotp(cookie: string | undefined, ip: string): Promise<Response> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'x-forwarded-for': ip,
+      origin: TRUSTED_ORIGIN,
+    };
+    if (cookie !== undefined) {
+      headers.cookie = cookie;
+    }
+    return handlerOf(auth)(
+      new Request('http://localhost:3000/api/auth/two-factor/verify-totp', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ code: '000000' }),
+      }),
+    );
+  }
+
+  function expectWrongCodeRefused(response: Response): void {
+    expect(response.status, 'an attempt under the limits is not rate-limited').not.toBe(429);
+    expect(response.status, 'a wrong code is refused, never accepted').not.toBe(200);
+  }
+
+  /** Five wrong codes for `cookie`: three from one fresh IP, two from another, so no per-IP bucket is exhausted. */
+  async function consumeFiveFailuresFromTwoIps(cookie: string): Promise<void> {
+    const firstIp = randomIp();
+    const secondIp = randomIp();
+    for (let attempt = 0; attempt < STEP_UP_IP_MAX; attempt += 1) {
+      expectWrongCodeRefused(await verifyWrongTotp(cookie, firstIp));
+    }
+    for (let attempt = 0; attempt < STEP_UP_USER_MAX - STEP_UP_IP_MAX; attempt += 1) {
+      expectWrongCodeRefused(await verifyWrongTotp(cookie, secondIp));
+    }
+  }
+
+  it('Wrong step-up TOTP codes for one session from two IPs are answered 429 after the fifth failure', async () => {
+    const cookie = await signedInCookie();
+
+    await consumeFiveFailuresFromTwoIps(cookie);
+
+    // A third IP has an untouched per-IP bucket: only the per-user bucket can block this.
+    await expectBlockedByRateLimit(await verifyWrongTotp(cookie, randomIp()));
+  });
+
+  it('Another user is unaffected by the first user being limited', async () => {
+    const firstCookie = await signedInCookie();
+    await consumeFiveFailuresFromTwoIps(firstCookie);
+    await expectBlockedByRateLimit(await verifyWrongTotp(firstCookie, randomIp()));
+
+    const otherCookie = await signedInCookie();
+    expectWrongCodeRefused(await verifyWrongTotp(otherCookie, randomIp()));
+  });
+
+  it('Sign-in challenges keep their current limits: with no session cookie there is no per-user bucket, and the per-IP limit still applies', async () => {
+    // No session cookie, one fresh IP each: more attempts than the per-user maximum, none limited.
+    for (let attempt = 0; attempt <= STEP_UP_USER_MAX; attempt += 1) {
+      expectWrongCodeRefused(await verifyWrongTotp(undefined, randomIp()));
+    }
+
+    // The existing per-IP limit is unchanged: the fourth attempt from one IP is limited.
+    const ip = randomIp();
+    for (let attempt = 0; attempt < STEP_UP_IP_MAX; attempt += 1) {
+      expectWrongCodeRefused(await verifyWrongTotp(undefined, ip));
+    }
+    await expectBlockedByRateLimit(await verifyWrongTotp(undefined, ip));
+  });
+});

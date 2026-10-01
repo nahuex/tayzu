@@ -87,6 +87,12 @@ export interface PreAuthRateLimitOptions {
    * user id, resolved from the session cookie.
    */
   readonly passwordCheck?: RateLimitRuleOptions;
+  /**
+   * Second bucket for the `/two-factor/verify-*` routes, per session user id
+   * (task 28.1, design Q80): applies only when the request carries a valid
+   * session cookie, on top of the per-IP `twoFactorVerify` bucket.
+   */
+  readonly twoFactorVerifyUser?: RateLimitRuleOptions;
 }
 
 /** The narrow shape this module needs from `CreateAuthOptions` (avoids importing `../auth.ts`, which imports this module). */
@@ -102,6 +108,12 @@ interface PreAuthRateLimitRule {
   readonly keyedByEmail: boolean;
   /** `true` for routes that carry no email but an authenticated session: a second bucket keyed by the session's user id (task 24.2). */
   readonly keyedByUser?: boolean;
+  /** Key namespace of the user bucket, never shared between rule families. */
+  readonly userNamespace?: string;
+  /** Limit of the user bucket; defaults to `ruleOptions`. */
+  readonly userRuleOptions?: (
+    options: PreAuthRateLimitHostOptions,
+  ) => RateLimitRuleOptions | undefined;
   readonly ruleOptions: (options: PreAuthRateLimitHostOptions) => RateLimitRuleOptions | undefined;
 }
 
@@ -131,18 +143,27 @@ const PRE_AUTH_RATE_LIMIT_RULES: readonly PreAuthRateLimitRule[] = [
     path: '/two-factor/verify-totp',
     scope: 'two_factor_verify',
     keyedByEmail: false,
+    keyedByUser: true,
+    userNamespace: 'two_factor_verify_user',
+    userRuleOptions: (options) => options.rateLimit?.twoFactorVerifyUser,
     ruleOptions: (options) => options.rateLimit?.twoFactorVerify,
   },
   {
     path: '/two-factor/verify-backup-code',
     scope: 'two_factor_verify',
     keyedByEmail: false,
+    keyedByUser: true,
+    userNamespace: 'two_factor_verify_user',
+    userRuleOptions: (options) => options.rateLimit?.twoFactorVerifyUser,
     ruleOptions: (options) => options.rateLimit?.twoFactorVerify,
   },
   {
     path: '/two-factor/verify-otp',
     scope: 'two_factor_verify',
     keyedByEmail: false,
+    keyedByUser: true,
+    userNamespace: 'two_factor_verify_user',
+    userRuleOptions: (options) => options.rateLimit?.twoFactorVerifyUser,
     ruleOptions: (options) => options.rateLimit?.twoFactorVerify,
   },
   ...PASSWORD_CHECK_PATHS.map((path): PreAuthRateLimitRule => ({
@@ -150,6 +171,7 @@ const PRE_AUTH_RATE_LIMIT_RULES: readonly PreAuthRateLimitRule[] = [
     scope: 'sign_in',
     keyedByEmail: false,
     keyedByUser: true,
+    userNamespace: 'password_check',
     ruleOptions: (options) => options.rateLimit?.passwordCheck,
   })),
   {
@@ -418,7 +440,7 @@ export function preAuthRateLimitPlugin(options: PreAuthRateLimitHostOptions): Be
       const namespace =
         rule.path === '/send-verification-email' || rule.path === '/verify-email'
           ? 'email_verification'
-          : rule.keyedByUser === true
+          : PASSWORD_CHECK_PATHS.includes(rule.path)
             ? 'password_check'
             : rule.scope;
       const [ipResult, emailResult] = await Promise.all([
@@ -442,14 +464,16 @@ export function preAuthRateLimitPlugin(options: PreAuthRateLimitHostOptions): Be
           : Promise.resolve<ConsumeResult>({ allowed: true, retryAfterSeconds: null }),
       ]);
       // An unauthenticated caller has no user bucket: the IP bucket above still applies.
-      const userId = rule.keyedByUser === true ? await resolveSessionUserId(request, ctx) : null;
+      const userOptions =
+        rule.keyedByUser === true ? (rule.userRuleOptions ?? rule.ruleOptions)(options) : undefined;
+      const userId = userOptions === undefined ? null : await resolveSessionUserId(request, ctx);
       const userResult =
-        userId === null
+        userId === null || userOptions === undefined
           ? ({ allowed: true, retryAfterSeconds: null } satisfies ConsumeResult)
           : await consumeRateLimitBucket(
               ctx.adapter,
-              hashBucketKey(rule.scope, 'user', `password_check:${userId}`),
-              ruleOptions,
+              hashBucketKey(rule.scope, 'user', `${rule.userNamespace ?? namespace}:${userId}`),
+              userOptions,
             );
 
       if (ipResult.allowed && emailResult.allowed && userResult.allowed) {

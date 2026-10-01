@@ -1083,7 +1083,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
 
 ## 28. Final gaps (VCDM and security review re-run after group 27)
 
-- [ ] 28.1 The two-factor verify routes carrying a session cookie are also
+- [x] 28.1 The two-factor verify routes carrying a session cookie are also
   limited per session user, 5 failures in 5 minutes, on top of the per-IP
   bucket (design Q80, D20). Verify: `pre-auth-rate-limit.int.test.ts`
   (extended) covers wrong step-up TOTP codes for one session from two IPs
