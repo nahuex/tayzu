@@ -1050,6 +1050,8 @@ redefined.
 | `auth.security.login_failed` | WARN | `tayzu.auth.failure_reason` (`bad_credentials`\|`mfa_failed`\|`account_disabled`) | Brute-force / misuse signal |
 | `auth.security.session_revoked` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.revocation.reason` (`password_change`\|`admin_action`) | Auth audit trail |
 | `catalog.security.authz_denied` | WARN | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.authz.resource.kind`, `tayzu.authz.action` | Distinguishes a Cerbos deny from a validation error or a not-found (SEC16) |
+| `auth.security.step_up_succeeded` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.method` (`local`\|`visma_connect`) | A fresh step-up verification on an existing session (Q77), distinct from a login |
+| `auth.internal_error` | ERROR | `error.type`; `db.response.status_code` (SQLSTATE) when present | An unmapped Better Auth or Fastify error, sanitized: no message, stack text or bind values (Q76) |
 | `auth.security.step_up_required` | WARN | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.catalog.operation` | High-risk-operation friction and misuse signal |
 | `auth.security.token_exchange_failed` | WARN | `tayzu.auth.credential.kind` | Machine-credential abuse signal |
 | `auth.security.rate_limited` | WARN | `tayzu.auth.rate_limit.scope` (`sign_in`\|`two_factor_verify`\|`token_exchange`) | Pre-authentication brute-force signal (design D20); no IP or email attribute |
@@ -1299,6 +1301,12 @@ No open questions remain for this change.
 | Q71 | (VCDM M3, 2026-10-01) SSO step-up callback not bound to the browser | A first-deployment gate, tested against Visma Connect's test environment with Q57: `nonce`, `response_mode=query` and the session cookie required at the callback. |
 | Q72 | (VCDM, 2026-10-01) Admin MFA gate versus SSO-only admins | Kept fail-closed (Q43): an organization admin needs a local TOTP factor; SSO-only admins are unsupported until `025`. |
 | Q73 | (VCDM M5, M9-M15, M17-M20, 2026-10-01) Hand-offs | They become tasks in `043` and first-deployment gates in `010`. Hard rule: `identity.*` and the machine-credential routes are not mounted over HTTP before `043`'s group 14 (hand-offs from `002`) is done. |
+| Q74 | (VCDM P1 and security review, 2026-10-01) Guards keyed on the raw `request.url` | A first `onRequest` hook rejects any request target that is not origin-form (does not start with a single `/`) or whose path holds a percent-encoded byte, before any other hook; every guard reads the parsed pathname; a raw-socket regression matrix covers every guarded surface (tasks 27.1, 27.2). |
+| Q75 | (VCDM, 2026-10-01) Idle timeout resettable through `/api/auth/*` | The 12-hour idle check also applies to session-bearing `/api/auth/*` routes (sign-in excluded), with the same peek as `resolveContext` (task 27.3). |
+| Q76 | (VCDM, 2026-10-01) Unmapped errors invisible in security logs | A sanitized `auth.internal_error` log event (type and SQLSTATE only), declared in the Observability contract (task 27.4). |
+| Q77 | (VCDM, 2026-10-01) Step-up verification logged as a login | `login_succeeded` only when the verification creates a new session; a step-up on an existing session emits `auth.security.step_up_succeeded` (task 27.5). |
+| Q78 | (VCDM NB-E, 2026-10-01) scrypt cost and password policy | Better Auth's default is accepted for the 002 merge; the hash parameters are a first-deployment gate (no users exist before `010`). |
+| Q79 | (VCDM, 2026-10-01) Human attestations H1-H9 | Deferred to `010`'s SSA, as Q59; task 11.12 stays the first-deployment gate. |
 
 ## Known residual risks (2026-09-30)
 
@@ -1336,3 +1344,4 @@ Human-owned, next to task 11.12 (Resolved decisions Q57, Q58):
   that the rate-limit stores are shared across replicas (Q73).
 - Dependabot or an equivalent tracks the pinned image digests (`postgres`,
   Cerbos, ZAP) (Q73).
+- scrypt cost parameters set to current OWASP guidance before the first user exists (Q78).

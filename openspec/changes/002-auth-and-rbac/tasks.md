@@ -1042,3 +1042,42 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   added to `043/tasks.md`. Verify: markdownlint and `openspec validate --strict`
   for both changes pass.
 
+## 27. Final gaps (VCDM and security review re-run after group 26)
+
+- [ ] 27.1 A first `onRequest` hook in `createApp`, ahead of every other
+  hook, answers `404` (the allowlist's own response) to any request whose
+  target is not origin-form or whose path (before the query) contains `%`,
+  `//` or a backslash (design Q74, D18). Verify: a new
+  `request-target.int.test.ts` sends, over a raw TCP socket to a listening
+  app, an absolute-form `POST http://x/api/auth/organization/update-member-role`,
+  `/api/auth/%6Frganization/create`, `//api/auth/...` and
+  `/v1/auth/%74oken`, each answering `404` with no side effect, and an
+  ordinary request still answering normally.
+- [ ] 27.2 Every guard in `apps/api` (allowlist, 415, `idToken` refusal,
+  link/unlink step-up, token-exchange predicate and limiter) reads the parsed
+  pathname instead of the raw `request.url` (design Q74). Verify: the same
+  test file covers each guard still applying to its route when the request
+  carries a query string, and the token-exchange limiter answering `429` on
+  the routed path.
+- [ ] 27.3 The 12-hour idle check also applies to session-bearing
+  `/api/auth/*` routes except sign-in (design Q75, Q7). Verify:
+  `session-policy.int.test.ts` (extended) covers a session idle for more than
+  12 hours being refused on `/api/auth/get-session` without its `updatedAt`
+  being refreshed, and a fresh session unaffected.
+- [ ] 27.4 An unmapped Better Auth or Fastify error emits
+  `auth.internal_error` with only `error.type` and, when present, the
+  SQLSTATE (design Q76, Observability contract). Verify:
+  `http-errors.int.test.ts` (extended) covers a database failure emitting one
+  record with no message, stack text or bind value, and `otel-smoke-check`
+  knows the new name.
+- [ ] 27.5 `auth.security.login_succeeded` is emitted only when a two-factor
+  verification creates a new session; a verification on an existing session
+  emits `auth.security.step_up_succeeded` (design Q77). Verify:
+  `auth-flow.int.test.ts` and `step-up.int.test.ts` (extended) cover both
+  cases emitting exactly the right event, and `otel-smoke-check` knows the
+  new name.
+- [ ] 27.6 _(setup)_ Docs: `attack-surfaces.md` (the request-target rule and
+  the statement that any unlisted path gets `404`, re-verified), the idle rule
+  on `/api/auth/*`, and the two new log events. Verify: markdownlint and
+  `openspec validate --strict` pass.
+
