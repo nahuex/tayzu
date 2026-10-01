@@ -145,6 +145,10 @@ describe('appendChangeEvent (design D9, R13; spec "Actor attribution and change 
   let db: Db;
 
   beforeAll(async () => {
+    // Connects directly as the DATABASE_URL role (bypasses RLS: superuser in
+    // CI, BYPASSRLS in the sandbox) for the raw UPDATE/DELETE/TRUNCATE checks
+    // below — the same role @tayzu/db's own getOwnerPool() names (task 6.3,
+    // design D6 Q1a), not reachable here across the package's export boundary.
     db = connect(databaseUrl());
     await runMigrations(db.$client);
   }, 60_000);

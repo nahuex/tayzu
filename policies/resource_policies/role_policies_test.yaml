@@ -1,0 +1,211 @@
+---
+name: RolePoliciesTest
+description: >-
+  Task 8.3, spec "Three-tier role baseline". Asserts the combination of the
+  role policies and the resource policies per resource kind, not each file
+  type in isolation (design D8).
+tests:
+  # Scenario: Admin can manage blueprints
+  - name: Admin can create, update, delete and read a blueprint
+    input:
+      principals: [admin_t1]
+      resources: [blueprint_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: admin_t1
+        resource: blueprint_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_ALLOW
+
+  - name: Admin holding the role in another tenant cannot manage this tenant's blueprint
+    input:
+      principals: [admin_t2]
+      resources: [blueprint_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: admin_t2
+        resource: blueprint_t1
+        actions:
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: Admin is permitted every action on every resource kind of its own tenant
+    input:
+      principals: [admin_t1]
+      resources: [blueprint_t1, entity_service_other_team_t1, team_t1, user_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: admin_t1
+        resource: blueprint_t1
+        actions: &all_allowed
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_ALLOW
+      - principal: admin_t1
+        resource: entity_service_other_team_t1
+        actions: *all_allowed
+      - principal: admin_t1
+        resource: team_t1
+        actions: *all_allowed
+      - principal: admin_t1
+        resource: user_t1
+        actions: *all_allowed
+
+  # Scenario: Member cannot manage blueprints
+  - name: Member cannot create, update or delete a blueprint
+    input:
+      principals: [member_t1]
+      resources: [blueprint_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: member_t1
+        resource: blueprint_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  # Scenario: Member can create and update entities
+  - name: Member can read, create and update an entity of an existing blueprint, but not delete it
+    input:
+      principals: [member_t1]
+      resources: [entity_service_unowned_t1, entity_deployment_unowned_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: member_t1
+        resource: entity_service_unowned_t1
+        actions: &member_entity
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_DENY
+      - principal: member_t1
+        resource: entity_deployment_unowned_t1
+        actions: *member_entity
+
+  - name: Member can read every entity, including one owned by another team
+    input:
+      principals: [member_t1]
+      resources: [entity_service_other_team_t1]
+      actions: [view, list]
+    expected:
+      - principal: member_t1
+        resource: entity_service_other_team_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+
+  - name: Member of another tenant cannot read or write this tenant's entity
+    input:
+      principals: [member_platform_t2]
+      resources: [entity_service_unowned_t1, blueprint_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: member_platform_t2
+        resource: entity_service_unowned_t1
+        actions: &none
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+      - principal: member_platform_t2
+        resource: blueprint_t1
+        actions: *none
+
+  # Task 8.3 Verify clause: cases named exactly as the task lists them.
+  - name: Admin can manage blueprints
+    input:
+      principals: [admin_t1]
+      resources: [blueprint_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: admin_t1
+        resource: blueprint_t1
+        actions: *all_allowed
+
+  - name: Member cannot manage blueprints
+    input:
+      principals: [member_t1]
+      resources: [blueprint_t1]
+      actions: [create, update, delete]
+    expected:
+      - principal: member_t1
+        resource: blueprint_t1
+        actions:
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: Member can create and update entities that have no owner team
+    input:
+      principals: [member_t1]
+      resources: [entity_service_unowned_t1]
+      actions: [create, update]
+    expected:
+      - principal: member_t1
+        resource: entity_service_unowned_t1
+        actions:
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+
+  - name: Member can view and list users and teams
+    input:
+      principals: [member_t1]
+      resources: [user_t1, team_t1]
+      actions: [view, list]
+    expected:
+      - principal: member_t1
+        resource: user_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+      - principal: member_t1
+        resource: team_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+
+  - name: Member cannot create, update, or delete users or teams, or change roles
+    input:
+      principals: [member_t1]
+      resources: [user_t1, team_t1]
+      actions: [create, update, delete, change_role]
+    expected:
+      - principal: member_t1
+        resource: user_t1
+        actions: &member_no_write
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+          change_role: EFFECT_DENY
+      - principal: member_t1
+        resource: team_t1
+        actions: *member_no_write
+
+  - name: Member cannot delete an entity by role alone
+    input:
+      principals: [member_t1]
+      resources: [entity_service_unowned_t1, entity_service_other_team_t1]
+      actions: [delete]
+    expected:
+      - principal: member_t1
+        resource: entity_service_unowned_t1
+        actions:
+          delete: EFFECT_DENY
+      - principal: member_t1
+        resource: entity_service_other_team_t1
+        actions:
+          delete: EFFECT_DENY

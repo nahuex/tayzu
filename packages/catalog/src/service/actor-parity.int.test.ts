@@ -232,6 +232,7 @@
  * same as `blueprints.int.test.ts`), since it is harmless for the tests that
  * do not use it.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -239,6 +240,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -274,7 +276,7 @@ function actorFor(kind: ActorKind): CatalogContext['actor'] {
 }
 
 function ctxFor(tenantId: string, kind: ActorKind): CatalogContext {
-  return { tenantId, actor: actorFor(kind) };
+  return { tenantId, actor: actorFor(kind), principal: ADMIN_PRINCIPAL };
 }
 
 interface MutationSucceedResult {
@@ -302,12 +304,18 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
   let entityService: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw introspection only (selectChangeEvents/countChangeEventsForTenant/
+    // selectChangeEventActors below run outside withTenantTransaction, with
+    // no app.tenant_id session setting): the owner connection bypasses RLS,
+    // task 6.3, design D6 Resolved decision Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production (task 6.3, design D6 Q1a).
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {
@@ -316,6 +324,7 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
 
   afterAll(async () => {
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('Agent and human writes are attributed identically', async () => {
@@ -658,6 +667,7 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
     const delegatedCtx: CatalogContext = {
       tenantId,
       actor: { type: 'agent', id: 'ag1', onBehalfOf: { type: 'user', id: 'u1' } },
+      principal: ADMIN_PRINCIPAL,
     };
 
     const output = await entityService.upsert(delegatedCtx, {

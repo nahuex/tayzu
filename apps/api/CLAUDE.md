@@ -38,7 +38,7 @@ this in, task by task, per `tasks.md`.
   `status`/`code`/`data` — no collapsing to a generic 500.
 - Rate limiting (`@fastify/rate-limit`) is keyed by
   `${tenantId}:${actorType}:${actorId}` for authenticated traffic, and
-  separately by IP + client id for `POST /v1/auth/token` (D20). Neither key
+  separately by IP alone for `POST /v1/auth/token` (D20). Neither key
   component is ever logged or exported as a telemetry attribute.
 - `@fastify/helmet` with `contentSecurityPolicy: false`; `CORSPlugin` with an
   explicit origin allowlist and `credentials: true`;

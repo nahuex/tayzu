@@ -1,0 +1,27 @@
+# TEST-ONLY scratch policy (002 task 9.3). Served only by the throwaway Cerbos
+# container that authz-pipeline.int.test.ts starts on other ports; it is never
+# part of policies/ and never reviewed as a production policy.
+#
+# Rule 1 allows any admin of the request's own tenant, for every action.
+# Rule 2 is a second allow rule whose condition raises a CEL evaluation error
+# only for tenants whose id starts with "tboom" (int() of a non-numeric id).
+# Without strict evaluation, rule 1 would still allow the action; with it, the
+# whole action must be denied.
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  resource: catalog_blueprint
+  version: default
+  rules:
+    - actions: ['*']
+      effect: EFFECT_ALLOW
+      roles: ['admin']
+      condition:
+        match:
+          expr: R.attr.tenantId == P.attr.tenantId
+    - actions: ['create']
+      effect: EFFECT_ALLOW
+      roles: ['admin']
+      condition:
+        match:
+          expr: 'R.attr.tenantId.startsWith("tboom") ? int(R.attr.tenantId) == 1 : false'

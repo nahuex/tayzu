@@ -1,0 +1,66 @@
+---
+name: CatalogBlueprintTest
+description: >-
+  Task 8.2: catalog_blueprint denies by default. Spec "Authorization is
+  decided by Cerbos and fails closed", scenario "Action with no matching rule
+  is denied".
+tests:
+  # Scenario: Action with no matching rule is denied
+  - name: Member has no rule for create, update, delete or an unknown action
+    input:
+      principals: [member_t1, member_platform_t1, member_moderator_service_t1]
+      resources: [blueprint_t1]
+      actions: [create, update, delete, export]
+    expected:
+      - principal: member_t1
+        resource: blueprint_t1
+        actions: &no_write
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+          export: EFFECT_DENY
+      - principal: member_platform_t1
+        resource: blueprint_t1
+        actions: *no_write
+      - principal: member_moderator_service_t1
+        resource: blueprint_t1
+        actions: *no_write
+
+  - name: Member can still read a blueprint of its own tenant
+    input:
+      principals: [member_t1]
+      resources: [blueprint_t1]
+      actions: [view, list]
+    expected:
+      - principal: member_t1
+        resource: blueprint_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+
+  - name: A principal with an unrecognized role is denied everything
+    input:
+      principals: [unknown_role_t1]
+      resources: [blueprint_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: unknown_role_t1
+        resource: blueprint_t1
+        actions:
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: A principal with no tenantId attribute is denied (fails closed)
+    input:
+      principals: [admin_no_tenant]
+      resources: [blueprint_t1]
+      actions: [view, create]
+    expected:
+      - principal: admin_no_tenant
+        resource: blueprint_t1
+        actions:
+          view: EFFECT_DENY
+          create: EFFECT_DENY

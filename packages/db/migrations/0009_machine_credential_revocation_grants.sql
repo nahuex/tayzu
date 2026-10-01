@@ -1,0 +1,25 @@
+-- Custom SQL migration file, put your code below! -----
+-- Hand-written custom SQL (design D21, Migration Plan step 3's second half;
+-- task 5.5). `GRANT` and `FORCE ROW LEVEL SECURITY` are not expressible
+-- through Drizzle's table definitions
+-- (`packages/catalog/src/persistence/schema.ts`), so this migration is
+-- hand-written, the same pattern 0001, 0003 and 0006 already used.
+--
+-- Numbered after 0008_machine_credential_revocation.sql (the Drizzle-generated
+-- migration that creates the table and its `tenant_isolation` policy): unlike
+-- 0006/0007 (where the custom grants migration had to run *before* the
+-- Drizzle-generated one, because `CREATE POLICY ... TO "tayzu_app"` needs the
+-- role to already exist), this migration only needs the table itself, which
+-- 0008 already created, and the `tayzu_app` role, which 0006 already created.
+-- Both migrations are presented and approved together at the same
+-- Checkpoint 3 (design Migration Plan step 3).
+--
+-- Only what tasks 5.6 (write a revocation row on revoke) and 5.7 (look up a
+-- revocation row on every machine-token request) need: `INSERT` and
+-- `SELECT`. There is no update-in-place (revocation is final: rotation is
+-- revoke-and-recreate, design D5) and no delete (the row is the permanent
+-- record that a credential was revoked), so neither is granted here, matching
+-- this task's own instruction to grant only what 5.6/5.7 use.
+GRANT SELECT, INSERT ON machine_credential_revocation TO tayzu_app;
+--> statement-breakpoint
+ALTER TABLE machine_credential_revocation FORCE ROW LEVEL SECURITY;

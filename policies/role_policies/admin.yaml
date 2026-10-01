@@ -1,0 +1,22 @@
+# Design D8. `admin` (Better Auth `owner` or `admin`) is permitted every action
+# on every resource kind. A role-policy allow does nothing without a matching
+# resource-policy allow: the tenant check and the explicit cross-tenant deny
+# live in the resource policies.
+#
+# No `parentRoles`: in Cerbos, `parentRoles` on a role policy makes the role a
+# restricted subset of its parents (a ceiling), the opposite of inheritance.
+# `parentRoles: [member]` here would cap `admin` at `member`'s ceiling and
+# deny "admin can manage blueprints" (verified with `cerbos compile`, task 8.3).
+---
+apiVersion: api.cerbos.dev/v1
+rolePolicy:
+  role: admin
+  rules:
+    - resource: catalog_blueprint
+      allowActions: ['*']
+    - resource: catalog_entity
+      allowActions: ['*']
+    - resource: team
+      allowActions: ['*']
+    - resource: user
+      allowActions: ['*']

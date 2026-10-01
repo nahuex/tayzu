@@ -357,3 +357,35 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
   passes, and design/specs/code agree (update design only if an
   implementation finding forced a change, noted in the PR). Verify: the
   command output is attached to the PR.
+
+## 14. Hand-offs from 002 (002 design Q73; mount gate)
+
+`identity.*` and the machine-credential routes are not mounted over HTTP
+before every task in this group is done.
+
+- [ ] 14.1 `machine_credential_revocation` gets a composite `(tenant_id,
+  credential_id)` key (a migration, Checkpoint 3), and machine-credential
+  create and revoke go through Cerbos and are marked `x-tayzu-risk: high`.
+  Verify: a cross-tenant pre-insert of a known id is refused, and a non-admin
+  is denied create and revoke.
+- [ ] 14.2 Identity operations refuse a target that has a membership outside
+  the caller's tenant, so an admin of one tenant cannot link an SSO `sub` to,
+  or otherwise act on, a user who also belongs to another tenant (002 VCDM
+  M10). Verify: `linkSsoAccount` on a two-tenant user is refused.
+- [ ] 14.3 `createUser` and `linkSsoAccount` give no email or `sub`
+  existence oracle, and the Q42 audit events (user, credential and bootstrap
+  lifecycle) are emitted. Verify: an existing and an unknown email answer
+  identically, and each lifecycle action emits its declared event.
+- [ ] 14.4 `resolveContext` rejects a disabled (`banned`) user, disabling a
+  user revokes its sessions, and an admin-initiated disable (off-boarding)
+  path exists (002 VCDM M20). Verify: a banned user cannot sign in locally or
+  through SSO, and existing sessions stop working.
+- [ ] 14.5 Temporary and bootstrap passwords force a change at first sign-in
+  and expire, and the password policy is decided (minimum length,
+  breached-password check, backoff or lockout) (002 VCDM M5, M11). Verify:
+  a temporary password grants only the change-password route.
+- [ ] 14.6 Inherited ownership is reachable or explicitly removed from the
+  spec, and a `replace`-mode upsert without `ownerTeam` cannot silently
+  release ownership; authorization and the write run in one transaction
+  (002 VCDM M4, M15). Verify: the corresponding scenarios pass.
+

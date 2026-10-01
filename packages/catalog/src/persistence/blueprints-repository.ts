@@ -201,6 +201,22 @@ export async function deleteBlueprintRow(
   await tx.execute(sql`delete from catalog_blueprint where tenant_id = ${tenantId} and id = ${id}`);
 }
 
+/** Identifiers of the entities of `blueprintId` (ordered, at most `limit`), used to name delete-blocking referrers. */
+export async function selectBlueprintEntityIdentifiers(
+  tx: BlueprintRepositoryTx,
+  tenantId: string,
+  blueprintId: string,
+  limit: number,
+): Promise<string[]> {
+  const result = await tx.execute<{ identifier: string }>(sql`
+    select identifier from catalog_entity
+    where tenant_id = ${tenantId} and blueprint_id = ${blueprintId}
+    order by identifier
+    limit ${limit}
+  `);
+  return result.rows.map((row) => row.identifier);
+}
+
 /** One `catalog_relation_definition` row, joined with its target blueprint's identifier. */
 export type RelationDefinitionRow = {
   readonly id: string;

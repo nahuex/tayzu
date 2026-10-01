@@ -66,6 +66,15 @@ BEGIN
    END IF;
    -- The integration tests create and drop private scratch databases.
    ALTER ROLE tayzu CREATEDB;
+   -- Migrations from 002-auth-and-rbac on create the tayzu_auth, tayzu_app
+   -- and tayzu_migrator roles (design D6). Test cluster only; CI uses the
+   -- postgres:16 image's superuser.
+   ALTER ROLE tayzu CREATEROLE;
+   -- The test harness's owner connection reads and writes raw rows across
+   -- tenants (constraint and trigger tests); service-level test pools run
+   -- as tayzu_app through SET ROLE, so RLS still applies to them (002 D6).
+   -- CI's postgres:16 user is a superuser and bypasses RLS the same way.
+   ALTER ROLE tayzu BYPASSRLS;
 END
 $do$;
 

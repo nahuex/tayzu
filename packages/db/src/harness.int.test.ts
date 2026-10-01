@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, escapeIdentifier, Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
-import { getTestDatabase } from './harness.js';
+import { getOwnerPool, getTestDatabase } from './harness.js';
 import { runMigrations } from './index.js';
 
 /**
@@ -49,6 +49,16 @@ import { runMigrations } from './index.js';
  * afterwards. They never touch shared tables. The role therefore needs the
  * `CREATEDB` privilege (the user of the CI `postgres:16` service is a
  * superuser).
+ *
+ * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28): `getTestDatabase()`
+ * now hands back a pool that runs every query *as* `tayzu_app` (`SET ROLE` on
+ * every connection), so every service-level integration test runs under the
+ * real `tenant_isolation` RLS policy, exactly as production — a `DATABASE_URL`
+ * role that is itself a superuser or holds `BYPASSRLS` would otherwise skip
+ * RLS silently. `getOwnerPool()` is the new, explicit escape hatch for a test
+ * that deliberately needs cross-tenant or tenant-less raw access (this file's
+ * own connection-target checks among them): it connects as the `DATABASE_URL`
+ * role itself, unaffected by the `SET ROLE` above.
  */
 
 const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -95,6 +105,32 @@ async function expectTargets(pool: Pool, url: string): Promise<void> {
     'select current_database() as database, current_user as role',
   );
   expect(rows).toEqual([expectedTarget(url)]);
+}
+
+/**
+ * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28): `getTestDatabase()`
+ * must hand back a pool that runs every query *as* `tayzu_app` (`SET ROLE` on
+ * every connection), not merely a role that happens to inherit `tayzu_app`'s
+ * privileges through plain membership — a `DATABASE_URL` role that is itself
+ * a superuser (the CI `postgres:16` service) or holds `BYPASSRLS` (the
+ * sandbox) would silently skip every `tenant_isolation` policy check
+ * otherwise, defeating the whole point of 001's isolation tests becoming real
+ * RLS tests (design D6). So `current_user` on this pool must read back as
+ * `tayzu_app` itself, never the raw `DATABASE_URL` role `expectTargets` above
+ * checks for `getOwnerPool()` and for every other raw connection in this file.
+ */
+const APP_ROLE = 'tayzu_app';
+
+function expectedAppRoleTarget(url: string): { database: string | undefined; role: string } {
+  const client = new Client({ connectionString: url });
+  return { database: client.database, role: APP_ROLE };
+}
+
+async function expectAppRoleTarget(pool: Pool, url: string): Promise<void> {
+  const { rows } = await pool.query<{ database: string; role: string }>(
+    'select current_database() as database, current_user as role',
+  );
+  expect(rows).toEqual([expectedAppRoleTarget(url)]);
 }
 
 interface AppliedMigration {
@@ -418,7 +454,10 @@ describe(RUN_SUITE, () => {
 
     for (const { pool } of databases) {
       expect(pool).toBeInstanceOf(Pool);
-      await expectTargets(pool, url);
+      // This is getTestDatabase()'s own pool: it must run as tayzu_app (task
+      // 6.3, design D6 Q1a), never as the raw DATABASE_URL role expectTargets
+      // above checks for a plain admin/owner connection.
+      await expectAppRoleTarget(pool, url);
       await expectJournalMatchesShippedMigrations(pool);
     }
   });
@@ -429,13 +468,48 @@ describe(RUN_SUITE, () => {
     const result = await pool.query<{ one: number }>('select 1 as one');
 
     expect(result.rows).toEqual([{ one: 1 }]);
-    await expectTargets(pool, databaseUrl());
+    // Same reason as the concurrentCallers test above: getTestDatabase()'s
+    // pool must run as tayzu_app, not the raw DATABASE_URL role.
+    await expectAppRoleTarget(pool, databaseUrl());
   });
 
   it(RUN_SUITE_TESTS.journal, async () => {
     const { pool } = await getTestDatabase();
 
     await expectJournalMatchesShippedMigrations(pool);
+  });
+});
+
+/**
+ * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28). Not part of
+ * `RUN_SUITE`: this suite's own name is never `--testNamePattern`-matched by
+ * `runSuiteInSeparateRun` above, so it only ever runs in this run, once,
+ * against whatever database `DATABASE_URL` names for the whole test process.
+ */
+describe('getTestDatabase() and getOwnerPool() run as different Postgres roles', () => {
+  it("getTestDatabase()'s pool runs every query as tayzu_app, exactly as production's runtime role does", async () => {
+    const url = databaseUrl();
+
+    const { pool } = await getTestDatabase();
+
+    await expectAppRoleTarget(pool, url);
+  });
+
+  it('getOwnerPool() connects as the DATABASE_URL role itself: the role that bypasses RLS (superuser in CI, BYPASSRLS in the sandbox), for tests that deliberately need cross-tenant or tenant-less raw access', async () => {
+    const url = databaseUrl();
+
+    const ownerPool = await getOwnerPool();
+
+    expect(ownerPool).toBeInstanceOf(Pool);
+    await expectTargets(ownerPool, url);
+  });
+
+  it('getOwnerPool() is a distinct pool from getTestDatabase() own pool: two roles must never share one physical connection pool', async () => {
+    const { pool: appPool } = await getTestDatabase();
+
+    const ownerPool = await getOwnerPool();
+
+    expect(ownerPool).not.toBe(appPool);
   });
 });
 

@@ -29,6 +29,21 @@ depends on this change and runs immediately after it.
   `two-factor` (MFA) plugins, backed by its own Postgres schema (`auth`) and
   its own database role (`tayzu_auth`), never routed through
   `withTenantTransaction`.
+- **Public self sign-up is disabled under every circumstance**
+  (`emailAndPassword.disableSignUp: true`, the sign-up route is not
+  allowlisted). A Tayzu user is created only by an org admin
+  (Cerbos-gated `identity.users.create`) or a one-time bootstrap script for
+  an organization's first admin (design D22).
+- **Visma Connect SSO** (OIDC), Tayzu's own primary IdP, via Better Auth's
+  bundled `genericOAuth` plugin — no new dependency. Local email+password
+  stays available alongside it; the user chooses on the login screen.
+  Account linking is explicit and keyed only on the Visma Connect account's
+  immutable UserID, never on email; a Visma Connect sign-in never creates a
+  new Tayzu user. Step-up for a session Visma Connect established delegates
+  to a Visma Connect re-authorization, server-verified. A public,
+  rate-limited back-channel logout endpoint revokes the matching Tayzu
+  sessions (design D23-D26). Enforcing SSO *per organization* stays out of
+  scope, with `025-sso-and-identity-federation`.
 - **Session policy**: 7-day rolling expiry, 12-hour idle timeout, all other
   sessions revoked on password change, session cookie cache off.
 - **Better Auth's native org-management and apiKey routes are not reachable**:
@@ -82,8 +97,11 @@ Out of scope, and assigned to `043-identity-lifecycle-and-org-admin` (new id,
 not a renumbering, executed immediately after this change): the full 4-state
 user status/invitation lifecycle and invitation email, service accounts, the
 org API-credentials viewer, data retention/deletion policy and org deletion,
-and credential-rotation policy UX. Also out of scope: generic OIDC/SAML/SCIM
-federation (`025`), the permission simulator, "view as", per-page ACLs, and
+and credential-rotation policy UX. Also out of scope: *per-organization* SSO
+— customer-brought SAML/OIDC, per-tenant enforcement, group-sync, SCIM
+(`025`; Visma Connect SSO itself, Tayzu's own single primary IdP, is in
+this change's scope, not `025`'s) — the permission simulator, "view as",
+per-page ACLs, and
 workflow execute permissions (`014`/`006`), any multi-org UX (`042`), and a
 forgot-password/account-recovery flow, deferred to a new, explicitly named
 future change, `044-password-reset-and-account-recovery` (VCDM
@@ -111,14 +129,19 @@ lifecycle depth, not a second authentication flow).
   Fastify bootstrap mounting Better Auth's handler and the catalog's oRPC
   handler), `policies/` (Cerbos policy YAML and their test suites, not a
   package).
-- **Database**: three Checkpoint-3 migrations — (1) Better Auth's generated
+- **Database**: four Checkpoint-3 migrations — (1) Better Auth's generated
   schema in its own `auth` Postgres schema, plus the `tayzu_auth` role and
   the `rateLimit` plugin's own table; (2) the `tayzu_migrator`/`tayzu_app`
   role split, `GRANT`/`REVOKE`, and `FORCE ROW LEVEL SECURITY` on every
   catalog table; (3) `machine_credential_revocation`, a new catalog table
   recording revoked machine credentials, RLS-scoped like every other catalog
-  table (VCDM pre-assessment). ⛔ **Checkpoint 3 applies to all three,
-  separately.**
+  table (VCDM pre-assessment); (4) a `session.ssoSid` column added to
+  Better Auth's own (already-migrated) `session` table, needed to match a
+  Visma Connect session to its back-channel logout event and to tell the
+  step-up guard which kind of session it is (design D25/D26). Visma
+  Connect's back-channel-logout replay protection reuses Better Auth's
+  existing `verification` table instead of adding a fifth migration. ⛔
+  **Checkpoint 3 applies to all four, separately.**
 - **Policies**: the first `policies/` tree (derived roles, resource policies,
   role policies). ⛔ **Checkpoint 3 applies to every policy file**, separately
   from the PR and from the migrations.
@@ -130,13 +153,18 @@ lifecycle depth, not a second authentication flow).
   `@better-auth/drizzle-adapter@1.7.6`, `@cerbos/grpc@0.29.1`,
   `@cerbos/orm-drizzle@0.1.0`, `fastify@^5.12.5`, `@fastify/cors@^11.3.0`,
   `@fastify/helmet@^13.1.1`, `@fastify/rate-limit@^11.2.0`, the
-  `ghcr.io/cerbos/cerbos:0.55.0` container image (pinned by digest).
+  `ghcr.io/cerbos/cerbos:0.55.0` container image (pinned by digest). Visma
+  Connect SSO adds **no new dependency**: it uses `better-auth@1.7.6`'s own
+  bundled `genericOAuth` plugin (design D23).
 - **Downstream contracts this change freezes**: the `AUTH_FORBIDDEN` error
   code and its distinction from `CATALOG_NOT_FOUND` (an authorization deny
   inside your own tenant is not "not found"; a cross-tenant read still is);
   the Cerbos resource-kind taxonomy; the `CatalogContext` resolution rules
-  for session vs. machine-token callers. `003`, `004`-`006`, and `025` build
-  directly on these.
+  for session vs. machine-token callers; account linking keyed on an
+  immutable provider UserID, never on email (design D24) — the pattern
+  `025`'s own per-organization federation must follow, not reinvent; the
+  `AUTH_SSO_REJECTED` error code's "reveal nothing" contract. `003`,
+  `004`-`006`, and `025` build directly on these.
 - **Security**: pre-assessed against SSA SEC01-SEC16 by the
   `vcdm-ssa-validator` agent, including a second, adversarial pass run
   jointly against this change and `043` (`ssa-pre-assessment.md`, committed

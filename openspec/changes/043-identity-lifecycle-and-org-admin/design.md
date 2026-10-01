@@ -533,6 +533,25 @@ was closed.
   slow] → `EmailSender` is faked in every test except a single, explicitly
   optional manual smoke check against a real Communication Services sandbox
   (not part of CI).
+- [Coordination note, added 2026-09-28: `002` gained Visma Connect SSO
+  (`002`'s `design.md` D22-D26, `project.md` §23 D11) after this design was
+  written] → Two seams to verify when `043` starts implementation, not
+  resolved here (would rewrite `002`'s design, not this one's job):
+  (1) **Invitation acceptance for an SSO-only user.** D4's invitation flow
+  (`afterAcceptInvitation` → `_user.status = Active`) assumes the invited
+  person sets a local password when accepting. An organization that wants
+  to invite someone who will only ever sign in through Visma Connect needs
+  the acceptance step to also support linking a Visma Connect account
+  (`002` D24's path (a) or (b)) instead of, or in addition to, setting a
+  password — `002`'s own "a user must keep at least one sign-in method"
+  invariant (D24) already anticipates a password-optional account, but this
+  change's invitation-acceptance flow does not yet have a path that ends
+  there. (2) **Service accounts and SSO are unrelated.** `002`'s account
+  linking (D24) is scoped to human (`user`-actor) sessions only; a service
+  account (`043` D6) resolves to `actor.type: integration` via a machine
+  credential (`002` D5) and has no Visma Connect account to link, so no
+  change is needed there — noted explicitly so a future reader does not
+  wonder whether it was overlooked.
 
 ## Migration Plan
 

@@ -31,6 +31,7 @@
  * d's compatible half) reach it -- which is exactly why they are the ones
  * this file expects to fail today.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -40,6 +41,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -61,7 +63,7 @@ function registeredHarness(): TelemetryTestHarness {
 }
 
 function testCtx(tenantId: string): CatalogContext {
-  return { tenantId, actor: { type: 'user', id: 'user-1' } };
+  return { tenantId, actor: { type: 'user', id: 'user-1' }, principal: ADMIN_PRINCIPAL };
 }
 
 interface SchemaIncompatibleViolation {
@@ -121,12 +123,17 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
   let entities: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw introspection only (specEdgeTargets below runs outside
+    // withTenantTransaction, with no app.tenant_id session setting): the
+    // owner connection bypasses RLS, task 6.3, design D6 Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    blueprints = createBlueprintService({ pool });
-    entities = createEntityService({ pool });
+    blueprints = createBlueprintService({ pool, authz });
+    entities = createEntityService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {
@@ -136,6 +143,7 @@ describe('blueprints.update against real entities and edges (design D7, D9; spec
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   describe('(a) an in-use relation kept unchanged', () => {

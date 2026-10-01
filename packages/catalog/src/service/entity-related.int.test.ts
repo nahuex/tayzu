@@ -227,11 +227,13 @@
  * scenarios only assert `listRelated`'s return value. Same reasoning as
  * `entities-delete.int.test.ts`.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   randomTenantId,
@@ -253,7 +255,7 @@ import type { CatalogContext } from '../domain/context.js';
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -294,11 +296,17 @@ describe('entities.listRelated (task 8.7; spec "Related entities traversal")', (
   let entityService: EntityService;
 
   beforeAll(async () => {
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). No raw introspection follows in this file.
+    const ownerDb = connectAsOwner(databaseUrl());
+    await runMigrations(ownerDb.$client);
+    await endQuietly(ownerDb.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
     const db = connect(databaseUrl());
     pool = db.$client;
-    await runMigrations(pool);
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {

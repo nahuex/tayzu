@@ -38,6 +38,12 @@ export function definePackageConfig(name: string): UserWorkspaceConfig {
             environment: 'node',
             include: [INTEGRATION_TEST_GLOB],
             globalSetup: [integrationGlobalSetup],
+            // Integration tests hash passwords and round-trip Postgres and
+            // Cerbos; under Turborepo's parallel package runs one shared
+            // database and CPU make 5 s (the default) too tight. A timeout
+            // is not an assertion: tests still fail on any wrong result.
+            testTimeout: 30_000,
+            hookTimeout: 60_000,
           },
         },
       ],

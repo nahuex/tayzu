@@ -1,0 +1,135 @@
+---
+name: OwnershipTest
+description: >-
+  Task 8.5, spec "Team ownership". `ownerTeam` is the effective owning team
+  resolved by the service layer; for `create` it is the team the new entity
+  would be owned by (register-time simulation, design D11).
+tests:
+  # Scenario: Owning team member can update an owned entity
+  - name: A member of the owning team can read and update the owned entity
+    input:
+      principals: [member_platform_t1]
+      resources: [entity_service_platform_t1]
+      actions: [view, list, update]
+    expected:
+      - principal: member_platform_t1
+        resource: entity_service_platform_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+
+  - name: Team membership gives no delete
+    input:
+      principals: [member_platform_t1]
+      resources: [entity_service_platform_t1]
+      actions: [delete]
+    expected:
+      - principal: member_platform_t1
+        resource: entity_service_platform_t1
+        actions:
+          delete: EFFECT_DENY
+
+  # Scenario: Non-owning member cannot update another team's entity
+  - name: A member outside the owning team, with no Moderator grant, cannot update
+    input:
+      principals: [member_t1, member_platform_t1]
+      resources: [entity_service_other_team_t1]
+      actions: [update, delete]
+    expected:
+      - principal: member_t1
+        resource: entity_service_other_team_t1
+        actions:
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+      - principal: member_platform_t1
+        resource: entity_service_other_team_t1
+        actions:
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: A non-owning member can still read the other team's entity
+    input:
+      principals: [member_t1]
+      resources: [entity_service_other_team_t1]
+      actions: [view, list]
+    expected:
+      - principal: member_t1
+        resource: entity_service_other_team_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+
+  # Scenario: Creating an entity owned by a team the caller does not belong to is denied
+  - name: Creating an entity owned by a team the caller does not belong to is denied
+    input:
+      principals: [member_t1, member_moderator_service_t2]
+      resources: [entity_service_platform_t1]
+      actions: [create]
+    expected:
+      - principal: member_t1
+        resource: entity_service_platform_t1
+        actions:
+          create: EFFECT_DENY
+      # Other tenant: belongs to a team of the same name, still denied.
+      - principal: member_moderator_service_t2
+        resource: entity_service_platform_t1
+        actions:
+          create: EFFECT_DENY
+
+  - name: Creating an entity owned by a team the caller belongs to is allowed
+    input:
+      principals: [member_platform_t1]
+      resources: [entity_service_platform_t1]
+      actions: [create]
+    expected:
+      - principal: member_platform_t1
+        resource: entity_service_platform_t1
+        actions:
+          create: EFFECT_ALLOW
+
+  - name: A member in another team cannot create an entity owned by payments
+    input:
+      principals: [member_platform_t1]
+      resources: [entity_service_other_team_t1]
+      actions: [create]
+    expected:
+      - principal: member_platform_t1
+        resource: entity_service_other_team_t1
+        actions:
+          create: EFFECT_DENY
+
+  - name: Creating an unowned entity needs no team membership
+    input:
+      principals: [member_t1]
+      resources: [entity_service_unowned_t1]
+      actions: [create, update]
+    expected:
+      - principal: member_t1
+        resource: entity_service_unowned_t1
+        actions:
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+
+  - name: Admin may create for a team it does not belong to
+    input:
+      principals: [admin_t1]
+      resources: [entity_service_platform_t1]
+      actions: [create]
+    expected:
+      - principal: admin_t1
+        resource: entity_service_platform_t1
+        actions:
+          create: EFFECT_ALLOW
+
+  - name: A member of the same-named team in another tenant cannot update this tenant's entity
+    input:
+      principals: [member_platform_t2]
+      resources: [entity_service_platform_t1]
+      actions: [view, update]
+    expected:
+      - principal: member_platform_t2
+        resource: entity_service_platform_t1
+        actions:
+          view: EFFECT_DENY
+          update: EFFECT_DENY

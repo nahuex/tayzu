@@ -1,0 +1,5 @@
+# ZAP baseline rules for the dast-zap job and `pnpm ci:local` (task 15.1,
+# design D16). One rule per line: plugin id, TAB, level (IGNORE, INFO, WARN
+# or FAIL), TAB, (name), optionally TAB and a note. A rule not listed here
+# stays WARN, and any WARN or FAIL alert fails the scan.
+10049	INFO	(Storable and Cacheable Content)	Informational by design: it reports one of three variants for every response. apps/api sends Cache-Control: no-store by default (design D13), guarded by apps/api/src/headers.int.test.ts.

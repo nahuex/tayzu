@@ -23,7 +23,19 @@ export interface Principal {
 export type CatalogContext = {
   tenantId: string;
   actor: Principal & { onBehalfOf?: Principal };
+  /**
+   * Host-supplied authorization attributes (002 design Q26), filled only by
+   * `resolveContext`. Missing or empty `roles` makes Cerbos deny; no default
+   * role is ever invented.
+   */
+  principal?: AuthorizationPrincipal;
 };
+
+export interface AuthorizationPrincipal {
+  roles: readonly string[];
+  teams?: readonly string[];
+  moderatedBlueprints?: readonly string[];
+}
 
 const TENANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const ACTOR_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -62,6 +74,36 @@ function parsePrincipal(value: unknown): Principal | undefined {
   return { type: type as ActorType, id };
 }
 
+/** A fresh array when `value` is an array of strings, otherwise `undefined`. */
+function parseStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items: unknown[] = value;
+  if (!items.every((item): item is string => typeof item === 'string')) return undefined;
+  return [...items];
+}
+
+/**
+ * A malformed `principal` is dropped, never repaired: the missing principal
+ * then denies at the authorization stage (fail closed, design Q26).
+ */
+function parseAuthorizationPrincipal(value: unknown): AuthorizationPrincipal | undefined {
+  if (!isRecord(value)) return undefined;
+  const roles = parseStringList(value['roles']);
+  if (!roles) return undefined;
+  const principal: AuthorizationPrincipal = { roles };
+  if (value['teams'] !== undefined) {
+    const teams = parseStringList(value['teams']);
+    if (!teams) return undefined;
+    principal.teams = teams;
+  }
+  if (value['moderatedBlueprints'] !== undefined) {
+    const moderatedBlueprints = parseStringList(value['moderatedBlueprints']);
+    if (!moderatedBlueprints) return undefined;
+    principal.moderatedBlueprints = moderatedBlueprints;
+  }
+  return principal;
+}
+
 export function parseCatalogContext(input: unknown): CatalogContext {
   if (!isRecord(input)) rejectContext('missing_tenant');
 
@@ -81,6 +123,9 @@ export function parseCatalogContext(input: unknown): CatalogContext {
     if (!onBehalfOf) rejectContext('invalid_actor');
     context.actor = { ...actor, onBehalfOf };
   }
+
+  const principal = parseAuthorizationPrincipal(input['principal']);
+  if (principal) context.principal = principal;
 
   return context;
 }

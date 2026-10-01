@@ -1,0 +1,33 @@
+# Resource kind `catalog_blueprint` (design D7/D8). Every allow rule requires
+# the `same_tenant` derived role AND the Cerbos role, so the role name alone
+# never grants anything across tenants. Deny by default: an action with no
+# matching allow rule is denied, and a tenant mismatch is denied explicitly.
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  resource: catalog_blueprint
+  version: default
+  importDerivedRoles:
+    - same_tenant
+  rules:
+    # Explicit fallback: a cross-tenant request is denied outright, whatever
+    # role or role policy would otherwise apply. (A wildcard deny cannot be
+    # used as the fallback: Cerbos deny wins over allow.)
+    - actions: ['*']
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          expr: R.attr.tenantId != P.attr.tenantId
+    - actions: [view, list]
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          expr: '"member" in P.roles || "admin" in P.roles'
+    - actions: ['*']
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          expr: '"admin" in P.roles'

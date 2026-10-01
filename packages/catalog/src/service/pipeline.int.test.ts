@@ -126,6 +126,7 @@
  * (see `@tayzu/observability/src/harness.test.ts`'s identical pattern and its
  * own note on import order).
  */
+import { ADMIN_PRINCIPAL, authz, testAuthorization } from './__fixtures__/authz-test-helpers.js';
 import { randomUUID } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
@@ -133,6 +134,7 @@ import { SpanStatusCode, trace } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing: see the module doc comment above.
@@ -192,6 +194,34 @@ async function endQuietly(closeable: {
 
 function randomTenantId(): string {
   return `t${randomUUID().replaceAll('-', '')}`;
+}
+
+/**
+ * Fixed literal role name (task 6.3, design D6 Resolved decision Q1a): never
+ * interpolated, never built from input.
+ */
+const APP_ROLE_SET_STATEMENT = 'SET ROLE tayzu_app';
+
+/**
+ * Connects as `tayzu_app` (every later query on this pool runs under the
+ * real `tenant_isolation` RLS policy, exactly like production), by queuing a
+ * literal `SET ROLE` on every new physical connection ahead of any query a
+ * caller sends on it (`pg` serializes queries on one connection). Same
+ * pattern as `./__fixtures__/blueprint-test-helpers.js`'s own `connect()`;
+ * duplicated locally rather than imported, matching this file's own existing
+ * choice to build its own connection rather than depend on that fixture
+ * module (see the `Db` type comment below).
+ */
+function connectAsApp(url: string): ReturnType<typeof drizzle> {
+  const pool = new Pool({ connectionString: url });
+  pool.on('connect', (client) => {
+    void client.query(APP_ROLE_SET_STATEMENT).catch(() => {
+      // A failure here surfaces as the real, catchable error below: the next
+      // query queued on this same connection fails with a permission error
+      // instead of silently running under the wrong (owner) identity.
+    });
+  });
+  return drizzle(pool);
 }
 
 function randomResourceIdentifier(): string {
@@ -345,15 +375,23 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   let dummyOperation: (rawContext: unknown, input: DummyInput) => Promise<DummyOutput>;
 
   beforeAll(async () => {
+    // Raw introspection only (the change-event trace_id check below runs
+    // outside withTenantTransaction, with no app.tenant_id session setting):
+    // the owner connection bypasses RLS, task 6.3, design D6 Q1a. It also
+    // runs migrations: tayzu_app has no DDL privilege.
     db = drizzle(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    await runMigrations(db.$client);
+    // The pipeline under test runs through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connectAsApp(databaseUrl()).$client;
     harness = registeredHarness();
 
     handlerCalls = [];
     dummyOperation = defineCatalogOperation<DummyInput, DummyOutput>({
       name: DUMMY_OPERATION_NAME,
       pool,
+      authz,
+      authorization: testAuthorization,
       handler: async ({ ctx, client, input }): Promise<CatalogOperationResult<DummyOutput>> => {
         handlerCalls.push(input);
 
@@ -428,6 +466,7 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   describe('context validation (design D3 step 1; spec "Tenant context is mandatory and fails closed")', () => {
@@ -507,7 +546,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   describe('successful operation (design D3 steps 2, 3, 6, 7)', () => {
     it('records the operation span with the common attributes, and operation.duration with outcome success and tayzu.actor.type', async () => {
       const tenantId = randomTenantId();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'user', id: 'user-1' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'user', id: 'user-1' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       const result = await dummyOperation(ctx, { mode: 'success' });
       expect(result).toEqual({ ok: true });
@@ -543,7 +586,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   describe('CATALOG_* error (design D3 step 5; Observability contract, "Errors")', () => {
     it('ends the span with ERROR status, error.type = the code, no exception event and no leaked message, and outcome client_error', async () => {
       const tenantId = randomTenantId();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'agent', id: 'agent-1' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'agent', id: 'agent-1' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       const thrown = await dummyOperation(ctx, { mode: 'catalog_error' }).catch(
         (error: unknown) => error,
@@ -584,7 +631,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
   describe('unknown error: a forced DB error (design D3 step 5, D11; SSA B4)', () => {
     it('records a sanitized exception (type, SQLSTATE, constraint; no message, no detail; stack without its message line), outcome server_error, and catalog.internal_error, leaking neither the tenant value nor SQL text', async () => {
       const tenantId = randomTenantId();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'integration', id: 'integration-1' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'integration', id: 'integration-1' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       const thrown = await dummyOperation(ctx, { mode: 'db_error' }).catch(
         (error: unknown) => error,
@@ -676,6 +727,7 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
       const ctx: CatalogContext = {
         tenantId,
         actor: { type: 'agent', id: 'agent-1', onBehalfOf: { type: 'user', id: 'user-1' } },
+        principal: ADMIN_PRINCIPAL,
       };
 
       const result = await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
@@ -686,7 +738,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
       const span = onlySpan(harness.spanExporter, DUMMY_SPAN_NAME);
       const traceId = span.spanContext().traceId;
 
-      const eventRows = await pool.query<{ trace_id: string | null; seq: string }>(
+      // Raw introspection on the owner connection: this runs outside
+      // withTenantTransaction, with no app.tenant_id session setting, so the
+      // tayzu_app pool above would see zero rows under RLS regardless of the
+      // tenant_id filter (task 6.3, design D6 Q1a).
+      const eventRows = await db.$client.query<{ trace_id: string | null; seq: string }>(
         'select trace_id, seq from catalog_change_event where tenant_id = $1 and resource_identifier = $2',
         [tenantId, resourceIdentifier],
       );
@@ -723,7 +779,11 @@ describe('defineCatalogOperation (design D3, D5, D9; tasks 6.2, 6.3)', () => {
     it('omits the on_behalf_of attributes entirely when the actor has no delegate', async () => {
       const tenantId = randomTenantId();
       const resourceIdentifier = randomResourceIdentifier();
-      const ctx: CatalogContext = { tenantId, actor: { type: 'system', id: 'sys' } };
+      const ctx: CatalogContext = {
+        tenantId,
+        actor: { type: 'system', id: 'sys' },
+        principal: ADMIN_PRINCIPAL,
+      };
 
       await dummyOperation(ctx, { mode: 'mutation', resourceIdentifier });
       await harness.forceFlush();

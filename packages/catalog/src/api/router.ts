@@ -100,9 +100,9 @@ export function createCatalogRouter(services: CatalogRouterServices) {
       delete: os.entities.delete.handler(({ context, input }) =>
         run(() =>
           services.entities.delete(context, {
-            blueprint: input.blueprint,
-            identifier: input.entity,
-            detachReferences: input.detachReferences,
+            blueprint: input.params.blueprint,
+            identifier: input.params.entity,
+            detachReferences: input.query.detachReferences,
           }),
         ),
       ),

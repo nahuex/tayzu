@@ -34,13 +34,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { createAuth } from './auth.js';
+import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 // A `@better-auth/drizzle-adapter` `DB` handle is typed as `{[key: string]: any}`
 // (it is never queried while `betterAuth(...)` builds `auth.api`), so an empty
 // object stands in for a real Drizzle database in this unit test.
 const stubDb: Record<string, unknown> = {};
-
-const TEST_SECRET = 'unit-test-only-secret-not-used-for-anything-real';
 
 function buildAuthApi(): Record<string, unknown> {
   const auth = createAuth({ db: stubDb, secret: TEST_SECRET });
@@ -102,5 +101,42 @@ describe('createAuth', () => {
     expect(api['createTeam']).toBeUndefined();
     expect(api['listOrganizationTeams']).toBeUndefined();
     expect(api['removeTeam']).toBeUndefined();
+  });
+
+  /**
+   * Task 18.1 (design D22, resolved decision Q16; `specs/auth-and-rbac/
+   * spec.md`, "Public self sign-up is not available"):
+   *
+   * "asserts `auth.options.emailAndPassword.disableSignUp === true`,
+   * initially failing since the flag is not yet set (green in 18.2)."
+   *
+   * `createAuth`'s own `AuthInstance` return type (`./auth.ts`, task 2.1)
+   * deliberately types both `api` and `$context` as `unknown` for callers to
+   * introspect by name -- `options` is the same kind of `betterAuth(...)`
+   * return-value property (`Auth<Options>.options`, the installed
+   * `better-auth@1.7.6` source, `dist/types/auth.d.mts`) not otherwise
+   * exposed on `AuthInstance` yet, so this test narrows it locally, the same
+   * "introspect the narrower production type locally" pattern every int test
+   * file in this package already uses for `auth.api`/`auth.handler`.
+   *
+   * ## Why this is expected to fail for the right reason right now
+   *
+   * `./auth.ts`'s `emailAndPassword` option is `{ enabled: true }` only
+   * (confirmed by reading the file before writing this test): no
+   * `disableSignUp` key is set at all, so
+   * `options.emailAndPassword.disableSignUp` is `undefined`, not `true` --
+   * a plain **assertion failure**, not a missing export or a typo: `./auth.js`
+   * and `createAuth` already exist and are exercised unchanged by every other
+   * test in this file.
+   */
+  it('disables public self sign-up (design D22)', () => {
+    const auth = createAuth({ db: stubDb, secret: TEST_SECRET });
+    const options = (
+      auth as unknown as {
+        readonly options: { readonly emailAndPassword?: { readonly disableSignUp?: boolean } };
+      }
+    ).options;
+
+    expect(options.emailAndPassword?.disableSignUp).toBe(true);
   });
 });

@@ -3,8 +3,9 @@
 # same order, against the local sandbox. gitleaks, Semgrep and Syft download
 # their pinned version into CI_TOOLS_CACHE (outside the repo) the first
 # time; if a tool truly cannot run here (no network, unsupported platform),
-# its step prints an explicit SKIP and is not counted as a failure. Every
-# other step failure is fatal. Syft is non-blocking, matching its
+# its step prints an explicit SKIP and is not counted as a failure. The DAST
+# step (scripts/ci/dast.sh) needs Docker and skips the same way without it.
+# Every other step failure is fatal. Syft is non-blocking, matching its
 # `continue-on-error: true` step in CI.
 
 set -uo pipefail
@@ -36,12 +37,14 @@ step() {
 step "lint" pnpm lint
 step "format:check" pnpm format:check
 step "typecheck" pnpm typecheck
+step "policy:compile" pnpm policy:compile
 step "test" pnpm test
 step "contract:check" pnpm contract:check
 step "otel-smoke-check" pnpm otel-smoke-check
 step "pnpm audit --prod --audit-level=high" pnpm audit --prod --audit-level=high
 step "gitleaks" bash "$SCRIPT_DIR/gitleaks.sh"
 step "semgrep" bash "$SCRIPT_DIR/semgrep.sh"
+step "dast (OWASP ZAP baseline)" bash "$SCRIPT_DIR/dast.sh" all
 
 echo
 echo "== syft (SBOM, non-blocking) =="

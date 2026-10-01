@@ -16,8 +16,9 @@
  */
 import { trace } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
+import { sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from 'uuidv7';
 
 import { applyWrite } from '../domain/apply-write.js';
@@ -34,6 +35,7 @@ import { parseSafeInput } from '../domain/safe-parse.js';
 import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
 import type { ValidatorCacheKey } from '../domain/validator-cache.js';
+import { catalogEntity } from '../persistence/schema.js';
 import { appendChangeEvent } from '../persistence/change-events.js';
 import {
   findBlueprintIdByIdentifier,
@@ -71,8 +73,25 @@ import {
   type EntityRow,
 } from '../persistence/entities-repository.js';
 import type { LocalizedText } from '../domain/localized-text.js';
-import { entityMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
-import { defineCatalogOperation } from './pipeline.js';
+import {
+  authzCheckDurationHistogram,
+  entityMutationsCounter,
+  logger,
+  tracer,
+} from '../telemetry/instruments.js';
+import {
+  RESOURCE_KINDS,
+  buildAttributes,
+  planToFilter,
+  redactUnreadable,
+  type CerbosClient,
+  type PlanFilter,
+} from '@tayzu/authz';
+import {
+  loadEntityAuthzAttributes as loadEntityAttributes,
+  newEntityAuthzAttributes,
+} from './entity-authz-attributes.js';
+import { PLAN_AUTHORIZED, defineCatalogOperation, inputString } from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
 export interface EntitySpecWriteInput {
@@ -179,8 +198,127 @@ export interface EntityOutput {
   readonly updatedBy: CatalogContext['actor'];
 }
 
+type PlanOperator = 'eq' | 'ne' | 'in' | 'isSet';
+type PlanTransformArgs = { readonly operator: string; readonly value: unknown };
+
+/**
+ * A mapper entry for a text-valued SQL expression. Only `eq`, `ne`, `in` and
+ * `isSet` are supported: any other operator throws, which denies the list.
+ */
+function textPlanTransform(expression: SQL) {
+  return ({ operator, value }: PlanTransformArgs): SQL => {
+    switch (operator as PlanOperator) {
+      case 'eq':
+        return sql`${expression} = ${String(value)}`;
+      case 'ne':
+        return sql`${expression} is distinct from ${String(value)}`;
+      case 'in':
+        if (!Array.isArray(value)) throw new Error('Unsupported plan value');
+        return sql`${expression} = any(${sql.param(value.map(String))}::text[])`;
+      case 'isSet':
+        return value === true ? sql`${expression} is not null` : sql`${expression} is null`;
+      default:
+        throw new Error('Unsupported plan operator');
+    }
+  };
+}
+
+/** A mapper entry for a boolean SQL expression (`eq`/`ne` against a boolean only). */
+function booleanPlanTransform(expression: SQL) {
+  return ({ operator, value }: PlanTransformArgs): SQL => {
+    if (typeof value !== 'boolean') throw new Error('Unsupported plan value');
+    switch (operator as PlanOperator) {
+      case 'eq':
+        return sql`${expression} = ${value}`;
+      case 'ne':
+        return sql`${expression} <> ${value}`;
+      default:
+        throw new Error('Unsupported plan operator');
+    }
+  };
+}
+
+/** The blueprint identifier of the row (the value `moderatedBlueprints` holds). */
+const BLUEPRINT_IDENTIFIER_SQL = sql`(
+  select b.identifier from catalog_blueprint b
+  where b.tenant_id = ${catalogEntity.tenantId} and b.id = ${catalogEntity.blueprintId}
+)`;
+
+/** The direct `ownerTeam` relation target's identifier, or NULL when the row has none. */
+const OWNER_TEAM_SQL = sql`(
+  select t.identifier
+  from catalog_entity_relation r
+  join catalog_relation_definition d
+    on d.tenant_id = r.tenant_id and d.id = r.relation_definition_id
+  join catalog_entity t on t.tenant_id = r.tenant_id and t.id = r.target_entity_id
+  where r.tenant_id = ${catalogEntity.tenantId} and r.source_entity_id = ${catalogEntity.id}
+    and r.scope = 'spec' and d.identifier = 'ownerTeam'
+  order by r.position
+  limit 1
+)`;
+
+const LOCKED_SQL = sql`coalesce(${catalogEntity.specProperties} -> 'locked' = 'true'::jsonb, false)`;
+
+/** Plan attribute references (the names in `policies/resource_policies/catalog_entity.yaml`) to `catalog_entity` columns or SQL expressions. */
+const ENTITY_PLAN_MAPPER = {
+  'request.resource.attr.createdBy': catalogEntity.createdById,
+  'request.resource.attr.tenantId': catalogEntity.tenantId,
+  'request.resource.attr.blueprintId': textPlanTransform(BLUEPRINT_IDENTIFIER_SQL),
+  'request.resource.attr.ownerTeam': textPlanTransform(OWNER_TEAM_SQL),
+  'request.resource.attr.locked': booleanPlanTransform(LOCKED_SQL),
+};
+
+/**
+ * Design D11: `PlanResources` for `list`, folded into the page query. A plan
+ * that cannot be turned into a filter throws, which denies (never allows).
+ */
+async function planEntityList(authz: CerbosClient, ctx: CatalogContext): Promise<PlanFilter> {
+  const startedAtMillis = Date.now();
+  return tracer.startActiveSpan('authz.plan', async (planSpan) => {
+    planSpan.setAttribute('tayzu.authz.resource.kind', RESOURCE_KINDS.catalogEntity);
+    try {
+      const filter = await runEntityListPlan(authz, ctx);
+      planSpan.setAttribute(
+        'tayzu.authz.plan.kind',
+        filter.kind === 'denied'
+          ? 'always_denied'
+          : filter.filter === undefined
+            ? 'always_allowed'
+            : 'conditional',
+      );
+      return filter;
+    } finally {
+      planSpan.end();
+      authzCheckDurationHistogram.record((Date.now() - startedAtMillis) / 1000, {
+        'tayzu.authz.resource.kind': RESOURCE_KINDS.catalogEntity,
+      });
+    }
+  });
+}
+
+async function runEntityListPlan(authz: CerbosClient, ctx: CatalogContext): Promise<PlanFilter> {
+  const plan = await authz.planResources({
+    principal: {
+      id: ctx.actor.id,
+      roles: [...(ctx.principal?.roles ?? [])],
+      attr: buildAttributes(ctx.tenantId, {
+        teams: [...(ctx.principal?.teams ?? [])],
+        moderatedBlueprints: [...(ctx.principal?.moderatedBlueprints ?? [])],
+      }),
+    },
+    resource: {
+      kind: RESOURCE_KINDS.catalogEntity,
+      attr: buildAttributes(ctx.tenantId, {}),
+    },
+    action: 'list',
+  });
+  return planToFilter(plan, ENTITY_PLAN_MAPPER);
+}
+
 export interface CreateEntityServiceOptions {
   readonly pool: Pool;
+  /** The Cerbos client every operation authorizes through (design Q27). */
+  readonly authz: CerbosClient;
   readonly limits?: CatalogLimits;
 }
 
@@ -679,6 +817,93 @@ async function blueprintIdentifierFor(
   return found;
 }
 
+/** Most readable referrer identifiers a delete error names; the rest are only counted (design D12). */
+const MAX_NAMED_REFERRERS = 10;
+
+/** Most delete-blocking referrers considered for redaction. */
+const MAX_REFERRER_CANDIDATES = 1000;
+
+/** design D12: names the referrers the caller can read (one batch `CheckResources(read)`) and counts the rest. */
+async function redactReferrers(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  identifiers: readonly string[],
+): Promise<{ referrers: string[]; notVisible: number }> {
+  const distinct = [...new Set(identifiers)];
+  const candidates = distinct.slice(0, MAX_REFERRER_CANDIDATES);
+  const { readable, notVisible } = await redactUnreadable({
+    authz,
+    tenantId: ctx.tenantId,
+    actor: ctx.actor,
+    principal: {
+      roles: ctx.principal?.roles ?? [],
+      teams: ctx.principal?.teams ?? [],
+      moderatedBlueprints: ctx.principal?.moderatedBlueprints ?? [],
+    },
+    kind: RESOURCE_KINDS.catalogEntity,
+    candidates: candidates.map((id) => ({ id })),
+  });
+  const readableSet = new Set(readable);
+  return {
+    referrers: candidates.filter((id) => readableSet.has(id)).slice(0, MAX_NAMED_REFERRERS),
+    // Candidates beyond the cap cannot be checked, so they are reported as not visible.
+    notVisible: notVisible + (distinct.length - candidates.length),
+  };
+}
+
+/** Blocks a delete with the redacted referrer list. */
+async function throwReferenceViolation(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  message: string,
+  identifiers: readonly string[],
+): Promise<never> {
+  const { referrers, notVisible } = await redactReferrers(authz, ctx, identifiers);
+  throw new CatalogError('CATALOG_REFERENCE_VIOLATION', message, {
+    details: notVisible > 0 ? { referrers, notVisible } : { referrers },
+  });
+}
+
+/**
+ * design Q65: whether the caller may `update` the referrer, judged on the
+ * referrer's own stored attributes. A referrer that cannot be loaded is a deny
+ * (fail closed). One check per distinct referrer, so a shared identifier across
+ * blueprints never confuses the decisions.
+ */
+async function mayUpdateReferrer(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  client: PoolClient,
+  blueprint: string,
+  identifier: string,
+): Promise<boolean> {
+  const attributes = await loadEntityAttributes({ ctx, client, input: { blueprint, identifier } });
+  if (attributes === undefined) return false;
+  const roles = ctx.principal?.roles ?? [];
+  if (roles.length === 0) return false;
+  const response = await authz.checkResources({
+    principal: {
+      id: ctx.actor.id,
+      roles: [...roles],
+      attr: buildAttributes(ctx.tenantId, {
+        teams: [...(ctx.principal?.teams ?? [])],
+        moderatedBlueprints: [...(ctx.principal?.moderatedBlueprints ?? [])],
+      }),
+    },
+    resources: [
+      {
+        resource: {
+          kind: RESOURCE_KINDS.catalogEntity,
+          id: identifier,
+          attr: buildAttributes(ctx.tenantId, { blueprintId: blueprint, ...attributes }),
+        },
+        actions: ['update'],
+      },
+    ],
+  });
+  return response.results[0]?.isAllowed('update') === true;
+}
+
 interface BumpReferrerOptions {
   readonly bumpGeneration: boolean;
   readonly action: 'updated' | 'status_updated';
@@ -747,12 +972,20 @@ async function bumpReferrerAndAppendEvent(
 }
 
 export function createEntityService(options: CreateEntityServiceOptions): EntityService {
-  const { pool } = options;
+  const { pool, authz } = options;
   const limits = options.limits ?? defaultCatalogLimits;
 
   const create = defineCatalogOperation<CreateEntityInput, EntityOutput>({
     name: 'entity.create',
     pool,
+    authz,
+    loadAttributes: ({ ctx, input }) => Promise.resolve(newEntityAuthzAttributes({ ctx, input })),
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'create',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeEntityInput(rawInput, limits) as CreateEntityInput;
       const tx = drizzle(client);
@@ -877,6 +1110,36 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const upsert = defineCatalogOperation<UpsertEntityInput, UpsertEntityOutput>({
     name: 'entity.upsert',
     pool,
+    authz,
+    loadAttributes: loadEntityAttributes,
+    authorizationWhenMissing: ({ ctx, input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'create',
+      resourceId: inputString(input, 'identifier'),
+      attributes: {
+        blueprintId: inputString(input, 'blueprint'),
+        ...newEntityAuthzAttributes({ ctx, input }),
+      },
+    }),
+    // Design Q63: handing an entity to another team also needs `create` for it.
+    additionalAuthorization: ({ ctx, input, stored }) => {
+      const next = newEntityAuthzAttributes({ ctx, input });
+      const replaces = (input as { mode?: unknown }).mode === 'replace';
+      if (next['ownerTeam'] === undefined && !replaces) return undefined;
+      if (next['ownerTeam'] === stored['ownerTeam']) return undefined;
+      return {
+        kind: RESOURCE_KINDS.catalogEntity,
+        action: 'create',
+        resourceId: inputString(input, 'identifier'),
+        attributes: { blueprintId: inputString(input, 'blueprint'), ...next },
+      };
+    },
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'update',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeEntityInput(rawInput, limits) as UpsertEntityInput;
       const tx = drizzle(client);
@@ -1128,6 +1391,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const writeStatus = defineCatalogOperation<WriteEntityStatusInput, EntityOutput>({
     name: 'entity.status.write',
     pool,
+    authz,
+    loadAttributes: loadEntityAttributes,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'update',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input: rawInput }) => {
       const input = parseSafeEntityInput(rawInput, limits) as WriteEntityStatusInput;
       const tx = drizzle(client);
@@ -1279,6 +1550,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const get = defineCatalogOperation<GetEntityInput, EntityOutput>({
     name: 'entity.get',
     pool,
+    authz,
+    loadAttributes: loadEntityAttributes,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'view',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
@@ -1301,6 +1580,8 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const list = defineCatalogOperation<ListEntitiesInput, ListEntitiesOutput>({
     name: 'entity.list',
     pool,
+    authz,
+    authorization: PLAN_AUTHORIZED,
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
 
@@ -1322,10 +1603,17 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       if (blueprintId === undefined)
         throw new CatalogError('CATALOG_NOT_FOUND', 'Blueprint not found');
 
+      const planFilter = await planEntityList(authz, ctx);
+      if (planFilter.kind === 'denied') {
+        trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', 0);
+        return { output: { items: [] } };
+      }
+
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintId);
       const rows = await selectEntitiesPage(tx, ctx.tenantId, blueprintId, {
         limit: pageSize,
         afterIdentifier,
+        authorizationFilter: planFilter.filter,
       });
       const hasMore = rows.length > pageSize;
       const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
@@ -1349,6 +1637,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const doDelete = defineCatalogOperation<DeleteEntityInput, undefined>({
     name: 'entity.delete',
     pool,
+    authz,
+    loadAttributes: loadEntityAttributes,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'delete',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input }) => {
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
@@ -1380,18 +1676,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
 
       if (!detachReferences) {
         if (specReferrers.length > 0) {
-          const referrers = [
-            ...new Set(specReferrers.map((referrer) => referrer.source_identifier)),
-          ].slice(0, 10);
-          throw new CatalogError('CATALOG_REFERENCE_VIOLATION', 'Entity is still referenced', {
-            details: { referrers },
-          });
+          return throwReferenceViolation(
+            authz,
+            ctx,
+            'Entity is still referenced',
+            specReferrers.map((referrer) => referrer.source_identifier),
+          );
         }
       } else {
         if (specReferrers.some((referrer) => referrer.required)) {
-          throw new CatalogError(
-            'CATALOG_REFERENCE_VIOLATION',
+          return throwReferenceViolation(
+            authz,
+            ctx,
             'A required relation blocks detach',
+            specReferrers.map((referrer) => referrer.source_identifier),
           );
         }
 
@@ -1402,6 +1700,35 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           throw new CatalogError('CATALOG_LIMIT_EXCEEDED', 'Too many referrers to detach', {
             details: { limit: 'detach.maxReferrers' },
           });
+        }
+
+        // Q65: every referrer must be updatable by the caller before any edge is detached.
+        const checkedReferrerIds = new Set<string>();
+        for (const referrer of specReferrers) {
+          if (checkedReferrerIds.has(referrer.source_entity_id)) continue;
+          checkedReferrerIds.add(referrer.source_entity_id);
+          const referrerBlueprint = await blueprintIdentifierFor(
+            tx,
+            ctx.tenantId,
+            referrer.source_blueprint_id,
+            cache,
+          );
+          if (
+            !(await mayUpdateReferrer(
+              authz,
+              ctx,
+              client,
+              referrerBlueprint,
+              referrer.source_identifier,
+            ))
+          ) {
+            return throwReferenceViolation(
+              authz,
+              ctx,
+              'Entity is still referenced',
+              specReferrers.map((r) => r.source_identifier),
+            );
+          }
         }
 
         if (distinctReferrerIds.length > 0) {
@@ -1419,6 +1746,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       }
 
       // Observed (status) references never block a delete: always removed (spec "Entity read, list and delete").
+      // Q81: status edges are system-written and point at the deleted entity, so detaching them needs no `update` on each observer (unlike spec edges, Q65).
       const statusReferrerIds = await selectDistinctStatusReferrerIds(tx, ctx.tenantId, row.id);
       if (statusReferrerIds.length > 0) {
         await deleteEntityRelationEdgesForTarget(tx, ctx.tenantId, row.id, 'status');
@@ -1469,6 +1797,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
   const listRelated = defineCatalogOperation<ListRelatedInput, ListRelatedOutput>({
     name: 'entity.related.list',
     pool,
+    authz,
+    loadAttributes: loadEntityAttributes,
+    authorization: ({ input }) => ({
+      kind: RESOURCE_KINDS.catalogEntity,
+      action: 'view',
+      resourceId: inputString(input, 'identifier'),
+      attributes: { blueprintId: inputString(input, 'blueprint') },
+    }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
