@@ -273,6 +273,17 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
+  // Q67, D11: an error that reaches Fastify unmapped answers the generic
+  // `INTERNAL` body, never the thrown message. Client errors Fastify and its
+  // plugins raise on purpose (4xx) keep their own status and body.
+  app.setErrorHandler(async (error, _request, reply) => {
+    const { statusCode } = error as { statusCode?: unknown };
+    if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
+      return reply.status(statusCode).send(error);
+    }
+    const mapped = toOrpcError(error);
+    return reply.status(mapped.status).send(mapped.toJSON());
+  });
   // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
   // HSTS (task 11.12): one year, subdomains included (helmet's default is 180 days).
   await app.register(fastifyHelmet, {

@@ -72,7 +72,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { os } from '@orpc/server';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
 import Fastify, { type FastifyInstance, type LightMyRequestResponse } from 'fastify';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
@@ -81,6 +81,7 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { AuthInvalidCredentialsError, AuthStepUpError } from '../../../packages/auth/src/errors.js';
 import { AuthorizationError } from '../../../packages/catalog/src/domain/errors.js';
+import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession, freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
@@ -462,5 +463,179 @@ describe('apps/api HTTP error status (task 11.3)', () => {
       expect(toOrpcError(new AuthStepUpError()).status).toBe(403);
       expect(toOrpcError(new AuthInvalidCredentialsError()).status).toBe(401);
     });
+  });
+});
+
+/**
+ * Task 26.3 (design Q67, D11): `createApp` sets a Fastify error handler. An
+ * error not already mapped answers `500` with `code: INTERNAL` and a fixed
+ * message, never the thrown message.
+ *
+ * Verify: "a database failure on the admin-MFA gate and on the
+ * re-authorization callback answering the generic body with no driver text."
+ *
+ * ## Harness
+ *
+ * - Admin-MFA gate: a real enrolled org owner (so `resolveContext` passes and
+ *   the gate runs) calls `GET /v1/blueprints`. `auth.api.getSession` is spied:
+ *   a baseline request counts how many calls one request makes, then the same
+ *   request is repeated with the LAST call (the gate's own session read, after
+ *   the resolver's) rejecting with a driver-style error.
+ * - Re-authorization callback: `createApp` runs with `sso` pointing at the
+ *   local OIDC stub and an `authPool` wrapped in a proxy whose `query`
+ *   rejects with a driver-style error while a flag is set. The callback's
+ *   first statement (consuming the `state` row) is then a database failure.
+ *
+ * ## Production symbols expected
+ *
+ * - `createApp` calls `app.setErrorHandler(...)`: any error that reaches
+ *   Fastify unmapped answers `500`, body `{ defined: false, code: 'INTERNAL',
+ *   status: 500, message: <the fixed message of toOrpcError(unknown)> }`, and
+ *   nothing from the thrown error (message, SQL, driver fields) is in it.
+ *
+ * ## Why this fails right now
+ *
+ * Without the handler, Fastify's default answers `{ statusCode: 500, error:
+ * 'Internal Server Error', message: <thrown message> }`: an assertion failure.
+ */
+describe('Unmapped errors answer a generic INTERNAL body (task 26.3, design Q67, D11)', () => {
+  const DRIVER_TEXT =
+    'connection terminated: relation "auth.verification" does not exist (host=db-secret.internal password=hunter2)';
+  const FIXED_MESSAGE = toOrpcError(new Error('anything')).message;
+
+  function driverError(): Error {
+    return Object.assign(new Error(DRIVER_TEXT), {
+      code: '42P01',
+      severity: 'ERROR',
+      routine: 'parserOpenTable',
+    });
+  }
+
+  function expectGenericInternal(response: LightMyRequestResponse): void {
+    expect(response.statusCode).toBe(500);
+    const body = response.json<ErrorBody>();
+    expect(body.code).toBe('INTERNAL');
+    expect(body.status).toBe(500);
+    expect(body.message).toBe(FIXED_MESSAGE);
+    expect(body.data).toBeUndefined();
+    for (const leaked of [
+      'hunter2',
+      'db-secret',
+      'auth.verification',
+      '42P01',
+      'parserOpenTable',
+    ]) {
+      expect(response.body).not.toContain(leaked);
+    }
+  }
+
+  describe('admin-MFA gate', () => {
+    let app: App;
+
+    beforeAll(async () => {
+      app = await createApp({
+        ...(await harnessPools()),
+        authSecret: TEST_SECRET,
+        cerbosAddress: 'localhost:3593',
+        allowedOrigins: [ALLOWED_ORIGIN],
+      });
+    }, 60_000);
+
+    afterAll(async () => {
+      await app.close();
+    }, 60_000);
+
+    it('a database failure on the gate answers the generic INTERNAL body', async () => {
+      const tenant = await enrolledAdminSession(app, await provisionTenant(app), {
+        password: TEST_PASSWORD,
+        origin: ALLOWED_ORIGIN,
+      });
+      const list = () =>
+        app.app.inject({
+          method: 'GET',
+          url: '/v1/blueprints',
+          headers: { cookie: tenant.cookie, origin: ALLOWED_ORIGIN },
+        });
+
+      const api = app.auth.api as {
+        getSession(args: unknown): Promise<unknown>;
+      };
+      const original = api.getSession.bind(api);
+      const spy = vi.spyOn(api, 'getSession');
+      try {
+        // Baseline: how many session reads one successful request makes.
+        spy.mockImplementation((args) => original(args));
+        const baseline = await list();
+        expect(baseline.statusCode, 'precondition: the gated request succeeds').toBe(200);
+        const callsPerRequest = spy.mock.calls.length;
+        expect(callsPerRequest, 'precondition: the gate reads the session').toBeGreaterThan(1);
+
+        // Same request, the last session read (the gate's) fails like a database outage.
+        let call = 0;
+        spy.mockImplementation((args) => {
+          call += 1;
+          return call === callsPerRequest ? Promise.reject(driverError()) : original(args);
+        });
+        const failed = await list();
+        expect(call, 'the failing call was reached').toBe(callsPerRequest);
+        expectGenericInternal(failed);
+      } finally {
+        spy.mockRestore();
+      }
+    }, 60_000);
+  });
+
+  describe('re-authorization callback', () => {
+    let app: App;
+    let stub: OidcStub;
+    let failQueries = false;
+
+    beforeAll(async () => {
+      const pools = await harnessPools();
+      const authPool = new Proxy(pools.authPool, {
+        get(target, prop) {
+          if (prop === 'query' && failQueries) {
+            return () => Promise.reject(driverError());
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function'
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      });
+      stub = await startOidcStub();
+      app = await createApp({
+        appPool: pools.appPool,
+        authPool,
+        authSecret: TEST_SECRET,
+        cerbosAddress: 'localhost:3593',
+        allowedOrigins: [ALLOWED_ORIGIN],
+        sso: {
+          discoveryUrl: stub.discoveryUrl,
+          clientId: stub.clientId,
+          clientSecret: stub.clientSecret,
+        },
+      });
+    }, 60_000);
+
+    afterAll(async () => {
+      failQueries = false;
+      await app.close();
+      await stub.close();
+    }, 60_000);
+
+    it('a database failure on the callback answers the generic INTERNAL body', async () => {
+      failQueries = true;
+      try {
+        const response = await app.app.inject({
+          method: 'GET',
+          url: '/v1/auth/visma-connect/reauthorize/callback?code=some-code&state=some-state',
+          headers: { 'x-forwarded-for': randomIp() },
+        });
+        expectGenericInternal(response);
+      } finally {
+        failQueries = false;
+      }
+    }, 60_000);
   });
 });

@@ -1011,7 +1011,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   Verify: `body-limit.int.test.ts` (extended) covers an oversized
   `text/plain`, `multipart/form-data` and `application/octet-stream` body each
   answering `415`, and a JSON body still answering normally.
-- [ ] 26.3 `createApp` sets a Fastify error handler: an error not already
+- [x] 26.3 `createApp` sets a Fastify error handler: an error not already
   mapped answers `500` with `code: INTERNAL` and a fixed message, never the
   thrown message (design Q67, D11). Verify: `http-errors.int.test.ts`
   (extended) covers a database failure on the admin-MFA gate and on the
