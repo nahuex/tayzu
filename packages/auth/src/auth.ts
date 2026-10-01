@@ -544,6 +544,22 @@ interface AuthHandlerSurface {
 export function createAuth(options: CreateAuthOptions): AuthInstance {
   const auth = betterAuth({
     secret: options.secret,
+    // Task 26.4, design Q67: Better Auth's default logger writes the raw error
+    // (message, stack, driver text) to the console. Nothing raw is written; the
+    // package's declared telemetry carries the sanitized signals.
+    logger: {
+      log: () => {
+        /* intentionally empty: raw error text never reaches a sink */
+      },
+    },
+    // The router would `console.error` any non-API error with its raw text, so
+    // an unexpected error becomes a bare 500 (no message) before it gets there.
+    onAPIError: {
+      onError: (error: unknown) => {
+        if (isAPIError(error)) throw error;
+        throw new APIError('INTERNAL_SERVER_ERROR');
+      },
+    },
     ...(options.baseURL === undefined ? {} : { baseURL: options.baseURL }),
     ...(options.trustedOrigins === undefined
       ? {}

@@ -1016,7 +1016,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   thrown message (design Q67, D11). Verify: `http-errors.int.test.ts`
   (extended) covers a database failure on the admin-MFA gate and on the
   re-authorization callback answering the generic body with no driver text.
-- [ ] 26.4 Better Auth's logger goes through the sanitized logging path, and
+- [x] 26.4 Better Auth's logger goes through the sanitized logging path, and
   HTTP telemetry drops `url.query` and the query of `url.full` (design Q67).
   Verify: `otel-export.int.test.ts` (extended) covers a request with
   `?code=...&state=...` exporting no query, and `auth-flow.int.test.ts` or a

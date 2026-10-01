@@ -12,7 +12,7 @@ import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
-import { logs, metrics, NodeSDK } from '@opentelemetry/sdk-node';
+import { core, logs, metrics, NodeSDK, tracing } from '@opentelemetry/sdk-node';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -40,6 +40,39 @@ function signalUrl(env: Env, signal: 'traces' | 'metrics' | 'logs'): string | un
   return `${base.replace(/\/+$/, '')}/v1/${signal}`;
 }
 
+const URL_ATTRIBUTES = ['url.full', 'http.url', 'http.target', 'url.path'] as const;
+
+/** Removes the URL query (OAuth `code`/`state`, tokens) from one span's attributes. */
+function stripQuery(span: tracing.ReadableSpan): tracing.ReadableSpan {
+  const attributes: Record<string, unknown> = { ...span.attributes };
+  delete attributes['url.query'];
+  for (const key of URL_ATTRIBUTES) {
+    const value = attributes[key];
+    if (typeof value === 'string') {
+      const index = value.search(/[?#]/);
+      if (index !== -1) attributes[key] = value.slice(0, index);
+    }
+  }
+  return Object.create(span, {
+    attributes: { value: attributes, enumerable: true },
+  }) as tracing.ReadableSpan;
+}
+
+/** Wraps a span exporter so no exported span carries the URL query (design Q67). */
+function queryFreeExporter(inner: tracing.SpanExporter): tracing.SpanExporter {
+  return {
+    export: (spans, done: (result: core.ExportResult) => void) => {
+      try {
+        inner.export(spans.map(stripQuery), done);
+      } catch {
+        done({ code: core.ExportResultCode.FAILED });
+      }
+    },
+    shutdown: () => inner.shutdown(),
+    ...(inner.forceFlush === undefined ? {} : { forceFlush: () => inner.forceFlush?.() }),
+  } as tracing.SpanExporter;
+}
+
 export function startTelemetry(env: Env): Telemetry | undefined {
   if (!ENDPOINT_VARIABLES.some((name) => (env[name] ?? '') !== '')) {
     if ((env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test') {
@@ -55,7 +88,7 @@ export function startTelemetry(env: Env): Telemetry | undefined {
     return undefined;
   }
   const sdk = new NodeSDK({
-    traceExporter: new OTLPTraceExporter({ url: signalUrl(env, 'traces') }),
+    traceExporter: queryFreeExporter(new OTLPTraceExporter({ url: signalUrl(env, 'traces') })),
     metricReader: new metrics.PeriodicExportingMetricReader({
       exporter: new OTLPMetricExporter({ url: signalUrl(env, 'metrics') }),
     }),

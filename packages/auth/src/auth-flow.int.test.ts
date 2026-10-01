@@ -781,3 +781,140 @@ describe('MFA login emits login_succeeded (task 24.5, design Q54)', () => {
     }
   }, 60_000);
 });
+
+/**
+ * Task 26.4 (design Q67, VCDM M7): Better Auth's own logger goes through the
+ * sanitized logging path. By default it writes `console.error(message, ...args)`
+ * with the raw error (message, stack, driver text), which can carry tenant data
+ * or SQL bind values. A Better Auth internal error must therefore write no raw
+ * error text to the console, stdout/stderr or any exported OTel log record.
+ *
+ * No new telemetry name is asserted (the design declares none for this): the
+ * test only requires that the raw text is absent from every sink.
+ *
+ * ## Production symbols expected
+ *
+ * - `createAuth` sets Better Auth's `logger` option so that nothing reaches
+ *   `console.*` or the process streams with the raw error, and no raw error text
+ *   reaches an OTel log record (only declared names/attributes, if anything).
+ */
+describe('Better Auth internal error logging is sanitized (task 26.4, design Q67)', () => {
+  let db: TestDb;
+  let failingAuth: AuthInstance;
+  let harness: TelemetryTestHarness;
+  const driverMarker = `driver-secret-${randomUUID()}`;
+  const emailMarker = `leak-${randomUUID()}@example.test`;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error('createTelemetryTestHarness() failed while the test module graph loaded', {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    // Every query fails with a driver-style error carrying the marker.
+    const failing = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (
+          prop === 'select' ||
+          prop === 'insert' ||
+          prop === 'update' ||
+          prop === 'delete' ||
+          prop === 'execute' ||
+          prop === 'transaction' ||
+          prop === 'query'
+        ) {
+          return () => {
+            throw new Error(`relation "auth.user" failed: ${driverMarker}`);
+          };
+        }
+        return Reflect.get(target, prop, receiver) as unknown;
+      },
+    });
+    failingAuth = createAuth({ db: failing, secret: TEST_SECRET });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  it('A Better Auth internal error writes no raw error text to the console, the process streams or OTel logs', async () => {
+    const written: string[] = [];
+    const render = (args: readonly unknown[]): string =>
+      args
+        .map((arg) =>
+          arg instanceof Error
+            ? `${arg.message}\n${arg.stack ?? ''}\n${String(arg.cause)}`
+            : typeof arg === 'string'
+              ? arg
+              : JSON.stringify(arg),
+        )
+        .join(' ');
+
+    const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
+    const originals = methods.map((m) => console[m].bind(console));
+    const originalStdout = process.stdout.write.bind(process.stdout);
+    const originalStderr = process.stderr.write.bind(process.stderr);
+    methods.forEach((m) => {
+      console[m] = (...args: unknown[]): void => {
+        written.push(render(args));
+      };
+    });
+    process.stdout.write = (chunk: string | Uint8Array): boolean => {
+      written.push(String(chunk));
+      return true;
+    };
+    process.stderr.write = (chunk: string | Uint8Array): boolean => {
+      written.push(String(chunk));
+      return true;
+    };
+
+    await harness.reset();
+    let status: number;
+    try {
+      const response = await (
+        failingAuth as unknown as { handler: (request: Request) => Promise<Response> }
+      ).handler(
+        new Request('http://localhost/api/auth/sign-in/email', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-forwarded-for': `10.${String(randomInt(1, 255))}.${String(randomInt(1, 255))}.${String(randomInt(1, 255))}`,
+          },
+          body: JSON.stringify({ email: emailMarker, password: TEST_PASSWORD }),
+        }),
+      );
+      status = response.status;
+      await response.text();
+    } finally {
+      methods.forEach((m, i) => {
+        console[m] = originals[i] as never;
+      });
+      process.stdout.write = originalStdout;
+      process.stderr.write = originalStderr;
+    }
+    await harness.forceFlush();
+
+    // The failure path was really exercised.
+    expect(status).toBeGreaterThanOrEqual(500);
+
+    const everythingWritten = written.join('\n');
+    const telemetry = JSON.stringify(
+      [...harness.logExporter.getFinishedLogRecords()].map((record) => ({
+        attributes: record.attributes,
+        body: record.body,
+        eventName: record.eventName,
+      })),
+    );
+    for (const raw of [driverMarker, 'relation "auth.user"']) {
+      expect(everythingWritten, 'console/stdout/stderr must carry no raw error text').not.toContain(
+        raw,
+      );
+      expect(telemetry, 'OTel logs must carry no raw error text').not.toContain(raw);
+    }
+    expect(everythingWritten).not.toContain(emailMarker);
+    expect(telemetry).not.toContain(emailMarker);
+  }, 60_000);
+});
