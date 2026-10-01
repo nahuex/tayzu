@@ -23,6 +23,7 @@
     "contract:check": "turbo run contract:check",
     "otel-smoke-check": "turbo run otel-smoke-check",
     "db:migrate": "turbo run db:migrate",
+    "policy:compile": "bash scripts/policy-compile.sh",
     "ci:local": "bash scripts/ci/local.sh"
   },
   "devDependencies": {

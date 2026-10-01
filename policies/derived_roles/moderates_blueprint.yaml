@@ -1,0 +1,19 @@
+# Design D8. Moderator is not a role: it is derived from whether the
+# resource's `blueprintId` appears in the principal's `moderatedBlueprints`
+# attribute (the list kept on the user's `_user` entity). The tenant check is
+# repeated here because blueprint ids are only unique within a tenant.
+---
+apiVersion: api.cerbos.dev/v1
+description: Principal holds a Moderator grant over the resource's blueprint.
+derivedRoles:
+  name: moderates_blueprint
+  definitions:
+    - name: moderates_blueprint
+      parentRoles: ['*']
+      condition:
+        match:
+          all:
+            of:
+              - expr: R.attr.tenantId == P.attr.tenantId
+              - expr: has(R.attr.blueprintId) && has(P.attr.moderatedBlueprints)
+              - expr: R.attr.blueprintId in P.attr.moderatedBlueprints

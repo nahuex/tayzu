@@ -1,0 +1,95 @@
+---
+# Shared resources for every suite in policies/resource_policies/. An entity
+# with no `ownerTeam` attribute has `None` ownership (design D9).
+resources:
+  blueprint_t1:
+    kind: catalog_blueprint
+    id: service
+    attr:
+      tenantId: t1
+  team_t1:
+    kind: team
+    id: platform
+    attr:
+      tenantId: t1
+  user_t1:
+    kind: user
+    id: someone
+    attr:
+      tenantId: t1
+  # No ownership configured.
+  entity_service_unowned_t1:
+    kind: catalog_entity
+    id: unowned-service
+    attr:
+      tenantId: t1
+      blueprintId: service
+  entity_deployment_unowned_t1:
+    kind: catalog_entity
+    id: unowned-deployment
+    attr:
+      tenantId: t1
+      blueprintId: deployment
+  # Directly owned by team `platform`.
+  entity_service_platform_t1:
+    kind: catalog_entity
+    id: payments
+    attr:
+      tenantId: t1
+      blueprintId: service
+      ownerTeam: platform
+  # Owned by team `payments`, which none of the test principals belong to.
+  entity_service_other_team_t1:
+    kind: catalog_entity
+    id: ledger
+    attr:
+      tenantId: t1
+      blueprintId: service
+      ownerTeam: payments
+  entity_deployment_other_team_t1:
+    kind: catalog_entity
+    id: ledger-deploy
+    attr:
+      tenantId: t1
+      blueprintId: deployment
+      ownerTeam: payments
+  # Dynamic ABAC fixtures (task 8.6). Unowned, blueprint `deployment`.
+  entity_created_by_member_t1:
+    kind: catalog_entity
+    id: mine
+    attr:
+      tenantId: t1
+      blueprintId: deployment
+      createdBy: member_t1
+  entity_created_by_other_t1:
+    kind: catalog_entity
+    id: theirs
+    attr:
+      tenantId: t1
+      blueprintId: deployment
+      createdBy: someone_else
+  # Locked, unowned, not created by anyone in the suites.
+  entity_locked_unowned_t1:
+    kind: catalog_entity
+    id: locked-unowned
+    attr:
+      tenantId: t1
+      blueprintId: deployment
+      locked: true
+  # Locked and owned by team `platform`, in moderated blueprint `service`.
+  entity_locked_platform_service_t1:
+    kind: catalog_entity
+    id: locked-platform-service
+    attr:
+      tenantId: t1
+      blueprintId: service
+      ownerTeam: platform
+      locked: true
+  # Explicitly unlocked, unowned.
+  entity_unlocked_t1:
+    kind: catalog_entity
+    id: unlocked
+    attr:
+      tenantId: t1
+      blueprintId: deployment
+      locked: false

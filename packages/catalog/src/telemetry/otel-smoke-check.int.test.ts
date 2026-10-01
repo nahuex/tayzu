@@ -77,6 +77,7 @@
  * metrics API has no proxy meter provider, so any of that happening before
  * registration would make every later instrument a permanent no-op.
  */
+import { ADMIN_PRINCIPAL, authz } from '../service/__fixtures__/authz-test-helpers.js';
 import {
   registration,
   type TelemetryTestHarness,
@@ -90,6 +91,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -131,7 +133,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'smoke-user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 /** Every data point of `name`, across every metric export collected so far, regardless of instrument type. */
@@ -294,13 +296,21 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
   >;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). `db` is also `forceChangeEventPkCollision`'s
+    // connection below: that helper runs raw selects/inserts outside
+    // withTenantTransaction, with no app.tenant_id session setting, so the
+    // owner connection is the only one that can see and plant those rows
+    // under RLS.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
     harness = registeredHarness();
 
-    const blueprints: BlueprintService = createBlueprintService({ pool });
-    const entities: EntityService = createEntityService({ pool });
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
+    const blueprints: BlueprintService = createBlueprintService({ pool, authz });
+    const entities: EntityService = createEntityService({ pool, authz });
     const router = createCatalogRouter({ blueprints, entities });
     client = createRouterClient(router, { context: (raw: Record<string, unknown>) => raw });
   }, 60_000);
@@ -308,6 +318,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('runs every operation once successfully and once per applicable error class, and every declared span, metric and log event is observed with its required (and, where the condition holds, conditional) attributes (spec "Declared telemetry is emitted"; task 10.1)', async () => {
@@ -803,7 +814,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
       },
       { context: internalContext },
     );
-    await forceChangeEventPkCollision(pool, internalTenantId);
+    await forceChangeEventPkCollision(db.$client, internalTenantId);
 
     const captureInternalUpsert = spanTracker(harness.spanExporter, 'catalog.entity.upsert');
     const captureInternalLog = logTracker(harness.logExporter, 'catalog.internal_error');
@@ -992,7 +1003,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
     // Force a real, unmapped database constraint error on the *next*
     // write of this same entity (see forceChangeEventPkCollision's doc
     // comment).
-    await forceChangeEventPkCollision(pool, tenantId);
+    await forceChangeEventPkCollision(db.$client, tenantId);
 
     const thrown = await client.entities
       .upsert(
@@ -1077,6 +1088,100 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
       expect(allLogsText, `the marker "${marker}" must never reach any log record`).not.toContain(
         marker,
       );
+    }
+  }, 60_000);
+
+  it('authz.check and authz.plan spans, the cerbos call id correlation and the tayzu.authz.check.duration histogram appear on a representative operation (design "Observability contract"; task 9.4)', async () => {
+    const tenantId = randomTenantId();
+    const hostContext = ctx(tenantId);
+
+    await client.blueprints.create(teamDefinition(), { context: hostContext });
+    await client.entities.create(
+      { blueprint: 'team', identifier: 'team-authz', title: 'Team Authz' },
+      { context: hostContext },
+    );
+
+    const parentSpanId = (span: ReadableSpanLike): string | undefined => {
+      const withParent = span as unknown as {
+        parentSpanContext?: { spanId?: string };
+        parentSpanId?: string;
+      };
+      return withParent.parentSpanContext?.spanId ?? withParent.parentSpanId;
+    };
+
+    // authz.check: child of the operation span, with its required attributes
+    // and the conditional Cerbos call id.
+    const checksBefore = finishedSpans(harness.spanExporter, 'authz.check').length;
+    const captureGet = spanTracker(harness.spanExporter, 'catalog.entity.get');
+    await client.entities.get(
+      { blueprint: 'team', identifier: 'team-authz' },
+      { context: hostContext },
+    );
+    const operationSpan = captureGet();
+    const checkSpans = finishedSpans(harness.spanExporter, 'authz.check').slice(checksBefore);
+    expect(checkSpans, 'exactly one authz.check span per operation').toHaveLength(1);
+    const checkSpan = checkSpans[0];
+    if (checkSpan === undefined) throw new Error('unreachable: length was just asserted');
+
+    expect(parentSpanId(checkSpan), 'authz.check must be a child of the operation span').toBe(
+      operationSpan.spanContext().spanId,
+    );
+    expect(checkSpan.attributes['tayzu.authz.resource.kind']).toBe('catalog_entity');
+    expect(checkSpan.attributes['tayzu.authz.action']).toBe('view');
+    const callId = checkSpan.attributes['tayzu.authz.cerbos.call_id'];
+    expect(typeof callId).toBe('string');
+    expect(callId).not.toBe('');
+
+    // cerbosCallId correlation onto the enclosing operation span (design D14).
+    expect(
+      operationSpan.attributes['tayzu.authz.cerbos.call_id'],
+      'the operation span must carry the same Cerbos call id as its authz.check child',
+    ).toBe(callId);
+
+    // authz.plan: child of entities.list only, with the plan kind.
+    const plansBefore = finishedSpans(harness.spanExporter, 'authz.plan').length;
+    const checksBeforeList = finishedSpans(harness.spanExporter, 'authz.check').length;
+    const captureList = spanTracker(harness.spanExporter, 'catalog.entity.list');
+    await client.entities.list({ blueprint: 'team', pageSize: 10 }, { context: hostContext });
+    const listSpan = captureList();
+    const planSpans = finishedSpans(harness.spanExporter, 'authz.plan').slice(plansBefore);
+    expect(planSpans, 'entities.list emits exactly one authz.plan span').toHaveLength(1);
+    const planSpan = planSpans[0];
+    if (planSpan === undefined) throw new Error('unreachable: length was just asserted');
+    expect(parentSpanId(planSpan), 'authz.plan must be a child of the list operation span').toBe(
+      listSpan.spanContext().spanId,
+    );
+    expect(planSpan.attributes['tayzu.authz.resource.kind']).toBe('catalog_entity');
+    expect(['always_allowed', 'always_denied', 'conditional']).toContain(
+      planSpan.attributes['tayzu.authz.plan.kind'],
+    );
+
+    // authz.plan is for entities.list only: no other operation emits one.
+    expect(
+      finishedSpans(harness.spanExporter, 'authz.check').length,
+      'entities.list still runs its authz.check',
+    ).toBeGreaterThanOrEqual(checksBeforeList);
+    const plansAfterList = finishedSpans(harness.spanExporter, 'authz.plan').length;
+    await client.entities.get(
+      { blueprint: 'team', identifier: 'team-authz' },
+      { context: hostContext },
+    );
+    expect(finishedSpans(harness.spanExporter, 'authz.plan')).toHaveLength(plansAfterList);
+
+    // tayzu.authz.check.duration: recorded, with only tayzu.authz.resource.kind.
+    await harness.forceFlush();
+    const durationPoints = allMetricDataPointAttributes(
+      harness.metricExporter,
+      'tayzu.authz.check.duration',
+    );
+    expect(durationPoints.length).toBeGreaterThan(0);
+    expect(
+      durationPoints.some(
+        (attributes) => attributes['tayzu.authz.resource.kind'] === 'catalog_entity',
+      ),
+    ).toBe(true);
+    for (const attributes of durationPoints) {
+      expect(Object.keys(attributes)).toEqual(['tayzu.authz.resource.kind']);
     }
   }, 60_000);
 });

@@ -1,4 +1,15 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(claude -p --agent test-writer:*)",
+      "Bash(claude -p --agent implementer:*)",
+      "Bash(claude -p --agent observability-auditor:*)",
+      "Bash(timeout * claude -p --agent *)",
+      "Bash(git push origin claude/determined-cannon-7aom0j)",
+      "Bash(git push -q origin claude/determined-cannon-7aom0j)",
+      "Bash(curl -sS -X PUT -H \"Accept: application/vnd.github+json\" https://api.github.com/repos/nahuex/tayzu/pulls/8/merge:*)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

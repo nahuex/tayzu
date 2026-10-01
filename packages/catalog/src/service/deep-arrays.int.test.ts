@@ -24,6 +24,7 @@
  * `./__fixtures__/registered-harness.js` is imported first for the same
  * import-order reason as every other int test in this package (design D1).
  */
+import { authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -31,6 +32,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -90,12 +92,17 @@ describe('entities.create rejects a deeply nested array inside an object-typed p
   let entities: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw introspection only (selectChangeEvents below runs outside
+    // withTenantTransaction, with no app.tenant_id session setting): the
+    // owner connection bypasses RLS, task 6.3, design D6 Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    blueprints = createBlueprintService({ pool });
-    entities = createEntityService({ pool });
+    blueprints = createBlueprintService({ pool, authz });
+    entities = createEntityService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {
@@ -105,6 +112,7 @@ describe('entities.create rejects a deeply nested array inside an object-typed p
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('fails with CATALOG_LIMIT_EXCEEDED for a 50000-level nested array under an object-typed property, and persists nothing', async () => {

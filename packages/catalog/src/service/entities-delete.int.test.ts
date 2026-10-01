@@ -230,12 +230,14 @@
  * `catalog_change_event` rows. This mirrors `isolation-blueprints.int.test.ts`'s
  * own reasoning for skipping `./__fixtures__/registered-harness.js`.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   blueprintRowId,
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -249,6 +251,7 @@ import {
   seedManyReferrers,
   selectChangeEventActors,
 } from './__fixtures__/entity-b-test-helpers.js';
+import { redactingAuthz } from './__fixtures__/redaction-authz.js';
 import {
   createBlueprintService,
   type BlueprintService,
@@ -260,7 +263,7 @@ import type { CatalogContext } from '../domain/context.js';
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -309,15 +312,22 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
   let entityService: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    // Raw seeding/introspection only (seedManyReferrers, blueprintRowId,
+    // entityRowId, selectChangeEvents/selectChangeEventActors below run
+    // outside withTenantTransaction, with no app.tenant_id session setting):
+    // the owner connection bypasses RLS, task 6.3, design D6 Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('Delete an unreferenced entity', async () => {
@@ -586,5 +596,90 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
 
     const stillThere = await entityService.get(c, { blueprint: 'target', identifier: 'victim' });
     expect(stillThere.identifier).toBe('victim');
+  });
+
+  it('Delete-blocking referrers the caller cannot read are redacted to a count', async () => {
+    // GIVEN `team-a` is referenced by 1 entity the caller can read and 4 the
+    // caller cannot read (task 10.3, design D12)
+    const hidden = ['hidden-1', 'hidden-2', 'hidden-3', 'hidden-4'];
+    const seed = async (required: boolean): Promise<CatalogContext> => {
+      const tenantId = randomTenantId();
+      const c = ctx(tenantId);
+      await blueprintService.create(c, blueprintInput('team'));
+      await blueprintService.create(
+        c,
+        blueprintInput('service', {
+          relations: {
+            owner: { title: { en: 'Owner' }, target: 'team', many: false, required },
+          },
+        }),
+      );
+      await entityService.create(c, entityInput('team', 'team-a'));
+      for (const identifier of ['visible-1', ...hidden]) {
+        await entityService.create(
+          c,
+          entityInput('service', identifier, { spec: { relations: { owner: 'team-a' } } }),
+        );
+      }
+      return c;
+    };
+    const expectRedacted = (
+      error: { readonly message: string; readonly issues?: unknown; readonly details?: unknown },
+      details: Readonly<Record<string, unknown>> | undefined,
+    ): void => {
+      // THEN the error names the readable referrer and reports "+4 not visible"
+      expect(details?.['referrers']).toEqual(['visible-1']);
+      expect(details?.['notVisible']).toBe(4);
+      // AND no unreadable identifier leaks anywhere in the error
+      const serialized = JSON.stringify({
+        message: error.message,
+        issues: error.issues,
+        details: error.details,
+      });
+      for (const identifier of hidden) {
+        expect(serialized).not.toContain(identifier);
+      }
+    };
+
+    // WHEN `team-a` is deleted without `detachReferences`
+    const c = await seed(false);
+    const spy = redactingAuthz(new Set(['visible-1', 'team-a']));
+    const redacting = createEntityService({ pool, authz: spy.client });
+    const error = await expectCatalogErrorCode(
+      redacting.delete(c, { blueprint: 'team', identifier: 'team-a' }),
+      'CATALOG_REFERENCE_VIOLATION',
+    );
+    expectRedacted(error, error.details);
+
+    // AND the redaction was one batch check over the candidates, in this tenant
+    // (the operation's own check on `team-a` is a single-resource batch,
+    // answered readable by the fixture's set; it is not the redaction batch)
+    const redactionBatches = spy.batches.filter((batch) => batch.ids.length > 1);
+    expect(redactionBatches).toHaveLength(1);
+    expect([...(redactionBatches[0]?.ids ?? [])].sort()).toEqual(['visible-1', ...hidden].sort());
+    expect(new Set(redactionBatches[0]?.attrTenantIds)).toEqual(new Set([c.tenantId]));
+
+    // AND the entity is still there
+    expect((await entityService.get(c, { blueprint: 'team', identifier: 'team-a' })).version).toBe(
+      1,
+    );
+
+    // The `detachReferences` case (task 10.3): required referrers still block
+    // the delete, and the error is redacted the same way.
+    const cRequired = await seed(true);
+    const detachSpy = redactingAuthz(new Set(['visible-1', 'team-a']));
+    const detaching = createEntityService({ pool, authz: detachSpy.client });
+    const detachError = await expectCatalogErrorCode(
+      detaching.delete(cRequired, {
+        blueprint: 'team',
+        identifier: 'team-a',
+        detachReferences: true,
+      }),
+      'CATALOG_REFERENCE_VIOLATION',
+    );
+    expectRedacted(detachError, detachError.details);
+    const detachBatches = detachSpy.batches.filter((batch) => batch.ids.length > 1);
+    expect(detachBatches).toHaveLength(1);
+    expect([...(detachBatches[0]?.ids ?? [])].sort()).toEqual(['visible-1', ...hidden].sort());
   });
 });

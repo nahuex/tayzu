@@ -19,8 +19,8 @@ You only verify and block. You never implement or fix anything.
 1. Read the "Observability contract" section of
    `openspec/changes/<change>/design.md`: spans, metrics and log events, each
    with its required and conditional attributes.
-2. Read the executable mirror (for 001, that is
-   `packages/catalog/src/telemetry/contract.ts`) and every place that emits
+2. Read the executable mirror of every package the change touches
+   (`packages/<pkg>/src/telemetry/contract.ts`) and every place that emits
    telemetry (`grep` for `startActiveSpan`, `startSpan`, `createHistogram`,
    `createCounter`, `emit(`, `setAttribute`).
 3. Build a three-way table: design ↔ contract.ts ↔ emission sites. For every

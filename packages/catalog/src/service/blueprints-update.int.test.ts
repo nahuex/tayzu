@@ -38,6 +38,7 @@
  * `seedEntity`), exactly like `blueprints.int.test.ts` does for task 7.5:
  * entity *operations* (task 8.x) do not exist yet.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -47,6 +48,7 @@ import { registration, type TelemetryTestHarness } from './__fixtures__/register
 import {
   blueprintRowId,
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -56,6 +58,7 @@ import {
   type TestDb,
 } from './__fixtures__/blueprint-test-helpers.js';
 import { onlySpan } from './__fixtures__/telemetry-assertions.js';
+import { redactingAuthz } from './__fixtures__/redaction-authz.js';
 import type { CatalogContext } from '../domain/context.js';
 import {
   createBlueprintService,
@@ -76,7 +79,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 function blueprintInput(
@@ -107,11 +110,17 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
   let service: BlueprintService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw seeding/introspection only (blueprintRowId, seedEntity,
+    // selectEntitySpecs below run outside withTenantTransaction, with no
+    // app.tenant_id session setting): the owner connection bypasses RLS,
+    // task 6.3, design D6 Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The service under test runs through the real tenant_isolation RLS
+    // policy, exactly like production.
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    service = createBlueprintService({ pool });
+    service = createBlueprintService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {
@@ -121,6 +130,7 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('Adding an optional property is compatible', async () => {
@@ -254,5 +264,64 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
       }),
       'CATALOG_VERSION_CONFLICT',
     );
+  });
+
+  it('Incompatible entities the caller cannot read are redacted', async () => {
+    // GIVEN blueprint `service` has 2 incompatible entities the caller can
+    // read and 3 incompatible entities the caller cannot read (task 10.2,
+    // design D12)
+    const tenantId = randomTenantId();
+    const c = ctx(tenantId);
+    await service.create(c, blueprintInput('service', { schema: LANGUAGE_ONLY_SCHEMA }));
+    const blueprintId = await blueprintRowId(db, tenantId, 'service');
+    const visible = ['visible-1', 'visible-2'];
+    const hidden = ['hidden-1', 'hidden-2', 'hidden-3'];
+    for (const identifier of [...visible, ...hidden]) {
+      await seedEntity(db, tenantId, blueprintId, identifier, {
+        specProperties: { language: 'go' },
+      });
+    }
+    const spy = redactingAuthz(new Set(visible));
+    const redacting = createBlueprintService({ pool, authz: spy.client });
+
+    // WHEN the caller updates it with an incompatible schema change
+    const error = await expectCatalogErrorCode(
+      redacting.update(c, {
+        identifier: 'service',
+        title: { en: 'service' },
+        schema: {
+          properties: {
+            language: { type: 'string', title: { en: 'Language' } },
+            tier: { type: 'string', title: { en: 'Tier' } },
+          },
+          required: ['tier'],
+        },
+      }),
+      'CATALOG_SCHEMA_INCOMPATIBLE',
+    );
+
+    // THEN the 2 readable entities are named and "+3 not visible" is reported
+    const violations = error.details?.['violations'] as
+      readonly SchemaIncompatibleViolation[] | undefined;
+    expect(violations?.map((violation) => violation.entityIdentifier).sort()).toEqual(visible);
+    expect(error.details?.['notVisible']).toBe(3);
+
+    // AND no unreadable identifier leaks anywhere in the error
+    const serialized = JSON.stringify({
+      message: error.message,
+      issues: error.issues,
+      details: error.details,
+    });
+    for (const identifier of hidden) {
+      expect(serialized).not.toContain(identifier);
+    }
+
+    // AND the redaction was one batch check over the offending entities, in this tenant
+    expect(spy.batches).toHaveLength(1);
+    expect([...(spy.batches[0]?.ids ?? [])].sort()).toEqual([...visible, ...hidden].sort());
+    expect(new Set(spy.batches[0]?.attrTenantIds)).toEqual(new Set([tenantId]));
+
+    // AND the blueprint is unchanged
+    expect((await service.get(c, { identifier: 'service' })).version).toBe(1);
   });
 });

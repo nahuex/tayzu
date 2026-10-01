@@ -1,0 +1,729 @@
+/**
+ * The Fastify bootstrap (task 11.1, design D13). One Fastify instance mounts
+ * two handlers: Better Auth's own catch-all route (`/api/auth/*`) and the
+ * catalog's `OpenAPIHandler` (`/v1/*`).
+ *
+ * Every `/v1/*` request's context comes only from `resolveContext`
+ * (`@tayzu/auth`); nothing in the body, path or query is ever read for
+ * `tenantId` or `actor`. `createApp` reads no environment: the process entry
+ * point hands it explicit options. Later group 11 tasks add CORS, CSRF,
+ * headers, body limits, rate limiting, the route allowlist and error mapping.
+ */
+import { randomUUID } from 'node:crypto';
+
+import fastifyCors from '@fastify/cors';
+import fastifyHelmet from '@fastify/helmet';
+import fastifyRateLimit from '@fastify/rate-limit';
+import { OpenAPIHandler } from '@orpc/openapi/fastify';
+import { ORPCError } from '@orpc/server';
+import { SimpleCsrfProtectionHandlerPlugin } from '@orpc/server/plugins';
+import {
+  authSchema,
+  createAuth,
+  createContextResolver,
+  createEnrolledStepUpCheck,
+  createStepUpGuard,
+  emitInternalError,
+  emitRateLimited,
+  exchangeMachineToken,
+  AuthStepUpError,
+  isAllowedAuthPath,
+  verifyLogoutToken,
+  withBackchannelLogoutTelemetry,
+  type AuthInstance,
+  type BackchannelLogoutOutcome,
+  type CreateAuthOptions,
+} from '@tayzu/auth';
+import { createCerbosClient } from '@tayzu/authz';
+import type { createPool } from '@tayzu/db';
+import { createBlueprintService, createCatalogRouter, createEntityService } from '@tayzu/catalog';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+
+import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
+import { createReauthorization, type Reauthorization } from './reauthorization.js';
+import { assertDiscoverable } from './sso-discovery.js';
+
+type Pool = ReturnType<typeof createPool>;
+
+export interface CreateAppOptions {
+  /** Pool running as `tayzu_app` (RLS applies), built by the host. Not ended by `close`. */
+  readonly appPool: Pool;
+  /** Pool running as `tayzu_auth` (design D6), built by the host. Not ended by `close`. */
+  readonly authPool: Pool;
+  /** Better Auth's secret, from the host's environment. */
+  readonly authSecret: string;
+  /** `host:port` of the Cerbos gRPC endpoint. */
+  readonly cerbosAddress: string;
+  /** Explicit CORS origin allowlist: exact matches only, never `*` or a reflected origin. */
+  readonly allowedOrigins: readonly string[];
+  /**
+   * Public base URL (Q40): forwarded to `createAuth` as `baseURL` and used to
+   * build the web `Request` URL. Omitted only in the test harness.
+   */
+  readonly baseUrl?: string;
+  /**
+   * Maximum request body in bytes (D13), enforced by Fastify with a 413 before
+   * any handler runs. Omitted: Fastify's default (1 MiB).
+   */
+  readonly bodyLimit?: number;
+  /**
+   * Per-principal budget for `/v1/*` (D13). The bucket key is
+   * `${tenantId}:${actor.type}:${actor.id}` from `resolveContext`; omitted: no limiter.
+   */
+  readonly rateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /**
+   * Budget for `POST /v1/auth/token` (D20), independent of `rateLimit`. The
+   * bucket key is the caller's IP plus the body's client id; omitted: no limiter.
+   */
+  readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /** Visma Connect SSO (D23), forwarded to `createAuth`; omitted: SSO is not registered. */
+  readonly sso?: CreateAuthOptions['sso'];
+  /** Better Auth's pre-auth limits (D20), forwarded to `createAuth`; omitted: none. */
+  readonly preAuthRateLimit?: CreateAuthOptions['rateLimit'];
+  /** Back-channel logout budget per source IP per minute (D26, Q32); omitted: 600. */
+  readonly backchannelLogoutRateLimitPerMinute?: number;
+}
+
+export interface App {
+  /** The Fastify instance; never listening until the host calls `listen`. */
+  readonly app: FastifyInstance;
+  /** The same Better Auth instance mounted at `/api/auth/*`. */
+  readonly auth: AuthInstance;
+  /** Closes Fastify only; the host owns the injected pools. */
+  close(): Promise<void>;
+}
+
+/** Better Auth's runtime `handler` (`AuthInstance` types its surface as `unknown`). */
+interface AuthHandlerSurface {
+  handler(request: Request): Promise<Response>;
+}
+
+/** The slice of `auth.api.getSession` the MFA enrollment gate reads. */
+interface AuthSessionSurface {
+  getSession(args: {
+    headers: Headers;
+  }): Promise<{ user?: { twoFactorEnabled?: boolean | null } } | null>;
+}
+
+const STEP_UP_HEADERS = '__stepUpHeaders';
+
+interface StepUpHandlerContext {
+  readonly [STEP_UP_HEADERS]: Headers;
+  readonly tenantId: string;
+  readonly actor: { readonly type: string; readonly id: string };
+}
+
+const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+/** Skew added to the token's `exp` for the replay record's lifetime (D26). */
+const LOGOUT_JTI_SKEW_SECONDS = 30;
+/** Generous per-IP floor (D26): high enough not to drop legitimate logout bursts. */
+const DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE = 600;
+const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
+/** Q36: where Visma Connect returns from a step-up re-authorization. */
+const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
+
+/** Q74: the path of the request target, without its query. Every guard keys on this. */
+function pathnameOf(request: FastifyRequest): string {
+  return request.url.split('?', 1)[0] ?? '';
+}
+
+function isTokenExchange(request: FastifyRequest): boolean {
+  return request.method === 'POST' && pathnameOf(request) === TOKEN_EXCHANGE_PATH;
+}
+
+const CERBOS_TLS_LOOPBACK_ONLY = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
+
+function toWebHeaders(request: FastifyRequest): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (typeof value === 'string') {
+      headers.set(name, value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        headers.append(name, item);
+      }
+    }
+  }
+  return headers;
+}
+
+function toWebRequest(request: FastifyRequest, baseUrl: string | undefined): Request {
+  const headers = toWebHeaders(request);
+  // Better Auth keys its pre-auth rate-limit buckets by `x-forwarded-for`. Replace
+  // whatever the caller sent with the address Fastify resolved from the real peer
+  // (honoring `trustProxy`), so a spoofed or multi-hop header cannot pick a bucket.
+  headers.set('x-forwarded-for', request.ip);
+  const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+  let body: string | undefined;
+  if (hasBody && request.body !== undefined && request.body !== null) {
+    body = typeof request.body === 'string' ? request.body : JSON.stringify(request.body);
+    headers.delete('content-length');
+  }
+  return new Request(
+    new URL(request.url, baseUrl ?? `http://${request.headers.host ?? 'localhost'}`),
+    {
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body }),
+    },
+  );
+}
+
+export async function createApp(options: CreateAppOptions): Promise<App> {
+  // Q48, D23: a configured provider that cannot be discovered fails startup.
+  if (options.sso !== undefined) {
+    await assertDiscoverable(options.sso.discoveryUrl);
+  }
+  // The auth handle runs on the host's `tayzu_auth` pool; the catalog and
+  // revocation pool run as `tayzu_app` so RLS applies.
+  const authDb = drizzle(options.authPool, { schema: authSchema });
+  const appPool = options.appPool;
+
+  const auth = createAuth({
+    db: authDb,
+    secret: options.authSecret,
+    ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
+    trustedOrigins: options.allowedOrigins,
+    ...(options.sso === undefined ? {} : { sso: options.sso }),
+    ...(options.preAuthRateLimit === undefined ? {} : { rateLimit: options.preAuthRateLimit }),
+  });
+  const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+
+  const authz = createCerbosClient({
+    address: options.cerbosAddress,
+    tls: !CERBOS_TLS_LOOPBACK_ONLY.test(options.cerbosAddress),
+  });
+  const router = createCatalogRouter({
+    blueprints: createBlueprintService({ pool: appPool, authz }),
+    entities: createEntityService({ pool: appPool, authz }),
+  });
+  // D4: the guard runs after context resolution and before the operation, for
+  // every procedure whose route spec carries `x-tayzu-risk: high`. The caller's
+  // headers travel in the handler context, under a private key.
+  const stepUpGuard = createStepUpGuard({
+    auth,
+    ...(options.sso === undefined ? {} : { sso: options.sso }),
+  });
+  // Q36: the SSO step-up flow. The callback's absolute URL is built on the
+  // host's `BETTER_AUTH_URL` (Q64), falling back to the first allowed origin
+  // only when it is unset (test); never on a request header.
+  const callbackBase = options.baseUrl ?? options.allowedOrigins[0];
+  const reauthorization: Reauthorization | undefined =
+    options.sso === undefined || callbackBase === undefined
+      ? undefined
+      : createReauthorization({
+          auth,
+          authPool: options.authPool,
+          discoveryUrl: options.sso.discoveryUrl,
+          clientId: options.sso.clientId,
+          clientSecret: options.sso.clientSecret,
+          redirectUri: new URL(REAUTH_CALLBACK_PATH, callbackBase).toString(),
+        });
+  const openApiHandler = new OpenAPIHandler(router, {
+    clientInterceptors: [
+      errorMappingInterceptor,
+      async (interceptorOptions) => {
+        const { context, path, procedure } = interceptorOptions;
+        const route = procedure['~orpc'].route;
+        const resolvedSpec = typeof route.spec === 'function' ? route.spec({}) : route.spec;
+        const stepUpContext = context as unknown as StepUpHandlerContext;
+        const highRisk =
+          resolvedSpec !== undefined &&
+          (resolvedSpec as Record<string, unknown>)['x-tayzu-risk'] === 'high';
+        const headers = stepUpContext[STEP_UP_HEADERS];
+        // A result recorded by the re-auth callback reaches the guard (D25, Q36).
+        const returned =
+          highRisk && reauthorization !== undefined ? await reauthorization.lookup(headers) : null;
+        try {
+          await stepUpGuard({
+            headers,
+            tenantId: stepUpContext.tenantId,
+            actor: stepUpContext.actor,
+            route: { ...(highRisk ? { riskLevel: 'high' as const } : {}) },
+            operation: path.join('.'),
+            ...(returned === null ? {} : { reauthorization: returned }),
+          });
+        } catch (error) {
+          const reauthorizationUrl =
+            error instanceof AuthStepUpError && reauthorization !== undefined
+              ? await reauthorization.start(headers)
+              : null;
+          if (reauthorizationUrl === null) {
+            throw error;
+          }
+          throw new ORPCError('AUTH_STEP_UP_REQUIRED', {
+            status: 403,
+            message: error instanceof Error ? error.message : 'Step-up required',
+            data: { reauthorizationUrl },
+          });
+        }
+        return interceptorOptions.next();
+      },
+    ],
+    // D13: custom-header CSRF check (default `x-csrf-token: orpc`) on every
+    // mutating route. Fail closed: only an explicit GET/HEAD route is exempt.
+    plugins: [
+      new SimpleCsrfProtectionHandlerPlugin({
+        exclude: ({ procedure }) => {
+          const method = procedure['~orpc'].route.method;
+          return method === 'GET' || method === 'HEAD';
+        },
+      }),
+    ],
+  });
+
+  // Only a proxy on a private or loopback address (the ACA ingress) may set
+  // the client address via `X-Forwarded-For`; a public peer's header is ignored.
+  const app = Fastify({
+    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
+    ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
+  });
+  // Q74, D18: first hook of all. A target that is not origin-form, or whose
+  // path (before the query) holds `%`, `//` or a backslash, answers the
+  // allowlist's own 404 before any other hook or the router can normalize it.
+  app.addHook('onRequest', async (request, reply) => {
+    const url: string = request.url;
+    const pathname: string = url.split('?', 1)[0] ?? '';
+    const originForm: boolean = url.startsWith('/') && !url.startsWith('//');
+    if (!originForm || /[%\\]|\/\//.test(pathname)) {
+      reply.callNotFound();
+      return reply;
+    }
+  });
+  // Q67, D11: an error that reaches Fastify unmapped answers the generic
+  // `INTERNAL` body, never the thrown message. Client errors Fastify and its
+  // plugins raise on purpose (4xx) keep their own status and body.
+  app.setErrorHandler(async (error, _request, reply) => {
+    const { statusCode } = error as { statusCode?: unknown };
+    if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
+      return reply.status(statusCode).send(error);
+    }
+    const mapped = toOrpcError(error);
+    // Q76: only a genuinely unmapped error is a security-log signal.
+    if (mapped.code === 'INTERNAL') {
+      emitInternalError(error);
+    }
+    return reply.status(mapped.status).send(mapped.toJSON());
+  });
+  // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
+  // HSTS (task 11.12): one year, subdomains included (helmet's default is 180 days).
+  await app.register(fastifyHelmet, {
+    contentSecurityPolicy: false,
+    strictTransportSecurity: { maxAge: 31_536_000, includeSubDomains: true },
+  });
+  // D13, ZAP finding [10049] (Storable and Cacheable Content): default to
+  // `no-store` on every response, including Fastify's 404, unless the handler
+  // (e.g. Better Auth's get-session) already set its own Cache-Control.
+  app.addHook('onSend', async (_request, reply) => {
+    if (!reply.hasHeader('cache-control')) {
+      reply.header('cache-control', 'no-store');
+    }
+  });
+  // Exact-match allowlist; `credentials` is required for Better Auth's cookie.
+  // A disallowed origin gets no CORS headers at all, not even `credentials`.
+  const allowedOrigins = new Set(options.allowedOrigins);
+  await app.register(fastifyCors, {
+    delegator: (request, callback) => {
+      const origin = request.headers.origin;
+      if (origin !== undefined && allowedOrigins.has(origin)) {
+        callback(null, { origin, credentials: true });
+      } else {
+        callback(null, { origin: false, credentials: false });
+      }
+    },
+  });
+  // oRPC reads the raw body itself; keep Fastify from consuming other types.
+  app.addContentTypeParser('*', (_request, _payload, done) => {
+    done(null, undefined);
+  });
+
+  // Route-level limits only (`global: false`); registered before any route that opts in.
+  await app.register(fastifyRateLimit, { global: false });
+
+  // Q33: liveness only. Unauthenticated, no dependency check, no detail.
+  app.get('/healthz', () => ({ status: 'ok' }));
+
+  // D18: deny-by-default. An unlisted path gets Fastify's own 404, identical
+  // to any unknown route, before Better Auth is reached.
+  app.addHook('onRequest', async (request, reply) => {
+    const pathname: string = pathnameOf(request);
+    if (!pathname.startsWith('/api/auth')) {
+      return;
+    }
+    if (!isAllowedAuthPath(pathname)) {
+      reply.callNotFound();
+      return reply;
+    }
+  });
+
+  // Q66, D13: the `*` parser above skips Fastify's body limit for non-JSON types, so a
+  // body-bearing `/v1/*` request must be `application/json` or it is refused with 415
+  // in `onRequest`, before any body is read.
+  app.addHook('onRequest', async (request, reply) => {
+    const pathname: string = pathnameOf(request);
+    if (pathname !== '/v1' && !pathname.startsWith('/v1/')) {
+      return;
+    }
+    // The IdP's form-encoded callbacks (D26, Q36) have their own scoped parsers.
+    if (pathname === BACKCHANNEL_LOGOUT_PATH || pathname === REAUTH_CALLBACK_PATH) {
+      return;
+    }
+    const { headers } = request;
+    const hasBody =
+      headers['transfer-encoding'] !== undefined ||
+      (headers['content-length'] !== undefined && headers['content-length'] !== '0');
+    if (!hasBody) {
+      return;
+    }
+    const mediaType = (headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
+    if (mediaType !== 'application/json') {
+      return reply
+        .status(415)
+        .send({ code: 'UNSUPPORTED_MEDIA_TYPE', status: 415, message: 'Unsupported media type' });
+    }
+    return undefined;
+  });
+
+  // Q60: a client-submitted ID token would bypass the authorization-code callback
+  // (state, nonce, PKCE; D23-D26), so sign-in and linking refuse any body carrying one.
+  app.addHook('preHandler', async (request, reply) => {
+    const pathname: string = pathnameOf(request);
+    if (
+      request.method !== 'POST' ||
+      (pathname !== '/api/auth/sign-in/social' && pathname !== '/api/auth/link-social')
+    ) {
+      return;
+    }
+    const body: unknown = request.body;
+    if (typeof body === 'object' && body !== null && Object.hasOwn(body, 'idToken')) {
+      return reply.status(400).send({ code: 'BAD_REQUEST', status: 400, message: 'Bad request' });
+    }
+    return undefined;
+  });
+
+  // D24 path (a): `/link-social` is a Better Auth native route, so D4's
+  // procedure guard does not reach it, nor `/unlink-account` (Q43); the caller
+  // needs a fresh MFA verification or password re-entry (Q49) before the request
+  // reaches Better Auth.
+  const assertLinkStepUp = createEnrolledStepUpCheck({ auth });
+  app.addHook('preHandler', async (request, reply) => {
+    const pathname: string = pathnameOf(request);
+    if (
+      request.method !== 'POST' ||
+      (pathname !== '/api/auth/link-social' && pathname !== '/api/auth/unlink-account')
+    ) {
+      return;
+    }
+    try {
+      await assertLinkStepUp(toWebHeaders(request));
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return reply.status(mapped.status).send(mapped.toJSON());
+    }
+    return undefined;
+  });
+
+  // Q35, D23: Visma Connect's `form_post` callback arrives as
+  // `application/x-www-form-urlencoded`. Only this scope keeps that body (as the raw
+  // string Better Auth re-reads); the catch-all `*` parser stays for other routes.
+  await app.register((scope, _opts, done) => {
+    scope.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (_request, body, parsed) => {
+        parsed(null, body);
+      },
+    );
+    scope.all('/api/auth/*', async (request, reply) => {
+      const response = await (auth as unknown as AuthHandlerSurface).handler(
+        toWebRequest(request, options.baseUrl),
+      );
+      reply.status(response.status);
+      for (const [name, value] of response.headers) {
+        if (name !== 'set-cookie') {
+          reply.header(name, value);
+        }
+      }
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length > 0) {
+        reply.header('set-cookie', cookies);
+      }
+      return reply.send(Buffer.from(await response.arrayBuffer()));
+    });
+    done();
+  });
+
+  // D26: public back-channel logout (Visma Connect's infrastructure is the
+  // caller: no cookie, no CSRF header). Encapsulated so the form parser does
+  // not change how any other route sees its body. Every well-formed request
+  // answers the same 200, whatever the token's validity or session match.
+  /** Verifies, replay-guards and applies one logout token; the outcome is the only thing returned. */
+  async function handleLogoutToken(
+    token: string,
+    config: NonNullable<CreateAppOptions['sso']>,
+  ): Promise<BackchannelLogoutOutcome> {
+    const verified = await verifyLogoutToken(token, {
+      discoveryUrl: config.discoveryUrl,
+      clientId: config.clientId,
+    });
+    if (verified?.jti === undefined) {
+      return 'invalid';
+    }
+    // Replay state (D26): one `auth.verification` row per accepted token,
+    // recorded atomically; a second delivery inserts nothing and revokes nothing.
+    const recorded = await options.authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       select $1, $2, $3, to_timestamp($4)
+       where not exists (select 1 from auth.verification where identifier = $2)`,
+      [
+        randomUUID(),
+        `backchannel-logout:${config.clientId}:${verified.jti}`,
+        'processed',
+        verified.exp + LOGOUT_JTI_SKEW_SECONDS,
+      ],
+    );
+    if (recorded.rowCount !== 1) {
+      return 'replay';
+    }
+    let revoked = 0;
+    if (verified.sid !== undefined) {
+      revoked =
+        (
+          await options.authPool.query('delete from auth.session where sso_sid = $1', [
+            verified.sid,
+          ])
+        ).rowCount ?? 0;
+    } else if (verified.sub !== undefined) {
+      // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
+      // local sessions (`sso_sid` null) are never touched.
+      revoked =
+        (
+          await options.authPool.query(
+            `delete from auth.session
+           where sso_sid is not null
+             and user_id in (
+               select user_id from auth.account
+               where provider_id = 'visma-connect' and account_id = $1
+             )`,
+            [verified.sub],
+          )
+        ).rowCount ?? 0;
+    }
+    return revoked > 0 ? 'revoked' : 'no_match';
+  }
+  const sso = options.sso;
+  // Without SSO configuration the route is disabled: it answers 404.
+  await app.register((scope, _opts, done) => {
+    if (sso === undefined) {
+      // Explicit 404, so the `/v1/*` catch-all never answers for it.
+      scope.post(BACKCHANNEL_LOGOUT_PATH, (_request, reply) =>
+        reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 }),
+      );
+      done();
+      return;
+    }
+    scope.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (_request, body, parsed) => {
+        const fields: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const [name, value] of new URLSearchParams(body as string)) {
+          if (name === 'logout_token') {
+            fields[name] = value;
+          }
+        }
+        parsed(null, fields);
+      },
+    );
+    scope.post(
+      BACKCHANNEL_LOGOUT_PATH,
+      {
+        config: {
+          // Floor against abuse, keyed by source IP only: the caller is Visma
+          // Connect's infrastructure, not a Tayzu principal (D26).
+          rateLimit: {
+            max:
+              options.backchannelLogoutRateLimitPerMinute ??
+              DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE,
+            timeWindow: 60_000,
+            keyGenerator: (request: FastifyRequest): string => `backchannel-logout:${request.ip}`,
+          },
+        },
+      },
+      async (request, reply) => {
+        const token = (request.body as Record<string, string> | undefined)?.['logout_token'];
+        const malformed = typeof token !== 'string' || token === '';
+        await withBackchannelLogoutTelemetry(async () => {
+          if (malformed) {
+            return 'invalid';
+          }
+          return handleLogoutToken(token, sso);
+        });
+        if (malformed) {
+          return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
+        }
+        return reply.status(200).send({});
+      },
+    );
+    done();
+  });
+
+  // Q36: the re-authorization callback (query redirect or `form_post`). The
+  // single-use `state` binds it to the session; it answers a bare 200 or 400.
+  await app.register((scope, _opts, done) => {
+    scope.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (_request, body, parsed) => {
+        const fields: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const [name, value] of new URLSearchParams(body as string)) {
+          if (name === 'code' || name === 'state') {
+            fields[name] = value;
+          }
+        }
+        parsed(null, fields);
+      },
+    );
+    const handle = async (
+      params: { code?: unknown; state?: unknown },
+      reply: import('fastify').FastifyReply,
+    ): Promise<unknown> => {
+      const ok = reauthorization !== undefined && (await reauthorization.complete(params));
+      return ok
+        ? reply.status(200).send({})
+        : reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
+    };
+    scope.get(REAUTH_CALLBACK_PATH, (request, reply) => {
+      const query = request.query as Record<string, unknown>;
+      return handle({ code: query['code'], state: query['state'] }, reply);
+    });
+    scope.post(REAUTH_CALLBACK_PATH, (request, reply) => {
+      const body = request.body as Record<string, unknown> | undefined;
+      return handle({ code: body?.['code'], state: body?.['state'] }, reply);
+    });
+    done();
+  });
+
+  // Resolved once per request: the rate-limit key generator and the handler share it.
+  type Resolution = { context: Awaited<ReturnType<typeof resolveContext>> } | { error: unknown };
+  const resolutions = new WeakMap<FastifyRequest, Promise<Resolution>>();
+  const resolveOnce = (request: FastifyRequest): Promise<Resolution> => {
+    let pending = resolutions.get(request);
+    if (pending === undefined) {
+      pending = resolveContext(toWebHeaders(request)).then(
+        (context): Resolution => ({ context }),
+        (error: unknown): Resolution => ({ error }),
+      );
+      resolutions.set(request, pending);
+    }
+    return pending;
+  };
+
+  const limited = new ORPCError('AUTH_RATE_LIMITED', {
+    status: 429,
+    message: 'Too many requests',
+  });
+
+  // D20: token exchange has no tenant/actor yet, so it gets its own bucket
+  // (IP only, so varying `clientId` cannot mint a fresh bucket; Q56) and is exempt from the authenticated one below.
+  if (options.tokenExchangeRateLimit !== undefined) {
+    const check = app.createRateLimit({
+      max: options.tokenExchangeRateLimit.max,
+      timeWindow: options.tokenExchangeRateLimit.timeWindowMs,
+      // Internal bucket key only: never logged or returned.
+      keyGenerator: (request: FastifyRequest): string => `token:${request.ip}`,
+    });
+    app.addHook('preHandler', async (request, reply) => {
+      if (!isTokenExchange(request)) {
+        return;
+      }
+      const result = await check(request);
+      if (!result.isAllowed && result.isExceeded) {
+        emitRateLimited('token_exchange');
+        return reply.status(429).header('retry-after', result.ttlInSeconds).send(limited.toJSON());
+      }
+      return undefined;
+    });
+  }
+
+  // D5: machine credentials exchange a client id and secret for an access
+  // token. No session: the credential is the authentication. Registered before
+  // the `/v1/*` catch-all, so it never reaches the per-principal limiter.
+  app.post(TOKEN_EXCHANGE_PATH, async (request, reply) => {
+    const body = request.body as { clientId?: unknown; clientSecret?: unknown } | null | undefined;
+    if (typeof body?.clientId !== 'string' || typeof body.clientSecret !== 'string') {
+      return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
+    }
+    try {
+      const { accessToken } = await exchangeMachineToken(auth, {
+        clientId: body.clientId,
+        clientSecret: body.clientSecret,
+      });
+      return await reply.status(200).send({ accessToken });
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return reply.status(mapped.status).send(mapped.toJSON());
+    }
+  });
+
+  let v1Config: { rateLimit?: object } = {};
+  if (options.rateLimit !== undefined) {
+    v1Config = {
+      rateLimit: {
+        max: options.rateLimit.max,
+        timeWindow: options.rateLimit.timeWindowMs,
+        allowList: isTokenExchange,
+        // Internal bucket key only: never logged, returned or exported.
+        keyGenerator: async (request: FastifyRequest): Promise<string> => {
+          const resolved = await resolveOnce(request);
+          if ('error' in resolved) {
+            return `unauthenticated:${request.ip}`;
+          }
+          const { tenantId, actor } = resolved.context;
+          return `${tenantId}:${actor.type}:${actor.id}`;
+        },
+        errorResponseBuilder: () => ({ ...limited.toJSON(), statusCode: 429 }),
+      },
+    };
+  }
+
+  app.all('/v1/*', { config: v1Config }, async (request, reply) => {
+    const resolved = await resolveOnce(request);
+    if ('error' in resolved) {
+      // Same mapping and body shape as any other error, via oRPC's own JSON.
+      const mapped = toOrpcError(resolved.error);
+      return reply.status(mapped.status).send(mapped.toJSON());
+    }
+    const context = resolved.context;
+    // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
+    // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
+    // principals are always `member` (Q28), so only a user can carry `admin` here.
+    if (context.principal?.roles.includes('admin') === true) {
+      const session = await (auth.api as AuthSessionSurface).getSession({
+        headers: toWebHeaders(request),
+      });
+      if (session?.user?.twoFactorEnabled !== true) {
+        const mapped = toOrpcError(new AuthStepUpError());
+        return reply.status(mapped.status).send(mapped.toJSON());
+      }
+    }
+    const result = await openApiHandler.handle(request, reply, {
+      context: { ...context, [STEP_UP_HEADERS]: toWebHeaders(request) },
+    });
+    if (!result.matched) {
+      return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });
+    }
+    return undefined;
+  });
+
+  await app.ready();
+
+  return {
+    app,
+    auth,
+    async close(): Promise<void> {
+      await app.close();
+    },
+  };
+}

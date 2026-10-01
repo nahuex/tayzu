@@ -253,11 +253,13 @@
  *    second is granted only once the first request's own transaction
  *    commits or rolls back.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -276,7 +278,7 @@ import type { CatalogContext } from '../domain/context.js';
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string): CatalogContext {
-  return { tenantId, actor: DEFAULT_ACTOR };
+  return { tenantId, actor: DEFAULT_ACTOR, principal: ADMIN_PRINCIPAL };
 }
 
 const TIER_ONLY_SCHEMA = {
@@ -291,15 +293,22 @@ describe('entity write racing a blueprint update (task 8.9; design D7)', () => {
   let entityService: EntityService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
-    blueprintService = createBlueprintService({ pool });
-    entityService = createEntityService({ pool });
+    // Raw introspection only (blueprintRowLocation/waitForBlueprintRowWaiters
+    // below inspect pg_locks/pg_stat_activity directly, outside
+    // withTenantTransaction): the owner connection bypasses RLS, task 6.3,
+    // design D6 Resolved decision Q1a.
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The services under test run through the real tenant_isolation RLS
+    // policy, exactly like production (task 6.3, design D6 Q1a).
+    pool = connect(databaseUrl()).$client;
+    blueprintService = createBlueprintService({ pool, authz });
+    entityService = createEntityService({ pool, authz });
   }, 60_000);
 
   afterAll(async () => {
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   it('commits the entity write against the new schema when the blueprint update wins the lock race', async () => {
@@ -312,7 +321,11 @@ describe('entity write racing a blueprint update (task 8.9; design D7)', () => {
     });
     const location = await blueprintRowLocation(db, tenantId, 'service');
 
-    const controller = await acquireBlueprintRowLock(pool, tenantId, 'service', 'update');
+    // Raw lock hold on the owner connection (bypasses RLS): a raw `for
+    // update`/`for share` filtered by tenant_id with no app.tenant_id session
+    // setting would otherwise see zero rows under tayzu_app's RLS policy
+    // (task 6.3, design D6 Q1a).
+    const controller = await acquireBlueprintRowLock(db.$client, tenantId, 'service', 'update');
 
     // Queues first: blueprints.update's own internal `FOR UPDATE`.
     const updatePromise = blueprintService.update(c, {
@@ -361,7 +374,8 @@ describe('entity write racing a blueprint update (task 8.9; design D7)', () => {
     });
     const location = await blueprintRowLocation(db, tenantId, 'service');
 
-    const controller = await acquireBlueprintRowLock(pool, tenantId, 'service', 'update');
+    // Raw lock hold on the owner connection: same reason as the test above.
+    const controller = await acquireBlueprintRowLock(db.$client, tenantId, 'service', 'update');
 
     // Queues first: entities.create's own internal `FOR SHARE`.
     const createPromise = entityService.create(c, {

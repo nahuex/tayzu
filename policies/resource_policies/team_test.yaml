@@ -1,0 +1,66 @@
+---
+name: TeamTest
+description: >-
+  Task 8.2: team denies by default; only an admin of the same tenant is
+  granted anything. Scenario "Action with no matching rule is denied".
+tests:
+  # Scenario: Action with no matching rule is denied
+  - name: Member can only view and list team, everything else is denied
+    input:
+      principals: [member_t1, member_platform_t1, member_moderator_service_t1]
+      resources: [team_t1]
+      actions: [view, list, create, update, delete, export]
+    expected:
+      - principal: member_t1
+        resource: team_t1
+        actions: &all_denied
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+          export: EFFECT_DENY
+      - principal: member_platform_t1
+        resource: team_t1
+        actions: *all_denied
+      - principal: member_moderator_service_t1
+        resource: team_t1
+        actions: *all_denied
+
+  - name: Admin of the same tenant is allowed, admin of another tenant is denied
+    input:
+      principals: [admin_t1, admin_t2]
+      resources: [team_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: admin_t1
+        resource: team_t1
+        actions:
+          view: EFFECT_ALLOW
+          list: EFFECT_ALLOW
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_ALLOW
+      - principal: admin_t2
+        resource: team_t1
+        actions:
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: Member of another tenant cannot view or list team
+    input:
+      principals: [member_platform_t2]
+      resources: [team_t1]
+      actions: [view, list, create, update, delete]
+    expected:
+      - principal: member_platform_t2
+        resource: team_t1
+        actions:
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY

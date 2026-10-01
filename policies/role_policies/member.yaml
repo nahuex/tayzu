@@ -1,0 +1,30 @@
+# Design D8. `member` (Better Auth `member`). Read every blueprint, entity, team
+# and user, create and update entities. Nothing else on team or user.
+#
+# Cerbos treats a role policy as a CEILING on what the role can do, not as a
+# grant: an action the ceiling omits is denied even when a resource-policy rule
+# (for example the Moderator derived role) would allow it. The grants live in
+# resource_policies/, which also holds the tenant check and the ownership
+# narrowing (which entities a member may create or update).
+#
+# `delete` is on the `catalog_entity` ceiling so that the Moderator grant
+# ("every entity-level action", spec "Moderator grant") and the attribute rule
+# "member deletes an entity they created" (task 8.6) can reach it. No other
+# resource-policy rule gives a plain member `delete`; moderator_test.yaml,
+# role_policies_test.yaml and dynamic_abac_test.yaml assert that.
+#
+# `user` and `team`: members may only view and list them (Checkpoint 3, Q3a).
+# Everything else on those kinds stays admin-only.
+---
+apiVersion: api.cerbos.dev/v1
+rolePolicy:
+  role: member
+  rules:
+    - resource: catalog_entity
+      allowActions: [view, list, create, update, delete]
+    - resource: catalog_blueprint
+      allowActions: [view, list]
+    - resource: team
+      allowActions: [view, list]
+    - resource: user
+      allowActions: [view, list]

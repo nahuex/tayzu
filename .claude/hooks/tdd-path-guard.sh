@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # PreToolUse guard for the TDD subagents (Write/Edit/MultiEdit/NotebookEdit).
-# Usage: tdd-path-guard.sh test|impl   (tool call JSON arrives on stdin)
+# Usage: tdd-path-guard.sh test|impl|policy   (tool call JSON arrives on stdin)
 # test: may only write test files.  impl: may never write test files.
+# policy: may only write under policies/ (Cerbos policies and their tests).
 # Exit 2 blocks the tool call and shows stderr to the agent.
 set -euo pipefail
 mode="${1:?mode required}"
@@ -13,6 +14,13 @@ case "$path" in
 esac
 if [ "$mode" = "test" ] && [ "$is_test" -eq 0 ]; then
   echo "tdd-path-guard: test-writer may only write test files (*.test.ts, *.int.test.ts, __fixtures__/). Blocked: $path" >&2
+  exit 2
+fi
+if [ "$mode" = "policy" ]; then
+  case "$path" in
+    */policies/*|policies/*) exit 0 ;;
+  esac
+  echo "tdd-path-guard: policy-writer may only write under policies/. Blocked: $path" >&2
   exit 2
 fi
 if [ "$mode" = "impl" ] && [ "$is_test" -eq 1 ]; then

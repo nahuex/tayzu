@@ -126,6 +126,7 @@
  * entity *operations* (task 8.x) do not exist yet, but the six D4 tables
  * (task 5.1) do.
  */
+import { ADMIN_PRINCIPAL, authz } from './__fixtures__/authz-test-helpers.js';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
@@ -137,6 +138,7 @@ import { registration, type TelemetryTestHarness } from './__fixtures__/register
 import {
   blueprintRowId,
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -149,6 +151,7 @@ import {
   onlySpan,
   sumDataPoints,
 } from './__fixtures__/telemetry-assertions.js';
+import { redactingAuthz } from './__fixtures__/redaction-authz.js';
 import type { CatalogContext } from '../domain/context.js';
 import {
   createBlueprintService,
@@ -171,7 +174,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 /** A minimal, valid blueprint input, with `overrides` shallow-merged on top. */
@@ -194,11 +197,19 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
   let service: BlueprintService;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
-    pool = db.$client;
-    await runMigrations(pool);
+    // Raw introspection only (the change-event snapshot check and the
+    // seedEntity/blueprintRowId raw seeding below run outside
+    // withTenantTransaction, with no app.tenant_id session setting): the
+    // owner connection bypasses RLS so these see rows regardless of tenant
+    // context (task 6.3, design D6 Resolved decision Q1a).
+    db = connectAsOwner(databaseUrl());
+    await runMigrations(db.$client);
+    // The service under test runs through the real tenant_isolation RLS
+    // policy, exactly like production (task 6.3, design D6 Resolved decision
+    // Q1a).
+    pool = connect(databaseUrl()).$client;
     harness = registeredHarness();
-    service = createBlueprintService({ pool });
+    service = createBlueprintService({ pool, authz });
   }, 60_000);
 
   afterEach(async () => {
@@ -208,6 +219,7 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
   afterAll(async () => {
     await harness.shutdown();
     await endQuietly(pool);
+    await endQuietly(db.$client);
   }, 60_000);
 
   describe('blueprints.create (task 7.1)', () => {
@@ -468,6 +480,49 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
       await service.delete(c, { identifier: 'sandbox' });
 
       await expectCatalogErrorCode(service.get(c, { identifier: 'sandbox' }), 'CATALOG_NOT_FOUND');
+    });
+
+    it('Referring entities the caller cannot read are redacted to a count', async () => {
+      // GIVEN blueprint `service` has 1 entity the caller can read and 4 the
+      // caller cannot read (task 10.2, design D12)
+      const tenantId = randomTenantId();
+      const c = ctx(tenantId);
+      await service.create(c, blueprintInput('service'));
+      const blueprintId = await blueprintRowId(db, tenantId, 'service');
+      const hidden = ['hidden-1', 'hidden-2', 'hidden-3', 'hidden-4'];
+      for (const identifier of ['visible-1', ...hidden]) {
+        await seedEntity(db, tenantId, blueprintId, identifier);
+      }
+      const spy = redactingAuthz(new Set(['visible-1']));
+      const redacting = createBlueprintService({ pool, authz: spy.client });
+
+      // WHEN the blueprint is deleted
+      const error = await expectCatalogErrorCode(
+        redacting.delete(c, { identifier: 'service' }),
+        'CATALOG_REFERENCE_VIOLATION',
+      );
+
+      // THEN the error names the readable referrer and reports "+4 not visible"
+      expect(error.details?.['referrers']).toEqual(['visible-1']);
+      expect(error.details?.['notVisible']).toBe(4);
+
+      // AND no unreadable identifier leaks anywhere in the error
+      const serialized = JSON.stringify({
+        message: error.message,
+        issues: error.issues,
+        details: error.details,
+      });
+      for (const identifier of hidden) {
+        expect(serialized).not.toContain(identifier);
+      }
+
+      // AND the redaction was one batch check over the candidates, in this tenant
+      expect(spy.batches).toHaveLength(1);
+      expect([...(spy.batches[0]?.ids ?? [])].sort()).toEqual(['visible-1', ...hidden].sort());
+      expect(new Set(spy.batches[0]?.attrTenantIds)).toEqual(new Set([tenantId]));
+
+      // AND the blueprint is still there
+      expect((await service.get(c, { identifier: 'service' })).version).toBe(1);
     });
   });
 });

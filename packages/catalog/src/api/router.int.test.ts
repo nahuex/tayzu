@@ -79,6 +79,7 @@
  * as every other int test in this package, reused from
  * `../service/__fixtures__/*.js` per the task instructions.
  */
+import { ADMIN_PRINCIPAL, authz } from '../service/__fixtures__/authz-test-helpers.js';
 import { createRouterClient } from '@orpc/server';
 import { runMigrations } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -90,6 +91,7 @@ import {
 } from '../service/__fixtures__/registered-harness.js';
 import {
   connect,
+  connectAsOwner,
   databaseUrl,
   endQuietly,
   expectCatalogErrorCode,
@@ -115,7 +117,7 @@ function registeredHarness(): TelemetryTestHarness {
 const DEFAULT_ACTOR: CatalogContext['actor'] = { type: 'user', id: 'user-1' };
 
 function ctx(tenantId: string, actor: CatalogContext['actor'] = DEFAULT_ACTOR): CatalogContext {
-  return { tenantId, actor };
+  return { tenantId, actor, principal: ADMIN_PRINCIPAL };
 }
 
 /** Narrows an unknown OpenAPI Operation Object field access without widening every read to `any`. */
@@ -125,7 +127,6 @@ function operationExtension(document: unknown, path: string, method: string, key
 }
 
 describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
-  let db: TestDb;
   let pool: TestDb['$client'];
   let harness: TelemetryTestHarness;
   let blueprints: BlueprintService;
@@ -138,12 +139,19 @@ describe('catalog API router (design D2, D3, D11; task 9.1)', () => {
   >;
 
   beforeAll(async () => {
-    db = connect(databaseUrl());
+    // Migrations need the owner connection: tayzu_app has no DDL privilege
+    // (task 6.3, design D6 Q1a). No raw introspection follows in this file,
+    // so the owner connection is closed right after migrating.
+    const ownerDb = connectAsOwner(databaseUrl());
+    await runMigrations(ownerDb.$client);
+    await endQuietly(ownerDb.$client);
+    // The router under test runs through the real tenant_isolation RLS
+    // policy, exactly like production.
+    const db = connect(databaseUrl());
     pool = db.$client;
-    await runMigrations(pool);
     harness = registeredHarness();
-    blueprints = createBlueprintService({ pool });
-    entities = createEntityService({ pool });
+    blueprints = createBlueprintService({ pool, authz });
+    entities = createEntityService({ pool, authz });
     const router = createCatalogRouter({ blueprints, entities });
     client = createRouterClient(router, {
       context: (raw: Record<string, unknown>) => raw,

@@ -1,0 +1,103 @@
+# Resource kind `catalog_entity` (design D7-D9). Resource attributes:
+# tenantId, blueprintId, and `ownerTeam` (the effective owning team resolved by
+# the service layer before the call; the attribute is absent when ownership is
+# `None`). For `create`, the attributes are those the entity WOULD have
+# (register-time simulation, design D11).
+#
+# Optional attributes `createdBy` (principal id of the creator) and `locked`
+# (boolean) drive the dynamic ABAC rules (task 8.6). Both are absent on most
+# entities; every condition guards them with has(), so an absent attribute
+# never matches the grant and never errors.
+#
+# Every allow rule requires the `same_tenant` derived role (or a derived role
+# that itself checks the tenant), so no rule can cross tenants. Deny by
+# default: an action with no matching allow rule is denied, and a tenant
+# mismatch is denied explicitly.
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  resource: catalog_entity
+  version: default
+  importDerivedRoles:
+    - same_tenant
+    - moderates_blueprint
+    - owning_team_member
+  rules:
+    # Explicit fallback: a cross-tenant request is denied outright.
+    - actions: ['*']
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          expr: R.attr.tenantId != P.attr.tenantId
+
+    # Dynamic ABAC (task 8.6): a locked entity cannot be updated by anyone who
+    # is not an admin. An explicit deny wins over every allow in Cerbos, so
+    # neither the member, moderator nor owning-team grants below can bypass it.
+    # An absent or non-true `locked` means "not locked": the deny does not
+    # match and does not error (has() guard).
+    - actions: [update]
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          all:
+            of:
+              - expr: has(R.attr.locked) && R.attr.locked == true
+              - expr: '!("admin" in P.roles)'
+
+    # admin: every action within their own tenant.
+    - actions: ['*']
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          expr: '"admin" in P.roles'
+
+    # member: read every entity.
+    - actions: [view, list]
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          expr: '"member" in P.roles'
+
+    # Dynamic ABAC (task 8.6): a member may delete an entity they created.
+    # Without a `createdBy` attribute the rule does not match (no grant).
+    - actions: [delete]
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          all:
+            of:
+              - expr: '"member" in P.roles'
+              - expr: has(R.attr.createdBy) && R.attr.createdBy == P.id
+
+    # member: create and update an entity that has no owning team. An owned
+    # entity is opened to its owning team's members by the rule below and to
+    # moderators by the rule after it, and to nobody else.
+    - actions: [create, update]
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          all:
+            of:
+              - expr: '"member" in P.roles'
+              - expr: '!has(R.attr.ownerTeam)'
+
+    # Team ownership (task 8.5): a member of the owning team may read and
+    # update the entity. The same rule is the register-time creation rule:
+    # for `create`, `ownerTeam` is the team the new entity would be owned by,
+    # so an entity owned by a team the creator does not belong to matches no
+    # allow rule and is denied.
+    - actions: [view, update, create]
+      effect: EFFECT_ALLOW
+      derivedRoles: [owning_team_member]
+
+    # Moderator (task 8.4): every action on entities of a moderated blueprint,
+    # regardless of team ownership.
+    - actions: ['*']
+      effect: EFFECT_ALLOW
+      derivedRoles: [moderates_blueprint]

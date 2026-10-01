@@ -24,12 +24,24 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
 
+  policy-compile:
+    name: Policy compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: pnpm policy:compile
+
   test:
     name: Test
+    needs: policy-compile
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # postgres:16, pinned by digest (task 24.9).
+        image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
         env:
           POSTGRES_USER: tayzu
           POSTGRES_PASSWORD: tayzu
@@ -48,6 +60,27 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Start Cerbos
+        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). Run
+        # after checkout so it serves the repo's policies/ and config/ (a
+        # service container cannot mount them). No shell in this image, so
+        # the "wait" loop polls the health endpoint from the runner.
+        run: |
+          docker run -d --name tayzu-cerbos \
+            -p 3592:3592 -p 3593:3593 \
+            -e CERBOS_NO_TELEMETRY=1 \
+            -v "$GITHUB_WORKSPACE/policies:/policies:ro" \
+            -v "$GITHUB_WORKSPACE/config/cerbos.yaml:/config/.cerbos.yaml:ro" \
+            ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515 \
+            server --config=/config/.cerbos.yaml
+      - name: Wait for Cerbos
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3592/_cerbos/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Cerbos did not become healthy in time" >&2
+          exit 1
       - run: pnpm test
 
   contract-check:
@@ -65,7 +98,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # postgres:16, pinned by digest (task 24.9).
+        image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
         env:
           POSTGRES_USER: tayzu
           POSTGRES_PASSWORD: tayzu
@@ -84,6 +118,27 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Start Cerbos
+        # ghcr.io/cerbos/cerbos:0.55.0, pinned by digest (design D7). Run
+        # after checkout so it serves the repo's policies/ and config/ (a
+        # service container cannot mount them). No shell in this image, so
+        # the "wait" loop polls the health endpoint from the runner.
+        run: |
+          docker run -d --name tayzu-cerbos \
+            -p 3592:3592 -p 3593:3593 \
+            -e CERBOS_NO_TELEMETRY=1 \
+            -v "$GITHUB_WORKSPACE/policies:/policies:ro" \
+            -v "$GITHUB_WORKSPACE/config/cerbos.yaml:/config/.cerbos.yaml:ro" \
+            ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515 \
+            server --config=/config/.cerbos.yaml
+      - name: Wait for Cerbos
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3592/_cerbos/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Cerbos did not become healthy in time" >&2
+          exit 1
       - run: pnpm otel-smoke-check
 
   dependency-audit:
@@ -137,3 +192,63 @@ jobs:
           name: sbom-spdx
           path: ${{ runner.temp }}/sbom.spdx.json
           if-no-files-found: warn
+
+  dast-zap:
+    name: DAST (OWASP ZAP baseline)
+    runs-on: ubuntu-latest
+    env:
+      CERBOS_ADDRESS: localhost:3593
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Start Cerbos
+        # Same pinned image as the test job (design D7).
+        run: |
+          docker run -d --name tayzu-cerbos \
+            -p 3592:3592 -p 3593:3593 \
+            -e CERBOS_NO_TELEMETRY=1 \
+            -v "$GITHUB_WORKSPACE/policies:/policies:ro" \
+            -v "$GITHUB_WORKSPACE/config/cerbos.yaml:/config/.cerbos.yaml:ro" \
+            ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515 \
+            server --config=/config/.cerbos.yaml
+      - name: Wait for Cerbos
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3592/_cerbos/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Cerbos did not become healthy in time" >&2
+          exit 1
+      - name: Start the DAST stack
+        # PostgreSQL 16 behind verified TLS (a per-run CA, sslmode=verify-full,
+        # design D5), migrations, apps/api through main.ts and one seeded
+        # organization and session (Q30). The same script backs `pnpm
+        # ci:local`. The seed exports ZAP_AUTH_HEADER and its masked value.
+        run: bash scripts/ci/dast.sh up
+      - name: ZAP baseline scan
+        # zaproxy/action-baseline v0.15.0, pinned by commit SHA, running the
+        # ZAP image pinned by digest (the one scripts/ci/dast.sh runs
+        # locally). It passes ZAP_AUTH_HEADER, ZAP_AUTH_HEADER_VALUE and
+        # ZAP_AUTH_HEADER_SITE into the container, so the scan is
+        # authenticated. fail_action fails the job on any WARN or FAIL alert;
+        # .zap/rules.tsv sets the levels, and goes through cmd_options
+        # because rules_file_name only takes effect with an IGNORE entry.
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
+        env:
+          ZAP_AUTH_HEADER_SITE: localhost
+        with:
+          target: http://localhost:3000
+          docker_name: ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
+          cmd_options: -c .zap/rules.tsv
+          fail_action: true
+          allow_issue_writing: false
+      - name: ZAP API scan
+        # Task 24.9: every operation of openapi/catalog.openapi.json, sent with
+        # the seeded MFA session and passively scanned (safe mode, D16), with
+        # the same pinned image and rules file.
+        run: bash scripts/ci/dast.sh api-scan
+      - name: Stop the DAST stack
+        if: always()
+        run: bash scripts/ci/dast.sh down
