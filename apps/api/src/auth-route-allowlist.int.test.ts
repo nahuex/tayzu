@@ -525,3 +525,103 @@ describe('apps/api /api/auth/change-password (task 23.16, design Q46 and D18)', 
     expect(response.statusCode).toBe(401);
   }, 60_000);
 });
+
+describe('apps/api /api/auth/* allowlist hook stops after callNotFound (task 26.5, design Q68 and D18)', () => {
+  let app: App;
+  let email: string;
+
+  beforeAll(async () => {
+    app = await createApp({
+      ...(await harnessPools()),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ALLOWED_ORIGIN],
+    });
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Callnotfound Owner',
+      email: `callnotfound-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Callnotfound Org ${suffix}`,
+      organizationSlug: `callnotfound-org-${suffix}`,
+      ip: randomIp(),
+    });
+    email = tenant.email;
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  async function signIn(): Promise<string> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/email',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ALLOWED_ORIGIN,
+      },
+      payload: JSON.stringify({ email, password: TEST_PASSWORD }),
+    });
+    expect(response.statusCode).toBe(200);
+    const setCookie = response.headers['set-cookie'];
+    const cookies = Array.isArray(setCookie)
+      ? setCookie
+      : typeof setCookie === 'string'
+        ? [setCookie]
+        : [];
+    return cookies.map((raw) => raw.split(';')[0]).join('; ');
+  }
+
+  async function hasSession(cookie: string): Promise<boolean> {
+    const response = await app.app.inject({
+      method: 'GET',
+      url: '/api/auth/get-session',
+      headers: { 'x-forwarded-for': randomIp(), origin: ALLOWED_ORIGIN, cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body: unknown = response.body === '' ? null : JSON.parse(response.body);
+    return body !== null && typeof body === 'object' && 'session' in body;
+  }
+
+  it('An organization owner calling an unlisted mutating route gets a 404 and the other sessions stay valid', async () => {
+    const callerCookie = await signIn();
+    const otherCookieA = await signIn();
+    const otherCookieB = await signIn();
+    expect(await hasSession(callerCookie)).toBe(true);
+    expect(await hasSession(otherCookieA)).toBe(true);
+    expect(await hasSession(otherCookieB)).toBe(true);
+
+    const url = '/api/auth/revoke-other-sessions';
+    const unknownUrl = '/api/auth/definitely-not-a-route-' + randomUUID();
+    // No body, as in the task: the hook alone must decide the outcome.
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: { 'x-forwarded-for': randomIp(), origin: ALLOWED_ORIGIN, cookie: callerCookie },
+    });
+    const unknown = await app.app.inject({
+      method: 'POST',
+      url: unknownUrl,
+      headers: { 'x-forwarded-for': randomIp(), origin: ALLOWED_ORIGIN, cookie: callerCookie },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(normalize(response.body, url)).toBe(normalize(unknown.body, unknownUrl));
+    // No side effect: Better Auth never ran, so no other session was revoked.
+    expect(await hasSession(otherCookieA)).toBe(true);
+    expect(await hasSession(otherCookieB)).toBe(true);
+    expect(await hasSession(callerCookie)).toBe(true);
+
+    // Control: the same call made in-process does revoke the other sessions, so
+    // the checks above would have caught a side effect.
+    const sessionsApi = app.auth.api as {
+      revokeOtherSessions(args: { headers: Headers }): Promise<unknown>;
+    };
+    await sessionsApi.revokeOtherSessions({ headers: new Headers({ cookie: callerCookie }) });
+    expect(await hasSession(otherCookieA)).toBe(false);
+    expect(await hasSession(otherCookieB)).toBe(false);
+    expect(await hasSession(callerCookie)).toBe(true);
+  }, 60_000);
+});

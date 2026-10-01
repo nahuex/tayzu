@@ -1021,7 +1021,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   Verify: `otel-export.int.test.ts` (extended) covers a request with
   `?code=...&state=...` exporting no query, and `auth-flow.int.test.ts` or a
   new test covers a Better Auth internal error writing no raw error text.
-- [ ] 26.5 The `/api/auth/*` allowlist hook returns the reply after
+- [x] 26.5 The `/api/auth/*` allowlist hook returns the reply after
   `callNotFound()` (design Q68, D18). Verify: `auth-route-allowlist.int.test.ts`
   (extended) covers an organization owner calling an unlisted mutating route
   (for example `/api/auth/revoke-other-sessions` without a body) getting `404`

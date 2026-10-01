@@ -331,6 +331,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     const pathname = request.url.split('?', 1)[0] ?? '';
     if (!isAllowedAuthPath(pathname)) {
       reply.callNotFound();
+      return reply;
     }
   });
 
