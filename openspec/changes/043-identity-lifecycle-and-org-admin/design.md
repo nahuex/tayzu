@@ -14,20 +14,46 @@
   change was originally drafted in parallel with `002`, before `002`'s own
   `design.md` existed, from the shared research notes
   (`scratchpad/p002/r1-port.md`, `r2-better-auth.md`, `r3-cerbos.md`,
-  `r4-data-http.md`, `r5-carryover-security.md`). Now that `002` is final,
-  this document has been checked against it directly. The package-layout
+  `r4-data-http.md`, `r5-carryover-security.md`). The package-layout
   assumption held exactly: `002` D1 confirms `packages/auth`/`@tayzu/auth`,
-  `packages/authz`/`@tayzu/authz`, and the `user` Cerbos resource kind, so no
-  import-path changes were needed. Four substantive corrections were made as
-  part of this reconciliation: the `_user.status` value casing now matches
-  `002`'s `Active`/`Disabled` exactly (D2, Goals); the ADRs this change adds
-  are renumbered 0017-0020 to avoid colliding with `002`'s own 0013-0016
-  (D3, D6, D8, D9, D12); `AUTH_STEP_UP_REQUIRED` is corrected to reuse `002`'s
-  existing code (403), not a newly invented 409 (D10); and the service-account
-  credential mechanism (D6) is corrected to reuse `002`'s single
-  `machine-credential` apiKey config rather than a config `002` never
-  actually defines. Task 1.1 remains in `tasks.md` as a final drift-check at
-  implementation time, not a first-time discovery step.
+  `packages/authz`/`@tayzu/authz`, and the `user` Cerbos resource kind. Four
+  substantive corrections were made then: the `_user.status` value casing
+  matches `002`'s `Active`/`Disabled` exactly; the ADRs this change adds are
+  numbered 0017-0020 to avoid colliding with `002`'s own 0013-0016;
+  `AUTH_STEP_UP_REQUIRED` reuses `002`'s existing code (403); and the
+  service-account credential mechanism reuses `002`'s single
+  `machine-credential` apiKey config.
+- **Re-reconciled against the merged `002` code on 2026-10-01** (task 1.1,
+  drift-check, plus the VCDM Mode A pre-assessment, task 1.2). Mechanical
+  drift was fixed in place; every scope or design conflict was asked in chat
+  and recorded as Resolved decisions Q8-Q17. The mechanical fixes, so that a
+  reader of the older text is not surprised:
+  - `nextStatus` returns a package-local error with
+    `code = 'CATALOG_VALIDATION_FAILED'`, because `@tayzu/auth` has no
+    `@tayzu/catalog` dependency (D2).
+  - `_user` is created per tenant, create-only and idempotent, and its
+    `status` enum is `['Active','Disabled']`: the change updates
+    `USER_BLUEPRINT` for new tenants and runs `blueprints.update` once per
+    existing tenant, and it widens the enum (D1).
+  - The role property is `portRole`; the identity router passes
+    `accountKind`, `portRole`, `moderatedBlueprints` and the **target's real
+    tenant** as Cerbos resource attributes, and new rules are `EFFECT_DENY`
+    (D3).
+  - Credential metadata is `{ actorKind, role: 'member', userId }`, because
+    token exchange rejects any credential without `role === 'member'` (D6).
+  - Better Auth stores `canceled` and never stores `expired`: the boundary
+    maps `canceled` to `cancelled` and derives `expired` from `expiresAt` (D4).
+  - `otel-smoke-check` reads the `@tayzu/auth` contract in addition to the
+    `@tayzu/authz` one, and the duplicate `step_up_denials` metric is dropped
+    (Observability contract).
+  - Step-up runs only in the OpenAPI interceptor, keyed on the route spec, so
+    every procedure declares `.route({ method, path, spec })` and step-up is
+    tested over HTTP only (D10).
+  - Rate limits use path-keyed `createRateLimit` preHandlers for the public
+    route and service-level buckets for the invitation caps, with the
+    defaults in `apps/api/src/config.ts` (D4).
+  - `docs/security/secrets.md`, `attack-surfaces.md` and `crypto-inventory.md`
+    are the docs this change updates (D12).
 - Reused, not redefined: `CatalogContext`/`Principal`/`onBehalfOf`
   (`001` design D3), the catalog operation pipeline
   (`defineCatalogOperation`), the `catalog.audit.*`/`catalog.security.*`
@@ -50,399 +76,671 @@
 ## Goals / Non-Goals
 
 **Goals:**
+
 - Complete the Port-shaped user status model (`Staged`/`Invited`/`Active`/
-  `Disabled`) as one canonical field on the `_user` entity, updated by hooks
-  reacting to Better Auth events — never reconstructed from raw invitation
-  history at read time (per the human's decision Q4, and `r5-carryover-security.md`
-  OQ-3 recommendation B).
+  `Disabled`) as one canonical field on the `_user` entity, written only
+  through one state machine by every writer (hooks, `identity.users.create`,
+  the ban hook, the sign-in hook) — never reconstructed from raw invitation
+  history at read time (human decisions Q4 and Q11).
 - Authorize every sensitive operation this change adds (invite, status
-  change, service-account creation, credential rotation/revocation, org
-  deletion) through Cerbos, never through an `actor.type`/origin check —
-  Port's own docs gate these on request *origin* (UI/API), which is exactly
-  the kind of actor-type-as-code-path shortcut `project.md` forbids outside
-  the two reserved files.
-- Keep this change to **zero new database migrations**. Every new field or
-  record this change needs already fits inside a mechanism `001`/`002`
-  provide (a blueprint-schema property addition, Better Auth's own
-  `apikey.metadata`, an in-memory step-up check).
+  change, service-account creation and deletion, credential creation,
+  rotation and revocation, org deletion) through Cerbos, never through an
+  `actor.type`/origin check, and bind every target to the caller's tenant on
+  the server (D14).
+- Make disable, rotate, revoke and org deletion effective within seconds, not
+  at token expiry (D13, Resolved decisions Q13 and Q14).
+- Add exactly **two SQL migrations**, each a Checkpoint 3 item: `0011` (a
+  composite `(tenant_id, credential_id)` key on the revocation list) and
+  `0012` (the tenant-deletion marker and the purge function). The `_user`
+  blueprint evolution itself stays a data-plane change.
 - Ship SEC11-hardened invitation email as this change's first outbound-email
-  capability, and data-retention/org-deletion guarantees before any real
-  tenant's data volume makes deletion expensive.
+  capability, and the first public (unauthenticated) route, the invitation
+  accept route, with strict limits.
+- Keep the whole surface unreachable over HTTP until `002`'s hand-offs are
+  done, enforced by a switch and a test (D15).
 
 **Non-Goals:**
+
 - No SSO/SCIM-provisioned lifecycle (`025`). No "view as a different user"
   (`003`/`014`). No org-wide audit-log **product surface**, its retention or
   export tooling (`015`, `010` own those; this change only emits events for
   them to eventually consume). No multi-org UX (`042`). No per-tenant Cerbos
   scopes (still deferred past `042`, per `project.md` §23 D7).
+- No role-editing operation: nothing here changes a user's role or
+  `moderatedBlueprints` (Resolved decision Q16). The member-management
+  procedures `002` D18 anticipated (`updateMemberRole`, `removeMember`,
+  `setActiveOrganization`) are **deferred** past this change; off-boarding in
+  this change is the `Disabled` status (D13). Recorded as a ticket.
 - No grace-period orchestration for credential rotation (old and new
-  credential coexisting for a window) — v1 is an immediate two-credential
-  cutover (ADR-0018). No BullMQ-based asynchronous deletion queue — org
-  deletion executes synchronously in one operation (no worker infrastructure
-  is wired yet at this point in the roadmap).
+  credential coexisting for a window) — v1 is an immediate cutover (ADR-0018).
+  No BullMQ-based deletion queue — the purge is a scheduled job (D9).
+- No in-product way to cancel a pending org deletion (see Open Question 4).
 - No changes to `002`'s Better Auth bootstrap, MFA, DB roles/RLS, Cerbos
-  engine wiring, or the three-tier RBAC baseline itself.
+  engine wiring, or the three-tier RBAC baseline itself, beyond the resolver
+  checks of D13, the two migrations, and the policy files listed in D3.
 
 ## Decisions
 
-### D1. `_user` gains one optional property, added as a data-plane operation
+### D1. `_user` evolves: a four-value `status` and `accountKind`, per tenant
+
 The `_user` system blueprint (owned by `002`) gains `accountKind`
-(`"standard"` | `"service"`, default `"standard"`). Adding an optional
-property to an existing blueprint is exactly the "compatible" case `001`'s
-safe-schema-evolution check (design D7) already proves out — every existing
-entity stays valid, no entity needs revalidation work, and it requires no
-`ALTER TABLE`, because blueprint schemas live in a `schema jsonb` column. The
-operation that adds it runs as the `system` actor, through the ordinary
-`blueprints.update` procedure `001`/`002` already expose, not a bespoke
-migration.
-- *Alternative:* a new `catalog_service_account` table. Rejected: it
+(`"standard"` | `"service"`, default `"standard"`), and its `status` enum is
+widened from `['Active','Disabled']` to the four values `Staged`, `Invited`,
+`Active`, `Disabled` (`UserSyncInput.status` is widened with it). Adding an
+optional property and widening an enum are the "compatible" cases `001`'s
+safe-schema-evolution check (design D7) already proves out, and neither needs
+an `ALTER TABLE`, because blueprint schemas live in a `schema jsonb` column.
+`_user` is created per tenant and the system blueprint is create-only and
+idempotent, so the change has two parts: `USER_BLUEPRINT` carries the new
+schema for every **new** tenant (and the bootstrap constant), and a one-off,
+idempotent `blueprints.update` run as the `system` actor, once **per existing
+tenant**, brings existing tenants forward. Existing `_user` entities stay
+valid and read back `accountKind: "standard"`.
+
+- _Alternative:_ a new `catalog_service_account` table. Rejected: it
   duplicates the `_user` blueprint's own attribution, status and RBAC
   plumbing for no benefit, and reintroduces exactly the "second way to model
   the same resource" problem `001`'s "Workflows are themselves entities"
   precedent (`project.md` §3) already argues against.
 
-### D2. User status is a pure state machine over four values
-`packages/auth/src/identity/user-status.ts` (package path per the Context
-note's assumption) exports a pure function
-`nextStatus(current: UserStatus, event: StatusEvent): UserStatus | CatalogError`,
-where `StatusEvent` is `created_staged | created_invited | first_sign_in |
-admin_disable | admin_enable`. It is a total function over the 4×5 matrix; any
-transition not in the Requirement's allowed set (spec "User status has four
-states...") returns `CATALOG_VALIDATION_FAILED`. Keeping this pure and
-table-driven (rather than a chain of `if`s scattered across the invitation
-and sign-in call sites) means the forward-only rule is enforced in exactly
-one place and is exhaustively unit-testable without a database or Better
-Auth.
-- *Alternative:* let each call site (accept-invitation hook, sign-in hook,
-  disable endpoint) independently decide the next status. Rejected: this is
-  exactly how Port's own docs ended up needing a whole "forward-only"
-  paragraph to describe emergent behavior — Tayzu encodes the invariant once.
+### D2. User status is a pure state machine; every writer goes through it
 
-### D3. Cerbos, not origin, gates invite/status-change/service-account/credential/org-deletion — ADR-0020
+`packages/auth/src/identity/user-status.ts` exports a pure function
+`nextStatus(current: UserStatus | null, event: StatusEvent): UserStatus`
+that throws a package-local `StatusTransitionError` (carrying
+`code = 'CATALOG_VALIDATION_FAILED'`, like `AuthContextError`; `@tayzu/auth`
+does not depend on `@tayzu/catalog`) for a disallowed pair. `current` is
+`null` for an entity that does not exist yet.
+
+`StatusEvent` is `created_staged | created_invited | created_active |
+invitation_accepted | first_sign_in | admin_disable | admin_enable`. The
+allowed transitions are the whole table; every other `(status, event)` pair
+is rejected:
+
+| Event                 | From                           | To         |
+| --------------------- | ------------------------------ | ---------- |
+| `created_staged`      | none                           | `Staged`   |
+| `created_invited`     | none, `Staged`, `Invited`      | `Invited`  |
+| `created_active`      | none                           | `Active`   |
+| `invitation_accepted` | `Invited`, `Staged`            | `Active`   |
+| `first_sign_in`       | `Staged`, `Invited`            | `Active`   |
+| `admin_disable`       | `Staged`, `Invited`, `Active`  | `Disabled` |
+| `admin_enable`        | `Disabled`                     | `Active`   |
+
+So a `Disabled` user is never revived by a sign-in, by accepting a pending
+invitation, or by a hook (multi-stage misuse found by the VCDM pre-assessment,
+B4), and `Active` never goes back to `Invited` or `Staged`.
+
+The status writers that exist in `002` bypass any such rule today:
+`afterAddMember` writes `Active` (`packages/auth/src/auth.ts`), the ban hook
+writes `Active`/`Disabled`, and `identity.users.create` writes `Active`
+directly. Per Resolved decision Q11 all of them, and the new sign-in hook for
+`first_sign_in`, go through `nextStatus` (via an event: `created_active` for an
+admin-created user, `invitation_accepted` for the first membership of an
+accepted invitation, `admin_disable`/`admin_enable` for the ban hook).
+Admin-created users start `Active`; `Staged` is the default only for an
+entity created without a status.
+
+- _Alternative:_ let each call site independently decide the next status.
+  Rejected: this is exactly how Port's own docs ended up needing a whole
+  "forward-only" paragraph to describe emergent behavior — Tayzu encodes the
+  invariant once.
+
+### D3. Cerbos, not origin, gates every operation here — ADR-0020
+
 Port's docs state "only users with a UI/API origin can invite users and
-change their status" (`r1-port.md` §1.5) — i.e., they gate on *how* the
-request arrived, not *who* is making it. Tayzu already committed to the
-opposite principle (`project.md` §1: "humans and AI agents execute exactly
-the same workflow path... `actor.type` is data and never selects a code
-path"). This change instead adds seven Cerbos-checked actions, all gated to
-the `admin` role via a role policy (mirroring `r3-cerbos.md` §3.3's pattern):
-`user.invite`, `user.updateStatus` (with a derived-role condition that denies
-when the resource's identifier equals the principal's own — "a user cannot
-disable themselves"), `service_account.create`, `credential.rotate`,
-`credential.revoke`, `credential.list`, and `organization.delete`. A rule on
-`002`'s existing `user` resource policy additionally denies **any** action
-that would leave a `resource.attr.accountKind == "service"` entity with role
-`admin` or a non-empty `moderatedBlueprints` (D6, Resolved decision Q7 —
-VCDM pre-assessment) — independent of, and in addition to, the input
-validation `identity.serviceAccounts.create` already performs, so the two
-layers cannot silently drift apart. Reusing
-`002`'s existing `user` resource kind for the first two, and adding
-`service_account`, `credential`, and `organization` as new, small, fixed
-resource kinds (per `002`'s own "static policy / dynamic context" pattern,
-`r3-cerbos.md` §3.1) keeps this in the same small, reviewable policy-file set
-`002` already establishes. Every rule in every one of these new resource
-policies (`service_account.yaml`, `credential.yaml`, `organization.yaml`) and
-in `user.yaml`'s new rules imports `002` D7's `same_tenant` derived role,
-exactly as `002` already requires of every resource policy — this change
-introduces no second tenant-isolation mechanism.
-- *Alternative:* keep Port's origin-based rule as a secondary check on top of
+change their status" (`r1-port.md` §1.5) — i.e., they gate on _how_ the
+request arrived, not _who_ is making it. Tayzu already committed to the
+opposite principle (`project.md` §1: `actor.type` is data and never selects a
+code path). This change adds these Cerbos-checked actions, all gated to the
+`admin` role:
+
+| Resource kind     | Actions                                                       |
+| ----------------- | ------------------------------------------------------------- |
+| `user` (existing) | `invite` (also covers cancel and resend), `updateStatus`      |
+| `service_account` | `create`, `delete`                                            |
+| `credential`      | `list`, `create`, `rotate`, `revoke`                          |
+| `organization`    | `delete`                                                      |
+
+Policy-file mechanics, as `002` actually has them:
+
+- `RESOURCE_KINDS` in `packages/authz/src/resource-kinds.ts` gains
+  `service_account`, `credential` and `organization`.
+- `policies/role_policies/admin.yaml` lists kinds one by one (no wildcard) and
+  is a ceiling, so it gains the three kinds, and
+  `role_policies_test.yaml` (and `member.yaml` if a ceiling must be stated)
+  is edited with it. Without that edit the admin is denied fail-closed and
+  the feature is dead on arrival.
+- `policies/resource_policies/user.yaml` already allows `*` to admin, so
+  `invite` and `updateStatus` need no new allow. The new content on `user` is
+  **only two `EFFECT_DENY` rules**: a self-deny (`updateStatus` when
+  `R.id == P.id`, using `002`'s `R`/`P` shorthand), and the service-account
+  ceiling below. Deny rules, not allow-narrowing, because an allow cannot
+  override `*`.
+- Every new rule imports `002` D7's `same_tenant` derived role. That role is
+  vacuous for catalog operations (`002`'s Known residual risks): it protects
+  only if the caller passes the **target's real tenant** as the resource
+  tenant. The identity router therefore resolves the target on the server
+  (D14) and passes its real tenant (an invitation's `organizationId`, an API
+  key's `referenceId`, the user's membership), together with `accountKind`,
+  `portRole` and `moderatedBlueprints` as resource attributes (`002`'s router
+  passes only `tenantId` today). This is the attribute contract.
+- **Service-account ceiling** (Resolved decisions Q7, Q16): a rule on `user`
+  denies any action when `R.attr.accountKind == "service"` and
+  (`R.attr.portRole != "member"` or `R.attr.moderatedBlueprints` is
+  non-empty), where the attributes are the **resulting** values. It is a
+  defensive layer independent of the input validation in
+  `identity.serviceAccounts.create` (D6): no operation in this change edits a
+  role or `moderatedBlueprints`, so the rule is proven at the policy level
+  (`user_test.yaml`) and by a `system`-actor test, not by a new operation.
+
+- _Alternative:_ keep Port's origin-based rule as a secondary check on top of
   Cerbos. Rejected: it would be the actor/origin-as-code-path pattern
   `project.md` explicitly forbids, for no security benefit Cerbos's
   role-based deny doesn't already give.
 
-### D4. Invitation lifecycle wraps Better Auth's `organization` plugin, synced to `_user.status` by hooks
-Better Auth's own invitation record (`pending`/`accepted`/`rejected`/
-`canceled`, 48h default `invitationExpiresIn`) is the state of the
-*invitation*, distinct from the state of the *user* (`r5-carryover-security.md`
-OQ-3). This change wires `afterCreateInvitation` → set `_user.status =
-Invited` (creating the `_user` entity first if the email has none yet),
-`afterAcceptInvitation` → set `_user.status = Active`, and leaves
-`afterRejectInvitation`/`afterCancelInvitation` as no-ops on `_user.status`
-(rejecting or cancelling an invitation does not retroactively disable a
-user — an admin re-invites, which is already a supported path, or explicitly
-disables). `cancelPendingInvitationsOnReInvite: true` is set so re-inviting
-the same email is a single call, matching the spec's "Re-inviting cancels the
-previous invitation" scenario, instead of Tayzu hand-rolling the cancel step.
-`requireEmailVerificationOnInvitation: true` is set explicitly (not left to
-Better Auth's default inference) so acceptance always requires the accepting
-session's email to match the invited email, per the spec's mismatched-email
-scenario — `r2-better-auth.md` §5 flags this as worth setting explicitly
-rather than relying on the opaque-ID-implies-optional default.
-- *Alternative:* model Tayzu's own invitation record instead of Better Auth's.
+### D4. Invitation lifecycle, public acceptance, roles and caps
+
+Better Auth's `organization` plugin provides the invitation record
+(`pending`/`accepted`/`rejected`/`canceled`, 48h `invitationExpiresIn`). It is
+the state of the _invitation_, distinct from the state of the _user_. At the
+boundary Tayzu maps `canceled` to `cancelled` and **derives** `expired` from
+`expiresAt` (Better Auth never stores it; the schema default is `pending`).
+`cancelPendingInvitationsOnReInvite: true` makes re-inviting a single call.
+
+**Roles (Resolved decision Q9).** `identity.users.invite` accepts only the
+organization roles `member` or `admin`, never `owner` (Better Auth's
+`inviteMember` accepts any role and `afterAddMember` maps owner/admin to the
+Cerbos `admin` role, so an unconstrained role is a privilege escalation).
+Anything else is `CATALOG_VALIDATION_FAILED`. The role is an attribute of
+`catalog.audit.invitation_created`. An `admin` invitation requires step-up
+(D10, Open Question 2 decides the granularity).
+
+**Hooks.** `afterCreateInvitation` → `_user.status = Invited` through
+`created_invited` (creating the `_user` entity first if the email has none yet;
+an existing `Disabled` user cannot be invited). `afterAcceptInvitation` is
+**not** used for status: acceptance is the in-process flow below, and it
+writes through `invitation_accepted`. Rejecting or cancelling an invitation
+does not touch `_user.status`.
+
+**Acceptance (Resolved decision Q8).** Sign-up is disabled (`002` Q16), no
+email-verification flow exists, `resolveContext` rejects any session without
+an active organization the user is a member of, and Better Auth's native
+`/organization/accept-invitation` is off `002`'s D18 allowlist and stays off.
+An invitee therefore cannot use any `/v1/*` route, so acceptance is a
+dedicated **public, rate-limited route outside the tenant-context pipeline**,
+`POST /v1/auth/invitations/accept`, shaped like `002`'s token-exchange route
+(path-keyed `createRateLimit` preHandler, no session, no tenant context). Its
+body carries the invitation id, the token and the new password; **nothing
+identifying travels in the path or query**.
+
+1. _Token._ Issued at invite/resend: 256 bits from a CSPRNG, shown only in the
+   email link. Only `sha256(token)` is stored, in the `auth.verification`
+   table `002` already reuses for `jti` replay state (identifier
+   `invitation-accept:<invitationId>`, `expiresAt` equal to the invitation's),
+   so there is no new table. It is compared in constant time
+   (`timingSafeEqual` over equal-length digests) and consumed with one atomic
+   delete-and-return, so it works exactly once. Resend therefore issues a
+   **new** token (the old one stops working) with the **same** expiry: the
+   plaintext is not stored, so the same link cannot be re-sent.
+2. _Tenant._ Derived on the server from the invitation record's
+   `organizationId`. The body has no tenant field and a body that carries
+   one is rejected. The route never reads `tenantId` or `actor` from input.
+3. _Account._ For an invited email with no Better Auth user, the flow creates
+   the user (global role `user`, never an admin role), sets the password the
+   invitee supplied under the password policy (Open Question 5), marks the
+   email verified (the token is proof of mailbox control, so no
+   email-verification flow is needed), adds the membership with the invited
+   role, writes `_user.status` through `invitation_accepted`, and **creates no
+   session**; the invitee then signs in through the normal route, and MFA
+   enrollment follows `002` Q43. The acceptance **never links** an account by
+   the email claim from Visma Connect (`002` D24, Q18): linking stays
+   `sub`-keyed through `/link-social`, with step-up. Acceptance **never sets or
+   changes the password of an account that already exists** (an account takeover
+   vector); what happens instead for an existing account is Open Question 1.
+   An invitee who will only ever use Visma Connect is unsupported until `025`
+   (`002` Q72): they need a local password first (Risks).
+4. _Errors._ Every rejected acceptance (nonexistent invitation, wrong state —
+   expired, cancelled, rejected, already accepted — wrong token, or a
+   `Disabled` user) returns the same status, error code (`CATALOG_NOT_FOUND`)
+   and body shape. A missing invitation still runs a dummy digest comparison so
+   timing does not separate it from a wrong token. The reason is only in the
+   `catalog.security.invitation_acceptance_denied` event. A password that fails
+   the policy is reported only after the token has verified, so it reveals
+   nothing to a caller who does not hold a valid token.
+
+**Invitation email caps (Resolved decision Q15).** `identity.users.invite` and
+`identity.users.resendInvitation` share: **30 per hour per tenant**, **3 per 24
+hours per recipient across all tenants** (keyed by the sha256 of the
+normalized email, never the address), and a **global kill switch**
+(`INVITATION_EMAIL_KILL_SWITCH`, an environment variable). Exceeding any of them
+fails with `AUTH_RATE_LIMITED` (429), sends nothing, and emits
+`catalog.security.invitation_rate_limited` with a bounded `limit_scope`
+(`tenant`|`recipient`|`global`). The buckets are service-level counters on a
+store interface (the key needs the resolved tenant and the body's recipient,
+which a path-keyed preHandler does not have); the public accept route uses a
+path-keyed `createRateLimit` preHandler keyed on the parsed pathname, like
+token exchange. Defaults are enabled in code, live in
+`apps/api/src/config.ts`, and a disabled or zero value fails startup (`002`
+Q39). The store is in memory in tests; **a shared store is a first-deployment
+gate** (Risks), because a per-replica bucket does not enforce a per-recipient
+cap.
+
+- _Alternative:_ model Tayzu's own invitation record instead of Better Auth's.
   Rejected: duplicates a state machine Better Auth already implements
-  correctly (expiry, single-pending-per-email via re-invite cancellation),
-  for a resource that is app-owned and tenant-scoped either way.
-
-**Invitation-acceptance errors are indistinguishable (VCDM pre-assessment,
-ticket 11).** Accepting a nonexistent invitation, a foreign one, one in the
-wrong state (expired/cancelled/rejected/already-accepted), and one with a
-mismatched session email all return the same status, error code, and body
-shape — classic enumeration surfaces for an invitation-based flow, per SEC06.
-The specific reason is recorded only in the
-`catalog.security.invitation_acceptance_denied` log event's `denial_reason`
-attribute (already in the Observability contract below), never surfaced to
-the caller.
-
-**Per-tenant invitation rate limiting (VCDM pre-assessment, ticket 12,
-SEC11 best practice).** `identity.users.invite` and
-`identity.users.resendInvitation` share one rate-limit bucket keyed by
-`tenantId`, using the same `@fastify/rate-limit` mechanism `002` D13
-establishes, with a Tayzu-chosen default cap (documented alongside the other
-policy defaults in `docs/security/data-retention.md`) — this stops the
-invitation-email surface from being used to send bulk, phishing-style
-messages through Tayzu's outbound email capability, distinct from `002`'s
-own per-actor and pre-authentication rate limits, which this operation is
-already subject to as an authenticated admin action.
+  correctly (expiry, single-pending-per-email via re-invite cancellation).
+- _Alternative:_ allowlist the native accept route (reopens the gap D18 closed),
+  or only accept for users who already have an account (makes invitations
+  nearly useless). Rejected by Resolved decision Q8.
 
 ### D5. Invitation email: an `EmailSender` port, Azure Communication Services adapter
-Better Auth's `sendInvitationEmail` callback has no default transport
-(`r2-better-auth.md` §5, `r5-carryover-security.md` §4.1) — Tayzu must
-implement one. `packages/auth/src/identity/email/sender.ts` defines a small
-port, `interface EmailSender { send(to: string, template: InvitationEmail):
-Promise<void> }`, so the concrete provider is swappable without touching the
-invitation-lifecycle code. `azure-communication-email.ts` implements it over
-`@azure/communication-email` (`1.1.0`, verified via `npm view`, 2026-09-28) —
-consistent with the Azure-first stack (`project.md` §2, §7) and the existing
-Key Vault-backed secrets pattern `002` establishes for the DB credential
-(the Communication Services connection string is one more Key Vault secret,
-not a new secrets mechanism). The email itself contains exactly one
-clickable link (the invitation-accept URL) and states the 48-hour expiry —
-no other link, per SEC11 (`r1-port.md` §1.4's invite flow plus
-`r5-carryover-security.md` §5 SEC11).
-- *Alternative:* a generic SMTP client. Rejected: another credential shape
-  (SMTP username/password) to manage in Key Vault for no benefit over a
-  managed Azure service already in the stack's cloud.
 
-### D6. Service accounts: `_user` sub-kind + org-owned machine credential, Tayzu's own identifier convention — ADR-0017
+Better Auth's `sendInvitationEmail` callback has no default transport — Tayzu
+must implement one. `packages/auth/src/identity/email/sender.ts` defines a
+small port, `interface EmailSender { send(to: string, template:
+InvitationEmail): Promise<void> }`, so the concrete provider is swappable.
+`azure-communication-email.ts` implements it over `@azure/communication-email`
+(`1.1.0`, verified via `npm view`, 2026-09-28), consistent with the Azure-first
+stack and the Key Vault-backed secrets pattern `002` establishes (the
+connection string is one more Key Vault secret). The email's content is a
+fixed contract (VCDM B9, SEC11):
+
+- **Exactly one recipient**: the port takes one address, validated to be a
+  single plain address (no CR/LF, no display name, no list separators, at most
+  254 characters), and has no CC, BCC or attachment field, so none can be set.
+- **Fixed subject and fixed template.** Only two values are interpolated: the
+  link and the 48-hour expiry text. The organization name, the inviter's name
+  and any other tenant or inviter free text are **never** interpolated, so
+  they cannot carry a phishing message or markup.
+- **Link origin from trusted configuration** (`BETTER_AUTH_URL`), never from
+  the request `Host` or any forwarded header. The link carries the invitation
+  id and token in the URL fragment, so neither reaches a server log or an
+  access log.
+- Exactly one clickable link.
+- A real provider is required outside test: startup fails in production
+  without one, and CI and DAST wire a non-sending `EmailSender`.
+
+- _Alternative:_ a generic SMTP client. Rejected: another credential shape
+  (SMTP username/password) to manage in Key Vault for no benefit over a
+  managed Azure service already in the stack's cloud. A managed identity for
+  the provider instead of a connection string is a ticket (Risks).
+
+### D6. Service accounts: `_user` sub-kind + org-owned machine credential — ADR-0017
+
 A service account is a `_user` entity with `accountKind: "service"`, created
 through one orchestrated operation: (1) create the `_user` entity with
-`status: Active` (no invitation, per the spec), (2) issue an
-organization-owned Better Auth API key by reusing `002`'s existing
-`machine-credential` apiKey config directly (`references: "organization"`,
-`defaultPrefix: "tayzu_mc_"`, per `002` design D5) — there is no separate
-"service-account" config; `002` defines exactly one, and a service account is
-functionally an `integration`-kind credential with a bound catalog identity,
-consistent with the decision record's Q5 ("integration/agent actors
-authenticate with that token" — no third actor kind), (3) return `{ user,
-clientId, clientSecret }` once. Port fakes an email at a reserved domain
-(`serviceaccounts.getport.io`, `r1-port.md` §1.6) because Port's
-`_user.identifier` **is** an email address company-wide; Tayzu has no
-equivalent single public domain per tenant, so this change instead gives
-service-account identifiers their own pattern,
-`^svc-[A-Za-z][A-Za-z0-9_-]{0,58}$` (fits inside `001`'s existing entity
-identifier length limit), documented as ADR-0017, rather than manufacturing a
-fake email address that would read as a real one to anything downstream. The
-credential's `metadata` field records `{ userId, actorKind: "integration" }`
-— `actorKind` fixed exactly as `002` D5 already does for any machine
-credential, `userId` new. Listing (D7) uses `userId` to join the two. Because
-a service account's requests resolve to `actor.type: integration` under
-`002`'s frozen context-resolution contract (not `actor.type: user`), this
-change additively extends `packages/authz`'s attribute builder: when an
-`integration`-actor request's underlying credential carries a bound
-`metadata.userId`, the builder also sources `role`/`team`/`moderatedBlueprints`
-from that `_user` entity, exactly as it already does for a `user`-type actor.
-This is new plumbing 043 adds on top of `002`'s mechanism — it changes
-neither `002`'s actor-type enum nor its tenant/context resolution contract.
-- *Alternative:* mint a synthetic `@service.tayzu.internal` email, closer to
-  Port's literal convention. Rejected: it invites exactly the kind of
-  confusion an actual email-shaped string causes (accidental email delivery
-  attempts, phishing-adjacent lookalike risk) for no behavioral benefit,
-  since Tayzu's `_user.identifier` does not have to be email-shaped the way
-  Port's does.
+`status: Active` (no invitation), role `member` and an empty
+`moderatedBlueprints`, written as the `system` actor with `onBehalfOf` set to
+the admin (Resolved decision Q10); (2) issue an organization-owned Better Auth
+API key by reusing `002`'s single `machine-credential` apiKey config
+(`references: "organization"`, `defaultPrefix: "tayzu_mc_"`), with metadata
+`{ actorKind: 'integration', role: 'member', userId }` — `role` stays
+`member` because token exchange rejects any credential without it, and
+`userId` is the `_user` entity's opaque id; (3) return `{ user, clientId,
+clientSecret }` once. Service-account identifiers follow
+`^svc-[A-Za-z][A-Za-z0-9_-]{0,58}$` (not an email-shaped string), ADR-0017.
 
-**Service accounts are restricted to `member` role, never `admin`, never a
-Moderator grant (Resolved decision Q7, VCDM pre-assessment).** `002`'s
-step-up gate (its D4) exempts `agent`/`integration`/`system` actors
-entirely — a deliberate, already-approved call, because step-up is a
-human-specific control. Combined with a service account bound to an
-`admin`-role (or broadly-moderating) `_user` entity, a leaked service-account
-secret would carry that elevated power **forever**, with no MFA layer ever
-required, unlike the human admin it mirrors — an emergent risk neither `002`
-nor this change's original draft could see before the other existed. This
-change closes it at both layers: (1) `identity.serviceAccounts.create`
-validates that a service account is created with role `member` and an empty
-`moderatedBlueprints`, rejecting any other input before the `_user` entity or
-credential is created; (2) a Cerbos rule (D3) denies the same outcome
-independently, so a future code path that skips (1) — a bulk import, a direct
-entity-update procedure, a bug — still cannot produce a service account with
-more than `member`. Both layers are tested (task 7.7, task 7.3's extension).
-- *Alternative considered (Q4 option 2):* allow admin-role service accounts
-  with a secondary approval/friction mechanism for their high-risk
-  operations. Rejected: this is a new control this change would have to
-  design and build (what "friction" means for a non-interactive caller is
-  itself unresolved), for a capability (service accounts needing broad admin
-  power) nothing in the roadmap currently asks for.
-- *Alternative considered (Q4 option 3):* accept the current design as-is,
-  reasoning the credential itself is already a strong, hashed, revocable
-  secret. Rejected: that argument is exactly the reasoning `002`'s own D4
-  already rejected for human accounts (a strong password is not why MFA
-  exists) — a service account is not a special case that needs less
-  defense-in-depth than a human admin, it needs a different one (least
-  privilege at the role layer, since it cannot have the human one).
-- *Alternative considered (Q4 option 4):* document as an accepted residual
-  risk with no code change. Rejected: the fix is cheap (least-privilege at
-  creation, one more Cerbos rule) relative to the blast radius Summary #5
-  describes, so accepting the risk was not the proportionate choice.
+**The principal of a service account is never read from its `_user`
+(Resolved decision Q12).** `002` Q28 fixes every machine principal as
+`{ roles: ['member'], teams: [], moderatedBlueprints: [] }`, built from the
+signed token claim, and `002` treats that context contract as frozen. A
+service account has no Better Auth user or member row, and `CLAUDE.md` bans
+`actor.type` branches outside three files, so this change adds **no**
+entity-sourced role, team or Moderator plumbing to `packages/authz`. `userId`
+is added to the token only as an attribution claim (who the credential is
+bound to), never as a source of authority. A tampered `_user` row therefore
+cannot raise a service account above `member`.
+
+**Ceiling (Resolved decisions Q7, Q16).** A service account holds `member`
+and an empty `moderatedBlueprints`, always: `002`'s step-up gate exempts
+`agent`/`integration`/`system` actors by design, so an elevated role bound to
+a leaked secret would carry that power forever with no MFA layer. It is
+enforced at creation (input validation rejects anything else before the
+`_user` or the credential exists) and independently by the Cerbos rule in D3;
+there is no operation that edits a role, so no update path exists to guard.
+
+**Operations.** Disable and re-enable are `identity.users.setStatus` on the
+service account's `_user` identifier (D9, D13); a service account has no Better
+Auth user, so `setStatus` writes only `_user.status` and the resolver check of
+D13 enforces it. Deletion is `identity.serviceAccounts.delete`: a plain
+`entities.delete` on `_user` is denied by the reserved-prefix rule, so an
+explicit operation revokes the credential (revocation list, permanent) and then
+removes the `_user` entity as `system` with `onBehalfOf` the admin.
+
+- _Alternative:_ mint a synthetic `@service.tayzu.internal` email. Rejected: it
+  invites accidental email delivery attempts and lookalike-phishing risk for no
+  behavioral benefit.
+- _Alternative considered (Q4 option 2):_ allow admin-role service accounts
+  with a secondary approval/friction mechanism. Rejected: a new control to
+  design and build for a capability nothing in the roadmap asks for.
+- _Alternative considered (Q4 option 3/4):_ accept the design as-is, or
+  document a residual risk. Rejected: the fix is cheap relative to the blast
+  radius; a service account needs least privilege at the role layer, since it
+  cannot have MFA.
+- _Alternative:_ read `teams` (or role) from the `_user` entity through a new
+  claim. Rejected by Resolved decision Q12: it changes `002`'s frozen resolver.
 
 ### D7. Org API-credentials viewer is a read model over Better Auth's `apikey` table
+
 Listing is `auth.api.listApiKeys` (or the equivalent org-scoped query)
-filtered to `organizationId = tenantId`, joined in the service layer to the
-`_user` entity via each key's `metadata.userId` for service-account
-credentials (integration-only keys, without a `_user`, show kind
-`integration` and no joined user). The prefix (`key.prefix`), `enabled`,
+filtered to the caller's tenant (`referenceId = ctx.tenantId`), joined in the
+service layer to the `_user` entity via each key's `metadata.userId` for
+service-account credentials (integration-only keys, without a `_user`, show
+kind `integration` and no joined user). The prefix (`key.prefix`), `enabled`,
 `createdAt`, `lastRequest`, and a computed `rotationDueAt` (D8) are returned;
-the hashed `key` column is never selected into the response shape at all, so
-"never re-exposes a secret" is a projection guarantee, not a
-redaction-after-the-fact one.
-- *Alternative:* a denormalized read table Tayzu maintains itself. Rejected:
-  Better Auth's `apikey` table is already the source of truth; a second copy
-  is a sync-drift risk for a page that only needs to read one org's rows at
-  a time (bounded, not a hot path).
+the hashed `key` column is never selected into the response shape, so "never
+re-exposes a secret" is a projection guarantee. `enabled` is derived: a
+credential is shown disabled when its key is disabled, it is revoked, or its
+bound service account is `Disabled`.
 
-### D8. Credential rotation is an immediate two-credential cutover — ADR-0018
-Better Auth's `api-key` plugin has no rotate endpoint (`r2-better-auth.md`
-§6): rotation is "create a new key, disable the old one," done at the
-application layer. This change implements exactly that, atomically (new key
-created, old key `enabled: false`, in the same service call), with no grace
-period where both are simultaneously valid. A `rotatedAt`/`rotationDueAt`
-pair lives in the new key's `metadata` (Better Auth's free-form JSON field);
-the viewer (D7) computes "rotation due" by comparing `rotationDueAt` to now,
-using a Tayzu-chosen default interval (90 days, configurable per deployment,
-recorded in `docs/security/data-retention.md` alongside the other retention
-numbers) — this is a documented policy default, not a hard-enforced expiry:
-no credential is force-disabled solely for being overdue, since that would
-silently break an integration outside the platform's control.
-- *Alternative:* a grace-period window (old key stays valid for N hours after
-  rotation so in-flight processes can pick up the new one). Rejected for v1:
-  real orchestration complexity (a scheduled hard-revoke) for a benefit that
-  matters only once a tenant runs unattended automation against a Tayzu
-  credential, which is not yet true of any Phase-1 integration. Recorded as a
-  Risk below, not built.
+- _Alternative:_ a denormalized read table Tayzu maintains itself. Rejected:
+  Better Auth's `apikey` table is already the source of truth.
 
-### D9. Org deletion: synchronous cascading delete, backup-window as the recovery mechanism — ADR-0019
-Deleting an organization runs as one operation: revoke every active session
-for the org (Better Auth `admin.revokeUserSessions` per member, or an
-org-scoped equivalent), disable every org-owned API key, delete every
-`catalog_*` row scoped to `tenant_id = organizationId` (a set of ordinary
-tenant-scoped `DELETE`s — `001`'s composite tenant FKs and `ON DELETE
-CASCADE`/`RESTRICT` rules already make this safe and ordered), delete Better
-Auth's `member`/`invitation`/`apikey` rows for that org, log
-`catalog.audit.org_deletion_completed`, then delete the `organization` row
-itself (Better Auth's `afterDeleteOrganization` hook is where the log event
-fires, so it is guaranteed to run before the row disappears). Recoverability
-after that point depends entirely on Azure Database for PostgreSQL Flexible
-Server's own backup retention window — documented as **14 days** in
-`docs/security/data-retention.md` (matching the number Port itself documents
-for the same guarantee, `r1-port.md` §12, chosen here as a reasonable Tayzu
-default, not copied because Port requires it), an infrastructure setting
-configured when the Azure resource is provisioned, not application code.
-- *Alternative:* an application-level soft-delete flag plus a scheduled purge
-  job N days later. Rejected: it is a second, app-owned retention mechanism
-  duplicating what the database's own backup already provides, and it needs
-  worker infrastructure (BullMQ) this point in the roadmap does not yet wire
-  up for this purpose. Revisit only if Tayzu ever needs a *shorter* or
-  *tenant-configurable* recovery window than the database-wide backup
-  policy gives.
-- Gated by `x-tayzu-risk: high` and an explicit confirmation (the caller
-  supplies the organization's identifier back, not just a boolean), per the
-  spec's step-up scenario — reusing `002`'s step-up-MFA mechanism exactly as
-  `001` anticipated it would be consumed (`001` design D11: "002 (Cerbos) and
-  014... consume that marker").
+### D8. Credential create, rotate and revoke go through the revocation list — ADR-0018
+
+Better Auth's `api-key` plugin has no rotate endpoint: rotation is "create a
+new key, retire the old one", done at the application layer, and **retiring
+means writing the revocation list**. Disabling a key through `updateApiKey`
+alone would leave an already-issued 1-hour access token valid, against `002`
+Q13's within-seconds rule, so rotation and revocation both use
+`revokeMachineCredential`, which writes the `machine_credential_revocation` row
+before disabling the key (an insert-only, permanent row).
+
+- **Create** (`identity.credentials.create`, integration/agent credentials; a
+  service account's first credential comes from D6): sets the per-key rate
+  limit explicitly (Better Auth's default is 10 verifications per 24 hours,
+  about 10 token exchanges a day), does not store the first characters of the
+  secret, and applies the expiry decided in Open Question 3.
+- **Rotate**: create the new key, then revoke the old one, then return the new
+  secret once. If the revoke fails, the new key is revoked as compensation so no
+  second usable credential survives; if compensation also fails,
+  `catalog.security.credential_rotation_incomplete` is emitted. Rotation of a
+  credential that is already revoked simply issues a new one.
+- **Revoke**: permanent; already-issued tokens are rejected within seconds
+  because `resolveContext` consults the revocation list through a cache of at
+  most 5 seconds, failing closed (`002` D21).
+- `rotatedAt`/`rotationDueAt` live in the new key's `metadata`; the viewer (D7)
+  computes "rotation due" against a Tayzu-chosen default interval (90 days,
+  configurable, in `docs/security/data-retention.md`). It is a documented
+  policy default, not a hard-enforced expiry: no credential is force-disabled
+  solely for being overdue (Open Question 3 revisits key expiry).
+- Because the revocation row is a permanent insert, "disable then re-enable" is
+  not a credential operation. Pausing a service account is `setStatus`
+  (D13), which is reversible; restoring a revoked credential is "rotate".
+
+- _Alternative:_ a grace-period window (old key stays valid for N hours).
+  Rejected for v1: real orchestration complexity for a benefit no Phase-1
+  integration needs yet. Recorded as a Risk, not built.
+
+### D9. Org deletion is two-phase: revoke now, purge later — ADR-0019
+
+Decision (Resolved decision Q14), rewriting the earlier synchronous design,
+which could not work as written: `catalog_change_event` is append-only (a
+trigger rejects DELETE for every role, and `tayzu_app` has no DELETE or
+TRUNCATE), `machine_credential_revocation` has no DELETE grant, catalog tables
+run on `tayzu_app` and Better Auth tables on `tayzu_auth` (two roles and pools
+cannot share a transaction), `apikey` has no FK to the organization, and
+several catalog FKs are `RESTRICT`.
+
+**Phase 1, request** (`identity.organization.delete`): Cerbos `organization.delete`
+with the real tenant, step-up, and an explicit confirmation: the caller sends
+the organization's identifier, and it must equal the **host** `ctx.tenantId`
+(never a value looked up from input). The operation inserts a **deletion marker**
+for the tenant (a new table, migration `0012`, Checkpoint 3) with a
+`purge_after` date, revokes every session whose active organization is the tenant,
+revokes every org-owned credential (revocation list), cancels pending
+invitations, and emits `catalog.audit.org_deletion_requested`. From that moment
+`resolveContext` and token exchange reject every principal of the tenant, human
+or machine (D13). The window is between 7 and 14 days (configurable, validated
+at startup; the default is Open Question 4). Requesting it again while pending
+changes nothing and returns the original date.
+
+**Phase 2, purge** (a scheduled job; an Azure Container Apps Job provisioned
+with `010`, with its entry point and a `tsx` script in this change, no HTTP
+listener): for each tenant whose `purge_after` has passed, in two idempotent
+steps with safe resume (progress is recorded on the marker):
+
+1. **Catalog data** (`tayzu_app`): ordered deletes of relations, entities,
+   blueprints and the other `catalog_*` rows (the order respects the `RESTRICT`
+   FKs), and for the append-only rows (`catalog_change_event`, the tenant's
+   `machine_credential_revocation` rows) a `SECURITY DEFINER` function owned by
+   `tayzu_migrator` that deletes **only** for a tenant whose marker is due. The
+   append-only guarantee holds for every other path, and `PUBLIC` has no
+   `EXECUTE` (which role may execute it is part of the Checkpoint 3 review;
+   the proposal is `tayzu_app` only).
+2. **Better Auth data** (`tayzu_auth`): the org's invitations, API keys
+   (`referenceId`), invitation tokens in `auth.verification`, members, then
+   each user who has no remaining membership in any other org together with
+   that user's `account`, `session` and `twoFactor` rows (global user data is not
+   per-org, so deleting only `member`/`invitation`/`apikey` would orphan it),
+   and the organization row last.
+
+`catalog.audit.org_deletion_completed` is emitted by the purge itself
+immediately before the organization row is deleted, **not** from Better Auth's
+`afterDeleteOrganization` hook (the installed plugin also has
+`beforeDeleteOrganization`, and the `after` hook runs after the delete). A
+failed step emits `catalog.security.org_deletion_failed` (with the step) and
+the next run resumes. The marker stays as a tombstone (tenant id and
+timestamps only) so a later request finds nothing.
+
+**Recovery** is the pending window, not point-in-time restore: server-level
+PITR cannot restore one tenant out of a shared-schema database. Backups keep
+purged data until the backup retention expires; the erasure statement in
+`docs/security/data-retention.md` says so. A compromised admin session with a
+fresh MFA can no longer destroy a tenant irreversibly in one call.
+
+- _Alternative:_ immediate hard delete as the first draft had it, with a
+  point-in-time restore runbook. Rejected by Resolved decision Q14.
+- _Alternative:_ keep change events and pseudonymize snapshots. Rejected: it
+  keeps the tamper-resistance but partially defeats erasure of the `_user`
+  emails the snapshots hold.
 
 ### D10. API contract
-New oRPC procedures, mounted on the router `002` exposes over HTTP:
 
-| Procedure | Route |
-|---|---|
-| `identity.users.invite` | `POST /v1/users/invitations` |
-| `identity.users.cancelInvitation` | `POST /v1/users/invitations/{invitation}/cancel` |
-| `identity.users.resendInvitation` | `POST /v1/users/invitations/{invitation}/resend` |
-| `identity.users.acceptInvitation` | `POST /v1/users/invitations/{invitation}/accept` |
-| `identity.users.setStatus` | `PUT /v1/users/{user}/status` |
-| `identity.serviceAccounts.create` | `POST /v1/service-accounts` |
-| `identity.credentials.list` | `GET /v1/credentials` |
-| `identity.credentials.rotate` | `POST /v1/credentials/{credential}/rotate` |
-| `identity.credentials.revoke` | `POST /v1/credentials/{credential}/revoke` |
-| `identity.organization.delete` | `DELETE /v1/organization` |
+New oRPC procedures on the router `002` exposes. Each declares
+`.route({ method, path, spec: markHighRisk })` like
+`packages/catalog/src/api/contract.ts`, because step-up runs only in the
+OpenAPI interceptor keyed on the route spec (calls through
+`createRouterClient` skip it).
 
-`identity.users.setStatus`, `identity.credentials.rotate`,
-`identity.credentials.revoke`, and `identity.organization.delete` carry
-`x-tayzu-risk: high` (D9's step-up gate applies to all four, not only org
-deletion — disabling a user or revoking a live credential is exactly the
-"high-risk functionality" SEC03 asks step-up for, `r5-carryover-security.md`
-§5 SEC03 Q5). Error codes and HTTP-status mapping reuse `001` design D11's
-table (`CATALOG_VALIDATION_FAILED` → 400, `CATALOG_NOT_FOUND` → 404, etc.);
-the step-up gate reuses `002`'s existing `AUTH_STEP_UP_REQUIRED` code (403)
-verbatim — it is not new here, and 002 already fixes its status at 403, not
-409.
+| Procedure                             | Route                                  | Notes                                |
+| ------------------------------------- | -------------------------------------- | ------------------------------------ |
+| `identity.users.invite`               | `POST /v1/users/invitations`           | high-risk (Open Question 2)          |
+| `identity.users.cancelInvitation`     | `POST /v1/users/invitations/{invitation}/cancel` |                            |
+| `identity.users.resendInvitation`     | `POST /v1/users/invitations/{invitation}/resend` |                            |
+| `identity.users.acceptInvitation`     | `POST /v1/auth/invitations/accept`     | public, outside the tenant pipeline  |
+| `identity.users.setStatus`            | `PUT /v1/users/{user}/status`          | high-risk                            |
+| `identity.serviceAccounts.create`     | `POST /v1/service-accounts`            | high-risk                            |
+| `identity.serviceAccounts.delete`     | `DELETE /v1/service-accounts/{user}`   | high-risk                            |
+| `identity.credentials.list`           | `GET /v1/credentials`                  |                                      |
+| `identity.credentials.create`         | `POST /v1/credentials`                 | high-risk                            |
+| `identity.credentials.rotate`         | `POST /v1/credentials/{credential}/rotate` | high-risk                        |
+| `identity.credentials.revoke`         | `POST /v1/credentials/{credential}/revoke` | high-risk                        |
+| `identity.organization.delete`        | `DELETE /v1/organization`              | high-risk                            |
+
+`{user}` is the `_user` entity identifier (an email, or `svc-…`), sent
+unencoded because `@` is legal in a path segment (Resolved decision Q12); a
+path containing `%` is a 404 (`002` Q74). Such identifiers must never reach
+telemetry (D16). The two `002` procedures that mint power are marked too:
+`identity.users.create` (Open Question 2) and the existing `linkSsoAccount`/
+`unlinkSsoAccount` stay high-risk. There is no role or Moderator editing
+procedure (Resolved decision Q16), so there is nothing to mark for it.
+
+High-risk set (`x-tayzu-risk: high`, VCDM B11): `setStatus`,
+`serviceAccounts.create`, `serviceAccounts.delete`, `credentials.create`,
+`credentials.rotate`, `credentials.revoke`, `organization.delete`, plus
+`invite` and `identity.users.create` as decided in Open Question 2. Deleting a
+service account is in the set because it revokes a credential, the same class
+as `credentials.revoke`.
+
+Error codes reuse `001` design D11's table and `002`'s: `AUTH_FORBIDDEN` (403),
+`AUTH_STEP_UP_REQUIRED` (403, not 409), `AUTH_RATE_LIMITED` (429),
+`CATALOG_NOT_FOUND` (404), `CATALOG_VALIDATION_FAILED` (400). All are already
+mapped in `apps/api/src/error-mapping.ts`. The change introduces no new code.
 
 ### D11. Testing strategy
+
 Unit tests (the D2 state machine, pure). Integration tests against a real
-PostgreSQL 16 and a real Cerbos test container (`002`'s own harness,
-reused — `r3-cerbos.md` §7.2), exercising the actual Better Auth instance
-(no mocked `organization`/`api-key` plugin — Better Auth's own in-memory or
-test-database adapter mode, so invitation expiry and re-invite-cancellation
-behavior is verified against the real library, not an assumption about it).
-The `EmailSender` port is faked in tests (a recording fake, asserting "one
+PostgreSQL 16 and a real Cerbos test container (`002`'s harness), exercising
+the actual Better Auth instance (no mocked `organization`/`api-key` plugin —
+invitation expiry and re-invite cancellation are verified against the real
+library). The `EmailSender` port is faked (a recording fake asserting "one
 call, one recipient, one link"), never calling the real Azure Communication
 Services API. `cerbos compile` (with its bundled test suites) gates every
-new policy file in CI, exactly as `r3-cerbos.md` §6.2/§6.4 establishes for
-`002`.
+policy file. Step-up is tested **over HTTP only** (D10). Every route has a
+cross-tenant test (D14). Org-owned key tests use a Better Auth `admin`
+member, not only `owner`, because Better Auth's own authorization on those
+keys is owner-only and is a second authorization path (`002` residual risk);
+Cerbos goes in front of it before any mount.
 
 ### D12. Docs-as-Code and ADRs from this change
+
 - `docs/adr/0017-service-account-identifier-convention.md` (D6)
 - `docs/adr/0018-credential-rotation-immediate-cutover.md` (D8)
-- `docs/adr/0019-org-deletion-backup-window-recovery.md` (D9)
+- `docs/adr/0019-org-deletion-two-phase-purge.md` (D9)
 - `docs/adr/0020-cerbos-gates-invite-and-status-not-origin.md` (D3)
 
-These numbers were reconciled against `002`'s actual `design.md` on
-2026-09-28: `002` claims 0013-0016 (its D17), so this change's four ADRs are
-0017-0020, with no collision against `002` or the existing `docs/adr/0008`-
-`0012` range. This change also writes
-`docs/security/data-retention.md` (retention windows per data category: org
-deletion's 14-day backup recovery window (D9), credential rotation's 90-day
-default cadence (D8); Cerbos and audit-log retention numbers are cross-referenced
-from `010`/`015`, not redefined here) and updates
-`docs/architecture/system-diagram.md` (new external actor: the email
-provider; new arrows: invite → email, credential rotation, org deletion).
+`002` claims 0013-0016 and 0021 is taken, so 0017-0020 are free. This change
+also writes `docs/security/data-retention.md` (the purge window and the
+erasure statement about backups; the credential rotation cadence; the
+invitation caps; audit and security log retention of at least 12 months,
+independent of tenant deletion, cross-referenced from `010`/`015`), updates
+`docs/security/secrets.md` (the Communication Services secret and its change
+procedure, the kill switch, the credential lifecycle), `docs/security/
+attack-surfaces.md` (the twelve routes, the public accept route, and the mount
+gate state; it currently lists `identity.*` as not mounted),
+`docs/security/crypto-inventory.md` (the invitation token) and `docs/security/
+dependencies.md` (license, `allowBuilds` and SBOM review of
+`@azure/communication-email` and its transitives), and updates
+`docs/architecture/system-diagram.md` (new external actors: the email provider
+and the invitee with their mailbox; new arrows: invite → email, the public
+accept route, ACS egress over HTTPS, the purge job).
+
+### D13. Disable, rotate, revoke and pending deletion take effect within seconds
+
+Access tokens are stateless 1-hour JWTs, and `resolveContext`'s machine branch
+checks neither the credential's `enabled` flag nor `_user.status`. Per Resolved
+decision Q13 (and Q11), `resolveContext` and token exchange gain these checks,
+all through the existing 5-second cache and **failing closed** on any lookup
+failure:
+
+- A human whose Better Auth user is `banned` is rejected (this is task 14.4;
+  `resolveContext` did not check it). `setStatus` to `Disabled` calls
+  `banUser`, which also revokes the user's sessions, and cancels the user's
+  pending invitations; `Active` calls `unbanUser`. Sign-in is blocked locally
+  and through SSO.
+- A machine principal whose bound `_user` (from the `userId` attribution claim)
+  is `Disabled` is rejected, and token exchange refuses to mint a token for it.
+  The revocation list is insert-only, so the cache check is what lets a
+  disabled service account be re-enabled without a migration.
+- A principal, human or machine, of a tenant with a deletion marker is rejected
+  (D9).
+- Revoked credentials are already covered by `002` D21 (D8).
+
+Each rejection emits `catalog.security.principal_rejected` and increments
+`tayzu.identity.principal_rejections`. There is no last-active-admin guard in
+this change (two admins can disable each other); it is a ticket (Risks).
+
+### D14. Every target is resolved on the server and belongs to the caller's tenant
+
+The `identity.*` data lives in the `auth` schema, which has no RLS (`tayzu_auth`,
+`002` D6), and `same_tenant` is vacuous unless the real tenant is passed (D3).
+So the tenant boundary for these routes is code, and it is stated as a rule:
+
+- Every `{invitation}`, `{credential}`, `{user}`, `{serviceAccount}` and
+  organization target is resolved **server-side** and must belong to
+  `ctx.tenantId`. Otherwise the answer is `CATALOG_NOT_FOUND`, identical to a
+  nonexistent id (no existence oracle).
+- Cerbos receives the **target's** real tenant as the resource tenant, not
+  `ctx.tenantId` echoed back.
+- `tenantId` and `actor` are never read from input, path, query or body.
+  `identity.organization.delete` compares its confirmation to `ctx.tenantId`, and
+  every Better Auth call (`deleteOrganization`, `listApiKeys`, `inviteMember`) is
+  given the host tenant only.
+- The one exception is the public accept route, whose tenant is derived from the
+  invitation record (D4), never from the request.
+- Each of the twelve routes has a cross-tenant test (tasks, group 13).
+
+### D15. Mount gate: the routes do not exist over HTTP until the hand-offs are done
+
+`002` Q73 is a hard rule: `identity.*` and the machine-credential routes are
+not mounted over HTTP before the hand-offs from `002` (tasks, group 14) are
+done. Prose is not a gate, so it is mechanical:
+
+- A switch, `mountIdentityRoutes` (environment `MOUNT_IDENTITY_ROUTES`), is
+  **off by default**. With it off, every route of D10 (including the public
+  accept route and any credential create/revoke route) answers 404, as if it did
+  not exist. A test enumerates the route table and fails if any identity or
+  credential route is registered outside the switch. This switch is also the
+  rollback: turning it off removes the whole surface.
+- Task order matches: the group that registers the routes (group 15) comes
+  **after** the hand-off group (group 14). No HTTP assertion about these routes
+  is written before group 14 is done; earlier groups test in process.
+- Turning the switch on in a deployment is a first-deployment gate for `010`
+  (Risks).
+
+### D16. No identifier in a URL path reaches telemetry
+
+`002` Q67 drops only `url.query`; the HTTP instrumentation still exports the
+raw `url.path`, and `{user}` is an email. `apps/api/src/telemetry.ts` already
+strips the query part of `url.full`, `http.url`, `http.target` and `url.path`
+from spans. For the identity routes it additionally replaces the path with its
+route template (`http.route`, for example `/v1/users/{user}/status`), so no
+email, invitation id or credential id leaves the process. The marker test runs
+through the real HTTP instrumentation, not only the in-memory harness.
 
 ## Observability contract
 
 Tracer/meter name `@tayzu/auth` (the package this change and `002` share),
 version equal to the package version — a second instrumentation scope
-alongside `001`'s `@tayzu/catalog`, per `001`'s own one-scope-per-package
-precedent. Shared attribute keys (`tayzu.tenant.id`, `tayzu.actor.type`,
-`tayzu.actor.id`) come from `@tayzu/observability/semconv`, unchanged.
+alongside `001`'s `@tayzu/catalog`. Shared attribute keys (`tayzu.tenant.id`,
+`tayzu.actor.type`, `tayzu.actor.id`) come from `@tayzu/observability/semconv`,
+unchanged. The contract lives in `packages/auth/src/telemetry/contract.ts`;
+`otel-smoke-check` (which imports `packages/authz/src/telemetry/contract.ts`
+today) is extended to import this one as well, so the new names are enforced.
+
+Identifier rules for every signal: `tayzu.identity.user.id` is the Better Auth
+user id, `tayzu.identity.service_account.id` is the `_user` entity's opaque id,
+never the email or the `svc-…` identifier, and no invited email, token,
+credential name or secret appears anywhere.
 
 ### Spans
 
-| Span name | When | Required attributes | Conditional attributes |
-|---|---|---|---|
-| `identity.invitation.create` | op | `tayzu.identity.invitation.id` | — |
-| `identity.invitation.accept` | op | `tayzu.identity.invitation.id` | — |
-| `identity.invitation.cancel` | op | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason` (`admin_cancel`\|`re_invite`) | — |
-| `identity.invitation.resend` | op | `tayzu.identity.invitation.id` | — |
-| `identity.user.set_status` | op | `tayzu.identity.user.status.from`, `tayzu.identity.user.status.to` | — |
-| `identity.service_account.create` | op | `tayzu.identity.service_account.id` | — |
-| `identity.credential.list` | op | `tayzu.identity.credential.count` | — |
-| `identity.credential.rotate` | op | `tayzu.identity.credential.kind` | — |
-| `identity.credential.revoke` | op | `tayzu.identity.credential.kind` | — |
-| `identity.organization.delete` | op | `tayzu.identity.org_deletion.entities_removed` | — |
+| Span name                         | When | Required attributes                                                                  | Conditional attributes |
+| --------------------------------- | ---- | ------------------------------------------------------------------------------------ | ---------------------- |
+| `identity.invitation.create`      | op   | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.role` (`member`\|`admin`) | —                      |
+| `identity.invitation.accept`      | op   | `tayzu.identity.invitation.id`                                                       | —                      |
+| `identity.invitation.cancel`      | op   | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason` (`admin_cancel`\|`re_invite`\|`user_disabled`\|`org_deletion`) | — |
+| `identity.invitation.resend`      | op   | `tayzu.identity.invitation.id`                                                       | —                      |
+| `identity.user.set_status`        | op   | `tayzu.identity.user.status.from`, `tayzu.identity.user.status.to`                   | —                      |
+| `identity.service_account.create` | op   | `tayzu.identity.service_account.id`                                                  | —                      |
+| `identity.service_account.delete` | op   | `tayzu.identity.service_account.id`                                                  | —                      |
+| `identity.credential.list`        | op   | `tayzu.identity.credential.count`                                                    | —                      |
+| `identity.credential.create`      | op   | `tayzu.identity.credential.kind`                                                     | —                      |
+| `identity.credential.rotate`      | op   | `tayzu.identity.credential.kind`                                                     | —                      |
+| `identity.credential.revoke`      | op   | `tayzu.identity.credential.kind`                                                     | —                      |
+| `identity.organization.delete`    | op   | `tayzu.tenant.id`                                                                    | —                      |
+| `identity.organization.purge`     | job  | `tayzu.identity.org_deletion.step` (`catalog`\|`auth`), `tayzu.identity.org_deletion.entities_removed` | —   |
 
-All spans are `INTERNAL`, one per operation, following `001` design's error
-and sanitization rules verbatim (expected errors: `error.type` only, no
-exception event; unexpected errors: sanitized exception, no message/SQL).
+All spans are `INTERNAL`, one per operation (one per tenant and step for the
+purge), following `001` design's error and sanitization rules verbatim
+(expected errors: `error.type` only, no exception event; unexpected errors:
+sanitized exception, no message/SQL).
 
 ### Metrics
 
-| Instrument | Type, unit | Attributes | Purpose |
-|---|---|---|---|
-| `tayzu.identity.invitations` | Counter, `{invitation}` | `tayzu.tenant.id`, `tayzu.identity.invitation.mutation` (`created`\|`accepted`\|`rejected`\|`cancelled`\|`expired`\|`rate_limited`) | Invitation funnel (`rate_limited` added per VCDM pre-assessment ticket 12) |
-| `tayzu.identity.user_status_changes` | Counter, `{change}` | `tayzu.tenant.id`, `tayzu.identity.user.status.to`, `tayzu.actor.type` | Lifecycle churn |
-| `tayzu.identity.service_accounts` | Counter, `{account}` | `tayzu.tenant.id`, `tayzu.identity.service_account.mutation` (`created`\|`disabled`\|`enabled`\|`deleted`) | Service-account volume |
-| `tayzu.identity.credential_mutations` | Counter, `{mutation}` | `tayzu.tenant.id`, `tayzu.identity.credential.kind` (`service_account`\|`integration`), `tayzu.identity.credential.mutation` (`created`\|`rotated`\|`revoked`) | Credential hygiene signal |
-| `tayzu.identity.org_deletions` | Counter, `{deletion}` | `tayzu.identity.org_deletion.outcome` (`completed`\|`denied_step_up`) | Rare, high-impact operation — always worth a signal |
-| `tayzu.identity.step_up_denials` | Counter, `{denial}` | `tayzu.catalog.operation` | Security signal: how often step-up blocks a high-risk op |
+| Instrument                            | Type, unit                | Attributes                                                                                                                                                                | Purpose                                                                                             |
+| ------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `tayzu.identity.invitations`          | Counter, `{invitation}`   | `tayzu.tenant.id`, `tayzu.identity.invitation.mutation` (`created`\|`accepted`\|`rejected`\|`cancelled`\|`expired`\|`rate_limited`)                                       | Invitation funnel                                                                                   |
+| `tayzu.identity.user_status_changes`  | Counter, `{change}`       | `tayzu.tenant.id`, `tayzu.identity.user.status.to`, `tayzu.actor.type`                                                                                                    | Lifecycle churn                                                                                     |
+| `tayzu.identity.service_accounts`     | Counter, `{account}`      | `tayzu.tenant.id`, `tayzu.identity.service_account.mutation` (`created`\|`disabled`\|`enabled`\|`deleted`)                                                                | Service-account volume                                                                              |
+| `tayzu.identity.credential_mutations` | Counter, `{mutation}`     | `tayzu.tenant.id`, `tayzu.identity.credential.kind` (`service_account`\|`integration`), `tayzu.identity.credential.mutation` (`created`\|`rotated`\|`revoked`)            | Credential hygiene signal                                                                           |
+| `tayzu.identity.org_deletions`        | Counter, `{deletion}`     | `tayzu.identity.org_deletion.outcome` (`requested`\|`completed`\|`failed`)                                                                                                | Rare, high-impact operation — always worth a signal (`denied_step_up` dropped: the guard already emits `tayzu.auth.step_up.required`) |
+| `tayzu.identity.principal_rejections` | Counter, `{rejection}`    | `tayzu.identity.rejection.reason` (`user_disabled`\|`service_account_disabled`\|`tenant_pending_deletion`), `tayzu.actor.type`                                            | Enforcement of D13 is visible and alertable                                                         |
+
+`tayzu.identity.step_up_denials` from the earlier draft is **dropped**: the
+step-up guard already emits `auth.security.step_up_required` and
+`tayzu.auth.step_up.required`.
 
 **Cardinality budget**: `tayzu.tenant.id` stays under the same <20 bound `001`
 ADR-0006 already assumes. Every other attribute above is a bounded enum.
@@ -452,146 +750,260 @@ are **never** attributes on any signal — the cardinality guard extends
 
 ### Log events
 
-| Event name | Severity | Attributes | Purpose |
-|---|---|---|---|
-| `catalog.audit.invitation_created` | INFO | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id` | Audit |
-| `catalog.audit.invitation_accepted` | INFO | same, plus `tayzu.identity.user.id` | Audit |
-| `catalog.audit.invitation_cancelled` | INFO | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason` | Audit |
-| `catalog.security.invitation_acceptance_denied` | WARN | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.denial_reason` (`expired`\|`cancelled`\|`rejected`\|`already_accepted`\|`email_mismatch`\|`not_found`) | Detect misuse of dead/foreign invitations (SEC06/SEC11); the reason lives only here, never in the HTTP response (VCDM pre-assessment ticket 11) |
-| `catalog.security.invitation_rate_limited` | WARN | `tayzu.tenant.id` | Per-tenant invite/resend volume abuse signal (VCDM pre-assessment ticket 12, SEC11); no invited email present |
-| `catalog.security.self_status_change_denied` | WARN | `tayzu.tenant.id`, `tayzu.actor.id` | Detect self-service status tampering attempts |
-| `catalog.audit.service_account_created` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.service_account.id` | Audit |
-| `catalog.audit.credential_rotated` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id` | Audit — opaque IDs only, never secrets |
-| `catalog.security.credential_revoked` | WARN | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id` | Security-relevant, not routine |
-| `catalog.audit.org_deletion_completed` | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.org_deletion.entities_removed` | Durable record that this irreversible action happened, emitted before the org row is gone |
+| Event name                                      | Severity | Attributes                                                                                                                                                  | Purpose                                                                                                   |
+| ----------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `catalog.audit.invitation_created`              | INFO     | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id`, `tayzu.identity.invitation.role`                                   | Audit; the role is logged (VCDM B2)                                                                       |
+| `catalog.audit.invitation_accepted`             | INFO     | same, plus `tayzu.identity.user.id`                                                                                                                         | Audit                                                                                                     |
+| `catalog.audit.invitation_cancelled`            | INFO     | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason`                                                                                          | Audit                                                                                                     |
+| `catalog.audit.invitation_resent`               | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.invitation.id`                                                                                         | Audit (new)                                                                                               |
+| `catalog.audit.user_created`                    | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.user.id`, `tayzu.identity.user.role` (`member`\|`admin`), `tayzu.identity.user.source` (`admin`\|`bootstrap`) | Audit for `identity.users.create` and bootstrap (`002` Q42, new)                                    |
+| `catalog.audit.user_status_changed`             | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.user.id`, `tayzu.identity.user.status.from`, `tayzu.identity.user.status.to`, `tayzu.identity.user.account_kind` | Audit of every status change, including service accounts disabled and enabled (new)       |
+| `catalog.audit.service_account_created`         | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.service_account.id`                                                                                    | Audit                                                                                                     |
+| `catalog.audit.service_account_deleted`         | INFO     | same                                                                                                                                                        | Audit (new)                                                                                               |
+| `catalog.audit.credential_created`              | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id`, `tayzu.identity.credential.kind`                                                       | Audit (`002` Q42, new)                                                                                    |
+| `catalog.audit.credential_rotated`              | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id`                                                 | Audit — opaque IDs only, never secrets                                                                    |
+| `catalog.audit.org_deletion_requested`          | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                                                                         | Phase 1 started: access revoked, tenant marked (new)                                                      |
+| `catalog.audit.org_deletion_completed`          | INFO     | `tayzu.tenant.id`, `tayzu.identity.org_deletion.entities_removed`                                                                                           | Durable record that the irreversible purge happened, emitted by the purge before the organization row is deleted |
+| `catalog.security.authz_denied`                 | WARN     | as already declared by `001`/`002`                                                                                                                          | Reused: the identity router now emits it on every Cerbos deny (it threw silently before)                 |
+| `catalog.security.invitation_acceptance_denied` | WARN     | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.denial_reason` (`expired`\|`cancelled`\|`rejected`\|`already_accepted`\|`token_mismatch`\|`disabled_user`\|`not_found`) | Misuse of dead/foreign invitations (SEC06/SEC11); the reason lives only here, never in the HTTP response |
+| `catalog.security.invitation_rate_limited`      | WARN     | `tayzu.tenant.id`, `tayzu.identity.invitation.limit_scope` (`tenant`\|`recipient`\|`global`)                                                                | Invite/resend volume abuse signal; no invited email present                                               |
+| `catalog.security.self_status_change_denied`    | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                                                                         | Self-service status tampering                                                                             |
+| `catalog.security.principal_rejected`           | WARN     | `tayzu.identity.rejection.reason`, `tayzu.actor.type`                                                                                                       | A disabled, revoked-tenant or pending-deletion principal was refused (D13, new)                           |
+| `catalog.security.credential_revoked`           | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id`                                                                                         | Security-relevant, not routine                                                                            |
+| `catalog.security.credential_rotation_incomplete` | WARN   | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id`                                                 | Overdue signal: a rotation left two usable credentials or none (new)                                      |
+| `catalog.security.org_deletion_failed`          | WARN     | `tayzu.tenant.id`, `tayzu.identity.org_deletion.step` (`catalog`\|`auth`)                                                                                   | A purge step failed; a failed deletion is no longer invisible (new)                                       |
 
 Every event above is exempt from sampling and from any downstream filter/drop
 rule, per `001`'s existing rule for `catalog.audit.*`/`catalog.security.*`
-(`001` design, Sampling exemption) — `010` inherits this constraint
-unchanged, it does not need to relearn it for this change's new event names.
+(`001` design, Sampling exemption) — `010` inherits this constraint unchanged.
+The user, credential and bootstrap lifecycle events `002` Q42 deferred to this
+change are `user_created`, `credential_created`/`credential_rotated`/
+`credential_revoked`, and the bootstrap case of `user_created`; SSO link and
+unlink already have `auth.security.account_linked` and `account_unlinked`.
 
 ## Security considerations (SSA SEC01-SEC16 posture)
 
-This is this change's own SEC01-16 walk-through, informed by
-`r5-carryover-security.md`'s already-completed mapping for the (then
-unsplit) `002`. The formal `vcdm-ssa-validator` pre-assessment (Mode A) is
-task 1.2 below, run before this proposal reaches Checkpoint 1, and its
-findings — if any — get folded in the same way `001`'s B1-B8/N1-N11 findings
-were. A second, adversarial Mode A pre-assessment, run jointly against this
-change and `002` (`002/ssa-pre-assessment.md`), found gaps only visible at
-the seam between the two changes — this change's share is folded in below
-(D3/D6's service-account role restriction, and SEC02/SEC06/SEC11's
-resolutions above); the report's own "Resolution" section records how each
-was closed.
+This is this change's own SEC01-16 walk-through. The formal `vcdm-ssa-validator`
+pre-assessment (Mode A, 2026-10-01) found 11 blocking gaps (B1-B11) against the
+merged `002`, all folded below; each is also a requirement or scenario in the
+spec and a task. A joint pre-assessment with `002` (`002/ssa-pre-assessment.md`)
+earlier found the seam gaps closed by D3/D6.
+
+| Gap | Where it is closed |
+| --- | --- |
+| B1 invitation acceptance cannot work | D4 (public accept route, token, tenant from the invitation), spec requirement "Invitation acceptance", tasks group 8 |
+| B2 unconstrained invited role | D4 (`member`\|`admin`), spec "Invitation lifecycle", task 7.4 |
+| B3 no server-side tenant binding | D14, spec "Targets belong to the caller's tenant", group 13 |
+| B4 disable/rotate not immediate, state machine bypass | D2, D8, D13, spec "Disabling a human takes effect immediately", groups 4, 9, 10, 11 |
+| B5 org deletion impossible as written | D9, spec "Org deletion", group 12, migration `0012` |
+| B6 Q73 gate not enforced | D15, spec "Identity routes are unreachable until mounted", group 14 before 15 |
+| B7 security logging gaps | Observability contract, spec "Security-relevant events are logged" |
+| B8 paths leak identifiers | D16, spec "Telemetry contract", task 16.5 |
+| B9 email injection, origin, caps | D4, D5, spec "Invitation email is fixed and capped", group 6 |
+| B10 service-account ceiling | D3, D6, spec "Service accounts", groups 5 and 10 |
+| B11 step-up coverage | D10, spec "Every high-risk operation requires step-up", task 15.2 |
 
 | Section | Applies | Posture |
-|---|---|---|
-| SEC01 Diagram | Yes | New external actor (email provider) and new arrows (invite→email, rotation, org deletion) added to `docs/architecture/system-diagram.md` (task in group 8). |
-| SEC02 Attack surfaces | Yes | Ten new routes (D10), each with its actor, auth mechanism (session or step-up-verified session) and Cerbos check named in the SEC02 table. The native Better Auth `inviteMember` route this same surface would otherwise duplicate is blocked by `002`'s allowlist (D18 there), closing the invite-bypass gap the joint VCDM pre-assessment found (`002`'s `ssa-pre-assessment.md`, Summary #1). |
-| SEC03 Access control | Yes, core of this change | Every operation Cerbos-gated to `admin` (D3); self-status-change explicitly denied; four operations require step-up (D10); fail-closed on missing grant, same as `001`/`002`; service accounts restricted to `member` role, never `admin`, closing the step-up-exemption interaction the joint VCDM pre-assessment flagged (Summary #5, Resolved decision Q7). |
-| SEC04 Password storage | N/A | No new password store; service-account credentials reuse `002`'s Better Auth `api-key` hashing. |
-| SEC05 Crypto | Partial | Invitation tokens are Better Auth's own opaque IDs; credential secrets are hashed by `002`'s mechanism; TLS to Azure Communication Services (managed service, TLS enforced by the provider). |
-| SEC06 Misuse | Yes | Expired/cancelled/rejected-invitation acceptance always fails (state-machine test); re-invite cancellation prevents duplicate-pending confusion; org deletion is idempotent against a second call; invitation-acceptance error responses are indistinguishable across failure reasons (VCDM pre-assessment ticket 11). |
-| SEC07 Dependencies | Yes | `@azure/communication-email` added to the existing Dependabot/`pnpm audit`/quarterly-EOL process (`001` R7) — no new gate. |
+| --- | --- | --- |
+| SEC01 Diagram | Yes | New external actors (the email provider; the invitee with their mailbox) and new arrows (invite→email, the public accept route, ACS egress over HTTPS, the purge job) added to `docs/architecture/system-diagram.md` (task 17.7). |
+| SEC02 Attack surfaces | Yes | Twelve routes (D10), each with its actor, authentication (session, step-up-verified session, or none for the public accept route) and Cerbos check named in `docs/security/attack-surfaces.md` (task 17.6). The native Better Auth `inviteMember` and `accept-invitation` routes stay off `002`'s allowlist (D18 there). The accept route is the first unauthenticated route: it derives the tenant from the invitation, is rate-limited, never reveals why it failed, and sits behind the mount gate (D15). |
+| SEC03 Access control | Yes, core | Every operation Cerbos-gated to `admin` (D3) with the target's real tenant; targets resolved server-side (D14); self-status-change denied; step-up on every high-risk operation (D10); invited role limited to `member`/`admin`; service accounts held to `member` by signed claim, creation validation and a Cerbos deny (D6); disabled users and service accounts rejected within seconds (D13). Off-boarding is `Disabled`; role change and member removal are deferred (Non-Goals). The human attestations (off-boarding procedure, training, access review) are deferred to `010`'s SSA (Resolved decision Q17). |
+| SEC04 Password storage | Yes | The acceptance flow is the first place a password is set outside sign-in: it applies the password policy (Open Question 5), the hash is Better Auth's scrypt (`002`), and a token is required before any password is read. Service-account credentials reuse `002`'s API-key hashing. |
+| SEC05 Crypto | Partial | The invitation token is 256 bits from a CSPRNG, stored only as a sha256 digest and compared in constant time (D4); credential secrets are hashed by `002`'s mechanism; TLS to Azure Communication Services is provider-managed. The token generator is ours, so no Better Auth invitation-id entropy claim is relied on. |
+| SEC06 Misuse | Yes | Dead invitations never succeed; acceptance errors are indistinguishable; a `Disabled` user cannot be revived by sign-in, acceptance or a hook (D2); re-invite cancels the previous invitation; org deletion is idempotent and reversible during the window (D9). |
+| SEC07 Dependencies | Yes | `@azure/communication-email` joins the Dependabot/`pnpm audit`/quarterly-EOL process; license, `allowBuilds` and SBOM review are recorded in `docs/security/dependencies.md` (task 1.3). |
 | SEC08 File upload | N/A | No file upload surface. |
-| SEC09/SEC10 Secrets | Yes | Azure Communication Services connection string is a new Key Vault secret, with a documented change procedure in `docs/security/data-retention.md`'s companion secrets note (reusing `002`'s Key Vault seam, not a new mechanism). |
-| SEC11 Phishing | Yes, this change's core new exposure | 48h expiry, single link, session-email-must-match-invited-email, re-invite invalidates the old link (D4/D5); per-tenant invite/resend rate cap closes the bulk-invite/messaging-abuse gap the SSA's own SEC11 best practices ask for (VCDM pre-assessment ticket 12). |
-| SEC12 Testing | Yes | Every requirement has a scenario-backed test; `cerbos compile` gates new policies; existing ZAP baseline (`002`) covers the new routes automatically, no new DAST job needed. |
-| SEC13 Deployment | Partial | One new env var (Communication Services connection string via Key Vault reference), no new deploy step. |
-| SEC14 Infra permissions | N/A, no change | No new DB roles or grants — this change touches only tables `002` already grants `tayzu_app`/`tayzu_auth` access to. |
-| SEC15 Network/host | Partial | One new outbound call (Azure Communication Services) from the app; documented as an egress in the system diagram. |
-| SEC16 Logging | Yes | Nine new log events (Observability contract), all sampling-exempt, following `001`'s naming and redaction rules. |
+| SEC09/SEC10 Secrets | Yes | The Communication Services connection string is a new Key Vault secret with a change procedure in `docs/security/secrets.md`; a managed identity instead is a ticket. |
+| SEC11 Phishing | Yes, core new exposure | 48h expiry, one link, fixed subject and template with no tenant or inviter free text, link origin from `BETTER_AUTH_URL` only, exactly one recipient and no CC/BCC/attachments, per-tenant, per-recipient and global caps (D4, D5). |
+| SEC12 Testing | Yes | Every requirement has a scenario-backed test; every route a cross-tenant test; `cerbos compile` gates policies. The OpenAPI-driven ZAP scan (`002` NB1) would hit `organization.delete`, `rotate`, `revoke` and `invite`, so it needs a sandbox tenant, a non-sending email sender and a destructive-route exclusion (ticket, Risks). |
+| SEC13 Deployment | Partial | One env var (Communication Services connection string via Key Vault reference), `INVITATION_EMAIL_KILL_SWITCH`, `MOUNT_IDENTITY_ROUTES`, the purge window, and a scheduled job provisioned with `010`; production startup fails without a real `EmailSender`. |
+| SEC14 Infra permissions | Yes | Two migrations (Checkpoint 3): `0011` and `0012` add a deletion-marker table and a `SECURITY DEFINER` purge function owned by `tayzu_migrator`; the roles stay separate (`tayzu_app`, `tayzu_auth`, `tayzu_migrator`) and `PUBLIC` gets no `EXECUTE`. |
+| SEC15 Network/host | Partial | One new outbound call (Azure Communication Services, HTTPS) and the sender-domain DNS (SPF, DKIM, DMARC), recorded as an egress in the system diagram. DNS DDoS protection is deferred to `010`'s SSA (Q17). |
+| SEC16 Logging | Yes | Nineteen new log events (plus the reused `catalog.security.authz_denied`) in the contract, all sampling-exempt, opaque ids and enums only; `catalog.security.authz_denied` is emitted from the identity router; no identifier in a URL path reaches telemetry (D16). |
 
 ## Divergences from Port (deliberate)
 
 | Topic | Port | Tayzu 043 | Why |
-|---|---|---|---|
-| Invite/status-change authorization | Gated on request *origin* (UI/API) | Gated on Cerbos role (`admin`) | `project.md`'s "actor.type/origin never selects a code path" invariant (D3, ADR-0020) |
+| --- | --- | --- | --- |
+| Invite/status-change authorization | Gated on request _origin_ (UI/API) | Gated on Cerbos role (`admin`) | `project.md`'s "actor.type/origin never selects a code path" invariant (D3, ADR-0020) |
 | Service-account identifier | Real-looking email at a reserved domain (`serviceaccounts.getport.io`) | `^svc-...` non-email identifier | Tayzu's `_user.identifier` is not required to be email-shaped; avoids a lookalike-phishing surface (D6, ADR-0017) |
-| Org deletion recovery window | Described as a 14-day internal backup process, mechanics undocumented | Same 14-day number, explicitly sourced to Azure Database for PostgreSQL Flexible Server's backup retention setting, not an app-level queue | Reuses infrastructure Tayzu already has instead of building a second retention mechanism (D9, ADR-0019) |
-| Credential rotation | Undocumented beyond "rotate if exposed" | Explicit immediate two-credential cutover, 90-day documented rotation cadence | Port leaves this as a gap (`r1-port.md` §8.1); Tayzu specifies it fully (D8, ADR-0018) |
+| Org deletion recovery | Described as a 14-day internal backup process, mechanics undocumented | A pending window (7 to 14 days) during which access is revoked and the tenant can still be reversed, then a job purges | Server PITR cannot restore one tenant; the window is a real, testable mechanism (D9, ADR-0019) |
+| Credential rotation | Undocumented beyond "rotate if exposed" | Explicit immediate cutover through the revocation list, 90-day documented rotation cadence | Port leaves this as a gap (`r1-port.md` §8.1); Tayzu specifies it fully (D8, ADR-0018) |
 | "View as" a different user | Documented, admin-only | Not built in this change | Explicitly later-UI (`003`/`014`), not dropped |
-| Support-user audit exemption | *"Support user actions are not logged"* | No such exemption anywhere in Tayzu | Every administrative action, including Tayzu's own operators, is logged uniformly (SEC16) |
+| Support-user audit exemption | _"Support user actions are not logged"_ | No such exemption anywhere in Tayzu | Every administrative action, including Tayzu's own operators, is logged uniformly (SEC16) |
 
 ## Risks / Trade-offs
 
 - [Credential rotation has no grace period (D8); an integration polling with
-  the old credential breaks the instant it's rotated] → Documented in the
-  rotation UX copy and `docs/security/data-retention.md`; revisit with a
+  the old credential breaks within seconds of the rotation] → Documented in
+  the rotation UX copy and `docs/security/data-retention.md`; revisit with a
   scheduled hard-revoke only if a real Phase-1 integration needs it.
-- [Org deletion recovery depends on an Azure-level setting (D9) this change's
-  code cannot verify at runtime] → The 14-day figure is documented as an
-  infrastructure requirement to confirm when the Azure Database for
-  PostgreSQL Flexible Server resource is actually provisioned (a later
-  deployment change); flagged here so it is not silently assumed true.
+- [A pending org deletion is reversible only out of band (Open Question 4),
+  and the purge removes the data for good; backups keep it until their own
+  retention expires] → The erasure statement in
+  `docs/security/data-retention.md` says so; the Azure backup retention is an
+  infrastructure setting to confirm when the server is provisioned.
+- [The deletion marker and the purge function are the most privileged new
+  surface: a compromised app role that can write a marker and execute the
+  function could purge another tenant] → Checkpoint 3 reviews the grants; the
+  function checks the marker is due, and only the operation writes it behind
+  Cerbos, step-up and the host-tenant confirmation. Recorded for `010`.
+- [Per-recipient cap across tenants is a weak oracle: an admin sees
+  `AUTH_RATE_LIMITED` for an address that other tenants invited three times]
+  → Accepted; the response is the same one a tenant cap gives, and the signal
+  reveals no tenant. Ticket to revisit.
+- [Step-up is keyed on the route, so a per-role step-up (admin invite only)
+  would need a body-aware guard] → Open Question 2.
+- [An existing-account invitee, an SSO-only invitee] → Open Question 1 and
+  `002` Q72: an organization that wants to invite someone who will only ever
+  use Visma Connect is unsupported until `025`; they need a local password
+  first, then link through `/link-social`. A service account has no Visma
+  account to link and needs no change.
 - [Drift between this design and `002`'s implementation by the time `043`
-  starts implementation] → The package-layout assumption was already checked
-  against `002`'s actual `design.md` during OpenSpec planning (2026-09-28,
-  see Context) and matched; task 1.1 remains as a final drift-check against
-  the merged code, not a first-time discovery step.
+  starts implementation] → Checked against the merged code on 2026-10-01 (task
+  1.1); the findings are in the Context.
 - [Sending a real invitation email in integration tests would be flaky and
   slow] → `EmailSender` is faked in every test except a single, explicitly
   optional manual smoke check against a real Communication Services sandbox
   (not part of CI).
-- [Coordination note, added 2026-09-28: `002` gained Visma Connect SSO
-  (`002`'s `design.md` D22-D26, `project.md` §23 D11) after this design was
-  written] → Two seams to verify when `043` starts implementation, not
-  resolved here (would rewrite `002`'s design, not this one's job):
-  (1) **Invitation acceptance for an SSO-only user.** D4's invitation flow
-  (`afterAcceptInvitation` → `_user.status = Active`) assumes the invited
-  person sets a local password when accepting. An organization that wants
-  to invite someone who will only ever sign in through Visma Connect needs
-  the acceptance step to also support linking a Visma Connect account
-  (`002` D24's path (a) or (b)) instead of, or in addition to, setting a
-  password — `002`'s own "a user must keep at least one sign-in method"
-  invariant (D24) already anticipates a password-optional account, but this
-  change's invitation-acceptance flow does not yet have a path that ends
-  there. (2) **Service accounts and SSO are unrelated.** `002`'s account
-  linking (D24) is scoped to human (`user`-actor) sessions only; a service
-  account (`043` D6) resolves to `actor.type: integration` via a machine
-  credential (`002` D5) and has no Visma Connect account to link, so no
-  change is needed there — noted explicitly so a future reader does not
-  wonder whether it was overlooked.
+
+### Gates for the first deployment (`010`)
+
+Human-owned, next to `002`'s own list:
+
+- The invitation caps (Q15) and the accept-route limiter on a **shared store**
+  across replicas (`002` Q73 gate, extended to these buckets).
+- `MOUNT_IDENTITY_ROUTES` is turned on only after every task in group 14 is
+  ticked.
+- A verified Communication Services sender domain (SPF, DKIM, DMARC) and the
+  secret in Key Vault; the DAST scan runs against a sandbox tenant with a
+  non-sending sender and without the destructive routes.
+- The purge job is provisioned and the purge window and Azure backup
+  retention are confirmed.
+- The human attestations (off-boarding, training, access review, DNS DDoS, log
+  hours, retention policy) are answered in `010`'s SSA (Resolved decision Q17).
+
+### Tickets (non-blocking VCDM items, not built in this change)
+
+| Ticket | Item |
+| --- | --- |
+| Last-active-admin protection | Two admins can disable each other; the last admin can be disabled. |
+| Member management | `updateMemberRole`, `removeMember`, `setActiveOrganization` as Cerbos-gated procedures (`002` D18), after this change. |
+| Retention windows | Accepted, expired and cancelled `invitation` rows keep the invitee's email; a `_user` left at `Invited` after expiry stays; define windows. |
+| User notifications | Status, role and credential changes notify the user (SEC06; `002` Q46). |
+| Service-account read scope | A service account as `member` can list all users' emails. |
+| ACS managed identity | Prefer a managed identity to a connection string (SEC10/SEC14). |
+| ZAP guards | Sandbox tenant, no-send email sender, destructive-route exclusion. |
+| SSO-only when linked | `002` Q44, for `025`. |
+| Per-recipient oracle | See Risks. |
+| Email in the `{user}` path | The `_user` identifier (an email) is a path segment (Resolved decision Q12). D16 keeps it out of the process's telemetry, but the ingress and any proxy access log outside the process still see it. Consider an opaque-id route. |
+| `002` hand-off traceability | Q73 hands 043 items M9, M12-M14 and M17-M19; group 14 maps M4, M5, M10, M11, M15 and M20 only, and the others are not recorded in the repo. |
 
 ## Migration Plan
 
-1. **No SQL migration.** The one schema change (`_user.accountKind`) is a
-   blueprint-schema update through the catalog's own `blueprints.update`
-   operation, run by the `system` actor once, as an ordinary (non-Checkpoint-3)
-   data-plane change — `001` design D7 already proves this class of change
-   safe by construction (adding an optional property is always compatible).
-2. ⛔ **Checkpoint 3** still applies to every new Cerbos policy file this
-   change adds (D3): `user.invite`/`user.updateStatus` extensions (including
-   the service-account role-restriction rule, Resolved decision Q7), and the
-   new `service_account`, `credential`, and `organization` resource-kind
-   policies, each presented with its `cerbos compile` test output for
-   separate approval.
-3. Deploy: no new environment or infrastructure component beyond the Azure
-   Communication Services connection string (a Key Vault secret reference,
-   following `002`'s existing pattern for the DB credential).
-4. Rollback: disabling the new oRPC procedures (feature-flagging them off at
-   the router) is sufficient rollback, since there is no schema to reverse.
+1. **Two SQL migrations, both Checkpoint 3**, each with its
+   `migrations/down/00NN.down.sql`, `meta/00NN_snapshot.json` and `_journal.json`
+   entry: `0011_machine_credential_revocation_tenant_key` (a composite
+   `(tenant_id, credential_id)` key; task 11.1) and `0012_tenant_deletion` (the
+   marker table and the `SECURITY DEFINER` purge function; task 12.1). The
+   blueprint evolution of `_user` (D1) is not a migration: it is a
+   `blueprints.update` per existing tenant plus the new-tenant constant.
+2. ⛔ **Checkpoint 3** also applies to every Cerbos policy file this change adds
+   or edits (D3): the `user.yaml` deny rules; the new `service_account.yaml`,
+   `credential.yaml` and `organization.yaml`; and `admin.yaml`,
+   `member.yaml` (if needed) and `role_policies_test.yaml`; each presented with
+   its `cerbos compile` test output, separately.
+3. Deploy: `@azure/communication-email` and its Key Vault secret, the kill
+   switch and the mount switch (both off or safe by default), and the purge job
+   (provisioned with `010`). Nothing is mounted until the gates above are met.
+4. Rollback: set `MOUNT_IDENTITY_ROUTES` off to remove the whole HTTP surface
+   (D15); disable the purge job. The migrations have down scripts, but a purge
+   that already ran cannot be undone.
 
-## Resolved decisions (asked and approved in chat, 2026-09-28)
+## Resolved decisions (asked and approved in chat, 2026-09-28 and 2026-10-01)
 
 Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 (`scratchpad/p002/decisions.md`) that specifically bears on this change:
 
-| # | Question | Decision |
-|---|---|---|
-| Q1 | Split point between `002` and `043` | This change owns exactly: 4-state user status lifecycle and invitations (+ invitation email, SEC11), service accounts, org API-credentials viewer/management, data retention & deletion policy + org deletion, credential rotation policy UX. Everything else stays with `002`. |
-| Q4 | Canonical user status field | Stored as one field on `_user`, updated by hooks reacting to Better Auth events (`002` defines the field and `Active`/`Disabled` at minimum; this change completes `Staged`/`Invited` and the transition rules). |
-| Q5 | Machine credentials | Long-lived client id + secret (revocable, rotatable, hashed) exchanged for a short-lived (1-hour) access token — this change's service accounts and credential viewer/rotation consume that mechanism, they do not redefine it. |
-| Q6 | Step-up for high-risk operations | A fresh MFA verification (or a step-up-required error) gates any operation marked `x-tayzu-risk: high` — this change marks `setStatus`, `credentials.rotate`, `credentials.revoke`, and `organization.delete` that way (D10). |
-| Q7 | (VCDM pre-assessment, 2026-09-28) Should service accounts be restricted from holding `admin`/broad `moderatedBlueprints`, given they never go through step-up | Restrict service accounts to `member` role only, enforced at creation/update validation and by an independent Cerbos rule on `accountKind: "service"` (D6, D3). |
+| #   | Question                                                                                                                                                  | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | Split point between `002` and `043`                                                                                                                       | This change owns exactly: 4-state user status lifecycle and invitations (+ invitation email, SEC11), service accounts, org API-credentials viewer/management, data retention & deletion policy + org deletion, credential rotation policy UX. Everything else stays with `002`.                                                                                                                                                                                                                                                                                           |
+| Q4  | Canonical user status field                                                                                                                               | Stored as one field on `_user`, updated by hooks reacting to Better Auth events (`002` defines the field and `Active`/`Disabled` at minimum; this change completes `Staged`/`Invited` and the transition rules).                                                                                                                                                                                                                                                                                                                                                          |
+| Q5  | Machine credentials                                                                                                                                       | Long-lived client id + secret (revocable, rotatable, hashed) exchanged for a short-lived (1-hour) access token — this change's service accounts and credential viewer/rotation consume that mechanism, they do not redefine it.                                                                                                                                                                                                                                                                                                                                            |
+| Q6  | Step-up for high-risk operations                                                                                                                          | A fresh MFA verification (or a step-up-required error) gates any operation marked `x-tayzu-risk: high` — this change marks `setStatus`, `credentials.rotate`, `credentials.revoke`, and `organization.delete` that way (D10).                                                                                                                                                                                                                                                                                                                                              |
+| Q7  | (VCDM pre-assessment, 2026-09-28) Should service accounts be restricted from holding `admin`/broad `moderatedBlueprints`, given they never go through step-up | Restrict service accounts to `member` role only, enforced at creation/update validation and by an independent Cerbos rule on `accountKind: "service"` (D6, D3).                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Q8  | (Drift-check and VCDM pre-assessment against merged 002, 2026-10-01) How an invitee without an account accepts                                            | The invitation link carries a single-use, constant-time-compared token. A public, rate-limited accept route outside the tenant-context pipeline derives the tenant from the invitation record, lets the invitee set a password, and treats the token as mailbox proof (email verified in-process); MFA enrollment then follows 002 Q43, and Visma Connect is linked later through `/link-social`, `sub`-keyed. Responses are enumeration-resistant. The native `/organization/accept-invitation` route stays off the D18 allowlist.                                          |
+| Q9  | (VCDM B2, 2026-10-01) Roles an invitation may carry                                                                                                       | `member` or `admin`, never `owner`; an `admin` invitation requires step-up and is logged with its role (consistent with 002 Q37).                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Q10 | (Drift b2, 2026-10-01) Attributing `_user` writes to the admin                                                                                            | The identity procedure writes as `system` with `actor.onBehalfOf` set to the admin, in-process only; `reserved.ts` is unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Q11 | (Drift b8, 2026-10-01) Canonical disable mechanism and default status                                                                                     | `setStatus` calls Better Auth `banUser`/`unbanUser` and syncs `_user.status` through the `nextStatus` state machine; `afterAddMember`, the ban hook and `identity.users.create` go through it. Admin-created users start `Active`; `Staged` is the default only for an entity created without a status. Covers 043 task 14.4.                                                                                                                                                                                                                                              |
+| Q12 | (Drift b3/b4, VCDM, 2026-10-01) Service-account principal                                                                                                 | The signed machine claim stays `member` with no teams and no moderated blueprints (002 Q28); `userId` is added only as an attribution claim. Routes address a user by its `_user` entity identifier (email or `svc-…`).                                                                                                                                                                                                                                                                                                                                                    |
+| Q13 | (Drift b5, VCDM B4, 2026-10-01) Immediacy of disable, rotate and revoke                                                                                   | Rotate and revoke write the revocation list (effective within seconds). Disable is a `_user.status` check on the resolver's machine branch with the 5-second cache, failing closed, so a disabled service account can be re-enabled without a migration.                                                                                                                                                                                                                                                                                                                  |
+| Q14 | (Drift b6, VCDM B5, 2026-10-01) Org deletion                                                                                                              | Two phases: access is revoked immediately and the tenant is marked pending deletion; after a 7-to-14-day window a job purges in idempotent steps (catalog data, then Better Auth rows). The purge of append-only rows goes through a `SECURITY DEFINER` function owned by `tayzu_migrator` that deletes only for a tenant marked for deletion (a migration, Checkpoint 3).                                                                                                                                                                                                  |
+| Q15 | (VCDM B9, 2026-10-01) Invitation email abuse limits                                                                                                       | 30 per hour per tenant, 3 per 24 hours per recipient across all tenants, and a global kill switch (environment variable), on a shared store before the first deployment.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Q16 | (Drift b7, 2026-10-01) Testing the service-account role ceiling                                                                                           | The Cerbos rule stays as a defensive layer, tested at the policy level, plus a `system`-actor test; no new role-editing operation.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Q17 | (VCDM, 2026-10-01) Human attestations                                                                                                                     | Deferred to `010`'s SSA, as 002 Q59 and Q79.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ## Open Questions
 
-None. Every genuinely open item from the research notes that would have
-changed this change's scope, approach, or task breakdown (the `002`/`043`
-split itself, the canonical-status-field decision, the step-up mechanism) was
-already asked and answered in the shared decision set before this document
-was written. The package-layout assumption (Context) and the credential
-rotation grace-period (Risks) are deferred deliberately but do not change
-scope, so they are not open questions — they are documented risks with a
-stated resolution path.
+The five items below are not decided by Q1-Q17 and are asked in chat. The tasks
+are written to the **recommended** option of each; if the human picks another,
+the tasks named under it change and nothing else. Nothing counts as approved
+until the human answers, after which the answer moves to "Resolved decisions".
+
+1. **What happens when an invitation is accepted for an email that already has
+   an account** (for example a person who already belongs to another
+   organization)? Setting a password would be an account takeover, so acceptance
+   never does that (D4); the open part is the alternative.
+   1. **(Recommended)** For an existing account, acceptance requires an
+      authenticated session of that same account plus the token, adds only the
+      membership, activates the `_user` and sets no password. Why: it supports
+      people in several organizations without a takeover path, at the cost of
+      a second accept variant (task 8.5 builds the refusal now and this variant
+      only after the human answers).
+   2. Refuse such an invitation generically at acceptance and tell the admin
+      out of band. Why safe: no variant; but it blocks multi-org users, which
+      `042` wants.
+   3. Defer invitations to existing accounts to `042`. Why: multi-org UX is
+      `042`'s, but this change would then reject a legitimate case.
+2. **Step-up granularity for invitations and `identity.users.create`.** Step-up
+   is keyed on the route, so a role-dependent step-up needs a body-aware guard.
+   1. **(Recommended)** Mark `invite` and `users.create` high-risk for every
+      role. Why: the guard is route-keyed, so it is the smallest correct change and
+      covers the `admin`-role requirement of Q9 and VCDM B11; the cost is a fresh MFA
+      for a `member` invitation too.
+   2. Two routes per operation (an `admin` variant that is high-risk and a
+      `member` variant that is not). Why: precise UX, but doubles the routes, the
+      Cerbos actions and the tests.
+   3. A body-aware guard in the interceptor. Why: precise, but changes `002`'s
+      step-up mechanism.
+3. **API-key expiry for machine credentials.** `002` asks 043 to set the limit and
+   expiry (Better Auth's default rate limit is 10 verifications per 24 hours;
+   the limit is set in either case). A hard expiry conflicts with D8's rule
+   that nothing is force-disabled for being overdue.
+   1. **(Recommended)** No hard expiry; the rotation-due indicator and the 90-day
+      cadence only (D8). Why: matches D8; no silent integration breakage.
+   2. A hard expiry of 180 days. Why: bounds a forgotten key, at the cost of
+      outages.
+   3. A hard expiry equal to twice the rotation interval. Why: a middle path
+      that still bounds a leaked key.
+4. **Org-deletion window default and reversal.** Q14 fixes 7 to 14 days.
+   1. **(Recommended)** Default 14 days, configurable between 7 and 14; reversal only by
+      a platform operator who clears the marker (a documented runbook), no
+      in-product cancel. Why: members have no access during the window, so a
+      product cancel would need a new unauthenticated path; the operator path
+      keeps the compromised-admin case reversible.
+   2. Default 7 days with the same operator reversal. Why: faster erasure
+      statement, less time to notice a hijack.
+   3. An in-product cancel by a fresh-MFA admin during the window. Why: self
+      service, but contradicts "access is revoked immediately".
+5. **Password policy** (for the invitation acceptance and the temporary/bootstrap
+   passwords of task 14.5): minimum length, breached-password check, backoff or
+   lockout (`002` Q78 accepted Better Auth's default only for the 002 merge).
+   1. **(Recommended)** Minimum 12 characters and a bundled common-password
+      denylist, no external call, no new dependency, with `002`'s existing
+      backoff. Why: stronger than the default and needs no dependency
+      (CLAUDE.md allows one only when the design names it).
+   2. Better Auth's default (minimum 8). Why: no work, weaker.
+   3. Minimum 12 and Better Auth's breached-password plugin (an external
+      range query, a new dependency). Why: strongest, but a dependency and an
+      egress to name in SEC15.

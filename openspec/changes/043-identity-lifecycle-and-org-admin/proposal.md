@@ -21,54 +21,77 @@ immediately after `002`, before `003` builds catalog UI on top of the
 - **4-state user status lifecycle.** `002` defines the Port-shaped `status`
   field on the `_user` system blueprint with `Active`/`Disabled` at minimum.
   `043` completes it to the full Port set (`Staged`, `Invited`, `Active`,
-  `Disabled`), with the forward-only transition rule (a user never moves back
-  from `Active` to `Invited`/`Staged`) and the Staged-vs-Invited origin
-  distinction (blueprint-entity creation vs. an explicit invite).
-- **Invitations.** Admin-initiated invite by email, backed by Better Auth's
-  `organization` plugin invitation record (pending/accepted/rejected/canceled,
-  48-hour expiry); an invitation email (new outbound-email capability, SEC11
-  hardened: single link, no other clickable links, matching-email-before-accept);
-  resend and cancel; a state-machine guard so accepting an expired, cancelled
-  or rejected invitation always fails, with indistinguishable error responses
-  across every rejection reason; a per-tenant rate cap on invite/resend
-  volume (VCDM pre-assessment).
+  `Disabled`) behind one state machine that **every** status writer goes
+  through (hooks, `identity.users.create`, the ban hook, first sign-in), with
+  the forward-only rule (a user never moves back from `Active` to
+  `Invited`/`Staged`, and a `Disabled` user is never revived by a sign-in or a
+  pending invitation).
+- **Invitations.** Admin-initiated invite by email for the roles `member` or
+  `admin` (never `owner`), backed by Better Auth's `organization` plugin
+  invitation record (48-hour expiry); resend and cancel; a state-machine guard
+  so accepting an expired, cancelled or rejected invitation always fails, with
+  indistinguishable error responses across every rejection reason.
+- **Invitation acceptance.** Because sign-up is disabled and no email
+  verification exists, a person with no account accepts through a new public,
+  rate-limited route outside the tenant-context pipeline: a single-use token
+  in the link proves mailbox control, the tenant comes from the invitation
+  record, and the invitee sets a password. This is the first unauthenticated
+  route and needs its own SSA row.
+- **Invitation email (SEC11-hardened).** A new outbound-email capability with a
+  fixed template and subject, exactly one recipient and one link, the link
+  origin from trusted configuration, and caps per tenant (30 per hour), per
+  recipient across tenants (3 per 24 hours) and a global kill switch.
 - **Service accounts.** A `_user` sub-kind for non-human actors, API-only
-  creation (Admin only), `Active` at creation with no invitation email, backed
-  by an organization-owned Better Auth API key (the machine-credential
-  mechanism `002` builds) whose `clientId`/`clientSecret` are returned exactly
-  once. Disabling the service account also disables its credential.
-  Restricted to `member` role only, never `admin`, never a Moderator grant,
-  enforced at both creation/update validation and by an independent Cerbos
-  rule (VCDM pre-assessment, joint with `002`: a service account never goes
-  through `002`'s step-up gate, so an elevated role would carry no MFA layer
-  at all).
+  creation (admin only, step-up), `Active` at creation with no invitation
+  email, backed by an organization-owned machine credential whose
+  `clientId`/`clientSecret` are returned exactly once. A service account is
+  always `member` with no teams and no moderated blueprints, taken from the
+  signed machine claim (never from its `_user`), with an independent Cerbos
+  deny rule as a second layer. Disable is enforced on the request path within
+  seconds and is reversible; delete is an explicit operation that revokes the
+  credential.
 - **Org API-credentials viewer.** A read surface over org-scoped API keys
   (service accounts and integrations) showing name, kind, prefix, created,
-  last used, enabled/disabled and rotation-due status — never the secret
-  itself after creation.
-- **Credential rotation policy UX.** A documented rotation cadence, a rotate
-  action (issue a new credential, immediately disable the old one — Better
-  Auth has no built-in rotate endpoint), and a rotation-due indicator in the
-  viewer.
-- **Data retention and org deletion.** A documented retention policy per data
-  category (`docs/security/data-retention.md`), and an admin-only,
-  step-up-gated org deletion operation that revokes access immediately,
-  deletes the tenant's catalog data and Better Auth org/member/invitation/
-  API-key rows, and relies on the underlying Azure Database for PostgreSQL
-  Flexible Server backup window (not a second application-level staged-delete
-  queue) for the recovery period.
-- **Observability.** New `catalog.audit.*`/`catalog.security.*` log events and
-  `tayzu.identity.*` metrics for every mutation above, exempt from sampling
-  like `002`'s own auth events.
+  last used, enabled/disabled and rotation-due status, never a secret.
+- **Credential create, rotate and revoke.** Create and rotate set a per-key
+  rate limit explicitly; rotate and revoke both write the revocation list, so
+  they take effect within seconds; rotation is an immediate cutover with a
+  compensating revoke on failure.
+- **Immediate effect of disable and deletion.** `resolveContext` and token
+  exchange reject a banned user, a machine principal whose service account is
+  `Disabled`, and any principal of a tenant pending deletion, through the
+  existing 5-second cache, failing closed.
+- **Data retention and org deletion, in two phases.** A documented retention
+  policy (`docs/security/data-retention.md`) and an admin-only, step-up-gated
+  org deletion that revokes access immediately and marks the tenant, then
+  purges after a 7-to-14-day window through a scheduled job in two idempotent
+  steps (catalog data, then Better Auth rows), through a `SECURITY DEFINER`
+  function for the append-only rows. Recovery is the pending window, not
+  point-in-time restore.
+- **Tenant binding and mount gate.** Every target of every route is resolved on
+  the server and must belong to the caller's tenant; each route has a
+  cross-tenant test. The routes are not mounted over HTTP until `002`'s
+  hand-offs are done, enforced by a switch that is off by default and a test.
+- **Step-up and security logging.** Every high-risk operation carries
+  `x-tayzu-risk: high` on its route (tested over HTTP). New
+  `catalog.audit.*`/`catalog.security.*` log events and `tayzu.identity.*`
+  metrics for every mutation and denial, exempt from sampling like `002`'s own
+  auth events; no identifier in a URL path reaches telemetry.
+- **Hand-offs from `002` (Q73).** Composite credential-revocation key, Cerbos in
+  front of the machine-credential routes, the SSO-link tenant check, no
+  existence oracle, banned-user rejection, temporary-password rules and the
+  ownership items.
 
 Out of scope, staying with `002`: Better Auth bootstrap itself, MFA, DB roles
 and RLS, the first HTTP listener, Cerbos engine wiring, the three-tier RBAC
 baseline, `$team`/ownership, and the machine-token exchange mechanism itself
-(043 only *consumes* it for service accounts). Also out of scope: "view as a
-different user" (later-UI, `003`/`014`), SSO/SCIM-provisioned lifecycle
-(`025`), the org-wide audit log **product surface** and its retention/export
-tooling (`015`, `010` — `043` only emits the events), and multi-org UX
-(`042`).
+(043 only *consumes* it for service accounts and adds the resolver checks
+above). Also out of scope: role or Moderator editing, member removal and
+`setActiveOrganization` (deferred, off-boarding is `Disabled`), a last-active-
+admin guard, "view as a different user" (later-UI, `003`/`014`), SSO/SCIM-
+provisioned lifecycle (`025`), the org-wide audit log **product surface** and
+its retention/export tooling (`015`, `010` — `043` only emits the events), and
+multi-org UX (`042`).
 
 ## Capabilities
 
@@ -82,10 +105,11 @@ tooling (`015`, `010` — `043` only emits the events), and multi-org UX
 ### Modified Capabilities
 <!-- None. 002-auth-and-rbac has not been archived yet at the time this change
      is authored, so there is no existing `openspec/specs/` capability path to
-     target with a MODIFIED delta. 043 only ever ADDs: an optional property on
-     the `_user` system blueprint (safe schema evolution per 001's D7) and new,
-     independent operations. See design.md Context for how this coordinates
-     with 002's actual shape once it lands. -->
+     target with a MODIFIED delta. 043 only ever ADDs: an optional property and a
+     widened `status` enum on the `_user` system blueprint (safe schema
+     evolution per 001's D7) and new,
+     independent operations. See design.md Context for how this was reconciled
+     with 002's merged code. -->
 
 ## Impact
 
@@ -96,19 +120,34 @@ tooling (`015`, `010` — `043` only emits the events), and multi-org UX
   accounts, credential viewer/rotation, org deletion, an `EmailSender` port
   and an Azure Communication Services adapter). Adds oRPC procedures to the
   router `002` mounts.
-- **Database**: **no new migration.** The `_user` blueprint gains one optional
-  property (`accountKind`) through the catalog's existing blueprint-update
-  operation (a data-plane change, not DDL, per `001` design D7). Everything
-  else reuses tables `002` creates (Better Auth's `organization`, `invitation`,
-  `apikey`).
-- **Cerbos**: new policy rules for `user.invite`, `user.updateStatus`,
-  `service_account.create`, `credential.rotate`, `credential.revoke`, and
-  `org.delete`. ⛔ **Checkpoint 3 applies** to every one of these.
+- **Database**: **two migrations, each a Checkpoint 3 item.** `0011` adds a
+  composite `(tenant_id, credential_id)` key to
+  `machine_credential_revocation`; `0012` adds the tenant-deletion marker and a
+  `SECURITY DEFINER` purge function owned by `tayzu_migrator` (an explicit,
+  narrow exception for the append-only rows). The `_user` blueprint gains
+  `accountKind` and a four-value `status` through the catalog's
+  blueprint-update operation, run once per existing tenant (a data-plane
+  change, not DDL, per `001` design D7). Everything else reuses tables `002`
+  creates (Better Auth's `organization`, `invitation`, `apikey`,
+  `verification`).
+- **Cerbos**: new resource kinds `service_account`, `credential` and
+  `organization`, rules for `user.invite`, `user.updateStatus`,
+  `service_account.create`/`delete`, `credential.list`/`create`/`rotate`/
+  `revoke` and `organization.delete`, the `user.yaml` deny rules (self-status
+  and the service-account ceiling), and the `admin.yaml`, `member.yaml` and
+  `role_policies_test.yaml` ceilings. ⛔ **Checkpoint 3 applies** to every one
+  of these, separately.
 - **Dependencies**: `@azure/communication-email` (`1.1.0` as of 2026-09-28,
-  verified via `npm view`) for invitation email delivery.
+  verified via `npm view`) for invitation email delivery. No other dependency:
+  the password denylist is bundled and the token digest uses `node:crypto`.
 - **Security**: pre-assessed against SSA SEC01-SEC16 by the
   `vcdm-ssa-validator` agent, with SEC11 (phishing) as the section this change
   newly exercises in depth, plus a second, adversarial pass run jointly with
-  `002` (`002/ssa-pre-assessment.md`) that found gaps only visible at the
-  seam between the two changes. Findings are folded into `design.md` under
-  "Security considerations".
+  `002` (`002/ssa-pre-assessment.md`) and a Mode A pre-assessment against the
+  merged `002` (2026-10-01) that found eleven blocking gaps (B1-B11). All are
+  folded into `design.md` under "Security considerations", into the spec and
+  into the tasks. New surface: the first public route, the first outbound
+  email, and a privileged purge function.
+- **Docs**: `docs/security/data-retention.md` (new), and updates to
+  `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`
+  and `docs/architecture/system-diagram.md`.
