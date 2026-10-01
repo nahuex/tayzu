@@ -1076,7 +1076,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `auth-flow.int.test.ts` and `step-up.int.test.ts` (extended) cover both
   cases emitting exactly the right event, and `otel-smoke-check` knows the
   new name.
-- [ ] 27.6 _(setup)_ Docs: `attack-surfaces.md` (the request-target rule and
+- [x] 27.6 _(setup)_ Docs: `attack-surfaces.md` (the request-target rule and
   the statement that any unlisted path gets `404`, re-verified), the idle rule
   on `/api/auth/*`, and the two new log events. Verify: markdownlint and
   `openspec validate --strict` pass.
