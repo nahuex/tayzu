@@ -33,14 +33,19 @@ immediately after `002`, before `003` builds catalog UI on top of the
   indistinguishable error responses across every rejection reason.
 - **Invitation acceptance.** Because sign-up is disabled and no email
   verification exists, a person with no account accepts through a new public,
-  rate-limited route outside the tenant-context pipeline: a single-use token
-  in the link proves mailbox control, the tenant comes from the invitation
-  record, and the invitee sets a password. This is the first unauthenticated
-  route and needs its own SSA row.
+  rate-limited plain Fastify route outside the tenant-context pipeline: a
+  single-use token in the link proves mailbox control, the tenant comes from the
+  invitation record, and the invitee sets a password under a 20-character policy
+  with a breached-password check. A person who already has an account accepts with
+  their own session plus the token (CSRF header, origin check, matching verified
+  email, step-up for an `admin` role) and only gains the membership. This is the
+  first unauthenticated route and needs its own SSA row.
 - **Invitation email (SEC11-hardened).** A new outbound-email capability with a
   fixed template and subject, exactly one recipient and one link, the link
-  origin from trusted configuration, and caps per tenant (30 per hour), per
-  recipient across tenants (3 per 24 hours) and a global kill switch.
+  origin from a dedicated trusted setting (`INVITATION_LINK_BASE_URL`), and caps per
+  tenant (30 per hour), per recipient across tenants (3 per 24 hours) and a global
+  kill switch, on the existing DB-backed rate-limit store. A second fixed template
+  notifies every admin of a pending org deletion.
 - **Service accounts.** A `_user` sub-kind for non-human actors, API-only
   creation (admin only, step-up), `Active` at creation with no invitation
   email, backed by an organization-owned machine credential whose
@@ -58,16 +63,20 @@ immediately after `002`, before `003` builds catalog UI on top of the
   they take effect within seconds; rotation is an immediate cutover with a
   compensating revoke on failure.
 - **Immediate effect of disable and deletion.** `resolveContext` and token
-  exchange reject a banned user, a machine principal whose service account is
-  `Disabled`, and any principal of a tenant pending deletion, through the
-  existing 5-second cache, failing closed.
+  exchange reject a banned user, a human disabled in the active tenant (disabling
+  is tenant-scoped, so a member of two tenants can be off-boarded by either), a
+  machine principal whose service account is `Disabled`, and any principal of a
+  tenant pending deletion, through the existing 5-second cache, failing closed.
 - **Data retention and org deletion, in two phases.** A documented retention
   policy (`docs/security/data-retention.md`) and an admin-only, step-up-gated
   org deletion that revokes access immediately and marks the tenant, then
   purges after a 7-to-14-day window through a scheduled job in two idempotent
-  steps (catalog data, then Better Auth rows), through a `SECURITY DEFINER`
-  function for the append-only rows. Recovery is the pending window, not
-  point-in-time restore.
+  steps (catalog data, then Better Auth rows). The purge runs as a dedicated
+  `tayzu_purge` role under a row-level policy limited to due tenants, the marker is
+  insert-only for the request role, and the append-only trigger admits only the
+  purge role. Every admin is notified, and reversal is an audited operator script
+  under just-in-time access. Recovery is the pending window, not point-in-time
+  restore.
 - **Tenant binding and mount gate.** Every target of every route is resolved on
   the server and must belong to the caller's tenant; each route has a
   cross-tenant test. The routes are not mounted over HTTP until `002`'s
@@ -77,10 +86,13 @@ immediately after `002`, before `003` builds catalog UI on top of the
   `catalog.audit.*`/`catalog.security.*` log events and `tayzu.identity.*`
   metrics for every mutation and denial, exempt from sampling like `002`'s own
   auth events; no identifier in a URL path reaches telemetry.
-- **Hand-offs from `002` (Q73).** Composite credential-revocation key, Cerbos in
-  front of the machine-credential routes, the SSO-link tenant check, no
-  existence oracle, banned-user rejection, temporary-password rules and the
-  ownership items.
+- **Hand-offs from `002` (Q73).** Every item (M5, M9-M15, M17-M20) is a task in
+  group 14 or a recorded deferral: composite credential-revocation key, Cerbos in
+  front of the machine-credential operations, the SSO-link tenant check, no
+  existence oracle, banned-user rejection, temporary-password rules, the
+  ownership items, the startup and limiter fixes, and the CI and diagram items.
+  The existing `create`, `linkSsoAccount` and `unlinkSsoAccount` procedures get
+  routes and join the mounted set (fifteen routes in all).
 
 Out of scope, staying with `002`: Better Auth bootstrap itself, MFA, DB roles
 and RLS, the first HTTP listener, Cerbos engine wiring, the three-tier RBAC
@@ -113,18 +125,20 @@ multi-org UX (`042`).
 
 ## Impact
 
-- **New code**: extends the identity/auth module `002` introduces
-  (`packages/auth`, `@tayzu/auth` — confirmed against `002`'s actual
-  `design.md` during this reconciliation, 2026-09-28) with an
-  `identity/` subtree (user-status state machine, invitations, service
-  accounts, credential viewer/rotation, org deletion, an `EmailSender` port
-  and an Azure Communication Services adapter). Adds oRPC procedures to the
-  router `002` mounts.
-- **Database**: **two migrations, each a Checkpoint 3 item.** `0011` adds a
+- **New code**: the pure parts and the structural ports live in an `identity/`
+  subtree of `packages/auth` (`@tayzu/auth`: the user-status state machine, the
+  invitation token, the password policy, the `EmailSender` port and an Azure
+  Communication Services adapter), and the orchestration and the routers live in
+  `apps/api` (`@tayzu/auth` has no `@orpc/server` or `@tayzu/catalog` dependency):
+  invitations, service accounts, credential viewer and rotation, org deletion, the
+  purge job and the reversal script. Adds oRPC procedures to the identity router
+  `002` already has, plus one plain Fastify route (the invitation accept).
+- **Database**: **three migrations, each a Checkpoint 3 item.** `0011` adds a
   composite `(tenant_id, credential_id)` key to
-  `machine_credential_revocation`; `0012` adds the tenant-deletion marker and a
-  `SECURITY DEFINER` purge function owned by `tayzu_migrator` (an explicit,
-  narrow exception for the append-only rows). The `_user` blueprint gains
+  `machine_credential_revocation`; `0012` adds the tenant-deletion marker table;
+  `0013` adds its grants, the dedicated `tayzu_purge` role, the row-level policies,
+  the amended append-only trigger and the hardened purge and lister functions (an
+  explicit, narrow exception for the append-only rows). The `_user` blueprint gains
   `accountKind` and a four-value `status` through the catalog's
   blueprint-update operation, run once per existing tenant (a data-plane
   change, not DDL, per `001` design D7). Everything else reuses tables `002`
@@ -133,21 +147,25 @@ multi-org UX (`042`).
 - **Cerbos**: new resource kinds `service_account`, `credential` and
   `organization`, rules for `user.invite`, `user.updateStatus`,
   `service_account.create`/`delete`, `credential.list`/`create`/`rotate`/
-  `revoke` and `organization.delete`, the `user.yaml` deny rules (self-status
+  `revoke` and `organization.delete` (each new policy with the explicit
+  cross-tenant deny), the `user.yaml` deny rules (self-status
   and the service-account ceiling), and the `admin.yaml`, `member.yaml` and
   `role_policies_test.yaml` ceilings. ⛔ **Checkpoint 3 applies** to every one
   of these, separately.
 - **Dependencies**: `@azure/communication-email` (`1.1.0` as of 2026-09-28,
   verified via `npm view`) for invitation email delivery. No other dependency:
-  the password denylist is bundled and the token digest uses `node:crypto`.
+  the password denylist is bundled, the token digest uses `node:crypto` and the
+  breached-password check is Better Auth's built-in `haveIBeenPwned` plugin (one
+  new egress, `api.pwnedpasswords.com`, k-anonymity).
 - **Security**: pre-assessed against SSA SEC01-SEC16 by the
   `vcdm-ssa-validator` agent, with SEC11 (phishing) as the section this change
   newly exercises in depth, plus a second, adversarial pass run jointly with
   `002` (`002/ssa-pre-assessment.md`) and a Mode A pre-assessment against the
-  merged `002` (2026-10-01) that found eleven blocking gaps (B1-B11). All are
-  folded into `design.md` under "Security considerations", into the spec and
-  into the tasks. New surface: the first public route, the first outbound
-  email, and a privileged purge function.
+  merged `002` (2026-10-01) that found eleven blocking gaps (B1-B11), and a second
+  pass over the amended change that found five more (NB1-NB5). All are folded into
+  `design.md` under "Security considerations", into the spec and into the tasks.
+  New surface: the first public route, the first outbound email, a privileged
+  purge role and the Pwned Passwords egress.
 - **Docs**: `docs/security/data-retention.md` (new), and updates to
-  `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`
-  and `docs/architecture/system-diagram.md`.
+  `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`,
+  `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`.

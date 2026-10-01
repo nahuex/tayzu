@@ -30,6 +30,12 @@ other catalog mutation.
   host. No operation in this capability reads either from input, path, query
   or body. The one exception to "a tenant context exists" is the public
   invitation-accept route, which derives the tenant from the invitation record.
+- **Routes**: fifteen routes, fourteen oRPC procedures and the plain Fastify
+  invitation-accept route, all registered only behind the mount switch. The
+  accept route is not in the OpenAPI document.
+- **Canonical email**: the invited or created email is NFC-normalized, trimmed and
+  lower-cased, and is the same string in the `_user` identifier, the Better Auth
+  user, the invitation and (hashed) the per-recipient cap key.
 - **Principal attribution**: a `_user` write made by an admin operation is
   written as the `system` actor with `actor.onBehalfOf` set to the admin, in
   process only (`reserved.ts` is unchanged).
@@ -109,19 +115,31 @@ Cerbos deny (and increment the authorization-decision metric).
 - **THEN** the operation is denied with `AUTH_FORBIDDEN`, `u1` stays `Active`, and a `catalog.security.self_status_change_denied` event is logged
 
 ### Requirement: Disabling a human takes effect immediately
-Disabling a human user MUST ban the user, revoke every one of their sessions,
-and cancel their pending invitations. `resolveContext` MUST reject a banned
-user, so that an existing session and any new sign-in, local or through SSO,
-stop granting access. Enabling the user MUST unban them. Every rejection by
-this check MUST be logged as `catalog.security.principal_rejected` and counted.
+Disabling a human user MUST be scoped to the acting admin's tenant: it MUST write
+the `_user` status of that tenant through the state machine, revoke every one of
+the user's sessions whose active organization is that tenant, and cancel the
+user's pending invitations of that tenant. Only for a user whose single membership
+is that tenant MUST it also ban the user and revoke all their sessions. The ban
+MUST NOT use Better Auth's admin-plugin ban routes, which the global role `user`
+cannot call. `resolveContext` MUST reject a banned user, and MUST reject a human
+whose `_user` status in the active tenant is `Disabled`, so that an existing
+session and any new sign-in, local or through SSO, stop granting access. Enabling
+the user MUST reverse only what disabling did in that tenant. Every rejection by
+these checks MUST be logged as `catalog.security.principal_rejected` and counted.
 
 #### Scenario: A disabled user's sessions stop working
-- **GIVEN** an `Active` user with a live session
+- **GIVEN** an `Active` user with a single membership and a live session
 - **WHEN** an admin disables the user
 - **THEN** the next request on that session is rejected, a new sign-in (local or SSO) is refused, and `catalog.security.principal_rejected` is logged
 
+#### Scenario: A member of two tenants is disabled in one only
+- **GIVEN** an `Active` user who belongs to `t1` and `t2`, with a session in each
+- **WHEN** the admin of `t1` disables the user
+- **THEN** the user's `t1` session is rejected and their `_user` status in `t1` is `Disabled`
+- **AND** their `t2` session, `_user` status and global account are unchanged, and re-enabling in `t1` restores only `t1`
+
 #### Scenario: Disabling cancels pending invitations
-- **GIVEN** a pending invitation to `bob@example.com` and an existing `bob`
+- **GIVEN** a pending invitation to `bob@example.com` from this tenant and an existing `bob`
 - **WHEN** an admin disables `bob`
 - **THEN** the invitation's state becomes `cancelled` with reason `user_disabled`
 
@@ -134,7 +152,11 @@ role, an expiry 48 hours after creation, and one of the states `pending`,
 `catalog.audit.invitation_created`. Creating an invitation for an email that
 already has a `pending` invitation MUST cancel the previous invitation before
 creating the new one. An invitation for an email whose existing user is
-`Disabled` MUST be refused. Cancelling and resending MUST resolve the
+`Disabled` MUST be refused. An email the entity identifier cannot hold, or that
+contains `/`, MUST be rejected with `CATALOG_VALIDATION_FAILED` by `invite` and by
+`identity.users.create`, before anything is created. Better Auth's own errors (an
+existing member, the per-organization pending limit) MUST NOT reach the response
+as they are. Cancelling and resending MUST resolve the
 invitation on the server and MUST apply only to an invitation of the caller's
 tenant. Only a `pending`, non-expired invitation MUST be acceptable.
 
@@ -165,7 +187,11 @@ tenant. Only a `pending`, non-expired invitation MUST be acceptable.
 - **GIVEN** a pending invitation to `bob@example.com` created 10 hours ago
 - **WHEN** the admin resends it
 - **THEN** another email is sent to `bob@example.com` whose link works and whose earlier link no longer works
-- **AND** the invitation's expiry is still 48 hours from its original creation, not from the resend
+- **AND** the invitation's expiry is still 48 hours from its original creation, not from the resend (a resend does not reset it)
+
+#### Scenario: An address the platform cannot hold is rejected
+- **WHEN** an admin invites, or creates a user for, `a+b@example.com` or `a/b@example.com`
+- **THEN** the operation fails with `CATALOG_VALIDATION_FAILED` and no invitation, user, email or cap increment results
 
 #### Scenario: A disabled user cannot be invited
 - **GIVEN** a `Disabled` user `bob@example.com`
@@ -174,26 +200,36 @@ tenant. Only a `pending`, non-expired invitation MUST be acceptable.
 
 ### Requirement: Invitation acceptance
 Accepting an invitation MUST be a public, rate-limited operation outside the
-tenant-context pipeline (`POST /v1/auth/invitations/accept`), reachable only
-with the invitation identifier and a single-use token carried in the request
-body, with nothing identifying in the path or query. The token MUST be 256 bits
-from a CSPRNG, MUST be stored only as a sha256 digest, MUST be compared in
-constant time, and MUST work exactly once; a resend MUST invalidate the previous
-token. The tenant MUST be derived on the server from the invitation record; a
-body that carries a tenant or an actor MUST be rejected. For an invited email
-with no account, acceptance MUST create the user with the least global role,
-set the password the invitee supplied under the password policy, mark the email
-verified (the token is proof of mailbox control), add the membership with the
-invited role, write the status through the state machine, and MUST NOT create a
-session. Acceptance MUST NOT set or change the password of an account that
-already exists, and MUST NOT link an account by the email claim from Visma
-Connect. Every rejected acceptance (nonexistent invitation, expired, cancelled,
-rejected or already-accepted invitation, wrong token, or a `Disabled` user) MUST
-return the same status, error code and body shape, and a nonexistent invitation
-MUST take the same comparison work as a wrong token; the specific reason MUST
-be recorded only in the `catalog.security.invitation_acceptance_denied` event.
-A password that fails the policy MUST be reported only after the token has
-verified.
+tenant-context pipeline, served by a plain route (`POST /v1/auth/invitations/accept`)
+registered before the authenticated catch-all, reachable only with the invitation
+identifier and a single-use token carried in the request body, with nothing
+identifying in the path or query. The token MUST be 256 bits from a CSPRNG, MUST be
+stored only as a sha256 digest, MUST be compared in constant time, MUST be verified
+before it is consumed and then consumed by one atomic delete conditioned on its
+digest, and MUST work exactly once; a resend MUST invalidate the previous token. The
+tenant MUST be derived on the server from the invitation record; a body that
+carries a tenant or an actor MUST be rejected, and an invitation of a tenant with a
+pending deletion MUST NOT be acceptable. For an invited email with no account,
+acceptance MUST create the user with the least global role, set the password the
+invitee supplied under the password policy, mark the email verified (the token is
+proof of mailbox control), add the membership with the invited role, write the
+status through the state machine, and MUST NOT create a session. For an email that
+already has an account, acceptance MUST require a valid session of that same
+account, whose email is verified and equals the invitation email, together with the
+token; the request MUST carry the CSRF custom header and pass the origin check; when
+the invited role is `admin` it MUST also require a fresh step-up verification,
+checked only after the session, the email and the token have matched. It MUST add
+only the membership and activate the `_user`, and MUST NOT set, change or compare a
+password, the session, the active organization or any linked account. Acceptance
+MUST NOT link an account by the email claim from Visma Connect. Every rejected
+acceptance (nonexistent invitation, expired, cancelled, rejected or already-accepted
+invitation, wrong token, a `Disabled` user, a tenant pending deletion, no or
+mismatched session for an existing account, or a lost concurrent account creation)
+MUST return the same status, error code and body shape, and a nonexistent invitation
+MUST take the same comparison work as a wrong token; the specific reason MUST be
+recorded only in the `catalog.security.invitation_acceptance_denied` event. A
+password that fails the policy MUST be reported only after the token has verified,
+without consuming the token.
 
 #### Scenario: A new person accepts and can then sign in
 - **GIVEN** a pending invitation to `bob@example.com`, who has no account
@@ -207,8 +243,29 @@ verified.
 
 #### Scenario: Acceptance does not touch an existing account
 - **GIVEN** a pending invitation to an email that already has an account
-- **WHEN** the invitation is accepted with its valid token and a password
-- **THEN** the existing account's password is unchanged and no password is set
+- **WHEN** the invitation is accepted with its valid token and a password, without a session
+- **THEN** the existing account's password is unchanged, no password is set, and the answer is the uniform rejection
+
+#### Scenario: An existing account accepts with its session
+- **GIVEN** a pending invitation to `carol@example.com`, who has an account and a session
+- **WHEN** `carol` presents the token with her session, the CSRF custom header and an allowed origin
+- **THEN** she gains the membership with the invited role and her `_user` becomes `Active`
+- **AND** her password, session, active organization and linked accounts are unchanged, and the response has the same status and shape as a new person's acceptance
+
+#### Scenario: A session of another account cannot accept
+- **GIVEN** a pending invitation to `carol@example.com`
+- **WHEN** it is accepted with the valid token and a session of another user, or of an unverified email
+- **THEN** the answer is the uniform rejection and nothing changes
+
+#### Scenario: An admin invitation to an existing account needs step-up
+- **GIVEN** a pending `admin` invitation to `carol@example.com` and her matching session
+- **WHEN** she presents the valid token without a fresh step-up verification
+- **THEN** it fails with `AUTH_STEP_UP_REQUIRED` and nothing changes
+- **AND** a caller with a wrong token gets the uniform rejection, not `AUTH_STEP_UP_REQUIRED`
+
+#### Scenario: A cross-site request cannot accept
+- **WHEN** an existing-account acceptance arrives without the CSRF custom header or from a disallowed origin
+- **THEN** the answer is the uniform rejection and nothing changes
 
 #### Scenario: Acceptance does not link an SSO account by email
 - **WHEN** an invitation is accepted
@@ -229,8 +286,13 @@ verified.
 - **WHEN** it is accepted with a token that is not the issued one
 - **THEN** the acceptance fails and the invitation stays `pending`
 
+#### Scenario: A concurrent account creation yields one user
+- **GIVEN** two pending invitations to the same new email from two tenants
+- **WHEN** both are accepted at the same time
+- **THEN** exactly one user is created, and the other attempt gets the uniform rejection without consuming its token
+
 #### Scenario: Acceptance errors do not reveal which failure occurred
-- **GIVEN** a nonexistent invitation, an expired invitation, a pending invitation with a wrong token, and a pending invitation of a `Disabled` user
+- **GIVEN** a nonexistent invitation, an expired invitation, a pending invitation with a wrong token, a pending invitation of a `Disabled` user, and a pending invitation of a tenant pending deletion
 - **WHEN** each acceptance attempt is made
 - **THEN** all fail with the same status, error code and body shape, and the specific reason appears only in `catalog.security.invitation_acceptance_denied`
 
@@ -244,9 +306,12 @@ address with no line breaks, display name or list separator, and MUST have no
 CC, BCC or attachment. Its subject and template MUST be fixed: only the link
 and the expiry text are interpolated, and no organization name, inviter name or
 other tenant or inviter free text appears. The link origin MUST come from
-trusted configuration (`BETTER_AUTH_URL`), never from the request `Host` or a
+the dedicated trusted setting `INVITATION_LINK_BASE_URL` (`https` outside test and
+one of the allowed origins), never from `BETTER_AUTH_URL`, the request `Host` or a
 forwarded header, and the link MUST carry the invitation id and token in the
-URL fragment. Creating and resending invitations MUST be capped at 30 per hour
+URL fragment, on a fixed path. The only other email this capability sends, the
+org-deletion notice, MUST be a fixed template whose only interpolated value is the
+purge date, with no link and no tenant or actor free text. Creating and resending invitations MUST be capped at 30 per hour
 per tenant, 3 per 24 hours per recipient across all tenants (keyed by a digest
 of the normalized email, never the address), and by a global kill switch. A
 disabled or zero cap MUST fail startup. Exceeding any cap MUST fail the
@@ -265,7 +330,12 @@ MUST fail without a real email provider.
 
 #### Scenario: The link origin ignores the request headers
 - **WHEN** an invitation is created from a request with a forged `Host` and `X-Forwarded-Host`
-- **THEN** the emailed link starts with the configured `BETTER_AUTH_URL`
+- **THEN** the emailed link starts with the configured `INVITATION_LINK_BASE_URL`, and its id and token are in the fragment
+
+#### Scenario: The deletion notice carries no free text
+- **GIVEN** an organization named `<b>Pay now</b>` and an admin with a markup-bearing name
+- **WHEN** the org-deletion notice is sent
+- **THEN** neither string appears, the notice has no link, and its only variable is the purge date
 
 #### Scenario: Exceeding the per-tenant cap blocks further invites
 - **GIVEN** a tenant that has already created or resent 30 invitations in the current hour
@@ -385,6 +455,11 @@ opaque identifiers only, never secrets.
 - **WHEN** an admin without a fresh step-up verification creates a credential
 - **THEN** the operation fails with `AUTH_STEP_UP_REQUIRED`; with a fresh verification the created key has the configured rate limit and stores no secret characters
 
+#### Scenario: An admin who is not the owner can manage organization keys
+- **GIVEN** a Better Auth `admin` member who is not the organization `owner`
+- **WHEN** they create and revoke an organization credential through the identity operations
+- **THEN** both succeed because Cerbos allows them, and a `member` is denied by Cerbos
+
 #### Scenario: Rotating replaces the usable credential
 - **GIVEN** service account `svc-ci-github` with credential `c1`, enabled, and an access token issued from it
 - **WHEN** an admin rotates its credential
@@ -429,14 +504,19 @@ be given the host tenant only.
 - **WHEN** an admin of `t1` calls `setStatus` for it, or deletes a service account of `t2`
 - **THEN** the operation fails with `CATALOG_NOT_FOUND` and nothing changes
 
-#### Scenario: A user with memberships in two tenants is refused
+#### Scenario: A user with memberships in two tenants cannot be linked
 - **GIVEN** a user who belongs to `t1` and `t2`
-- **WHEN** an admin of `t1` links an SSO `sub` to it, or changes its status
-- **THEN** the operation is refused and nothing changes
+- **WHEN** an admin of `t1` links or unlinks an SSO `sub` for it
+- **THEN** the operation is refused and nothing changes (changing its status is tenant-scoped and is covered by "A member of two tenants is disabled in one only")
 
 #### Scenario: Org deletion targets only the host tenant
 - **WHEN** an admin of `t1` requests org deletion with `t2`'s identifier as the confirmation
 - **THEN** the operation fails with `CATALOG_VALIDATION_FAILED` and nothing of `t1` or `t2` changes
+
+#### Scenario: A user's self-deny uses the resolved identity
+- **GIVEN** an admin addressed by their email in the path
+- **WHEN** the admin changes their own status through that email
+- **THEN** the self-deny applies, because Cerbos compares the resolved opaque user id and never the email
 
 #### Scenario: Create and link give no existence oracle
 - **WHEN** an admin creates a user for an email that exists and for one that does not, or links an `sub` that exists and one that does not
@@ -449,7 +529,9 @@ organization's identifier, which MUST equal the host tenant. The operation
 MUST be in two phases. In phase 1 it MUST record a deletion marker with a
 purge date between 7 and 14 days away, revoke every session whose active
 organization is the tenant, revoke every org-owned credential, cancel pending
-invitations, and log `catalog.audit.org_deletion_requested`; from then on
+invitations, send the fixed org-deletion notice to every administrator of the
+organization (a send failure MUST NOT block the request and MUST be logged), and log
+`catalog.audit.org_deletion_requested` with the admin as actor; from then on
 `resolveContext` and token exchange MUST reject every principal of the tenant,
 human or machine. Requesting deletion again while pending MUST change nothing
 and MUST return the original date. In phase 2 a scheduled job MUST, for a
@@ -461,7 +543,10 @@ keys, invitation tokens, members, each user left with no other membership
 together with that user's accounts, sessions and second-factor rows, and the
 organization row last). `catalog.audit.org_deletion_completed` MUST be logged
 before the organization row is removed, and a failed step MUST log
-`catalog.security.org_deletion_failed` and be retried by the next run.
+`catalog.security.org_deletion_failed` and be retried by the next run. A pending deletion MUST be
+reversible only by a platform operator, through an audited script that tombstones
+the marker (never deletes it) and logs `catalog.audit.org_deletion_cancelled` with
+the operator's opaque id; there is no in-product cancel.
 
 #### Scenario: Deletion without step-up fails
 - **GIVEN** an admin session without a fresh MFA verification
@@ -472,6 +557,17 @@ before the organization row is removed, and a failed step MUST log
 - **GIVEN** organization `t1` with blueprints, entities, members and API credentials
 - **WHEN** an admin with a fresh step-up verification confirms deletion of `t1` by its identifier
 - **THEN** every member's session and every `t1` credential, human or machine, is rejected within seconds, a marker with a purge date 7 to 14 days away exists, and the data is still there
+
+#### Scenario: Every admin is notified of a pending deletion
+- **GIVEN** an organization with an owner, two admins and a member
+- **WHEN** an admin requests deletion
+- **THEN** each of the three administrators receives exactly one fixed-template email and the member receives none, and a repeated request sends nothing
+
+#### Scenario: A platform operator reverses a pending deletion
+- **GIVEN** `t1` has a pending deletion
+- **WHEN** a platform operator runs the reversal script
+- **THEN** the marker is tombstoned (never deleted), `catalog.audit.org_deletion_cancelled` is logged with the operator's opaque id, and the tenant's principals are accepted again
+- **AND** a later deletion request creates a new marker
 
 #### Scenario: Requesting deletion twice returns the original date
 - **GIVEN** `t1` has a pending deletion
@@ -504,6 +600,30 @@ before the organization row is removed, and a failed step MUST log
 - **WHEN** the purge job runs again
 - **THEN** it deletes nothing and does not fail
 
+### Requirement: The deletion marker and the purge are protected from the request path
+The deletion marker MUST be insert-only for the role that serves requests: its
+`requested_at` MUST be set by the database, a database constraint MUST keep
+`purge_after` between 7 and 14 days after `requested_at`, and only one pending
+marker per tenant MAY exist. The purge MUST run as a dedicated role, used only by
+the purge job with its own secret, that can act only on tenants with a due pending
+marker; the append-only change-event rows MUST be deletable only by that role, and
+the purge and due-tenant listing functions MUST be hardened (a fixed `search_path`,
+no dynamic SQL, no `EXECUTE` for `PUBLIC`). A schema-driven test MUST fail when a
+table carrying tenant data is neither purged nor explicitly exempted.
+
+#### Scenario: The request role cannot back-date a marker
+- **WHEN** the role that serves requests inserts a marker with a past or caller-supplied `requested_at`, or a `purge_after` outside 7 to 14 days
+- **THEN** the database ignores the first and refuses the second, and the request role can neither update nor delete a marker
+
+#### Scenario: Only due tenants can be purged, and only by the purge role
+- **GIVEN** a tenant with a pending marker whose date has not passed, and one with a due marker
+- **WHEN** the purge role and the request role each try to delete the append-only rows of both
+- **THEN** only the purge role, and only for the due tenant, succeeds; every other path is refused, including the table owner
+
+#### Scenario: A new table cannot escape the purge
+- **WHEN** a table with a `tenant_id` column is added that no purge step covers
+- **THEN** the completeness test fails until the table is covered or exempted with a reason
+
 ### Requirement: Every high-risk operation requires step-up
 These operations MUST carry `x-tayzu-risk: high` on their route, so that the
 step-up gate in the OpenAPI interceptor applies: `identity.users.setStatus`,
@@ -511,7 +631,9 @@ step-up gate in the OpenAPI interceptor applies: `identity.users.setStatus`,
 `identity.serviceAccounts.create`, `identity.serviceAccounts.delete`,
 `identity.credentials.create`, `identity.credentials.rotate`,
 `identity.credentials.revoke`, `identity.organization.delete`, and the
-existing SSO link and unlink operations. An admin session without a fresh
+existing SSO link and unlink operations (which have their own routes). The
+acceptance route has no route spec and MUST call the same guard explicitly when the
+invited role is `admin`. An admin session without a fresh
 verification MUST receive `AUTH_STEP_UP_REQUIRED` and nothing MUST change. The
 step-up gate runs only over HTTP, so it MUST be tested over HTTP.
 
@@ -520,21 +642,34 @@ step-up gate runs only over HTTP, so it MUST be tested over HTTP.
 - **WHEN** it invites an `admin`, creates a user, creates a service account or creates a credential
 - **THEN** each fails with `AUTH_STEP_UP_REQUIRED` over HTTP and nothing is created
 
+#### Scenario: The step-up honors the factor and the identity provider
+- **GIVEN** a user with an enrolled second factor holding only a password step-up marker, and a session that carries an SSO session id
+- **WHEN** each calls a high-risk route
+- **THEN** the first fails with `AUTH_STEP_UP_REQUIRED`, and the second is sent to the identity provider's re-authorization instead of a local verification
+
+#### Scenario: An admin without an enrolled factor is blocked
+- **GIVEN** an admin, invited or not, who has not enrolled a second factor
+- **WHEN** they call any `/v1` route
+- **THEN** it fails with `AUTH_STEP_UP_REQUIRED` until they enrol
+
 #### Scenario: Every route in the high-risk set is marked
 - **WHEN** the generated OpenAPI document is read
 - **THEN** every route in the set above carries `x-tayzu-risk: high`
 
 ### Requirement: Identity routes are unreachable until mounted
-No route of this capability, nor the machine-credential create and revoke
-routes, MUST be reachable over HTTP while the mount switch
+No route of this capability MUST be reachable over HTTP while the mount switch
 (`MOUNT_IDENTITY_ROUTES`) is off, and the switch MUST be off by default. With
-it off, every such route MUST answer 404 as if it did not exist. The task that
+it off, every such route MUST answer exactly as an unknown `/v1` path does: 401
+`CATALOG_CONTEXT_REQUIRED` for an unauthenticated caller and 404 for an authenticated
+one. The routes are the fifteen of this capability: the machine-credential create and
+revoke operations are library functions with no route of their own, reachable only
+through them. The task that
 registers the routes MUST come after every hand-off task from `002`.
 
-#### Scenario: Routes answer 404 while the switch is off
+#### Scenario: Routes answer like an unknown path while the switch is off
 - **GIVEN** the switch is off, which is the default
-- **WHEN** any identity route (including the public accept route) or a machine-credential create or revoke route is called
-- **THEN** it answers 404
+- **WHEN** any identity route (including the public accept route) is called, with and without authentication
+- **THEN** each answers exactly as an unknown `/v1` path does
 
 #### Scenario: No route is registered outside the switch
 - **WHEN** the route table is enumerated
@@ -544,10 +679,11 @@ registers the routes MUST come after every hand-off task from `002`.
 Every Cerbos deny, status change, service-account disable, enable and
 deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
-excess, and org-deletion request, completion and failure MUST be logged as the
+excess, and org-deletion request, completion, failure, cancellation and notice failure MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
-Observability contract, with opaque identifiers and enumerated values only. A
-failed org deletion MUST NOT be invisible.
+Observability contract, with opaque identifiers and enumerated values only, and the
+actor of an audit event MUST be the admin who acted, never the `system` actor of the
+write. A failed org deletion MUST NOT be invisible.
 
 #### Scenario: Each lifecycle action emits its declared event
 - **WHEN** each of the actions above is executed once
@@ -586,12 +722,24 @@ invitation state, account kind, credential kind) are permitted.
 
 ### Requirement: Password policy
 Every password the system sets or changes (invitation acceptance, temporary
-and bootstrap passwords, `/change-password`) MUST be NFC-normalized and then
-be 20 to 128 characters long, contain an upper-case letter, a lower-case
+and bootstrap passwords, `/change-password`) MUST be NFC-normalized, and every
+password-verifying entry point (sign-in, `/verify-password`, `/two-factor/enable`)
+MUST normalize the same way, and then be 20 to 128 characters long, contain an upper-case letter, a lower-case
 letter, a digit and a symbol, contain no control character, unpaired
 surrogate or Unicode format character, and not appear on the bundled
-common-password denylist. A refusal MUST name only the failed rule and never
+common-password denylist. A generated temporary password MUST satisfy the same
+policy, and MUST force a change at first sign-in and expire. A refusal MUST name only the failed rule and never
 echo the password.
+
+#### Scenario: A password verifies in any normalization form
+- **GIVEN** a password set through acceptance
+- **WHEN** it is presented in its decomposed (NFD) form at sign-in, `/verify-password` or `/two-factor/enable`
+- **THEN** it verifies
+
+#### Scenario: A temporary password grants only a password change
+- **GIVEN** a user created with a temporary password
+- **WHEN** they sign in with it
+- **THEN** the session reaches only the change-password route until they set a policy-compliant password, and the temporary password expires if not changed
 
 #### Scenario: A short password is refused
 - **WHEN** an invitee accepts with a 19-character password that meets every other rule
@@ -611,3 +759,23 @@ echo the password.
 - **WHEN** the Pwned Passwords service is unreachable
 - **THEN** the password is not set and the caller gets a generic retryable error
 
+### Requirement: The hand-offs from the authentication baseline hold
+Before the routes are mounted, the platform MUST refuse to start with `NODE_ENV=test`
+and a non-local database host; the public re-authorization callback MUST be
+rate-limited before it touches the database, and `reauthorization.start` MUST be
+bounded per session; a back-channel logout token with neither `sid` nor `sub` MUST be
+rejected without consuming its `jti`, and its cheap claim checks MUST run before any
+outbound discovery or key fetch; the DAST API scan MUST fail when it sees no 2xx
+operation response.
+
+#### Scenario: A test environment cannot point at a remote database
+- **WHEN** the platform starts with `NODE_ENV=test` and a non-local database host
+- **THEN** startup fails
+
+#### Scenario: A malformed logout token is cheap to refuse
+- **WHEN** a back-channel logout token without `sid` and `sub` arrives
+- **THEN** it is rejected, its `jti` is not consumed, and no discovery or key fetch happens
+
+#### Scenario: The re-authorization callback is limited
+- **WHEN** a caller exceeds the callback's limit
+- **THEN** further requests are refused before any database access
