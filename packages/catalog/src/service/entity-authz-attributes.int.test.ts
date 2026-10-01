@@ -477,6 +477,120 @@ describe('entity operations authorize with entity attributes (task 23.2, Q34, D9
     });
   });
 
+  describe('entities.delete with detachReferences authorizes update on every referrer (task 26.1, Q65, Q34)', () => {
+    /** A tenant plus a `consumer` blueprint whose optional `dependsOn` points at `service`, and a `service` `ledger` created by `member-creator`. */
+    async function referencedTenant(): Promise<string> {
+      const tenantId = await newTenant();
+      await blueprints.create(
+        ctx(tenantId, 'admin-1', ADMIN),
+        blueprintInput('consumer', {
+          schema: {
+            properties: { locked: { type: 'boolean', title: { en: 'Locked' } } },
+            required: [],
+          },
+          statusSchema: { properties: {} },
+          relations: {
+            ownerTeam: { title: { en: 'Owner team' }, target: '_team' },
+            dependsOn: { title: { en: 'Depends on' }, target: 'service', many: true },
+          },
+        }),
+      );
+      await createOwned(tenantId, 'service', 'ledger', {
+        actorId: 'member-creator',
+        principal: { roles: ['member'], teams: ['platform'] },
+      });
+      return tenantId;
+    }
+
+    const creator = (tenantId: string) =>
+      ctx(tenantId, 'member-creator', { roles: ['member'], teams: ['platform'] });
+
+    const addReferrer = (
+      tenantId: string,
+      identifier: string,
+      options: { team?: string; locked?: boolean } = {},
+    ) =>
+      entities.create(ctx(tenantId, 'admin-1', ADMIN), {
+        blueprint: 'consumer',
+        identifier,
+        title: identifier,
+        spec: {
+          properties: options.locked === undefined ? {} : { locked: options.locked },
+          relations: {
+            dependsOn: ['ledger'],
+            ...(options.team === undefined ? {} : { ownerTeam: options.team }),
+          },
+        },
+      });
+
+    const getAs = (tenantId: string, blueprint: string, identifier: string) =>
+      entities.get(ctx(tenantId, 'admin-1', ADMIN), { blueprint, identifier });
+
+    const deleteLedger = (tenantId: string) =>
+      entities.delete(creator(tenantId), {
+        blueprint: 'service',
+        identifier: 'ledger',
+        detachReferences: true,
+      });
+
+    /** Nothing was detached: the target exists and each referrer still references it at version 1. */
+    async function expectNothingDetached(tenantId: string, referrers: string[]): Promise<void> {
+      await getAs(tenantId, 'service', 'ledger');
+      for (const identifier of referrers) {
+        const referrer = await getAs(tenantId, 'consumer', identifier);
+        expect(referrer.spec.relations['dependsOn'], identifier).toEqual(['ledger']);
+        expect(referrer.version, identifier).toBe(1);
+        expect(referrer.generation, identifier).toBe(1);
+      }
+    }
+
+    it('a member deleting its own entity is refused when a referrer is owned by another team, and nothing is detached', async () => {
+      const tenantId = await referencedTenant();
+      await addReferrer(tenantId, 'allowed-referrer', { team: 'platform' });
+      await addReferrer(tenantId, 'foreign-referrer', { team: 'other' });
+
+      expect(await thrownCode(deleteLedger(tenantId))).toBe('CATALOG_REFERENCE_VIOLATION');
+      // Even the referrer the caller may update is untouched: no edge is detached before the deny.
+      await expectNothingDetached(tenantId, ['allowed-referrer', 'foreign-referrer']);
+    });
+
+    it('a member deleting its own entity is refused when a referrer is locked, and nothing is detached', async () => {
+      const tenantId = await referencedTenant();
+      await addReferrer(tenantId, 'open-referrer');
+      await addReferrer(tenantId, 'locked-referrer', { team: 'platform', locked: true });
+
+      expect(await thrownCode(deleteLedger(tenantId))).toBe('CATALOG_REFERENCE_VIOLATION');
+      await expectNothingDetached(tenantId, ['open-referrer', 'locked-referrer']);
+    });
+
+    it('the same delete is allowed when every referrer may be updated, and each distinct referrer gets an update check', async () => {
+      const tenantId = await referencedTenant();
+      await addReferrer(tenantId, 'team-referrer', { team: 'platform' });
+      await addReferrer(tenantId, 'unowned-referrer');
+
+      recorded.length = 0;
+      await deleteLedger(tenantId);
+
+      await expectCatalogErrorCode(getAs(tenantId, 'service', 'ledger'), 'CATALOG_NOT_FOUND');
+      for (const identifier of ['team-referrer', 'unowned-referrer']) {
+        const referrer = await getAs(tenantId, 'consumer', identifier);
+        expect(referrer.spec.relations['dependsOn'] ?? [], identifier).not.toContain('ledger');
+        expect(referrer.version, identifier).toBe(2);
+        expect(
+          recorded.filter((entry) => entry.action === 'update' && entry.id === identifier),
+          `an update check for ${identifier}`,
+        ).toHaveLength(1);
+      }
+    });
+
+    it('a delete without detachReferences and without referrers does not need update on anything else', async () => {
+      const tenantId = await referencedTenant();
+      recorded.length = 0;
+      await entities.delete(creator(tenantId), { blueprint: 'service', identifier: 'ledger' });
+      expect(recorded.some((entry) => entry.action === 'update')).toBe(false);
+    });
+  });
+
   it('a cross-tenant id stays CATALOG_NOT_FOUND', async () => {
     const tenantId = await newTenant();
     await createOwned(tenantId, 'service', 'payments', { team: 'platform' });

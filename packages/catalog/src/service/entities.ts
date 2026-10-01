@@ -18,7 +18,7 @@ import { trace } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from 'uuidv7';
 
 import { applyWrite } from '../domain/apply-write.js';
@@ -864,6 +864,46 @@ async function throwReferenceViolation(
   });
 }
 
+/**
+ * design Q65: whether the caller may `update` the referrer, judged on the
+ * referrer's own stored attributes. A referrer that cannot be loaded is a deny
+ * (fail closed). One check per distinct referrer, so a shared identifier across
+ * blueprints never confuses the decisions.
+ */
+async function mayUpdateReferrer(
+  authz: CerbosClient,
+  ctx: CatalogContext,
+  client: PoolClient,
+  blueprint: string,
+  identifier: string,
+): Promise<boolean> {
+  const attributes = await loadEntityAttributes({ ctx, client, input: { blueprint, identifier } });
+  if (attributes === undefined) return false;
+  const roles = ctx.principal?.roles ?? [];
+  if (roles.length === 0) return false;
+  const response = await authz.checkResources({
+    principal: {
+      id: ctx.actor.id,
+      roles: [...roles],
+      attr: buildAttributes(ctx.tenantId, {
+        teams: [...(ctx.principal?.teams ?? [])],
+        moderatedBlueprints: [...(ctx.principal?.moderatedBlueprints ?? [])],
+      }),
+    },
+    resources: [
+      {
+        resource: {
+          kind: RESOURCE_KINDS.catalogEntity,
+          id: identifier,
+          attr: buildAttributes(ctx.tenantId, { blueprintId: blueprint, ...attributes }),
+        },
+        actions: ['update'],
+      },
+    ],
+  });
+  return response.results[0]?.isAllowed('update') === true;
+}
+
 interface BumpReferrerOptions {
   readonly bumpGeneration: boolean;
   readonly action: 'updated' | 'status_updated';
@@ -1660,6 +1700,35 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           throw new CatalogError('CATALOG_LIMIT_EXCEEDED', 'Too many referrers to detach', {
             details: { limit: 'detach.maxReferrers' },
           });
+        }
+
+        // Q65: every referrer must be updatable by the caller before any edge is detached.
+        const checkedReferrerIds = new Set<string>();
+        for (const referrer of specReferrers) {
+          if (checkedReferrerIds.has(referrer.source_entity_id)) continue;
+          checkedReferrerIds.add(referrer.source_entity_id);
+          const referrerBlueprint = await blueprintIdentifierFor(
+            tx,
+            ctx.tenantId,
+            referrer.source_blueprint_id,
+            cache,
+          );
+          if (
+            !(await mayUpdateReferrer(
+              authz,
+              ctx,
+              client,
+              referrerBlueprint,
+              referrer.source_identifier,
+            ))
+          ) {
+            return throwReferenceViolation(
+              authz,
+              ctx,
+              'Entity is still referenced',
+              specReferrers.map((r) => r.source_identifier),
+            );
+          }
         }
 
         if (distinctReferrerIds.length > 0) {

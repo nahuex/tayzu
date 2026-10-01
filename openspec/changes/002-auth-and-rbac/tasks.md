@@ -999,7 +999,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
 
 ## 26. Final gaps (VCDM and security review re-run after group 25)
 
-- [ ] 26.1 `entities.delete` with `detachReferences: true` authorizes
+- [x] 26.1 `entities.delete` with `detachReferences: true` authorizes
   `update` on every distinct referrer before detaching any edge, and a deny
   fails closed with the existing redacted reference violation (design Q65).
   Verify: `entity-authz-attributes.int.test.ts` (extended) covers a member
