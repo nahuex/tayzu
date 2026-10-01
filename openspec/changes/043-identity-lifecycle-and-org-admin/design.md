@@ -174,8 +174,7 @@
     logout identifiers, `auth.rate_limit` and `auth.jwks` (D9, tasks 12.1b, 12.8,
     12.16). A repeated deletion request re-runs the idempotent revocations and is
     logged (D9, tasks 12.5, 12.5b). The operator id is `gh:<numeric actor id>` with
-    actor type `user`, which fits the id pattern of the catalog context (D9; the
-    recommended option of Open Question 1, pending the human).
+    actor type `user`, which fits the id pattern of the catalog context (D9; Q70).
   - The resolver checks branch on the credential (bearer or cookie), never on
     `actor.type`, which the lint rule bans outside three files (D13). The reconcile
     runs before the release that carries the `user_missing` rejection reaches an
@@ -1256,8 +1255,7 @@ operator id is derived from the workflow's authenticated actor and handed to the
 job by the workflow, never typed as an argument. It is `gh:<numeric GitHub actor
 id>` (never the login, which can be a bot name such as `x[bot]` that the catalog's
 id pattern `[A-Za-z0-9_.:-]{1,128}` rejects), and it is the `onBehalfOf` of the
-`system` writes with the actor type `user`, one of the closed set of four (the
-recommended option of Open Question 1, pending the human). The job runs inside the VNET, so
+`system` writes with the actor type `user`, one of the closed set of four (Q70). The job runs inside the VNET, so
 no one connects to the production database from a workstation. The same workflow
 starts the other maintenance scripts, the blueprint backfill and the `_user`
 reconcile of D1; the reconcile's change events carry the operator id as
