@@ -394,7 +394,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       HTTP twin is in 15.5).
 - [ ] 6.8c Every `AUTH_RATE_LIMITED` of the invitation caps (tenant, recipient and
       global) carries the **same** `Retry-After` (the shortest window, one hour), so
-      the header does not reveal which bucket tripped (VCDM G2; Open Question 4).
+      the header does not reveal which bucket tripped (VCDM G2; Q61).
       Verify: `invitation-caps.test.ts` covers "Every cap answers with the same
       Retry-After": the tenant, recipient and kill-switch rejections carry an equal
       `retryAfterSeconds`.
@@ -433,7 +433,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `AdminAcceptedNotice` are sent. It applies the global kill switch, the
       per-recipient bucket of 6.7 (keyed by the sha256 of the canonical email) and a
       per-tenant notice cap (scope `notice_tenant`, emails per hour, default 60 in
-      `apps/api/src/config.ts` pending Open Question 1), sends to at most 20
+      `apps/api/src/config.ts` per Q58), sends to at most 20
       recipients (the administrators who have been members the longest, the invitee
       excluded) and never throws into its caller: a suppressed or truncated notice
       logs `catalog.security.notice_suppressed` (declared in 16.1) with the template,
@@ -506,7 +506,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [ ] 7.10 The canonical email form (NFC, trimmed, lower-cased) is one pure
       function in `apps/api/src/identity/email-canonical.ts` (`@tayzu/auth` has no use
       for it and cannot import `@tayzu/catalog`; `@tayzu/catalog` exports its private
-      `ENTITY_IDENTIFIER_PATTERN` unchanged, Open Question 3), used for the `_user` identifier, the Better Auth email, the invitation
+      `ENTITY_IDENTIFIER_PATTERN` unchanged, Q60), used for the `_user` identifier, the Better Auth email, the invitation
       email and the cap key, and a validator rejects an address the entity identifier
       pattern cannot hold or that contains `/` (Resolved decision Q33). Verify:
       `email-canonical.test.ts` covers `Alice@Example.com ` and its NFC variant
@@ -1033,7 +1033,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       read or delete tenant data; and that the migration creates no `SECURITY DEFINER`
       function. ⛔ **Stop for Checkpoint 3 approval of the SQL before continuing.**
 - [ ] 12.1c (Checkpoint 3) Migration `0013`, Better Auth side (Resolved decision Q49;
-      Open Question 2): row-level security on the Better Auth tables that purge step 2
+      Q59): row-level security on the Better Auth tables that purge step 2
       deletes from, **named one by one**, with a permissive policy `TO tayzu_auth`
       (`USING (true) WITH CHECK (true)`, so Better Auth's behavior is unchanged) and
       due-marker policies for `tayzu_purge`: `DELETE` (and the `SELECT` it needs) on an

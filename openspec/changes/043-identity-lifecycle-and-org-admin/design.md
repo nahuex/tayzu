@@ -441,7 +441,7 @@ plus-addressing. The canonical-email function lives in
 `apps/api/src/identity/email-canonical.ts`: `@tayzu/auth` has no use for it and
 cannot import `@tayzu/catalog`, whose `ENTITY_IDENTIFIER_PATTERN` is a private
 constant today, so the catalog exports it unchanged (an additive export, no
-behavior change; Open Questions).
+behavior change; Q60).
 
 **Hooks.** `afterCreateInvitation` → `_user.status = Invited` through
 `created_invited` (creating the `_user` entity first if the email has none yet;
@@ -578,7 +578,7 @@ registers oRPC's `ResponseHeadersPlugin` (it ships in `@orpc/server`, so no new
 dependency) and the error mapping sets the header through it; the accept route
 sets it by hand like token exchange. Every `AUTH_RATE_LIMITED` of the invitation
 caps carries the **same** `Retry-After` (the shortest window, one hour), so the
-header does not reveal which bucket tripped (Open Questions). The buckets are service-level counters on a store interface (the key
+header does not reveal which bucket tripped (Q61, always 1 hour). The buckets are service-level counters on a store interface (the key
 needs the resolved tenant and the body's recipient, which a path-keyed
 preHandler does not have). Defaults are enabled in code, live in
 `apps/api/src/config.ts` following its `limitWithDefaults` positive-integer
@@ -617,7 +617,7 @@ all three templates despite its name), the **per-recipient bucket** (the same 3
 per 24 hours bucket, keyed by the sha256 of the canonical email) and a
 **per-tenant notice cap** (scope `notice_tenant`, its own bucket, counted in emails
 per hour, with its default in `apps/api/src/config.ts` and a disabled or zero value
-failing startup; the default is an Open Question). A notice goes to **at most 20
+failing startup; the default is 60 per hour, Q58). A notice goes to **at most 20
 recipients**, the administrators who have been members the longest. A notice that
 is suppressed or truncated never blocks the operation that triggered it (the
 request has already revoked access, or the acceptance has already committed) and
@@ -1006,7 +1006,7 @@ worthless if the role that serves requests can write the marker. So:
   user-keyed row only for a user whose memberships are all in due tenants.
   Enabling row-level security on these tables needs a permissive policy `TO
   tayzu_auth`, so Better Auth's own behavior is unchanged. The exact predicates
-  are fixed in the migration and reviewed at Checkpoint 3 (Open Questions).
+  are fixed in the migration and reviewed at Checkpoint 3 (Q59).
 
 **Phase 2, purge** (a scheduled job; an Azure Container Apps Job provisioned
 with `010`, with its entry point a `tsx` script in this change,
@@ -1653,7 +1653,7 @@ connection as `tayzu_purge`, the reconcile job, the reversal script and the work
   tenants, the append-only trigger admits only that role, and there is no `SECURITY DEFINER`
   function (D9, Resolved decisions Q26 and Q48). The Better Auth rows get due-marker
   policies too (Q49), which means enabling row-level security on tables `002`
-  owns, with a permissive policy for `tayzu_auth` (Open Questions). Checkpoint 3 reviews every grant and the
+  owns, with a permissive policy for `tayzu_auth` (Q59). Checkpoint 3 reviews every grant and the
   trigger amendment. Recorded for `010`.
 - [The per-recipient cap across tenants is a weak oracle and a
   denial-of-invitation vector: an admin sees `AUTH_RATE_LIMITED` for an address
@@ -1912,38 +1912,11 @@ Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 | Q55 | (VCDM G8, 2026-10-01) GitHub settings for the maintenance workflow | Required reviewers with "prevent self-review", deployment branch limited to `master`, OIDC subject pinned to the environment, recorded in a settings checklist the human applies. |
 | Q56 | (VCDM G12, 2026-10-01) Per-tenant caps | 50 service accounts and 200 credentials per tenant, configurable in `apps/api/src/config.ts`; zero or a disabled value fails startup. |
 | Q57 | (VCDM G4, 2026-10-01) Identity wrapper contract | `defineIdentityOperation` keeps 002's guarantees: a caller-tenant role check first (one answer for any target to an unauthorized caller), and fail closed on a Cerbos error, a malformed context or empty roles; two tests pin it. |
+| Q58 | (Amendment Open Question 1, 2026-10-01) Per-tenant notice-email cap | 60 per hour per tenant (three full notices of 20 recipients). |
+| Q59 | (Amendment Open Question 2, 2026-10-01) Scoping Better Auth rows for the purge | RLS on those tables with a permissive policy letting `tayzu_auth` act on rows of tenants with a due marker only, the same shape as Q48 and no functions (migration `0013`, Checkpoint 3). |
+| Q60 | (Amendment Open Question 3, N16, 2026-10-01) `ENTITY_IDENTIFIER_PATTERN` in `apps/api` | `@tayzu/catalog` exports the constant unchanged, one source of truth; no `001` behavior change. |
+| Q61 | (Amendment Open Question 4, G2, 2026-10-01) Uniform `Retry-After` on invitation caps | Always the shortest window, 1 hour. |
 
 ## Open Questions
 
-The decisions Q48-Q57 leave four details that only the human can settle. None
-counts as approved until the human answers in chat; the answer is then recorded in
-"Resolved decisions".
-
-1. **Default of the per-tenant notice cap (Q53).** The cap is in emails per hour,
-   configurable. Options: (a) 60 per hour, three full notices of 20 recipients
-   (**recommended**: an acceptance or a deletion request never needs more, and it
-   still bounds a loop of accepted `admin` invitations to far fewer than the
-   invitation cap would allow); (b) 20 per hour, one full notice; (c) 120 per hour.
-   The design and tasks use (a) until the human answers.
-2. **How the Better Auth rows are gated for the purge (Q49).** Options: (a)
-   row-level security on the Better Auth tables with due-marker policies for
-   `tayzu_purge` and a permissive policy for `tayzu_auth` (**recommended**: the
-   same shape as Q48, no function and no ownership transfer, but it enables
-   row-level security on tables `002` owns); (b) a `SECURITY DEFINER` function
-   gated on the due marker (it brings back the ownership problem of Q48); (c) a
-   second purge role for the auth side only (no policy change, but the role still
-   has to be limited by something). Checkpoint 3 reviews the exact predicates
-   whichever option is chosen. The design uses (a) until the human answers.
-3. **How `apps/api` gets the entity identifier pattern (Q33, N16).**
-   `ENTITY_IDENTIFIER_PATTERN` is a private constant of `@tayzu/catalog`, which
-   Q33 said would not change. Options: (a) `@tayzu/catalog` exports the constant
-   unchanged, an additive export with no behavior change (**recommended**: one
-   source of truth); (b) `apps/api` keeps a copy with a test that fails if the two
-   drift (no `001` change, but two sources).
-4. **The uniform `Retry-After` of the invitation caps (VCDM G2).** Today the
-   tenant cap would answer up to about one hour and the recipient cap up to about
-   24 hours, which reveals the bucket. Options: (a) always the shortest window, one
-   hour (**recommended**: the caller can retry, at worst into another 429, and
-   nothing is revealed); (b) always the longest, 24 hours (nothing revealed, but a
-   tenant admin waits a day after a one-hour cap); (c) keep them different and
-   document the oracle as accepted. The design uses (a) until the human answers.
+None. The amendment's four questions were answered on 2026-10-01 (Q58-Q61).
