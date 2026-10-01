@@ -323,6 +323,34 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     }
   });
 
+  // Q66, D13: the `*` parser above skips Fastify's body limit for non-JSON types, so a
+  // body-bearing `/v1/*` request must be `application/json` or it is refused with 415
+  // in `onRequest`, before any body is read.
+  app.addHook('onRequest', async (request, reply) => {
+    const pathname = request.url.split('?', 1)[0] ?? '';
+    if (pathname !== '/v1' && !pathname.startsWith('/v1/')) {
+      return;
+    }
+    // The IdP's form-encoded callbacks (D26, Q36) have their own scoped parsers.
+    if (pathname === BACKCHANNEL_LOGOUT_PATH || pathname === REAUTH_CALLBACK_PATH) {
+      return;
+    }
+    const { headers } = request;
+    const hasBody =
+      headers['transfer-encoding'] !== undefined ||
+      (headers['content-length'] !== undefined && headers['content-length'] !== '0');
+    if (!hasBody) {
+      return;
+    }
+    const mediaType = (headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
+    if (mediaType !== 'application/json') {
+      return reply
+        .status(415)
+        .send({ code: 'UNSUPPORTED_MEDIA_TYPE', status: 415, message: 'Unsupported media type' });
+    }
+    return undefined;
+  });
+
   // Q60: a client-submitted ID token would bypass the authorization-code callback
   // (state, nonce, PKCE; D23-D26), so sign-in and linking refuse any body carrying one.
   app.addHook('preHandler', async (request, reply) => {

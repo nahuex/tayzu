@@ -1006,7 +1006,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   deleting its own entity with a referrer owned by another team or locked
   being refused with nothing detached, and the same delete allowed when every
   referrer may be updated.
-- [ ] 26.2 A body-bearing `/v1/*` request whose content type is not
+- [x] 26.2 A body-bearing `/v1/*` request whose content type is not
   `application/json` answers `415` before the body is read (design Q66, D13).
   Verify: `body-limit.int.test.ts` (extended) covers an oversized
   `text/plain`, `multipart/form-data` and `application/octet-stream` body each

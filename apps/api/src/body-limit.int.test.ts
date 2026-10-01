@@ -157,4 +157,79 @@ describe('apps/api body size limit (task 11.7)', () => {
     });
     expect(lookup.statusCode).toBe(404);
   }, 60_000);
+
+  /**
+   * Task 26.2 (design Q66, D13): a body-bearing `/v1/*` request whose content
+   * type is not `application/json` answers 415 before the body is read.
+   *
+   * Production behavior expected: the `*` catch-all content-type parser in
+   * `server.ts` (which lets Fastify skip body-limit enforcement for any
+   * non-JSON type) must stop accepting `/v1/*` bodies; a non-JSON content type
+   * on a body-bearing `/v1/*` request is refused with 415 (Fastify's
+   * `FST_ERR_CTP_INVALID_MEDIA_TYPE`, or an explicit preParsing/onRequest
+   * guard). No new options or symbols are required.
+   *
+   * Each body is oversized (above `BODY_LIMIT_BYTES`) AND would be a valid
+   * blueprint if read as JSON, so a 413 or a 200 shows the body was handled
+   * rather than refused up front; the spy and the follow-up lookup prove the
+   * operation never ran.
+   */
+  describe('non-JSON content types on /v1/* (task 26.2)', () => {
+    const cases: readonly { name: string; contentType: string }[] = [
+      { name: 'text/plain', contentType: 'text/plain' },
+      {
+        name: 'multipart/form-data',
+        contentType: 'multipart/form-data; boundary=----tayzu-boundary',
+      },
+      { name: 'application/octet-stream', contentType: 'application/octet-stream' },
+    ];
+
+    for (const { name, contentType } of cases) {
+      it(`An oversized ${name} body answers 415 before the body is read`, async () => {
+        const identifier = `non-json-${randomUUID()}`;
+        const oversized = JSON.stringify({
+          identifier,
+          title: { en: 'Non JSON body' },
+          description: { en: 'x'.repeat(BODY_LIMIT_BYTES * 2) },
+          schema: emptySchema,
+        });
+        expect(Buffer.byteLength(oversized)).toBeGreaterThan(BODY_LIMIT_BYTES);
+
+        const response = await app.app.inject({
+          method: 'POST',
+          url: '/v1/blueprints',
+          headers: {
+            cookie,
+            origin: ALLOWED_ORIGIN,
+            'x-forwarded-for': randomIp(),
+            'content-type': contentType,
+            ...CSRF_HEADERS,
+          },
+          payload: oversized,
+        });
+
+        expect(response.statusCode).toBe(415);
+        expect(validatorSpy).not.toHaveBeenCalled();
+
+        const lookup = await app.app.inject({
+          method: 'GET',
+          url: `/v1/blueprints/${identifier}`,
+          headers: { cookie, origin: ALLOWED_ORIGIN, 'x-forwarded-for': randomIp() },
+        });
+        expect(lookup.statusCode).toBe(404);
+      }, 60_000);
+    }
+
+    it('A JSON body still answers normally', async () => {
+      const response = await createBlueprint(
+        JSON.stringify({
+          identifier: `json-still-ok-${randomUUID()}`,
+          title: { en: 'JSON still fine' },
+          schema: emptySchema,
+        }),
+      );
+      expect(response.statusCode).toBe(200);
+      expect(validatorSpy).toHaveBeenCalled();
+    }, 60_000);
+  });
 });
