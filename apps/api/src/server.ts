@@ -23,6 +23,7 @@ import {
   createContextResolver,
   createEnrolledStepUpCheck,
   createStepUpGuard,
+  emitInternalError,
   emitRateLimited,
   exchangeMachineToken,
   AuthStepUpError,
@@ -299,6 +300,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return reply.status(statusCode).send(error);
     }
     const mapped = toOrpcError(error);
+    // Q76: only a genuinely unmapped error is a security-log signal.
+    if (mapped.code === 'INTERNAL') {
+      emitInternalError(error);
+    }
     return reply.status(mapped.status).send(mapped.toJSON());
   });
   // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.

@@ -189,6 +189,11 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'INFO',
     attributes: [LOGOUT_OUTCOME],
   },
+  {
+    name: 'auth.internal_error',
+    severity: 'ERROR',
+    attributes: ['error.type', 'db.response.status_code'],
+  },
 ];
 
 /**

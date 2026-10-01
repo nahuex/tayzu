@@ -79,7 +79,7 @@ import { createCerbosClient } from '@tayzu/authz';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
@@ -755,6 +755,28 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
       [sid],
     );
     expect(remaining.rows[0]?.n, 'the valid token revoked the matching session').toBe('0');
+  }, 60_000);
+
+  it('internal error (task 27.4, design Q76): an unmapped database failure on the admin-MFA gate answers 500', async () => {
+    const api = app.auth.api as { getSession(args: unknown): Promise<unknown> };
+    const original = api.getSession.bind(api);
+    const spy = vi.spyOn(api, 'getSession');
+    const list = () => catalogRequest({ cookie: admin.cookie }, 'GET', '/v1/blueprints');
+    try {
+      spy.mockImplementation((args) => original(args));
+      expect((await list()).statusCode, 'precondition: the gated request succeeds').toBe(200);
+      const callsPerRequest: number = spy.mock.calls.length;
+      let call = 0;
+      spy.mockImplementation((args) => {
+        call += 1;
+        return call === callsPerRequest
+          ? Promise.reject(Object.assign(new Error('driver failure'), { code: '57P01' }))
+          : original(args);
+      });
+      expect((await list()).statusCode).toBe(500);
+    } finally {
+      spy.mockRestore();
+    }
   }, 60_000);
 });
 

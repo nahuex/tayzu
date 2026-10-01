@@ -74,6 +74,9 @@ import { OpenAPIHandler } from '@orpc/openapi/fastify';
 import Fastify, { type FastifyInstance, type LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+// Task 27.4: the telemetry harness registers while the module graph loads (design D1), so this
+// import stays ahead of every import that loads `@tayzu/auth`.
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import {
   bootstrapTestTenant,
   createAdminUser,
@@ -638,4 +641,181 @@ describe('Unmapped errors answer a generic INTERNAL body (task 26.3, design Q67,
       }
     }, 60_000);
   });
+});
+
+/**
+ * Task 27.4 (design Q76, "Observability contract" -> Log events): an unmapped
+ * Better Auth or Fastify error emits one `auth.internal_error` log record
+ * (ERROR) with only `error.type` and, when present, `db.response.status_code`
+ * (the SQLSTATE). Never the message, stack text or a bind value.
+ *
+ * Verify: "a database failure emitting one record with no message, stack text
+ * or bind value".
+ *
+ * ## Harness
+ *
+ * Same driver as the admin-MFA gate test above: a real enrolled owner calls
+ * `GET /v1/blueprints`, and the gate's own `auth.api.getSession` read (the last
+ * call of the request) rejects with a driver-style error carrying a message, a
+ * stack, a bind value (`parameters`, `detail`) and a SQLSTATE.
+ *
+ * ## Production symbols expected
+ *
+ * - `createApp`'s Fastify error handler (and the Better Auth error path) emits
+ *   the log event `auth.internal_error`, severity ERROR, exactly once per
+ *   unmapped error, with attributes `error.type` (a non-empty string) and, only
+ *   when the error carries a SQLSTATE, `db.response.status_code`.
+ * - Declared in the telemetry contract (`packages/authz/src/telemetry/contract.ts`,
+ *   consumed by `otel-smoke-check`): `{ name: 'auth.internal_error', severity:
+ *   'ERROR', attributes: ['error.type', 'db.response.status_code'] }`.
+ *
+ * ## Why this fails right now
+ *
+ * No `auth.internal_error` record is emitted: an assertion failure on the
+ * record count.
+ */
+describe('Unmapped errors emit a sanitized auth.internal_error (task 27.4, design Q76)', () => {
+  const EVENT = 'auth.internal_error';
+  const ERROR_TYPE_KEY = 'error.type';
+  const SQLSTATE_KEY = 'db.response.status_code';
+  const ERROR_SEVERITY_NUMBER = 17;
+  const BIND_MARKER = `bind-marker-${randomUUID()}`;
+  const STACK_FRAME = 'leakyFrameFunction';
+  const MESSAGE_TEXT = 'duplicate key value violates unique constraint';
+  const FORBIDDEN: readonly string[] = [
+    BIND_MARKER,
+    STACK_FRAME,
+    MESSAGE_TEXT,
+    'db-secret',
+    'node_modules',
+    '_bt_check_unique',
+  ];
+
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error('the telemetry test harness failed to register', {
+        cause: registration.error,
+      });
+    }
+    return registration.harness;
+  }
+
+  function leakyError(sqlstate: string | undefined): Error {
+    const error = new Error(`${MESSAGE_TEXT} (email)=(${BIND_MARKER}) host=db-secret.internal`);
+    error.stack = `Error: ${error.message}\n    at ${STACK_FRAME} (/srv/node_modules/pg/lib/client.js:1:1)`;
+    return Object.assign(error, {
+      parameters: [BIND_MARKER],
+      detail: `Key (email)=(${BIND_MARKER}) already exists.`,
+      routine: '_bt_check_unique',
+      ...(sqlstate === undefined ? {} : { code: sqlstate }),
+    });
+  }
+
+  let app: App;
+  let harness: TelemetryTestHarness;
+  let cookie: string;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    app = await createApp({
+      ...(await harnessPools()),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ALLOWED_ORIGIN],
+    });
+    const tenant = await enrolledAdminSession(app, await provisionTenant(app), {
+      password: TEST_PASSWORD,
+      origin: ALLOWED_ORIGIN,
+    });
+    cookie = tenant.cookie;
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  function list(): Promise<LightMyRequestResponse> {
+    return app.app.inject({
+      method: 'GET',
+      url: '/v1/blueprints',
+      headers: { cookie, origin: ALLOWED_ORIGIN },
+    });
+  }
+
+  async function records() {
+    await harness.forceFlush();
+    return harness.logExporter
+      .getFinishedLogRecords()
+      .filter((record) => record.eventName === EVENT);
+  }
+
+  /** Runs one gated request whose gate session read fails with `error`; returns the new records. */
+  async function failGateWith(error: Error) {
+    const before: number = (await records()).length;
+    const api = app.auth.api as { getSession(args: unknown): Promise<unknown> };
+    const original = api.getSession.bind(api);
+    const spy = vi.spyOn(api, 'getSession');
+    try {
+      spy.mockImplementation((args) => original(args));
+      const baseline = await list();
+      expect(baseline.statusCode, 'precondition: the gated request succeeds').toBe(200);
+      const callsPerRequest: number = spy.mock.calls.length;
+      expect((await records()).length, 'precondition: a successful request emits nothing').toBe(
+        before,
+      );
+
+      let call = 0;
+      spy.mockImplementation((args) => {
+        call += 1;
+        return call === callsPerRequest ? Promise.reject(error) : original(args);
+      });
+      const failed = await list();
+      expect(failed.statusCode).toBe(500);
+    } finally {
+      spy.mockRestore();
+    }
+    return (await records()).slice(before);
+  }
+
+  it('a database failure emits exactly one ERROR record with only error.type and the SQLSTATE', async () => {
+    const emitted = await failGateWith(leakyError('23505'));
+    expect(emitted).toHaveLength(1);
+    const record = emitted[0];
+    expect(record?.severityNumber).toBe(ERROR_SEVERITY_NUMBER);
+    expect(Object.keys(record?.attributes ?? {}).sort()).toEqual([SQLSTATE_KEY, ERROR_TYPE_KEY]);
+    const errorType: unknown = record?.attributes[ERROR_TYPE_KEY];
+    expect(typeof errorType).toBe('string');
+    expect((errorType as string).length).toBeGreaterThan(0);
+    expect(record?.attributes[SQLSTATE_KEY]).toBe('23505');
+  }, 60_000);
+
+  it('the record carries no message, stack text or bind value anywhere', async () => {
+    const emitted = await failGateWith(leakyError('23505'));
+    expect(emitted).toHaveLength(1);
+    const serialized: string = JSON.stringify({
+      body: emitted[0]?.body,
+      attributes: emitted[0]?.attributes,
+    });
+    for (const forbidden of FORBIDDEN) {
+      expect(serialized, `the record must not contain "${forbidden}"`).not.toContain(forbidden);
+    }
+  }, 60_000);
+
+  it('an error without a SQLSTATE emits error.type alone', async () => {
+    const emitted = await failGateWith(leakyError(undefined));
+    expect(emitted).toHaveLength(1);
+    expect(Object.keys(emitted[0]?.attributes ?? {})).toEqual([ERROR_TYPE_KEY]);
+    expect(JSON.stringify(emitted[0]?.attributes)).not.toContain(BIND_MARKER);
+  }, 60_000);
+
+  it('a mapped client error (401 CATALOG_CONTEXT_REQUIRED) emits no auth.internal_error', async () => {
+    const before: number = (await records()).length;
+    const response = await app.app.inject({
+      method: 'GET',
+      url: '/v1/blueprints',
+      headers: { origin: ALLOWED_ORIGIN },
+    });
+    expect(response.statusCode).toBe(401);
+    expect((await records()).length).toBe(before);
+  }, 60_000);
 });

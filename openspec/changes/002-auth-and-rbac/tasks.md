@@ -1064,7 +1064,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `session-policy.int.test.ts` (extended) covers a session idle for more than
   12 hours being refused on `/api/auth/get-session` without its `updatedAt`
   being refreshed, and a fresh session unaffected.
-- [ ] 27.4 An unmapped Better Auth or Fastify error emits
+- [x] 27.4 An unmapped Better Auth or Fastify error emits
   `auth.internal_error` with only `error.type` and, when present, the
   SQLSTATE (design Q76, Observability contract). Verify:
   `http-errors.int.test.ts` (extended) covers a database failure emitting one

@@ -226,6 +226,11 @@ const DESIGN_LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'INFO',
     attributes: [LOGOUT_OUTCOME],
   },
+  {
+    name: 'auth.internal_error',
+    severity: 'ERROR',
+    attributes: ['error.type', 'db.response.status_code'],
+  },
 ];
 
 /**
@@ -309,7 +314,7 @@ describe('authz telemetry/contract.ts mirrors design.md, "Observability contract
   });
 
   describe('Log events', () => {
-    it('declares exactly the 13 log events design.md names, no more and no fewer', () => {
+    it('declares exactly the 14 log events design.md names, no more and no fewer', () => {
       expect(sorted(LOG_EVENTS.map((event) => event.name))).toEqual(
         sorted(DESIGN_LOG_EVENTS.map((event) => event.name)),
       );
@@ -350,5 +355,22 @@ describe('authz telemetry/contract.ts mirrors design.md, "Observability contract
         expect(SAMPLING_EXEMPT_SIGNALS).toContain(event.name);
       }
     });
+  });
+});
+
+/**
+ * Task 27.4 (design Q76, "Observability contract" -> Log events): the
+ * `auth.internal_error` row, transcribed verbatim:
+ * `| auth.internal_error | ERROR | error.type; db.response.status_code
+ * (SQLSTATE) when present |`. `otel-smoke-check` reads this module, so
+ * declaring the name here is what makes it "know" the new name.
+ */
+describe('auth.internal_error is declared (task 27.4, design Q76)', () => {
+  it('declares auth.internal_error: ERROR, error.type and db.response.status_code', () => {
+    const actual = LOG_EVENTS.find((event) => event.name === 'auth.internal_error');
+    expect(actual?.severity).toBe('ERROR');
+    expect(sorted(actual?.attributes ?? [])).toEqual(
+      sorted(['error.type', 'db.response.status_code']),
+    );
   });
 });
