@@ -288,7 +288,7 @@ identifying travels in the path or query**.
    one is rejected. The route never reads `tenantId` or `actor` from input.
 3. _Account._ For an invited email with no Better Auth user, the flow creates
    the user (global role `user`, never an admin role), sets the password the
-   invitee supplied under the password policy (Open Question 5), marks the
+   invitee supplied under the password policy (Q22), marks the
    email verified (the token is proof of mailbox control, so no
    email-verification flow is needed), adds the membership with the invited
    role, writes `_user.status` through `invitation_accepted`, and **creates no
@@ -808,7 +808,7 @@ earlier found the seam gaps closed by D3/D6.
 | SEC01 Diagram | Yes | New external actors (the email provider; the invitee with their mailbox) and new arrows (invite→email, the public accept route, ACS egress over HTTPS, the purge job) added to `docs/architecture/system-diagram.md` (task 17.7). |
 | SEC02 Attack surfaces | Yes | Twelve routes (D10), each with its actor, authentication (session, step-up-verified session, or none for the public accept route) and Cerbos check named in `docs/security/attack-surfaces.md` (task 17.6). The native Better Auth `inviteMember` and `accept-invitation` routes stay off `002`'s allowlist (D18 there). The accept route is the first unauthenticated route: it derives the tenant from the invitation, is rate-limited, never reveals why it failed, and sits behind the mount gate (D15). |
 | SEC03 Access control | Yes, core | Every operation Cerbos-gated to `admin` (D3) with the target's real tenant; targets resolved server-side (D14); self-status-change denied; step-up on every high-risk operation (D10); invited role limited to `member`/`admin`; service accounts held to `member` by signed claim, creation validation and a Cerbos deny (D6); disabled users and service accounts rejected within seconds (D13). Off-boarding is `Disabled`; role change and member removal are deferred (Non-Goals). The human attestations (off-boarding procedure, training, access review) are deferred to `010`'s SSA (Resolved decision Q17). |
-| SEC04 Password storage | Yes | The acceptance flow is the first place a password is set outside sign-in: it applies the password policy (Open Question 5), the hash is Better Auth's scrypt (`002`), and a token is required before any password is read. Service-account credentials reuse `002`'s API-key hashing. |
+| SEC04 Password storage | Yes | The acceptance flow is the first place a password is set outside sign-in: it applies the password policy (Q22), the hash is Better Auth's scrypt (`002`), and a token is required before any password is read. Service-account credentials reuse `002`'s API-key hashing. |
 | SEC05 Crypto | Partial | The invitation token is 256 bits from a CSPRNG, stored only as a sha256 digest and compared in constant time (D4); credential secrets are hashed by `002`'s mechanism; TLS to Azure Communication Services is provider-managed. The token generator is ours, so no Better Auth invitation-id entropy claim is relied on. |
 | SEC06 Misuse | Yes | Dead invitations never succeed; acceptance errors are indistinguishable; a `Disabled` user cannot be revived by sign-in, acceptance or a hook (D2); re-invite cancels the previous invitation; org deletion is idempotent and reversible during the window (D9). |
 | SEC07 Dependencies | Yes | `@azure/communication-email` joins the Dependabot/`pnpm audit`/quarterly-EOL process; license, `allowBuilds` and SBOM review are recorded in `docs/security/dependencies.md` (task 1.3). |
@@ -942,68 +942,12 @@ Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 | Q15 | (VCDM B9, 2026-10-01) Invitation email abuse limits                                                                                                       | 30 per hour per tenant, 3 per 24 hours per recipient across all tenants, and a global kill switch (environment variable), on a shared store before the first deployment.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Q16 | (Drift b7, 2026-10-01) Testing the service-account role ceiling                                                                                           | The Cerbos rule stays as a defensive layer, tested at the policy level, plus a `system`-actor test; no new role-editing operation.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Q17 | (VCDM, 2026-10-01) Human attestations                                                                                                                     | Deferred to `010`'s SSA, as 002 Q59 and Q79.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Q18 | (Open Question 1, 2026-10-01) Invitation for an email that already has an account | Acceptance requires an authenticated session of that same account plus the token; it adds only the membership, activates the `_user` and sets no password. |
+| Q19 | (Open Question 2, 2026-10-01) Step-up for `invite` and `users.create` | Both are marked `x-tayzu-risk: high` for every invited or created role. |
+| Q20 | (Open Question 3, 2026-10-01) Machine API-key expiry | No hard expiry; only the 90-day rotation-due indicator (D8). |
+| Q21 | (Open Question 4, 2026-10-01) Org-deletion window and reversal | Default 14 days, configurable between 7 and 14; reversal only by a platform operator clearing the marker through a documented runbook; no in-product cancel. |
+| Q22 | (Open Question 5, 2026-10-01) Password policy | Minimum **20** characters (the human's choice), at most 128 (bounds the hashing cost). Every character class is required: an upper-case letter, a lower-case letter, a digit and a symbol. Characters that can harm the system are rejected: control characters (U+0000-U+001F, U+007F-U+009F, NUL included), unpaired surrogates, and Unicode format characters (bidirectional overrides, zero-width characters); the password is NFC-normalized before the check and the hash. A bundled common-password denylist applies, with no external call and no new dependency, plus `002`'s existing backoff. Applies to invitation acceptance, temporary and bootstrap passwords, and `/change-password`. |
 
 ## Open Questions
 
-The five items below are not decided by Q1-Q17 and are asked in chat. The tasks
-are written to the **recommended** option of each; if the human picks another,
-the tasks named under it change and nothing else. Nothing counts as approved
-until the human answers, after which the answer moves to "Resolved decisions".
-
-1. **What happens when an invitation is accepted for an email that already has
-   an account** (for example a person who already belongs to another
-   organization)? Setting a password would be an account takeover, so acceptance
-   never does that (D4); the open part is the alternative.
-   1. **(Recommended)** For an existing account, acceptance requires an
-      authenticated session of that same account plus the token, adds only the
-      membership, activates the `_user` and sets no password. Why: it supports
-      people in several organizations without a takeover path, at the cost of
-      a second accept variant (task 8.5 builds the refusal now and this variant
-      only after the human answers).
-   2. Refuse such an invitation generically at acceptance and tell the admin
-      out of band. Why safe: no variant; but it blocks multi-org users, which
-      `042` wants.
-   3. Defer invitations to existing accounts to `042`. Why: multi-org UX is
-      `042`'s, but this change would then reject a legitimate case.
-2. **Step-up granularity for invitations and `identity.users.create`.** Step-up
-   is keyed on the route, so a role-dependent step-up needs a body-aware guard.
-   1. **(Recommended)** Mark `invite` and `users.create` high-risk for every
-      role. Why: the guard is route-keyed, so it is the smallest correct change and
-      covers the `admin`-role requirement of Q9 and VCDM B11; the cost is a fresh MFA
-      for a `member` invitation too.
-   2. Two routes per operation (an `admin` variant that is high-risk and a
-      `member` variant that is not). Why: precise UX, but doubles the routes, the
-      Cerbos actions and the tests.
-   3. A body-aware guard in the interceptor. Why: precise, but changes `002`'s
-      step-up mechanism.
-3. **API-key expiry for machine credentials.** `002` asks 043 to set the limit and
-   expiry (Better Auth's default rate limit is 10 verifications per 24 hours;
-   the limit is set in either case). A hard expiry conflicts with D8's rule
-   that nothing is force-disabled for being overdue.
-   1. **(Recommended)** No hard expiry; the rotation-due indicator and the 90-day
-      cadence only (D8). Why: matches D8; no silent integration breakage.
-   2. A hard expiry of 180 days. Why: bounds a forgotten key, at the cost of
-      outages.
-   3. A hard expiry equal to twice the rotation interval. Why: a middle path
-      that still bounds a leaked key.
-4. **Org-deletion window default and reversal.** Q14 fixes 7 to 14 days.
-   1. **(Recommended)** Default 14 days, configurable between 7 and 14; reversal only by
-      a platform operator who clears the marker (a documented runbook), no
-      in-product cancel. Why: members have no access during the window, so a
-      product cancel would need a new unauthenticated path; the operator path
-      keeps the compromised-admin case reversible.
-   2. Default 7 days with the same operator reversal. Why: faster erasure
-      statement, less time to notice a hijack.
-   3. An in-product cancel by a fresh-MFA admin during the window. Why: self
-      service, but contradicts "access is revoked immediately".
-5. **Password policy** (for the invitation acceptance and the temporary/bootstrap
-   passwords of task 14.5): minimum length, breached-password check, backoff or
-   lockout (`002` Q78 accepted Better Auth's default only for the 002 merge).
-   1. **(Recommended)** Minimum 12 characters and a bundled common-password
-      denylist, no external call, no new dependency, with `002`'s existing
-      backoff. Why: stronger than the default and needs no dependency
-      (CLAUDE.md allows one only when the design names it).
-   2. Better Auth's default (minimum 8). Why: no work, weaker.
-   3. Minimum 12 and Better Auth's breached-password plugin (an external
-      range query, a new dependency). Why: strongest, but a dependency and an
-      egress to name in SEC15.
+None. The five questions raised by the amendment were answered on 2026-10-01 (Q18-Q22).

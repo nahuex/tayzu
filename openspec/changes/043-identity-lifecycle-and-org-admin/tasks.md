@@ -268,10 +268,17 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 8. Invitation acceptance
 
-- [ ] 8.1 A password policy module: minimum 12 characters and a bundled
-  common-password denylist, with no external call and no new dependency
-  (Open Question 5). Verify: `password-policy.test.ts` covers a short password, a
-  denylisted one and a compliant one.
+- [ ] 8.1 A password policy module (design Q22): NFC-normalized, 20 to 128
+  characters, at least one upper-case letter, lower-case letter, digit and
+  symbol, no control characters (U+0000-U+001F, U+007F-U+009F), unpaired
+  surrogates or Unicode format characters (bidi overrides, zero-width), and
+  not on a bundled common-password denylist; no external call and no new
+  dependency. Applied to invitation acceptance, temporary and bootstrap
+  passwords, and `/change-password`. Verify: `password-policy.test.ts` covers
+  19 and 129 characters refused, each missing class refused, a NUL, a control
+  character, a bidi override and a zero-width character refused, a
+  denylisted password refused, a compliant 20-character password accepted,
+  and the refusal naming only the failed rule, never the password.
 - [ ] 8.2 `identity.users.acceptInvitation` for an email with no account: verifies
   the token, creates the user (global role `user`), sets the password the
   invitee supplied under the policy, marks the email verified, adds the

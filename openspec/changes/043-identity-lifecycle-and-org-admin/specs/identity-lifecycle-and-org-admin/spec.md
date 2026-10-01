@@ -583,3 +583,22 @@ invitation state, account kind, credential kind) are permitted.
 #### Scenario: The email provider's failure never leaks
 - **WHEN** the email provider fails with an error that contains the recipient address
 - **THEN** that address appears in no exported signal and no error response
+
+### Requirement: Password policy
+Every password the system sets or changes (invitation acceptance, temporary
+and bootstrap passwords, `/change-password`) MUST be NFC-normalized and then
+be 20 to 128 characters long, contain an upper-case letter, a lower-case
+letter, a digit and a symbol, contain no control character, unpaired
+surrogate or Unicode format character, and not appear on the bundled
+common-password denylist. A refusal MUST name only the failed rule and never
+echo the password.
+
+#### Scenario: A short password is refused
+- **WHEN** an invitee accepts with a 19-character password that meets every other rule
+- **THEN** the acceptance fails naming the length rule
+- **AND** no user is created
+
+#### Scenario: A password with a harmful character is refused
+- **WHEN** a password contains a NUL, a control character, a bidirectional override or a zero-width character
+- **THEN** it is refused naming the character rule, without echoing the password
+
