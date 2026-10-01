@@ -863,10 +863,12 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `sso-token-storage.int.test.ts` covers a real SSO sign-in leaving no
   plaintext token in `auth.account`, and the tokens still decrypting for the
   step-up flow.
-- [x] 23.20 Better Auth `advanced.ipAddress` is configured with an explicit
-  trusted-proxy and header setting, so a caller-supplied `X-Forwarded-For`
-  cannot pick or rotate its rate-limit bucket and the shared `no-trusted-ip`
-  bucket is not reachable by a multi-hop header (design Q48, D20). Verify:
+- [x] 23.20 The Fastify bootstrap overwrites the `x-forwarded-for` header it
+  hands to Better Auth with Fastify's resolved `request.ip` (which honors
+  `trustProxy` for loopback, link-local and private peers only), so a
+  caller-supplied `X-Forwarded-For` cannot pick or rotate its rate-limit
+  bucket and the shared `no-trusted-ip` bucket is not reachable by a
+  multi-hop header (design Q48, D20). Verify:
   `pre-auth-rate-limit.int.test.ts` (extended) covers a spoofed single-value
   and a multi-hop `X-Forwarded-For` from an untrusted peer both being limited
   by the real peer address, and a trusted proxy's client address being used.
@@ -1034,7 +1036,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   an enrolled factor (design Q70, Q51). Verify: `step-up.int.test.ts`
   (extended) covers an enrolled user refused with only a password, allowed
   after `verify-totp`, and a user without MFA unaffected.
-- [ ] 26.8 _(setup)_ Docs: `attack-surfaces.md` and `secrets.md` reflect 25.3
+- [x] 26.8 _(setup)_ Docs: `attack-surfaces.md` and `secrets.md` reflect 25.3
   and group 26, task 23.20's text matches the implementation, SSO-only admins
   are documented as unsupported until `025` (Q72), and the Q73 hand-offs are
   added to `043/tasks.md`. Verify: markdownlint and `openspec validate --strict`
