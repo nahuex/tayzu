@@ -30,7 +30,10 @@ immediately after `002`, before `003` builds catalog UI on top of the
   `admin` (never `owner`), backed by Better Auth's `organization` plugin
   invitation record (48-hour expiry); resend and cancel; a state-machine guard
   so accepting an expired, cancelled or rejected invitation always fails, with
-  indistinguishable error responses across every rejection reason.
+indistinguishable error responses across every rejection reason. An invitation does
+not outlive its inviter's authority: acceptance fails unless the inviter is still an
+active, non-banned admin member, and disabling a user cancels the invitations they
+created.
 - **Invitation acceptance.** Because sign-up is disabled and no email
   verification exists, a person with no account accepts through a new public,
   rate-limited plain Fastify route outside the tenant-context pipeline: a
@@ -45,8 +48,11 @@ immediately after `002`, before `003` builds catalog UI on top of the
   fixed template and subject, exactly one recipient and one link, the link
   origin from a dedicated trusted setting (`INVITATION_LINK_BASE_URL`), and caps per
   tenant (30 per hour), per recipient across tenants (3 per 24 hours) and a global
-  kill switch, on the existing DB-backed rate-limit store, and every limiter answers
-  with `Retry-After`. A second fixed template notifies the admins of a pending org
+  kill switch, on the existing DB-backed rate-limit store (a bucket resets only after a
+full window with no allowed request, which is stricter than the nominal rate), and
+every limiter answers with `Retry-After`. Outside production a real sender needs a
+mandatory recipient-domain allowlist; CI, DAST and demo tenants use a non-sending
+sender. A second fixed template notifies the admins of a pending org
   deletion and a third tells the other admins of an accepted `admin` invitation;
   all three share the kill switch and the per-recipient bucket, with a per-tenant
   notice cap and at most 20 recipients per notice, and the invitation caps answer
@@ -58,7 +64,9 @@ immediately after `002`, before `003` builds catalog UI on top of the
   always `member` with no teams and no moderated blueprints, taken from the
   signed machine claim (never from its `_user`), with an independent Cerbos
   deny rule as a second layer. A service account holds exactly one active credential, and a tenant holds at most
-  50 service accounts and 200 credentials.
+  50 service accounts and 200 credentials. Every service-account route refuses a human
+  target with the answer for an unknown id, and a credential records the admin who
+  created it.
   Disable is enforced on the request path within seconds and is reversible; delete
   is an explicit operation that revokes every bound credential, and a token whose
   service account is absent or not `Active` is rejected.
@@ -86,17 +94,22 @@ immediately after `002`, before `003` builds catalog UI on top of the
   purges after a 7-to-14-day window through a scheduled job in two idempotent
   steps (catalog data, then Better Auth rows). The purge runs as a dedicated
   `tayzu_purge` role under row-level policies limited to due tenants, for the
-  catalog rows and for the Better Auth rows alike, with no `SECURITY DEFINER`
-  function; the marker is insert-only for the request role, and the append-only
+  catalog rows and for the Better Auth rows alike (it may read every membership,
+  read-only, to know whether a user belongs elsewhere), with no `SECURITY DEFINER`
+  function; a repeated request re-runs the idempotent revocations; the marker is insert-only for the request role, and the append-only
   trigger admits only the purge role. The admins are notified, and reversal is an audited operator script
   that runs only through a reviewed manual workflow (the same one that runs the
   one-off `_user` backfill and reconcile), refuses a tenant whose purge has begun,
-  and relies on GitHub settings the human applies from a checklist. Recovery is the pending window, not point-in-time
+  and relies on GitHub and Azure settings the human applies from a checklist; its inputs
+  reach the job only through `env`, its actions are pinned by SHA and `CODEOWNERS` covers
+  it. Recovery is the pending window, not point-in-time
   restore.
 - **Mandatory authorization.** Every procedure of the identity router is built with
   one wrapper that checks the caller's role first, resolves the target, calls Cerbos,
   fails closed and emits `authz_denied`, and a route-table-driven HTTP matrix proves
-  each of the fourteen oRPC routes. Their OpenAPI document is committed
+  each of the fourteen oRPC routes. One repository module in `apps/api` serves every
+  identity read of `apikey`, `invitation` and `member`, requiring the tenant, with a lint
+  ban on direct adapter access. Their OpenAPI document is committed
   (`openapi/identity.openapi.json`, paths and risk markers only) with its own drift
   check.
 - **Tenant binding and mount gate.** Every target of every route is resolved on
@@ -154,11 +167,14 @@ multi-org UX (`042`).
   invitation token, the password policy, the `EmailSender` port and an Azure
   Communication Services adapter), and the orchestration and the routers live in
   `apps/api` (`@tayzu/auth` has no `@orpc/server` or `@tayzu/catalog` dependency):
-  invitations, service accounts, credential viewer and rotation, org deletion, the
+  the `auth` repository module, invitations, service accounts, credential viewer and rotation, org deletion, the
   purge job, the `_user` reconcile and the reversal script. Adds oRPC procedures to
   the identity router `002` already has, plus one plain Fastify route (the
   invitation accept), four `tsx` scripts under `apps/api/scripts/` (and the moved
-  bootstrap CLI) and a GitHub Actions maintenance workflow.
+  bootstrap CLI, with `bootstrapAdmin()` moving into `packages/auth/src/`), a GitHub
+  Actions maintenance workflow and a `CODEOWNERS` file. It also edits
+  `packages/catalog/src/service/user-sync.ts` (the four-value status and
+  `onBehalfOf`) and the shared test fixtures, which gain a `_user` row per member.
 - **Database**: **three migrations, each a Checkpoint 3 item.** `0011` adds a
   composite `(tenant_id, credential_id)` key to
   `machine_credential_revocation`; `0012` adds the tenant-deletion marker table;
@@ -189,7 +205,10 @@ multi-org UX (`042`).
   `002` (`002/ssa-pre-assessment.md`) and a Mode A pre-assessment against the
   merged `002` (2026-10-01) that found eleven blocking gaps (B1-B11), a second
   pass over the amended change that found five more (NB1-NB5), a third pass that found two more (service-account lifecycle and mandatory
-  authorization), and a fourth pass that found fourteen non-blocking gaps. All are folded into
+  authorization), a fourth pass that found fourteen non-blocking gaps, and a fifth pass
+  that found three blocking ones (a service-account route accepting a human target, an
+  invitation outliving its inviter's authority, and the maintenance workflow's inputs and
+  cloud role), eight non-blocking ones and four questions. All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks.
   New surface: the first public route, the first outbound email, a privileged
   purge role and the Pwned Passwords egress.

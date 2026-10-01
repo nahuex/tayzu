@@ -134,7 +134,8 @@ Cerbos deny (and increment the authorization-decision metric).
 Every procedure of the identity router MUST be built through the one wrapper, and
 the wrapper MUST work in this order: first a Cerbos check of the caller's role in
 the caller's own tenant with no target, so that an unauthorized caller gets the same
-`AUTH_FORBIDDEN` for any target; then the server-side resolution of the target;
+`AUTH_FORBIDDEN` for any target and for any body; then the parsing of the input and the
+server-side resolution of the target;
 then a Cerbos check with the target's real tenant and the Cerbos attributes, which
 emits `catalog.security.authz_denied` on a deny; and only then the handler. The
 wrapper MUST fail closed: a Cerbos error, a malformed context or an empty role list
@@ -156,7 +157,14 @@ one.
 - **WHEN** the caller invokes the operation on each
 - **THEN** both answers are the same `AUTH_FORBIDDEN`, and the target was not resolved
 
+#### Scenario: An unauthorized caller gets no parse error
+
+- **GIVEN** a caller without the grant
+- **WHEN** the caller invokes an operation with a malformed body, a body with an undeclared field and a valid body
+- **THEN** all three answers are the same `AUTH_FORBIDDEN`, and the input was not parsed
+
 #### Scenario: The wrapper fails closed
+
 
 - **WHEN** Cerbos errors, the context is malformed or the caller has no roles
 - **THEN** the operation is denied and the handler does not run
@@ -171,8 +179,9 @@ one.
 
 Disabling a human user MUST be scoped to the acting admin's tenant: it MUST write
 the `_user` status of that tenant through the state machine, revoke every one of
-the user's sessions whose active organization is that tenant, and cancel the
-user's pending invitations of that tenant. Only for a user whose single membership
+the user's sessions whose active organization is that tenant, cancel the
+user's pending invitations of that tenant, and cancel the pending invitations that
+user created in that tenant. Only for a user whose single membership
 is that tenant MUST it also ban the user and revoke all their sessions. The ban
 MUST NOT use Better Auth's admin-plugin ban routes, which the global role `user`
 cannot call. `resolveContext` MUST reject a banned user, and MUST reject a human
@@ -209,20 +218,33 @@ these checks MUST be logged as `catalog.security.principal_rejected` and counted
 - **WHEN** an admin disables `bob`
 - **THEN** the invitation's state becomes `cancelled` with reason `user_disabled`
 
+#### Scenario: Disabling cancels the invitations the user created
+
+- **GIVEN** an admin who created two pending invitations to other people, and another admin's pending invitation
+- **WHEN** the first admin is disabled
+- **THEN** their two invitations become `cancelled` with reason `inviter_disabled`, the other admin's stays `pending`, and re-enabling restores none
+
+
 ### Requirement: Every member has a `_user` row
 
 A human member with no `_user` row in the active tenant MUST be rejected by
 `resolveContext` and logged with the reason `user_missing`. A repeatable reconcile,
 run only through the reviewed maintenance workflow, MUST create the `_user` entity
-of every member that has none, through the state machine as `created_active`, MUST
-leave an existing row untouched (a second run changes nothing), and MUST attribute
-its writes to the operator whose id the workflow supplies.
+of every member that has none, through the state machine as `created_active`, MUST leave an existing row untouched (a second run changes nothing), MUST create a
+`Disabled` row for a member whose user is banned, and MUST attribute its writes to the
+operator whose id the workflow supplies.
 
 #### Scenario: A member with no `_user` row is rejected
 
 - **GIVEN** a member of `t1` whose `_user` row does not exist
 - **WHEN** the member calls any `/v1` route in `t1`
 - **THEN** the call is rejected and `catalog.security.principal_rejected` is logged with the reason `user_missing`
+
+#### Scenario: The reconcile does not revive a banned user
+
+- **GIVEN** a banned member with no `_user` row
+- **WHEN** the reconcile runs
+- **THEN** the member's row is created and ends `Disabled`, not `Active`
 
 #### Scenario: The reconcile repairs a member and is repeatable
 
@@ -312,7 +334,11 @@ before it is consumed and then consumed by one atomic delete conditioned on its
 digest, and MUST work exactly once; a resend MUST invalidate the previous token. The
 tenant MUST be derived on the server from the invitation record; a body that
 carries a tenant or an actor MUST be rejected, and an invitation of a tenant with a
-pending deletion MUST NOT be acceptable. For an invited email with no account,
+pending deletion MUST NOT be acceptable. On both paths, after the token has verified and before it is consumed, the invitation's
+inviter MUST still be a member of the organization with the `admin` role (`owner` or
+`admin`), MUST NOT be banned and MUST have the `_user` status `Active` in the tenant,
+otherwise the acceptance fails with the uniform rejection and the token is not consumed.
+For an invited email with no account,
 acceptance MUST create the user with the least global role, set the password the
 invitee supplied under the password policy, mark the email verified (the token is
 proof of mailbox control), add the membership with the invited role, write the
@@ -333,8 +359,8 @@ allowlist of the invitation id, the token and, for a new account, the password; 
 other field MUST be rejected with `CATALOG_VALIDATION_FAILED`, and an invitation id
 that fails a shape and length check MUST NOT be logged. Every rejected
 acceptance (nonexistent invitation, expired, cancelled, rejected or already-accepted
-invitation, wrong token, a `Disabled` user, a tenant pending deletion, no or
-mismatched session for an existing account, a failed CSRF or origin check, or a lost
+invitation, wrong token, a `Disabled` user, a tenant pending deletion, an inviter who is no longer an
+active admin, no or mismatched session for an existing account, a failed CSRF or origin check, or a lost
 concurrent account creation)
 MUST return the same status, error code and body shape, and a nonexistent invitation
 MUST take the same comparison work as a wrong token; the specific reason MUST be
@@ -342,7 +368,7 @@ recorded only in the `catalog.security.invitation_acceptance_denied` event. A
 password that fails the policy MUST be reported only after the token has verified,
 without consuming the token. When an invitation whose role is `admin` is accepted, a
 fixed notice with no link and no free text MUST be sent to every other
-administrator of the organization; a send failure MUST NOT block the acceptance and
+administrator of the organization, `Disabled` administrators included; a send failure MUST NOT block the acceptance and
 MUST be logged.
 
 #### Scenario: A new person accepts and can then sign in
@@ -398,11 +424,19 @@ MUST be logged.
 
 #### Scenario: An accepted admin invitation notifies the other admins
 
-- **GIVEN** an organization with an owner and two admins
+- **GIVEN** an organization with an owner, two admins and a `Disabled` admin
 - **WHEN** an invitation with the role `admin` is accepted, on either path
-- **THEN** the owner and the two admins each receive exactly one fixed-template notice with no link and no free text, the new admin receives none, and a failing send does not stop the acceptance
+- **THEN** the owner, the two admins and the `Disabled` admin each receive exactly one fixed-template notice with no link and no free text, the new admin receives none, and a failing send does not stop the acceptance
+
+#### Scenario: An invitation does not outlive its inviter's authority
+
+- **GIVEN** a pending invitation whose inviter is then disabled, banned, demoted to `member` or no longer a member
+- **WHEN** it is accepted with its valid token, on the new-account path and on the existing-account path
+- **THEN** each answers the uniform rejection, `catalog.security.invitation_acceptance_denied` records the reason `inviter_not_active_admin`, and the token is not consumed
+- **AND** an invitation whose inviter is still an active `admin` or `owner` is accepted, and a wrong token with a disabled inviter answers the same uniform rejection
 
 #### Scenario: A cross-site request cannot accept
+
 
 - **WHEN** an existing-account acceptance arrives without the CSRF custom header, with no `Origin` header, or from a disallowed origin
 - **THEN** the answer is the uniform rejection and nothing changes
@@ -469,11 +503,17 @@ MUST be logged as `catalog.security.notice_suppressed`. The provider MUST NOT tr
 message MUST have no Reply-To. Creating and resending invitations MUST be capped at 30 per hour
 per tenant, 3 per 24 hours per recipient across all tenants (keyed by a digest
 of the normalized email, never the address), and by a global kill switch. A
-disabled or zero cap MUST fail startup. Exceeding any cap MUST fail the
+disabled or zero cap MUST fail startup. A bucket MUST reset only after a full window with
+no allowed request (the semantics of the shared rate-limit store), so the caps are
+stricter than their nominal rate. Exceeding any cap MUST fail the
 operation with `AUTH_RATE_LIMITED` and a `Retry-After` header that is the same for
 every invitation cap, send no email, and log
-`catalog.security.invitation_rate_limited` with its scope. Outside test, startup
-MUST fail without a real email provider.
+`catalog.security.invitation_rate_limited` with its scope. In production,
+startup MUST fail without a real email provider. Outside production a real provider
+MUST be configured only together with a recipient-domain allowlist, startup MUST fail
+without it, a recipient whose domain is not on it MUST be refused like a provider failure
+and logged as `catalog.security.email_recipient_blocked`, and CI, DAST and demo tenants
+MUST use a non-sending sender.
 
 #### Scenario: Injection through the invited address is impossible
 
@@ -520,7 +560,20 @@ MUST fail without a real email provider.
 - **WHEN** the per-tenant cap and the per-recipient cap each reject an invitation
 - **THEN** both answers carry the same `Retry-After` value
 
+#### Scenario: A slow trickle never resets a bucket
+
+- **GIVEN** a per-recipient bucket of 3 per 24 hours and requests spaced just under 24 hours apart
+- **WHEN** the fourth request arrives
+- **THEN** it is refused, because only a full window with no allowed request resets the bucket
+
+#### Scenario: A real sender outside production needs an allowlist
+
+- **WHEN** the platform starts outside production with a real email provider and no recipient-domain allowlist
+- **THEN** startup fails
+- **AND** with the allowlist, an invitation to a recipient off it sends nothing and logs `catalog.security.email_recipient_blocked` without the address
+
 #### Scenario: Exceeding the per-tenant cap blocks further invites
+
 
 - **GIVEN** a tenant that has already created or resent 30 invitations in the current hour
 - **WHEN** an admin attempts one more invite or resend
@@ -548,7 +601,11 @@ its status to `Active` immediately with no invitation email sent, and MUST
 atomically issue one organization-owned machine credential
 (`clientId`/`clientSecret`) for it. The credential's secret MUST be returned
 exactly once, in the creation response, and MUST NOT be retrievable again.
-A service account MUST hold exactly one active credential: creating a credential
+Every service-account route MUST resolve its target on the server and MUST answer
+`CATALOG_NOT_FOUND`, identical to an unknown id, unless the target's `_user` has
+`accountKind: "service"` and an `svc-` identifier, including for the caller's own `_user`
+and an owner's; Cerbos MUST also deny any action on a `service_account` resource whose
+`accountKind` is not `service`. A service account MUST hold exactly one active credential: creating a credential
 bound to a service account that already has an active one MUST be refused, a
 revoked credential MUST be rotatable only when its service account has no active
 credential, and rotation MUST be serialized per service account.
@@ -582,7 +639,14 @@ user's role or `moderatedBlueprints`.
 - **WHEN** an admin creates a service account
 - **THEN** the operation fails and no `_user` entity of that service account remains
 
+#### Scenario: A service-account route refuses a human target
+
+- **GIVEN** a human `_user` such as `alice@example.com`, the admin's own address and an owner
+- **WHEN** an admin deletes or changes the status of any of them through a service-account route
+- **THEN** each answers the same `CATALOG_NOT_FOUND` as an unknown id, the human's row and status are intact, no credential is revoked and no event is emitted
+
 #### Scenario: The per-tenant service-account cap holds
+
 
 - **GIVEN** a tenant with 50 service accounts
 - **WHEN** an admin creates another, or two admins create the 50th at the same time
@@ -664,7 +728,8 @@ user's role or `moderatedBlueprints`.
 Listing an organization's API credentials (service accounts, integrations and
 agents) MUST return, per credential: a name, its kind, a non-secret
 prefix, creation time, last-used time (when known), enabled/disabled state,
-and whether it is past its rotation-due threshold. A credential MUST be shown
+whether it is past its rotation-due threshold, and the opaque id of the admin who
+created it (when known). A credential MUST be shown
 disabled when its key is disabled, it is revoked, or its bound service account
 is `Disabled`. It MUST NOT return the secret value or any stored secret
 characters under any circumstance after creation. This listing MUST be
@@ -676,6 +741,12 @@ tenant.
 - **GIVEN** an organization with 3 API credentials
 - **WHEN** an admin lists them
 - **THEN** each entry has a prefix, not the full secret, and no field in the response ever equals a credential's secret value
+
+#### Scenario: The viewer shows who created a credential
+
+- **GIVEN** a credential created by an admin through the identity operations
+- **WHEN** an admin lists the credentials
+- **THEN** its entry carries the creating admin's opaque id and no email
 
 #### Scenario: Non-admin cannot list credentials
 
@@ -810,10 +881,10 @@ be given the host tenant only.
 - **WHEN** the admin changes their own status through that email
 - **THEN** the self-deny applies, because Cerbos compares the resolved opaque user id and never the email
 
-#### Scenario: Create and link give no existence oracle
+#### Scenario: Create and link give one generic answer to every conflict
 
-- **WHEN** an admin creates a user for an email that exists and for one that does not, or links an `sub` that exists and one that does not
-- **THEN** both answer identically
+- **WHEN** an admin creates a user for an email that already has an account in this tenant or in another tenant, or links a `sub` that is already linked
+- **THEN** every cause answers with the same `CATALOG_VALIDATION_FAILED` and a fixed message, and no state changes, so a failed probe leaves no partial state
 
 ### Requirement: Org deletion revokes access immediately and purges tenant data after a window
 
@@ -827,8 +898,9 @@ invitations, send the fixed org-deletion notice to the administrators of the
 organization, under the notice controls (a send failure or suppression MUST NOT block the request and MUST be logged), and log
 `catalog.audit.org_deletion_requested` with the admin as actor; from then on
 `resolveContext` and token exchange MUST reject every principal of the tenant,
-human or machine, while the marker is pending or purged. Requesting deletion again while pending MUST change nothing
-and MUST return the original date. In phase 2 a scheduled job MUST, for a
+human or machine, while the marker is pending or purged. Requesting deletion again while pending MUST insert no second marker, send no
+second notice and return the original date, MUST re-run the idempotent revocations of
+phase 1, and MUST be logged as `catalog.security.org_deletion_repeated`. In phase 2 a scheduled job MUST, for a
 tenant whose purge date has passed, delete in two idempotent steps with safe
 resume: first the tenant's catalog data (including the append-only change
 events and revocation rows, which the purge role may delete only for a tenant
@@ -846,7 +918,12 @@ does not restore the credentials phase 1 revoked. The script, and the
 one-off `_user` backfill and reconcile, MUST run only through a reviewed manual
 workflow, runnable only from the main branch, whose environment requires a second
 approver, and the operator's id MUST derive from that
-workflow's authenticated actor, never from an argument.
+workflow's authenticated actor, never from an argument. Every workflow input MUST be a
+fixed choice or validated against the tenant-id pattern and MUST reach the job only
+through the environment, never through an expression inside a `run:` script; every
+third-party action MUST be pinned by commit SHA; the workflow and the scripts MUST be
+covered by `CODEOWNERS`; and the federated identity's cloud role MUST be limited to
+starting the named jobs.
 
 #### Scenario: Deletion without step-up fails
 
@@ -879,7 +956,13 @@ workflow's authenticated actor, never from an argument.
 - **WHEN** a platform operator runs the reversal script
 - **THEN** it refuses, the marker is unchanged, and the database refuses the same tombstone from the reversal role
 
+#### Scenario: The workflow does not interpolate its inputs
+
+- **WHEN** the maintenance workflow file is read
+- **THEN** no `run:` contains `${{ inputs.* }}`, `github.event.*` or `github.head_ref`, every input is a choice or validated, every `uses:` is pinned by a 40-character SHA, and `CODEOWNERS` covers the workflow and `apps/api/scripts/**`
+
 #### Scenario: The reversal records the authenticated operator
+
 
 - **WHEN** the reversal is started without the operator id that the reviewed workflow supplies
 - **THEN** the script refuses to run and nothing is tombstoned
@@ -894,7 +977,13 @@ workflow's authenticated actor, never from an argument.
 
 - **GIVEN** `t1` has a pending deletion
 - **WHEN** the deletion is requested again, in process
-- **THEN** nothing changes and the original purge date is returned
+- **THEN** no second marker or notice is created, the original purge date is returned, and `catalog.security.org_deletion_repeated` is logged
+
+#### Scenario: A repeated request completes a half-failed first one
+
+- **GIVEN** a first request that recorded the marker but failed before revoking a credential
+- **WHEN** the deletion is requested again
+- **THEN** the credential is revoked
 
 #### Scenario: Purge removes tenant data after the window
 
@@ -934,7 +1023,9 @@ The deletion marker MUST be insert-only for the role that serves requests: its
 `purge_after` between 7 and 14 days after `requested_at`, and only one pending
 marker per tenant MAY exist. The purge MUST run as a dedicated role, used only by
 the purge job with its own secret, that can act only on tenants with a due pending
-marker, on the catalog rows and on the Better Auth rows alike, and the due-tenant
+marker, on the catalog rows and on the Better Auth rows alike (it may also read every
+membership row, read-only, so that it can see a user's memberships in tenants that are
+not due), and the due-tenant
 condition MUST be enforced by row-level policies, not by a function or by code; the
 append-only change-event rows MUST be deletable only by that role. No
 `SECURITY DEFINER` function MUST take part in the purge, and each maintenance
@@ -950,7 +1041,7 @@ table carrying tenant data is neither purged nor explicitly exempted.
 
 - **GIVEN** a tenant with a pending marker whose date has not passed, and one with a due marker
 - **WHEN** the purge role tries to delete the Better Auth rows of both
-- **THEN** only the rows of the due tenant, and only the users whose memberships are all in due tenants, are deleted, and the role that serves authentication keeps its access
+- **THEN** only the rows of the due tenant, and only the users whose memberships are all in due tenants, are deleted (a user who also belongs to a tenant that is not due is kept, because the purge role can read that membership), and the role that serves authentication keeps its access to every tenant
 
 #### Scenario: Only due tenants can be purged, and only by the purge role
 
@@ -1048,7 +1139,8 @@ the authenticated context resolution.
 Every Cerbos deny, status change, service-account disable, enable and
 deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
-excess, and org-deletion request, completion, failure, cancellation and notice failure, a failed admin-accepted notice, a suppressed or truncated notice and a
+excess, and org-deletion request, repeated request, completion, failure, cancellation and notice failure, a failed admin-accepted notice, a suppressed or truncated notice, a
+recipient refused by the non-production allowlist, a banned user's sign-in attempt and a
 reconcile run, MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
@@ -1107,7 +1199,8 @@ verify functions themselves so that no entry point (sign-in, `/verify-password`,
 future one) can be missed, and then be 20 to 128 characters long, contain an upper-case letter, a lower-case
 letter, a digit and a symbol, contain no control character, unpaired
 surrogate or Unicode format character, and not appear on the bundled
-common-password denylist. A generated temporary password MUST satisfy the same
+common-password denylist. The breached-password check MUST see the NFC form, so the
+password-bearing body fields are normalized before the check runs. A generated temporary password MUST satisfy the same
 policy by construction (every character class is guaranteed, not left to chance), and MUST force a change at first sign-in and expire. A refusal MUST name only the failed rule and never
 echo the password.
 
@@ -1116,6 +1209,12 @@ echo the password.
 - **GIVEN** a password set through acceptance
 - **WHEN** it is presented in its decomposed (NFD) form at sign-in, `/verify-password`, `/two-factor/enable`, `/change-password` or `/two-factor/generate-backup-codes`
 - **THEN** it verifies
+
+#### Scenario: A breached password is refused in any normalization form
+
+- **GIVEN** a password that appears in the Pwned Passwords corpus
+- **WHEN** it is presented in its decomposed (NFD) form on acceptance or `/change-password`
+- **THEN** it is refused, because the breach check sees the NFC form
 
 #### Scenario: A temporary password grants only a password change
 
