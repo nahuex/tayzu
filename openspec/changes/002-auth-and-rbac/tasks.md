@@ -1100,7 +1100,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `api-scan` (design Q82, D16). Verify: the `dast-zap` job and `pnpm
   ci:local` pass, and the API scan's log shows mutating operations answered
   other than `403`.
-- [ ] 28.4 _(setup)_ Docs: `attack-surfaces.md` reflects 28.1 and Q81, and
+- [x] 28.4 _(setup)_ Docs: `attack-surfaces.md` reflects 28.1 and Q81, and
   the design's residual-risk and gate lists include Q83 and Q84. Verify:
   markdownlint and `openspec validate --strict` pass.
 
