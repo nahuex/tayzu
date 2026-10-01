@@ -18,9 +18,8 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1-Q45 in `design.md`. One open question
-remains (OQ1, a human member with no `_user` row) and affects only one case of
-task 11.8.
+Tasks follow the Resolved decisions Q1-Q47 in `design.md`; there are no open
+questions.
 
 Migrations follow the repo's pairing of a table migration with a hand-written
 grants migration and start at `0011`; every migration and every Cerbos task is
@@ -786,10 +785,10 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       The task adds the status read, a 5-second cache keyed by `(tenantId, userId)` and
       a rejection on failure (fail closed), logging `catalog.security.principal_rejected`
       and incrementing `tayzu.identity.principal_rejections`. A member with no `_user`
-      row is handled per Open Question 1, and that case is not tested until it is
-      answered. Verify: `context-resolver.int.test.ts` covers "A disabled member is
+      row in the active tenant is rejected (Q46). Verify: `context-resolver.int.test.ts` covers "A disabled member is
       rejected in their tenant only": the same user accepted in `t2`, a second request
-      within 5 seconds not repeating the lookup, and a lookup failure rejecting.
+      within 5 seconds not repeating the lookup, a lookup failure rejecting, and a
+      member with no `_user` row in the active tenant rejected (Q46).
 
 ## 12. Org deletion, two phases, ⛔ Checkpoint 3 (migrations `0012` and `0013`)
 

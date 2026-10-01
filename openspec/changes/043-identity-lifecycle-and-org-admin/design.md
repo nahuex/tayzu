@@ -1646,24 +1646,9 @@ Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 | Q43 | (Drift B3, 2026-10-01) OpenAPI document for the identity routes                                                                                               | A second committed document, `openapi/identity.openapi.json`, generated in `apps/api` with its own `contract:generate` and `contract:check`; the `x-tayzu-risk` assertions run on it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Q44 | (Drift B4, 2026-10-01) Per-key API rate limit                                                                                                                 | 60 verifications per hour per key, configurable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Q45 | (VCDM B2, 2026-10-01) Mandatory authorization in the identity router                                                                                          | A `defineIdentityOperation({ authorization, handler })` wrapper resolves the target server-side, calls Cerbos and emits `authz_denied`; a test forbids a bare handler; a route-table-driven HTTP matrix covers each of the 14 oRPC routes (admin allowed, member 403, machine token 403, unauthenticated 401, foreign target 404).                                                                                                                                                                                                                                                                                                                                                                    |
+| Q46 | (Amendment Open Question, 2026-10-01) A human member with no `_user` row in the active tenant | `resolveContext` rejects it (fail closed); the `_user` backfill runs before the first deployment so no legitimate member is locked out. |
+| Q47 | (Amendment choices confirmed by the human, 2026-10-01) Details settled while applying Q38-Q45 | (1) An acceptance request with no `Origin` header is rejected. (2) The org-deletion confirmation travels in the query (`?confirmation=`), which telemetry already drops. (3) Rotation is also serialized per credential for integrations with no service account. (4) Invitation cancel uses Better Auth's `cancelInvitation` with the admin's forwarded session headers, like `invite` (Q42). |
 
 ## Open Questions
 
-The amendment's earlier questions were answered on 2026-10-01 (Q35-Q45). One
-remains, and nothing counts as approved until the human answers it in chat. It
-affects only task 11.8's case of a member with no `_user` row.
-
-**OQ1. What does `resolveContext` do for a human member whose `_user` row is absent
-in the active tenant?** (D13, task 11.8; VCDM re-run N2.) The check of Q25 rejects a
-`Disabled` status and rejects on a lookup failure, but an absent row is neither.
-Every membership path writes the `_user` once the adapter of D2 is wired, and the
-one-off backfill of D1 covers existing members.
-
-1. **Reject, fail closed. (Recommended)** Consistent with the rest of D13, and it
-   stops a removed or never-synced `_user` from bypassing a disable. The risk is a
-   lockout for a member the backfill missed, so the backfill must run before the
-   check is deployed (Migration Plan).
-2. **Treat it as `Active` and log a WARN.** No lockout risk, but anyone whose
-   `_user` row is deleted or never written escapes a disable.
-3. **Create the `_user` as `Staged` on the spot.** Self-healing, but a write on the
-   read path of every request, and it can silently re-create a deleted user.
+None. The last open question was answered on 2026-10-01 (Q46).
