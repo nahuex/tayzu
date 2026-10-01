@@ -810,6 +810,19 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         if (ctx.path !== CHANGE_PASSWORD_PATH) {
           return undefined;
         }
+        // Q70, Q51: a user with an enrolled MFA factor needs a fresh `mfa`
+        // marker. Without a session, Better Auth's own route answers 401.
+        const session = await getSessionFromCtx(ctx).catch(() => null);
+        if (
+          session &&
+          (session.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true &&
+          (await currentFreshFactor(ctx.context.internalAdapter, session.session.token)) !== 'mfa'
+        ) {
+          throw new APIError('FORBIDDEN', {
+            code: 'AUTH_STEP_UP_REQUIRED',
+            message: 'AUTH_STEP_UP_REQUIRED',
+          });
+        }
         return { context: { body: { revokeOtherSessions: true } } };
       }),
       after: createAuthMiddleware(async (ctx) => {

@@ -1075,3 +1075,198 @@ describe('Backup-code regeneration requires a fresh MFA step-up (task 24.3, desi
     ).not.toBe(before);
   }, 60_000);
 });
+
+/**
+ * Task 26.7 (design Q70, Q51): `/change-password` requires a fresh `mfa`
+ * step-up marker for a user with an enrolled MFA factor. A user without MFA is
+ * unaffected. Driven through Better Auth's real HTTP entry point
+ * (`auth.handler`) with a fresh random IP per request.
+ *
+ * ## Production symbols expected
+ *
+ * - `./auth.ts` `hooks.before`: for `/change-password`, a session whose user has
+ *   an enrolled factor and no fresh `mfa` marker (`currentFreshFactor(...) !==
+ *   'mfa'`, same check as `/two-factor/generate-backup-codes`) is refused with
+ *   `403` and body code `AUTH_STEP_UP_REQUIRED` before the password is changed.
+ *   A user with `twoFactorEnabled` false skips the check entirely.
+ *   `revokeOtherSessions: true` (23.16) is still injected on the allowed path.
+ */
+describe('/change-password requires a fresh MFA step-up for enrolled users (task 26.7, design Q70, Q51)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+
+  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET, trustedOrigins: [TRUSTED_ORIGIN] });
+    api = apiOf(auth);
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  function sessionTokenOf(cookie: string): string {
+    const pair = cookie.split('; ').find((entry) => entry.includes('session_token='));
+    const signed = decodeURIComponent(pair?.slice(pair.indexOf('=') + 1) ?? '');
+    return signed.split('.')[0] ?? '';
+  }
+
+  async function dropMarker(cookie: string): Promise<void> {
+    await db.execute(sql`
+      delete from auth.verification
+      where identifier = ${`step-up-verified:${sessionTokenOf(cookie)}`}
+    `);
+  }
+
+  async function verifyPassword(cookie: string): Promise<void> {
+    const response = await postJson(
+      handlerOf(auth),
+      '/verify-password',
+      { password: TEST_PASSWORD },
+      randomIp(),
+      { cookie, origin: TRUSTED_ORIGIN },
+    );
+    expect(response.status, 'the password re-entry is accepted').toBe(200);
+  }
+
+  function changePassword(cookie: string): Promise<Response> {
+    return postJson(
+      handlerOf(auth),
+      '/change-password',
+      { currentPassword: TEST_PASSWORD, newPassword: NEW_PASSWORD },
+      randomIp(),
+      { cookie, origin: TRUSTED_ORIGIN },
+    );
+  }
+
+  /** Whether `password` signs the user in (200) rather than being rejected. */
+  async function canSignInWith(email: string, password: string): Promise<boolean> {
+    const response = await postJson(
+      handlerOf(auth),
+      '/sign-in/email',
+      { email, password },
+      randomIp(),
+    );
+    return response.status === 200;
+  }
+
+  async function enrolledUser(): Promise<{
+    email: string;
+    signInWithTotp(): Promise<string>;
+  }> {
+    const handler = handlerOf(auth);
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Change Password Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const enabled = await api.enableTwoFactor({
+      body: { password: TEST_PASSWORD, method: 'totp' },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    const secret = rawSecretFromTotpUri(enabled.totpURI);
+    await api.verifyTOTP({
+      body: { code: (await api.generateTOTP({ body: { secret } })).code },
+      headers: new Headers({ cookie: tenant.cookie }),
+    });
+    return {
+      email,
+      signInWithTotp: async () => {
+        const challenge = await postJson(
+          handler,
+          '/sign-in/email',
+          { email, password: TEST_PASSWORD },
+          randomIp(),
+        );
+        expect(challenge.status, 'the sign-in is challenged, not rejected').toBe(200);
+        const verified = await postJson(
+          handler,
+          '/two-factor/verify-totp',
+          { code: (await api.generateTOTP({ body: { secret } })).code },
+          randomIp(),
+          { cookie: cookieHeaderFrom(challenge), origin: TRUSTED_ORIGIN },
+        );
+        expect(verified.status, 'the TOTP challenge is verified').toBe(200);
+        return cookieHeaderFrom(verified);
+      },
+    };
+  }
+
+  it('An MFA-enrolled user changing their password with only a fresh password re-entry is refused with AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await enrolledUser();
+    const cookie = await user.signInWithTotp();
+    // GIVEN a session with no fresh MFA verification, only a fresh password re-entry.
+    await dropMarker(cookie);
+    await verifyPassword(cookie);
+
+    // WHEN they call /change-password with the correct current password.
+    const response = await changePassword(cookie);
+
+    // THEN it is refused with AUTH_STEP_UP_REQUIRED (403) and the password is unchanged.
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { code?: unknown }).code).toBe('AUTH_STEP_UP_REQUIRED');
+    expect(await canSignInWith(user.email, NEW_PASSWORD), 'the new password was not set').toBe(
+      false,
+    );
+    expect(await canSignInWith(user.email, TEST_PASSWORD), 'the old password still works').toBe(
+      true,
+    );
+  }, 60_000);
+
+  it('An MFA-enrolled user changing their password with no step-up marker at all is refused with AUTH_STEP_UP_REQUIRED', async () => {
+    const user = await enrolledUser();
+    const cookie = await user.signInWithTotp();
+    await dropMarker(cookie);
+
+    const response = await changePassword(cookie);
+
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { code?: unknown }).code).toBe('AUTH_STEP_UP_REQUIRED');
+  }, 60_000);
+
+  it('The same MFA-enrolled user can change their password after a fresh /two-factor/verify-totp', async () => {
+    const user = await enrolledUser();
+    const weakCookie = await user.signInWithTotp();
+    await dropMarker(weakCookie);
+    await verifyPassword(weakCookie);
+    expect(
+      (await changePassword(weakCookie)).status,
+      'precondition: refused with only a password',
+    ).toBe(403);
+
+    // GIVEN a fresh TOTP verification on a new session.
+    const freshCookie = await user.signInWithTotp();
+
+    // WHEN they change the password, THEN it succeeds and the new password works.
+    const response = await changePassword(freshCookie);
+    expect(response.status).toBe(200);
+    expect(await canSignInWith(user.email, TEST_PASSWORD), 'the old password no longer works').toBe(
+      false,
+    );
+  }, 60_000);
+
+  it('A user without MFA is unaffected: /change-password still works with the current password alone', async () => {
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Change Password Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+
+    const response = await changePassword(tenant.cookie);
+
+    expect(response.status).toBe(200);
+    expect(await canSignInWith(email, NEW_PASSWORD), 'the new password works').toBe(true);
+  }, 60_000);
+});

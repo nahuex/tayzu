@@ -1030,7 +1030,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `session-policy.int.test.ts` (extended) covers a session used within the
   idle window staying valid past 12 hours of age, and an idle session still
   rejected after 12 hours.
-- [ ] 26.7 `/change-password` requires a fresh `mfa` step-up for a user with
+- [x] 26.7 `/change-password` requires a fresh `mfa` step-up for a user with
   an enrolled factor (design Q70, Q51). Verify: `step-up.int.test.ts`
   (extended) covers an enrolled user refused with only a password, allowed
   after `verify-totp`, and a user without MFA unaffected.
