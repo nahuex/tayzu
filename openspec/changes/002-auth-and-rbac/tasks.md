@@ -1053,7 +1053,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   `/api/auth/%6Frganization/create`, `//api/auth/...` and
   `/v1/auth/%74oken`, each answering `404` with no side effect, and an
   ordinary request still answering normally.
-- [ ] 27.2 Every guard in `apps/api` (allowlist, 415, `idToken` refusal,
+- [x] 27.2 Every guard in `apps/api` (allowlist, 415, `idToken` refusal,
   link/unlink step-up, token-exchange predicate and limiter) reads the parsed
   pathname instead of the raw `request.url` (design Q74). Verify: the same
   test file covers each guard still applying to its route when the request

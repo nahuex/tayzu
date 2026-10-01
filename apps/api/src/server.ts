@@ -122,8 +122,13 @@ const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 /** Q36: where Visma Connect returns from a step-up re-authorization. */
 const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
 
+/** Q74: the path of the request target, without its query. Every guard keys on this. */
+function pathnameOf(request: FastifyRequest): string {
+  return request.url.split('?', 1)[0] ?? '';
+}
+
 function isTokenExchange(request: FastifyRequest): boolean {
-  return request.method === 'POST' && request.url.split('?', 1)[0] === TOKEN_EXCHANGE_PATH;
+  return request.method === 'POST' && pathnameOf(request) === TOKEN_EXCHANGE_PATH;
 }
 
 const CERBOS_TLS_LOOPBACK_ONLY = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
@@ -337,10 +342,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // D18: deny-by-default. An unlisted path gets Fastify's own 404, identical
   // to any unknown route, before Better Auth is reached.
   app.addHook('onRequest', async (request, reply) => {
-    if (!request.url.startsWith('/api/auth')) {
+    const pathname: string = pathnameOf(request);
+    if (!pathname.startsWith('/api/auth')) {
       return;
     }
-    const pathname = request.url.split('?', 1)[0] ?? '';
     if (!isAllowedAuthPath(pathname)) {
       reply.callNotFound();
       return reply;
@@ -351,7 +356,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // body-bearing `/v1/*` request must be `application/json` or it is refused with 415
   // in `onRequest`, before any body is read.
   app.addHook('onRequest', async (request, reply) => {
-    const pathname = request.url.split('?', 1)[0] ?? '';
+    const pathname: string = pathnameOf(request);
     if (pathname !== '/v1' && !pathname.startsWith('/v1/')) {
       return;
     }
@@ -378,7 +383,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // Q60: a client-submitted ID token would bypass the authorization-code callback
   // (state, nonce, PKCE; D23-D26), so sign-in and linking refuse any body carrying one.
   app.addHook('preHandler', async (request, reply) => {
-    const pathname = request.url.split('?', 1)[0];
+    const pathname: string = pathnameOf(request);
     if (
       request.method !== 'POST' ||
       (pathname !== '/api/auth/sign-in/social' && pathname !== '/api/auth/link-social')
@@ -398,7 +403,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // reaches Better Auth.
   const assertLinkStepUp = createEnrolledStepUpCheck({ auth });
   app.addHook('preHandler', async (request, reply) => {
-    const pathname = request.url.split('?', 1)[0];
+    const pathname: string = pathnameOf(request);
     if (
       request.method !== 'POST' ||
       (pathname !== '/api/auth/link-social' && pathname !== '/api/auth/unlink-account')

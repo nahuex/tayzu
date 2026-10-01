@@ -234,3 +234,198 @@ describe('apps/api request-target hook (task 27.1, design Q74 and D18)', () => {
     expect(response.statusCode).toBe(200);
   }, 60_000);
 });
+
+/**
+ * Task 27.2 (design Q74): "Every guard in `apps/api` (allowlist, 415, `idToken`
+ * refusal, link/unlink step-up, token-exchange predicate and limiter) reads the
+ * parsed pathname instead of the raw `request.url`. Verify: the same test file
+ * covers each guard still applying to its route when the request carries a
+ * query string, and the token-exchange limiter answering `429` on the routed
+ * path."
+ *
+ * ## Production symbols expected
+ *
+ * None new. Every guard in `./server.ts` derives its path from one parsed
+ * pathname (no raw `request.url` comparison). Behavior is unchanged, so these
+ * are regression guards: they pass today because each guard already strips
+ * the query with `split('?')`, and they must stay green through the refactor.
+ */
+describe('apps/api guards still apply with a query string (task 27.2, design Q74)', () => {
+  const QUERY = '?probe=1&other=%41';
+  let app: App;
+  let pools: HarnessPools;
+  let tenant: BootstrappedTenant;
+  let port: number;
+  let limitedApp: App;
+  let limitedPort: number;
+
+  beforeAll(async () => {
+    pools = await harnessPools();
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ALLOWED_ORIGIN],
+      tokenExchangeRateLimit: { max: 1000, timeWindowMs: 60_000 },
+    });
+    const suffix: string = randomUUID();
+    tenant = await bootstrapTestTenant(app.auth, {
+      name: 'Query Guard User',
+      email: `query-guard-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Query Guard Org ${suffix}`,
+      organizationSlug: `query-guard-org-${suffix}`,
+      ip: randomIp(),
+    });
+    await app.app.listen({ host: '127.0.0.1', port: 0 });
+    port = (app.app.server.address() as AddressInfo).port;
+
+    limitedApp = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ALLOWED_ORIGIN],
+      tokenExchangeRateLimit: { max: 2, timeWindowMs: 60_000 },
+    });
+    await limitedApp.app.listen({ host: '127.0.0.1', port: 0 });
+    limitedPort = (limitedApp.app.server.address() as AddressInfo).port;
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await limitedApp.close();
+  }, 60_000);
+
+  const jsonHeaders = (): Record<string, string> => ({
+    'content-type': 'application/json',
+    cookie: tenant.cookie,
+  });
+
+  function codeOf(response: RawResponse): unknown {
+    try {
+      return (JSON.parse(response.body) as { code?: unknown }).code;
+    } catch {
+      return undefined;
+    }
+  }
+
+  it('Allowlist: an unlisted /api/auth route answers 404 with a query string, and no side effect', async () => {
+    const slug: string = `query-guard-created-${randomUUID()}`;
+    const created: RawResponse = await rawRequest(
+      port,
+      'POST',
+      `/api/auth/organization/create${QUERY}`,
+      jsonHeaders(),
+      JSON.stringify({ name: 'Query Org', slug }),
+    );
+    expect(created.statusCode).toBe(404);
+    const count = await pools.authPool.query<{ count: string }>(
+      'select count(*) as count from auth.organization where slug = $1',
+      [slug],
+    );
+    expect(Number(count.rows[0]?.count ?? '0')).toBe(0);
+
+    const roleChange: RawResponse = await rawRequest(
+      port,
+      'POST',
+      `/api/auth/organization/update-member-role${QUERY}`,
+      jsonHeaders(),
+      JSON.stringify({
+        organizationId: tenant.organizationId,
+        memberId: tenant.userId,
+        role: 'member',
+      }),
+    );
+    expect(roleChange.statusCode).toBe(404);
+    const roles = await pools.authPool.query<{ role: string }>(
+      'select role from auth.member where organization_id = $1 and user_id = $2',
+      [tenant.organizationId, tenant.userId],
+    );
+    expect(roles.rows[0]?.role).toBe('owner');
+  }, 60_000);
+
+  it('Allowlist: a listed /api/auth route is still served with a query string', async () => {
+    const response: RawResponse = await rawRequest(
+      port,
+      'GET',
+      `/api/auth/get-session${QUERY}`,
+      { cookie: tenant.cookie },
+      '',
+    );
+    expect(response.statusCode).toBe(200);
+  }, 60_000);
+
+  it('415: a non-JSON body on a /v1 route is refused with a query string', async () => {
+    const response: RawResponse = await rawRequest(
+      port,
+      'POST',
+      `/v1/blueprints/query-guard${QUERY}`,
+      { 'content-type': 'text/plain', 'x-csrf-token': 'orpc' },
+      'not json',
+    );
+    expect(response.statusCode).toBe(415);
+    expect(codeOf(response)).toBe('UNSUPPORTED_MEDIA_TYPE');
+  }, 60_000);
+
+  it('idToken refusal: sign-in/social and link-social refuse a body with idToken with a query string', async () => {
+    const payload: string = JSON.stringify({
+      provider: 'visma-connect',
+      idToken: { token: 'client-submitted' },
+      callbackURL: '/',
+    });
+    for (const route of ['/api/auth/sign-in/social', '/api/auth/link-social']) {
+      const response: RawResponse = await rawRequest(
+        port,
+        'POST',
+        `${route}${QUERY}`,
+        jsonHeaders(),
+        payload,
+      );
+      expect(response.statusCode, route).toBe(400);
+      expect(codeOf(response), route).toBe('BAD_REQUEST');
+    }
+  }, 60_000);
+
+  it('Link/unlink step-up: link-social and unlink-account without a fresh step-up answer 403 AUTH_STEP_UP_REQUIRED with a query string', async () => {
+    for (const route of ['/api/auth/link-social', '/api/auth/unlink-account']) {
+      const response: RawResponse = await rawRequest(
+        port,
+        'POST',
+        `${route}${QUERY}`,
+        jsonHeaders(),
+        JSON.stringify({
+          provider: 'visma-connect',
+          providerId: 'visma-connect',
+          callbackURL: '/',
+        }),
+      );
+      expect(response.statusCode, `${route}: ${response.body}`).toBe(403);
+      expect(codeOf(response), route).toBe('AUTH_STEP_UP_REQUIRED');
+    }
+  }, 60_000);
+
+  it('Token-exchange limiter: answers 429 AUTH_RATE_LIMITED on the routed path, whether or not the request carries a query string', async () => {
+    const ip: string = randomIp();
+    const exchange = (target: string): Promise<RawResponse> =>
+      rawRequest(
+        limitedPort,
+        'POST',
+        target,
+        {
+          'content-type': 'application/json',
+          'x-csrf-token': 'orpc',
+          'x-forwarded-for': ip,
+        },
+        JSON.stringify({ clientId: `client-${randomUUID()}`, clientSecret: 'wrong-secret' }),
+      );
+
+    // Both spellings of the route share one bucket (max 2), so the query string
+    // neither escapes the limiter nor the predicate that names the route.
+    expect((await exchange(`/v1/auth/token${QUERY}`)).statusCode).not.toBe(429);
+    expect((await exchange('/v1/auth/token')).statusCode).not.toBe(429);
+    const limited: RawResponse = await exchange(`/v1/auth/token${QUERY}`);
+    expect(limited.statusCode).toBe(429);
+    expect(codeOf(limited)).toBe('AUTH_RATE_LIMITED');
+    expect((await exchange('/v1/auth/token')).statusCode).toBe(429);
+  }, 60_000);
+});
