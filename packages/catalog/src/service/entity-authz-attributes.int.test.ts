@@ -589,6 +589,64 @@ describe('entity operations authorize with entity attributes (task 23.2, Q34, D9
       await entities.delete(creator(tenantId), { blueprint: 'service', identifier: 'ledger' });
       expect(recorded.some((entry) => entry.action === 'update')).toBe(false);
     });
+
+    describe('status-scope edges are detached without an update check on their observers (task 28.2, Q81, Q65)', () => {
+      /** `observer` (owned by team `other`) reports `ledger` through a status relation, written by the system-like admin. */
+      const observeLedger = (tenantId: string, identifier: string) =>
+        entities.create(ctx(tenantId, 'admin-1', ADMIN), {
+          blueprint: 'consumer',
+          identifier,
+          title: identifier,
+          spec: { properties: {}, relations: { ownerTeam: 'other' } },
+        });
+
+      const reportStatus = (tenantId: string, identifier: string) =>
+        entities.writeStatus(ctx(tenantId, 'admin-1', ADMIN), {
+          blueprint: 'consumer',
+          identifier,
+          relations: { dependsOn: ['ledger'] },
+          observedGeneration: 1,
+          source: 'test',
+        });
+
+      it('a member deleting its entity succeeds when a foreign-team entity observes it through a status relation', async () => {
+        const tenantId = await referencedTenant();
+        await observeLedger(tenantId, 'foreign-observer');
+        await reportStatus(tenantId, 'foreign-observer');
+        const before = await getAs(tenantId, 'consumer', 'foreign-observer');
+        expect(before.status?.relations['dependsOn'], 'precondition: status edge exists').toEqual([
+          'ledger',
+        ]);
+
+        recorded.length = 0;
+        await deleteLedger(tenantId);
+
+        await expectCatalogErrorCode(getAs(tenantId, 'service', 'ledger'), 'CATALOG_NOT_FOUND');
+        const after = await getAs(tenantId, 'consumer', 'foreign-observer');
+        expect(after.status?.relations['dependsOn'] ?? []).not.toContain('ledger');
+        // The observer is never authorized for update: the edge is system-written (Q81).
+        expect(
+          recorded.filter((entry) => entry.action === 'update' && entry.id === 'foreign-observer'),
+        ).toHaveLength(0);
+        // The observer's spec is untouched.
+        expect(after.generation).toBe(before.generation);
+      });
+
+      it('a spec-scope referrer of another team still blocks the delete, and the status edge is kept', async () => {
+        const tenantId = await referencedTenant();
+        await observeLedger(tenantId, 'foreign-observer');
+        await reportStatus(tenantId, 'foreign-observer');
+        await addReferrer(tenantId, 'foreign-referrer', { team: 'other' });
+
+        expect(await thrownCode(deleteLedger(tenantId))).toBe('CATALOG_REFERENCE_VIOLATION');
+
+        await getAs(tenantId, 'service', 'ledger');
+        const referrer = await getAs(tenantId, 'consumer', 'foreign-referrer');
+        expect(referrer.spec.relations['dependsOn']).toEqual(['ledger']);
+        const observer = await getAs(tenantId, 'consumer', 'foreign-observer');
+        expect(observer.status?.relations['dependsOn']).toEqual(['ledger']);
+      });
+    });
   });
 
   it('a cross-tenant id stays CATALOG_NOT_FOUND', async () => {

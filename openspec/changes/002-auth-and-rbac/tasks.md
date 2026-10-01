@@ -1089,7 +1089,7 @@ either, stop for Checkpoint 3 (⛔) before continuing.
   (extended) covers wrong step-up TOTP codes for one session from two IPs
   being answered `429` after the fifth failure, another user unaffected, and
   sign-in challenges keeping their current limits.
-- [ ] 28.2 `entities.delete` with `detachReferences` detaches status-scope
+- [x] 28.2 `entities.delete` with `detachReferences` detaches status-scope
   edges without an `update` check on their observers, as decided (design
   Q81, Q65). Verify: `entity-authz-attributes.int.test.ts` (extended) pins a
   member deleting its entity observed through a status relation by an entity

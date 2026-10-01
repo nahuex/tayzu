@@ -1746,6 +1746,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       }
 
       // Observed (status) references never block a delete: always removed (spec "Entity read, list and delete").
+      // Q81: status edges are system-written and point at the deleted entity, so detaching them needs no `update` on each observer (unlike spec edges, Q65).
       const statusReferrerIds = await selectDistinctStatusReferrerIds(tx, ctx.tenantId, row.id);
       if (statusReferrerIds.length > 0) {
         await deleteEntityRelationEdgesForTarget(tx, ctx.tenantId, row.id, 'status');
