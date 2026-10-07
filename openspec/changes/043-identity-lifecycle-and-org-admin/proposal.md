@@ -7,14 +7,23 @@ model: the auth/RBAC baseline every later change (`003`, `004`, `005`, `025`,
 ...) actually depends on. Splitting the rest out was the human's own decision
 (2026-09-28, Q1 of the `002`/`043` decision set): a 4-state Port-style user
 lifecycle with invitations, service accounts, an org API-credentials viewer,
-a credential rotation policy, and data-retention/org-deletion guarantees are
-real product depth, but nothing in the roadmap's dependency graph blocks on
-them the way it blocks on `002`'s RBAC baseline. Batching all of it into one
+and a credential rotation policy are real product depth, but nothing in the
+roadmap's dependency graph blocks on them the way it blocks on `002`'s RBAC
+baseline. Batching all of it into one
 change would have pushed `002` past the ~30-80 TDD-task sizing the roadmap
 targets (`docs/references/port/roadmap-analysis.md:9-12`) and delayed
 Checkpoint 2 on work nothing else needs first. `043` ships this depth
 immediately after `002`, before `003` builds catalog UI on top of the
 `_user`/`_team` surfaces `002` and `043` together define.
+
+The human split `043` once more on 2026-10-07 (Resolved decision Q103): with 227
+tasks it was still far past that budget, and the data-retention and org-deletion
+half (the two-phase purge, the deletion marker, the purge and deletion-admin roles,
+migrations `0012`-`0014`, the reversal and purge jobs and the maintenance
+workflow) is the most self-contained part. It is now
+`045-org-deletion-and-data-retention`, which depends on `002` and on this change
+and executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`).
+
 
 ## What Changes
 
@@ -60,11 +69,11 @@ every limiter answers with `Retry-After`. A deployed environment must choose its
 email provider explicitly, a real sender under the test environment needs a mandatory
 recipient-domain allowlist (honored wherever it is set), CI and DAST use the
 non-sending sender, and a list of disabled tenants keeps demo tenants from sending real
-mail. A second fixed template notifies the admins of a pending org
-  deletion and a third tells the other admins of an accepted `admin` invitation;
-  all three share the kill switch and the per-recipient bucket, with a per-tenant
-  notice cap and at most 20 recipients per notice, and the invitation caps answer
-  with one uniform `Retry-After`.
+mail. A second fixed template tells the other admins of an accepted
+  `admin` invitation; the notices share the kill switch and the per-recipient
+  bucket, with a per-tenant notice cap and at most 20 recipients per notice (the
+  org-deletion notice of `045` joins them), and the invitation caps answer with one
+  uniform `Retry-After`.
 - **Service accounts.** A `_user` sub-kind for non-human actors, API-only
   creation (admin only, step-up), `Active` at creation with no invitation
   email, backed by an organization-owned machine credential whose
@@ -86,40 +95,28 @@ mail. A second fixed template notifies the admins of a pending org
   service account; rotate and revoke both write the revocation list, so
   they take effect within seconds; rotation is an immediate cutover with a
   compensating revoke on failure.
-- **Immediate effect of disable and deletion.** `resolveContext` and token
+- **Immediate effect of disable.** `resolveContext` and token
   exchange reject a banned user, a human disabled in the active tenant (disabling
   is tenant-scoped, so a member of two tenants can be off-boarded by either; the
-  answer is `CATALOG_CONTEXT_REQUIRED`, 401), a
-  machine principal whose service account is `Disabled`, and any principal of a
-  tenant pending deletion, through the existing 5-second cache, failing closed.
+  answer is `CATALOG_CONTEXT_REQUIRED`, 401) and a
+  machine principal whose service account is `Disabled`, through the existing
+  5-second cache, failing closed (`045` adds the principals of a tenant pending
+  deletion).
 - **Every member has a `_user` row.** A member with no `_user` row is rejected
-  (reason `user_missing`), and a repeatable reconcile, run through the reviewed
-  workflow, creates every missing row through the state machine and removes an orphan
+  (reason `user_missing`), and a repeatable reconcile, run as an operator-started job, creates every missing row through the state machine and removes an orphan
   row that a rolled-back acceptance leaves; it is also the repair path for a member
   that predates this change. A banned user's sign-in fails exactly like any other
   failure, and every identity procedure parses its input strictly.
-- **Data retention and org deletion, in two phases.** A documented retention
-  policy (`docs/security/data-retention.md`) and an admin-only, step-up-gated
-  org deletion that revokes access immediately and marks the tenant, then
-  purges after a 7-to-14-day window through a scheduled job in two idempotent
-  steps (catalog data, then Better Auth rows). The purge runs as a dedicated
-  `tayzu_purge` role under row-level policies limited to due tenants, for the
-  catalog rows and for the Better Auth rows alike (it may read every membership,
-  read-only, to know whether a user belongs elsewhere), with no `SECURITY DEFINER`
-  function; a repeated request re-runs the idempotent revocations; the marker is insert-only for the request role, and the append-only
-  trigger admits only the purge role. The admins are notified, and reversal is an audited operator script
-  that runs only through a reviewed manual workflow (the same one that runs the
-  one-off `_user` backfill and reconcile; the bootstrap CLI stays an operator-run
-  script outside it), refuses a tenant whose purge has begun,
-  and relies on GitHub and Azure settings the human applies from a checklist; its inputs
-  reach the job only through `env`, its actions are pinned by SHA and `CODEOWNERS` covers
-  it. Recovery is the pending window, not point-in-time
-  restore. Each maintenance script starts telemetry and flushes it before it exits,
-  so its audit events are exported.
+- **Org deletion and data retention** are not part of this change: the two-phase
+  org deletion, the purge, the reversal, the maintenance workflow and the retention
+  policy moved to `045-org-deletion-and-data-retention` (Resolved decision Q103).
+  This change keeps a minimal mechanism for the maintenance scripts it still needs,
+  the `_user` backfill and reconcile: operator-started Container Apps Jobs under
+  just-in-time access, which `045`'s reviewed workflow later takes over.
 - **Mandatory authorization.** Every procedure of the identity router is built with
   one wrapper that checks the caller's role first, resolves the target, calls Cerbos,
   fails closed and emits `authz_denied`, and a route-table-driven HTTP matrix proves
-  each of the fourteen oRPC routes. One repository module in `apps/api` serves every
+  each of the thirteen oRPC routes. One repository module in `apps/api` serves every
   identity read of `apikey`, `invitation`, `member`, `session`, `user` and `account`,
   requiring the tenant wherever the model has one, with a lint ban on direct adapter
   access. The machine-credential functions are exported only on a package subpath and
@@ -136,16 +133,16 @@ mail. A second fixed template notifies the admins of a pending org
   metrics for every mutation and denial, exempt from sampling like `002`'s own
   auth events; no identifier in a URL path reaches telemetry.
 - **Hand-offs from `002` (`002` Q73).** Every item (M5, M9-M15, M17-M20) is a task in
-  group 14 or a recorded deferral: composite credential-revocation key, Cerbos in
+  group 13 or a recorded deferral: composite credential-revocation key, Cerbos in
   front of the machine-credential operations, the SSO-link tenant check, no
   existence oracle, banned-user rejection, temporary-password rules, the
   ownership items, the startup and limiter fixes, and the CI and diagram items
   (`002` Q46, the password, MFA and email-change notifications, is deferred to `044`).
   The existing `create`, `linkSsoAccount` and `unlinkSsoAccount` procedures get
-  routes and join the mounted set (fifteen routes in all).
+  routes and join the mounted set (fourteen routes in all).
 
-Out of scope, staying with `002`: MFA, DB roles and RLS (beyond the roles and
-policies of the four migrations), the first HTTP listener, Cerbos engine wiring, the
+Out of scope, staying with `002`: MFA, DB roles and RLS (beyond the composite key of
+migration `0011`), the first HTTP listener, Cerbos engine wiring, the
 three-tier RBAC baseline, `$team`/ownership, and the machine-token exchange mechanism
 itself. `043` does edit `002`'s Better Auth wiring, the token payload and the resolver
 where its decisions need it (see Impact), and adds the resolver checks above. Also out of scope: role or Moderator editing, member removal and
@@ -153,15 +150,15 @@ where its decisions need it (see Impact), and adds the resolver checks above. Al
 admin guard, "view as a different user" (later-UI, `003`/`014`), SSO/SCIM-
 provisioned lifecycle (`025`), the org-wide audit log **product surface** and
 its retention/export tooling (`015`, `010` — `043` only emits the events), and
-multi-org UX (`042`).
+multi-org UX (`042`), and org deletion with data retention (`045`).
+
 
 ## Capabilities
 
 ### New Capabilities
 
 - `identity-lifecycle-and-org-admin`: the full user status lifecycle and
-  invitations, service accounts, the org API-credentials viewer, credential
-  rotation, and org deletion — all as tenant-scoped, actor-attributed
+  invitations, service accounts, the org API-credentials viewer, and credential rotation — all as tenant-scoped, actor-attributed
   operations reusing `001`'s catalog operation pipeline and `002`'s Cerbos/
   Better Auth wiring.
 
@@ -182,16 +179,15 @@ multi-org UX (`042`).
   invitation token, the password policy, the `EmailSender` port and an Azure
   Communication Services adapter), and the orchestration and the routers live in
   `apps/api` (`@tayzu/auth` has no `@orpc/server` or `@tayzu/catalog` dependency):
-  the `auth` repository module, invitations, service accounts, credential viewer and rotation, org deletion, the
-  purge job, the `_user` reconcile and the reversal script. Adds oRPC procedures to
+  the `auth` repository module, invitations, service accounts, credential viewer and rotation, the `_user` backfill
+  and reconcile. Adds oRPC procedures to
   the identity router `002` already has, plus one plain Fastify route (the
-  invitation accept), four `tsx` scripts under `apps/api/scripts/` (and the moved
-  bootstrap CLI, with `bootstrapAdmin()` moving into `packages/auth/src/`), a GitHub
-  Actions maintenance workflow and a `CODEOWNERS` file. It also edits
+  invitation accept), two `tsx` scripts under `apps/api/scripts/` (and the moved
+  bootstrap CLI, with `bootstrapAdmin()` moving into `packages/auth/src/`). It also edits
   `packages/catalog/src/service/user-sync.ts` (the four-value status and
   `onBehalfOf`), `packages/catalog/src/service/system-blueprints.ts` and the catalog
   index (which export `USER_BLUEPRINT` with its input builder and
-  `ENTITY_IDENTIFIER_PATTERN`), `packages/authz/src/resource-kinds.ts` (three new
+  `ENTITY_IDENTIFIER_PATTERN`), `packages/authz/src/resource-kinds.ts` (two new
   kinds), `packages/auth/package.json` (the `@tayzu/auth/machine-credentials` subpath
   export), a new identity contract module under `packages/auth/src/telemetry/`, the
   shared test fixtures, which gain a `_user` row per member, `scripts/ci/dast.sh` and
@@ -207,26 +203,21 @@ multi-org UX (`042`).
   settings, the `createAppFromEnv` refusal and the route-template paths),
   `eslint.config.js` and a new restriction module, `vitest.shared.ts` and `turbo.json`
   (the breached-password stub), the test harness `packages/db/src/harness.ts`,
-  `packages/catalog/src/persistence/schema.ts`, `.github/dependabot.yml`, and ADR-0013
-  and ADR-0014.
-- **Database**: **four migrations, each a Checkpoint 3 item.** `0011` adds a
-  composite `(tenant_id, credential_id)` key to
-  `machine_credential_revocation`; `0012` adds the tenant-deletion marker table;
-  `0013` adds its grants, the dedicated `tayzu_purge` and `tayzu_deletion_admin`
-  roles, the row-level policies of the catalog rows and the amended append-only
-  trigger (an explicit, narrow exception for the append-only rows); `0014` adds the
-  row-level policies of the Better Auth rows. None creates a function. The `_user`
+  `packages/catalog/src/persistence/schema.ts`, `.github/dependabot.yml`, and ADR-0013.
+- **Database**: **one migration, a Checkpoint 3 item.** `0011` adds a
+  composite `(tenant_id, credential_id)` key to `machine_credential_revocation`.
+  `045` owns `0012`-`0014` (the deletion marker, the purge and deletion-admin
+  roles and the row-level policies); nothing is renumbered. The `_user`
   blueprint gains `accountKind` and a four-value `status` through the catalog's
   blueprint-update operation, run once per existing tenant (a data-plane
   change, not DDL, per `001` design D7). Everything else reuses tables `002`
   creates (Better Auth's `organization`, `invitation`, `apikey`,
   `verification`).
-- **Cerbos**: new resource kinds `service_account`, `credential` and
-  `organization`, rules for `user.invite`, `user.updateStatus`,
-  `service_account.create`/`delete`, `credential.list`/`create`/`rotate`/
-  `revoke` and `organization.delete` (each new policy with the explicit
-  cross-tenant deny), the `user.yaml` deny rules (self-status
-  and the service-account ceiling), and the `admin.yaml`, `member.yaml` and
+- **Cerbos**: new resource kinds `service_account` and `credential`, rules for
+  `user.invite`, `user.updateStatus`, `service_account.create`/`delete` and
+  `credential.list`/`create`/`rotate`/`revoke` (each new policy with the explicit
+  cross-tenant deny), the `user.yaml` deny rules (self-status and the
+  service-account ceiling), and the `admin.yaml`, `member.yaml` and
   `role_policies_test.yaml` ceilings. ⛔ **Checkpoint 3 applies** to every one
   of these, separately.
 - **Dependencies**: `@azure/communication-email` (`1.1.0` as of 2026-09-28,
@@ -243,16 +234,17 @@ multi-org UX (`042`).
   authorization), a fourth pass that found fourteen non-blocking gaps, and a fifth pass
   that found three blocking ones (a service-account route accepting a human target, an
   invitation outliving its inviter's authority, and the maintenance workflow's inputs and
-  cloud role), eight non-blocking ones and four questions, and a sixth pass that found
+  cloud role, which moved to `045`), eight non-blocking ones and four questions, and a sixth pass that found
   one blocking one (an SSO link recorded by one tenant's admin surviving into a second
   tenant), fourteen non-blocking ones and three questions, and a seventh pass that found two
   blocking ones (the sessions issued through that link surviving, and the link's
   provenance failing open), ten non-blocking ones and three questions. All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks.
-  New surface: the first public route, the first outbound email, a privileged
-  purge role and the Pwned Passwords egress.
-- **Docs**: `docs/security/data-retention.md` (new), and updates to
+  New surface: the first public route, the first outbound email and the Pwned
+  Passwords egress.
+- **Docs**: `docs/security/data-retention.md` (new, for the operational policies; `045`
+  extends it with the retention policy), and updates to
   `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`,
   `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`, and
-  amendments of `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Better Auth's
-  `ac` roles are neutralized) and `docs/adr/0014-postgres-roles-and-forced-rls.md`.
+  an amendment of `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Better Auth's
+  `ac` roles are neutralized).

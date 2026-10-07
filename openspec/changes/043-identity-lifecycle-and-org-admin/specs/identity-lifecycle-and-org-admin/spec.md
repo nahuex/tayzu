@@ -5,13 +5,13 @@
 Identity lifecycle and org administration completes Tayzu's identity model on
 top of `002-auth-and-rbac`'s baseline: the full 4-state user lifecycle with
 invitations, service accounts, org API-credential visibility and rotation,
-and org-level data deletion, all attributed and audited the same way as every
-other catalog mutation.
+all attributed and audited the same way as every other catalog mutation. Org-level
+data deletion and data retention are the capability of
+`045-org-deletion-and-data-retention`.
 
 ## Conventions
 
-- **New Cerbos resource kinds**: `service_account`, `credential`,
-  `organization`. `user.invite` (which also covers cancelling and resending an
+- **New Cerbos resource kinds**: `service_account` and `credential`. `user.invite` (which also covers cancelling and resending an
   invitation) and `user.updateStatus` are new actions on
   `002-auth-and-rbac`'s existing `user` resource kind, not a new kind.
 - **Reused error codes**: this capability introduces no new error codes. A
@@ -31,8 +31,8 @@ other catalog mutation.
   host. No operation in this capability reads either from input, path, query
   or body. The one exception to "a tenant context exists" is the public
   invitation-accept route, which derives the tenant from the invitation record.
-- **Routes**: fifteen routes, fourteen oRPC procedures and the plain Fastify
-  invitation-accept route, all registered only behind the mount switch. The
+- **Routes**: fourteen routes, thirteen oRPC procedures and the plain Fastify
+  invitation-accept route (`045` adds `DELETE /v1/organization`), all registered only behind the mount switch. The
   accept route is not in the OpenAPI document of the identity router
   (`openapi/identity.openapi.json`, committed and checked for drift; it carries
   paths, methods, path parameters and risk markers only, no schemas).
@@ -141,7 +141,7 @@ emits `catalog.security.authz_denied` on a deny; and only then the handler. The
 wrapper MUST fail closed: a Cerbos error, a malformed context or an empty role list
 MUST deny and MUST NOT run the handler. A procedure built without the wrapper MUST
 fail a test, and the check MUST NOT be bypassable by chaining or by importing an
-unwrapped builder. Over HTTP each of the fourteen oRPC routes MUST allow an admin,
+unwrapped builder. Over HTTP each of the thirteen oRPC routes MUST allow an admin,
 refuse a `member` and a machine `member` token with `AUTH_FORBIDDEN`, refuse an
 unauthenticated caller with 401 and answer a foreign target exactly as an unknown
 one.
@@ -171,7 +171,7 @@ one.
 
 #### Scenario: Each identity route enforces its authorization over HTTP
 
-- **GIVEN** the mounted server and the fourteen oRPC routes
+- **GIVEN** the mounted server and the thirteen oRPC routes
 - **WHEN** each route is called by an admin (with a fresh step-up where required), a member, a machine `member` token, an unauthenticated caller, and, where it has a target, with a foreign target
 - **THEN** the admin is allowed, the member and the machine token get `AUTH_FORBIDDEN` (403), the unauthenticated caller gets 401, and the foreign target gets the same 404 as an unknown one
 
@@ -232,14 +232,14 @@ these checks MUST be logged as `catalog.security.principal_rejected` and counted
 
 A human member with no `_user` row in the active tenant MUST be rejected by
 `resolveContext` (`CATALOG_CONTEXT_REQUIRED`, 401) and logged with the reason
-`user_missing`. A repeatable reconcile, run only through the reviewed maintenance
-workflow, MUST create the `_user` entity of every member that has none, through the
+`user_missing`. A repeatable reconcile, run only as an operator-started job (the reviewed workflow
+that later starts it is `045`'s), MUST create the `_user` entity of every member that has none, through the
 state machine as `created_active`, MUST leave an existing row untouched (a second run
 changes nothing), MUST create a `Disabled` row for a member whose user is banned, MUST
 remove an orphan (a human `_user` that is `Active`, has no membership in its tenant and
 is more than one hour old, which a failed acceptance leaves behind; never an `Invited`
-or `Staged` row, a younger row or a service account), and MUST attribute its writes to the operator whose id the workflow
-supplies.
+or `Staged` row, a younger row or a service account), and MUST attribute its writes to the operator whose id the job's environment
+supplies, refusing to run without one.
 
 #### Scenario: A member with no `_user` row is rejected
 
@@ -346,8 +346,7 @@ stored only as a sha256 digest, MUST be compared in constant time, MUST be verif
 before it is consumed and then consumed last, by one atomic delete conditioned on its
 digest, and MUST work exactly once; a resend MUST invalidate the previous token. The
 tenant MUST be derived on the server from the invitation record; a body that
-carries a tenant or an actor MUST be rejected, and an invitation of a tenant with a
-pending deletion MUST NOT be acceptable. On both paths, after the token has verified and before it is consumed, the invitation's
+carries a tenant or an actor MUST be rejected. On both paths, after the token has verified and before it is consumed, the invitation's
 inviter MUST still be a member of the organization with the `admin` role (`owner` or
 `admin`), MUST NOT be banned and MUST have the `_user` status `Active` in the tenant,
 otherwise the acceptance fails with the uniform rejection and the token is not consumed.
@@ -381,7 +380,7 @@ allowlist of the invitation id, the token and, for a new account, the password; 
 other field MUST be rejected with `CATALOG_VALIDATION_FAILED`, and an invitation id
 that fails a shape and length check MUST NOT be logged. Every rejected
 acceptance (nonexistent invitation, expired, cancelled, rejected or already-accepted
-invitation, wrong token, a `Disabled` user, a tenant pending deletion, an inviter who is no longer an
+invitation, wrong token, a `Disabled` user, an inviter who is no longer an
 active admin, a tenant at its member limit, no or mismatched session for an existing account, a failed CSRF or origin check, or a lost
 concurrent account creation)
 MUST return the same status, error code and body shape, and a nonexistent invitation
@@ -500,7 +499,7 @@ MUST be logged.
 
 #### Scenario: Acceptance errors do not reveal which failure occurred
 
-- **GIVEN** a nonexistent invitation, an expired invitation, a pending invitation with a wrong token, a pending invitation of a `Disabled` user, and a pending invitation of a tenant pending deletion
+- **GIVEN** a nonexistent invitation, an expired invitation, a pending invitation with a wrong token, and a pending invitation of a `Disabled` user
 - **WHEN** each acceptance attempt is made
 - **THEN** all fail with the same status, error code and body shape, and the specific reason appears only in `catalog.security.invitation_acceptance_denied`
 
@@ -594,11 +593,10 @@ other tenant or inviter free text appears. The link origin MUST come from
 the dedicated trusted setting `INVITATION_LINK_BASE_URL` (`https` outside test and
 one of the allowed origins), never from `BETTER_AUTH_URL`, the request `Host` or a
 forwarded header, and the link MUST carry the invitation id and token in the
-URL fragment, on a fixed path. The only other emails this capability sends are the
-org-deletion notice, a fixed template whose only interpolated value is the purge
-date, and the notice to the other admins when an `admin` invitation is accepted, a
-fixed template with no interpolated value; neither has a link or any tenant, actor
-or invitee free text. Both notices MUST go through the same global kill switch and
+URL fragment, on a fixed path. The only other email this capability sends is the notice to the other admins when an
+`admin` invitation is accepted, a fixed template with no interpolated value, with no link
+or any tenant, actor or invitee free text (`045` adds the org-deletion notice to the
+same controls). Every notice MUST go through the same global kill switch and
 per-recipient cap as the invitation email, MUST be capped per tenant, and MUST go to
 at most 20 recipients, the administrators who have been members the longest; a
 suppressed or truncated notice MUST NOT block the operation that triggered it and
@@ -632,7 +630,7 @@ template.
 #### Scenario: A demo tenant sends no email
 
 - **GIVEN** a tenant on the list of disabled tenants and a real sender
-- **WHEN** an admin of that tenant invites a user, or an organization deletion is requested
+- **WHEN** an admin of that tenant invites a user, or an `admin` invitation is accepted
 - **THEN** nothing reaches the sender, no cap bucket is consumed, the operation succeeds, and `catalog.security.email_tenant_blocked` is logged with the tenant and the template and no address
 
 #### Scenario: Injection through the invited address is impossible
@@ -651,12 +649,6 @@ template.
 - **WHEN** an invitation is created from a request with a forged `Host` and `X-Forwarded-Host`
 - **THEN** the emailed link starts with the configured `INVITATION_LINK_BASE_URL`, and its id and token are in the fragment
 
-#### Scenario: The deletion notice carries no free text
-
-- **GIVEN** an organization named `<b>Pay now</b>` and an admin with a markup-bearing name
-- **WHEN** the org-deletion notice is sent
-- **THEN** neither string appears, the notice has no link, and its only variable is the purge date
-
 #### Scenario: The admin notice carries no free text
 
 - **GIVEN** an organization named `<b>Pay now</b>` and an invitee with a markup-bearing name
@@ -666,14 +658,14 @@ template.
 #### Scenario: The notices are under the kill switch and the caps
 
 - **GIVEN** the kill switch is on, or the per-tenant notice cap is exhausted, or a recipient's per-recipient bucket is full
-- **WHEN** an organization deletion is requested or an `admin` invitation is accepted
+- **WHEN** an `admin` invitation is accepted
 - **THEN** the operation succeeds, no email goes to the affected recipients, and `catalog.security.notice_suppressed` is logged with the template and the reason
 
 #### Scenario: A notice goes to at most 20 recipients
 
 - **GIVEN** an organization with 25 administrators
-- **WHEN** an organization deletion is requested
-- **THEN** exactly 20 emails are sent, to the administrators who have been members the longest, and the truncation is logged
+- **WHEN** an `admin` invitation is accepted
+- **THEN** exactly 20 emails are sent, to the administrators who have been members the longest (the new admin excluded), and the truncation is logged
 
 #### Scenario: Every cap answers with the same Retry-After
 
@@ -973,13 +965,12 @@ opaque identifiers only, never secrets.
 
 ### Requirement: Targets belong to the caller's tenant
 
-Every invitation, credential, user, service account and organization targeted
+Every invitation, credential, user and service account targeted
 by an operation in this capability MUST be resolved on the server and MUST
 belong to the host's `tenantId`; otherwise the operation MUST fail with
 `CATALOG_NOT_FOUND`, identical to a nonexistent id. Cerbos MUST receive the
-target's real tenant, not the caller's echoed back. `identity.organization.delete`
-MUST compare its confirmation to the host tenant, and every Better Auth call MUST
-be given the host tenant only.
+target's real tenant, not the caller's echoed back. Every Better Auth
+call MUST be given the host tenant only.
 
 #### Scenario: Another tenant's invitation cannot be cancelled, resent or accepted
 
@@ -1011,11 +1002,6 @@ be given the host tenant only.
 - **WHEN** an admin of `t1` links an SSO `sub` to either of them
 - **THEN** the operation is refused with the same generic rejection as every other link conflict, no account is written and no session is revoked, and they can still link their own identity through the self-service route with a fresh step-up verification
 
-#### Scenario: Org deletion targets only the host tenant
-
-- **WHEN** an admin of `t1` requests org deletion with `t2`'s identifier as the confirmation
-- **THEN** the operation fails with `CATALOG_VALIDATION_FAILED` and nothing of `t1` or `t2` changes
-
 #### Scenario: A user's self-deny uses the resolved identity
 
 - **GIVEN** an admin addressed by their email in the path
@@ -1027,184 +1013,6 @@ be given the host tenant only.
 - **WHEN** an admin creates a user for an email that already has an account in this tenant or in another tenant, or links a `sub` that is already linked, or links a `sub` to an admin or an owner
 - **THEN** every cause answers with the same `CATALOG_VALIDATION_FAILED` and a fixed message, and no state changes, so a failed probe leaves no partial state
 
-### Requirement: Org deletion revokes access immediately and purges tenant data after a window
-
-Deleting an organization MUST be authorized to admins only, MUST require a
-fresh step-up verification, and MUST require the caller to confirm the
-organization's identifier, which MUST equal the host tenant. The operation
-MUST be in two phases. In phase 1 it MUST record a deletion marker with a
-purge date between 7 and 14 days away (computed in SQL from the database's own clock),
-revoke every session whose active organization is the tenant (logging each as
-`auth.security.session_revoked` with the reason `admin_action`), revoke every org-owned credential, cancel pending
-invitations, send the fixed org-deletion notice to the administrators of the
-organization, under the notice controls (a send failure or suppression MUST NOT block the request and MUST be logged), and log
-`catalog.audit.org_deletion_requested` with the admin as actor; from then on
-`resolveContext` and token exchange MUST reject every principal of the tenant,
-human or machine, while the marker is pending or purged. Requesting deletion again while pending MUST insert no second marker, send no
-second notice and return the original date, MUST re-run the idempotent revocations of
-phase 1, and MUST be logged as `catalog.security.org_deletion_repeated`. In phase 2 a scheduled job MUST, for a
-tenant whose purge date has passed, delete in two idempotent steps with safe
-resume: first the tenant's catalog data (including the append-only change
-events and revocation rows, which the purge role may delete only for a tenant
-whose marker is due), then the tenant's Better Auth data (invitations, API
-keys, invitation tokens, members, each user left with no other membership
-together with that user's accounts, sessions and second-factor rows, and the
-organization row last). `catalog.audit.org_deletion_completed` MUST be logged
-before the organization row is removed, and a failed step MUST log
-`catalog.security.org_deletion_failed` and be retried by the next run. A pending deletion MUST be
-reversible only by a platform operator, through an audited script that tombstones
-the marker (never deletes it) and logs `catalog.audit.org_deletion_cancelled` with
-the operator's opaque id; there is no in-product cancel. The reversal MUST be
-refused for a tenant whose purge has begun or whose purge date has passed, and it
-does not restore the credentials phase 1 revoked. The script, and the
-one-off `_user` backfill and reconcile, MUST run only through a reviewed manual
-workflow, runnable only from the main branch, whose environment requires a second
-approver, and the operator's id MUST derive from that
-workflow's authenticated actor, never from an argument. Every workflow input MUST be a
-fixed choice or validated against the tenant-id pattern and MUST reach the job only
-through the environment, never through an expression inside a `run:` script; every
-third-party action MUST be pinned by commit SHA; the workflow and the scripts MUST be
-covered by `CODEOWNERS`; and the federated identity's cloud role MUST be limited to
-starting the named jobs. The bootstrap command is the one script outside that workflow:
-an operator runs it out of band, as the authentication baseline designed it.
-
-#### Scenario: Deletion without step-up fails
-
-- **GIVEN** an admin session without a fresh MFA verification
-- **WHEN** that admin requests org deletion
-- **THEN** the operation fails with a step-up-required error and nothing changes
-
-#### Scenario: Requesting deletion revokes access at once
-
-- **GIVEN** organization `t1` with blueprints, entities, members and API credentials
-- **WHEN** an admin with a fresh step-up verification confirms deletion of `t1` by its identifier
-- **THEN** every member's session and every `t1` credential, human or machine, is rejected within seconds, a marker with a purge date 7 to 14 days away exists, and the data is still there
-
-#### Scenario: Every admin is notified of a pending deletion
-
-- **GIVEN** an organization with an owner, two admins and a member
-- **WHEN** an admin requests deletion
-- **THEN** each of the three administrators receives exactly one fixed-template email and the member receives none, and a repeated request sends nothing
-
-#### Scenario: A platform operator reverses a pending deletion
-
-- **GIVEN** `t1` has a pending deletion
-- **WHEN** a platform operator runs the reversal script
-- **THEN** the marker is tombstoned (never deleted), `catalog.audit.org_deletion_cancelled` is logged with the operator's opaque id, and the tenant's principals are accepted again
-- **AND** a later deletion request creates a new marker
-
-#### Scenario: A reversal is refused once the purge has begun
-
-- **GIVEN** `t1` has a pending marker with a purge step recorded, or whose purge date has passed
-- **WHEN** a platform operator runs the reversal script
-- **THEN** it refuses, the marker is unchanged, and the database refuses the same tombstone from the reversal role
-
-#### Scenario: The workflow does not interpolate its inputs
-
-- **WHEN** the maintenance workflow file is read
-- **THEN** no `run:` contains `${{ inputs.* }}`, `github.event.*` or `github.head_ref`, every input is a choice or validated, every `uses:` is pinned by a 40-character SHA, and `CODEOWNERS` covers the workflow and `apps/api/scripts/**`
-
-#### Scenario: The reversal records the authenticated operator
-
-
-- **WHEN** the reversal is started without the operator id that the reviewed workflow supplies
-- **THEN** the script refuses to run and nothing is tombstoned
-
-#### Scenario: A purged tenant stays rejected
-
-- **GIVEN** `t1` was purged and its marker remains as a tombstone in state `purged`
-- **WHEN** a principal of `t1` is resolved
-- **THEN** it is rejected, while a tenant whose marker is `cancelled` is accepted
-
-#### Scenario: Requesting deletion twice returns the original date
-
-- **GIVEN** `t1` has a pending deletion
-- **WHEN** the deletion is requested again, in process
-- **THEN** no second marker or notice is created, the original purge date is returned, and `catalog.security.org_deletion_repeated` is logged
-
-#### Scenario: A repeated request completes a half-failed first one
-
-- **GIVEN** a first request that recorded the marker but failed before revoking a credential
-- **WHEN** the deletion is requested again
-- **THEN** the credential is revoked
-
-#### Scenario: Purge removes tenant data after the window
-
-- **GIVEN** `t1`'s purge date has passed
-- **WHEN** the purge job runs
-- **THEN** `t1`'s catalog entities, blueprints, relations, change events, credential revocation rows, invitations, API keys, members and organization row are gone
-- **AND** a `catalog.audit.org_deletion_completed` event was logged before the organization row was removed
-
-#### Scenario: A purge does not touch a tenant whose window has not passed
-
-- **GIVEN** `t1`'s purge date is in the future and `t2` has no marker
-- **WHEN** the purge job runs
-- **THEN** nothing of `t1` or `t2` is deleted, and the purge role is refused when it tries to delete the append-only rows of either
-
-#### Scenario: Users with no other membership are removed, others are kept
-
-- **GIVEN** a user who belongs only to `t1` and another who belongs to `t1` and `t2`
-- **WHEN** `t1` is purged
-- **THEN** the first user and their account, session and second-factor rows are gone, and the second user keeps their account and their membership in `t2`
-
-#### Scenario: A failed purge step is visible and resumes
-
-- **GIVEN** the Better Auth step fails after the catalog step succeeded
-- **WHEN** the purge job runs again
-- **THEN** `catalog.security.org_deletion_failed` was logged for the failure, the catalog step is not repeated, and the run completes the Better Auth step
-
-#### Scenario: A repeated purge is safe
-
-- **GIVEN** `t1` was already purged
-- **WHEN** the purge job runs again
-- **THEN** it deletes nothing and does not fail
-
-### Requirement: The deletion marker and the purge are protected from the request path
-
-The deletion marker MUST be insert-only for the role that serves requests, and that role
-MUST have no privilege on any marker column other than the tenant, the purge date and the
-requesting actor, so that `requested_at`, the state, the purge-step timestamps and the
-cancellation fields always take the database's own values; a database constraint MUST keep
-`purge_after` between 7 and 14 days after `requested_at`, and only one pending
-marker per tenant MAY exist. The purge MUST run as a dedicated role, used only by
-the purge job with its own secret, that can act only on tenants with a due pending
-marker, on the catalog rows and on the Better Auth rows alike (it may also read every
-membership row, read-only, so that it can see a user's memberships in tenants that are
-not due), and the due-tenant
-condition MUST be enforced by row-level policies, not by a function or by code; the
-append-only change-event rows MUST be deletable only by that role. No
-`SECURITY DEFINER` function MUST take part in the purge, and each maintenance
-script MUST run as its own job with its own identity and secrets and MUST refuse to run
-under a database role other than the one it declares. A schema-driven test MUST fail when a
-table carrying tenant data is neither purged nor explicitly exempted.
-
-#### Scenario: The request role cannot back-date a marker
-
-- **WHEN** the role that serves requests inserts a marker that names `requested_at`, a `state` or a purge-step timestamp, or a `purge_after` outside 7 to 14 days
-- **THEN** the database refuses each, and the request role can neither update nor delete a marker
-
-#### Scenario: The Better Auth rows of a tenant that is not due cannot be purged
-
-- **GIVEN** a tenant with a pending marker whose date has not passed, and one with a due marker
-- **WHEN** the purge role tries to delete the Better Auth rows of both
-- **THEN** only the rows of the due tenant, and only the users whose memberships are all in due tenants, are deleted (a user who also belongs to a tenant that is not due is kept, because the purge role can read that membership), and the role that serves authentication keeps its access to every tenant
-
-#### Scenario: Only due tenants can be purged, and only by the purge role
-
-- **GIVEN** a tenant with a pending marker whose date has not passed, and one with a due marker
-- **WHEN** the purge role and the request role each try to delete the append-only rows of both
-- **THEN** only the purge role, and only for the due tenant, succeeds; every other path is refused, including the table owner
-
-#### Scenario: No role can become the purge role
-
-- **WHEN** any other role of the platform attempts `SET ROLE` to the purge role
-- **THEN** it is refused, and no membership of another application role grants it the ability (the creating role's admin-only membership has no set or inherit option)
-
-#### Scenario: A new table cannot escape the purge
-
-- **WHEN** a table with a `tenant_id` column, an `auth` table that references an organization or a user (by foreign key or by column), or a new `auth.verification` identifier pattern is added that no purge step covers
-- **THEN** the completeness test fails until it is covered or exempted with a reason
-
 ### Requirement: Every high-risk operation requires step-up
 
 These operations MUST carry `x-tayzu-risk: high` on their route, so that the
@@ -1212,7 +1020,7 @@ step-up gate in the OpenAPI interceptor applies: `identity.users.setStatus`,
 `identity.users.invite`, `identity.users.create`,
 `identity.serviceAccounts.create`, `identity.serviceAccounts.delete`,
 `identity.credentials.create`, `identity.credentials.rotate`,
-`identity.credentials.revoke`, `identity.organization.delete`, and the
+`identity.credentials.revoke`, and the
 existing SSO link and unlink operations (which have their own routes). The
 acceptance route has no route spec and MUST call the same guard explicitly when the
 invited role is `admin`. An admin session without a fresh
@@ -1256,7 +1064,7 @@ No route of this capability MUST be reachable over HTTP while the mount switch
 (`MOUNT_IDENTITY_ROUTES`) is off, and the switch MUST be off by default. With
 it off, every such route MUST answer exactly as an unknown `/v1` path does: 401
 `CATALOG_CONTEXT_REQUIRED` for an unauthenticated caller and 404 for an authenticated
-one. The routes are the fifteen of this capability: the machine-credential create and
+one. The routes are the fourteen of this capability: the machine-credential create and
 revoke operations are library functions with no route of their own, reachable only
 through them, exported only on a package subpath and importable only from the identity
 code. The task that
@@ -1286,7 +1094,7 @@ the authenticated context resolution.
 Every Cerbos deny, status change, service-account disable, enable and
 deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
-excess, and org-deletion request, repeated request, completion, failure, cancellation and notice failure, a failed admin-accepted notice, a suppressed or truncated notice, a
+excess, a failed admin-accepted notice, a suppressed or truncated notice, a
 recipient refused by the non-production allowlist, an email suppressed for a disabled
 tenant, an SSO link shed (and the session revocations it causes), a provenance marker write that
 failed, an acceptance compensation that failed, a banned user's sign-in attempt and a
@@ -1294,21 +1102,16 @@ reconcile run, MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
 actor of an audit event MUST be the admin who acted, never the `system` actor of the
-write. A failed org deletion MUST NOT be invisible.
+write.
 
 #### Scenario: Each lifecycle action emits its declared event
 
 - **WHEN** each of the actions above is executed once
 - **THEN** its declared event is observed with its required attributes and no email, token, name or secret
 
-#### Scenario: A failed deletion is logged
-
-- **WHEN** a purge step fails
-- **THEN** `catalog.security.org_deletion_failed` is logged with the step
-
 #### Scenario: A maintenance script's audit event is exported before it exits
 
-- **WHEN** the purge, the reversal or the reconcile script emits its `catalog.audit.*` event and finishes, or fails
+- **WHEN** the reconcile script emits its `catalog.audit.*` event and finishes, or fails
 - **THEN** the event has been exported (flushed) by the time the script's process ends
 
 ### Requirement: Telemetry contract
