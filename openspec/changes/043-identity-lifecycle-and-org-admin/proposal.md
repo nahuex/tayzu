@@ -42,21 +42,25 @@ created.
   with a breached-password check. A person who already has an account accepts with
   their own session plus the token (CSRF header, its own origin check, matching
   email, step-up for an `admin` role) and only gains the membership. Every other
-  admin is notified when an `admin` invitation is accepted. The creation of the user
-  and the membership shares one transaction with the consumption of the token, and
-  the `_user` write fails closed. An SSO link that an admin recorded for one tenant is
-  shed when its user joins a second tenant, so an invitation cannot turn it into a
-  way into the second tenant. This is the first unauthenticated route and needs its
+  admin is notified when an `admin` invitation is accepted. The steps of the acceptance
+  are idempotent, the token is consumed last, the `_user` write fails closed and what
+  a failed attempt created is undone (there is no single transaction). An SSO link its
+  user did not make (every link without a provenance marker) is shed, and the user's
+  other sessions are revoked, when the user joins a second tenant, so an invitation
+  cannot turn it, or a session issued through it, into a way into the second tenant;
+  an admin cannot record such a link on an admin or an owner. This is the first unauthenticated route and needs its
   own SSA row.
 - **Invitation email (SEC11-hardened).** A new outbound-email capability with a
   fixed template and subject, exactly one recipient and one link, the link
   origin from a dedicated trusted setting (`INVITATION_LINK_BASE_URL`), and caps per
-  tenant (30 per hour), per recipient across tenants (3 per 24 hours) and a global
-  kill switch, on the existing DB-backed rate-limit store (a bucket resets only after a
+  tenant (30 per hour), per recipient across tenants (3 per 24 hours, keyed by an HMAC under a server
+  secret) and a global kill switch, on the existing DB-backed rate-limit store (a bucket resets only after a
 full window with no allowed request, which is stricter than the nominal rate), and
-every limiter answers with `Retry-After`. Outside production a real sender needs a
-mandatory recipient-domain allowlist; CI and DAST use a non-sending sender, and a list
-of disabled tenants keeps demo tenants from sending real mail. A second fixed template notifies the admins of a pending org
+every limiter answers with `Retry-After`. A deployed environment must choose its
+email provider explicitly, a real sender under the test environment needs a mandatory
+recipient-domain allowlist (honored wherever it is set), CI and DAST use the
+non-sending sender, and a list of disabled tenants keeps demo tenants from sending real
+mail. A second fixed template notifies the admins of a pending org
   deletion and a third tells the other admins of an accepted `admin` invitation;
   all three share the kill switch and the per-recipient bucket, with a per-tenant
   notice cap and at most 20 recipients per notice, and the invitation caps answer
@@ -105,7 +109,8 @@ of disabled tenants keeps demo tenants from sending real mail. A second fixed te
   function; a repeated request re-runs the idempotent revocations; the marker is insert-only for the request role, and the append-only
   trigger admits only the purge role. The admins are notified, and reversal is an audited operator script
   that runs only through a reviewed manual workflow (the same one that runs the
-  one-off `_user` backfill and reconcile), refuses a tenant whose purge has begun,
+  one-off `_user` backfill and reconcile; the bootstrap CLI stays an operator-run
+  script outside it), refuses a tenant whose purge has begun,
   and relies on GitHub and Azure settings the human applies from a checklist; its inputs
   reach the job only through `env`, its actions are pinned by SHA and `CODEOWNERS` covers
   it. Recovery is the pending window, not point-in-time
@@ -130,19 +135,20 @@ of disabled tenants keeps demo tenants from sending real mail. A second fixed te
   `catalog.audit.*`/`catalog.security.*` log events and `tayzu.identity.*`
   metrics for every mutation and denial, exempt from sampling like `002`'s own
   auth events; no identifier in a URL path reaches telemetry.
-- **Hand-offs from `002` (Q73).** Every item (M5, M9-M15, M17-M20) is a task in
+- **Hand-offs from `002` (`002` Q73).** Every item (M5, M9-M15, M17-M20) is a task in
   group 14 or a recorded deferral: composite credential-revocation key, Cerbos in
   front of the machine-credential operations, the SSO-link tenant check, no
   existence oracle, banned-user rejection, temporary-password rules, the
-  ownership items, the startup and limiter fixes, and the CI and diagram items.
+  ownership items, the startup and limiter fixes, and the CI and diagram items
+  (`002` Q46, the password, MFA and email-change notifications, is deferred to `044`).
   The existing `create`, `linkSsoAccount` and `unlinkSsoAccount` procedures get
   routes and join the mounted set (fifteen routes in all).
 
-Out of scope, staying with `002`: Better Auth bootstrap itself, MFA, DB roles
-and RLS, the first HTTP listener, Cerbos engine wiring, the three-tier RBAC
-baseline, `$team`/ownership, and the machine-token exchange mechanism itself
-(043 only _consumes_ it for service accounts and adds the resolver checks
-above). Also out of scope: role or Moderator editing, member removal and
+Out of scope, staying with `002`: MFA, DB roles and RLS (beyond the roles and
+policies of the four migrations), the first HTTP listener, Cerbos engine wiring, the
+three-tier RBAC baseline, `$team`/ownership, and the machine-token exchange mechanism
+itself. `043` does edit `002`'s Better Auth wiring, the token payload and the resolver
+where its decisions need it (see Impact), and adds the resolver checks above. Also out of scope: role or Moderator editing, member removal and
 `setActiveOrganization` (deferred, off-boarding is `Disabled`), a last-active-
 admin guard, "view as a different user" (later-UI, `003`/`014`), SSO/SCIM-
 provisioned lifecycle (`025`), the org-wide audit log **product surface** and
@@ -190,7 +196,19 @@ multi-org UX (`042`).
   export), a new identity contract module under `packages/auth/src/telemetry/`, the
   shared test fixtures, which gain a `_user` row per member, `scripts/ci/dast.sh` and
   `scripts/ci/zap-seed.ts`, and the stale statements of `packages/authz/CLAUDE.md` and
-  `apps/api/CLAUDE.md`.
+  `apps/api/CLAUDE.md`. It also edits `002`'s own code where its decisions require it:
+  `packages/auth/src/auth.ts` (the `organization` roles, the password configuration, the
+  membership, ban, first-sign-in and account hooks, the uniform banned sign-in and
+  the transaction-free acceptance support), `context-resolver.ts`, `token-exchange.ts`
+  and `pre-auth-rate-limit.ts` (the resolver checks, the `userId` claim and the new
+  rate-limit scopes), `session-idle.ts` and the package index (`isIdle`),
+  `machine-credentials.ts` (headerless calls), `apps/api/src/server.ts`, `config.ts`,
+  `bootstrap.ts`, `identity-router.ts` and `telemetry/` (the merged router, the new
+  settings, the `createAppFromEnv` refusal and the route-template paths),
+  `eslint.config.js` and a new restriction module, `vitest.shared.ts` and `turbo.json`
+  (the breached-password stub), the test harness `packages/db/src/harness.ts`,
+  `packages/catalog/src/persistence/schema.ts`, `.github/dependabot.yml`, and ADR-0013
+  and ADR-0014.
 - **Database**: **four migrations, each a Checkpoint 3 item.** `0011` adds a
   composite `(tenant_id, credential_id)` key to
   `machine_credential_revocation`; `0012` adds the tenant-deletion marker table;
@@ -227,11 +245,14 @@ multi-org UX (`042`).
   invitation outliving its inviter's authority, and the maintenance workflow's inputs and
   cloud role), eight non-blocking ones and four questions, and a sixth pass that found
   one blocking one (an SSO link recorded by one tenant's admin surviving into a second
-  tenant), fourteen non-blocking ones and three questions. All are folded into
+  tenant), fourteen non-blocking ones and three questions, and a seventh pass that found two
+  blocking ones (the sessions issued through that link surviving, and the link's
+  provenance failing open), ten non-blocking ones and three questions. All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks.
   New surface: the first public route, the first outbound email, a privileged
   purge role and the Pwned Passwords egress.
 - **Docs**: `docs/security/data-retention.md` (new), and updates to
   `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`,
-  `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`, and an
-  amendment of `docs/adr/0014-postgres-roles-and-forced-rls.md`.
+  `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`, and
+  amendments of `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Better Auth's
+  `ac` roles are neutralized) and `docs/adr/0014-postgres-roles-and-forced-rls.md`.

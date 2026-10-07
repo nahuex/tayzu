@@ -38,7 +38,7 @@ other catalog mutation.
   paths, methods, path parameters and risk markers only, no schemas).
 - **Canonical email**: the invited or created email is NFC-normalized, trimmed and
   lower-cased, and is the same string in the `_user` identifier, the Better Auth
-  user, the invitation and (hashed) the per-recipient cap key.
+  user, the invitation and (as an HMAC) the per-recipient cap key.
 - **Principal attribution**: a `_user` write made by an admin operation is
   written as the `system` actor with `actor.onBehalfOf` set to the admin, in
   process only (`reserved.ts` is unchanged).
@@ -179,7 +179,8 @@ one.
 
 Disabling a human user MUST be scoped to the acting admin's tenant: it MUST write
 the `_user` status of that tenant through the state machine, revoke every one of
-the user's sessions whose active organization is that tenant, cancel the
+the user's sessions whose active organization is that tenant (logging each as
+`auth.security.session_revoked` with the reason `admin_action`), cancel the
 user's pending invitations of that tenant, and cancel the pending invitations that
 user created in that tenant. Only for a user whose single membership
 is that tenant MUST it also ban the user and revoke all their sessions. The ban
@@ -189,8 +190,9 @@ whose `_user` status in the active tenant is `Disabled`, and a human member with
 `_user` row in the active tenant (reason `user_missing`), with the answer
 `CATALOG_CONTEXT_REQUIRED` (401) and the reason only in the log, so that an existing
 session and any new sign-in, local or through SSO, stop granting access. A banned user's
-sign-in MUST fail exactly like any other sign-in failure, locally and through SSO,
-so that a correct password is never confirmed. Enabling
+sign-in MUST fail with the same status, error code and body as any other sign-in
+failure, locally and through SSO, after the credential was verified (as Better Auth
+refuses a ban), so that the response never confirms a correct password. Enabling
 the user MUST reverse only what disabling did in that tenant. Every rejection by
 these checks MUST be logged as `catalog.security.principal_rejected` and counted.
 
@@ -234,9 +236,9 @@ A human member with no `_user` row in the active tenant MUST be rejected by
 workflow, MUST create the `_user` entity of every member that has none, through the
 state machine as `created_active`, MUST leave an existing row untouched (a second run
 changes nothing), MUST create a `Disabled` row for a member whose user is banned, MUST
-remove an orphan (a human `_user` that is `Active` and has no membership in its tenant,
-which a rolled-back acceptance leaves behind; never an `Invited` or `Staged` row or a
-service account), and MUST attribute its writes to the operator whose id the workflow
+remove an orphan (a human `_user` that is `Active`, has no membership in its tenant and
+is more than one hour old, which a failed acceptance leaves behind; never an `Invited`
+or `Staged` row, a younger row or a service account), and MUST attribute its writes to the operator whose id the workflow
 supplies.
 
 #### Scenario: A member with no `_user` row is rejected
@@ -253,9 +255,9 @@ supplies.
 
 #### Scenario: The reconcile removes an orphan
 
-- **GIVEN** an `Active` human `_user` with no member in its tenant, an `Invited` one, a `Staged` one and a service account
+- **GIVEN** an `Active` human `_user` with no member in its tenant that is more than an hour old, one that is younger (an acceptance in flight), an `Invited` one, a `Staged` one and a service account
 - **WHEN** the reconcile runs
-- **THEN** only the `Active` human row is removed, the removal is attributed to the operator, and a later invitation of that email succeeds
+- **THEN** only the older `Active` human row is removed, the removal is attributed to the operator, and a later invitation of that email succeeds
 
 #### Scenario: The reconcile repairs a member and is repeatable
 
@@ -341,7 +343,7 @@ registered before the authenticated catch-all, reachable only with the invitatio
 identifier and a single-use token carried in the request body, with nothing
 identifying in the path or query. The token MUST be 256 bits from a CSPRNG, MUST be
 stored only as a sha256 digest, MUST be compared in constant time, MUST be verified
-before it is consumed and then consumed by one atomic delete conditioned on its
+before it is consumed and then consumed last, by one atomic delete conditioned on its
 digest, and MUST work exactly once; a resend MUST invalidate the previous token. The
 tenant MUST be derived on the server from the invitation record; a body that
 carries a tenant or an actor MUST be rejected, and an invitation of a tenant with a
@@ -353,12 +355,15 @@ For an invited email with no account,
 acceptance MUST create the user with the least global role, set the password the
 invitee supplied under the password policy, mark the email verified (the token is
 proof of mailbox control), add the membership with the invited role, write the
-status through the state machine, and MUST NOT create a session. The consumption of
-the token and the creation of the `auth` rows MUST share one transaction, and the
-`_user` write MUST fail closed: if it fails, the user, the membership and the token
-consumption MUST be rolled back. For an email that
+status through the state machine, and MUST NOT create a session. The acceptance
+MUST NOT depend on a single transaction: its steps MUST be idempotent, the token MUST
+be consumed last, the `_user` write MUST fail closed (if it fails, the token is not
+consumed and what the attempt created MUST be undone, so that a retry with the same
+token starts from nothing), and an orphan `_user` that a double failure leaves MUST be
+repaired by the reconcile. For an email that
 already has an account, acceptance MUST require a valid session of that same
-account, which MUST pass the idle-timeout and banned checks and the
+account, which MUST be read without refreshing it and MUST pass the idle-timeout and
+banned checks and the
 temporary-password marker check that the authenticated pipeline applies, and whose
 email MUST equal the invitation email (there is no
 verified-email condition, because no account's email is verified by anything else),
@@ -368,16 +373,16 @@ together with the token; the request MUST carry the CSRF custom header and an
 the identity provider, its re-authorization), checked only after the session, the
 email and the token have matched. It MUST add only the membership, activate the
 `_user` and mark the email verified, and MUST NOT set, change or compare a
-password, the session or the active organization, and MUST NOT touch a linked
-account except to shed an SSO link that an admin recorded for another tenant (see the
-requirement on admin-recorded SSO links). Acceptance
+password, the request's own session or the active organization, and MUST NOT touch a
+linked account or another session except to shed the SSO links its user did not make
+and revoke the user's other sessions (see the requirement on SSO links). Acceptance
 MUST NOT link an account by the email claim from Visma Connect. The body MUST be an
 allowlist of the invitation id, the token and, for a new account, the password; any
 other field MUST be rejected with `CATALOG_VALIDATION_FAILED`, and an invitation id
 that fails a shape and length check MUST NOT be logged. Every rejected
 acceptance (nonexistent invitation, expired, cancelled, rejected or already-accepted
 invitation, wrong token, a `Disabled` user, a tenant pending deletion, an inviter who is no longer an
-active admin, no or mismatched session for an existing account, a failed CSRF or origin check, or a lost
+active admin, a tenant at its member limit, no or mismatched session for an existing account, a failed CSRF or origin check, or a lost
 concurrent account creation)
 MUST return the same status, error code and body shape, and a nonexistent invitation
 MUST take the same comparison work as a wrong token; the specific reason MUST be
@@ -395,11 +400,11 @@ MUST be logged.
 - **THEN** `bob` has an account with a verified email, a membership with the invited role and status `Active`, and no session exists
 - **AND** the token cannot be used a second time
 
-#### Scenario: A failed `_user` write rolls the acceptance back
+#### Scenario: A failed `_user` write undoes the acceptance
 
 - **GIVEN** a pending invitation to `bob@example.com`, who has no account, and a `_user` write that fails
 - **WHEN** `bob` presents the invitation id, the token and a policy-compliant password
-- **THEN** no user and no membership exist, the token is not consumed and still verifies, and the answer is the sanitized generic server error
+- **THEN** no user, no membership and no `_user` exist, the token is not consumed and still verifies, the answer is the sanitized generic server error, and a retry with the same token succeeds
 
 #### Scenario: Unknown body fields are rejected
 
@@ -504,35 +509,80 @@ MUST be logged.
 - **WHEN** a caller exceeds the configured acceptance rate
 - **THEN** further requests fail with `AUTH_RATE_LIMITED` and a `Retry-After` header before any invitation lookup, and the count is shared across replicas
 
-### Requirement: An admin-recorded SSO link does not survive into a second tenant
+### Requirement: An SSO link that its user did not make does not survive into a second tenant
 
-When an admin links an identity-provider `sub` to a user, the platform MUST record the
-tenant that linked it, and MUST remove that record with the link when it is unlinked. A
-link that the user made through the self-service link route MUST NOT carry such a record.
-At existing-account acceptance, and whenever a membership is added to a user who already
-belongs to another tenant, every admin-recorded link whose recorded tenant is not the
-tenant being joined MUST be deleted, in the same transaction, and
-`catalog.security.sso_link_shed` MUST be logged with opaque identifiers only. The user MAY
-link the identity again through the self-service route, which requires a fresh step-up
-verification.
+The platform MUST record the provenance of every SSO link positively: a link that the
+user makes through the self-service link route or the SSO callback MUST carry a marker,
+keyed by the link's own row identifier (never by the identity provider's subject),
+written when the link is created and removed whenever the link is removed, by any
+path, and a link without a marker MUST count as recorded by an admin. A marker MUST NOT
+expire and MUST carry no email, subject or tenant. A failed marker write MUST fail the
+link and MUST be logged. An admin MUST NOT be able to record a link on a user who is an
+`admin` or an `owner` of the tenant. At existing-account acceptance, and whenever a
+membership is added to a user who already belongs to another tenant, every unmarked link
+of that user MUST be deleted and `catalog.security.sso_link_shed` MUST be logged with
+opaque identifiers only, and every session of the user MUST be revoked, except the one
+that carries the acceptance request (every session when the membership is added another
+way), whether or not the session was established through the identity provider, each
+revocation being logged as `auth.security.session_revoked` with the reason
+`sso_link_shed`. An admin unlinking an SSO identity MUST revoke every session of that
+user in the same way. A link and a join for one user MUST NOT interleave: one lock per
+user MUST serialize the link and the shed, so that a link that commits after a join
+cannot remain on a user of two tenants. The user MAY link the identity again through the
+self-service route, which requires a fresh step-up verification.
 
-#### Scenario: An admin-recorded SSO link does not survive into a second tenant
+#### Scenario: An SSO link its user did not make does not survive into a second tenant
 
 - **GIVEN** a user who belongs only to `t1`, with an SSO link recorded by an admin of `t1`
 - **WHEN** the user accepts an invitation of `t2` on the existing-account path, or a membership of `t2` is added to them directly
-- **THEN** the link and its record are gone, `catalog.security.sso_link_shed` is logged once, and signing in with that `sub` no longer reaches the user
+- **THEN** the link and any marker are gone, `catalog.security.sso_link_shed` is logged once, and signing in with that `sub` no longer reaches the user
+
+#### Scenario: A session established through a shed link cannot reach the joined tenant
+
+- **GIVEN** a session minted through an admin-recorded link before the user joins `t2`
+- **WHEN** the user joins `t2`, by acceptance or by a membership added directly
+- **THEN** that session is revoked, so `/organization/set-active` for `t2` and any `/v1` call with it are rejected, `auth.security.session_revoked` is logged with the reason `sso_link_shed`, and on the acceptance path the session that carried the acceptance still works
+
+#### Scenario: An admin unlink revokes the user's sessions
+
+- **GIVEN** a session minted through an admin-recorded link
+- **WHEN** an admin unlinks that identity
+- **THEN** every session of the user is rejected afterwards and `auth.security.session_revoked` is logged with the reason `sso_link_shed`
 
 #### Scenario: A link the user made survives
 
-- **GIVEN** a user with an SSO link made through the self-service link route
+- **GIVEN** a user with an SSO link made through the self-service link route, which carries a marker keyed by the link's row identifier
 - **WHEN** the user joins a second tenant
-- **THEN** the link is unchanged and nothing is logged
+- **THEN** the link and its sessions are unchanged and nothing is logged
+
+#### Scenario: A link that pre-dates the marker is treated as admin-recorded
+
+- **GIVEN** a user with an SSO link that has no marker, for example one made before this capability existed
+- **WHEN** the user joins a second tenant
+- **THEN** the link is shed, and the user may link again through the self-service route
+
+#### Scenario: A failed marker write fails closed
+
+- **GIVEN** the marker write fails while a user links through the self-service route
+- **WHEN** the link is attempted
+- **THEN** the link fails and `catalog.security.sso_link_marker_failed` is logged, and an unmarked link left behind would be shed like an admin-recorded one
+
+#### Scenario: A marker does not outlive its link
+
+- **WHEN** a link is removed by the user's own unlink, by an admin unlink or by the shed, and later the same subject is linked again
+- **THEN** each removal also removed the marker, and the new link carries a fresh marker and not a stale one
+
+#### Scenario: A link cannot race a join
+
+- **GIVEN** a user who is single-tenant, a link being recorded and a second membership being added at the same time
+- **WHEN** both complete
+- **THEN** either the link was refused because the user already belongs to two tenants, or it was shed, and no unmarked link remains on a user of two tenants
 
 #### Scenario: The user can link again
 
-- **GIVEN** a user whose admin-recorded link was shed
+- **GIVEN** a user whose link was shed
 - **WHEN** the user links the identity through the self-service route with a fresh step-up verification
-- **THEN** the link exists and carries no admin record
+- **THEN** the link exists and carries a marker
 
 ### Requirement: Invitation email is fixed and capped
 
@@ -556,19 +606,20 @@ MUST be logged as `catalog.security.notice_suppressed`. The token and the link M
 that sends an invitation or resends it, in any log record, or in anything the
 non-sending sender keeps, because the token proves mailbox control. The provider MUST
 NOT track clicks or engagement, and the message MUST have no Reply-To. Creating and resending invitations MUST be capped at 30 per hour
-per tenant, 3 per 24 hours per recipient across all tenants (keyed by a digest
-of the normalized email, never the address), and by a global kill switch. A
+per tenant, 3 per 24 hours per recipient across all tenants (keyed by an HMAC of
+the normalized email under a server secret, never the address nor a bare digest of it), and by a global kill switch. A
 disabled or zero cap MUST fail startup. A bucket MUST reset only after a full window with
 no allowed request (the semantics of the shared rate-limit store), so the caps are
 stricter than their nominal rate. Exceeding any cap MUST fail the
 operation with `AUTH_RATE_LIMITED` and a `Retry-After` header that is the same for
 every invitation cap, send no email, and log
-`catalog.security.invitation_rate_limited` with its scope. In production,
-startup MUST fail without a real email provider. Outside production a real provider
-MUST be configured only together with a recipient-domain allowlist, startup MUST fail
-without it, a recipient whose domain is not on it MUST be refused like a provider failure
-and logged as `catalog.security.email_recipient_blocked`, and CI and DAST MUST use a
-non-sending sender. An email of a tenant on the configured list of disabled tenants (the
+`catalog.security.invitation_rate_limited` with its scope. Where
+`NODE_ENV` is not `test`, startup MUST fail unless the email provider is set explicitly
+(the non-sending sender is an explicit choice, and CI and DAST MUST use it). Under
+`NODE_ENV=test` a real provider MUST be configured only together with a
+recipient-domain allowlist, and startup MUST fail without it; wherever an allowlist is
+set, a recipient whose domain is not on it MUST be refused like a provider failure and
+logged as `catalog.security.email_recipient_blocked`. An email of a tenant on the configured list of disabled tenants (the
 demo tenants) MUST be suppressed before any cap is consumed, MUST NOT block the operation,
 and MUST be logged as `catalog.security.email_tenant_blocked` with the tenant and the
 template.
@@ -635,9 +686,14 @@ template.
 - **WHEN** the fourth request arrives
 - **THEN** it is refused, because only a full window with no allowed request resets the bucket
 
-#### Scenario: A real sender outside production needs an allowlist
+#### Scenario: A deployed environment must choose its email provider
 
-- **WHEN** the platform starts outside production with a real email provider and no recipient-domain allowlist
+- **WHEN** the platform starts with a `NODE_ENV` other than `test` and no explicit email provider
+- **THEN** startup fails
+
+#### Scenario: A real sender under the test environment needs an allowlist
+
+- **WHEN** the platform starts with `NODE_ENV=test`, a real email provider and no recipient-domain allowlist
 - **THEN** startup fails
 - **AND** with the allowlist, an invitation to a recipient off it sends nothing and logs `catalog.security.email_recipient_blocked` without the address
 
@@ -949,6 +1005,12 @@ be given the host tenant only.
 - **WHEN** an admin of `t1` links or unlinks an SSO `sub` for it
 - **THEN** the operation is refused and nothing changes (changing its status is tenant-scoped and is covered by "A member of two tenants is disabled in one only")
 
+#### Scenario: An admin cannot record an SSO link on an admin or an owner
+
+- **GIVEN** another admin and an owner of `t1`
+- **WHEN** an admin of `t1` links an SSO `sub` to either of them
+- **THEN** the operation is refused with the same generic rejection as every other link conflict, no account is written and no session is revoked, and they can still link their own identity through the self-service route with a fresh step-up verification
+
 #### Scenario: Org deletion targets only the host tenant
 
 - **WHEN** an admin of `t1` requests org deletion with `t2`'s identifier as the confirmation
@@ -962,7 +1024,7 @@ be given the host tenant only.
 
 #### Scenario: Create and link give one generic answer to every conflict
 
-- **WHEN** an admin creates a user for an email that already has an account in this tenant or in another tenant, or links a `sub` that is already linked
+- **WHEN** an admin creates a user for an email that already has an account in this tenant or in another tenant, or links a `sub` that is already linked, or links a `sub` to an admin or an owner
 - **THEN** every cause answers with the same `CATALOG_VALIDATION_FAILED` and a fixed message, and no state changes, so a failed probe leaves no partial state
 
 ### Requirement: Org deletion revokes access immediately and purges tenant data after a window
@@ -971,8 +1033,9 @@ Deleting an organization MUST be authorized to admins only, MUST require a
 fresh step-up verification, and MUST require the caller to confirm the
 organization's identifier, which MUST equal the host tenant. The operation
 MUST be in two phases. In phase 1 it MUST record a deletion marker with a
-purge date between 7 and 14 days away, revoke every session whose active
-organization is the tenant, revoke every org-owned credential, cancel pending
+purge date between 7 and 14 days away (computed in SQL from the database's own clock),
+revoke every session whose active organization is the tenant (logging each as
+`auth.security.session_revoked` with the reason `admin_action`), revoke every org-owned credential, cancel pending
 invitations, send the fixed org-deletion notice to the administrators of the
 organization, under the notice controls (a send failure or suppression MUST NOT block the request and MUST be logged), and log
 `catalog.audit.org_deletion_requested` with the admin as actor; from then on
@@ -1002,7 +1065,8 @@ fixed choice or validated against the tenant-id pattern and MUST reach the job o
 through the environment, never through an expression inside a `run:` script; every
 third-party action MUST be pinned by commit SHA; the workflow and the scripts MUST be
 covered by `CODEOWNERS`; and the federated identity's cloud role MUST be limited to
-starting the named jobs.
+starting the named jobs. The bootstrap command is the one script outside that workflow:
+an operator runs it out of band, as the authentication baseline designed it.
 
 #### Scenario: Deletion without step-up fails
 
@@ -1110,7 +1174,8 @@ not due), and the due-tenant
 condition MUST be enforced by row-level policies, not by a function or by code; the
 append-only change-event rows MUST be deletable only by that role. No
 `SECURITY DEFINER` function MUST take part in the purge, and each maintenance
-script MUST run as its own job with its own identity and secrets. A schema-driven test MUST fail when a
+script MUST run as its own job with its own identity and secrets and MUST refuse to run
+under a database role other than the one it declares. A schema-driven test MUST fail when a
 table carrying tenant data is neither purged nor explicitly exempted.
 
 #### Scenario: The request role cannot back-date a marker
@@ -1133,7 +1198,7 @@ table carrying tenant data is neither purged nor explicitly exempted.
 #### Scenario: No role can become the purge role
 
 - **WHEN** any other role of the platform attempts `SET ROLE` to the purge role
-- **THEN** it is refused, and no role membership grants it the ability (the creating role's admin-only membership has no set or inherit option)
+- **THEN** it is refused, and no membership of another application role grants it the ability (the creating role's admin-only membership has no set or inherit option)
 
 #### Scenario: A new table cannot escape the purge
 
@@ -1223,7 +1288,8 @@ deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
 excess, and org-deletion request, repeated request, completion, failure, cancellation and notice failure, a failed admin-accepted notice, a suppressed or truncated notice, a
 recipient refused by the non-production allowlist, an email suppressed for a disabled
-tenant, an admin-recorded SSO link shed, a banned user's sign-in attempt and a
+tenant, an SSO link shed (and the session revocations it causes), a provenance marker write that
+failed, an acceptance compensation that failed, a banned user's sign-in attempt and a
 reconcile run, MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
@@ -1349,7 +1415,8 @@ before any lookup or database work.
 ### Requirement: The hand-offs from the authentication baseline hold
 
 Before the routes are mounted, the platform MUST refuse to start with `NODE_ENV=test`
-and a non-local database host; the public re-authorization callback MUST be
+and a non-local database host (the check lives in the application's startup path, not in
+the configuration loader); the public re-authorization callback MUST be
 rate-limited before it touches the database, and `reauthorization.start` MUST be
 bounded per session; a back-channel logout token with neither `sid` nor `sub` MUST be
 rejected without consuming its `jti`, and its cheap claim checks MUST run before any
