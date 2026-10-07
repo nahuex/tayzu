@@ -209,8 +209,8 @@
     from sending real mail, and the SHA-1 prefix is a recorded exception (D5, Q80,
     Q81).
   - The migrations are four, not three: the Better Auth side of the purge is its own
-    file, `0014`, so that each approved migration stays immutable (D9, Open Question
-    1). The marker's columns that the request role must not set are protected by a
+    file, `0014`, so that each approved migration stays immutable (D9, Q82
+    ). The marker's columns that the request role must not set are protected by a
     column-level `INSERT` grant, because a `DEFAULT` does not ignore an explicit value;
     it also has the cancellation columns (D9). The new roles need `USAGE` on the schemas, the purge
     deletes invitation tokens before the invitations their policy joins, and the
@@ -413,7 +413,7 @@ The adapter's read-derive-write is not atomic, so a concurrent ban, first sign-i
 add-member could revive a `Disabled` user: the adapter writes with the
 `expectedVersion` of the row it read (`entities.upsert` accepts it) and, on a version
 conflict, re-reads and retries a bounded number of times (3) before failing closed
-(Open Question 2, recommended option).
+(Q83).
 
 There are **two** sync types and both change: `UserSyncPort` and its input in
 `packages/auth/src/auth.ts` (the status becomes a `StatusEvent`), and
@@ -1306,7 +1306,7 @@ worthless if the role that serves requests can write the marker. So:
   table owner and `tayzu_app`, still raises, and for `tayzu_purge` the policy above
   still limits the rows to a due tenant.
 - **The Better Auth rows get the same boundary** (Resolved decision Q49), in its own
-  migration, `0014`, so that the approved `0013` stays immutable (Open Question 1,
+  migration, `0014`, so that the approved `0013` stays immutable (Q82,
   recommended option). The `auth` tables have no row-level security and `tayzu_auth`
   has full CRUD on every tenant's rows, so a purge step run as `tayzu_auth` would be
   gated only by code, the weakness this section argues against. Migration `0014`
@@ -2201,7 +2201,7 @@ connection as `tayzu_purge`, the reconcile job, the reversal script and the work
 - [A rolled-back acceptance can leave an orphan `_user`, because the write is on
   another pool and is not rolled back with the `auth` rows (Q75); an `Active` orphan
   would block a later invitation of the same email] → The reconcile removes it (D1,
-  Open Question 3).
+  Q84).
 - [The inviter check reads membership and `banned` inside the consuming transaction
   but the `_user` status from `tayzu_app`, another pool] → A sub-second race: an
   inviter disabled in the instant between the two reads can still be accepted.
@@ -2394,7 +2394,7 @@ Human-owned, next to `002`'s own list:
    `meta/00NN_snapshot.json` and `_journal.json` entry, following the repo's pairing of
    a table migration with a hand-written grants migration (0004+0005, 0008+0009), and
    splitting the two grant blocks of the purge so that each approved file stays
-   immutable (`packages/db/CLAUDE.md`; Open Question 1, recommended option):
+   immutable (`packages/db/CLAUDE.md`; Q82):
    - `0011_machine_credential_revocation_tenant_key`: a composite
      `(tenant_id, credential_id)` key on `machine_credential_revocation`, with the
      matching change in `packages/catalog/src/persistence/schema.ts` (task 11.1).
@@ -2528,47 +2528,11 @@ Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
 | Q79 | (Drift B6, 2026-10-01) Telemetry in maintenance scripts | Each script starts telemetry, emits its audit events and flushes before exit; the environment names are documented. |
 | Q80 | (VCDM Q-B, 2026-10-01) Demo tenants and the real sender | An `EMAIL_DISABLED_TENANT_IDS` list honored by the invitation and notice dispatcher; a listed tenant's emails are suppressed and logged as `catalog.security.email_tenant_blocked`. |
 | Q81 | (VCDM Q-C, 2026-10-01) SHA-1 prefix of the breached-password query | Recorded in `crypto-inventory.md` as a protocol-mandated exception (five hex characters leave, SHA-1 is not used for storage or authentication), with a ticket to evaluate an offline corpus. |
+| Q82 | (Sixth-pass Open Question 1, drift B7, 2026-10-07) Approving the two purge-grant blocks | Split into `0013_tenant_deletion_grants` (task 12.1b, catalog side) and `0014_tenant_deletion_auth_grants` (task 12.1c, Better Auth side), each approved separately at Checkpoint 3 and never edited afterwards. Four migrations in total. |
+| Q83 | (Sixth-pass Open Question 2, drift M12, 2026-10-07) Concurrent `_user` status writes | The status adapter writes with the `expectedVersion` of the row it read and retries at most 3 times before failing closed; a race never revives a `Disabled` user. |
+| Q84 | (Sixth-pass Open Question 3, Q75 follow-up, 2026-10-07) Reconcile of an orphan `_user` | The reconcile removes a human `_user` that is `Active` and has no `member` row in its tenant (never `Invited`, `Staged` or a service account), as `system` with `onBehalfOf` the operator, and counts it. |
+| Q85 | (Amendment details confirmed by the human, 2026-10-07) Names and values fixed during the Q73-Q81 amendment | `ACS_CONNECTION_STRING` and `EMAIL_PROVIDER` (`acs` or `none`); Better Auth's `maxPasswordLength` 256 (UTF-16 units) while Q22 keeps 128 code points; a credential-viewer page of 200; "Require review from Code Owners" as the fifth Q55 checklist item; SSO-link markers identified `sso-link:<accountId>`. |
 
 ## Open Questions
 
-Three questions from the sixth drift-check and VCDM pass need the human. Nothing is
-approved until the human answers; the tasks use the recommended option until then, and
-the answer is recorded under "Resolved decisions".
-
-**Open Question 1 (drift B7). How are the two Checkpoint 3 blocks of the purge grants
-approved, given that `packages/db/CLAUDE.md` says a migration is never edited after it
-is approved?** Tasks 12.1b (catalog side) and 12.1c (Better Auth side) are approved
-separately.
-
-1. **Recommended**: split them into `0013_tenant_deletion_grants` (12.1b) and
-   `0014_tenant_deletion_auth_grants` (12.1c), so that each approved file stays
-   immutable. Cost: four migrations instead of three.
-2. Present both blocks as one approval of `0013`. Simplest, but the Better Auth side,
-   the riskier one, is reviewed together with the catalog side.
-3. Approve 12.1b first and treat 12.1c as an addendum to the same file before it is
-   committed. This conflicts with the rule of `packages/db/CLAUDE.md`.
-
-**Open Question 2 (drift M12). Does the `_user` status adapter guard its
-read-derive-write against a concurrent ban, first sign-in and add-member?**
-
-1. **Recommended**: write with the `expectedVersion` of the row it read
-   (`entities.upsert` accepts it) and retry a bounded number of times (3) before
-   failing closed. A `Disabled` user is never revived by a race.
-2. Accept the race and document it. Less code, but a sub-second window in which a
-   `Disabled` user can be revived by a concurrent hook remains.
-
-**Open Question 3 (Q75 follow-up). What does "the reconcile repairs an orphan `_user`"
-mean?** A rolled-back acceptance leaves an `Active` human `_user` with no membership
-(its write is on another pool), and `Active` never moves back to `Invited`, so a later
-invitation of the same email would be refused.
-
-1. **Recommended**: the reconcile removes a human `_user` that is `Active` and has no
-   `member` row in its tenant (never an `Invited` or `Staged` row or a service
-   account), as `system` with `onBehalfOf` the operator, and counts it. It unblocks
-   the invitation; the row carries no data that is not recoverable from the change
-   events.
-2. The reconcile only reports orphans (a log event and a count) and an operator
-   removes them by hand. Safer against a wrong deletion, but the invitation stays
-   blocked until someone acts.
-3. The reconcile sets the orphan to `Disabled`. It keeps the row, but the person can
-   never be invited again until an admin re-enables the row.
+None. The three questions of the sixth pass were answered on 2026-10-07 (Q82-Q84).

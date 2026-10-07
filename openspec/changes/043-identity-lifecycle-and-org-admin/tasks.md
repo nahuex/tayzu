@@ -18,9 +18,8 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1-Q81 in `design.md`. Its three Open
-Questions are pending the human, and the tasks use their recommended option until
-they are answered (the tasks that depend on one say so).
+Tasks follow the Resolved decisions Q1-Q85 in `design.md`; there are no open
+questions.
 
 Migrations follow the repo's pairing of a table migration with a hand-written
 grants migration and run from `0011` to `0014`; every migration and every Cerbos task is
@@ -58,7 +57,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       tasks and tickets, and the blocking gap NB-4, the fourteen non-blocking gaps
       (G6-1 to G6-14) and the three questions (Q-A to Q-C) of the sixth pass,
       resolved by Q73, Q80 and Q81, tasks and tickets. The sixth drift-check's seven
-      decisions (B1-B7) are resolved by Q74-Q79 and the Open Questions. Attach the
+      decisions (B1-B7) are resolved by Q74-Q79 and Q82-Q84. Attach the
       reports to the PR. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded.
 - [ ] 1.3 _(setup)_ Add `@azure/communication-email` (`1.1.0`) to
@@ -152,7 +151,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       because its `_user` write is on another pool and is not rolled back with it
       (Resolved decision Q75; `Invited` and `Staged` rows and service accounts are
       never orphans). The removal is a `system` write with `onBehalfOf` the operator
-      (Open Question 3, recommended option). It lists organizations and members
+      (Q84). It lists organizations and members
       through the `tayzu_auth` pool and writes through `tayzu_app`, as its own
       Container Apps Job (Resolved decision Q49). Its change events carry the
       operator id as `onBehalfOf`, taken from the environment the maintenance
@@ -233,7 +232,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `expectedVersion` (`entities.upsert` accepts it) and, on a version conflict,
       re-reads and retries a bounded number of times (3) before failing closed, so a
       concurrent ban, first sign-in and add-member cannot revive a `Disabled` user
-      (Open Question 2, recommended option). Verify: `user-sync.int.test.ts` (in
+      (Q83). Verify: `user-sync.int.test.ts` (in
       `apps/api`) covers a write for each allowed event, a rejected `Active` →
       `Staged` write, a write with `onBehalfOf` carrying the admin on the change
       event, a concurrent `admin_disable` between the adapter's read and its write
