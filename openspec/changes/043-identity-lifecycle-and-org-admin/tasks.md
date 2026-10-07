@@ -18,8 +18,8 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1-Q98 in `design.md`. Four Open Questions
-remain there; 6.5 is written under the recommended option of the first and says so.
+Tasks follow the Resolved decisions Q1-Q102 in `design.md`; there are no open
+questions.
 
 Migrations follow the repo's pairing of a table migration with a hand-written
 grants migration and run from `0011` to `0014`; every migration and every Cerbos task is
@@ -317,7 +317,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `databaseHooks.user.update.before` receives neither the id nor the old row, so it
       sends the event the new value implies and the adapter treats a redundant event as
       a no-op (4.1); it is skipped without an endpoint context. Whether it should ever
-      write `admin_enable` is Open Question 4 of `design.md`. Verify: `ban-hook.int.test.ts` covers that banning sets
+      write `admin_enable` is Q102 of `design.md`. Verify: `ban-hook.int.test.ts` covers that banning sets
       `Disabled`, unbanning sets `Active`, unbanning a `Staged` user is rejected, and
       that enrolling a second factor for an `Active` user (an update with an unchanged
       `banned: false`) does not throw and leaves the status `Active`, and a repeated `banned: true` for a
@@ -962,7 +962,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       lost consume race (another attempt consumed the token first) compensates
       nothing, because the winner's state is final. An orphan `_user` left by a double
       fault is the reconcile's (2.2b, after its grace period), and a user left with no
-      membership is an operator repair (Open Question 2 of `design.md`, written under
+      membership is an operator repair (Q100 of `design.md`, written under
       its recommended option). Verify: `accept-flow.int.test.ts` covers a failure
       injected after `createUser` leaving no user row, a `userSync` that throws in
       `afterAddMember` leaving no user, no member and no `_user` with the token still

@@ -266,7 +266,7 @@
     SQL, the reversal role's `SELECT` and every script's own role assertion (D9); the
     identity router joins the catalog router in one handler (D10); spans and counters
     go through `@tayzu/auth` helpers, and the new rate-limit scopes reach `002`'s
-    metric and log event (Observability contract, D4); and the stale "Open Question 1"
+    metric and log event (Observability contract, D4); and the stale "Q99"
     references, the amendment header and the overlap of `Q70`-`Q84` with `002`'s own
     numbering were corrected (Resolved decisions).
 - Reused, not redefined: `CatalogContext`/`Principal`/`onBehalfOf`
@@ -781,7 +781,7 @@ value, because this route is public and the value is attacker-controlled.
    session, the uniform rejection, and the invitee would be stuck. A compensation that
    itself fails leaves a user with no membership or an orphan `_user`, which the
    reconcile removes after its grace period (D1, Resolved decision Q89) for the
-   `_user`; a stranded user is an operator repair (Open Questions).
+   `_user`; a stranded user is an operator repair (Q100).
 4. _Existing account (Q18, Q24)._ For an email that already has an account,
    acceptance **never sets or changes the password** (an account takeover
    vector). It succeeds only when **all** of these hold, checked in this order:
@@ -1078,7 +1078,7 @@ The invitation email's content is a fixed contract (VCDM B9, SEC11):
   **recipient-domain allowlist** (`EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`, a list of
   domains in `apps/api/src/config.ts`; startup fails when a real provider is
   configured under `NODE_ENV=test` without it), and the wrapper below enforces the
-  list whenever it is set, in any environment (provisional, pending Open Question 1:
+  list whenever it is set, in any environment (provisional, pending Q99:
   the allowlist's role in a deployed staging environment), so a known demo login
   cannot be used to relay phishing to a third party. The existing tests that load the
   configuration with a `NODE_ENV` other than `test` set `EMAIL_PROVIDER=none`. A wrapper around the real
@@ -2349,7 +2349,7 @@ earlier found the seam gaps closed by D3/D6.
 | G7-3 links recorded by an admin outlive that admin | Tickets ("Off-boarding review by creator", "User notifications") |
 | G7-4 no uniqueness of `member(organization, user)` | Tickets ("Member uniqueness") |
 | G7-5 the reconcile's orphan removal races an in-flight acceptance | D1, task 2.2b |
-| G7-6, G7-7, G7-8 user notifications, the notice bucket and bounce handling | Tickets; Open Question 3 |
+| G7-6, G7-7, G7-8 user notifications, the notice bucket and bounce handling | Tickets; Q101 |
 | G7-9, G7-10 tests of NB-5 and NB-6, the marker-failure event, 010 alerts | tasks 8.5g-8.5j, 16.1, Tickets ("Alerts for `010`") |
 | Seventh drift-check (A1-A38 of `drift7.md`) | Context (seventh amendment), tasks 1.1, 1.2 and the tasks they name |
 
@@ -2365,7 +2365,7 @@ connection as `tayzu_purge`, the reconcile job, the reversal script and the work
 | SEC07 Dependencies      | Yes                    | `@azure/communication-email` joins the Dependabot/`pnpm audit`/quarterly-EOL process; license, `allowBuilds` and SBOM review are recorded in `docs/security/dependencies.md` (task 1.3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | SEC08 File upload       | N/A                    | No file upload surface.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | SEC09/SEC10 Secrets     | Yes                    | The Communication Services connection string is a new Key Vault secret on a dedicated send-only ACS resource, with a change procedure in `docs/security/secrets.md`; a managed identity is a first-deployment gate (Q28). The purge job's `tayzu_purge` secret and the reconcile job's `tayzu_auth` secret are documented with owner and rotation, each job with its own identity, and so is the `IDENTITY_TOKEN_HMAC_SECRET` of the cap keys (Q93).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| SEC11 Phishing          | Yes, core new exposure | 48h expiry, one link, fixed subject and template with no tenant or inviter free text, link origin from `INVITATION_LINK_BASE_URL` only (Q32), exactly one recipient and no CC/BCC/attachments, ACS tracking disabled and no Reply-To, per-tenant, per-recipient and global caps (D4, D5); a third fixed notice tells the other admins, `Disabled` ones included, when an `admin` invitation is accepted (Q39); a real sender needs a mandatory recipient-domain allowlist under `NODE_ENV=test` and honors it wherever it is set (Q67, Q96, pending Open Question 1), and a tenant on `EMAIL_DISABLED_TENANT_IDS` (a demo tenant) sends nothing (Q80); all three templates share the kill switch and the per-recipient bucket, with a per-tenant notice cap and at most 20 recipients per notice (Q53). The SSA answers are Resolved decision Q34: one clickable link, unavoidable for a no-account invitee and mitigated by the fragment token, single use, 48-hour expiry and the configured origin; no attachments; only the recipient varies.                                                                                                                                                                                                    |
+| SEC11 Phishing          | Yes, core new exposure | 48h expiry, one link, fixed subject and template with no tenant or inviter free text, link origin from `INVITATION_LINK_BASE_URL` only (Q32), exactly one recipient and no CC/BCC/attachments, ACS tracking disabled and no Reply-To, per-tenant, per-recipient and global caps (D4, D5); a third fixed notice tells the other admins, `Disabled` ones included, when an `admin` invitation is accepted (Q39); a real sender needs a mandatory recipient-domain allowlist under `NODE_ENV=test` and honors it wherever it is set (Q67, Q96, pending Q99), and a tenant on `EMAIL_DISABLED_TENANT_IDS` (a demo tenant) sends nothing (Q80); all three templates share the kill switch and the per-recipient bucket, with a per-tenant notice cap and at most 20 recipients per notice (Q53). The SSA answers are Resolved decision Q34: one clickable link, unavoidable for a no-account invitee and mitigated by the fragment token, single use, 48-hour expiry and the configured origin; no attachments; only the recipient varies.                                                                                                                                                                                                    |
 | SEC12 Testing           | Yes                    | Every requirement has a scenario-backed test; every route a cross-tenant test; `cerbos compile` gates policies. The identity OpenAPI document has no request schemas (Q52), so a scan of it has limited value until schemas exist. The OpenAPI-driven ZAP scan (`002` NB1) would hit `organization.delete`, `rotate`, `revoke` and `invite`, so it needs a sandbox tenant, a non-sending email sender and a destructive-route exclusion; because the switch is off by default, a sandbox scan with the switch **on** is required before the first deployment (ticket and gate, Risks).                                                                                                                                                                                                                                                                                                                                                               |
 | SEC13 Deployment        | Partial                | The Communication Services connection string via Key Vault reference, `INVITATION_LINK_BASE_URL`, `INVITATION_EMAIL_KILL_SWITCH`, `MOUNT_IDENTITY_ROUTES`, the purge window, and a scheduled job provisioned with `010` that holds the `tayzu_purge` secret only, one Container Apps Job per maintenance script (Q49), and a reviewed `workflow_dispatch` workflow (environment reviewers with "prevent self-review", deployment branch limited to `master`, OIDC subject pinned to the environment and an Azure role limited to starting the named jobs, Q55 and Q64; inputs only through `env`, actions pinned by SHA, `CODEOWNERS` on the workflow and the scripts) for the reversal script and the `_user` backfill and reconcile (Q41), so nothing runs against production from a workstation, except the bootstrap CLI, which an operator runs out of band as `002` designed it (Q91); a deployed environment fails startup without an explicit `EMAIL_PROVIDER` (Q96).                                                                                                                                                                                                                                                                                                    |
 | SEC14 Infra permissions | Yes                    | Four migrations (Checkpoint 3): `0011` (composite key), `0012` (the marker table), `0013` (the `tayzu_purge` and `tayzu_deletion_admin` roles, the catalog row-level policies and the amended append-only trigger) and `0014` (the Better Auth row-level policies); no `SECURITY DEFINER` function, Q48 and Q49. The request role inserts only three marker columns (a column-level grant), the new roles get `USAGE` on the schemas they need, and the runtime-role assertion covers the marker and the revocation table. The marker is insert-only for `tayzu_app`, the roles stay separate (`tayzu_app`, `tayzu_auth`, `tayzu_purge`, `tayzu_migrator`) and no function exists to grant `EXECUTE` on, and a test proves no role can `SET ROLE tayzu_purge` (D9, Q26, Q48). The resolver rejects a `purged` marker as well as a `pending` one.                                                                                                                                                                                                                                                                                                    |
@@ -2452,7 +2452,7 @@ connection as `tayzu_purge`, the reconcile job, the reversal script and the work
   a user with no membership, because no transaction spans the two pools (Q89); an
   `Active` orphan would block a later invitation of the same email] → The reconcile
   removes the orphan `_user` after a one-hour grace period (D1, Q84); a stranded user
-  is an operator repair (Open Questions).
+  is an operator repair (Q100).
 - [The inviter check reads membership and `banned` from `tayzu_auth` and the `_user`
   status from `tayzu_app`, with no transaction around the acceptance (Q89)] → A race of
   a few seconds at most: an inviter disabled between the check and the consumption of
@@ -2616,7 +2616,7 @@ This change's own gates:
   exist in `010`'s alerting before the purge job is enabled (Resolved decision Q68):
   the request role can insert a marker, and the purge is irreversible.
 - A real email sender under `NODE_ENV=test` is configured only with its
-  recipient-domain allowlist (Q67, Q96, pending Open Question 1); every deployed
+  recipient-domain allowlist (Q67, Q96, pending Q99); every deployed
   environment sets `EMAIL_PROVIDER` explicitly, and CI, DAST and demo tenants use the
   non-sending sender.
 - `044` (the recovery path for a squatted account) ships before the mount switch is
@@ -2655,14 +2655,14 @@ This change's own gates:
 | HMAC of the per-recipient cap key (**built in this change by Q93, task 6.7b; it was a gate and is no longer one**) | Use an HMAC with a server secret instead of a bare sha256 of the email (SEC05).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Banned or disabled sign-in oracle | **Promoted to task 14.4b for the banned case (Resolved decision Q54).** Better Auth's admin plugin refuses a banned user with a distinct error after a correct password, a credential-validity oracle. The response should equal a wrong password's. |
 | `principal_rejected` log flood         | A disabled user's session emits the WARN log on every request. Aggregate or rate-limit it and keep the counter (SEC16).                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Ban-hook mirror                        | The ban hook (D2) writes `admin_enable` to every membership on a global unban, which can revert a tenant-scoped disable made by `setStatus`. It cannot see the old `banned` value, so any `user.update` that carries `banned: false` (enrolling a second factor, for example) sends `admin_enable` too, and the adapter's no-op covers only a user who is already `Active`: a user disabled in one of two tenants (not banned) would be re-enabled there. Open Question 4 asks whether the hook should ever write `admin_enable`.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Ban-hook mirror                        | The ban hook (D2) writes `admin_enable` to every membership on a global unban, which can revert a tenant-scoped disable made by `setStatus`. It cannot see the old `banned` value, so any `user.update` that carries `banned: false` (enrolling a second factor, for example) sends `admin_enable` too, and the adapter's no-op covers only a user who is already `Active`: a user disabled in one of two tenants (not banned) would be re-enabled there. Q102 asks whether the hook should ever write `admin_enable`.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Cerbos decision logs                   | `decisionLogsEnabled: true` records the resource id and attributes; this change sends only opaque ids (D3), but the content and retention of those logs need a policy (SEC16).                                                                                                                                                                                                                                                                                                                                                                                                                |
 | One-active-credential constraint | A partial unique index over `apikey` on the "one active credential per service account" invariant, as defence in depth beside the advisory lock (needs a migration, Checkpoint 3, and `apikey.metadata` is a text column) (SEC03/SEC10). |
 | Auth-schema repository module (**promoted into this change by Q69, tasks 5.1b and 5.1c**) | One repository module that requires `tenantId` for every adapter read of `apikey`, `invitation` and `member`, plus a lint ban on direct adapter access to those models elsewhere, because the `auth` schema has no row-level security and the tenant filter is repeated by hand (SEC03/SEC14). |
 | Bounce and complaint handling | Bounce, complaint and suppression handling for the ACS sender domain, with the operator procedure if the sender's reputation is hit (SEC11). |
 | In-app invitation inbox | Revisit removing the emailed link once `003` offers an in-app invitation inbox (SEC11 Q2; the justification is Q34). |
 | FQDN egress allowlist | FQDN egress allowlisting for ACS and `api.pwnedpasswords.com`, with `010` (SEC15). |
-| Separate notice-recipient bucket | The notices share the per-recipient bucket with the invitations (Q53), so any tenant's admin can drain a victim admin's bucket with three invitations and suppress their deletion or admin-accepted notice. Give notices a bucket of their own (scope `notice_recipient`) (SEC11). Raised by the seventh VCDM pass: the irreversible purge depends on the notice (Open Question 3 asks whether to build it here). |
+| Separate notice-recipient bucket | The notices share the per-recipient bucket with the invitations (Q53), so any tenant's admin can drain a victim admin's bucket with three invitations and suppress their deletion or admin-accepted notice. Give notices a bucket of their own (scope `notice_recipient`) (SEC11). Raised by the seventh VCDM pass: the irreversible purge depends on the notice (Q101 asks whether to build it here). |
 | DAST probe of the accept route | The public accept route is in no OpenAPI document, so DAST never sees it. A scripted probe or a hand-written OpenAPI fragment would let the scan cover the first unauthenticated route (SEC02/SEC12). |
 | Recipient-cap alias normalization | A `+` alias is rejected (Q33), but dot-aliasing at providers such as Gmail and case variants outside the local part still bypass the per-recipient cap. Document the limit or normalize known providers (SEC06/SEC11). |
 | Persistent per-tenant email-disable list | `EMAIL_DISABLED_TENANT_IDS` (Resolved decision Q80) is an environment variable, so changing it needs a new app revision. A persistent per-tenant setting, changed without a deploy, would make demo-tenant handling and an incident suppression faster (SEC11). |
@@ -2837,66 +2837,11 @@ this table:
 | Q96 | (Drift D1, 2026-10-07) "Production" for the email sender | `NODE_ENV !== 'test'`, as 002; `dast.sh` exports `EMAIL_PROVIDER=none`. |
 | Q97 | (Drift D2, 2026-10-07) Uniform banned and expired-marker sign-in failures | Checked after password verification, matching Better Auth's own ban ordering. |
 | Q98 | (Drift D3, 2026-10-07) The `NODE_ENV=test` refusal | In `createAppFromEnv`, with test fixtures on a local host; `loadConfig` tests unchanged. |
+| Q99 | (Seventh-pass Open Question 1, 2026-10-07) Recipient-domain allowlist after Q96 | The allowlist applies wherever it is set, and is mandatory only when a real email provider is configured with `NODE_ENV=test`. |
+| Q100 | (Seventh-pass Open Question 2, 2026-10-07) A user stranded by a failed acceptance compensation | Repaired by an operator, driven by an alert on `invitation_accept_compensation_failed` and a runbook. |
+| Q101 | (Seventh-pass Open Question 3, G7-7, 2026-10-07) A separate per-recipient bucket for notices | A task before the mount switch. |
+| Q102 | (Seventh-pass Open Question 4, 2026-10-07) The ban hook and `admin_enable` | The ban hook writes only `admin_disable`; re-enabling goes through `setStatus` only. |
 
 ## Open Questions
 
-The sixth-pass questions were answered on 2026-10-07 (Q82-Q84) and the seventh pass's
-on the same day (Q86-Q98). Applying them left four points that only the human can
-decide. Each is also asked in chat, and nothing below counts as approved until the
-human answers.
-
-**Open Question 1: what does the recipient-domain allowlist do now that every
-non-test environment is "production" (Q96 against Q67)?** Q67 made the allowlist
-mandatory for a real sender "outside production" so that staging could rehearse ACS
-and DMARC; Q96 defines production as `NODE_ENV !== 'test'`, which leaves only the test
-environment outside it. Options:
-
-1. **(Recommended)** The allowlist is enforced wherever it is set, in any environment,
-   and is mandatory only when a real provider runs under `NODE_ENV=test`. Staging sets
-   it, production leaves it unset. No new setting, and staging stays safe by
-   configuration. The artifacts are written this way, provisionally.
-2. Mandatory for every real provider in every environment. Impractical for production,
-   whose allowlist would have to contain every customer domain.
-3. An explicit setting (for example `EMAIL_ALLOWLIST_REQUIRED=true`) turns the
-   requirement on in staging. More explicit, one more variable to forget.
-4. Keep the allowlist for tests only and give up the staging protection.
-
-**Open Question 2: how is a user stranded by a failed acceptance repaired (Q89)?** If a
-new-account acceptance fails after it created the user and its own compensation also
-fails, a user with no membership remains, and a retry would meet an existing account
-with no session. The reconcile (Q84) removes only an orphan `_user`. Options:
-
-1. **(Recommended)** An operator repair: the event
-   `catalog.security.invitation_accept_compensation_failed` alerts, and the runbook
-   removes the user. It is a double fault, and nothing can tell a stranded user from a
-   legitimate one without a new mechanism.
-2. A progress marker (`invitation-progress:<invitationId>`, written before the user is
-   created) so that a retry resumes and the reconcile removes strays. A new
-   `auth.verification` family needs a purge classification and a policy line in the
-   pending migration `0014`.
-3. The reconcile also removes any Better Auth user with no membership older than a
-   grace period. Simple, but it can delete an account that is legitimately membership-less.
-
-**Open Question 3: is the separate notice-recipient bucket built here (G7-7)?** Any
-tenant's admin can drain a victim admin's shared per-recipient bucket with three
-invitations and so suppress the deletion notice or the admin-accepted notice, and the
-purge is irreversible. Options:
-
-1. **(Recommended)** A task before the mount switch: a bucket of its own for the two
-   notices (scope `notice_recipient`), on the same helper as the other scopes. Small, and
-   the notice is what the pre-purge protection depends on.
-2. Keep the ticket, raise its priority and make it a first-deployment gate.
-3. Leave it as a ticket.
-
-**Open Question 4: may the ban hook ever write `admin_enable` (D2)?** The hook cannot see
-the old `banned` value, so every `user.update` that carries `banned: false` (enrolling a
-second factor, for example) sends `admin_enable`, which re-enables a user disabled in one
-of two tenants (not banned). The redundant-event no-op covers only an `Active` user.
-Options:
-
-1. **(Recommended)** The ban hook writes only `admin_disable`; re-enabling is only
-   `setStatus`. It closes the path, and the hook stays the safety net for a ban that
-   comes from elsewhere. It changes Q11's "the ban hook writes both".
-2. Keep both and accept the revival, as the existing "Ban-hook mirror" ticket does.
-3. Make the hook compare `banned` with the session user's value when the update is for
-   the session's own user, and skip otherwise. More code, partial coverage.
+None. The seventh pass's four questions were answered on 2026-10-07 (Q99-Q102).
