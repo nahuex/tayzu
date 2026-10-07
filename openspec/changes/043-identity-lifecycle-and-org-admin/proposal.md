@@ -248,3 +248,8 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`, and
   an amendment of `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Better Auth's
   `ac` roles are neutralized).
+
+## Size
+
+After moving org deletion to `045` (Q103), this change still holds about 200 TDD tasks, over the roadmap's ~30-80 budget (`openspec/project.md` D9). The human accepted the overrun (Q104): the remaining groups are tightly coupled, and splitting them further would add coordination between changes without reducing risk.
+
