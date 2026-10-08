@@ -3041,86 +3041,13 @@ this table:
 | Q113 | (Ninth-pass drift N1, 2026-10-08) `_user` identifiers in `catalog.audit.mutation` | Q107 is extended to that log event: for a `_user` resource, `tayzu.catalog.resource.identifier` carries the same fixed placeholder; tasks 4.1d and 15.4 cover it, and `docs/catalog/catalog-core.md` records the amendment to 001's audit contract. The change-event row (found by `tayzu.tenant.id` and `tayzu.catalog.change_event.seq`) keeps the identifier in the database. |
 | Q114 | (Ninth-pass drift N3, 2026-10-08) The shed without `BETTER_AUTH_SECRET` | One shed core in `apps/api` works directly on the `tayzu_auth` pool with parameterized SQL inside the `withUserLock` transaction: it deletes the unmarked `account` rows and their markers, deletes the user's `session` rows and emits the events. All three shed paths use it; the reconcile builds no Better Auth instance and holds no `BETTER_AUTH_SECRET`. Valid because no secondary storage or cookie cache is configured, so a deleted session row is a revoked session; a test pins that configuration. |
 | Q115 | (Ninth-pass VCDM, 2026-10-08) The remaining low gaps | Folded into existing tasks: G9-2 (the stale group number in `docs/security/attack-surfaces.md`, task 16.6), G9-3 (the SSO callback fails closed when no account id was stashed, and 8.5g pins `account.updateAccountOnSignIn`), G9-5 (a failed post-commit revocation of the accepting session is logged and in the runbook and the alerts ticket), G9-6 (a declared `catalog.security.identity_conflict_refused` event with a bounded reason and opaque ids, emitted by 13.2b and 13.3). G9-4 and G9-7 become tickets TK9-2 and TK9-1. |
+| Q116 | (Ninth-amendment Open Question 1, 2026-10-08) Actor of an invitation acceptance and of the bootstrap | The acceptance names the invitee (`tayzu.actor.type` `user`, `tayzu.actor.id` the invitee's Better Auth id, the same id as `onBehalfOf` of the `_user` write). The bootstrap names the operator's opaque id, required from the environment, validated, and recorded as `tayzu.identity.operator.id` (D9's mechanism). |
+| Q117 | (Ninth-amendment Open Question 2, 2026-10-08) What `catalog.audit.user_status_changed` records | Every status change, each naming the principal its write already has: the admin, the operator id, the user on first sign-in, the invitee on acceptance (Q116), and no actor for the ban hook. The event also carries the bounded status event (for example `first_sign_in`, `admin_disable`), so a self-activation is distinguishable from an admin action. |
+| Q118 | (Tenth-pass VCDM G10-1, 2026-10-08) A failure after the acceptance's `_user` step | On the existing-account path, once the attempt's `_user` step has run (always after the shed), a later failure no longer deletes the membership: the attempt fails, the token stays valid, and a retry completes the acceptance. Compensation applies only to failures before the `_user` step. |
+| Q119 | (Tenth-pass VCDM G10-2, drift D-2 and D-3, 2026-10-08) `_user` emails in Cerbos decision logs and catalog HTTP spans | Q107 and Q113 are extended: for `_user` entities the catalog sends the fixed placeholder as the Cerbos `resource.id` (no `catalog_entity` policy reads `R.id`), `redactUnreadable` uses positional ids, and the D16 route-template rewrite also covers the catalog entity routes whose `{blueprint}` is `_user` (`/v1/blueprints/_user/entities/{entity}`, `/status`, `/related`); other blueprints keep their identifiers. D3's claim is corrected; tasks 4.1d, 15.4 and 15.5 cover it. |
+| Q120 | (Tenth-pass VCDM G10-3, 2026-10-08) The acceptance's shared context | The identity context carries the acceptance's `(tenantId, userId)`, and the ports skip only for that member; the self-link marker write checks the callback route path. A test each in 8.1e and 8.5g. |
+| Q121 | (Tenth-pass VCDM G10-4, 2026-10-08) The high audit advisory on master | Fixed outside 043 by a `pnpm.overrides` entry `source-map-js` `^1.2.2` (commit `c133f21`), documented in `docs/security/dependencies.md`; task 16.9 is unblocked. |
 
 ## Open Questions
 
-Open Question 1 of the eighth amendment was answered on 2026-10-08 (Q111), and the ninth
-amendment applied it, together with Q112-Q115, to D2, D4, D9, the Observability
-contract, Risks, the spec and the tasks. The consistency checks after applying them left
-two points that only the human can decide. Both are also asked in chat, and nothing
-below counts as approved until the human answers; each answer is then recorded as a
-Resolved decision and applied to the passages its question names. Until then those
-passages keep their current wording, and the rule that `tayzu.actor.id` is the admin
-who acted is scoped to the operations an admin initiates.
-
-**Open Question 1 (ninth amendment): who is the actor of an invitation acceptance and of
-the bootstrap?** The Observability contract and the spec said that in every audit event
-`tayzu.actor.id` is the admin who acted (the `onBehalfOf` of the `system` write, Q10).
-Two events have no such admin. `catalog.audit.invitation_accepted` declares
-`tayzu.actor.type` and `tayzu.actor.id`, but the acceptance is a public route on which
-the invitee acts, and its own `_user` step (D4 step 3) has no admin to put in
-`onBehalfOf`. `catalog.audit.user_created` with source `bootstrap` declares
-`tayzu.actor.id`, but the CLI runs out of band (Q91) with no admin in the
-`AsyncLocalStorage` of D2, so the membership hook's `_user` write has no `onBehalfOf`
-either, and unlike the reconcile (D9) the CLI takes no operator id. The reconcile is not
-in question: `users_reconciled` carries `tayzu.identity.operator.id`. The answer is
-applied to D2, D4 step 3, the Observability contract, the spec ("Security-relevant
-events are logged") and tasks 4.6, 4.6b, 8.1e, 13.3, 15.1 and 15.6. Options:
-
-1. **(Recommended)** The invitee for the acceptance, the operator for the bootstrap.
-   `invitation_accepted` carries `tayzu.actor.type` `user` and `tayzu.actor.id` the
-   invitee's Better Auth user id (the same value as `tayzu.identity.user.id`), and the
-   acceptance's `_user` step writes as `system` with that id as `onBehalfOf` (actor type
-   `user`) on both paths. The bootstrap CLI requires the operator's opaque id in its
-   environment, validated against the catalog's id pattern and refused when absent, as
-   the reconcile does (D9), and hands it to the hook's `_user` write as `onBehalfOf`
-   through the `AsyncLocalStorage` of D2; `user_created` with source `bootstrap` carries
-   it as `tayzu.identity.operator.id` in place of `tayzu.actor.id`, like
-   `users_reconciled`. Why: every audit event then names the principal who acted; the
-   bootstrap creates the most privileged account of an environment, and the
-   just-in-time access record that names its operator lives outside the audit trail;
-   it reuses D9's mechanism and adds no attribute name.
-2. The invitee for the acceptance, as in option 1; the bootstrap's `user_created` names
-   the created admin as `tayzu.actor.id` (the source `bootstrap` tells it apart), and its
-   `_user` write has no `onBehalfOf`. No new CLI input, but the event attributes the
-   creation to the account it created, and who ran the bootstrap is known only from the
-   just-in-time access record.
-3. No actor for either: `invitation_accepted` drops `tayzu.actor.type` and
-   `tayzu.actor.id` (the invitee is `tayzu.identity.user.id`), the bootstrap's
-   `user_created` drops `tayzu.actor.id`, and both `_user` writes are plain `system`
-   writes with no `onBehalfOf`. The smallest change, but neither the audit events nor the
-   catalog change events of those writes name a principal.
-
-**Open Question 2 (ninth amendment): which status changes does
-`catalog.audit.user_status_changed` record, and who is its actor when no admin acts?**
-Its row in the Observability contract declares it as the audit of every status change,
-with `tayzu.actor.id`, and the spec ("Security-relevant events are logged") requires
-every status change to be logged, but only `identity.users.setStatus` (tasks 11.2 and
-11.5) has an admin to name. Four writers change a status with no admin: the first-sign-in
-hook (D2, task 4.4, `first_sign_in`, in the user's own sign-in), the acceptance's own
-`_user` step (D4 step 3, tasks 8.1e and 8.2, `invitation_accepted`, whose actor is Open
-Question 1), the reconcile (D9, task 4.2b, `created_active` and `admin_disable`, with
-the operator as `onBehalfOf`) and the ban hook (D2, task 4.5, `admin_disable`, which
-mirrors a ban made elsewhere). No task says which of them emits the event, and Open
-Question 1 covers only the acceptance's. The answer is applied to the Observability
-contract, the spec ("Security-relevant events are logged") and tasks 4.2b, 4.4, 4.5,
-15.1 and 15.6. Options:
-
-1. **(Recommended)** Every status change, each naming the principal that its write
-   already has: the admin for `setStatus`; the operator for the reconcile
-   (`tayzu.identity.operator.id` in place of `tayzu.actor.id`, as on
-   `users_reconciled`); the user's own Better Auth id as `tayzu.actor.id` for the first
-   sign-in, which is the user's own act; the answer to Open Question 1 for the
-   acceptance; and no `tayzu.actor.id` for the ban hook, which has no principal of its
-   own. Why: the spec's "every status change is logged" stays true, SEC16 keeps one
-   audit record of every activation and disable, each with the principal that exists,
-   and no attribute name is added.
-2. Every status change, with `tayzu.actor.id` only when an admin acts and no actor
-   otherwise; the reconcile's still carries the operator id, as its change events do.
-   Simpler, but a first-sign-in activation names no principal.
-3. Only the changes made by `identity.users.setStatus`: the row's purpose becomes
-   "Audit of every status change made by `identity.users.setStatus`, including service
-   accounts disabled and enabled", and the spec's requirement is narrowed to the status
-   changes an admin initiates. The acceptance and the reconcile keep their own events
-   (`invitation_accepted`, `users_reconciled`), but a first-sign-in activation and a
-   ban-hook disable leave only their catalog change event and no audit event.
+None. The ninth amendment's two questions were answered on 2026-10-08 (Q116, Q117).
