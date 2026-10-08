@@ -40,8 +40,11 @@ and executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`).
 - **Invitations.** Admin-initiated invite by email for the roles `member` or
   `admin` (never `owner`), backed by Better Auth's `organization` plugin
   invitation record (48-hour expiry); resend and cancel; a state-machine guard
-  so accepting an expired, cancelled or rejected invitation always fails, with
-indistinguishable error responses across every rejection reason. An invitation does
+  so accepting an expired, cancelled, rejected or already-accepted invitation always fails, with
+indistinguishable error responses across every rejection reason. The acceptance marks
+the invitation `accepted` together with the consumption of its token, so an accepted
+invitation is never resent or cancelled (by an admin or by a disable) and no longer
+counts toward the per-organization pending limit. An invitation does
 not outlive its inviter's authority: acceptance fails unless the inviter is still an
 active, non-banned member whom Cerbos still allows to invite, and disabling a user
 cancels the invitations they created. Creating a user for an email with a pending
@@ -54,15 +57,22 @@ invitation in the tenant cancels that invitation.
   with a breached-password check. A person who already has an account accepts with
   their own session plus the token (CSRF header, its own origin check, matching
   email, step-up for an `admin` role) and only gains the membership. Every other
-  admin is notified when an `admin` invitation is accepted. The steps of the acceptance
+  admin is notified when an `admin` invitation is accepted, once: for an existing
+  account by the attempt that activates the member, as soon as it does, and for a new
+  account once the acceptance has committed. The steps of the acceptance
   are idempotent, the token is consumed last, the `_user` write fails closed and what
-  a failed attempt created is undone (on the existing-account path, only before its
+  a failed attempt created is undone (except after a lost race to consume the token, a
+  token delete or `accepted` write that changes no row, which undoes nothing on either
+  path and answers the uniform rejection; on the existing-account path, only before its
   `_user` step, the membership included), while a failure after an existing account's `_user` step
   keeps the membership and the token for a retry that completes the acceptance (there is
-  no single transaction). An SSO link its user did not make (every link
+  no single transaction), and what the join owes (the session revocation below and the
+  admin notice) has already run by then, so an attempt that is never retried leaves none
+  of it undone. An SSO link its user did not make (every link
   without a provenance marker) is shed, on every acceptance attempt and before the
-  reconcile creates a member's row, and the user's sessions are revoked, the accepting
-  one, and one that an earlier attempt's shed kept, once the acceptance has committed,
+  reconcile creates a member's row, and, when this or an earlier attempt's shed of the
+  invitation removed a link, the user's sessions are revoked, the accepting one, and one
+  that an earlier attempt's shed kept, as soon as the attempt's `_user` step has run,
   when the user joins a second tenant; the joined
   tenant's `_user` is activated only after that shed, so the new membership stays
   unusable until then; the SSO callback creates no session through a shed link, or when
@@ -122,7 +132,8 @@ mail. A second fixed template tells the other admins of an accepted
 - **Every member has a `_user` row.** A member with no `_user` row is rejected
   (reason `user_missing`), and a repeatable reconcile, run as an operator-started job, creates every missing row through the state machine (shedding first the SSO links
   that a member of two tenants did not make) and removes an orphan
-  row that a failed acceptance leaves (there is no transaction, Q89); it is also the repair path for a member
+  row that a failed acceptance leaves (there is no transaction, Q89) once an hour has
+  passed since the row was activated; it is also the repair path for a member
   that predates this change. Its shed is plain SQL on the authentication database role,
   so the job holds no secret that signs sessions. A banned user's sign-in fails exactly like any other
   failure, and every identity procedure parses its input strictly.
@@ -138,7 +149,8 @@ mail. A second fixed template tells the other admins of an accepted
   fails closed and emits `authz_denied`, and a route-table-driven HTTP matrix proves
   each of the thirteen oRPC routes. One repository module in `apps/api` serves every
   identity read of `apikey`, `invitation`, `member`, `session`, `user` and `account`,
-  the membership delete of the acceptance's compensations and the tenant-scoped
+  the acceptance's write of the `accepted` status, the membership delete of the
+  acceptance's compensations and the tenant-scoped
   session delete of a disable, requiring the tenant wherever the model has one except
   in two named reads that are global by nature (the accept route's invitation lookup,
   before the tenant is known, and the tenant ids of a user's memberships), with a lint
@@ -166,11 +178,13 @@ mail. A second fixed template tells the other admins of an accepted
   auth events; no identifier in a URL path reaches telemetry (the catalog routes of the
   `_user` blueprint included), and no catalog span, catalog audit event or catalog
   request to Cerbos carries a `_user` identifier (a fixed placeholder replaces it, and the
-  referrer redaction sends positional ids). Every audit event names the principal who
+  referrer redaction sends positional ids, which rewrites one existing `002` unit test
+  to a stricter assertion, called out in the PR). Every audit event names the principal who
   acted: the admin, the invitee of an acceptance, the user of their own first sign-in,
   or the operator's opaque id for the reconcile and the bootstrap, which requires it, and
   none for a status change that mirrors a ban; every status change is logged, by any
-  writer, with that principal and its status event. The
+  writer, with that principal and its status event, and names its subject by an opaque
+  id (the invitation's for the status write of a new invitation). The
   cause of a refused create or link and a failed revocation of an accepting session are
   logged internally with opaque ids.
 - **Hand-offs from `002` (`002` Q73).** Every item (M5, M9-M15, M17-M20) is a task in
@@ -298,10 +312,18 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   non-blocking ones (G8-1 to G8-9 and G8-12), and a ninth pass that found no blocking one
   and seven non-blocking ones (G9-1 to G9-7, among them the `_user` of a joined tenant
   being activated before the shed), and a tenth pass that found no blocking one and four
-  non-blocking ones (G10-1 to G10-4, among them `_user` emails in Cerbos's decision log).
+  non-blocking ones (G10-1 to G10-4, among them `_user` emails in Cerbos's decision log),
+  and an eleventh pass that found six non-blocking ones (G11-1 to G11-6, among them an
+  accepted invitation that stayed `pending`, and a `_user` referrer's identifier still
+  sent to Cerbos by a delete's referrer check).
   All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks, except
-  the org-deletion gaps, which moved to `045` with Q103 and are closed there.
+  the org-deletion gaps, which moved to `045` with Q103 and are closed there. Three
+  questions that a consistency check of the eleventh amendment raised (the admin notice
+  of a new-account join whose token consumption changes no row, the window between
+  the `pending` check of resend and cancel and the acceptance, and what an admin's
+  cancel of an invitation that is not `pending` answers) are open in `design.md`
+  until the human answers them.
   New surface: the first public route, the first outbound email and the Pwned
   Passwords egress.
 - **Docs**: `docs/security/data-retention.md` (new, for the operational policies; `045`

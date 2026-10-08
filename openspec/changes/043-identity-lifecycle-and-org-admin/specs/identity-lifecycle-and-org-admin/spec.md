@@ -213,7 +213,8 @@ the `_user` status of that tenant through the state machine, revoke every one of
 the user's sessions whose active organization is that tenant (logging each as
 `auth.security.session_revoked` with the reason `admin_action`), cancel the
 user's pending invitations of that tenant, and cancel the pending invitations that
-user created in that tenant. Only for a user whose single membership
+user created in that tenant, skipping any invitation that is no longer `pending`, such
+as an accepted one. Only for a user whose single membership
 is that tenant MUST it also ban the user and revoke all their sessions. The ban
 MUST NOT use Better Auth's admin-plugin ban routes, which the global role `user`
 cannot call. `resolveContext` MUST reject a banned user (reason `user_banned`), and MUST admit a human only
@@ -259,12 +260,13 @@ these checks MUST be logged as `catalog.security.principal_rejected` and counted
 - **GIVEN** a pending invitation to `bob@example.com` from this tenant and an existing `bob`
 - **WHEN** an admin disables `bob`
 - **THEN** the invitation's state becomes `cancelled` with reason `user_disabled`
+- **AND** an invitation of `bob` that was already accepted stays `accepted` and no cancellation is logged for it
 
 #### Scenario: Disabling cancels the invitations the user created
 
-- **GIVEN** an admin who created two pending invitations to other people, and another admin's pending invitation
+- **GIVEN** an admin who created two pending invitations to other people and one that its invitee has accepted, and another admin's pending invitation
 - **WHEN** the first admin is disabled
-- **THEN** their two invitations become `cancelled` with reason `inviter_disabled`, the other admin's stays `pending`, and re-enabling restores none
+- **THEN** their two pending invitations become `cancelled` with reason `inviter_disabled`, the accepted one stays `accepted` with no cancellation logged, the other admin's stays `pending`, and re-enabling restores none
 
 
 ### Requirement: Every member has a `_user` row
@@ -276,8 +278,9 @@ that later starts it is `045`'s), MUST create the `_user` entity of every member
 state machine as `created_active`, MUST leave an existing row untouched (a second run
 changes nothing), MUST create a `Disabled` row for a member whose user is banned, MUST
 remove an orphan (a human `_user` that is `Active`, has no membership in its tenant and
-is more than one hour old, which a failed acceptance leaves behind; never an `Invited`
-or `Staged` row, a younger row or a service account), and MUST attribute its writes to the operator whose id the job's environment
+was last updated, which for such a row is its activation, more than one hour ago, which
+a failed acceptance leaves behind; never an `Invited` or `Staged` row, a row updated
+within the hour, even one created earlier, or a service account), and MUST attribute its writes to the operator whose id the job's environment
 supplies, refusing to run without one. Before it creates the `_user` of a member whose user
 belongs to two or more tenants, the reconcile MUST shed the SSO links that user did not make,
 with the session revocation of the requirement on SSO links, and MUST NOT create the row
@@ -298,9 +301,9 @@ database role, without holding the secret that signs sessions.
 
 #### Scenario: The reconcile removes an orphan
 
-- **GIVEN** an `Active` human `_user` with no member in its tenant that is more than an hour old, one that is younger (an acceptance in flight), an `Invited` one, a `Staged` one and a service account
+- **GIVEN** an `Active` human `_user` with no member in its tenant that was activated more than an hour ago, one activated less than an hour ago (an acceptance in flight), one created by an invitation more than an hour ago and activated less than an hour ago by a failed new-account acceptance, an `Invited` one, a `Staged` one and a service account
 - **WHEN** the reconcile runs
-- **THEN** only the older `Active` human row is removed, the removal is attributed to the operator, and a later invitation of that email succeeds
+- **THEN** only the `Active` human row activated more than an hour ago is removed, the removal is attributed to the operator, and a later invitation of that email succeeds
 
 #### Scenario: The reconcile sheds before it creates a `_user`
 
@@ -332,7 +335,14 @@ contains `/`, MUST be rejected with `CATALOG_VALIDATION_FAILED` by `invite` and 
 existing member, the per-organization pending limit) MUST NOT reach the response
 as they are. Cancelling and resending MUST resolve the
 invitation on the server and MUST apply only to an invitation of the caller's
-tenant. Only a `pending`, non-expired invitation MUST be acceptable. Creating a user
+tenant. Only a `pending`, non-expired invitation MUST be acceptable. An accepted
+invitation MUST reach the state `accepted` together with the consumption of its token,
+and not before. Resending and cancelling, and the cancellations that disabling a user
+makes, MUST skip an invitation whose stored state is not `pending` (an accepted,
+cancelled or rejected one): a resend of it MUST be
+refused with `CATALOG_VALIDATION_FAILED`, without a new token or an email, and a
+cancellation of it MUST change nothing and log nothing. An accepted invitation MUST NOT count toward the per-organization limit
+of pending invitations. Creating a user
 through `identity.users.create` for an email that has a `pending` invitation in the
 caller's tenant MUST cancel that invitation, with the reason `user_created`, once the
 user and the membership exist, and MUST leave an invitation of another tenant untouched.
@@ -377,6 +387,13 @@ user and the membership exist, and MUST leave an invitation of another tenant un
 - **THEN** another email is sent to `bob@example.com` whose link works and whose earlier link no longer works
 - **AND** the invitation's expiry is still 48 hours from its original creation, not from the resend (a resend does not reset it)
 
+#### Scenario: An accepted invitation is not resent or cancelled
+
+- **GIVEN** an invitation to `bob@example.com` that `bob` has accepted
+- **WHEN** the admin resends it, and then cancels it
+- **THEN** the resend is refused with `CATALOG_VALIDATION_FAILED`, no token is issued and no email is sent, the cancel changes nothing, the invitation stays `accepted`, and neither `catalog.audit.invitation_resent` nor `catalog.audit.invitation_cancelled` is logged
+- **AND** the accepted invitation does not count toward the organization's limit of pending invitations
+
 #### Scenario: An address the platform cannot hold is rejected
 
 - **WHEN** an admin invites, or creates a user for, `a+b@example.com` or `a/b@example.com`
@@ -404,6 +421,13 @@ identifying in the path or query. The token MUST be 256 bits from a CSPRNG, MUST
 stored only as a sha256 digest, MUST be compared in constant time, MUST be verified
 before it is consumed and then consumed last, by one atomic delete conditioned on its
 digest, and MUST work exactly once; a resend MUST invalidate the previous token. The
+consumption MUST set the invitation's state to `accepted` in the same transaction,
+only while the invitation is still `pending`; when either the token delete or that
+write changes nothing, the consumption MUST change nothing and the attempt MUST fail without
+undoing anything, as an attempt that lost the race to consume the token does, with the
+uniform rejection and the reason `consume_conflict`, and a
+later acceptance of an accepted invitation MUST be recorded with the reason
+`already_accepted`. The
 tenant MUST be derived on the server from the invitation record; a body that
 carries a tenant or an actor MUST be rejected. On both paths, after the token has verified and before it is consumed, the invitation's
 inviter MUST still be a member of the organization, MUST NOT be banned and MUST have the
@@ -420,8 +444,9 @@ status through the state machine, and MUST NOT create a session. The acceptance
 MUST NOT depend on a single transaction: its steps MUST be idempotent, the token MUST
 be consumed last, the `_user` write MUST fail closed (if it fails, the token is not
 consumed and what the attempt created MUST be undone, so that a retry with the same
-token starts from nothing), and an orphan `_user` that a double failure leaves MUST be
-repaired by the reconcile. For an email that
+token starts from nothing), and the `Active` `_user` with no membership that a failed
+attempt leaves (the attempt found it, so it is not undone) MUST be repaired by the
+reconcile. For an email that
 already has an account, acceptance MUST require a valid session of that same
 account, which MUST be read without refreshing it (only the step-up guard of an
 `admin` invitation, evaluated after the session, the email and the token have matched,
@@ -446,21 +471,26 @@ password or change the active organization, and MUST NOT touch a linked account 
 session, the request's own included, except to shed the SSO links its user did not make
 and, when a link was shed by this or an earlier attempt of the invitation, revoke the
 user's sessions, the one that carried the acceptance (and any that an earlier attempt's
-shed kept) only after the acceptance has committed (see the requirement on SSO links).
+shed kept) only once the attempt's `_user` step has run, before the email is marked
+verified and the token is consumed (see the requirement on SSO links).
 On the existing-account path, if a step before the `_user` is activated (the shed or the
 `_user` write) fails, the membership that the attempt created MUST be deleted, and a
 membership that existed before the attempt MUST NOT be. Once the `_user` has been
 activated on that path, a later failure before the token is consumed MUST NOT delete the
 membership: the attempt fails, the token stays valid, and a retry with the same token
-MUST complete the acceptance. Acceptance
+MUST complete the acceptance. What the join owes, the revocation of those sessions and,
+for an `admin` invitation, the notice to the other administrators, MUST already have
+run by then, so that an attempt that fails after its `_user` step and is never retried,
+or whose token delete changes nothing because a concurrent resend replaced the token,
+leaves none of it undone. Acceptance
 MUST NOT link an account by the email claim from Visma Connect. The body MUST be an
 allowlist of the invitation id, the token and, for a new account, the password; any
 other field MUST be rejected with `CATALOG_VALIDATION_FAILED`, and an invitation id
 that fails a shape and length check MUST NOT be logged. Every rejected
 acceptance (nonexistent invitation, expired, cancelled, rejected or already-accepted
 invitation, wrong token, a `Disabled` user, an inviter who is no longer an
-active admin, a tenant at its member limit, no or mismatched session for an existing account, a failed CSRF or origin check, or a lost
-concurrent account creation)
+active admin, a tenant at its member limit, no or mismatched session for an existing account, a failed CSRF or origin check, a lost
+concurrent account creation, or a lost race to consume the token)
 MUST return the same status, error code and body shape, and a nonexistent invitation
 MUST take the same comparison work as a wrong token; the specific reason MUST be
 recorded only in the `catalog.security.invitation_acceptance_denied` event. A
@@ -470,14 +500,18 @@ fixed notice with no link and no free text MUST be sent to the other administrat
 of the organization, `Disabled` administrators included, through the notice controls
 of the requirement on the invitation email (the kill switch, the per-recipient and
 per-tenant notice caps and at most 20 recipients); a send failure MUST NOT block the
-acceptance and MUST be logged.
+acceptance and MUST be logged. On the existing-account path the notice MUST be sent by
+the attempt whose `_user` step activated the member, as soon as that step has run and
+before the email is marked verified and the token is consumed, and a retry MUST NOT send
+a second one; on the new-account path it MUST be sent only once the acceptance has
+committed, so that an attempt that is undone sends none.
 
 #### Scenario: A new person accepts and can then sign in
 
 - **GIVEN** a pending invitation to `bob@example.com`, who has no account
 - **WHEN** `bob` presents the invitation id, the token and a policy-compliant password
 - **THEN** `bob` has an account with a verified email, a membership with the invited role and status `Active`, and no session exists
-- **AND** the token cannot be used a second time
+- **AND** the invitation is `accepted` and the token cannot be used a second time
 
 #### Scenario: A failed `_user` write undoes the acceptance
 
@@ -520,6 +554,26 @@ acceptance and MUST be logged.
 - **GIVEN** a pending invitation to `carol@example.com`, who has an account and a session, and an attempt that fails after her `_user` was activated, when her email is marked verified
 - **WHEN** `carol` presents the token with her session, and then retries with the same token
 - **THEN** the failed attempt leaves her membership and her `Active` `_user` in place, deletes nothing and leaves the token valid, and the retry completes the acceptance, consuming the token and marking her email verified, with no second status write
+
+#### Scenario: A failure after the `_user` step has already notified the other admins
+
+- **GIVEN** a pending `admin` invitation to `carol@example.com`, who has an account, a session and a fresh step-up verification, in an organization with two other admins, and an attempt that fails after her `_user` was activated
+- **WHEN** `carol` presents the token, and the attempt fails, whether or not she retries it with the same token
+- **THEN** each other admin has already received exactly one notice, sent by the failed attempt right after it activated her `_user`, and a retry that completes the acceptance sends no second notice
+- **AND** on the new-account path an attempt that fails and is undone sends no notice, and the retry that completes the acceptance sends it once
+
+#### Scenario: A token replaced by a concurrent resend leaves nothing owed
+
+- **GIVEN** an existing-account acceptance of a pending `admin` invitation whose shed removed a link, and a resend of the same invitation that replaces the token after the attempt's `_user` step and before its consumption
+- **WHEN** the attempt consumes its token and the delete changes nothing
+- **THEN** the attempt fails as a lost race, answering the uniform rejection with the reason `consume_conflict`, and deletes nothing, the session that carried it is already revoked and the other admins already notified, and the invitation stays `pending`
+- **AND** an acceptance with the resent token completes it, revokes nothing more and sends no second notice
+
+#### Scenario: A replayed acceptance is recorded as already accepted
+
+- **GIVEN** an invitation that was accepted with its token
+- **WHEN** the same acceptance request is sent again
+- **THEN** it answers the uniform rejection, `catalog.security.invitation_acceptance_denied` records the reason `already_accepted`, and the invitation stays `accepted` with nothing changed
 
 #### Scenario: The acceptance holds back only its own member's hooks
 
@@ -640,11 +694,15 @@ switched to the joined tenant in the meantime is still rejected there.
 When the shed removed a link, every session of the user MUST be revoked, whether or not
 the session was established through the identity provider, each revocation being logged
 as `auth.security.session_revoked` with the reason `sso_link_shed`; the session that
-carries the acceptance request MUST be kept while the acceptance runs and MUST be revoked
-once it has committed, and a failure of that revocation MUST be logged; a shed that removes
+carries the acceptance request MUST be kept until the attempt's `_user` step has run and
+MUST be revoked as soon as that step has run, before the email is marked verified and the
+token is consumed, so that an attempt that fails afterwards and is never retried has
+already revoked it, and a failure of that revocation MUST be logged and MUST NOT undo the
+join; a shed that removes
 a link at acceptance MUST record the session it kept, together with its deletion, so that
-the attempt that commits also revokes that session, and its own, when an earlier attempt's
-shed removed the link and its own shed removes nothing; and the shed MUST
+every attempt that reaches its `_user` step also revokes that session, and its own, when
+an earlier attempt's shed removed the link and its own shed removes nothing, and the
+record MUST be removed once that revocation has succeeded; and the shed MUST
 sweep the user's sessions a second time after its deletion commits. The SSO callback MUST
 NOT create a session through an account that no longer exists, or that carries no marker
 while its user belongs to two or more tenants, and MUST refuse, failing closed, when it
@@ -665,7 +723,7 @@ requires a fresh step-up verification.
 
 - **GIVEN** a session minted through an admin-recorded link before the user joins `t2`
 - **WHEN** the user joins `t2`, by acceptance or by a membership added directly
-- **THEN** that session is revoked, so `/organization/set-active` for `t2` and any `/v1` call with it are rejected, `auth.security.session_revoked` is logged with the reason `sso_link_shed`, and on the acceptance path the acceptance carried by another session completes, and that session is revoked once the acceptance has committed (Q106; see "The accepting session is revoked when the shed removed a link")
+- **THEN** that session is revoked, so `/organization/set-active` for `t2` and any `/v1` call with it are rejected, `auth.security.session_revoked` is logged with the reason `sso_link_shed`, and on the acceptance path the acceptance carried by another session completes, and that session is revoked as soon as the acceptance's `_user` step has run (Q106, Q122; see "The accepting session is revoked when the shed removed a link")
 
 #### Scenario: A retried acceptance still sheds the link and revokes the sessions
 
@@ -695,20 +753,27 @@ requires a fresh step-up verification.
 #### Scenario: The accepting session is revoked when the shed removed a link
 
 - **GIVEN** a user with an SSO link they did not make who accepts an invitation of a second tenant with a session on the existing-account path
-- **WHEN** the acceptance commits
-- **THEN** the acceptance succeeded, the session that carried it is revoked afterwards and the user signs in again, and a user whose only link they made keeps that session
+- **WHEN** the acceptance runs
+- **THEN** the session that carried it is revoked as soon as the `_user` step has run, before the email is marked verified and the token is consumed, the acceptance succeeds and the user signs in again, and a user whose only link they made keeps that session
 
 #### Scenario: A failed revocation of the accepting session is logged
 
 - **GIVEN** an existing-account acceptance whose shed removed a link
-- **WHEN** the revocation of the session that carried it fails after the acceptance has committed
-- **THEN** the acceptance stays committed and `catalog.security.accepting_session_revocation_failed` is logged with opaque identifiers only
+- **WHEN** the revocation of the session that carried it fails after the `_user` step has run
+- **THEN** the join is not undone, the acceptance completes, and `catalog.security.accepting_session_revocation_failed` is logged with opaque identifiers only
 
 #### Scenario: A retried acceptance revokes the session an earlier attempt's shed kept
 
 - **GIVEN** a user with an SSO link they did not make, and an existing-account acceptance of a second tenant whose first attempt shed the link and then failed before its `_user` was activated
-- **WHEN** the acceptance is retried with the same token, with the same session or with a new one, and commits, its own shed removing nothing
+- **WHEN** the acceptance is retried with the same token, with the same session or with a new one, and completes, its own shed removing nothing
 - **THEN** the session that the first attempt kept is revoked, and so is the session that carried the retry, and an acceptance whose attempts never removed a link keeps its session
+
+#### Scenario: An attempt that fails after its `_user` step has already revoked the sessions
+
+- **GIVEN** a user with an SSO link they did not make, and an existing-account acceptance of a second tenant whose attempt sheds the link, activates the `_user` and then fails before the token is consumed
+- **WHEN** the attempt is never retried
+- **THEN** the session that carried it, and any session an earlier attempt's shed kept, are already revoked, the record of the kept session is gone, and `auth.security.session_revoked` was logged with the reason `sso_link_shed` for each
+- **AND** a later retry with a new session revokes nothing more
 
 #### Scenario: An account written inside another operation gets no marker
 
@@ -1322,7 +1387,9 @@ its actor, the same identity that its status write is attributed to. Every statu
 MUST be logged, whichever writer makes it, with the principal of its write (the admin, the
 operator's opaque id, the user on their own first sign-in, the invitee on acceptance, and
 no actor for a change that mirrors a ban) and the bounded status event that caused it, so
-that a self-activation is told apart from an admin action. The audit events of an invitation's creation, cancellation and resend MUST carry the
+that a self-activation is told apart from an admin action, and MUST name its subject by an
+opaque identifier: the user's, the service account's, or, for the status write that an
+invitation makes, the invitation's, because the invited email may have no account yet. The audit events of an invitation's creation, cancellation and resend MUST carry the
 tenant and the acting admin, and those of its creation and resend also the actor type.
 
 #### Scenario: Each lifecycle action emits its declared event
@@ -1334,6 +1401,7 @@ tenant and the acting admin, and those of its creation and resend also the actor
 
 - **WHEN** a status is changed by an admin's status change, invitation, user creation or service-account creation, by a first sign-in, by an acceptance, by a ban, by the reconcile and by the bootstrap
 - **THEN** each change is logged as `catalog.audit.user_status_changed` with its status event, the admin, the user or the invitee as its actor, the operator's opaque id in place of an actor for the reconcile and the bootstrap, and no actor for the ban, and with no email
+- **AND** the invitation's status write names the invitation's id as its subject, a service account's names the service account's id, and every other names the user's id
 
 #### Scenario: The acceptance and the bootstrap name who acted
 
@@ -1364,7 +1432,8 @@ account), while the entities of other blueprints keep theirs; the change event s
 the database keeps the identifier and is found from the audit event by its tenant and
 sequence number. The catalog's authorization requests MUST NOT carry it either: for a
 `_user` entity the resource identifier sent to the authorization engine, whose decision
-log records it, MUST be the same placeholder, and a redaction that checks several candidates MUST send
+log records it, MUST be the same placeholder, whether the entity is the one operated on
+or a referrer whose update permission a delete that detaches references checks, and a redaction that checks several candidates MUST send
 positional identifiers instead of theirs, while the entities of other blueprints keep
 their identifiers; and the exported path of a catalog entity route of the `_user`
 blueprint MUST be its route template, while the routes of other blueprints keep their
@@ -1394,8 +1463,8 @@ enumerated values (status, invitation state, account kind, credential kind) are 
 
 #### Scenario: A `_user` email never reaches the Cerbos decision log
 
-- **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, read, updated, deleted or listed through the catalog, and a delete is blocked by referrers
-- **THEN** every authorization request carries the fixed placeholder as the resource identifier of that entity and the email in no field, the referrer redaction sends positional identifiers, and an entity of another blueprint is checked with its identifier
+- **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, read, updated, deleted or listed through the catalog, a delete that detaches references has that entity as a referrer, and a delete is blocked by referrers
+- **THEN** every authorization request carries the fixed placeholder as the resource identifier of that entity and the email in no field, the referrer's update check included, the referrer redaction sends positional identifiers, and an entity of another blueprint is checked with its identifier
 
 #### Scenario: A `_user` email never reaches a catalog HTTP span
 
@@ -1406,6 +1475,11 @@ enumerated values (status, invitation state, account kind, credential kind) are 
 
 - **WHEN** `PUT /v1/users/marker-user@example.com/status` and a credential route with a marker id are called through the real HTTP server and instrumentation
 - **THEN** neither marker appears in any exported span, metric or log attribute, and the exported path is the route template
+
+#### Scenario: A percent-encoded path identifier never reaches telemetry over HTTP
+
+- **WHEN** `PUT /v1/users/marker-user%40example.com/status` and `GET /v1/blueprints/_user/entities/marker-user%40example.com` are called through the real HTTP server and instrumentation
+- **THEN** the exported path of each is its route template, and neither the encoded nor the decoded email appears in any exported span, metric or log attribute
 
 #### Scenario: The email provider's failure never leaks
 

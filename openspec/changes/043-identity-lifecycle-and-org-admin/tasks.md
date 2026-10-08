@@ -18,17 +18,33 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1 and Q4-Q121 in `design.md` (there is no Q2 or
+Tasks follow the Resolved decisions Q1 and Q4-Q126 in `design.md` (there is no Q2 or
 Q3). The ninth amendment's two open questions are Q116 (the invitee is the actor of an
 acceptance, and the bootstrap records the operator's opaque id) and Q117
 (`catalog.audit.user_status_changed` records every status change, with the principal of
 its write and the status event), applied to tasks 4.1e, 4.2b, 4.3, 4.4, 4.5, 4.6, 4.6b,
-7.3, 8.1e, 8.2, 8.5b, 10.3, 11.2, 11.5, 13.3, 15.1 and 15.6. One open question is pending
-(design, Open Questions, the tenth amendment's Open Question 1): what runs when an
-existing-account attempt fails after its `_user` step and is never retried. Tasks 8.1e,
-8.5b, 8.5h, 8.5k, 8.5m, 8.15 and 16.5 keep their current wording on that point (the revocation of the
-accepting session and the admin notice run after the acceptance commits); the answer is
-then recorded as a Resolved decision and applied to them, and no other task waits on it.
+7.3, 8.1e, 8.2, 8.5b, 10.3, 11.2, 11.5, 13.3, 15.1 and 15.6. Three questions are open
+(design, Open Questions 1 to 3, raised by the twelfth amendment's consistency check):
+whether a new-account attempt whose consumption changes no row after its `_user` step
+sends the admin notice (tasks 8.1e and 8.15), how the window between the `pending`
+check of resend and cancel and the acceptance's `accepted` write is treated (tasks 7.6,
+7.7, 7.13, 8.10, 11.4 and 11.4b, and, depending on the option, 5.1b, 7.2, 7.5 and
+8.3), and what an admin's cancel of an invitation that is not `pending` answers, success
+or the `CATALOG_VALIDATION_FAILED` of the refused resend (tasks 7.6 and 8.10). Until the human
+answers them those tasks keep their current wording, and none of them is ticked before
+the answer is applied. The tenth amendment's Open Question 1 is Q122: on the existing-account
+path the revocation of the accepting session and of the session an earlier attempt's
+shed recorded, and the admin notice, run as soon as the attempt's `_user` step has run,
+before the `emailVerified` write and the consumption of the token (on the new-account
+path the notice still follows the commit), applied to tasks 8.1e, 8.5b, 8.5h, 8.5k,
+8.5m, 8.15 and 16.5. Q123 (the acceptance marks the invitation `accepted` with the
+consumption of its token, and resend, cancel and the disable-time cancellations skip an
+invitation that is not `pending`) is applied to tasks 5.1b, 7.6, 7.7, 8.1e, 8.3, 8.10,
+11.4 and 11.4b; Q124 (the orphan grace period runs from the `_user` row's `updatedAt`) to tasks
+4.2b and 16.5; Q125 (the rewrite of the existing case of `redaction.test.ts`) to task
+4.1d; and Q126 (the subject of the `created_invited` status event) is the existing
+wording of tasks 4.1e, 7.3 and 15.1, with the optional `invitationId` of task 4.1's port
+input carrying that subject to the adapter (twelfth amendment, no new decision).
 The eighth amendment's Open Question 1 is Q111, applied to design D2, the Risks
 bullet on failed acceptances and the spec, and to tasks 3.2, 4.4, 8.1e and 16.5. Org deletion and data retention (the old group 12 of this file) moved to `045-org-deletion-and-data-retention` by Q103: no task here covers them.
 
@@ -74,7 +90,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 1. Setup and coordination with `002`
 
 - [ ] 1.1 _(setup)_ The drift-check against the merged `002` was run on
-      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to tenth drift-checks and VCDM passes (2026-10-01, 2026-10-07 and 2026-10-08) are folded in too. At
+      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to eleventh drift-checks and VCDM passes (2026-10-01, 2026-10-07 and 2026-10-08) are folded in too. At
       implementation time this task is a last drift-check of the files the design
       names (`user-sync.ts`, `identity-router.ts`, `context-resolver.ts`,
       `token-exchange.ts`, `server.ts`, `policies/`) and adjusts import paths and
@@ -105,7 +121,15 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       amendment's two open questions are resolved by Q116 and Q117, and the tenth pass (no
       blocking gap and the four non-blocking gaps G10-1 to G10-4, with the tenth
       drift-check's D-2 and D-3) by Q118-Q121 and tasks; its mechanical items (D-1 and
-      D-4) need no decision and are folded into the design and these tasks.
+      D-4) need no decision and are folded into the design and these tasks. The tenth
+      amendment's Open Question 1 is resolved by Q122, the eleventh pass's G11-1 and
+      G11-5 by Q123 and Q124, the eleventh drift-check's N-1 by Q125, and Q126 confirms
+      the subject of the `created_invited` status event; the eleventh pass's low gaps
+      (G11-2, G11-3, G11-4 and G11-6) and the eleventh drift-check's mechanical items
+      (N-2 to N-5, N-5 being G11-3) need no decision and are folded into the design,
+      these tasks, the Gates and the ticket TK11-1. The twelfth amendment's consistency
+      check folds its fixes into the design and these tasks with no new decision and
+      leaves the design's Open Questions 1 to 3 open until the human answers them.
       Attach the
       reports to the PR. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded.
@@ -291,7 +315,19 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `UserSyncPort` and its input (`auth.ts`) replace the two-value `status`
       (`'Active' | 'Disabled'`) with a `change`, which is a `StatusEvent` or the
       intent `membership_added` (carrying whether the member's Better Auth user is
-      `banned`), and accept an optional `onBehalfOf`. The port has only
+      `banned`), and accept an optional `onBehalfOf`. The port's input also gains
+      `userId` (design D2; a consistency fix within Resolved decisions Q117 and Q120, no
+      new decision), because today it carries no Better Auth user id, so the adapter
+      could neither compare a hook call with the acceptance's `(tenantId, userId)` (Q120,
+      8.1e) nor name the subject of a hook write (Q117, 4.1e): it is the Better Auth user
+      id of a human, which the membership hook passes from
+      `afterAddMember({ member, user })`'s `user`, the ban hook from the row it receives
+      (`SyncUserRow.id`) and the first-sign-in hook of 4.4 from the user who signed in,
+      while the `apps/api` writers pass the id they hold; it is the `svc-…` identifier of
+      a service account (Resolved decision Q90); and it is absent only for the invitation
+      hook's `created_invited` write, which passes the optional **`invitationId`** (the
+      `invitation.id` that `afterCreateInvitation` receives) instead (Resolved decision
+      Q126; a consistency fix within it, no new decision). The port has only
       `upsertUser`, so a hook cannot read the current status: `afterAddMember`
       passes the intent and the adapter derives the event (4.2). In
       `@tayzu/catalog`, `UserSyncInput` in
@@ -316,8 +352,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       event, a concurrent `admin_disable` between the adapter's read and its write
       never being overwritten (the user stays `Disabled`), a create race for a missing
       row (`CATALOG_ALREADY_EXISTS`) being retried like a version conflict, a redundant
-      event writing nothing and a write failing closed once the retries are exhausted, and the existing test of `createUserSync` in
-      `@tayzu/catalog` is extended for the four-value status, `expectedVersion` and `onBehalfOf`. Every test
+      event writing nothing and a write failing closed once the retries are exhausted, and a
+      new `packages/catalog/src/service/user-sync.int.test.ts` (no test of
+      `createUserSync` exists in `@tayzu/catalog` today) covers `createUserSync` with the
+      four-value status, the read path, `expectedVersion` and `onBehalfOf`. Every test
       that passes `createUserSync` to `createAuth` or `bootstrapAdmin` (the first
       `describe` of `user-sync.int.test.ts` and `sso-jit-refresh.int.test.ts` around
       line 179 among them) migrates to the adapter, because the port's input no longer
@@ -358,6 +396,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       checks of `entities.ts` (the `resourceId` of their authorization declarations, which
       the pipeline's Cerbos call in `pipeline.ts` sends as `resource.id`) carry the same
       placeholder instead of the identifier (no `catalog_entity` policy reads `R.id`), and
+      so does the per-referrer `update` check of a delete, `mayUpdateReferrer` in
+      `entities.ts` (`002` Q65), which calls `checkResources` directly with the
+      referrer's raw identifier and therefore sends the placeholder when the referrer's
+      blueprint is `_user` (a mechanical fix within Q119, no new decision), and
       `redactUnreadable` (`packages/authz/src/redaction.ts`, which the catalog's referrer
       redaction calls) sends each candidate's position as its resource id and maps the
       decisions back to the identifiers in process. Every other blueprint's checks keep
@@ -382,10 +424,20 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       Cerbos client around the real one shows every request of those operations on the
       marker `_user` entity carrying the placeholder as `resource.id` and the marker in no
       field, the same request for an entity of another blueprint carrying its identifier,
-      and a delete blocked by referrers sending positional ids; `redaction.test.ts` (in
+      a delete with `detachReferences` whose referrer is a `_user` entity (seeded with a
+      relation to the deleted entity) sending the placeholder as that referrer's
+      `resource.id` in its `update` check and the marker in no field, while a referrer of
+      another blueprint is checked with its identifier, and a delete blocked by referrers
+      sending positional ids; `redaction.test.ts` (in
       `packages/authz/src/`) covers the candidates being sent as positional ids, the
       readable identifiers coming back in their original order and a candidate missing
-      from the response still counting as not visible, and `redaction.int.test.ts` stays
+      from the response still counting as not visible. Its existing case ("N identifiers
+      become a count when unreadable") contradicts Q119 and is **rewritten** (Resolved
+      decision Q125), not loosened: its mock decides by position instead of by
+      identifier, and its assertion at `:61-63` changes from "the request ids equal the
+      candidate ids" to "the request ids are the candidates' positions and no candidate
+      id appears in the request", which is stricter; the PR description calls the rewrite
+      out, as Q76 and Q77 did for theirs. `redaction.int.test.ts` stays
       green; `docs-telemetry.test.ts` stays green and `docs/catalog/catalog-core.md`
       names the placeholder for the span attribute, the audit event and the Cerbos
       resource id, and the positional ids of the referrer redaction.
@@ -398,9 +450,11 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `tayzu.identity.user.status.from` (absent for a new row),
       `tayzu.identity.user.status.to`, the derived `StatusEvent` as
       `tayzu.identity.user.status.event`, `tayzu.identity.user.account_kind`, the subject
-      (`tayzu.identity.user.id`, or `tayzu.identity.service_account.id` for a service
-      account, or `tayzu.identity.invitation.id` for the `created_invited` write of the
-      invitation hook, which knows the invitation and not a Better Auth user) and the
+      from the port input of 4.1 (its `userId` as `tayzu.identity.user.id`, or as
+      `tayzu.identity.service_account.id` for a service
+      account, or, for the `created_invited` write of the invitation hook, which knows the
+      invitation and not a Better Auth user, its `invitationId` as
+      `tayzu.identity.invitation.id`, Resolved decision Q126) and the
       principal that the writer hands the adapter with its kind: an admin, the user of a
       first sign-in or the invitee of an acceptance as `tayzu.actor.id`, the operator as
       `tayzu.identity.operator.id` in its place, or none (the ban hook), which emits
@@ -412,8 +466,13 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       emitting none, each principal kind mapping to its attribute (an admin and a user to
       `tayzu.actor.id`, an operator to `tayzu.identity.operator.id` with no
       `tayzu.actor.id`, no principal to neither), a service account carrying
-      `tayzu.identity.service_account.id`, a `created_invited` write carrying the
-      invitation id, and no email in any attribute.
+      `tayzu.identity.service_account.id`, a `created_invited` write whose input carries
+      an `invitationId` and no `userId` naming that id as `tayzu.identity.invitation.id`
+      with no `tayzu.identity.user.id`, an input's `userId` becoming
+      `tayzu.identity.user.id`, a membership added through an `auth` built with the
+      adapter naming its user's Better Auth id from `afterAddMember`'s `user` (the ban
+      hook's and the first sign-in's are cases of 4.5 and 4.4), and no email in any
+      attribute.
 - [ ] 4.2 `afterAddMember` is the **single writer** for a membership (Resolved
       decisions Q11 and Q76, design D2), except for the acceptance's own member (the
       `(tenantId, userId)` that the acceptance's shared context carries, Resolved
@@ -454,14 +513,17 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       builds no Better Auth instance and holds no `BETTER_AUTH_SECRET` (Resolved decision
       Q114). It also
       removes an **orphan**: a human `_user` with status `Active`, no `member` row in
-      its tenant and a `createdAt` **more than one hour old**, which is what a failed
+      its tenant and an `updatedAt` **more than one hour old** (its activation; not its
+      `createdAt`, Resolved decision Q124, which amends Q84 and Q89), which is what a failed
       acceptance leaves behind, because its `_user` write is on another pool and no
       transaction spans the two (Resolved decisions Q84 and Q89; `Invited` and
       `Staged` rows and service accounts are never orphans). The grace period keeps the
       reconcile from deleting the row of a member whose acceptance is in flight or about
       to be retried, because the `_user` write and the membership are on two pools with no
       transaction spanning them (since Q112 the acceptance writes the `_user` after the
-      membership and the shed, 8.1e). The removal is a `system`
+      membership and the shed, 8.1e); it runs from the activation because on the
+      new-account path the row was created `Invited` when the invitation was made (7.3),
+      possibly more than an hour before the acceptance. The removal is a `system`
       write with `onBehalfOf` the operator (Q84), made with `detachReferences` because a
       relation that targets the `_user` is a `RESTRICT` foreign key
       (`catalog_entity_relation_target_fk`) that would otherwise fail it. It lists organizations and members
@@ -501,10 +563,15 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `Disabled`, not `Active`, with both writes attributed to the operator and two
       status events (`created_active`, then `admin_disable`), each carrying the operator
       id; and
-      "The reconcile removes an orphan": an `Active` human `_user` with no member and
-      older than the grace period is removed (also when a relation targets it), one
-      younger than the grace period, an `Invited` one, a `Staged` one and a service
-      account are kept, and the removal is attributed to the operator; and a run whose
+      "The reconcile removes an orphan": an `Active` human `_user` with no member whose
+      `updatedAt` is older than the grace period is removed (also when a relation targets
+      it), one updated within the grace period, an `Invited` one, a `Staged` one and a
+      service account are kept, and the removal is attributed to the operator; a failed
+      new-account acceptance of an invitation older than one hour (an `Active` row with no
+      member whose `createdAt` is more than an hour old and whose `updatedAt`, its
+      activation, is within the hour, seeded directly) is not deleted while it is within
+      one hour of its activation, and is removed by a run made after that hour (a clock
+      seam); and a run whose
       `CERBOS_ADDRESS` is unreachable creating and removing no `_user` row (the pipeline
       fails closed).
 - [ ] 4.3 `identity.users.create` performs **no** `_user` write of its own: the hook
@@ -540,7 +607,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       invited user" (a user whose only membership has a `Staged` `_user`, and one whose
       only membership has an `Invited` one, each ending `Active` through the state
       machine, with the change event's `onBehalfOf` and the status event's
-      `tayzu.actor.id` both the user's own id and the status event `first_sign_in`) and "First sign-in does not activate a second tenant's `_user`": a user
+      `tayzu.actor.id` both the user's own id, the status event `first_sign_in` and the
+      hook's port input carrying that id as `userId`, so the event's
+      `tayzu.identity.user.id` is it too) and "First sign-in does not activate a second tenant's `_user`": a user
       who belongs to `t1`, where the `_user` is `Active`, and to `t2`, where the `_user`
       is `Invited` (seeded directly, as a failed acceptance whose compensation failed
       leaves it), signs in locally, both rows are unchanged and no status write or status
@@ -562,7 +631,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       neither `tayzu.actor.id` nor `tayzu.identity.operator.id` (Resolved decision Q117).
       Verify: `ban-hook.int.test.ts` covers "The ban hook never re-enables a user":
       banning sets `Disabled` on every membership, each write emitting one
-      `catalog.audit.user_status_changed` with `admin_disable` and no actor attribute, a
+      `catalog.audit.user_status_changed` with `admin_disable`, the banned user's id (the
+      hook's `userId`, from `SyncUserRow.id`) as `tayzu.identity.user.id` and no actor
+      attribute, a
       repeated `banned: true` for a `Disabled` user is a no-op and emits none, an update with `banned: false` (an unban included)
       writes nothing and leaves every status as it was, enrolling a second factor for an
       `Active` user does not throw and leaves the status `Active`, and a user who belongs
@@ -719,7 +790,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       run without one. The revocation of the tenant-scoped disable (11.2, design D13) is a
       **tenant-keyed `session` delete** that requires a `tenantId` and filters by
       `activeOrganizationId` and the user id, so it never reaches the user's sessions of
-      another tenant. The
+      another tenant. A third tenant-keyed write, the acceptance's **`invitation` status
+      write** (Resolved decision Q123), is added to the module by 8.3, which tests it. The
       accesses that stay outside the module by nature are its only exceptions, each
       acting on one user id that the caller has already resolved in its tenant (or, for
       the new-account compensation, has just created): Better Auth's
@@ -941,7 +1013,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       read by `apps/api/src/config.ts` and documented in `docs/security/secrets.md`.
       Under `NODE_ENV=test` a real sender is allowed only with a mandatory
       recipient-domain allowlist (`EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`, Resolved
-      decision Q67): startup fails when a real provider is configured under
+      decisions Q67 and Q99): startup fails when a real provider is configured under
       `NODE_ENV=test` without it, and the wrapper of 6.5b enforces the list whenever it
       is set, in any environment, a deployed staging environment included (Resolved
       decision Q99). CI, DAST and demo tenants wire a non-sending
@@ -1150,18 +1222,21 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       writes the `_user` to `Invited` through `created_invited` (creating the entity
       first if the email has none yet, design D4 "Hooks"), via the Q30 adapter of 4.1,
       as `system` with `onBehalfOf` the admin, handed over through the
-      `AsyncLocalStorage` of D2 that `invite` runs around `createInvitation`. The hook's
+      `AsyncLocalStorage` of D2 that `invite` runs around `createInvitation`, and with the
+      invitation's id, which the hook receives, as the port input's `invitationId` (4.1).
+      The hook's
       write emits `catalog.audit.user_status_changed` (4.1e) with the admin as
       `tayzu.actor.id`, the status event `created_invited` and the invitation id as its
       subject, because an invited email may have no Better Auth user yet (Resolved
-      decision Q117). The response of
+      decisions Q117 and Q126). The response of
       `invite` never carries the token or the link (the token proves mailbox control,
       so an inviter who saw it could accept as the invitee). Verify:
       `invitations.int.test.ts` mints a real session and covers "Invite sends exactly
       one email with exactly one link" and "Explicit invite starts a user as invited"
       (one `_user` write, made by the hook, whose change event carries the admin as
       `onBehalfOf`, and one `catalog.audit.user_status_changed` with the admin, the
-      status event `created_invited`, `tayzu.identity.invitation.id` and no email) using
+      status event `created_invited`, `tayzu.identity.invitation.id` equal to the created
+      invitation's id and no email) using
       the recording fake, "The invitation link never leaves the email" (neither
       the token nor the id-plus-token link in the response, in any log record or in
       what the non-sending sender keeps) and a call whose context carries no valid
@@ -1180,13 +1255,19 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [ ] 7.6 `identity.users.cancelInvitation`, Cerbos-gated to admins through
       `user.invite`, resolving the invitation on the server and cancelling through
       Better Auth's `cancelInvitation` with the same forwarded session headers (it is
-      session-bound too). Verify: `invitations.int.test.ts` covers "Admin can cancel a
-      pending invitation".
+      session-bound too). It skips an invitation that is not `pending`, which 8.10 adds
+      once 8.3 marks an accepted invitation (Resolved decision Q123); what that skipped
+      cancel answers is the design's Open Question 3 and how the window of its `pending`
+      check is treated is its Open Question 2 (twelfth amendment), so this task is not
+      ticked before both answers are applied. Verify:
+      `invitations.int.test.ts` covers "Admin can cancel a pending invitation".
 - [ ] 7.7 `identity.users.resendInvitation` issues a **new** token (the old one
       stops working), keeps the original expiry and sends one email, and does **not**
       use Better Auth's `inviteMember` with `resend: true`, which resets `expiresAt`
       to now + 48 hours. Its response never carries the token or the link, and it sends
-      through the gate of 6.5c. Verify: `invitations.int.test.ts` covers "Resending
+      through the gate of 6.5c. It refuses an invitation that is not `pending` with
+      `CATALOG_VALIDATION_FAILED` and one fixed message (design D4 "Resend"), which 8.10
+      adds once 8.3 marks an accepted invitation (Resolved decision Q123). Verify: `invitations.int.test.ts` covers "Resending
       issues a new link and keeps the expiry", asserting the invitation's `expiresAt`
       is unchanged after the resend, the old token no longer verifies and the response
       carries neither the token nor the link.
@@ -1353,12 +1434,17 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       inviter (8.5f), check the password policy, do the work of the path (create the
       user and set its password and verified email, add the membership and write the
       `_user`; for an existing account, add the membership, run the explicit shed of
-      8.5h, and only then write the `_user` and set `emailVerified`) and **consume the
-      token last**. The flow sets the acceptance's shared context
+      8.5h, and only then write the `_user`, run at once the step for what the join owes
+      (the session revocation that 8.5k and 8.5m add and the admin notice that 8.15 adds,
+      Resolved decision Q122), and set `emailVerified`) and **consume the token last**
+      (the delete conditioned on its digest, which 8.3 puts in one short `tayzu_auth`
+      transaction with the invitation's `accepted` write, Resolved decision Q123); on the
+      new-account path the admin notice of 8.15 follows that commit. The flow sets the acceptance's shared context
       (`apps/api/src/identity/identity-context.ts`) on both paths, inside which
       `afterAddMember` makes **no** `_user` write (Resolved decision Q112) for the
       acceptance's own member: the context carries the acceptance's `(tenantId,
-      userId)`, and the `UserSyncPort` adapter skips only for that member (Resolved
+      userId)`, and the `UserSyncPort` adapter skips only for that member, comparing it
+      with the `tenantId` and the `userId` of the hook's port input (4.1) (Resolved
       decision Q120; so does the shed port of 8.5h), so a membership of another user, or
       of the same user in another tenant, added while the context is set is written (and,
       from 8.5h, shed) as on any other path. The `_user` is
@@ -1375,7 +1461,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the token is not consumed. A failure after the attempt **created** the user
       compensates, in reverse order and each idempotently, the membership, the `_user`
       and the user it created (never one it found), so a retry with the same token
-      starts from nothing; a compensation that fails logs
+      adds them again and finds the `_user`, which the invitation hook created and the
+      compensation therefore keeps, `Active` (no write) when the failure came after the
+      `_user` step; a compensation that fails logs
       `catalog.security.invitation_accept_compensation_failed` (declared in 15.1). **On
       the existing-account path** (Resolved decision Q105, part 1, narrowed by Q118) the
       attempt records whether its `addMember` created the membership and, if a step
@@ -1389,15 +1477,31 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       a consumption of the token that fails other than by losing the race) deletes
       nothing (Resolved decision Q118): the attempt fails with the sanitized generic error
       and the token still valid, and a retry with the same token finds the membership,
-      sheds again (removing nothing more), makes no `_user` write, sets `emailVerified`
-      and consumes the token; what such an attempt leaves undone when it is never retried
-      is the tenth amendment's Open Question 1 (design). A failure of the shed or of the
+      sheds again (removing nothing more), makes no `_user` write (so it sends no second
+      notice, 8.15), sets `emailVerified` and consumes the token. Such an attempt has
+      already run what the join owes, because that runs right after the `_user` step
+      (Resolved decision Q122), so when it is never retried it leaves only the
+      `emailVerified` write and the consumption of the token undone, and the invitation
+      stays `pending` until it expires. A failure of the shed or of the
       `_user` step leaves the `_user` `Invited`, so
       even when the compensation fails too the member stays rejected (fail closed), and
-      the first-sign-in hook of 4.4 does not activate that row (Resolved decision Q111). A lost consume race (another attempt consumed the token first) compensates
-      nothing, on either path, because the winner's state is final and may rest on the
-      membership the loser created. An orphan `_user` left by a double
-      fault is the reconcile's (4.2b, after its grace period), and a user left with no
+      the first-sign-in hook of 4.4 does not activate that row (Resolved decision Q111). A lost consume race (another attempt consumed the token first, so the
+      token delete changes no row; from 8.3, also the `accepted` write, and the
+      transaction then changes nothing, Q123) compensates
+      nothing, on either path: when another attempt consumed the token, the winner's
+      state is final and may rest on the membership the loser created, and the flow
+      cannot tell that case from a token delete that removes zero rows because a
+      concurrent resend replaced the digest (Q122), or from an `accepted` write that
+      changes no row because a concurrent cancellation committed first (Q123), where no
+      attempt won, so it handles them all alike and the join stands (design Risks;
+      whether a new-account attempt then sends the admin notice is the design's Open
+      Question 1, twelfth amendment); it answers the uniform rejection
+      (`CATALOG_NOT_FOUND`) and logs `catalog.security.invitation_acceptance_denied`
+      with the reason `consume_conflict` (design D4 steps 4 and 5; declared in 15.1),
+      not the sanitized generic error of the other failures after the `_user` step. The
+      `Active` `_user` with no membership that a compensated new-account failure after
+      the `_user` step leaves, when no retry follows, is the reconcile's (4.2b, one hour
+      after its activation, Q124), and a user left with no
       membership is an operator repair (Resolved decision Q100: driven by the alert on
       `catalog.security.invitation_accept_compensation_failed` and the runbook of 16.5). Verify: `accept-flow.int.test.ts` covers a failure
       injected after `createUser` leaving no user row, a `userSync` that throws at the
@@ -1406,7 +1510,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       inside the acceptance (the adapter writes the `_user` exactly once, from the
       acceptance's own step), an `addMember` that already happened being
       treated as done, a failing compensation emitting the event, and a lost consume
-      race deleting nothing the other attempt created; and "A failed existing-account
+      race deleting nothing the other attempt created and answering the uniform
+      rejection with the reason `consume_conflict`; and "A failed existing-account
       acceptance leaves no membership": an existing account whose acceptance fails after
       `addMember` inserted the member (a `userSync` that throws at the `_user` step; the
       failing shed is 8.5h's case) ends with no membership of the tenant and the
@@ -1418,7 +1523,14 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `emailVerified` write (a failure seam) keeping its membership and its `Active`
       `_user`, deleting nothing, emitting no `invitation_accept_compensation_failed` and
       leaving the token valid, and a retry with the same token completing the acceptance
-      (the token consumed, `emailVerified` set, no second `_user` write); the acceptance's
+      (the token consumed, `emailVerified` set, no second `_user` write), the slot for
+      what the join owes running after the `_user` step and before the `emailVerified`
+      write (a recording seam on the steps; its revocation and notice are 8.5m's and
+      8.15's cases), and a consumption whose token delete removes zero rows because a
+      resend replaced the digest after the `_user` step (a seam) being handled as a lost
+      race: the attempt answers the uniform rejection with the reason `consume_conflict`,
+      deletes nothing and keeps the membership and the `Active` `_user`, and an
+      acceptance with the resent token completes; the acceptance's
       `_user` step writing with the invitee's Better Auth user id as `onBehalfOf` on both
       paths, its `catalog.audit.user_status_changed` naming the invitee; and "The
       acceptance holds back only its own member's hooks": a test-only seam that adds,
@@ -1448,9 +1560,34 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `tayzu.identity.user.id` (Resolved decision Q116).
 - [ ] 8.3 The token is verified without consuming it and then consumed **last** (8.1e),
       with one atomic delete **conditioned on its digest**, so it
-      works exactly once. Verify:
+      works exactly once. The same short `tayzu_auth` transaction sets the invitation's
+      status to `accepted` (Resolved decision Q123; design D4 step 1) through a third
+      tenant-keyed write of the repository of 5.1b, which requires a `tenantId`, filters
+      by `organizationId` and the invitation id and updates only while the status is
+      still `pending` (parameterized SQL, no migration); when the token delete or that
+      write changes no row, the transaction changes nothing and the attempt takes the
+      lost-race path of 8.1e, answering the uniform rejection (`CATALOG_NOT_FOUND`) with
+      the denial reason `consume_conflict` (design D4 steps 4 and 5). A later acceptance
+      of the invitation is then denied with
+      the reason `already_accepted` (both declared in the design's Observability contract), not
+      `token_mismatch`. Verify:
       `invitation-accept.int.test.ts` covers a second acceptance with the same
-      token failing, including two concurrent attempts where exactly one succeeds.
+      token failing, including two concurrent attempts where exactly one succeeds and
+      the losing one, held by a seam before its consumption until the winner has
+      committed (on the existing-account path, so that both reach the consumption),
+      answers the uniform rejection with
+      `catalog.security.invitation_acceptance_denied` recording `consume_conflict`; a
+      successful acceptance leaving the invitation `accepted`, the status written in the
+      same transaction as the token delete (a seam that fails the transaction after the
+      delete leaves the token row in place and the invitation `pending`); a consumption
+      whose `accepted` write changes no row (the invitation cancelled by a seam after the
+      token verified) leaving the token row and the cancelled status untouched and
+      failing as a lost race with the same answer and reason; the repository write
+      refusing a call without a `tenantId`
+      and changing no invitation of another tenant; and "A replayed acceptance is recorded
+      as already accepted": the same request sent again after a success answering the
+      uniform rejection with `catalog.security.invitation_acceptance_denied` recording
+      `already_accepted`, and nothing changing.
 - [ ] 8.4 The tenant is derived from the invitation record, and the body is an
       allowlist of exactly the invitation id, the token and, for a new account, the
       password: a body that carries a tenant, an actor, `role`, `email`,
@@ -1484,8 +1621,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       make and, when it removed one, revokes the user's other sessions at once (8.5h);
       when it or an earlier attempt's shed of the invitation removed one (the
       `invitation-shed:<invitationId>` record of 8.5m), it revokes the accepting session
-      and any session that an earlier attempt's shed kept only after the acceptance has
-      committed (8.5k, 8.5m; Resolved decisions Q73, Q86, Q105 and Q106). Its success has the same
+      and any session that an earlier attempt's shed kept only once its `_user` step has
+      run, before the `emailVerified` write and the consumption of the token (8.5k, 8.5m;
+      Resolved decisions Q73, Q86, Q105, Q106 and Q122). Its success has the same
       status and body shape as the new-account path.
       Verify: `invitation-accept.int.test.ts` covers "An existing account accepts
       with its session", including `emailVerified` being true afterward, the `_user`
@@ -1697,8 +1835,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       sets the shared context (`apps/api/src/identity/identity-context.ts`), inside which
       the hook leaves the shed to that step and makes no `_user` write for the
       acceptance's own member (Q120; 8.1e); the step
-      keeps the session that carries the acceptance while the acceptance runs (8.5k
-      revokes it after the commit, and 8.5m records it when the step removed a link) and
+      keeps the session that carries the acceptance until the attempt's `_user` step has
+      run (8.5k revokes it right after that step, Resolved decision Q122, and 8.5m records
+      it when the step removed a link) and
       reports the path `acceptance`, and the
       acceptance's `_user` step runs only after it (Resolved decision Q112), so until the
       links are gone and the sessions revoked the new membership is inert: its `_user` is
@@ -1720,8 +1859,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       session minted through the link before the join, with the user then joining `t2`,
       fails `/api/auth/organization/set-active` for `t2` and the `/v1` calls after the
       join on both paths, while on the acceptance path the acceptance carried by another
-      session of the user completes (that session is not revoked while the acceptance
-      runs), each revocation emitting `auth.security.session_revoked` with the reason
+      session of the user completes (the shed step does not revoke that session; its
+      revocation right after the `_user` step is 8.5k's case), each revocation emitting `auth.security.session_revoked` with the reason
       `sso_link_shed` and none emitting `account_unlinked` with the actor `self` for the
       shed link; "A retried acceptance still sheds the link and revokes the sessions": an
       existing-account acceptance of `t2` whose first attempt fails after `addMember`
@@ -1796,12 +1935,17 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       depends. (2) The shed of 8.5h sweeps the user's sessions a second time after its deletion
       commits, so a session created through the link while the deletion was in flight is
       revoked too. (3) When the shed removed a link at acceptance, the session that carried
-      the acceptance is revoked too, after the acceptance commits (the token consumed):
+      the acceptance is revoked too, as soon as the attempt's `_user` step has run, before
+      the `emailVerified` write and the consumption of the token (Resolved decision Q122,
+      which replaces Q106's "after the acceptance commits", so that an attempt that fails
+      after its `_user` step and is never retried has already revoked it):
       this amends Q86's exemption, because the accepting session may itself have come
       through the shed link; when no shed of the invitation removed a link, the accepting
       session keeps working (a link removed by an earlier attempt's shed is 8.5m's case).
-      The acceptance deletes that `session` row through the shed core of 8.5h.
-      It has committed by then, so a failure of that revocation cannot undo it: the
+      The acceptance deletes that `session` row through the shed core of 8.5h, in the slot
+      that 8.1e runs right after the `_user` step.
+      The join is final by then (Resolved decision Q118), so a failure of that revocation
+      does not undo it and does not stop the acceptance: the
       failure is logged as `catalog.security.accepting_session_revocation_failed` (declared
       in 15.1) with the tenant, the invitation id and the opaque user id and no email
       (Resolved decision Q115, G9-5), and the runbook of 16.5 and the ticket "Alerts for
@@ -1820,11 +1964,14 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the same user succeeding), "A session created during the shed is swept" (a session
       created through the link between the shed's first sweep and its deletion commit, by
       a seam, being revoked by the second sweep, with the event emitted), and "The
-      accepting session is revoked when the shed removed a link" (the acceptance answering
-      success and its session then failing `/api/auth/get-session` and a `/v1` call, with
-      the event emitted, and an acceptance by a user whose only link they made keeping its
-      session), and "A failed revocation of the accepting session is logged" (a seam that
-      makes the post-commit deletion fail: the acceptance stays committed and
+      accepting session is revoked when the shed removed a link" (the session revoked
+      after the `_user` step and before the `emailVerified` write and the token
+      consumption, a recording seam on the steps showing the order, the acceptance
+      answering success and its session then failing `/api/auth/get-session` and a `/v1`
+      call, with the event emitted, and an acceptance by a user whose only link they made
+      keeping its session), and "A failed revocation of the accepting session is logged" (a
+      seam that makes the deletion after the `_user` step fail: the join is not undone,
+      the acceptance completes and
       `catalog.security.accepting_session_revocation_failed` is emitted with opaque ids
       only).
 - [ ] 8.5l The reconcile of 4.2b runs the shed of 8.5h, with its session revocation and
@@ -1847,24 +1994,33 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       environment and without building Better Auth (a spy on `createAuth` never called).
 - [ ] 8.5m A retried acceptance revokes the session that an earlier attempt's shed kept
       (design D4 step 7; a consistency fix within Resolved decision Q106, no new
-      decision). An attempt whose shed removed a link can fail before it commits (8.1e
-      compensates a failure before the `_user` step), and the retry's shed removes
-      nothing, so the condition of 8.5k (3) never holds for the attempt that commits,
-      while the session that the first attempt kept, possibly issued through the shed
-      link, survives. So when the shed core of 8.5h removes a link on the acceptance path,
-      it also upserts, in the same `withUserLock` transaction as the deletion
+      decision; its timing is Resolved decision Q122). An attempt whose shed removed a
+      link can fail before its `_user` step (8.1e compensates such a failure), and the
+      retry's shed removes nothing, so the condition of 8.5k (3) never holds for the retry
+      that reaches its `_user` step, while the session that the first attempt kept,
+      possibly issued through the shed link, survives. So when the shed core of 8.5h removes a link on the acceptance path,
+      it also writes, in the same `withUserLock` transaction as the deletion
       (parameterized SQL, no migration), an `auth.verification` row whose identifier is
       `invitation-shed:<invitationId>`, whose value is the `session` row id of the session
       it kept (never the session token) and whose `expiresAt` is the invitation's, so the
       record commits exactly when the deletion does; a later shed of the same invitation
       that removes a link replaces it (a session that the earlier record names and that
-      shed does not keep has already been revoked by it). After the acceptance
-      commits, it revokes through the core its own session and the session that the record
-      names whenever its own shed removed a link or the record exists, each revocation
-      emitting `auth.security.session_revoked` with the reason `sso_link_shed`, and then
-      deletes the record; a failed revocation logs
-      `catalog.security.accepting_session_revocation_failed` (8.5k) and leaves the record
-      to expire with the invitation. Verify: `sso-link-shed-sessions.int.test.ts` covers
+      shed does not keep has already been revoked by it). The write **deletes every
+      `verification` row with that identifier and then inserts the new row** with an id
+      that the core generates (design D4 step 7; a mechanical fix, no new decision):
+      `identifier` has only a non-unique index and `id` is a text primary key with no
+      default (`packages/db/migrations/0002_auth_schema.sql`,
+      `packages/auth/src/persistence/schema.ts`), so an `ON CONFLICT (identifier)` upsert
+      would fail. **Every attempt, as soon as its
+      `_user` step has run** and before the `emailVerified` write and the consumption of
+      the token (Resolved decision Q122), revokes through the core its own session and the
+      session that the record names whenever its own shed removed a link or the record
+      exists, each revocation emitting `auth.security.session_revoked` with the reason
+      `sso_link_shed`, and deletes the record after a successful revocation, so a later
+      retry revokes nothing more and a retry after a crash between the shed and the
+      revocation still finds the record; a failed revocation logs
+      `catalog.security.accepting_session_revocation_failed` (8.5k), does not stop the
+      acceptance and leaves the record to expire with the invitation. Verify: `sso-link-shed-sessions.int.test.ts` covers
       "A retried acceptance revokes the session an earlier attempt's shed kept": an
       existing-account acceptance of `t2` by a user of `t1` with an unmarked link, whose
       first attempt sheds the link and then fails at the `_user` step (a failure seam;
@@ -1872,16 +2028,31 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       id, and whose retry with the same session sheds nothing and commits, ending with
       that session failing `/api/auth/get-session` and a `/v1` call, the event emitted and
       the record gone; the same retry made with a new session of the user, signed in
-      after the first attempt, revoking both that session and the first attempt's; an
+      after the first attempt, revoking both that session and the first attempt's; a
+      second attempt whose shed removes an unmarked link recorded again after the first
+      attempt (seeded directly, as an admin's `linkSsoAccount` records one), and that
+      also fails at the `_user` step, leaving exactly one
+      `verification` row with that identifier, naming the second attempt's session (the
+      delete-then-insert above); an
       acceptance whose attempts never removed a link writing no record and keeping its
-      session; and a revocation that fails (a seam) leaving the record in place and
-      emitting `catalog.security.accepting_session_revocation_failed`.
+      session; a revocation that fails (a seam) leaving the record in place and
+      emitting `catalog.security.accepting_session_revocation_failed`; "An attempt that
+      fails after its `_user` step has already revoked the sessions": an attempt whose
+      shed removes the link and that then fails at the `emailVerified` write (a failure
+      seam) having already revoked its own session and the session a previous attempt's
+      record named, the events emitted and the record gone, with no retry needed, and a
+      retry with a new session of the user then revoking nothing more and completing the
+      acceptance; and a consumption whose token delete removes zero rows because a resend
+      replaced the digest after the `_user` step (a seam), the attempt failing as a lost
+      race (the uniform rejection, reason `consume_conflict`) with its session and the
+      recorded one already revoked and the record gone.
 - [ ] 8.6 Acceptance never links an account by an email claim. Verify:
       `invitation-accept.int.test.ts` covers "Acceptance does not link an SSO
       account by email" (no `account` row for the SSO provider exists afterward).
 - [ ] 8.7 Every rejected acceptance (nonexistent, expired, cancelled, rejected,
       already accepted, wrong token, `Disabled` user, an inviter who is no longer an active admin, a tenant at its 100-member
-      limit, no or mismatched session for an existing account) returns the same status, error
+      limit, no or mismatched session for an existing account, a lost race to consume the
+      token, whose case is 8.3's) returns the same status, error
       code (`CATALOG_NOT_FOUND`) and body shape, while
       `catalog.security.invitation_acceptance_denied` records the specific
       `denial_reason`. Verify: `invitation-accept.int.test.ts` covers "Acceptance
@@ -1894,9 +2065,27 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `invitation-accept.int.test.ts` covers "Accepting an expired invitation
       fails", using a clock seam to advance past 48 hours.
 - [ ] 8.10 A cancelled or already-accepted invitation fails, and a wrong token
-      leaves the invitation `pending`. Verify: `invitation-accept.int.test.ts`
-      covers "Accepting a cancelled or already-accepted invitation fails" and "A
-      wrong token fails".
+      leaves the invitation `pending`. An accepted invitation, which 8.3 marks
+      `accepted`, is skipped by resend (7.7) and cancel (7.6), which read its status
+      through the repository of 5.1b and act only on a `pending` invitation (Resolved
+      decision Q123; Better Auth's `cancelInvitation` does not check the status), and it
+      no longer counts toward the 100 pending invitations of 7.12. The status read is not
+      atomic with the `accepted` write of 8.3; how that window is treated is the design's
+      Open Question 2 (twelfth amendment), whose answer may add a race case here, and what
+      the skipped cancel answers is its Open Question 3, so this task is not ticked before
+      both answers are applied. The refused resend answers `CATALOG_VALIDATION_FAILED`
+      with one fixed message (design D4 "Resend"). Verify:
+      `invitation-accept.int.test.ts`
+      covers "Accepting a cancelled or already-accepted invitation fails" (the accepted
+      one denied with the reason `already_accepted`) and "A
+      wrong token fails"; and `invitations.int.test.ts` covers "An accepted invitation is
+      not resent or cancelled": after an acceptance, a resend is refused with
+      `CATALOG_VALIDATION_FAILED`, its fixed message and no provider text, with no new
+      token row, no email to the recording fake and no `catalog.audit.invitation_resent`,
+      an explicit cancel changes nothing and logs no `catalog.audit.invitation_cancelled`,
+      the invitation staying `accepted` throughout, and an organization holding 99
+      pending invitations and that accepted one (seeded directly) still allowing a new
+      invitation, its 100th pending one.
 - [ ] 8.11 A pending invitation of a user who was disabled afterward does not
       revive them. Verify: `invitation-accept.int.test.ts` covers "A disabled user
       is not revived by a pending invitation".
@@ -1930,12 +2119,32 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       other administrators of the organization (`Disabled` ones included, at most 20), one email per recipient,
       resolved on the server (Resolved decisions Q39 and Q53); a send failure never
       blocks the acceptance and logs `catalog.security.admin_notice_failed`, and a
-      suppression logs `catalog.security.notice_suppressed`. Verify:
+      suppression logs `catalog.security.notice_suppressed`. **When** it is sent depends
+      on the path (Resolved decision Q122; design D4 step 6): on the existing-account path
+      the attempt whose `_user` step activated the row sends it in the slot that 8.1e
+      runs right after that step, before the `emailVerified` write and the consumption of
+      the token, and a retry, whose `_user` step writes nothing, sends none; on the
+      new-account path it is sent after the acceptance commits (the token consumed),
+      because a failure there still compensates the whole join. Whether a new-account
+      attempt whose consumption changes no row after its `_user` step (8.1e) also sends it
+      is the design's Open Question 1 (twelfth amendment), whose answer may add a case
+      here, so this task is not ticked before that answer is applied. Verify:
       `invitation-accept-notice.int.test.ts` covers "An accepted admin invitation
       notifies the other admins" with the recording fake (an owner, two admins other
       than the invitee and a `Disabled` admin each receive exactly one email, a plain member and the invitee
       none, a `member` invitation sends none) and a failing sender not stopping the
-      acceptance.
+      acceptance; "A failure after the `_user` step has already notified the other
+      admins": an existing-account `admin` acceptance whose attempt fails at the
+      `emailVerified` write (a failure seam) having already sent exactly one notice per
+      recipient, with no retry needed, and a retry with the same token completing the
+      acceptance with no second notice, while a new-account `admin` acceptance whose
+      attempt fails and is compensated sends none and its retry that commits sends one;
+      and "A token replaced by a concurrent resend leaves nothing owed": an
+      existing-account `admin` attempt whose token delete removes zero rows because a
+      resend replaced the digest after its `_user` step (a seam) having already sent the
+      notice and answering the uniform rejection with the reason `consume_conflict`, the
+      invitation staying `pending`, and the acceptance with the resent token completing
+      with no second notice.
 
 ## 9. Org API credentials: viewer, create, rotate and revoke
 
@@ -2357,15 +2566,20 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the email-addressed `{user}` identifier, proving the self-deny compares the
       resolved Better Auth user id and is not vacuous.
 - [ ] 11.4 Disabling a user cancels their pending invitations **of that tenant**
-      (reason `user_disabled`). Verify: `user-status-op.int.test.ts` covers "Disabling
-      cancels pending invitations".
+      (reason `user_disabled`), skipping any invitation whose status is not `pending`
+      (Resolved decision Q123). Verify: `user-status-op.int.test.ts` covers "Disabling
+      cancels pending invitations", including an accepted invitation of the same user
+      staying `accepted`, with no `catalog.audit.invitation_cancelled` logged for it.
 - [ ] 11.4b Disabling a user also cancels the pending invitations that user
       **created** in that tenant (reason `inviter_disabled`, Resolved decision Q63;
-      design D13), and enabling restores none. The acceptance check of 8.5f stays the
+      design D13), and enabling restores none; an invitation whose status is not
+      `pending` is skipped (Resolved decision Q123). The acceptance check of 8.5f stays the
       authoritative control; this makes the revocation visible. Verify:
       `user-status-op.int.test.ts` covers "Disabling cancels the invitations the user
-      created": an admin who created two pending invitations is disabled, both become
-      `cancelled` with reason `inviter_disabled`, an invitation created by another admin
+      created": an admin who created two pending invitations and one that its invitee
+      accepted is disabled, the two pending ones become
+      `cancelled` with reason `inviter_disabled`, the accepted one stays `accepted` with no
+      `catalog.audit.invitation_cancelled` logged for it, an invitation created by another admin
       stays pending, an invitation created by the same user in another tenant stays
       pending, and re-enabling restores none.
 - [ ] 11.5 `identity.users.setStatus` for a service account (its `svc-…`
@@ -2961,7 +3175,8 @@ SSO surfaces of M18) are recorded there with their justification.
       (credential kind `agent`, rejection reasons `service_account_missing`,
       `user_missing` and `user_banned` (13.4), the constant `invalid` of `tayzu.identity.invitation.id` and the denial reasons
       `malformed_request` (8.4), `csrf_rejected`, `origin_rejected`,
-      `inviter_not_active_admin` and `member_limit`, invitation cancel reasons `inviter_disabled`
+      `inviter_not_active_admin`, `member_limit`, `already_accepted` (8.3, Resolved
+      decision Q123) and `consume_conflict` (8.1e, 8.3), invitation cancel reasons `inviter_disabled`
       and `user_created` (7.13, Resolved decision Q110),
       `tayzu.identity.email.template`, `tayzu.identity.sign_in.channel`,
       `tayzu.identity.sso_link.path` with its values `acceptance`, `membership_hook` and
@@ -2974,7 +3189,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `tayzu.identity.service_account.id` (the `svc-…` identifier, Resolved decision
       Q90) in place of `tayzu.identity.user.id` on `catalog.audit.user_status_changed`
       when `tayzu.identity.user.account_kind` is `service`, the other forms of that event
-      (Resolved decision Q117, 4.1e): its new attribute `tayzu.identity.user.status.event`
+      (Resolved decisions Q117 and Q126, 4.1e): its new attribute `tayzu.identity.user.status.event`
       with the seven `StatusEvent` values, `tayzu.identity.user.status.from` absent for a
       created row, `tayzu.identity.invitation.id` as the subject of the `created_invited`
       write, and its principal as `tayzu.actor.id`, as `tayzu.identity.operator.id` in its
@@ -3034,7 +3249,13 @@ SSO surfaces of M18) are recorded there with their justification.
       `GET /v1/blueprints/_user/entities/{marker-email}`, `PUT` of its `/status` and
       `GET` of its `/related`, each exporting its template with the marker in no
       attribute, while a `GET /v1/blueprints/{blueprint}/entities/{entity}` of another
-      blueprint keeps its path, and the template matcher covering every route of D10 and
+      blueprint keeps its path, "A percent-encoded path identifier never reaches
+      telemetry over HTTP" for `PUT /v1/users/{marker-email}/status` and
+      `GET /v1/blueprints/_user/entities/{marker-email}` sent with the marker's `@`
+      encoded as `%40` (as oRPC's generated client sends it, design Tickets "Email in the
+      `{user}` path"; `002` Q74 answers such a path with 404), each exporting its route
+      template as the HTTP span path with neither the encoded nor the decoded marker in
+      any attribute, and the template matcher covering every route of D10 and
       the three `_user` templates (fifteen templates); and `docs/catalog/catalog-core.md`
       names the three `_user` route templates.
 - [ ] 15.6 Every lifecycle action emits its declared event: user and bootstrap
@@ -3094,7 +3315,10 @@ SSO surfaces of M18) are recorded there with their justification.
       `EMAIL_PROVIDER`, and ACS data location and retention) and the demo-tenant
       provisioning runbook, which adds each demo tenant to `EMAIL_DISABLED_TENANT_IDS`
       (Resolved decision Q80); the `_user` reconcile as the repair for a member rejected
-      with `user_missing`, and the operator-started job that runs it (design D9); the
+      with `user_missing`, and the operator-started job that runs it (design D9), with its
+      orphan rule: an `Active` human `_user` with no membership is removed only once its
+      `updatedAt`, its activation, is more than one hour old, whatever its `createdAt`
+      (Resolved decisions Q84, Q89 and Q124); the
       off-boarding step that lists a disabled admin's service accounts and credentials
       by the viewer's `createdBy` and revokes or rotates them, and the SSO links the
       admin recorded (unmarked links, found through the `auth.security.account_linked`
@@ -3106,7 +3330,10 @@ SSO surfaces of M18) are recorded there with their justification.
       failure before the `_user` step;
       since Resolved decision Q118 an attempt that failed after it keeps its membership and
       its `Active` `_user` on purpose, for a retry of the same invitation, and is not
-      repaired; such a compensated membership can carry an unshed SSO link and live
+      repaired, and since Resolved decision Q122 it has already revoked the accepting
+      session and the recorded one and sent the admin notice, so a never-retried attempt
+      leaves only the `emailVerified` write and the consumption of the token undone and
+      needs no operator step; such a compensated membership can carry an unshed SSO link and live
       sessions, but its `_user` stays `Invited` when the shed or the `_user` step failed,
       because the acceptance activates it only after the shed, Resolved decision Q112, so
       the resolver rejects the member and the first-sign-in hook does not activate the
@@ -3116,7 +3343,8 @@ SSO surfaces of M18) are recorded there with their justification.
       session revocation, Resolved decision Q105; a new invitation, the membership hook
       and the reconcile do not reactivate an existing membership); the response to
       `catalog.security.accepting_session_revocation_failed` (Resolved decision Q115,
-      G9-5): the alert of the ticket "Alerts for `010`" starts it, and the operator revokes
+      G9-5; the revocation runs right after the acceptance's `_user` step, Resolved
+      decision Q122, and its failure does not stop the acceptance): the alert of the ticket "Alerts for `010`" starts it, and the operator revokes
       that user's sessions, found by the opaque user id the event carries, and deletes the
       `invitation-shed:<invitationId>` record of 8.5m, found by the invitation id it
       carries, so that neither the accepting session nor the one an earlier attempt kept
@@ -3131,7 +3359,9 @@ SSO surfaces of M18) are recorded there with their justification.
       an invited email that `auth.rate_limit` keeps. Verify: `pnpm lint` passes and the
       runbook is reachable from the file, with its steps for a second tenant's `Invited`
       row, for a failed revocation of the accepting session and for the unlink, then link
-      of an unshed pre-dating SSO link.
+      of an unshed pre-dating SSO link, and states the reconcile's orphan rule by
+      `updatedAt` and that an existing-account attempt that failed after its `_user` step
+      needs no operator step.
 - [ ] 16.6 Update `docs/security/attack-surfaces.md`: the fourteen routes with
       actor, authentication and Cerbos check, the public accept route with its session
       binding, CSRF header and origin check, the inert invitation link until `003`
@@ -3191,10 +3421,13 @@ SSO surfaces of M18) are recorded there with their justification.
       `source-map-js` advisory (GHSA-68fv-2mgg-jv7q) that failed `pnpm audit` on master
       is fixed outside this change by the `pnpm.overrides` entry `source-map-js`
       `^1.2.2` (commit `c133f21`), documented in `docs/security/dependencies.md`, so the
-      audit step does not block this task (Resolved decision Q121).
+      audit step does not block this task (Resolved decision Q121). The dev-toolchain
+      advisories reached through `markdownlint-cli2` (`braces`, `smol-toml`, `katex`) are
+      the design's ticket TK11-1, outside this change, and do not block it either, because
+      the audit step runs with `--prod`.
       Verify: attach the command output to the PR description.
 - [ ] 16.10 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
-      implemented code, and resolve or explicitly defer every blocking gap (the ten
+      implemented code, and resolve or explicitly defer every blocking gap (the eleven
       passes folded into this change before implementation are listed in 1.2).
       Verify: the report is attached to the PR with zero open blocking gaps.
 - [ ] 16.11 Run `/security-review` on the branch and fix or justify every
