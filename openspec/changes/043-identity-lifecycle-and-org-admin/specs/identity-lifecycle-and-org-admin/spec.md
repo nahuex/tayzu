@@ -55,7 +55,11 @@ through one state machine, never write a status directly. A `_user` entity
 created without a `status` MUST be `Staged`; a user created through
 `identity.users.create` MUST be `Active`. A user is `Invited` when an admin
 explicitly invites them. Both `Staged` and `Invited` users transition to
-`Active` on their first successful sign-in or on accepting an invitation. A
+`Active` on accepting an invitation and, for a user who holds exactly one membership, on
+their first successful sign-in. For a user of two or more tenants a sign-in MUST NOT
+change any `_user` status, so that the `Invited` or `Staged` row of a second tenant, which
+only a failed acceptance leaves, is never activated without the shed of the SSO links its
+user did not make (see the requirement on SSO links). A
 user's status MUST NOT transition from `Active` back to `Invited` or `Staged`
 under any operation. Any non-`Disabled` status MUST be able to transition to
 `Disabled` through an explicit admin action, and a `Disabled` user MUST be able
@@ -84,9 +88,15 @@ re-enable a user disabled in one tenant.
 
 #### Scenario: First sign-in activates a staged or invited user
 
-- **GIVEN** a `_user` entity with status `Staged`
+- **GIVEN** a user whose only membership has its `_user` with status `Staged` or `Invited`
 - **WHEN** that user signs in successfully for the first time
 - **THEN** its status becomes `Active`
+
+#### Scenario: First sign-in does not activate a second tenant's `_user`
+
+- **GIVEN** a user who belongs to `t1`, where their `_user` is `Active`, and to `t2`, where their `_user` is `Invited` or `Staged`, as a failed acceptance whose undo also failed can leave it
+- **WHEN** that user signs in successfully
+- **THEN** no `_user` status changes, the resolver still rejects the user in `t2`, and the user is still accepted in `t1`
 
 #### Scenario: Active never regresses to invited or staged
 
@@ -267,7 +277,8 @@ or `Staged` row, a younger row or a service account), and MUST attribute its wri
 supplies, refusing to run without one. Before it creates the `_user` of a member whose user
 belongs to two or more tenants, the reconcile MUST shed the SSO links that user did not make,
 with the session revocation of the requirement on SSO links, and MUST NOT create the row
-when the shed fails.
+when the shed fails. The reconcile MUST run that shed directly on its authentication
+database role, without holding the secret that signs sessions.
 
 #### Scenario: A member with no `_user` row is rejected
 
@@ -292,6 +303,7 @@ when the shed fails.
 - **GIVEN** a member of `t1` and `t2` with no `_user` row in `t2` and an SSO link they did not make
 - **WHEN** the reconcile runs
 - **THEN** the link is shed, the user's sessions are revoked and `catalog.security.sso_link_shed` is logged before the row is created, a single-tenant member's links are left alone, and a failed shed leaves the row uncreated
+- **AND** the reconcile did all of it without the secret that signs sessions in its environment
 
 #### Scenario: The reconcile repairs a member and is repeatable
 
@@ -417,7 +429,10 @@ together with the token; the request MUST carry the CSRF custom header and an
 `admin` it MUST also require a fresh step-up verification (and, for a session of
 the identity provider, its re-authorization), checked only after the session, the
 email and the token have matched. It MUST add only the membership, activate the
-`_user` and mark the email verified, and MUST NOT set, change or compare a
+`_user` and mark the email verified, and it MUST activate the `_user` only after the shed
+of the SSO links its user did not make, so that the new membership stays inert (its
+`_user` not `Active`, so the member is rejected in that tenant) until the shed is done;
+it MUST NOT set, change or compare a
 password or change the active organization, and MUST NOT touch a linked account or a
 session, the request's own included, except to shed the SSO links its user did not make
 and, when a link was shed, revoke the user's sessions, the one that carried the
@@ -589,13 +604,19 @@ of that user MUST be deleted (the shed) and `catalog.security.sso_link_shed` MUS
 logged with opaque identifiers only. At acceptance the shed MUST run as an explicit step
 of every attempt once the membership exists, including a retry that finds the membership
 already added, before the token is consumed, and a shed that fails MUST fail the attempt.
+On every path the `_user` of the joined tenant MUST NOT become `Active` before the shed
+has run: at acceptance it MUST be activated only after the shed, and on the other
+membership paths the shed MUST run before the `_user` is written, so that a session
+switched to the joined tenant in the meantime is still rejected there.
 When the shed removed a link, every session of the user MUST be revoked, whether or not
 the session was established through the identity provider, each revocation being logged
 as `auth.security.session_revoked` with the reason `sso_link_shed`; the session that
 carries the acceptance request MUST be kept while the acceptance runs and MUST be revoked
-once it has committed; and the shed MUST sweep the user's sessions a second time after its
-deletion commits. The SSO callback MUST NOT create a session through an account that no
-longer exists, or that carries no marker while its user belongs to two or more tenants. An
+once it has committed, and a failure of that revocation MUST be logged; and the shed MUST
+sweep the user's sessions a second time after its deletion commits. The SSO callback MUST
+NOT create a session through an account that no longer exists, or that carries no marker
+while its user belongs to two or more tenants, and MUST refuse, failing closed, when it
+cannot tell which account it signed in through. An
 admin unlinking an SSO identity MUST revoke every session of that user in the same way. A
 link and a join for one user MUST NOT interleave: one lock per user MUST serialize the link
 and the shed, so that a link that commits after a join cannot remain on a user of two
@@ -625,6 +646,13 @@ requires a fresh step-up verification.
 - **GIVEN** an SSO sign-in through a link the user did not make that is in flight while the user joins a second tenant, or a link without a marker on a user of two tenants
 - **WHEN** the callback is about to create its session after the shed deleted the link, or through the unmarked link
 - **THEN** the callback fails with its uniform rejection and no session exists
+- **AND** a callback that recorded no account it signed in through fails the same way
+
+#### Scenario: A joined tenant stays unreachable until the shed is done
+
+- **GIVEN** a session minted through a link the user did not make, and an existing-account acceptance of `t2`, or a membership of `t2` added directly, that has added the membership but not yet run the shed
+- **WHEN** that session switches its active organization to `t2` and calls a `/v1` route
+- **THEN** the resolver rejects the call, because the user has no `Active` `_user` in `t2` yet, and once the shed has run that session is revoked
 
 #### Scenario: A session created during the shed is swept
 
@@ -637,6 +665,12 @@ requires a fresh step-up verification.
 - **GIVEN** a user with an SSO link they did not make who accepts an invitation of a second tenant with a session on the existing-account path
 - **WHEN** the acceptance commits
 - **THEN** the acceptance succeeded, the session that carried it is revoked afterwards and the user signs in again, and a user whose only link they made keeps that session
+
+#### Scenario: A failed revocation of the accepting session is logged
+
+- **GIVEN** an existing-account acceptance whose shed removed a link
+- **WHEN** the revocation of the session that carried it fails after the acceptance has committed
+- **THEN** the acceptance stays committed and `catalog.security.accepting_session_revocation_failed` is logged with opaque identifiers only
 
 #### Scenario: An admin unlink revokes the user's sessions
 
@@ -1128,6 +1162,7 @@ call MUST be given the host tenant only.
 - **GIVEN** another admin and an owner of `t1`
 - **WHEN** an admin of `t1` links an SSO `sub` to either of them
 - **THEN** the operation is refused with the same generic rejection as every other link conflict, no account is written and no session is revoked, and they can still link their own identity through the self-service route with a fresh step-up verification
+- **AND** `catalog.security.identity_conflict_refused` is logged with the reason `target_is_admin_or_owner` and opaque identifiers only
 
 #### Scenario: A user's self-deny uses the resolved identity
 
@@ -1139,6 +1174,7 @@ call MUST be given the host tenant only.
 
 - **WHEN** an admin creates a user for an email that already has an account in this tenant or in another tenant, or links a `sub` that is already linked, or links a `sub` to an admin or an owner
 - **THEN** every cause answers with the same `CATALOG_VALIDATION_FAILED` and a fixed message, and no state changes, so a failed probe leaves no partial state
+- **AND** each cause is logged only in `catalog.security.identity_conflict_refused`, with its own bounded reason and no email or `sub`
 
 ### Requirement: Every high-risk operation requires step-up
 
@@ -1225,8 +1261,9 @@ excess, every invitation cancellation (an invitation cancelled by a user creatio
 included), a failed admin-accepted notice, a suppressed or truncated notice, a
 recipient refused by the recipient-domain allowlist, an email suppressed for a disabled
 tenant, an SSO link shed (and the session revocations it causes), a provenance marker write that
-failed, an acceptance compensation that failed, a banned user's sign-in attempt and a
-reconcile run, MUST be logged as the
+failed, an acceptance compensation that failed, a failed revocation of the session that
+carried an acceptance, a refused create or link conflict (with its cause as a bounded
+reason), a banned user's sign-in attempt and a reconcile run, MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
 actor of an audit event MUST be the admin who acted, never the `system` actor of the
@@ -1255,9 +1292,12 @@ of a human `_user`, or any other tenant-supplied free text (a service account's 
 identifier is its opaque id, not an email, and MAY identify it in the identity signals), and no identifier in a URL
 path (an email, an invitation id or a credential id) MUST reach any exported
 span, metric or log: for the routes of this capability the exported path MUST
-be the route template. A catalog span of a `_user` entity MUST carry a fixed placeholder
+be the route template. A catalog span of a `_user` entity, and the catalog audit event
+`catalog.audit.mutation` of a `_user` resource, MUST carry a fixed placeholder
 instead of the entity identifier (an email, or the `svc-` identifier of a service
-account), while the entities of other blueprints keep theirs. Opaque identifiers and
+account), while the entities of other blueprints keep theirs; the change event stored in
+the database keeps the identifier and is found from the audit event by its tenant and
+sequence number. Opaque identifiers and
 enumerated values (status, invitation state, account kind, credential kind) are permitted.
 
 #### Scenario: Declared telemetry is emitted
@@ -1269,11 +1309,17 @@ enumerated values (status, invitation state, account kind, credential kind) are 
 
 - **WHEN** `marker-user@example.com` is invited, and later fails to accept an expired invitation
 - **THEN** that email string appears in no exported span, metric, or log attribute
+- **AND** this includes the catalog spans and the `catalog.audit.mutation` events of the `_user` writes that the invitation makes
 
 #### Scenario: A `_user` email never reaches a catalog span
 
 - **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, read, updated, deleted or listed through the catalog, including through the existing user sync
 - **THEN** each catalog span carries the fixed placeholder as its entity identifier and the email appears in no exported attribute, and an entity of another blueprint keeps its identifier
+
+#### Scenario: A `_user` email never reaches the catalog audit event
+
+- **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, updated or deleted through the catalog, including through the existing user sync
+- **THEN** each `catalog.audit.mutation` event carries the fixed placeholder as its resource identifier and the email in none of its attributes, its tenant and sequence number find the stored change event, which keeps the identifier, and an entity of another blueprint keeps its identifier in the event
 
 #### Scenario: A path identifier never reaches telemetry over HTTP
 
