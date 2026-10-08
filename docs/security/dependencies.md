@@ -99,6 +99,23 @@ accelerating trend, not a hypothetical: the practical conclusion it draws is
 that licenses must be audited before adoption and monitored for later changes,
 which is the rule above.
 
+## Overrides
+
+`pnpm.overrides` in the root `package.json` forces a patched version of a
+transitive dependency when the direct dependency has not picked it up yet. It
+is preferred over a waiver because it removes the vulnerable code instead of
+accepting it. Each override is listed here and removed once every path in the
+graph resolves to a patched version on its own.
+
+| Override                                    | Advisory            | Path                                                    | Added      |
+| ------------------------------------------- | ------------------- | ------------------------------------------------------- | ---------- |
+| `@esbuild-kit/core-utils>esbuild` `^0.25.0` | GHSA-67mh-4wv8-2f99 | `drizzle-kit > @esbuild-kit/esm-loader > core-utils`    | 2026-09-28 |
+| `source-map-js` `^1.2.2`                    | GHSA-68fv-2mgg-jv7q | `better-auth > vitest > vite > postcss > source-map-js` | 2026-10-08 |
+
+The `source-map-js` path enters through `vitest`, an optional peer of Better
+Auth that is test tooling and is not loaded at runtime; the override still
+fixes it so the `dependency-audit` job stays green without a waiver.
+
 ## Audited waiver path for `pnpm audit`
 
 An advisory that cannot be fixed within its SLA (no upstream fix, or a fix
