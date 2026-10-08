@@ -56,17 +56,21 @@ invitation in the tenant cancels that invitation.
   email, step-up for an `admin` role) and only gains the membership. Every other
   admin is notified when an `admin` invitation is accepted. The steps of the acceptance
   are idempotent, the token is consumed last, the `_user` write fails closed and what
-  a failed attempt created is undone, the membership of an existing account included
-  (there is no single transaction). An SSO link its user did not make (every link
+  a failed attempt created is undone (on the existing-account path, only before its
+  `_user` step, the membership included), while a failure after an existing account's `_user` step
+  keeps the membership and the token for a retry that completes the acceptance (there is
+  no single transaction). An SSO link its user did not make (every link
   without a provenance marker) is shed, on every acceptance attempt and before the
   reconcile creates a member's row, and the user's sessions are revoked, the accepting
-  one once the acceptance has committed, when the user joins a second tenant; the joined
+  one, and one that an earlier attempt's shed kept, once the acceptance has committed,
+  when the user joins a second tenant; the joined
   tenant's `_user` is activated only after that shed, so the new membership stays
   unusable until then; the SSO callback creates no session through a shed link, or when
   it cannot tell which account it signed in through, so an invitation cannot turn such a
   link, or a session issued through it, into a way into the second tenant; an admin
   cannot record such a link on an admin or an owner. The account-linking configuration is pinned
-  so that only the links a user makes carry a provenance marker, and a link whose marker
+  and a marker is written only on the identity provider's callback route, so that only
+  the links a user makes carry a provenance marker, and a link whose marker
   cannot be written is removed. This is the first unauthenticated route and needs its
   own SSA row.
 - **Invitation email (SEC11-hardened).** A new outbound-email capability with a
@@ -127,7 +131,8 @@ mail. A second fixed template tells the other admins of an accepted
   policy moved to `045-org-deletion-and-data-retention` (Resolved decision Q103).
   This change keeps a minimal mechanism for the maintenance scripts it still needs,
   the `_user` backfill and reconcile: operator-started Container Apps Jobs under
-  just-in-time access, which `045`'s reviewed workflow later takes over.
+  just-in-time access, each with its own Cerbos sidecar because its catalog writes are
+  authorized like any other, which `045`'s reviewed workflow later takes over.
 - **Mandatory authorization.** Every procedure of the identity router is built with
   one wrapper that checks the caller's role first, resolves the target, calls Cerbos,
   fails closed and emits `authz_denied`, and a route-table-driven HTTP matrix proves
@@ -137,12 +142,15 @@ mail. A second fixed template tells the other admins of an accepted
   session delete of a disable, requiring the tenant wherever the model has one except
   in two named reads that are global by nature (the accept route's invitation lookup,
   before the tenant is known, and the tenant ids of a user's memberships), with a lint
-  ban on direct adapter access; its only
+  ban on direct adapter access and on the internal adapter's `account` reads. The
+  account reads of the existing link procedures move into it too, as two global
+  readers (`globalAccountByKey`, the "`sub` already linked" check of the link, and
+  `globalAccountsOf`, the account list of the unlink). Its only
   exceptions are Better Auth's internal-adapter calls on one user already resolved in
   the tenant (the per-user session operations of an admin unlink and a
   single-membership disable, the ban and unban, the `emailVerified` write, the
-  new-account compensation's user deletion, and the admin link and unlink), and the
-  shed's own SQL; the maintenance scripts are not identity code and read the `auth`
+  new-account compensation's user deletion, and the account write of the admin link
+  and unlink), and the shed's own SQL; the maintenance scripts are not identity code and read the `auth`
   schema on their own pool (D14). The machine-credential functions are exported only on a package subpath and
   importable only from the identity code. Their OpenAPI document is committed
   (`openapi/identity.openapi.json`, paths and risk markers only) with its own drift
@@ -155,8 +163,14 @@ mail. A second fixed template tells the other admins of an accepted
   `x-tayzu-risk: high` on its route (tested over HTTP). New
   `catalog.audit.*`/`catalog.security.*` log events and `tayzu.identity.*`
   metrics for every mutation and denial, exempt from sampling like `002`'s own
-  auth events; no identifier in a URL path reaches telemetry, and no catalog span or
-  catalog audit event carries a `_user` identifier (a fixed placeholder replaces it). The
+  auth events; no identifier in a URL path reaches telemetry (the catalog routes of the
+  `_user` blueprint included), and no catalog span, catalog audit event or catalog
+  request to Cerbos carries a `_user` identifier (a fixed placeholder replaces it, and the
+  referrer redaction sends positional ids). Every audit event names the principal who
+  acted: the admin, the invitee of an acceptance, the user of their own first sign-in,
+  or the operator's opaque id for the reconcile and the bootstrap, which requires it, and
+  none for a status change that mirrors a ban; every status change is logged, by any
+  writer, with that principal and its status event. The
   cause of a refused create or link and a failed revocation of an accepting session are
   logged internally with opaque ids.
 - **Hand-offs from `002` (`002` Q73).** Every item (M5, M9-M15, M17-M20) is a task in
@@ -227,11 +241,12 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   and `pre-auth-rate-limit.ts` (the resolver checks, the `userId` claim and the new
   rate-limit scopes), `session-idle.ts` and the package index (`isIdle`),
   `machine-credentials.ts` (headerless calls), `apps/api/src/server.ts`, `config.ts`,
-  `bootstrap.ts`, `identity-router.ts` and `telemetry/` (the merged router, the new
+  `bootstrap.ts`, `identity-router.ts` and `telemetry.ts` (the merged router, the new
   settings, the `createAppFromEnv` refusal, the runtime-role assertion and the
   route-template paths), `packages/catalog/src/service/entities.ts`,
   `packages/catalog/src/service/pipeline.ts` and the catalog telemetry contract (the
-  `_user` identifier placeholder on the spans and on `catalog.audit.mutation`),
+  `_user` identifier placeholder on the spans, on `catalog.audit.mutation` and as the
+  Cerbos resource id), `packages/authz/src/redaction.ts` (positional resource ids),
   `apps/api/src/error-mapping.ts` and `packages/auth/src/errors.ts` (the
   `AuthRateLimitedError` and its `Retry-After`), `packages/catalog/src/domain/limits.ts`
   and `identifiers.ts` (one exported `ENTITY_IDENTIFIER_PATTERN`), the `@tayzu/auth`
@@ -282,7 +297,9 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   the shed, and the ban hook re-enabling a user disabled in one tenant) and ten
   non-blocking ones (G8-1 to G8-9 and G8-12), and a ninth pass that found no blocking one
   and seven non-blocking ones (G9-1 to G9-7, among them the `_user` of a joined tenant
-  being activated before the shed). All are folded into
+  being activated before the shed), and a tenth pass that found no blocking one and four
+  non-blocking ones (G10-1 to G10-4, among them `_user` emails in Cerbos's decision log).
+  All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks, except
   the org-deletion gaps, which moved to `045` with Q103 and are closed there.
   New surface: the first public route, the first outbound email and the Pwned
@@ -291,7 +308,9 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   extends it with the retention policy), new ADRs 0017, 0018 and 0020, and updates to
   `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`,
   `docs/catalog/auth-and-rbac.md`, `docs/catalog/catalog-core.md` (the `_user`
-  identifier placeholder on the spans and the audit event) and
+  identifier placeholder on the spans, the audit event and the Cerbos requests, the
+  positional ids of the referrer redaction and the route templates of the catalog
+  `_user` routes) and
   `docs/architecture/system-diagram.md`, and
   an amendment of `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Better Auth's
   `ac` roles are neutralized).

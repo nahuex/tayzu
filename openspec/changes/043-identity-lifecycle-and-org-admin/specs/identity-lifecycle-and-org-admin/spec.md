@@ -41,7 +41,10 @@ data deletion and data retention are the capability of
   user, the invitation and (as an HMAC) the per-recipient cap key.
 - **Principal attribution**: a `_user` write made by an admin operation is
   written as the `system` actor with `actor.onBehalfOf` set to the admin, in
-  process only (`reserved.ts` is unchanged).
+  process only (`reserved.ts` is unchanged). A `_user` write that no admin makes is
+  attributed the same way to the principal who acted: the invitee of an acceptance, the
+  user of their own first sign-in, or the operator's opaque id for the reconcile and the
+  bootstrap; a write that mirrors a ban has no such principal.
 
 ## ADDED Requirements
 
@@ -420,7 +423,9 @@ consumed and what the attempt created MUST be undone, so that a retry with the s
 token starts from nothing), and an orphan `_user` that a double failure leaves MUST be
 repaired by the reconcile. For an email that
 already has an account, acceptance MUST require a valid session of that same
-account, which MUST be read without refreshing it and MUST pass the idle-timeout and
+account, which MUST be read without refreshing it (only the step-up guard of an
+`admin` invitation, evaluated after the session, the email and the token have matched,
+reads it again, as on every high-risk route) and MUST pass the idle-timeout and
 banned checks and the
 temporary-password marker check that the authenticated pipeline applies, and whose
 email MUST equal the invitation email (there is no
@@ -433,14 +438,21 @@ email and the token have matched. It MUST add only the membership, activate the
 `_user` and mark the email verified, and it MUST activate the `_user` only after the shed
 of the SSO links its user did not make, so that the new membership stays inert (its
 `_user` not `Active`, so the member is rejected in that tenant) until the shed is done;
+the acceptance MUST hold back the membership hook's `_user` write and shed only for its
+own member, so that a membership of another user, or of the same user in another tenant,
+added while it runs is written and shed as on any other path;
 it MUST NOT set, change or compare a
 password or change the active organization, and MUST NOT touch a linked account or a
 session, the request's own included, except to shed the SSO links its user did not make
-and, when a link was shed, revoke the user's sessions, the one that carried the
-acceptance only after the acceptance has committed (see the requirement on SSO links).
-If a step after the membership was added fails before the token is consumed, the
-membership that the attempt created MUST be deleted, and a membership that existed
-before the attempt MUST NOT be. Acceptance
+and, when a link was shed by this or an earlier attempt of the invitation, revoke the
+user's sessions, the one that carried the acceptance (and any that an earlier attempt's
+shed kept) only after the acceptance has committed (see the requirement on SSO links).
+On the existing-account path, if a step before the `_user` is activated (the shed or the
+`_user` write) fails, the membership that the attempt created MUST be deleted, and a
+membership that existed before the attempt MUST NOT be. Once the `_user` has been
+activated on that path, a later failure before the token is consumed MUST NOT delete the
+membership: the attempt fails, the token stays valid, and a retry with the same token
+MUST complete the acceptance. Acceptance
 MUST NOT link an account by the email claim from Visma Connect. The body MUST be an
 allowlist of the invitation id, the token and, for a new account, the password; any
 other field MUST be rejected with `CATALOG_VALIDATION_FAILED`, and an invitation id
@@ -454,9 +466,11 @@ MUST take the same comparison work as a wrong token; the specific reason MUST be
 recorded only in the `catalog.security.invitation_acceptance_denied` event. A
 password that fails the policy MUST be reported only after the token has verified,
 without consuming the token. When an invitation whose role is `admin` is accepted, a
-fixed notice with no link and no free text MUST be sent to every other
-administrator of the organization, `Disabled` administrators included; a send failure MUST NOT block the acceptance and
-MUST be logged.
+fixed notice with no link and no free text MUST be sent to the other administrators
+of the organization, `Disabled` administrators included, through the notice controls
+of the requirement on the invitation email (the kill switch, the per-recipient and
+per-tenant notice caps and at most 20 recipients); a send failure MUST NOT block the
+acceptance and MUST be logged.
 
 #### Scenario: A new person accepts and can then sign in
 
@@ -497,9 +511,21 @@ MUST be logged.
 
 #### Scenario: A failed existing-account acceptance leaves no membership
 
-- **GIVEN** a pending invitation to `carol@example.com`, who has an account and a session, and a step after the membership was added that fails
+- **GIVEN** a pending invitation to `carol@example.com`, who has an account and a session, and a step before the `_user` is activated that fails
 - **WHEN** `carol` presents the token with her session
 - **THEN** she has no membership of the tenant, the token is not consumed and still verifies, a retry with the same token adds the membership again, and a membership she held before the attempt is never deleted by it
+
+#### Scenario: A failure after the `_user` step keeps the membership for a retry
+
+- **GIVEN** a pending invitation to `carol@example.com`, who has an account and a session, and an attempt that fails after her `_user` was activated, when her email is marked verified
+- **WHEN** `carol` presents the token with her session, and then retries with the same token
+- **THEN** the failed attempt leaves her membership and her `Active` `_user` in place, deletes nothing and leaves the token valid, and the retry completes the acceptance, consuming the token and marking her email verified, with no second status write
+
+#### Scenario: The acceptance holds back only its own member's hooks
+
+- **GIVEN** an acceptance in progress for `carol@example.com` in `t2`
+- **WHEN** a membership of another user, or of `carol` in another tenant, is added while it runs
+- **THEN** that membership's `_user` is written and its unmarked links are shed as on any other path, while `carol`'s own membership in `t2` gets neither from the membership hook
 
 #### Scenario: A session of another account cannot accept
 
@@ -592,7 +618,9 @@ The platform MUST record the provenance of every SSO link positively: a link tha
 user makes through the self-service link route or the SSO callback MUST carry a marker,
 keyed by the link's own row identifier (never by the identity provider's subject),
 written when the link is created and removed whenever the link is removed, by any
-path, and a link without a marker MUST count as recorded by an admin. A marker MUST NOT
+path, and a link without a marker MUST count as recorded by an admin. A marker MUST be
+written only for an account created on the identity provider's callback route, never for
+an account that another operation writes while its own request is being handled. A marker MUST NOT
 expire and MUST carry no email, subject or tenant. A failed marker write MUST fail the
 link, MUST remove the link it was written for and MUST be logged. Only a link the user
 makes MAY carry a marker: signing in MUST NOT link an account implicitly by its email,
@@ -613,7 +641,10 @@ When the shed removed a link, every session of the user MUST be revoked, whether
 the session was established through the identity provider, each revocation being logged
 as `auth.security.session_revoked` with the reason `sso_link_shed`; the session that
 carries the acceptance request MUST be kept while the acceptance runs and MUST be revoked
-once it has committed, and a failure of that revocation MUST be logged; and the shed MUST
+once it has committed, and a failure of that revocation MUST be logged; a shed that removes
+a link at acceptance MUST record the session it kept, together with its deletion, so that
+the attempt that commits also revokes that session, and its own, when an earlier attempt's
+shed removed the link and its own shed removes nothing; and the shed MUST
 sweep the user's sessions a second time after its deletion commits. The SSO callback MUST
 NOT create a session through an account that no longer exists, or that carries no marker
 while its user belongs to two or more tenants, and MUST refuse, failing closed, when it
@@ -638,7 +669,7 @@ requires a fresh step-up verification.
 
 #### Scenario: A retried acceptance still sheds the link and revokes the sessions
 
-- **GIVEN** a user of `t1` with an SSO link they did not make, and an existing-account acceptance of `t2` whose first attempt failed after the membership was added and left it in place
+- **GIVEN** a user of `t1` with an SSO link they did not make, and an existing-account acceptance of `t2` whose first attempt failed after the membership was added but before its shed removed the link, and whose compensation failed too and left the membership in place
 - **WHEN** the acceptance is retried with the same token and finds the membership already added
 - **THEN** the link is shed, the user's sessions are revoked and `catalog.security.sso_link_shed` is logged before the token is consumed, and a shed that fails fails the attempt without consuming the token
 
@@ -672,6 +703,18 @@ requires a fresh step-up verification.
 - **GIVEN** an existing-account acceptance whose shed removed a link
 - **WHEN** the revocation of the session that carried it fails after the acceptance has committed
 - **THEN** the acceptance stays committed and `catalog.security.accepting_session_revocation_failed` is logged with opaque identifiers only
+
+#### Scenario: A retried acceptance revokes the session an earlier attempt's shed kept
+
+- **GIVEN** a user with an SSO link they did not make, and an existing-account acceptance of a second tenant whose first attempt shed the link and then failed before its `_user` was activated
+- **WHEN** the acceptance is retried with the same token, with the same session or with a new one, and commits, its own shed removing nothing
+- **THEN** the session that the first attempt kept is revoked, and so is the session that carried the retry, and an acceptance whose attempts never removed a link keeps its session
+
+#### Scenario: An account written inside another operation gets no marker
+
+- **GIVEN** an account row that another operation writes through the internal adapter while it handles its own request, for example while a membership is added
+- **WHEN** the account is created
+- **THEN** it carries no marker and counts as recorded by an admin, while a link the user makes through the callback route carries one
 
 #### Scenario: An admin unlink revokes the user's sessions
 
@@ -1258,8 +1301,8 @@ the authenticated context resolution.
 
 ### Requirement: Security-relevant events are logged
 
-Every Cerbos deny, status change, service-account disable, enable and
-deletion, invitation resend, user creation (including the bootstrap user),
+Every Cerbos deny, status change, service-account creation, disable, enable
+and deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
 excess, every invitation cancellation (an invitation cancelled by a user creation
 included), a failed admin-accepted notice, a suppressed or truncated notice, a
@@ -1271,14 +1314,31 @@ reason), a banned user's sign-in attempt and a reconcile run, MUST be logged as 
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
 actor of the audit event of an operation that an admin initiates MUST be the admin who
-acted, never the `system` actor of the write. A reconcile run, which no admin initiates,
-MUST record the operator's opaque id instead. The audit events of an invitation's creation, cancellation and resend MUST carry the
+acted, never the `system` actor of the write. Where no admin acts, the audit event MUST
+name the principal who did: a reconcile run and the bootstrap user's creation MUST record
+the operator's opaque id instead of an actor, which the bootstrap MUST require from its
+environment and refuse to run without; an invitation acceptance MUST name the invitee as
+its actor, the same identity that its status write is attributed to. Every status change
+MUST be logged, whichever writer makes it, with the principal of its write (the admin, the
+operator's opaque id, the user on their own first sign-in, the invitee on acceptance, and
+no actor for a change that mirrors a ban) and the bounded status event that caused it, so
+that a self-activation is told apart from an admin action. The audit events of an invitation's creation, cancellation and resend MUST carry the
 tenant and the acting admin, and those of its creation and resend also the actor type.
 
 #### Scenario: Each lifecycle action emits its declared event
 
 - **WHEN** each of the actions above is executed once
 - **THEN** its declared event is observed with its required attributes and no email, token, name or secret
+
+#### Scenario: Every status change names its principal
+
+- **WHEN** a status is changed by an admin's status change, invitation, user creation or service-account creation, by a first sign-in, by an acceptance, by a ban, by the reconcile and by the bootstrap
+- **THEN** each change is logged as `catalog.audit.user_status_changed` with its status event, the admin, the user or the invitee as its actor, the operator's opaque id in place of an actor for the reconcile and the bootstrap, and no actor for the ban, and with no email
+
+#### Scenario: The acceptance and the bootstrap name who acted
+
+- **WHEN** an invitation is accepted, and the bootstrap user is created
+- **THEN** the acceptance's audit event names the invitee as its actor, the bootstrap's names the operator's opaque id, and the bootstrap refuses to run without an operator id
 
 #### Scenario: A maintenance script's audit event is exported before it exits
 
@@ -1302,7 +1362,13 @@ be the route template. A catalog span of a `_user` entity, and the catalog audit
 instead of the entity identifier (an email, or the `svc-` identifier of a service
 account), while the entities of other blueprints keep theirs; the change event stored in
 the database keeps the identifier and is found from the audit event by its tenant and
-sequence number. Opaque identifiers and
+sequence number. The catalog's authorization requests MUST NOT carry it either: for a
+`_user` entity the resource identifier sent to the authorization engine, whose decision
+log records it, MUST be the same placeholder, and a redaction that checks several candidates MUST send
+positional identifiers instead of theirs, while the entities of other blueprints keep
+their identifiers; and the exported path of a catalog entity route of the `_user`
+blueprint MUST be its route template, while the routes of other blueprints keep their
+paths. Opaque identifiers and
 enumerated values (status, invitation state, account kind, credential kind) are permitted.
 
 #### Scenario: Declared telemetry is emitted
@@ -1325,6 +1391,16 @@ enumerated values (status, invitation state, account kind, credential kind) are 
 
 - **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, updated or deleted through the catalog, including through the existing user sync
 - **THEN** each `catalog.audit.mutation` event carries the fixed placeholder as its resource identifier and the email in none of its attributes, its tenant and sequence number find the stored change event, which keeps the identifier, and an entity of another blueprint keeps its identifier in the event
+
+#### Scenario: A `_user` email never reaches the Cerbos decision log
+
+- **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, read, updated, deleted or listed through the catalog, and a delete is blocked by referrers
+- **THEN** every authorization request carries the fixed placeholder as the resource identifier of that entity and the email in no field, the referrer redaction sends positional identifiers, and an entity of another blueprint is checked with its identifier
+
+#### Scenario: A `_user` email never reaches a catalog HTTP span
+
+- **WHEN** `GET /v1/blueprints/_user/entities/marker-user@example.com`, its status route and its related route are called through the real HTTP server and instrumentation
+- **THEN** the exported path of each is its route template and the email appears in no exported attribute, while a route of another blueprint keeps its path
 
 #### Scenario: A path identifier never reaches telemetry over HTTP
 
