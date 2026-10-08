@@ -31,7 +31,8 @@ and executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`).
   field on the `_user` system blueprint with `Active`/`Disabled` at minimum.
   `043` completes it to the full Port set (`Staged`, `Invited`, `Active`,
   `Disabled`) behind one state machine that **every** status writer goes
-  through (hooks, `identity.users.create`, the ban hook, which only ever disables,
+  through (hooks, `identity.users.create`, the acceptance's own `_user` step, the
+  reconcile, `identity.serviceAccounts.create`, `identity.users.setStatus`, the ban hook, which only ever disables,
   first sign-in, which activates only a user of a single tenant), with
   the forward-only rule (a user never moves back from `Active` to
   `Invited`/`Staged`, and a `Disabled` user is never revived by a sign-in or a
@@ -132,10 +133,17 @@ mail. A second fixed template tells the other admins of an accepted
   fails closed and emits `authz_denied`, and a route-table-driven HTTP matrix proves
   each of the thirteen oRPC routes. One repository module in `apps/api` serves every
   identity read of `apikey`, `invitation`, `member`, `session`, `user` and `account`,
-  and the membership delete of the acceptance's compensations, requiring the tenant
-  wherever the model has one, with a lint ban on direct adapter access; its only
-  exceptions are the per-user session operations of an admin unlink and a
-  single-membership disable, and the shed's own SQL (D14). The machine-credential functions are exported only on a package subpath and
+  the membership delete of the acceptance's compensations and the tenant-scoped
+  session delete of a disable, requiring the tenant wherever the model has one except
+  in two named reads that are global by nature (the accept route's invitation lookup,
+  before the tenant is known, and the tenant ids of a user's memberships), with a lint
+  ban on direct adapter access; its only
+  exceptions are Better Auth's internal-adapter calls on one user already resolved in
+  the tenant (the per-user session operations of an admin unlink and a
+  single-membership disable, the ban and unban, the `emailVerified` write, the
+  new-account compensation's user deletion, and the admin link and unlink), and the
+  shed's own SQL; the maintenance scripts are not identity code and read the `auth`
+  schema on their own pool (D14). The machine-credential functions are exported only on a package subpath and
   importable only from the identity code. Their OpenAPI document is committed
   (`openapi/identity.openapi.json`, paths and risk markers only) with its own drift
   check.

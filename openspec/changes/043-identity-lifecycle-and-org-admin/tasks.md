@@ -19,9 +19,15 @@ Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
 Tasks follow the Resolved decisions Q1 and Q4-Q115 in `design.md` (there is no Q2 or
-Q3). No open question is pending (design, Open Questions): the eighth amendment's Open
-Question 1 is Q111, applied to design D2, the Risks bullet on failed acceptances and the
-spec, and to tasks 3.2, 4.4, 8.1e and 16.5, so no task waits on an open question. Org deletion and data retention (the old group 12 of this file) moved to `045-org-deletion-and-data-retention` by Q103: no task here covers them.
+Q3). Two open questions are pending (design, Open Questions). The ninth amendment's Open
+Question 1 is the actor of the audit events and of the `_user` write of an invitation
+acceptance and of the bootstrap, where no admin acts: tasks 4.6, 4.6b, 8.1e, 13.3, 15.1
+and 15.6 keep their current wording on that point. Its Open Question 2 is which status
+changes `catalog.audit.user_status_changed` records when no admin acts, and with which
+actor: tasks 4.2b, 4.4, 4.5, 15.1 and 15.6 keep their current wording on that point.
+Each answer is then recorded as a Resolved decision and applied to its tasks; no other
+task waits on them. The eighth amendment's Open Question 1 is Q111, applied to design D2, the Risks
+bullet on failed acceptances and the spec, and to tasks 3.2, 4.4, 8.1e and 16.5. Org deletion and data retention (the old group 12 of this file) moved to `045-org-deletion-and-data-retention` by Q103: no task here covers them.
 
 The one migration of this change is `0011`; `045` owns `0012` to `0014` and no migration
 is renumbered. The task groups after the old group 12 moved up by one: `002`'s references
@@ -29,9 +35,28 @@ to `043`'s group 14 (the hand-offs, `002` Q73 and its residual risks) and to tas
 (`002` Q84) mean group 13 and task 13.2 here, and group 14 is the mount group (design,
 "Hand-offs from `002`: traceability"). Every migration and every Cerbos task is marked **(Checkpoint 3)** and stops for the human's separate approval. A task
 numbered with a letter (`8.5b`) was added by an amendment and is a full cycle of
-its own. Tasks run in file order, which is not always the order of their letters:
-14.1c runs before 14.1b, whose Verify reads the `contract:check` input that 14.1c
-creates.
+its own unless it is marked _(setup)_ (2.0b, 8.1a). Tasks run in file order, which is
+not always the order of their letters, so that every task runs after what its test
+uses: 4.1b runs after 4.2, whose derivation of the `membership_added` intent its wiring
+test exercises; 14.1c runs before 14.1b, whose Verify reads the `contract:check` input
+that 14.1c creates; 6.8b runs before 6.6, whose cap throws its `AuthRateLimitedError`; 6.7b runs
+before 6.7, whose key it computes; 8.5i runs before 8.5g, because the shed core of 8.5h
+runs inside its `withUserLock` transaction; and 11.2b runs after 11.8, whose resolver
+status check it asserts. Where a behavior spans tasks, the assertion that needs a later
+task's code is that later task's case, never the earlier one's: the breached-password
+stub of `dast.sh` is 8.1a's and the DAST seed's policy-compliant password 13.5b's (not
+4.6b's), the notice of a tenant on `EMAIL_DISABLED_TENANT_IDS` is 6.12's (6.5c tests its
+gate on fakes), the acceptance cases of the breach check and of the NFC normalization are
+8.12's and 8.2's (8.1b and 8.1d set the password through `auth.api.createUser`), the
+key create and revoke through the identity operation are 9.5's and 9.9's (9.1b calls the
+helpers directly), an `id` that `rotate` accepts is 9.6's (9.2 asserts the id), a
+surviving key of an identifier with no `_user` not resolving is 11.6's and 11.7's (10.3
+asserts the refused creation), the one fixed message of every conflict is 13.3's (10.3
+and 13.2b assert `CATALOG_VALIDATION_FAILED`), and the route list of the generated
+identity document is 14.1c's (14.1 calls the procedures). The
+`_user` reconcile, which writes through the adapter of 4.1 and the `membership_added`
+intent of 4.2, is task 4.2b; it was numbered 2.2b, so `045`'s reference to `043`'s task
+2.2b means task 4.2b here (`045` is not edited; this note is the mapping).
 
 **Order matters.** Group 13 (the hand-offs from `002`) comes before group 14,
 the only group that registers routes over HTTP (`002` Q73, design D15). Groups 1
@@ -154,6 +179,22 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       covers a script reading only its own variables, a missing one failing only the
       script that needs it, and neither the backfill nor the reconcile declaring or reading
       `BETTER_AUTH_SECRET`.
+- [ ] 2.0c `@tayzu/auth` exports the helpers through which `apps/api` creates every
+      identity log event, span and counter, before the first task that emits one
+      (design, Observability contract): an event emitter, a span helper and a metric
+      recorder over the `@tayzu/auth` tracer and meter, like `emitAccountLinkEvent`,
+      because `apps/api` has no `@opentelemetry/api` dependency and the design names
+      none. It also creates the separate identity contract module,
+      `packages/auth/src/telemetry/identity-contract.ts` (Resolved decision Q74),
+      exported from the package and declaring no name yet: 13.3 declares the four `002`
+      Q42 names in it and 15.1 the rest, and `telemetry/contract.ts` and its
+      `contract.test.ts` are not edited. Verify: `identity-telemetry.test.ts` (in
+      `packages/auth/src/telemetry/`) covers, under in-memory exporters, the event
+      emitter exporting a log record with the name, severity and attributes it is given
+      under the `@tayzu/auth` scope, the span helper recording a thrown error on its span
+      and rethrowing it, the metric recorder adding to a counter under that scope, and
+      the identity contract module being importable from the package index with no name
+      declared.
 - [ ] 2.1 `USER_BLUEPRINT` carries the optional `accountKind` (`"standard"` |
       `"service"`, default `"standard"`, applied on write only) and a four-value
       `status` enum (`Staged`, `Invited`, `Active`, `Disabled`, default `Staged`)
@@ -187,64 +228,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `accountKind` and widening `status` being a compatible change: the update succeeds,
       existing `_user` entities stay valid and are not rewritten, and a second run
       changes nothing: no version bump and no new change event.
-- [ ] 2.2b A repeatable `_user` reconcile script
-      (`apps/api/scripts/reconcile-users.ts`, `pnpm --filter @tayzu/api
-      identity:reconcile-users`, started through the helper of 2.0; Resolved
-      decision Q50) creates the `_user` entity of every existing member that has
-      none, through the Q30 adapter and the `membership_added` intent of 4.2 (so
-      `created_active`, with the input `afterAddMember` builds), and leaves an
-      existing row untouched. For a member whose Better Auth user is `banned` it
-      follows `created_active` with `admin_disable`, so the row is `Disabled` and a
-      banned user is never revived as `Active` (Resolved decision Q62). Before it
-      creates the `_user` of a member whose user holds two or more memberships it runs
-      the shed of 8.5h, which 8.5l adds to this script once the shed exists (Resolved
-      decision Q105); it calls the shed core directly on its `tayzu_auth` pool, so it
-      builds no Better Auth instance and holds no `BETTER_AUTH_SECRET` (Resolved decision
-      Q114). It also
-      removes an **orphan**: a human `_user` with status `Active`, no `member` row in
-      its tenant and a `createdAt` **more than one hour old**, which is what a failed
-      acceptance leaves behind, because its `_user` write is on another pool and no
-      transaction spans the two (Resolved decisions Q84 and Q89; `Invited` and
-      `Staged` rows and service accounts are never orphans). The grace period keeps the
-      reconcile from deleting the row of a member whose acceptance is in flight or about
-      to be retried, because the `_user` write and the membership are on two pools with no
-      transaction spanning them (since Q112 the acceptance writes the `_user` after the
-      membership and the shed, 8.1e). The removal is a `system`
-      write with `onBehalfOf` the operator (Q84), made with `detachReferences` because a
-      relation that targets the `_user` is a `RESTRICT` foreign key
-      (`catalog_entity_relation_target_fk`) that would otherwise fail it. It lists organizations and members
-      through the `tayzu_auth` pool and writes through `tayzu_app`, as its own
-      Container Apps Job (Resolved decision Q49), and declares those two roles for 2.0. Its change events carry the
-      operator id as `onBehalfOf`, taken from the job's environment (an opaque id of the
-      catalog's id shape, never an email, recorded with the named second approver; `045`'s
-      workflow later sets it as `gh:<numeric actor id>`, actor type `user`, Q70), and
-      the script refuses to run without it. It emits the span
-      `identity.user.reconcile` and the audit event `catalog.audit.users_reconciled`
-      per tenant, with the number of rows created and of orphans removed (declared
-      in 15.1). In production it runs as an operator-started job (design D9), before
-      the release that carries the `user_missing` rejection (11.8) serves traffic in
-      an environment that has members and before the mount switch is turned on
-      (design D15, Migration Plan). It is also the repair path for a member rejected
-      with `user_missing` (11.8), such as one that predates `043` or whose `_user`
-      row was removed by hand (an acceptance never leaves one: its `_user` step
-      fails closed, 8.2). Verify: `reconcile-users.int.test.ts` (in
-      `apps/api/src/identity/`, importing the script) covers "The reconcile repairs
-      a member and is repeatable": two tenants seeded with a member that has no
-      `_user` row and a member that has an `Active` one, the first run creating the
-      missing row as `Active` with `onBehalfOf` the operator and leaving the other
-      untouched, the second run changing nothing, the repaired member being accepted
-      by `resolveContext`, and the script refusing to run with no operator id; "The
-      reconcile does not revive a banned user": a banned member with no row ends
-      `Disabled`, not `Active`, with both writes attributed to the operator; and
-      "The reconcile removes an orphan": an `Active` human `_user` with no member and
-      older than the grace period is removed (also when a relation targets it), one
-      younger than the grace period, an `Invited` one, a `Staged` one and a service
-      account are kept, and the removal is attributed to the operator.
 - [ ] 2.3 Every reader of `accountKind` treats an absent value as `standard`,
       because a blueprint default applies only on write (design D1). Verify:
       `account-kind.test.ts` covers a `_user` read without the property resolving to
-      `standard`, and `identity-attributes.test.ts` (5.1) sending `standard` for
-      such an entity.
+      `standard` (the Cerbos attribute built from such an entity is 5.1's case).
 
 ## 3. User status state machine (pure)
 
@@ -314,11 +301,6 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `describe` of `user-sync.int.test.ts` and `sso-jit-refresh.int.test.ts` around
       line 179 among them) migrates to the adapter, because the port's input no longer
       has a `status`.
-- [ ] 4.1b `createApp` builds the adapter of 4.1 and passes it to `createAuth` as
-      `userSync` (today it passes none, so every status hook is a no-op in the running
-      app). Verify: `user-sync-wiring.int.test.ts` boots `createApp` and covers a
-      membership added through Better Auth writing the `_user` entity through the
-      state machine.
 - [ ] 4.1c `refreshDisplayData` (`auth.ts`) upserts a member's display fields
       without a status. With the new default `Staged` it would create a `Staged` row
       for a member who has none, which the resolver rejects (11.8, Resolved decision
@@ -383,6 +365,65 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       user is not revived by a hook" and one case per current status (none,
       `Invited`, `Staged`, `Active`, `Disabled`), asserting the event written or the
       absence of a write, and a banned member with no row ending `Disabled`.
+- [ ] 4.1b `createApp` builds the adapter of 4.1 and passes it to `createAuth` as
+      `userSync` (today it passes none, so every status hook is a no-op in the running
+      app). It runs after 4.2, whose derivation of the `membership_added` intent the
+      wiring test exercises (tasks header). Verify: `user-sync-wiring.int.test.ts` boots
+      `createApp` and covers a membership added through Better Auth writing the `_user`
+      entity through the state machine.
+- [ ] 4.2b A repeatable `_user` reconcile script
+      (`apps/api/scripts/reconcile-users.ts`, `pnpm --filter @tayzu/api
+      identity:reconcile-users`, started through the helper of 2.0; Resolved
+      decision Q50) creates the `_user` entity of every existing member that has
+      none, through the Q30 adapter and the `membership_added` intent of 4.2 (so
+      `created_active`, with the input `afterAddMember` builds), and leaves an
+      existing row untouched. For a member whose Better Auth user is `banned` it
+      follows `created_active` with `admin_disable`, so the row is `Disabled` and a
+      banned user is never revived as `Active` (Resolved decision Q62). Before it
+      creates the `_user` of a member whose user holds two or more memberships it runs
+      the shed of 8.5h, which 8.5l adds to this script once the shed exists (Resolved
+      decision Q105); it calls the shed core directly on its `tayzu_auth` pool, so it
+      builds no Better Auth instance and holds no `BETTER_AUTH_SECRET` (Resolved decision
+      Q114). It also
+      removes an **orphan**: a human `_user` with status `Active`, no `member` row in
+      its tenant and a `createdAt` **more than one hour old**, which is what a failed
+      acceptance leaves behind, because its `_user` write is on another pool and no
+      transaction spans the two (Resolved decisions Q84 and Q89; `Invited` and
+      `Staged` rows and service accounts are never orphans). The grace period keeps the
+      reconcile from deleting the row of a member whose acceptance is in flight or about
+      to be retried, because the `_user` write and the membership are on two pools with no
+      transaction spanning them (since Q112 the acceptance writes the `_user` after the
+      membership and the shed, 8.1e). The removal is a `system`
+      write with `onBehalfOf` the operator (Q84), made with `detachReferences` because a
+      relation that targets the `_user` is a `RESTRICT` foreign key
+      (`catalog_entity_relation_target_fk`) that would otherwise fail it. It lists organizations and members
+      through the `tayzu_auth` pool and writes through `tayzu_app`, as its own
+      Container Apps Job (Resolved decision Q49), and declares those two roles for 2.0. Its change events carry the
+      operator id as `onBehalfOf`, taken from the job's environment (an opaque id of the
+      catalog's id shape, never an email, recorded with the named second approver; `045`'s
+      workflow later sets it as `gh:<numeric actor id>`, actor type `user`, Q70), and
+      the script refuses to run without it. It emits the span
+      `identity.user.reconcile` and the audit event `catalog.audit.users_reconciled`
+      per tenant, with the number of rows created and of orphans removed (declared
+      in 15.1). In production it runs as an operator-started job (design D9), before
+      the release that carries the `user_missing` rejection (11.8) serves traffic in
+      an environment that has members and before the mount switch is turned on
+      (design D15, Migration Plan). It is also the repair path for a member rejected
+      with `user_missing` (11.8), such as one that predates `043` or whose `_user`
+      row was removed by hand (an acceptance never leaves one: its `_user` step
+      fails closed, 8.2). Verify: `reconcile-users.int.test.ts` (in
+      `apps/api/src/identity/`, importing the script) covers "The reconcile repairs
+      a member and is repeatable": two tenants seeded with a member that has no
+      `_user` row and a member that has an `Active` one, the first run creating the
+      missing row as `Active` with `onBehalfOf` the operator and leaving the other
+      untouched, the second run changing nothing, the repaired member being accepted
+      by `resolveContext`, and the script refusing to run with no operator id; "The
+      reconcile does not revive a banned user": a banned member with no row ends
+      `Disabled`, not `Active`, with both writes attributed to the operator; and
+      "The reconcile removes an orphan": an `Active` human `_user` with no member and
+      older than the grace period is removed (also when a relation targets it), one
+      younger than the grace period, an `Invited` one, a `Staged` one and a service
+      account are kept, and the removal is attributed to the operator.
 - [ ] 4.3 `identity.users.create` performs **no** `_user` write of its own: the hook
       of 4.2 writes it (today the operation writes twice, through the hook and
       through an explicit upsert, and the second write would throw because
@@ -444,8 +485,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `userSync` is passed to `createAuth`, and a second write would throw
       (`created_active` is allowed only from none). The `userSync` option of
       `BootstrapAdminOptions` is removed. It emits `catalog.audit.user_created` with
-      source `bootstrap` (declared in 13.3) and applies the password policy of 8.1
-      and the forced change of 13.5. Verify: `bootstrap.int.test.ts` (in
+      source `bootstrap` (declared in 13.3; its actor is the ninth amendment's Open
+      Question 1, design) and applies the password policy of 8.1 and the forced change
+      of 13.5 once those exist (8.1b and 13.5b test them on the bootstrap; they run
+      later). Verify: `bootstrap.int.test.ts` (in
       `packages/auth/src/`, the existing test) covers that `bootstrapAdmin()`, run
       against an `auth` built with a recording `UserSyncPort`, yields exactly one
       `created_active` write for the admin and no second write, and emits the audit
@@ -485,23 +528,21 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       Resolved decision Q96; 6.7b adds `IDENTITY_TOKEN_HMAC_SECRET` and
       `INVITATION_LINK_BASE_URL`, because `dast.sh` sets no `NODE_ENV`). The CLI itself is run by an operator out of band, as `002`
       designed it, and is not one of the scripts that `045`'s maintenance workflow starts
-      (Resolved decision Q91); `docs/security/secrets.md` (16.8) records how. The seed uses a password that
-      satisfies the policy of 8.1 (the generator of 13.5b) and honors the forced change of 13.5. The
-      breached-password stub (8.1a; Resolved decision Q71) must reach both processes
-      that run the breach plugin, the bootstrap child and the API server that
-      `dast.sh` starts and that serves the forced `/api/auth/change-password`, so
-      `dast.sh` sets `NODE_OPTIONS=--import` to the `.mjs` stub for the **whole**
-      `dast.sh up`; that step is shared with `ci:local`. Verify:
+      (Resolved decision Q91); `docs/security/secrets.md` (16.8) records how. Two parts
+      of the seed need code that later tasks build, so they are those tasks' cases: the
+      breached-password stub that `dast.sh` loads for the bootstrap child and the API
+      server is 8.1a's (Resolved decision Q71), and the seed's password, which satisfies
+      the policy of 8.1 through the generator of 13.5b and honors the forced change of
+      13.5, is 13.5b's. Verify:
       `bootstrap-admin.int.test.ts` (in `apps/api/src/`, importing
       `../scripts/bootstrap-admin.js`) runs `main()` and covers that the bootstrap
       `_user` exists, is `Active` through the state machine and was written once,
       and that `packages/auth` contains neither the script nor its package script;
-      `zap-seed.test.ts` covers the seed using the moved CLI, its four variables and
-      a policy-compliant password, and `--refresh` still parsing with `DATABASE_URL=unused`
+      `zap-seed.test.ts` covers the seed using the moved CLI and its four variables,
+      and `--refresh` still parsing with `DATABASE_URL=unused`
       and none of the new variables; and `dast-script.test.ts` (in `apps/api/src/`,
-      reading `scripts/ci/dast.sh` as text, like `zap-seed.test.ts`) covers the stub
-      being imported through `NODE_OPTIONS` before the API server and the seed start
-      and the seed receiving distinct `DATABASE_URL` and `AUTH_DATABASE_URL`, and
+      reading `scripts/ci/dast.sh` as text, like `zap-seed.test.ts`) covers the seed
+      receiving distinct `DATABASE_URL` and `AUTH_DATABASE_URL`, and
       `EMAIL_PROVIDER=none` being exported.
 
 ## 5. Cerbos foundations, ⛔ Checkpoint 3
@@ -519,10 +560,11 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       and `credentials.create` (no resource exists yet), the invitation id for cancel
       and resend, the Better Auth user id (or the `svc-…` identifier of a service
       account) for `setStatus`, `serviceAccounts.delete` and the SSO link and unlink,
-      the `apikey` id for rotate and revoke (`045` adds the tenant id for
+      the `apikey` id for rotate and revoke, and the literal `list` for
+      `credentials.list` (it has no target) (`045` adds the tenant id for
       `organization.delete`). Verify: `identity-attributes.test.ts` covers that the
       attributes carry the target's tenant and the three attributes and that the
-      resource id is the opaque id for an email-addressed target, that a `service_account` resource carries the resolved `accountKind` (and `service` for a create), the resource id of every operation being the one named above, and
+      resource id is the opaque id for an email-addressed target, that a `service_account` resource carries the resolved `accountKind` (and `service` for a create), a `_user` read without `accountKind` being sent as `standard` (through the reader of 2.3), the resource id of every operation being the one named above, and
       `resource-kinds.test.ts` that the kinds exist.
 - [ ] 5.1b `apps/api/src/identity/auth-repository.ts` (Resolved decision Q69; design
       D14) is the only module through which the identity code reads `apikey`,
@@ -535,36 +577,66 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       functions take a user id or an email, are named `global…` (for example
       `globalUserByEmail`) and exist only for reads that are global by nature, and a
       target that must belong to the tenant is read through a membership check
-      (`userInTenant`, which reads `member`). The module offers a paged key listing that reaches the end (9.2),
-      a key lookup by id, an invitation lookup by id, a member listing, a membership
-      lookup and the session reads of the disable operation, returns plain read
-      shapes and never selects the hashed `key` column. It also holds the one write the
-      acceptance's compensations need (8.1e, Resolved decision Q105 part 1): a
-      **tenant-keyed `member` delete** that requires a `tenantId`, filters by
-      `organizationId` and deletes only the membership row it is given, because Better
-      Auth's `removeMember` needs a session and both compensations run without one. Two
-      accesses stay outside the module by nature, and are its only exceptions, each
-      acting on one user id that the caller has already resolved in its tenant: the
+      (`userInTenant`, which reads `member`). Two reads of tenant-keyed models are global
+      by nature and are the only `global…` functions on those models:
+      `globalInvitationById(invitationId)`, used only by the public accept route (8.4),
+      which does not know the tenant before it reads the record and then derives the
+      tenant from the record's `organizationId`; and `globalMembershipTenantsOf(userId)`,
+      which returns tenant ids only and serves the checks that look at a user's
+      memberships in every tenant (the other-tenant refusal of `linkSsoAccount` and
+      `unlinkSsoAccount`, 13.2 and 8.5i, the single-membership test of the disable, 11.2
+      and 11.2b, and the `target_in_other_tenant` cause of `identity.users.create`,
+      13.3). The module offers a paged key listing that reaches the end (9.2),
+      a key lookup by id, an invitation lookup by id within a tenant, a member listing,
+      a membership lookup and the session reads of the disable operation, returns plain
+      read shapes and never selects the hashed `key` column. It also holds two
+      tenant-keyed writes. The write the acceptance's compensations need (8.1e, Resolved
+      decision Q105 part 1) is a **tenant-keyed `member` delete** that requires a
+      `tenantId`, filters by `organizationId` and deletes only the membership row it is
+      given, because Better Auth's `removeMember` needs a session and both compensations
+      run without one. The revocation of the tenant-scoped disable (11.2, design D13) is a
+      **tenant-keyed `session` delete** that requires a `tenantId` and filters by
+      `activeOrganizationId` and the user id, so it never reaches the user's sessions of
+      another tenant. The
+      accesses that stay outside the module by nature are its only exceptions, each
+      acting on one user id that the caller has already resolved in its tenant (or, for
+      the new-account compensation, has just created): Better Auth's
+      **internal-adapter calls on that user**, which name no model, namely the
       **per-user, cross-tenant session operations** (every session of a user, whatever
       its active organization) of the admin unlink (8.5j) and of the single-membership
-      disable (11.2), made through Better Auth's internal adapter (`listSessions`,
-      `deleteUserSessions`), and the **shed core** of 8.5h, whose parameterized SQL on the
-      `tayzu_auth` pool reads and deletes inside the `withUserLock` transaction (Resolved
-      decision Q114). Verify:
+      disable (11.2) (`listSessions`, `deleteUserSessions`), `updateUser` for the ban and
+      the unban of 11.2 and for the acceptance's `emailVerified` write (8.2, 8.5b), the
+      new-account compensation's deletion of the user it created (8.1e), and the account
+      link of `linkSsoAccount` and the account deletion of the admin unlink; and the
+      **shed core** of 8.5h, whose parameterized SQL on the `tayzu_auth` pool reads and
+      deletes inside the `withUserLock` transaction (Resolved decision Q114). The
+      maintenance scripts under `apps/api/scripts/` are not identity code and not
+      clients of the module: the backfill (2.2) lists `auth.organization`, and the
+      reconcile (4.2b) lists organizations and members and reads `user.banned`, directly
+      on their `tayzu_auth` pool, because enumerating every tenant is cross-tenant by
+      nature and the reconcile builds no Better Auth instance. Verify:
       `auth-repository.int.test.ts` covers each tenant-keyed function returning only
       the rows of the tenant it is given, with a second tenant's rows seeded to
       match on every other field, a missing or empty `tenantId` throwing, a
       `@ts-expect-error` case showing that a call without a `tenantId` does not
       type-check, a `session` read filtered by `activeOrganizationId`, the `member`
       delete removing the membership of the tenant it is given and leaving the same
-      user's membership of a second tenant in place, and the global functions being
-      the only ones without a `tenantId`.
+      user's membership of a second tenant in place, the `session` delete removing only
+      the sessions of the tenant it is given (a session of the same user whose active
+      organization is a second tenant surviving), `globalInvitationById` returning an
+      invitation of any tenant with its `organizationId`, `globalMembershipTenantsOf`
+      returning the tenant ids of every membership of the user and nothing else of
+      them, and the global functions (the `user` and `account` readers,
+      `globalInvitationById` and `globalMembershipTenantsOf`) being the only ones without
+      a `tenantId`.
 - [ ] 5.1c A lint rule bans direct adapter access to the `apikey`, `invitation`,
       `member`, `session`, `user` and `account` models from
       `apps/api/src/identity/**` and from `apps/api/src/identity-router.ts` (whose
       `authorizeTarget` reads `member` today, outside the `identity/` folder)
-      outside `auth-repository.ts` (Resolved decision Q69): a `no-restricted-syntax`
-      selector on adapter calls whose model is one of the six, and a restriction on
+      outside `auth-repository.ts` (Resolved decision Q69; the maintenance scripts under
+      `apps/api/scripts/` are outside that file scope, 5.1b): a `no-restricted-syntax`
+      selector on adapter calls whose model is one of the six (the internal-adapter
+      calls that 5.1b names take a user id and name no model), and a restriction on
       importing the adapter factory there. The block is added to `eslint.config.js`
       by **spreading** the existing `no-restricted-syntax` selectors (the `sql.raw`
       and `actor.type` bans, lines 91 and 97 of `eslint.config.js`), because a later
@@ -584,8 +656,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       rules off), and covers a direct `apikey` read in
       `credentials.ts` failing, a direct `member` read in `identity-router.ts`
       failing, the same read inside `auth-repository.ts` passing, a read of another
-      model passing, an internal-adapter `deleteUserSessions` call (an exception that
-      5.1b names) passing, the `sql.raw` and `actor.type` bans still firing on a scratch
+      model passing, internal-adapter `deleteUserSessions` and `updateUser` calls
+      (exceptions that 5.1b names) passing, the `sql.raw` and `actor.type` bans still firing on a scratch
       source inside the scoped paths, and `pnpm lint` staying green on the real
       tree.
 - [ ] 5.2 Every target of an `identity.*` operation is resolved on the server by
@@ -757,9 +829,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       handled exactly like a provider failure and logs
       `catalog.security.email_recipient_blocked` (declared in 15.1) with the template
       and no address. Verify: `email-allowlist.test.ts` covers a recipient on the list
-      reaching the stubbed provider, one off the list never reaching it (the domain
-      compared after the canonicalization of 7.10), the sanitized refusal and the
-      logged event carrying no address.
+      reaching the stubbed provider, one off the list never reaching it, the sanitized
+      refusal and the logged event carrying no address (the domain compared after the
+      canonicalization of 7.10 is 7.10's case).
 - [ ] 6.5c An `EMAIL_DISABLED_TENANT_IDS` list (a comma-separated list of tenant
       ids, each checked against the catalog's tenant-id pattern at startup, read by
       `apps/api/src/config.ts`; Resolved decision Q80) is honored by the one gate
@@ -769,12 +841,28 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `catalog.security.email_tenant_blocked` (declared in 15.1) is logged with the
       tenant and the template and no address. It is how a demo tenant, whose login
       is widely known, is kept from sending real mail in a deployment that has a
-      real sender; the demo-tenant provisioning runbook lists them (16.5). Verify:
-      `email-tenant-gate.test.ts` covers a listed tenant's invitation and the admin
-      notice not reaching the sender and consuming no cap bucket, an unlisted
-      tenant sending, the event carrying the tenant and the template and no address,
-      the operation succeeding, and `config.test.ts` a malformed tenant id in the
-      list failing startup.
+      real sender; the demo-tenant provisioning runbook lists them (16.5). The caps (6.6
+      to 6.8 and 6.10), the notice template (6.11) and the dispatcher (6.12) run after
+      this task, so the gate takes its cap store and its sender as ports and is tested on
+      fakes; the notice case is 6.12's. Verify: `email-tenant-gate.test.ts` covers, with
+      a recording fake cap store and the recording `EmailSender` fake of 6.1, a listed
+      tenant's invitation email not reaching the sender and consuming no bucket of the
+      fake store, an unlisted tenant's email reaching the sender, the event carrying the
+      tenant and the template and no address, the gate returning normally (the operation
+      is not blocked), and `config.test.ts` a malformed tenant id in the list failing
+      startup.
+- [ ] 6.8b Every limiter of this change answers with a `Retry-After` header, as
+      `002` requires (design D4). `ORPCError` carries no header and `errors.ts` has
+      no `AuthRateLimitedError`, so `@tayzu/auth` gains that class with
+      `retryAfterSeconds` and exports it from its index, and the three caps of 6.6,
+      6.7 and 6.8, which run after this task, throw it. The error mapping of `apps/api` turns it into a 429 `AUTH_RATE_LIMITED`
+      carrying the header: `errorMappingInterceptor` takes no context today and
+      `toOrpcError` drops `retryAfterSeconds`, so the mapping keeps the value and
+      sets the header through oRPC's `ResponseHeadersPlugin` (it ships in
+      `@orpc/server`, so no new dependency, and `server.ts` registers no such plugin
+      today). Verify: `error-mapping.test.ts` covers the class mapping to status
+      429, code `AUTH_RATE_LIMITED` and a `Retry-After` equal to its
+      `retryAfterSeconds` (the HTTP twin is in 14.5).
 - [ ] 6.6 A per-tenant cap of 30 invitation emails per hour, shared by invite and
       resend, on a store interface (in memory in tests), with its default in
       `apps/api/src/config.ts` following its `limitWithDefaults` pattern. Exceeding it
@@ -783,11 +871,6 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `tenant`. Verify: `invitation-caps.test.ts` covers "Exceeding the per-tenant
       cap blocks further invites", asserting the `EmailSender` fake recorded no
       further call.
-- [ ] 6.7 A per-recipient cap of 3 per 24 hours across all tenants, keyed by the
-      HMAC of the canonical email (6.7b, 7.10). Verify: `invitation-caps.test.ts` covers
-      "Exceeding the per-recipient cap blocks repeat invites across tenants",
-      asserting scope `recipient` and that no address is in the event or the key
-      store.
 - [ ] 6.7b The per-recipient key is an **HMAC-SHA256** of the canonical email (7.10)
       under a server secret, `IDENTITY_TOKEN_HMAC_SECRET` (Resolved decision Q93), not a
       bare sha256: an unsalted digest is a pseudonym that anyone can recompute from an
@@ -816,21 +899,14 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       covers `dast.sh` exporting `IDENTITY_TOKEN_HMAC_SECRET` and
       `INVITATION_LINK_BASE_URL`, the latter equal to its `ALLOWED_ORIGINS` value, port
       included.
+- [ ] 6.7 A per-recipient cap of 3 per 24 hours across all tenants, keyed by the
+      HMAC of the canonical email (6.7b, 7.10). Verify: `invitation-caps.test.ts` covers
+      "Exceeding the per-recipient cap blocks repeat invites across tenants",
+      asserting scope `recipient` and that no address is in the event or the key
+      store.
 - [ ] 6.8 A global kill switch (`INVITATION_EMAIL_KILL_SWITCH`). Verify:
       `invitation-caps.test.ts` covers "The global kill switch stops all invitation
       email" with scope `global`.
-- [ ] 6.8b Every limiter of this change answers with a `Retry-After` header, as
-      `002` requires (design D4). `ORPCError` carries no header and `errors.ts` has
-      no `AuthRateLimitedError`, so `@tayzu/auth` gains that class with
-      `retryAfterSeconds` and exports it from its index, and the three caps throw
-      it. The error mapping of `apps/api` turns it into a 429 `AUTH_RATE_LIMITED`
-      carrying the header: `errorMappingInterceptor` takes no context today and
-      `toOrpcError` drops `retryAfterSeconds`, so the mapping keeps the value and
-      sets the header through oRPC's `ResponseHeadersPlugin` (it ships in
-      `@orpc/server`, so no new dependency, and `server.ts` registers no such plugin
-      today). Verify: `error-mapping.test.ts` covers the class mapping to status
-      429, code `AUTH_RATE_LIMITED` and a `Retry-After` equal to its
-      `retryAfterSeconds` (the HTTP twin is in 14.5).
 - [ ] 6.8c Every `AUTH_RATE_LIMITED` of the invitation caps (tenant, recipient and
       global) carries the **same** `Retry-After` (the shortest window, one hour), so
       the header does not reveal which bucket tripped (VCDM G2; Q61).
@@ -838,8 +914,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       Retry-After": the tenant, recipient and kill-switch rejections carry an equal
       `retryAfterSeconds`.
 - [ ] 6.9 A disabled or zero cap fails startup (`002` Q39). Verify:
-      `config.test.ts` covers a zero or disabled value for each cap, the notice cap of 6.12
-      included, throwing at startup.
+      `config.test.ts` covers a zero or disabled value for each invitation cap throwing
+      at startup (the notice cap's is 6.12's case).
 - [ ] 6.10 The production store for the caps and the accept route's limiter is
       `002`'s DB-backed atomic store (`auth.rate_limit`, hashed keys, no migration).
       `consumeRateLimitBucket` is not exported today and is tied to the Better Auth
@@ -892,7 +968,10 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       cap exhausted and a full per-recipient bucket each suppressing exactly the
       affected emails with the right reason and no address in the event), "A notice
       goes to at most 20 recipients" (25 admins, 20 emails to the longest-standing
-      ones, a `truncated` event) the dispatcher never throwing, and a `Disabled` admin being among the recipients; `config.test.ts`
+      ones, a `truncated` event) the dispatcher never throwing, a `Disabled` admin being among the recipients, and a
+      notice of a tenant on the list of 6.5c being suppressed before any bucket is
+      consumed, with nothing sent and `catalog.security.email_tenant_blocked` logged with
+      the tenant and the template `admin_accepted` and no address; `config.test.ts`
       covers a zero notice cap failing startup.
 - [ ] 6.12b Notices get their own per-recipient bucket (scope `notice_recipient`, a new
       value of the closed `RateLimitScope` union and a rule of the helper of 6.10, keyed
@@ -991,11 +1070,14 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       function in `apps/api/src/identity/email-canonical.ts` (`@tayzu/auth` has no use
       for it and cannot import `@tayzu/catalog`; the `ENTITY_IDENTIFIER_PATTERN` it
       validates against is the one `@tayzu/catalog` exports in 7.9b, Q60), used for the `_user` identifier, the Better Auth email, the invitation
-      email and the cap key, and a validator rejects an address the entity identifier
-      pattern cannot hold or that contains `/` (Resolved decision Q33). Verify:
+      email, the cap key and the domain that the allowlist wrapper of 6.5b compares, and
+      a validator rejects an address the entity identifier pattern cannot hold or that
+      contains `/` (Resolved decision Q33). Verify:
       `email-canonical.test.ts` covers `Alice@Example.com ` and its NFC variant
       canonicalizing identically, `a+b@example.com` and `a/b@example.com` rejected,
-      and a plain address accepted.
+      and a plain address accepted, and `email-allowlist.test.ts` (6.5b) covers a
+      recipient written `Bob@Allowed.Example ` reaching the stubbed provider when
+      `allowed.example` is on the list.
 - [ ] 7.11 `identity.users.invite` and `identity.users.create` reject such an
       address with `CATALOG_VALIDATION_FAILED`, before any invitation, user, email or
       cap increment. Verify: `email-boundary.int.test.ts` covers both operations
@@ -1053,12 +1135,19 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (8.1b). A child process never inherits it (the bootstrap that
       `scripts/ci/zap-seed.ts` spawns, the API server that `dast.sh` starts, and any
       test that spawns one), so the same module is loaded with
-      `NODE_OPTIONS=--import` for those (4.6b), and it is listed in `turbo.json`
-      `globalDependencies` so that a change to it invalidates the cached test runs.
+      `NODE_OPTIONS=--import` for those, and it is listed in `turbo.json`
+      `globalDependencies` so that a change to it invalidates the cached test runs. The
+      stub must reach both processes of the DAST run that run the breach plugin, the
+      bootstrap child of the seed (moved by 4.6b) and the API server that `dast.sh`
+      starts and that serves the forced `/api/auth/change-password`, so `dast.sh` sets
+      `NODE_OPTIONS=--import` to the `.mjs` stub for the **whole** `dast.sh up`; that
+      step is shared with `ci:local` (Resolved decision Q71).
       Verify: `pnpm --filter @tayzu/auth test` and `pnpm --filter @tayzu/api test`
       pass, a spy shows no request to `api.pwnedpasswords.com` leaving a test
       worker, a child process started with the `--import` option shows none either,
-      and `turbo.json` lists the file.
+      `dast-script.test.ts` (4.6b) covers the stub being imported through
+      `NODE_OPTIONS` before the API server and the seed start, and `turbo.json` lists
+      the file.
 - [ ] 8.1b Breached-password check (design Q23): Better Auth's built-in
       `haveIBeenPwned` plugin is enabled for every path the policy covers, with a
       sanitized refusal and fail-closed behavior. The plugin checks only the endpoint
@@ -1068,8 +1157,10 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       explicitly through the password module. Verify: `password-breach.int.test.ts`
       installs its own stub of the global `fetch` over the shared one of 8.1a (the plugin
       hardcodes `api.pwnedpasswords.com`) and
-      covers a password whose SHA-1 suffix is in the stubbed range being refused **on
-      acceptance, on a temporary password and on bootstrap**, a clean one accepted,
+      covers a password whose SHA-1 suffix is in the stubbed range being refused **when
+      set through `auth.api.createUser`** (the covered endpoint that the acceptance of
+      8.1e and 8.2 uses; the acceptance case itself is 8.12's), **on a temporary password
+      and on bootstrap**, a clean one accepted,
       only the 5-character prefix ever being sent, and an unreachable service
       refusing the password (the plugin's fail-closed 500 `APIError`) with the sanitized
       generic `INTERNAL` (500) error at the boundary, the only generic error the mapping
@@ -1102,7 +1193,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       limiter's coverage list (it includes `/link-social` on purpose, `002` Q52 and
       omits `/sign-in/email`, which has its own rule), so it is **not** exported,
       reused or changed here. Verify: `password-nfc.int.test.ts` covers a password set
-      through acceptance signing in, passing `/verify-password`, enabling a second
+      through `auth.api.createUser` (the endpoint the acceptance uses; a password set
+      through the acceptance itself is 8.2's case) signing in, passing `/verify-password`, enabling a second
       factor, changing it with `/change-password` and generating backup codes when
       presented in its NFD form, a breached password presented in its NFD form being
       refused (the stubbed range is keyed on the NFC form, so this fails unless the hook
@@ -1125,7 +1217,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (`apps/api/src/identity/identity-context.ts`) on both paths, inside which
       `afterAddMember` makes **no** `_user` write (Resolved decision Q112): the `_user` is
       written by the acceptance's own `_user` step, through the adapter of 4.1 with the
-      `membership_added` intent, so on the existing-account path a new membership stays
+      `membership_added` intent (its `onBehalfOf` is the ninth amendment's Open Question
+      1, design), so on the existing-account path a new membership stays
       inert (its `_user` still `Invited`, rejected by 11.8) until the shed is done. Each step is idempotent: an
       `addMember` for a user who already is a member is treated as done (and recorded as
       not created by this attempt), and an `Active` `_user` is no write. The `_user`
@@ -1141,20 +1234,21 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       write), deletes the membership it created, idempotently and never one it found,
       logging the same event if the deletion fails (both paths delete a membership
       through the tenant-keyed `member` delete of 5.1b, because `removeMember` needs a
-      session); without it a retry would find the
-      membership, treat it as done and skip `afterAddMember`. The `_user` it activated
+      session); without it a failed attempt that is never retried would leave an inert
+      membership (its `_user` still `Invited`); a retry still runs the explicit shed of
+      8.5h. The `_user` it activated
       is not reverted (a retry finds it `Active`, and without one it is an orphan for
-      2.2b). A failure of the shed or of the `_user` step leaves the `_user` `Invited`, so
+      4.2b). A failure of the shed or of the `_user` step leaves the `_user` `Invited`, so
       even when the compensation fails too the member stays rejected (fail closed), and
       the first-sign-in hook of 4.4 does not activate that row (Resolved decision Q111). A lost consume race (another attempt consumed the token first) compensates
       nothing, on either path, because the winner's state is final and may rest on the
       membership the loser created. An orphan `_user` left by a double
-      fault is the reconcile's (2.2b, after its grace period), and a user left with no
+      fault is the reconcile's (4.2b, after its grace period), and a user left with no
       membership is an operator repair (Resolved decision Q100: driven by the alert on
       `catalog.security.invitation_accept_compensation_failed` and the runbook of 16.5). Verify: `accept-flow.int.test.ts` covers a failure
       injected after `createUser` leaving no user row, a `userSync` that throws at the
-      acceptance's `_user` step leaving no user, no member and no `_user` with the token
-      still valid and a retry then succeeding, `afterAddMember` making no `_user` write
+      acceptance's `_user` step leaving no user, no member, and the `_user` still
+      `Invited`, with the token still valid and a retry then succeeding, `afterAddMember` making no `_user` write
       inside the acceptance (the adapter writes the `_user` exactly once, from the
       acceptance's own step), an `addMember` that already happened being
       treated as done, a failing compensation emitting the event, and a lost consume
@@ -1176,9 +1270,10 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       Resolved decision Q112) and creates **no session**. A failure of any step, the `_user` write included, is compensated
       (8.1e) and leaves the token unconsumed. Verify:
       `invitation-accept.int.test.ts` covers "A new person accepts and can then sign
-      in" (sign-in through the normal route succeeds afterward) and "A failed
+      in" (sign-in through the normal route succeeds afterward, also with the password
+      presented in its NFD form, the normalization of 8.1d) and "A failed
       `_user` write undoes the acceptance": with a `userSync` that throws, no user, no
-      member and no `_user` exist, the token still verifies, a retry with the same token
+      member, and the `_user` still `Invited`, the token still verifies, a retry with the same token
       succeeds and the acceptance answers
       the sanitized `INTERNAL` error.
 - [ ] 8.3 The token is verified without consuming it and then consumed **last** (8.1e),
@@ -1284,6 +1379,26 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       invitation's tenant as the principal's and the resource's tenant, and a Cerbos
       client that denies, or that throws, for an otherwise active admin inviter
       answering the same uniform rejection with the token still valid.
+- [ ] 8.5i One Postgres advisory lock per user id closes the race between linking and
+      joining (Resolved decision Q87). `apps/api/src/identity/user-lock.ts` exposes
+      `withUserLock(userId, fn)` (in `apps/api`, used by `linkSsoAccount` and by the shed
+      of 8.5h, both in `apps/api`; the hooks of `auth.ts` reach it only through the shed
+      port of 8.5h): a short dedicated `tayzu_auth` transaction takes
+      `pg_advisory_xact_lock` on a key derived from the user id (a bound parameter,
+      never interpolated) and holds it while `fn` runs; `fn` receives that transaction,
+      inside which the shed core of 8.5h runs its reads and deletes (Resolved decision
+      Q114). `linkSsoAccount` takes it around
+      its membership check and its link, and the shed of 8.5h takes it around its read
+      and its deletion. Every path takes the lock once, through the shed: the acceptance
+      in its explicit shed step, after `addMember` has returned (inside the acceptance's
+      shared context the hook does not shed), `afterAddMember` on the other membership
+      paths and the reconcile (8.5l), so no path takes it twice (the lock is not
+      re-entered across connections; Resolved decision Q105). Verify:
+      `user-lock.int.test.ts` covers two concurrent `withUserLock` calls for one user
+      running one after the other and for two users running in parallel, `fn` running on
+      the transaction that holds the lock, and `linkSsoAccount` running its membership
+      check and its link inside the lock (a spy on `withUserLock`); the interleavings of
+      a link and a join need the shed and are 8.5h's `sso-link-race.int.test.ts`.
 - [ ] 8.5g **Positive provenance of SSO links** (Resolved decision Q87, which
       supersedes Q73's admin-side marker). `databaseHooks.account.create.after` writes a
       marker row in `auth.verification` (no migration) for an account that is not the
@@ -1331,16 +1446,16 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `account` row's id (not the `sub`) with the value `self`, a link through
       `linkSsoAccount` writing none, the marker's `expiresAt` being the far-future
       sentinel and surviving Better Auth's expired-row cleanup, a user's own
-      `/unlink-account`, an admin unlink and the shed each removing the marker (the
-      admin unlink, which has no endpoint context, through the fallback adapter), a
+      `/unlink-account` and an admin unlink each removing the marker (the admin unlink,
+      which has no endpoint context, through the fallback adapter; the shed's own marker
+      deletion is 8.5h's case), a
       re-link of the same `sub` after an unlink getting a fresh marker and not a stale
       one, `account_unlinked` with the actor `self` emitted once for the user's own
       `/unlink-account` and not for an admin unlink, `account_linked` with the actor
       `self` emitted once for a `/link-social` callback and not for `linkSsoAccount`, and
       an account row deleted through the internal adapter from inside an `addMember`
       call (a test-only `afterAddMember` seam) emitting no self-link event, a marker write that fails making the link fail with the event emitted and no
-      `account` row of that link remaining, a link left unmarked by a crash (seeded
-      directly) being shed at the next join, "A link to a provider account with another
+      `account` row of that link remaining, "A link to a provider account with another
       email is refused": a `/link-social` callback whose provider email differs from the
       user's being refused with no new `account` row and no marker, and an SSO sign-in
       whose email matches another user creating no link, and the marker carrying no
@@ -1428,18 +1543,23 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       event emitted with the path `acceptance` before the token is consumed, and a shed
       that fails fails the attempt with the token unconsumed and the membership it created
       deleted (8.1e), the `_user` of `t2` staying `Invited` while the membership is left
-      by the failed compensation; "A joined tenant stays unreachable until the shed is
-      done" (Resolved decision Q112): a session minted through the unmarked link, during
-      an existing-account acceptance of `t2` held by a seam between `addMember` and the
-      shed, calls `/api/auth/organization/set-active` for `t2` and then a `/v1` route,
-      and the resolver rejects that call (401 `CATALOG_CONTEXT_REQUIRED`, the `_user` of
-      `t2` not yet `Active`), and after the seam is released the shed revokes that
-      session; the same for a membership added directly, whose `_user` is written only
-      after the hook's shed (a failing shed leaving the row unwritten); the shed's
-      deletes running on the `tayzu_auth` pool with no Better Auth instance (a shed core
+      by the failed compensation; a membership added directly whose hook's shed fails
+      leaving its `_user` unwritten (the hook sheds before its `_user` write, Resolved
+      decision Q112; the resolver's rejection of the joined tenant before the shed is
+      11.8's "A joined tenant stays unreachable until the shed is done"); the shed
+      deleting any marker keyed by a row it deletes, and a link left unmarked by a crash
+      between the link and its marker (8.5g, seeded directly) being shed at the next
+      join; the shed's deletes running on the `tayzu_auth` pool with no Better Auth
+      instance (a shed core
       built in a test with only that pool and no `BETTER_AUTH_SECRET` shedding the link
       and revoking the sessions, a revoked session failing `/api/auth/get-session`); and
-      the user re-linking through `/link-social` with step-up; and
+      the user re-linking through `/link-social` with step-up;
+      `sso-link-race.int.test.ts` covers the interleavings: a link that starts while a
+      join is adding the second membership ends refused (it sees two tenants) or shed
+      (it committed first), never an unmarked link left on a two-tenant user, over
+      repeated runs of both orders, and an existing-account acceptance, whose
+      `afterAddMember` runs inside its shared context, taking the lock of 8.5i exactly
+      once (a spy on `withUserLock`); and
       `user-sync-wiring.int.test.ts` (4.1b) covers `createApp` passing the port, a
       membership added through Better Auth to a user of another tenant shedding the
       user's unmarked link; and `session-storage-config.test.ts` (new, in
@@ -1449,29 +1569,6 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the exported `emitSessionRevoked` emitting the reason it is given, each of the three,
       and the `password_change` revocation of `/change-password` still emitting
       `password_change`.
-- [ ] 8.5i One Postgres advisory lock per user id closes the race between linking and
-      joining (Resolved decision Q87). `apps/api/src/identity/user-lock.ts` exposes
-      `withUserLock(userId, fn)` (in `apps/api`, used by `linkSsoAccount` and by the shed
-      of 8.5h, both in `apps/api`; the hooks of `auth.ts` reach it only through the shed
-      port of 8.5h): a short dedicated `tayzu_auth` transaction takes
-      `pg_advisory_xact_lock` on a key derived from the user id (a bound parameter,
-      never interpolated) and holds it while `fn` runs; `fn` receives that transaction,
-      inside which the shed core of 8.5h runs its reads and deletes (Resolved decision
-      Q114). `linkSsoAccount` takes it around
-      its membership check and its link, and the shed of 8.5h takes it around its read
-      and its deletion. Every path takes the lock once, through the shed: the acceptance
-      in its explicit shed step, after `addMember` has returned (inside the acceptance's
-      shared context the hook does not shed), `afterAddMember` on the other membership
-      paths and the reconcile (8.5l), so no path takes it twice (the lock is not
-      re-entered across connections; Resolved decision Q105). Verify:
-      `user-lock.int.test.ts` covers two concurrent `withUserLock` calls for one user
-      running one after the other and for two users running in parallel, and
-      `sso-link-race.int.test.ts` covers the interleavings: a link that starts while a
-      join is adding the second membership ends refused (it sees two tenants) or shed
-      (it committed first), never an unmarked link left on a two-tenant user, over
-      repeated runs of both orders, and an existing-account acceptance, whose
-      `afterAddMember` runs inside its shared context, taking the lock exactly once (a spy
-      on `withUserLock`).
 - [ ] 8.5j An admin `unlinkSsoAccount` revokes every session of the target user
       (Resolved decision Q86), through the internal adapter (`listSessions` and
       `deleteUserSessions`, one of the per-user exceptions that 5.1b names), because a
@@ -1536,7 +1633,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       makes the post-commit deletion fail: the acceptance stays committed and
       `catalog.security.accepting_session_revocation_failed` is emitted with opaque ids
       only).
-- [ ] 8.5l The reconcile of 2.2b runs the shed of 8.5h, with its session revocation and
+- [ ] 8.5l The reconcile of 4.2b runs the shed of 8.5h, with its session revocation and
       under the lock of 8.5i, **before** it creates the `_user` of a member whose user holds
       two or more memberships (Resolved decision Q105, part 4; design D1): the new row
       makes the member admissible (11.8), and an unmarked link would otherwise reach the
@@ -1581,7 +1678,10 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       has verified. Verify: `invitation-accept.int.test.ts` asserts a bad password
       with a wrong token returns the generic rejection, and with a valid token
       returns `CATALOG_VALIDATION_FAILED` without consuming the token (a second
-      attempt with a compliant password and the same token then succeeds).
+      attempt with a compliant password and the same token then succeeds), and that a
+      password whose SHA-1 suffix is in the stubbed range of 8.1b, with a valid token,
+      is refused on acceptance naming the breached-password rule, with nothing created
+      and the token not consumed (spec "A breached password is refused").
 - [ ] 8.13 The public accept route has its own limiter, a Fastify `preHandler`
       that consumes a bucket of the DB-backed store through the helper of 6.10 (scope
       `invitation_accept`, keyed by the hash of `request.ip` as Fastify resolves it under the app's trust
@@ -1640,9 +1740,12 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `configId`; 9.11 adds the mapping of a foreign or unknown id to
       `CATALOG_NOT_FOUND`) instead of `getApiKey`, and `updateApiKey` is called headerless with `body.userId`. The grant is a permission set that only
       Better Auth's check reads: it is neutralized, and ADR-0013 records that (16.3,
-      Resolved decision Q94). Verify: `org-api-key-access.int.test.ts` covers a Better Auth
-      `admin` member who is not the owner creating and revoking an org key through the
-      identity operation, an `owner` doing the same (custom roles replace the
+      Resolved decision Q94). The identity operations that call the helpers are 9.5 and
+      9.9, so the create and revoke through an operation are their cases. Verify:
+      `org-api-key-access.int.test.ts` covers a Better Auth
+      `admin` member who is not the owner creating and revoking an org key by calling the
+      changed `createMachineCredential` and `revokeMachineCredential` directly, headerless
+      with `body.userId`, an `owner` doing the same (custom roles replace the
       defaults, so the owner's `apiKey` permissions are asserted too), the three roles still holding every default permission (an
       `admin` can still create and cancel an invitation, a `member` cannot manage keys),
       the key's `body.userId` being the admin's id, and that neither helper forwards
@@ -1701,7 +1804,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       Verify: `credentials.int.test.ts` covers "Listing never includes the secret",
       "Non-admin cannot list credentials", the page limit applying, a tenant with
       200 non-revoked and 30 revoked credentials listing all 200 non-revoked ones
-      with `truncated` set, an `id` in each entry that `rotate` accepts, `createdBy`
+      with `truncated` set, an `id` in each entry equal to the key's opaque `apikey` id
+      (that `rotate` accepts it is 9.6's case), `createdBy`
       being the creating admin's opaque id, the adapter's `metadata` shape (an
       object) being pinned by an assertion while the reader accepts both an object
       and a JSON string, and the paged lookup finding a key beyond the limit (a
@@ -1731,7 +1835,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       covers "Creating a credential requires step-up and bounds its use" at the
       service level (the key's metadata records `createdBy`): the created key has the configured limit (60 per hour by default,
       and a configured value is honored) and stores no secret characters, a changed limit
-      applying only to keys created afterwards, a 33-character name refused, and
+      applying only to keys created afterwards, a 33-character name refused, a Better
+      Auth `admin` member who is not the owner and an `owner` each creating a key
+      through the operation with the headerless call of 9.1b, and
       `config.test.ts` a zero or disabled limit failing startup (the step-up part is
       asserted over HTTP in 14.4).
 - [ ] 9.5b The optional `userId` of `identity.credentials.create` is resolved
@@ -1767,11 +1873,17 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (200 seeded keys, the 201st refused, two concurrent creates at 199 yielding
       one success, a revoked key not counting) and `config.test.ts` a zero or
       disabled cap failing startup.
-- [ ] 9.6 `identity.credentials.rotate`: creates the new credential, revokes the
+- [ ] 9.6 `identity.credentials.rotate`: creates the new credential, whose metadata
+      copies the old key's `actorKind`, `role` and `userId`, records the rotating admin
+      as `createdBy` and the rotation time as `rotatedAt` (design D8), revokes the
       old one through `revokeMachineCredential` (the revocation list), and returns
       the new secret once. Verify: `credentials.int.test.ts` covers "Rotating
-      replaces the usable credential", asserting the old credential's already-issued
-      token and any new exchange are rejected within the cache window.
+      replaces the usable credential", addressing the old credential by the `id` that
+      `identity.credentials.list` (9.2) returns for it and asserting the old credential's already-issued
+      token and any new exchange are rejected within the cache window, the new key's
+      metadata carrying the old key's `actorKind`, `role` and `userId`, `rotatedAt` and
+      the rotating admin's opaque id as `createdBy`, and its `rotationDueAt` (9.4)
+      computed from that `rotatedAt`.
 - [ ] 9.6b Rotation is serialized per service account: it takes the
       per-service-account lock of 9.5c for the whole rotation (per credential for an
       unbound integration or agent credential), and a revoked credential may be rotated only when its
@@ -1790,7 +1902,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       compensate is signalled".
 - [ ] 9.9 `identity.credentials.revoke`: permanent; the credential can never be
       restored, and revoking an already revoked credential is a no-op. Verify:
-      `credentials.int.test.ts` covers "Revoking a credential is permanent".
+      `credentials.int.test.ts` covers "Revoking a credential is permanent", and a Better
+      Auth `admin` member who is not the owner and an `owner` each revoking a key through
+      the operation with the headerless call of 9.1b.
 - [ ] 9.10 Rotation and revocation log events carry only opaque credential
       identifiers, never a secret, even under a forced serialization of the full
       credential object. Verify: `credentials.int.test.ts` covers a marker-leak
@@ -1831,7 +1945,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       member is denied at the first. ⛔ **Stop for Checkpoint 3 approval of the
       policy diff before continuing.**
 - [ ] 10.3 `identity.serviceAccounts.create` (in `apps/api`): writes the `_user` entity
-      (`status: Active`, `accountKind: "service"`, role `member`, empty
+      (`status: Active`, written through `created_active` by the Q30 adapter,
+      `accountKind: "service"`, role `member`, empty
       `moderatedBlueprints`) as `system` with `onBehalfOf` the admin, and issues an
       organization-owned key by reusing `002`'s `machine-credential` apiKey config,
       headerless with `body.userId` the acting admin's id (metadata `{ actorKind:
@@ -1843,8 +1958,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       per-service-account lock of 9.5c it first looks for a non-revoked key of the tenant
       whose `metadata.userId` is the new identifier (the paged lookup of 9.11), for example
       one that survived the failed deletion of an earlier service account of the same
-      identifier, and refuses the creation with `CATALOG_VALIDATION_FAILED` and the fixed
-      message of 13.3 when one exists, before anything is written: the new account would
+      identifier, and refuses the creation with `CATALOG_VALIDATION_FAILED` (13.3 later
+      gives every conflict one fixed message) when one exists, before anything is written: the new account would
       otherwise start with a second active credential (Resolved decision Q40; design D6)
       and the old key would resolve again. Verify: `service-accounts.int.test.ts`
       covers "Service account is active immediately, no email", asserting the
@@ -1852,8 +1967,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       admin as `createdBy` and that a later read never includes the secret, and "A new
       service account does not inherit a surviving credential": with a non-revoked key
       bound to `svc-ci-github` seeded directly and no such `_user`, the creation of
-      `svc-ci-github` is refused with nothing created and the old key still not resolving,
-      and it succeeds once that key is revoked.
+      `svc-ci-github` is refused with nothing created, and it succeeds once that key is
+      revoked (that the surviving key does not resolve is 11.6's and 11.7's case).
 - [ ] 10.3b If issuing the key fails after the `_user` was written, the `_user`
       entity is removed again (compensation) and the failure is recorded as the error
       of the `identity.service_account.create` span (no new event; design D6), so no
@@ -1980,28 +2095,24 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [ ] 11.2 `identity.users.setStatus` for a human is **tenant-scoped** (Resolved
       decision Q25): it validates through `nextStatus`, checks the Cerbos grant, writes
       `_user.status` as `system` with `onBehalfOf` the admin (appending a change
-      event) and revokes only the sessions whose active organization is the tenant, each
+      event) and revokes only the sessions whose active organization is the tenant,
+      through the tenant-keyed `session` delete of 5.1b, each
       revocation emitting `auth.security.session_revoked` with the reason `admin_action`
       (`002`'s declared event, through the exported `emitSessionRevoked` of 8.5h). For
-      a user with a **single** membership it also sets `banned` and deletes all their
+      a user with a **single** membership (counted through `globalMembershipTenantsOf`
+      of 5.1b) it also sets `banned` and deletes all their
       sessions through the internal adapter (`internalAdapter.updateUser({ banned })`
-      and `deleteUserSessions`, one of the per-user exceptions that 5.1b names, not
+      and `deleteUserSessions`, per-user exceptions that 5.1b names, not
       Better Auth's `banUser`/`unbanUser`, which the global role `user` cannot call). `setStatus` to `Active`, for a user whom the
       disable banned (a single membership), clears `banned` through
-      `internalAdapter.updateUser({ banned: false })` (the ban hook is skipped without an
+      `internalAdapter.updateUser({ banned: false })` (an exception that 5.1b names too; the ban hook is skipped without an
       endpoint context, and since Q102 it writes nothing for `banned: false`). Verify:
-      `user-status-op.int.test.ts` covers "Disable and re-enable" and "A disabled user's
-      sessions stop working" for a single-membership user through the operation
-      pipeline, with the `auth.security.session_revoked` event (reason `admin_action`)
+      `user-status-op.int.test.ts` covers "Disable and re-enable" and the revocation part
+      of "A disabled user's sessions stop working" (the next request on a deleted session
+      answering 401 `CATALOG_CONTEXT_REQUIRED`; a session the deletion did not reach is
+      13.4's) for a single-membership user through the operation pipeline, with the `auth.security.session_revoked` event (reason `admin_action`)
       emitted for each revoked session, and a re-enabled single-membership user is no
       longer `banned`, is accepted by `resolveContext` and can sign in.
-- [ ] 11.2b For a user with memberships in two tenants, disabling in `t1` revokes
-      only the sessions of `t1` and does not set `banned`, so the same user keeps
-      working in `t2`; enabling in `t1` restores only `t1`. Verify:
-      `user-status-op.int.test.ts` covers "A member of two tenants is disabled in one
-      only" and the two-tenant case of "A disabled user is not revived by signing in": a
-      sign-in of that user leaves the `Disabled` status of `t1` unchanged and the
-      resolver still rejects the user in `t1`.
 - [ ] 11.3 A user attempting to change their own status is denied and a
       `catalog.security.self_status_change_denied` event is logged. Verify:
       `user-status-op.int.test.ts` covers "A user cannot disable themselves" through
@@ -2036,13 +2147,15 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       A token without the claim is unaffected. The check is selected by the credential branch (a bearer machine token), never by comparing `actor.type`, which lint bans outside three files (design D13). Verify: `context-resolver.int.test.ts`
       covers "Disabling a service account takes effect within seconds" for an
       already-issued token, "A token for a deleted service account is rejected" (a
-      credential that survives the delete still does not resolve), and a lookup
-      failure rejecting.
+      credential that survives the delete still does not resolve), a non-revoked key
+      bound to an identifier that has no `_user` (seeded as in 10.3) not resolving, and a
+      lookup failure rejecting.
 - [ ] 11.7 Token exchange refuses to mint a token for a service account whose
       `_user` is `Disabled`, absent or otherwise not `Active`, and re-enabling
       restores the same credential. Verify: `token-exchange.int.test.ts` covers the
-      refusal for a `Disabled` and for a deleted service account, and "Re-enabling
-      restores access without a new credential".
+      refusal for a `Disabled` and for a deleted service account and for a non-revoked
+      key bound to an identifier that has no `_user` (seeded as in 10.3), and
+      "Re-enabling restores access without a new credential".
 - [ ] 11.8 `resolveContext` admits a **human** only when their `_user.status` in the
       active tenant is `Active` (Resolved decision Q105, part 3, which amends the
       "`Disabled` only" rule of Q25: deny unless `Active`, like the machine branch of
@@ -2059,7 +2172,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `catalog.security.principal_rejected` and increments
       `tayzu.identity.principal_rejections`. A member with no `_user` row in the
       active tenant is rejected the same way with the reason `user_missing`, logged
-      and counted (Resolved decisions Q46 and Q50; 2.2b repairs it). The check is
+      and counted (Resolved decisions Q46 and Q50; 4.2b repairs it). The check is
       selected by the credential branch (a session cookie), never by comparing
       `actor.type`, which lint bans outside three files (design D13). The test at
       `context-resolver-principal.int.test.ts` (around lines 364-390) asserts today
@@ -2067,7 +2180,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       lookup: it is **rewritten** to this requirement (Resolved decision Q77), and
       the PR description calls the change out. Verify:
       `context-resolver.int.test.ts` covers "A member of two tenants is disabled in
-      one only": the same user accepted in `t2`, a second request within 5
+      one only" (the `_user` `Disabled` in `t1` and `Active` in `t2`, seeded directly):
+      the same user accepted in `t2`, a second request within 5
       seconds not repeating the lookup, "An `Invited` member is rejected by the
       resolver" (a member whose `_user` in the tenant is `Invited`, as a failed
       acceptance leaves it, and one whose `_user` is `Staged`, each rejected with 401
@@ -2076,8 +2190,22 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `context-resolver-principal.int.test.ts` around line 384), every rejection
       answering 401 `CATALOG_CONTEXT_REQUIRED` with no reason in the body, and a
       member with no `_user` row in the active tenant rejected with `user_missing`
-      (Q46, Q50); and the rewritten case of `context-resolver-principal.int.test.ts`
-      passes.
+      (Q46, Q50); `sso-link-shed.int.test.ts` (8.5h) covers "A joined tenant stays
+      unreachable until the shed is done" (Resolved decision Q112): a session minted
+      through the unmarked link, during an existing-account acceptance of `t2` held by a
+      seam between `addMember` and the shed, calls `/api/auth/organization/set-active`
+      for `t2` and then a `/v1` route, and the resolver rejects that call (401
+      `CATALOG_CONTEXT_REQUIRED`, the `_user` of `t2` not yet `Active`), and after the
+      seam is released the shed revokes that session; the same for a membership added
+      directly, whose `_user` is written only after the hook's shed; and the rewritten
+      case of `context-resolver-principal.int.test.ts` passes.
+- [ ] 11.2b For a user with memberships in two tenants, disabling in `t1` revokes
+      only the sessions of `t1` and does not set `banned`, so the same user keeps
+      working in `t2`; enabling in `t1` restores only `t1`. Verify:
+      `user-status-op.int.test.ts` covers "A member of two tenants is disabled in one
+      only" and the two-tenant case of "A disabled user is not revived by signing in": a
+      sign-in of that user leaves the `Disabled` status of `t1` unchanged and the
+      resolver still rejects the user in `t1`.
 
 ## 12. Cross-tenant matrix (one test per route, in process; the HTTP twin is 14.8)
 
@@ -2135,7 +2263,9 @@ VCDM re-assessment (M4 is not in that list and is closed here too, 13.6); `002` 
 (the password, MFA and email-change notifications) is deferred to `044` (Resolved
 decision Q92); `design.md` (Risks, "Hand-offs from `002` (`002` Q73): traceability")
 records each item and where it is closed. The
-items closed by another group are named in the task they appear in; the two
+items closed by another group are listed, with the tasks that close them, in that
+traceability table (M5: 8.1-8.1d; M9: 11.1, 15.6; M13: 6.10, 8.13; M19: 16.7, 16.13;
+M20: 11.2); the two
 explicit deferrals (the in-memory `@fastify/rate-limit` budgets of M13 and the
 SSO surfaces of M18) are recorded there with their justification.
 
@@ -2156,7 +2286,9 @@ SSO surfaces of M18) are recorded there with their justification.
 - [ ] 13.2 Identity operations that act on the global account refuse a target that
       has a membership outside the caller's tenant, so an admin of one tenant cannot
       link an SSO `sub` to a user who also belongs to another tenant (`002` VCDM M10;
-      `setStatus` is tenant-scoped instead, Resolved decision Q25). Verify:
+      `setStatus` is tenant-scoped instead, Resolved decision Q25). The target's
+      memberships in other tenants are read through `globalMembershipTenantsOf` of 5.1b.
+      Verify:
       `identity-router.int.test.ts` covers `linkSsoAccount` and `unlinkSsoAccount` on a
       two-tenant user being refused. A link recorded while the user was single-tenant
       does not survive into a second tenant (8.5g, 8.5h).
@@ -2173,8 +2305,9 @@ SSO surfaces of M18) are recorded there with their justification.
       `target_is_admin_or_owner`, the tenant, the acting admin and the target's opaque
       user id, and no email or `sub` (Resolved decision Q115, G9-6). Verify:
       `identity-router.int.test.ts` covers a
-      link on an `admin` and on an `owner` being refused with the same
-      `CATALOG_VALIDATION_FAILED` and fixed message as every other conflict, with no
+      link on an `admin` and on an `owner` being refused with
+      `CATALOG_VALIDATION_FAILED` (that it answers like every other conflict is 13.3's
+      case), with no
       `account` row written and no session revoked, the event emitted with the reason
       `target_is_admin_or_owner` and no email or `sub`, a link on a plain `member` still
       succeeding, and an admin linking their own identity through `/link-social` with
@@ -2194,18 +2327,18 @@ SSO surfaces of M18) are recorded there with their justification.
       opaque user id when the target account exists, and never an email or a `sub`. The
       user, credential and bootstrap lifecycle events (`002`
       Q42; M9) are declared here, before any route exists, because `002` Q42 forbids
-      mounting an operation whose events are not declared. They are declared in a
-      **separate identity contract module**,
+      mounting an operation whose events are not declared. They are declared in the
+      **separate identity contract module** that 2.0c created,
       `packages/auth/src/telemetry/identity-contract.ts` (Resolved decision Q74),
       and not in `telemetry/contract.ts`, whose `contract.test.ts` requires it to
       equal the authz contract's `auth.*` subset exactly and forbids any `catalog.`
       name, so that file and its test stay untouched. The module is exported from
-      the package, and `otel-smoke-check` imports it (15.1). Log events, spans and counters of the
-      identity operations are all created through helpers that `@tayzu/auth` exports (an
-      event emitter, a span helper and a metric recorder over its tracer and meter),
-      because `apps/api` has no `@opentelemetry/api` dependency and the design names
-      none. The events are
-      `catalog.audit.user_created` (with its `bootstrap` source),
+      the package (2.0c), and `otel-smoke-check` imports it (15.1). Log events, spans and
+      counters of the identity operations, in this task and in every earlier one, are
+      all created through the helpers of 2.0c; this task declares the four `002` Q42
+      names in the module. The events are
+      `catalog.audit.user_created` (with its `bootstrap` source, whose actor is the
+      ninth amendment's Open Question 1, design),
       `catalog.audit.credential_created`, `catalog.audit.credential_rotated` and
       `catalog.security.credential_revoked`; the operations emit them (the rest of
       the contract is 15.1). Verify: `identity-router.int.test.ts` covers "Create
@@ -2284,10 +2417,14 @@ SSO surfaces of M18) are recorded there with their justification.
       generator exists twice (`identity-router.ts` and `bootstrap-admin.ts`). One shared
       generator in `@tayzu/auth` (the password module) guarantees the length and every
       character class from a CSPRNG, both call sites use it, and the policy applies to
-      bootstrap passwords (`002` VCDM M5). Verify: `temporary-password.test.ts` covers
+      bootstrap passwords (`002` VCDM M5). The DAST seed (`scripts/ci/zap-seed.ts`, which
+      runs the CLI that 4.6b moved) therefore uses a password that satisfies the policy
+      of 8.1, from this generator, and honors the forced change of 13.5. Verify:
+      `temporary-password.test.ts` covers
       1000 generated passwords all passing the policy (each with a symbol, a digit and
       both cases), the two call sites using the shared generator, and a bootstrap
-      password failing the policy being refused.
+      password failing the policy being refused; and `zap-seed.test.ts` (4.6b) covers the
+      seed using a policy-compliant password.
 - [ ] 13.5c The accept route honors the temporary-password marker (VCDM G6-4). The
       route reads the session directly and bypasses both `resolveContext` and the
       `/api/auth` hook, so a session whose user holds an unexpired marker could
@@ -2422,9 +2559,9 @@ SSO surfaces of M18) are recorded there with their justification.
       interceptor chain, so step-up, the error mapping and `ResponseHeadersPlugin` reach
       both and no second handler is created); the procedures read `input.params`,
       `input.query` and `input.body` under `inputStructure: 'detailed'`. Verify: `router.int.test.ts` calls each procedure once on its
-      happy path through `createRouterClient`, and `openapi.test.ts` asserts the
-      document generated from the router lists the thirteen routes with their methods
-      and paths and **not** the accept route, and `merged-router.int.test.ts` covers one handler
+      happy path through `createRouterClient` (the route list of the generated document
+      is 14.1c's case, because 14.1c creates the generator), and
+      `merged-router.int.test.ts` covers one handler
       serving a catalog route and an identity route, the step-up interceptor and the
       error mapping applying to both, and a `Retry-After` set through
       `ResponseHeadersPlugin` on an identity 429 and absent from a catalog answer.
@@ -2442,7 +2579,9 @@ SSO surfaces of M18) are recorded there with their justification.
       first-deployment gate. Verify: `identity-openapi.test.ts` (in `apps/api/src/`; `identity-contract.test.ts`
       is the telemetry file of 13.3) covers `contract:generate` producing the committed file, `contract:check` passing
       on it, `contract:check` failing after a route's path or risk spec is changed in a
-      scratch edit, and the document containing no schema object.
+      scratch edit, the generated document listing the thirteen routes with their
+      methods and paths and **not** the accept route, and the document containing no
+      schema object.
 - [ ] 14.1b The acceptance is a **plain Fastify route**, `POST
       /v1/auth/invitations/accept`, registered before the `/v1/*` catch-all like
       `app.post(TOKEN_EXCHANGE_PATH)` (the catch-all would answer an unauthenticated
@@ -2524,11 +2663,17 @@ SSO surfaces of M18) are recorded there with their justification.
       succeeding with the same status and body shape as the new-account path (for an
       account whose email was never verified), and an `admin` invitation answering
       `AUTH_STEP_UP_REQUIRED` only after the token and the session matched.
-- [ ] 14.8 A cross-tenant request per route over HTTP: each of the fourteen routes,
-      called by `t1`'s admin with a target of `t2`, answers the same response as an
-      unknown target. Verify: `cross-tenant.http.int.test.ts` covers one request per
-      route over the mounted server and compares each response to the unknown-id
-      response.
+- [ ] 14.8 A cross-tenant request per route over HTTP, called by `t1`'s admin: each
+      route with a target (cancel, resend, setStatus, link, unlink,
+      `serviceAccounts.delete`, rotate, revoke, `credentials.create` with a `userId`,
+      and accept with a `t2` invitation) answers like an unknown target. The
+      target-less routes assert the HTTP twin of 12.1, 12.5, 12.6 and 12.9:
+      host-tenant-only writes, and foreign rows omitted from the list. Verify:
+      `cross-tenant.http.int.test.ts` covers one request per route over the mounted
+      server, compares each response of a route with a target of `t2` to the
+      unknown-id response, and for the target-less routes (invite, `users.create`,
+      `serviceAccounts.create`, `credentials.list`) asserts that the write lands only in
+      `t1` and that the list omits `t2`'s credentials.
 - [ ] 14.9 A route-table-driven authorization matrix over HTTP (Resolved decision
       Q45), built from the router's own procedure list so a new route cannot be
       forgotten: for each of the thirteen oRPC routes, the admin (with a fresh step-up
@@ -2556,7 +2701,7 @@ SSO surfaces of M18) are recorded there with their justification.
 - [ ] 15.1 Extend the telemetry contract of the identity change with every remaining
       span, metric and log event from design.md's Observability contract (the user
       and credential lifecycle events were declared by 13.3), in the separate
-      identity contract module of 13.3,
+      identity contract module of 2.0c,
       `packages/auth/src/telemetry/identity-contract.ts` (Resolved decision Q74).
       `telemetry/contract.ts` and `contract.test.ts` are not edited: that test pins
       the file to the authz contract's `auth.*` subset and forbids `catalog.` names.
@@ -2621,11 +2766,11 @@ SSO surfaces of M18) are recorded there with their justification.
 - [ ] 15.5 For the routes of this capability the exported HTTP path is the route
       template, so no email, invitation id or credential id leaves the process; because
       `/v1/*` is one catch-all, the template is computed by matching the parsed pathname (as the guards of `002` read it, `002` Q74)
-      against the fourteen paths of design D10, and the marker test runs through the
-      real HTTP server and instrumentation. Verify: `telemetry-paths.http.int.test.ts`
+      against the twelve path templates of the fourteen routes of design D10, and the
+      marker test runs through the real HTTP server and instrumentation. Verify: `telemetry-paths.http.int.test.ts`
       covers "A path identifier never reaches telemetry over HTTP" for
       `PUT /v1/users/{marker-email}/status` and a credential route with a marker id,
-      and the template matcher covering all fourteen paths.
+      and the template matcher covering every route of D10 (twelve templates).
 - [ ] 15.6 Every lifecycle action emits its declared event: user and bootstrap
       creation, status change, service-account disable, enable and deletion,
       invitation resend and every invitation cancellation (each with the tenant and the
@@ -2638,10 +2783,18 @@ SSO surfaces of M18) are recorded there with their justification.
       `identity.users.create` (reason `user_created`), a reconcile run
       (`catalog.audit.users_reconciled`, with the operator id) and a suppressed or
       truncated notice (the user, credential and
-      bootstrap events are declared and first tested in 13.3). In every audit event
-      `tayzu.actor.id` is the admin who acted (the `onBehalfOf` of the `system` write),
-      never the `system` actor. Verify: `identity-events.int.test.ts` covers "Each
-      lifecycle action emits its declared event", the actor id being the admin.
+      bootstrap events are declared and first tested in 13.3). In every audit event of an
+      operation that an admin initiates, `tayzu.actor.id` is the admin who acted (the
+      `onBehalfOf` of the `system` write), never the `system` actor; the reconcile's
+      event carries the operator's `tayzu.identity.operator.id` instead, and the actor of
+      `catalog.audit.invitation_accepted` and of the bootstrap's `user_created` is the
+      ninth amendment's Open Question 1 (design), and which status changes
+      `catalog.audit.user_status_changed` records when no admin acts (the first sign-in,
+      the acceptance, the reconcile and the ban hook), and with which actor, is its Open
+      Question 2; each is applied here once answered. Verify:
+      `identity-events.int.test.ts` covers "Each lifecycle action emits its declared
+      event", the actor id being the admin for every admin-initiated action and the
+      reconcile's event carrying the operator id.
 
 ## 16. Docs, ADRs, diagram, and integration checks (Checkpoint 2 readiness)
 
@@ -2706,7 +2859,7 @@ SSO surfaces of M18) are recorded there with their justification.
       (Resolved decision Q32), the egress to `api.pwnedpasswords.com`, the SEC11 answers
       of Resolved decision Q34, the limited value of a scan of the schema-less identity document (Resolved decision
       Q52) and the mount gate state (it lists `identity.*` as not mounted today), and
-      corrects its stale group number (Resolved decision Q115, G9-2): the hard rule (Q73)
+      corrects its stale group number (Resolved decision Q115, G9-2): the hard rule (`002` Q73)
       at `docs/security/attack-surfaces.md:200` says the routes are not mounted "before
       group 14 of `043` (hand-offs from `002`) is done", and since Q103 moved the old group
       12 out the hand-offs are group 13. Verify: `pnpm lint` passes, every route of design

@@ -50,6 +50,7 @@ data deletion and data retention are the capability of
 The `_user` system blueprint's `status` property MUST take one of four
 values: `Staged`, `Invited`, `Active`, `Disabled`. Every writer of the status
 (the invitation hooks, `identity.users.create`, the first-membership hook, the
+acceptance's own `_user` step, the reconcile, `identity.serviceAccounts.create`, the
 ban hook, the first-sign-in hook and `identity.users.setStatus`) MUST go
 through one state machine, never write a status directly. A `_user` entity
 created without a `status` MUST be `Staged`; a user created through
@@ -229,7 +230,7 @@ these checks MUST be logged as `catalog.security.principal_rejected` and counted
 
 - **GIVEN** an `Active` user with a single membership and a live session
 - **WHEN** an admin disables the user
-- **THEN** the next request on that session is rejected with `CATALOG_CONTEXT_REQUIRED` (401) and no reason in the body, a new sign-in (local or SSO) is refused, and `catalog.security.principal_rejected` is logged with the reason
+- **THEN** the next request on that session is rejected with `CATALOG_CONTEXT_REQUIRED` (401) and no reason in the body, a new sign-in (local or SSO) is refused, and a session of that user that the deletion did not reach (seeded directly) is rejected with `catalog.security.principal_rejected` and the reason `user_banned`
 
 #### Scenario: An `Invited` member is rejected by the resolver
 
@@ -468,7 +469,7 @@ MUST be logged.
 
 - **GIVEN** a pending invitation to `bob@example.com`, who has no account, and a `_user` write that fails
 - **WHEN** `bob` presents the invitation id, the token and a policy-compliant password
-- **THEN** no user, no membership and no `_user` exist, the token is not consumed and still verifies, the answer is the sanitized generic server error, and a retry with the same token succeeds
+- **THEN** no user and no membership exist, the `_user` keeps the status it had before the attempt (`Invited`), the token is not consumed and still verifies, the answer is the sanitized generic server error, and a retry with the same token succeeds
 
 #### Scenario: Unknown body fields are rejected
 
@@ -1099,6 +1100,7 @@ opaque identifiers only, never secrets.
 - **GIVEN** service account `svc-ci-github` with credential `c1`, enabled, and an access token issued from it
 - **WHEN** an admin rotates its credential
 - **THEN** a new credential `c2` is returned once with its secret, `c1` is revoked, and `c1`'s issued token and any new exchange with `c1` are rejected within seconds
+- **AND** the listing shows `c2` created by the rotating admin, with its rotation-due threshold counted from the rotation
 
 #### Scenario: Concurrent rotation leaves exactly one active credential
 
@@ -1231,7 +1233,9 @@ one. The routes are the fourteen of this capability: the machine-credential crea
 revoke operations are library functions with no route of their own, reachable only
 through them, exported only on a package subpath and importable only from the identity
 code. The task that
-registers the routes MUST come after every hand-off task from `002`. With the
+registers the routes MUST come after the hand-off group from `002`, and the switch MUST
+NOT be turned on until every hand-off item, including those closed by later tasks, is
+closed. With the
 switch on, every Fastify route outside an explicit public allowlist MUST be behind
 the authenticated context resolution.
 
@@ -1266,8 +1270,9 @@ carried an acceptance, a refused create or link conflict (with its cause as a bo
 reason), a banned user's sign-in attempt and a reconcile run, MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
-actor of an audit event MUST be the admin who acted, never the `system` actor of the
-write. The audit events of an invitation's creation, cancellation and resend MUST carry the
+actor of the audit event of an operation that an admin initiates MUST be the admin who
+acted, never the `system` actor of the write. A reconcile run, which no admin initiates,
+MUST record the operator's opaque id instead. The audit events of an invitation's creation, cancellation and resend MUST carry the
 tenant and the acting admin, and those of its creation and resend also the actor type.
 
 #### Scenario: Each lifecycle action emits its declared event
