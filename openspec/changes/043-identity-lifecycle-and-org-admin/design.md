@@ -2741,53 +2741,8 @@ this table:
 | Q108 | (Eighth-pass drift B-2, 2026-10-07) The inviter re-check at acceptance | Cerbos decides it: a `user`/`invite` check with the inviter as the principal (roles from the member row, tenant from the invitation), keeping 002 D2's single decision point. |
 | Q109 | (Eighth-pass drift B-3, 2026-10-07) `assertRuntimeRole` and `machine_credential_revocation` | A small 043 task beside migration `0011`: the startup assertion also fails when the runtime role owns `machine_credential_revocation`; `045` task 2.4 keeps only the marker table. This removes 043's last dependency on `045`. |
 | Q110 | (Eighth-pass VCDM G8-12, 2026-10-07) `users.create` for an email with a pending invitation in the same tenant | `create` cancels that invitation with the reason `user_created`. |
+| Q111 | (Eighth-amendment Open Question 1, 2026-10-08) May the first-sign-in hook activate a second tenant's `_user` without the shed? | No. The hook writes `first_sign_in` only for a user with exactly one membership; for a user of two or more tenants it writes nothing, so the resolver keeps rejecting that `_user` (Q105 part 3). The repair paths for such a row are a retry of the same invitation within its 48 hours (the acceptance sheds on every attempt) or Q100's operator repair; a new invitation, the membership hook and the reconcile do not reactivate an existing membership. |
 
 ## Open Questions
 
-The four open questions left by the seventh amendment were answered on 2026-10-07
-(Q99-Q102); the seventh VCDM pass's three questions are Q86-Q88; the split of org
-deletion into `045` was approved the same day (Q103), and the eighth pass's and the
-eighth drift-check's decisions are Q105-Q110. A consistency check after applying them
-left one point that only the human can decide. It is also asked in chat, and nothing
-below counts as approved until the human answers; the answer is then recorded as a
-Resolved decision and applied to D2, the Risks bullet on failed acceptances, tasks 3.2,
-4.4 and 16.5, and the spec ("User status has
-four states with forward-only transitions" and its scenario "First sign-in activates a
-staged or invited user"). Until then those passages keep their current wording.
-
-**Open Question 1: may the first-sign-in hook activate the `_user` of a second tenant
-without the shed (Q105)?** Q105 part 3 rejects an `Invited` or `Staged` member in the
-resolver, and the spec scenario "An `Invited` member is rejected by the resolver" names
-a failed acceptance as the case. But the first-sign-in hook (D2, task 4.4) moves a
-`Staged` or `Invited` `_user` to `Active` on the user's next sign-in, is not scoped to a
-tenant and runs no shed. If an existing-account acceptance fails at its `_user` write
-and its compensation fails too (D4 step 4, Q105 part 1), the membership remains, its
-`_user` is `Invited` and an unmarked SSO link can still be in place (the SSO callback
-refuses a session through it, Q106, but a local sign-in does not). One local sign-in then
-activates the row, and the member is admitted to the second tenant without the shed that
-Q105 requires. In the normal flows the hook is never needed for a second tenant: the
-membership hook already writes `invitation_accepted` (D2). Options:
-
-1. **(Recommended)** The hook writes `first_sign_in` only for a user who holds exactly
-   one membership, to that membership's `_user`; for a user of two or more tenants it
-   writes nothing, so such a `_user` stays rejected by the resolver (Q105 part 3) until
-   a path that sheds activates it (a new acceptance, the membership hook or the
-   reconcile) or the operator repair of Q100 removes the membership. Task 4.4 gains a
-   two-tenant case. Why: the hook is reached for a second tenant only in a failure
-   state, for which Q100 already chose an operator repair; this adds no shed caller, no
-   session revocation inside a sign-in and no new attribute value, and the spec
-   sentence stays true for a single-tenant user (it gains "of a single tenant").
-2. For a user of two or more tenants the hook first runs the shed of D4 step 7 through
-   `SsoLinkShedPort`, with its session revocation (which can revoke the session the
-   sign-in is creating) and under the per-user lock, and activates only when the shed
-   succeeded; `tayzu.identity.sso_link.path` gains the value `first_sign_in`, and task
-   4.4 gains a two-tenant case. The spec sentence stays as written for every user, at
-   the cost of a fourth shed caller on the sign-in path.
-3. Drop `Invited` from the `first_sign_in` row, so that `Invited` reaches `Active` only
-   through `invitation_accepted`. The smallest change to the table, but a `Staged`
-   `_user` beside another membership is still activated without the shed, and the spec
-   sentence and task 3.2 change.
-
-The residual that no option removes, the same double fault with an `Active` `_user`
-(the shed failed, then the compensation failed), is named in Risks and in the runbook of
-task 16.5 under Q100.
+None. Open Question 1 of the eighth amendment was answered on 2026-10-08 (Q111); its tasks are applied by the next amendment.
