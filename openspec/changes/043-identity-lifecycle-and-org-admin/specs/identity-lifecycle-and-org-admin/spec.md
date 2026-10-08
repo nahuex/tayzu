@@ -61,7 +61,11 @@ under any operation. Any non-`Disabled` status MUST be able to transition to
 `Disabled` through an explicit admin action, and a `Disabled` user MUST be able
 to transition back to `Active` only through an explicit admin action. A
 `Disabled` user MUST NOT become `Active` by signing in, by accepting a pending
-invitation, or by any hook.
+invitation, or by any hook. The ban hook MUST only ever disable: it MUST write the
+disable event, to every membership of the user, only for an update that sets the user
+banned, and MUST write nothing for an update that leaves the user not banned, so that
+no account update (an unban, or enrolling a second factor from another tenant) can
+re-enable a user disabled in one tenant.
 
 #### Scenario: New entity without a status starts staged
 
@@ -95,6 +99,12 @@ invitation, or by any hook.
 - **GIVEN** a `_user` entity with status `Active`
 - **WHEN** an admin disables the user, and later re-enables them
 - **THEN** the status becomes `Disabled` and then `Active`, and in each case the change event is written as `system` with `onBehalfOf` set to the admin
+
+#### Scenario: The ban hook never re-enables a user
+
+- **GIVEN** a user who belongs to `t1` and `t2`, disabled in `t1` by an admin of `t1` and not banned
+- **WHEN** the user enrols a second factor from a session of `t2`, or any other update leaves the user not banned
+- **THEN** the user stays `Disabled` in `t1` and `Active` in `t2`, and the hook writes nothing
 
 #### Scenario: A disabled user is not revived by signing in
 
@@ -185,10 +195,10 @@ user's pending invitations of that tenant, and cancel the pending invitations th
 user created in that tenant. Only for a user whose single membership
 is that tenant MUST it also ban the user and revoke all their sessions. The ban
 MUST NOT use Better Auth's admin-plugin ban routes, which the global role `user`
-cannot call. `resolveContext` MUST reject a banned user, and MUST reject a human
-whose `_user` status in the active tenant is `Disabled`, and a human member with no
-`_user` row in the active tenant (reason `user_missing`), with the answer
-`CATALOG_CONTEXT_REQUIRED` (401) and the reason only in the log, so that an existing
+cannot call. `resolveContext` MUST reject a banned user, and MUST admit a human only
+when their `_user` status in the active tenant is `Active`: a `Disabled`, `Invited` or
+`Staged` status and a missing `_user` row (reason `user_missing`) MUST be rejected, with
+the answer `CATALOG_CONTEXT_REQUIRED` (401) and the reason only in the log, so that an existing
 session and any new sign-in, local or through SSO, stop granting access. A banned user's
 sign-in MUST fail with the same status, error code and body as any other sign-in
 failure, locally and through SSO, after the credential was verified (as Better Auth
@@ -201,6 +211,12 @@ these checks MUST be logged as `catalog.security.principal_rejected` and counted
 - **GIVEN** an `Active` user with a single membership and a live session
 - **WHEN** an admin disables the user
 - **THEN** the next request on that session is rejected with `CATALOG_CONTEXT_REQUIRED` (401) and no reason in the body, a new sign-in (local or SSO) is refused, and `catalog.security.principal_rejected` is logged with the reason
+
+#### Scenario: An `Invited` member is rejected by the resolver
+
+- **GIVEN** a member of `t1` whose `_user` in `t1` is `Invited`, as a failed acceptance can leave it, or `Staged`
+- **WHEN** the member calls any `/v1` route in `t1`
+- **THEN** the call is rejected with `CATALOG_CONTEXT_REQUIRED` (401) and no reason in the body, `catalog.security.principal_rejected` is logged, and the same user is accepted in a tenant where their `_user` is `Active`
 
 #### Scenario: A banned user's sign-in is indistinguishable from a wrong password
 
@@ -239,7 +255,10 @@ changes nothing), MUST create a `Disabled` row for a member whose user is banned
 remove an orphan (a human `_user` that is `Active`, has no membership in its tenant and
 is more than one hour old, which a failed acceptance leaves behind; never an `Invited`
 or `Staged` row, a younger row or a service account), and MUST attribute its writes to the operator whose id the job's environment
-supplies, refusing to run without one.
+supplies, refusing to run without one. Before it creates the `_user` of a member whose user
+belongs to two or more tenants, the reconcile MUST shed the SSO links that user did not make,
+with the session revocation of the requirement on SSO links, and MUST NOT create the row
+when the shed fails.
 
 #### Scenario: A member with no `_user` row is rejected
 
@@ -258,6 +277,12 @@ supplies, refusing to run without one.
 - **GIVEN** an `Active` human `_user` with no member in its tenant that is more than an hour old, one that is younger (an acceptance in flight), an `Invited` one, a `Staged` one and a service account
 - **WHEN** the reconcile runs
 - **THEN** only the older `Active` human row is removed, the removal is attributed to the operator, and a later invitation of that email succeeds
+
+#### Scenario: The reconcile sheds before it creates a `_user`
+
+- **GIVEN** a member of `t1` and `t2` with no `_user` row in `t2` and an SSO link they did not make
+- **WHEN** the reconcile runs
+- **THEN** the link is shed, the user's sessions are revoked and `catalog.security.sso_link_shed` is logged before the row is created, a single-tenant member's links are left alone, and a failed shed leaves the row uncreated
 
 #### Scenario: The reconcile repairs a member and is repeatable
 
@@ -282,7 +307,10 @@ contains `/`, MUST be rejected with `CATALOG_VALIDATION_FAILED` by `invite` and 
 existing member, the per-organization pending limit) MUST NOT reach the response
 as they are. Cancelling and resending MUST resolve the
 invitation on the server and MUST apply only to an invitation of the caller's
-tenant. Only a `pending`, non-expired invitation MUST be acceptable.
+tenant. Only a `pending`, non-expired invitation MUST be acceptable. Creating a user
+through `identity.users.create` for an email that has a `pending` invitation in the
+caller's tenant MUST cancel that invitation, with the reason `user_created`, once the
+user and the membership exist, and MUST leave an invitation of another tenant untouched.
 
 #### Scenario: Invite sends exactly one email with exactly one link
 
@@ -329,6 +357,12 @@ tenant. Only a `pending`, non-expired invitation MUST be acceptable.
 - **WHEN** an admin invites, or creates a user for, `a+b@example.com` or `a/b@example.com`
 - **THEN** the operation fails with `CATALOG_VALIDATION_FAILED` and no invitation, user, email or cap increment results
 
+#### Scenario: Creating a user cancels a pending invitation of the same email
+
+- **GIVEN** a pending invitation of `t1` to `bob@example.com` and another of `t2` to the same address
+- **WHEN** an admin of `t1` creates the user `bob@example.com` through `identity.users.create`
+- **THEN** the `t1` invitation becomes `cancelled` with the reason `user_created` and `catalog.audit.invitation_cancelled` is logged with that reason, the `t2` invitation stays `pending`, and a creation that fails leaves the `t1` invitation `pending`
+
 #### Scenario: A disabled user cannot be invited
 
 - **GIVEN** a `Disabled` user `bob@example.com`
@@ -347,9 +381,12 @@ before it is consumed and then consumed last, by one atomic delete conditioned o
 digest, and MUST work exactly once; a resend MUST invalidate the previous token. The
 tenant MUST be derived on the server from the invitation record; a body that
 carries a tenant or an actor MUST be rejected. On both paths, after the token has verified and before it is consumed, the invitation's
-inviter MUST still be a member of the organization with the `admin` role (`owner` or
-`admin`), MUST NOT be banned and MUST have the `_user` status `Active` in the tenant,
-otherwise the acceptance fails with the uniform rejection and the token is not consumed.
+inviter MUST still be a member of the organization, MUST NOT be banned and MUST have the
+`_user` status `Active` in the tenant, and Cerbos MUST still allow the inviter, as a
+principal built from their membership in the invitation's tenant, to invite a user there
+(the admin role is never decided by a local mapping of the membership role); otherwise,
+and also when Cerbos fails, the acceptance fails with the uniform rejection and the
+token is not consumed.
 For an invited email with no account,
 acceptance MUST create the user with the least global role, set the password the
 invitee supplied under the password policy, mark the email verified (the token is
@@ -372,9 +409,13 @@ together with the token; the request MUST carry the CSRF custom header and an
 the identity provider, its re-authorization), checked only after the session, the
 email and the token have matched. It MUST add only the membership, activate the
 `_user` and mark the email verified, and MUST NOT set, change or compare a
-password, the request's own session or the active organization, and MUST NOT touch a
-linked account or another session except to shed the SSO links its user did not make
-and revoke the user's other sessions (see the requirement on SSO links). Acceptance
+password or change the active organization, and MUST NOT touch a linked account or a
+session, the request's own included, except to shed the SSO links its user did not make
+and, when a link was shed, revoke the user's sessions, the one that carried the
+acceptance only after the acceptance has committed (see the requirement on SSO links).
+If a step after the membership was added fails before the token is consumed, the
+membership that the attempt created MUST be deleted, and a membership that existed
+before the attempt MUST NOT be. Acceptance
 MUST NOT link an account by the email claim from Visma Connect. The body MUST be an
 allowlist of the invitation id, the token and, for a new account, the password; any
 other field MUST be rejected with `CATALOG_VALIDATION_FAILED`, and an invitation id
@@ -423,11 +464,17 @@ MUST be logged.
 
 #### Scenario: An existing account accepts with its session
 
-- **GIVEN** a pending invitation to `carol@example.com`, who has an account and a session
+- **GIVEN** a pending invitation to `carol@example.com`, who has an account, a session and no SSO link she did not make
 - **WHEN** `carol` presents the token with her session, the CSRF custom header and an allowed origin
 - **THEN** she gains the membership with the invited role and her `_user` becomes `Active`
 - **AND** her email is now marked verified, even if it was not before
 - **AND** her password, session, active organization and linked accounts are unchanged, and the response has the same status and shape as a new person's acceptance
+
+#### Scenario: A failed existing-account acceptance leaves no membership
+
+- **GIVEN** a pending invitation to `carol@example.com`, who has an account and a session, and a step after the membership was added that fails
+- **WHEN** `carol` presents the token with her session
+- **THEN** she has no membership of the tenant, the token is not consumed and still verifies, a retry with the same token adds the membership again, and a membership she held before the attempt is never deleted by it
 
 #### Scenario: A session of another account cannot accept
 
@@ -461,6 +508,12 @@ MUST be logged.
 - **WHEN** it is accepted with its valid token, on the new-account path and on the existing-account path
 - **THEN** each answers the uniform rejection, `catalog.security.invitation_acceptance_denied` records the reason `inviter_not_active_admin`, and the token is not consumed
 - **AND** an invitation whose inviter is still an active `admin` or `owner` is accepted, and a wrong token with a disabled inviter answers the same uniform rejection
+
+#### Scenario: The inviter re-check is a Cerbos decision
+
+- **GIVEN** a pending invitation whose inviter is still an active, non-banned member of the tenant
+- **WHEN** it is accepted with its valid token while Cerbos denies the inviter `invite` in the invitation's tenant, or fails
+- **THEN** the answer is the uniform rejection, the reason `inviter_not_active_admin` is recorded and the token is not consumed, and the check was made with the inviter as the principal and the invitation's tenant
 
 #### Scenario: A cross-site request cannot accept
 
@@ -517,18 +570,25 @@ written when the link is created and removed whenever the link is removed, by an
 path, and a link without a marker MUST count as recorded by an admin. A marker MUST NOT
 expire and MUST carry no email, subject or tenant. A failed marker write MUST fail the
 link and MUST be logged. An admin MUST NOT be able to record a link on a user who is an
-`admin` or an `owner` of the tenant. At existing-account acceptance, and whenever a
-membership is added to a user who already belongs to another tenant, every unmarked link
-of that user MUST be deleted and `catalog.security.sso_link_shed` MUST be logged with
-opaque identifiers only, and every session of the user MUST be revoked, except the one
-that carries the acceptance request (every session when the membership is added another
-way), whether or not the session was established through the identity provider, each
-revocation being logged as `auth.security.session_revoked` with the reason
-`sso_link_shed`. An admin unlinking an SSO identity MUST revoke every session of that
-user in the same way. A link and a join for one user MUST NOT interleave: one lock per
-user MUST serialize the link and the shed, so that a link that commits after a join
-cannot remain on a user of two tenants. The user MAY link the identity again through the
-self-service route, which requires a fresh step-up verification.
+`admin` or an `owner` of the tenant. At existing-account acceptance, whenever a
+membership is added to a user who already belongs to another tenant, and before the
+reconcile creates a `_user` for a member of two or more tenants, every unmarked link
+of that user MUST be deleted (the shed) and `catalog.security.sso_link_shed` MUST be
+logged with opaque identifiers only. At acceptance the shed MUST run as an explicit step
+of every attempt once the membership exists, including a retry that finds the membership
+already added, before the token is consumed, and a shed that fails MUST fail the attempt.
+When the shed removed a link, every session of the user MUST be revoked, whether or not
+the session was established through the identity provider, each revocation being logged
+as `auth.security.session_revoked` with the reason `sso_link_shed`; the session that
+carries the acceptance request MUST be kept while the acceptance runs and MUST be revoked
+once it has committed; and the shed MUST sweep the user's sessions a second time after its
+deletion commits. The SSO callback MUST NOT create a session through an account that no
+longer exists, or that carries no marker while its user belongs to two or more tenants. An
+admin unlinking an SSO identity MUST revoke every session of that user in the same way. A
+link and a join for one user MUST NOT interleave: one lock per user MUST serialize the link
+and the shed, so that a link that commits after a join cannot remain on a user of two
+tenants. The user MAY link the identity again through the self-service route, which
+requires a fresh step-up verification.
 
 #### Scenario: An SSO link its user did not make does not survive into a second tenant
 
@@ -540,7 +600,31 @@ self-service route, which requires a fresh step-up verification.
 
 - **GIVEN** a session minted through an admin-recorded link before the user joins `t2`
 - **WHEN** the user joins `t2`, by acceptance or by a membership added directly
-- **THEN** that session is revoked, so `/organization/set-active` for `t2` and any `/v1` call with it are rejected, `auth.security.session_revoked` is logged with the reason `sso_link_shed`, and on the acceptance path the session that carried the acceptance still works
+- **THEN** that session is revoked, so `/organization/set-active` for `t2` and any `/v1` call with it are rejected, `auth.security.session_revoked` is logged with the reason `sso_link_shed`, and on the acceptance path the acceptance carried by another session completes
+
+#### Scenario: A retried acceptance still sheds the link and revokes the sessions
+
+- **GIVEN** a user of `t1` with an SSO link they did not make, and an existing-account acceptance of `t2` whose first attempt failed after the membership was added and left it in place
+- **WHEN** the acceptance is retried with the same token and finds the membership already added
+- **THEN** the link is shed, the user's sessions are revoked and `catalog.security.sso_link_shed` is logged before the token is consumed, and a shed that fails fails the attempt without consuming the token
+
+#### Scenario: A sign-in through a shed link creates no session
+
+- **GIVEN** an SSO sign-in through a link the user did not make that is in flight while the user joins a second tenant, or a link without a marker on a user of two tenants
+- **WHEN** the callback is about to create its session after the shed deleted the link, or through the unmarked link
+- **THEN** the callback fails with its uniform rejection and no session exists
+
+#### Scenario: A session created during the shed is swept
+
+- **GIVEN** a session created through the link after the shed's first sweep and before its deletion commits
+- **WHEN** the deletion commits
+- **THEN** a second sweep revokes that session and logs `auth.security.session_revoked` with the reason `sso_link_shed`
+
+#### Scenario: The accepting session is revoked when the shed removed a link
+
+- **GIVEN** a user with an SSO link they did not make who accepts an invitation of a second tenant with a session on the existing-account path
+- **WHEN** the acceptance commits
+- **THEN** the acceptance succeeded, the session that carried it is revoked afterwards and the user signs in again, and a user whose only link they made keeps that session
 
 #### Scenario: An admin unlink revokes the user's sessions
 
@@ -1094,7 +1178,7 @@ the authenticated context resolution.
 Every Cerbos deny, status change, service-account disable, enable and
 deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
-excess, a failed admin-accepted notice, a suppressed or truncated notice, a
+excess, an invitation cancelled by a user creation, a failed admin-accepted notice, a suppressed or truncated notice, a
 recipient refused by the non-production allowlist, an email suppressed for a disabled
 tenant, an SSO link shed (and the session revocations it causes), a provenance marker write that
 failed, an acceptance compensation that failed, a banned user's sign-in attempt and a
@@ -1125,8 +1209,10 @@ addresses, invitation tokens, credential names, credential secrets, `_user`
 identifiers, or any other tenant-supplied free text, and no identifier in a URL
 path (an email, an invitation id or a credential id) MUST reach any exported
 span, metric or log: for the routes of this capability the exported path MUST
-be the route template. Opaque identifiers and enumerated values (status,
-invitation state, account kind, credential kind) are permitted.
+be the route template. A catalog span of a `_user` entity MUST carry a fixed placeholder
+instead of the entity identifier (an email, or the `svc-` identifier of a service
+account), while the entities of other blueprints keep theirs. Opaque identifiers and
+enumerated values (status, invitation state, account kind, credential kind) are permitted.
 
 #### Scenario: Declared telemetry is emitted
 
@@ -1137,6 +1223,11 @@ invitation state, account kind, credential kind) are permitted.
 
 - **WHEN** `marker-user@example.com` is invited, and later fails to accept an expired invitation
 - **THEN** that email string appears in no exported span, metric, or log attribute
+
+#### Scenario: A `_user` email never reaches a catalog span
+
+- **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, read, updated, deleted or listed through the catalog, including through the existing user sync
+- **THEN** each catalog span carries the fixed placeholder as its entity identifier and the email appears in no exported attribute, and an entity of another blueprint keeps its identifier
 
 #### Scenario: A path identifier never reaches telemetry over HTTP
 
@@ -1219,7 +1310,8 @@ before any lookup or database work.
 
 Before the routes are mounted, the platform MUST refuse to start with `NODE_ENV=test`
 and a non-local database host (the check lives in the application's startup path, not in
-the configuration loader); the public re-authorization callback MUST be
+the configuration loader); the startup check of the runtime database roles MUST also fail
+when a runtime role owns the machine-credential revocation table; the public re-authorization callback MUST be
 rate-limited before it touches the database, and `reauthorization.start` MUST be
 bounded per session; a back-channel logout token with neither `sid` nor `sub` MUST be
 rejected without consuming its `jti`, and its cheap claim checks MUST run before any
@@ -1230,6 +1322,11 @@ operation response.
 
 - **WHEN** the platform starts with `NODE_ENV=test` and a non-local database host
 - **THEN** startup fails
+
+#### Scenario: A runtime role that owns the revocation table is refused at startup
+
+- **WHEN** the platform starts, outside the test environment, with a runtime database role that owns `machine_credential_revocation`
+- **THEN** startup fails with a fixed message that carries no connection detail
 
 #### Scenario: A malformed logout token is cheap to refuse
 

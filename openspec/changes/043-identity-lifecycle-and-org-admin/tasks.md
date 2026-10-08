@@ -18,7 +18,7 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1-Q103 in `design.md`; there are no open questions. Org deletion and data retention (the old group 12 of this file) moved to `045-org-deletion-and-data-retention` by Q103: no task here covers them.
+Tasks follow the Resolved decisions Q1-Q110 in `design.md`; there are no open questions. Org deletion and data retention (the old group 12 of this file) moved to `045-org-deletion-and-data-retention` by Q103: no task here covers them.
 
 The one migration of this change is `0011`; `045` owns `0012` to `0014` and nothing is
 renumbered. Every migration and every Cerbos task is marked **(Checkpoint 3)** and stops for the human's separate approval. A task
@@ -59,6 +59,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       gaps NB-5 and NB-6, the ten non-blocking gaps G7-1 to G7-10 and three questions) is
       resolved by Q86-Q88, tasks and tickets, and the seventh drift-check's decisions
       (A1, B1, C1-C3, C5, C6, D1-D3) by Q89-Q98; C4 (the task count) is resolved by Q103, which moved org deletion and data retention to `045`.
+      The eighth pass (the blocking gaps NB-7 and NB-8 and the non-blocking gaps G8-1 to
+      G8-12) and the eighth drift-check's decisions (B-1 to B-3) are resolved by Q101,
+      Q102 and Q105-Q110, tasks and tickets.
       Attach the
       reports to the PR. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded.
@@ -175,7 +178,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `created_active`, with the input `afterAddMember` builds), and leaves an
       existing row untouched. For a member whose Better Auth user is `banned` it
       follows `created_active` with `admin_disable`, so the row is `Disabled` and a
-      banned user is never revived as `Active` (Resolved decision Q62). It also
+      banned user is never revived as `Active` (Resolved decision Q62). Before it
+      creates the `_user` of a member whose user holds two or more memberships it runs
+      the shed of 8.5h, which 8.5l adds to this script once the shed exists (Resolved
+      decision Q105). It also
       removes an **orphan**: a human `_user` with status `Active`, no `member` row in
       its tenant and a `createdAt` **more than one hour old**, which is what a failed
       acceptance leaves behind, because its `_user` write is on another pool and no
@@ -297,6 +303,30 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       writes a status. Verify: `display-data.int.test.ts` covers a member with no
       `_user` row still having none after a profile refresh, and a member with a row
       having only its display fields updated, the status unchanged.
+- [ ] 4.1d No catalog span carries a `_user` identifier (Resolved decision Q107; design,
+      Observability contract). `packages/catalog/src/service/entities.ts` sets
+      `tayzu.catalog.entity.identifier` to the raw identifier on `catalog.entity.create`,
+      `upsert`, `get`, `delete`, `status.write` and `related.list`, and a `_user`
+      identifier is the member's email (`user-sync.ts`), so once 4.1b wires the adapter
+      every status write would export it (it is latent in `002` only because `createApp`
+      wires no `userSync`). For an entity of the reserved `_user` blueprint the attribute
+      carries one fixed placeholder constant, exported by
+      `packages/catalog/src/telemetry/contract.ts`, instead of the identifier, and every
+      other blueprint keeps its identifier. The attribute stays required on those spans:
+      Q107 allows omitting it, but `otel-smoke-check` asserts required attributes and
+      omitting it would loosen that assertion. This amends `001`'s catalog telemetry
+      contract, and `docs/catalog/catalog-core.md` (its `## Telemetry` section) records
+      the placeholder for `_user` entities. Verify: `contract.test.ts` (in
+      `packages/catalog/src/telemetry/`) covers the contract exporting the placeholder and
+      the six entity spans still declaring `tayzu.catalog.entity.identifier` as a required
+      attribute, and `user-identifier-telemetry.int.test.ts` (in
+      `packages/catalog/src/service/`) covers "A `_user` email never reaches a catalog
+      span": under an in-memory exporter, a `_user` entity whose identifier is a marker
+      email, written through `createUserSync` (`002`'s existing sync) and read, upserted,
+      deleted and listed through the catalog operations as the `system` actor, exports the placeholder on each
+      of the six spans and the marker in no exported attribute, a service account's
+      `svc-…` identifier is replaced the same way, and a non-reserved entity's spans
+      still carry its identifier; `docs-telemetry.test.ts` stays green.
 - [ ] 4.2 `afterAddMember` is the **single writer** for a membership (Resolved
       decisions Q11 and Q76, design D2). It cannot read the status (the port has
       only `upsertUser`), so it passes the intent `membership_added` and the adapter
@@ -327,18 +357,26 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `Invited` user, and leaves a `Disabled` user `Disabled`. Verify:
       `first-sign-in.int.test.ts` covers "First sign-in activates a staged or
       invited user".
-- [ ] 4.5 The ban hook writes `admin_disable` and `admin_enable` through the
-      state machine instead of `Disabled`/`Active` directly. It fires on every
-      `user.update` that carries a boolean `banned` (for example `/two-factor/enable`)
-      and cannot tell whether the value changed, because
-      `databaseHooks.user.update.before` receives neither the id nor the old row, so it
-      sends the event the new value implies and the adapter treats a redundant event as
-      a no-op (4.1); it is skipped without an endpoint context. Whether it should ever
-      write `admin_enable` is Q102 of `design.md`. Verify: `ban-hook.int.test.ts` covers that banning sets
-      `Disabled`, unbanning sets `Active`, unbanning a `Staged` user is rejected, and
-      that enrolling a second factor for an `Active` user (an update with an unchanged
-      `banned: false`) does not throw and leaves the status `Active`, and a repeated `banned: true` for a
-      `Disabled` user is a no-op.
+- [ ] 4.5 The ban hook (`databaseHooks.user.update.after` in `auth.ts`) writes through
+      the state machine instead of `Disabled`/`Active` directly, and **only ever
+      disables** (Resolved decision Q102; design D2). It fires on every `user.update`
+      that carries a boolean `banned` and runs with an endpoint context (for example
+      `/two-factor/verify-totp`, which is allowlisted), and it receives the new row, with
+      its `id`, but not the old row, so it cannot tell an unban from any other update. It
+      writes `admin_disable` to the `_user` of every membership of the user only when
+      `banned === true`, and the adapter treats that redundant event for a `Disabled`
+      user as a no-op (4.1). It **never writes `admin_enable`**: an update with
+      `banned: false` writes nothing, because an `admin_enable` for every membership
+      would re-enable a user whom `setStatus` disabled in one tenant only; re-enabling
+      goes through `setStatus` only (11.2). It is skipped without an endpoint context.
+      Verify: `ban-hook.int.test.ts` covers "The ban hook never re-enables a user":
+      banning sets `Disabled` on every membership, a repeated `banned: true` for a
+      `Disabled` user is a no-op, an update with `banned: false` (an unban included)
+      writes nothing and leaves every status as it was, enrolling a second factor for an
+      `Active` user does not throw and leaves the status `Active`, and a user who belongs
+      to `t1` and `t2`, `Disabled` in `t1` only (written through the adapter with
+      `admin_disable`, as `setStatus` of 11.2 does, and not banned), who enrols TOTP from
+      a session of `t2` stays `Disabled` in `t1` and `Active` in `t2`.
 - [ ] 4.6 `bootstrapAdmin()` moves out of the script file into
       `packages/auth/src/bootstrap-admin.ts` and the package index (design D2):
       today it shares `packages/auth/scripts/bootstrap-admin.ts` with the CLI
@@ -872,6 +910,17 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       exceeding 100 pending invitations, asserting the generic code and no membership
       information in the response, and `identity.users.create` in an organization with
       100 members answering `CATALOG_VALIDATION_FAILED`.
+- [ ] 7.13 `identity.users.create` for an email that has a `pending` invitation in the
+      caller's tenant cancels that invitation once the user and the membership exist, with
+      the reason `user_created` (Resolved decision Q110; design D4), through Better Auth's
+      `cancelInvitation` with the admin's forwarded session headers, like 7.6, and emits
+      the span `identity.invitation.cancel` and `catalog.audit.invitation_cancelled` with
+      that reason (declared in 15.1). Verify: `invitations.int.test.ts` covers "Creating
+      a user cancels a pending invitation of the same email": a pending invitation of `t1`
+      to `bob@example.com`, followed by `identity.users.create` for `bob@example.com` in
+      `t1`, leaves the invitation `cancelled` with the reason `user_created` and the event
+      emitted with it; a pending invitation of `t2` to the same email stays `pending`; and
+      a `create` refused at the member limit of 7.12 leaves the invitation `pending`.
 
 ## 8. Invitation acceptance
 
@@ -968,17 +1017,26 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       orders the steps of design D4: verify the token without consuming it, check the
       inviter (8.5f), check the password policy, do the work of the path (create the
       user and set its password and verified email, add the membership and ensure the
-      `_user`; for an existing account the same without the user) and **consume the
-      token last**. Each step is idempotent: an `addMember` for a user who already is
-      a member is treated as done, and an `Active` `_user` is no write. The `_user`
+      `_user`; for an existing account the same without the user, followed by the
+      explicit shed of 8.5h) and **consume the token last**. Each step is idempotent: an
+      `addMember` for a user who already is a member is treated as done (and recorded as
+      not created by this attempt), and an `Active` `_user` is no write. The `_user`
       write of `afterAddMember` **fails closed**: if it throws, the attempt fails and
       the token is not consumed. A failure after the attempt **created** the user
       compensates, in reverse order and each idempotently, the membership, the `_user`
       and the user it created (never one it found), so a retry with the same token
       starts from nothing; a compensation that fails logs
-      `catalog.security.invitation_accept_compensation_failed` (declared in 15.1). A
-      lost consume race (another attempt consumed the token first) compensates
-      nothing, because the winner's state is final. An orphan `_user` left by a double
+      `catalog.security.invitation_accept_compensation_failed` (declared in 15.1). **On
+      the existing-account path** (Resolved decision Q105, part 1) the attempt records
+      whether its `addMember` created the membership and, if a later step fails before
+      the token is consumed (the `_user` write, the shed of 8.5h, the `emailVerified`
+      write), deletes the membership it created, idempotently and never one it found,
+      logging the same event if the deletion fails; without it a retry would find the
+      membership, treat it as done and skip `afterAddMember`. The `_user` it activated
+      is not reverted (a retry finds it `Active`, and without one it is an orphan for
+      2.2b). A lost consume race (another attempt consumed the token first) compensates
+      nothing, on either path, because the winner's state is final and may rest on the
+      membership the loser created. An orphan `_user` left by a double
       fault is the reconcile's (2.2b, after its grace period), and a user left with no
       membership is an operator repair (Q100 of `design.md`, written under
       its recommended option). Verify: `accept-flow.int.test.ts` covers a failure
@@ -986,7 +1044,14 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `afterAddMember` leaving no user, no member and no `_user` with the token still
       valid and a retry then succeeding, an `addMember` that already happened being
       treated as done, a failing compensation emitting the event, and a lost consume
-      race deleting nothing the other attempt created.
+      race deleting nothing the other attempt created; and "A failed existing-account
+      acceptance leaves no membership": an existing account whose acceptance fails after
+      `addMember` inserted the member (a `userSync` that throws in `afterAddMember`; the
+      failing shed is 8.5h's case) ends with no membership of the tenant and the
+      token still valid, a retry with the same token adding the membership again, a
+      membership that existed before the attempt (seeded directly) never being deleted
+      by a failed attempt, and a failing deletion emitting
+      `invitation_accept_compensation_failed`.
 - [ ] 8.2 The acceptance service function (in `apps/api`, served by the plain route
       of 14.1b) for an email with no account runs the steps of 8.1e: it verifies
       the token, creates the user (global role `user`), sets the
@@ -1026,9 +1091,10 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the `_user` through `invitation_accepted` and sets `emailVerified` (Resolved
       decision Q38: the token proves the mailbox); it never touches the password,
       the request's own session, the active organization or any linked account,
-      except that, through the membership hook, it sheds the SSO links its user did
-      not make and revokes the user's other sessions (8.5h, Resolved decisions Q73
-      and Q86). Its success has the same status and body shape as the new-account path.
+      except that its explicit shed step (8.5h) removes the SSO links its user did not
+      make and, when it removed one, revokes the user's sessions, the accepting one only
+      after the acceptance has committed (8.5k; Resolved decisions Q73, Q86, Q105 and
+      Q106). Its success has the same status and body shape as the new-account path.
       Verify: `invitation-accept.int.test.ts` covers "An existing account accepts
       with its session", including `emailVerified` being true afterward.
 - [ ] 8.5c The session user's email must equal the invitation email, with **no**
@@ -1062,11 +1128,18 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       session's `updatedAt` unchanged.
 - [ ] 8.5f At acceptance, on both paths, after the token has verified and before it
       is consumed, the invitation's inviter must still be a member of the
-      invitation's organization with the `admin` Cerbos role (a membership role of
-      `owner` or `admin`), whose Better Auth user is not `banned` and whose `_user`
-      status in the tenant is `Active`; otherwise the acceptance answers the uniform
-      rejection with the denial reason `inviter_not_active_admin` and the token is
-      not consumed (Resolved decision Q63; design D4 step 2). The reads go through
+      invitation's organization, whose Better Auth user is not `banned` and whose
+      `_user` status in the tenant is `Active`, and **Cerbos must still allow the
+      inviter `invite` on a `user` resource** (Resolved decision Q108, which replaces a
+      local mapping of the membership role and keeps `002` D2's single decision point):
+      the principal is built from the inviter's member row (the inviter's Better Auth
+      user id, the roles `resolveContext` derives from that membership role, through the
+      same mapping, `toCerbosRole` in `context-resolver.ts`, exported for it, and the
+      invitation's tenant), and the resource has the id `new` and the invitation's
+      `organizationId` as its tenant. A missing membership, a banned or non-`Active`
+      inviter, a Cerbos deny and a Cerbos error each answer the uniform rejection with
+      the denial reason `inviter_not_active_admin`, and the token is not consumed
+      (Resolved decision Q63; design D4 step 2). The reads go through
       the repository of 5.1b (`tayzu_auth`) and the `_user` status is read from
       `tayzu_app`, a different pool, with no transaction around the acceptance (8.1e),
       so an inviter disabled between the check and the consumption of the token can
@@ -1078,7 +1151,11 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       rejection with `denial_reason` `inviter_not_active_admin` and the token still
       valid afterwards; an `admin` inviter and an `owner` inviter still being
       accepted; a wrong token with a disabled inviter answering the same uniform
-      rejection.
+      rejection; and "The inviter re-check is a Cerbos decision": a recording Cerbos
+      client showing one `user`/`invite` check with the inviter as the principal and the
+      invitation's tenant as the principal's and the resource's tenant, and a Cerbos
+      client that denies, or that throws, for an otherwise active admin inviter
+      answering the same uniform rejection with the token still valid.
 - [ ] 8.5g **Positive provenance of SSO links** (Resolved decision Q87, which
       supersedes Q73's admin-side marker). `databaseHooks.account.create.after` writes a
       marker row in `auth.verification` (no migration) for an account that is not the
@@ -1107,19 +1184,28 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the unmarked link being shed at the next join), and the marker carrying no email.
 - [ ] 8.5h An SSO link that its user did not make does not survive into a second
       tenant, and the sessions issued through it do not either (Resolved decisions Q73,
-      Q86 and Q87). At existing-account acceptance, and in `afterAddMember` whenever
-      the user already has a membership in another tenant, every non-`credential`
-      account of the user without a marker (8.5g) is deleted through the internal
-      adapter (its hook removes the marker and, inside the shared context of design D2,
-      does not emit `auth.security.account_unlinked` with the actor `self`),
-      `catalog.security.sso_link_shed` (declared in 15.1) is emitted with the tenant
-      joined, the path (`acceptance` or `membership_hook`) and the opaque user id and no
-      email, and **every session of the user is revoked except the one carrying the
-      acceptance request** (the hook path revokes all; not filtered on `ssoSid`, because
-      `002` Q83 admits SSO sessions created without one), each revocation emitting
-      `auth.security.session_revoked` with the reason `sso_link_shed`. The acceptance
-      sets the shared context (`apps/api/src/identity/identity-context.ts`) so that the
-      hook's shed keeps the acceptance's own session and reports the path `acceptance`.
+      Q86, Q87 and Q105). Whenever the user holds a membership in another tenant, the
+      shed deletes every non-`credential` account of the user without a marker (8.5g)
+      through the internal adapter (its hook removes the marker and, inside the shared
+      context of design D2, does not emit `auth.security.account_unlinked` with the actor
+      `self`), emits `catalog.security.sso_link_shed` (declared in 15.1) with the tenant
+      joined, the path (`acceptance`, `membership_hook` or, from 8.5l, `reconcile`) and
+      the opaque user id and no email, and, **when it removed a link, revokes every
+      session of the user** (not filtered on `ssoSid`, because `002` Q83 admits SSO
+      sessions created without one), each revocation emitting
+      `auth.security.session_revoked` with the reason `sso_link_shed`; it is idempotent:
+      a re-run deletes the unmarked links that remain and does nothing more when none
+      remains. **At existing-account acceptance the shed is an explicit step of every
+      attempt** once the membership exists, including a retry whose `addMember` found the
+      membership already there, run before the token is consumed, and a shed that fails
+      fails the attempt, which then compensates the membership (8.1e; Resolved decision
+      Q105, part 2: `addMember` calls `afterAddMember` only when it inserts, so a shed that
+      lived only in the hook was skipped by a failed or retried attempt). The acceptance
+      sets the shared context (`apps/api/src/identity/identity-context.ts`), inside which
+      the hook leaves the shed to that step; the step keeps the session that carries the
+      acceptance while the acceptance runs (8.5k revokes it after the commit) and reports
+      the path `acceptance`. **`afterAddMember` keeps its shed** for every other membership
+      path (path `membership_hook`, every session revoked).
       The user may re-link through `/link-social`, which requires step-up. Without it an
       admin of tenant A could link their own identity-provider `sub` to a single-tenant
       user, and a later invitation from tenant B would turn that link, or a session
@@ -1134,26 +1220,37 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       "A session established through a shed link cannot reach the joined tenant": a
       session minted through the link before the join, with the user then joining `t2`,
       fails `/api/auth/organization/set-active` for `t2` and the `/v1` calls after the
-      join on both paths, while on the acceptance path the session that carried the
-      acceptance still works, each revocation emitting `auth.security.session_revoked`
-      with the reason `sso_link_shed` and none emitting `account_unlinked` with the
-      actor `self` for the shed link; and the user re-linking through `/link-social`
-      with step-up.
+      join on both paths, while on the acceptance path the acceptance carried by another
+      session of the user completes (that session is not revoked while the acceptance
+      runs), each revocation emitting `auth.security.session_revoked` with the reason
+      `sso_link_shed` and none emitting `account_unlinked` with the actor `self` for the
+      shed link; "A retried acceptance still sheds the link and revokes the sessions": an
+      existing-account acceptance of `t2` whose first attempt fails after `addMember`
+      inserted the member, with its compensation failing too (a failure seam), so the
+      membership stays, and whose retry with the same token finds the membership already
+      there, ends with the unmarked link shed, the user's other sessions revoked and the
+      event emitted with the path `acceptance` before the token is consumed, and a shed
+      that fails fails the attempt with the token unconsumed and the membership it created
+      deleted (8.1e); and the user re-linking through `/link-social` with step-up.
 - [ ] 8.5i One Postgres advisory lock per user id closes the race between linking and
       joining (Resolved decision Q87). `apps/api/src/identity/user-lock.ts` exposes
       `withUserLock(userId, fn)`: a short dedicated `tayzu_auth` transaction takes
       `pg_advisory_xact_lock` on a key derived from the user id (a bound parameter,
       never interpolated) and holds it while `fn` runs. `linkSsoAccount` takes it around
       its membership check and its link, and the shed of 8.5h takes it around its read
-      and its deletion; the acceptance and `afterAddMember` take the lock through the
-      shed, and the acceptance takes no second lock of its own, because the hook runs
-      inside its call (the lock is not re-entered across connections). Verify:
+      and its deletion. Every path takes the lock once, through the shed: the acceptance
+      in its explicit shed step, after `addMember` has returned (inside the acceptance's
+      shared context the hook does not shed), `afterAddMember` on the other membership
+      paths and the reconcile (8.5l), so no path takes it twice (the lock is not
+      re-entered across connections; Resolved decision Q105). Verify:
       `user-lock.int.test.ts` covers two concurrent `withUserLock` calls for one user
       running one after the other and for two users running in parallel, and
       `sso-link-race.int.test.ts` covers the interleavings: a link that starts while a
       join is adding the second membership ends refused (it sees two tenants) or shed
       (it committed first), never an unmarked link left on a two-tenant user, over
-      repeated runs of both orders.
+      repeated runs of both orders, and an existing-account acceptance, whose
+      `afterAddMember` runs inside its shared context, taking the lock exactly once (a spy
+      on `withUserLock`).
 - [ ] 8.5j An admin `unlinkSsoAccount` revokes every session of the target user
       (Resolved decision Q86), through the internal adapter, because a session already
       issued through the link would otherwise outlive the unlink; each revocation emits
@@ -1164,6 +1261,49 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `/api/auth/get-session` and a `/v1` call), the user's session on a second device
       being gone too, the event emitted with the reason, and the unlink of a link that
       does not exist revoking nothing.
+- [ ] 8.5k The session paths that the shed still missed are closed, before the mount
+      switch (Resolved decision Q106; design D4 step 7). (1) The SSO callback refuses to
+      create a session through an account that no longer exists, or that has no marker
+      (8.5g) while its user belongs to two or more tenants: a callback that read the
+      account before the shed deleted it could otherwise create its session afterwards.
+      For example, the callback's `account.update.after` (Better Auth refreshes the linked
+      account's tokens before it creates the session) stashes the account row's id for the
+      request, and `session.create.before` re-reads that account and its marker and
+      refuses with the callback's one uniform rejection, so no session row is written.
+      (2) The shed of 8.5h sweeps the user's sessions a second time after its deletion
+      commits, so a session created through the link while the deletion was in flight is
+      revoked too. (3) When the shed removed a link at acceptance, the session that carried
+      the acceptance is revoked too, after the acceptance commits (the token consumed):
+      this amends Q86's exemption, because the accepting session may itself have come
+      through the shed link; when the shed removed none, the accepting session keeps
+      working. Each revocation emits `auth.security.session_revoked` with the reason
+      `sso_link_shed`. Verify: `sso-link-shed-sessions.int.test.ts` covers "A sign-in
+      through a shed link creates no session" (a callback held by a seam between its
+      account read and its session creation while the shed deletes the link, then
+      resumed, failing with the uniform rejection and leaving no session row; a callback
+      through an unmarked link of a user of two tenants, seeded directly as a link that
+      pre-dates this change, refused the same way; and a callback through a marked link of
+      the same user succeeding), "A session created during the shed is swept" (a session
+      created through the link between the shed's first sweep and its deletion commit, by
+      a seam, being revoked by the second sweep, with the event emitted), and "The
+      accepting session is revoked when the shed removed a link" (the acceptance answering
+      success and its session then failing `/api/auth/get-session` and a `/v1` call, with
+      the event emitted, and an acceptance by a user whose only link they made keeping its
+      session).
+- [ ] 8.5l The reconcile of 2.2b runs the shed of 8.5h, with its session revocation and
+      under the lock of 8.5i, **before** it creates the `_user` of a member whose user holds
+      two or more memberships (Resolved decision Q105, part 4; design D1): the new row
+      makes the member admissible (11.8), and an unmarked link would otherwise reach the
+      second tenant through it. The script builds the shed over its `tayzu_auth` pool, as
+      the bootstrap CLI builds Better Auth (4.6b), and the shed reports the path
+      `reconcile` (declared in 15.1). A shed that fails leaves that member's row uncreated
+      (fail closed: the member stays rejected with `user_missing` until a later run).
+      Verify: `reconcile-users.int.test.ts` covers "The reconcile sheds before it creates
+      a `_user`": a member of `t1` and `t2` with no `_user` in `t2` and an unmarked link
+      ends with the link shed, the user's sessions revoked and the event emitted with the
+      path `reconcile`, and only then the row created; a single-tenant member's unmarked
+      link being left alone; a marked link being kept; and a failing shed leaving the row
+      uncreated.
 - [ ] 8.6 Acceptance never links an account by an email claim. Verify:
       `invitation-accept.int.test.ts` covers "Acceptance does not link an SSO
       account by email" (no `account` row for the SSO provider exists afterward).
@@ -1547,6 +1687,18 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `context-resolver.int.test.ts` covers "A revocation in one tenant does not
       poison the cache of another": credential id `c1` revoked in `t2` and cached,
       then a `t1` principal with the same id is still accepted.
+- [ ] 11.1c The startup assertion on the runtime database roles covers
+      `machine_credential_revocation` (Resolved decision Q109). `assertRuntimeRole` in
+      `apps/api/src/bootstrap.ts` fails for a superuser, for `BYPASSRLS` and for the owner
+      of a relation whose name matches `catalog\_%`, which `machine_credential_revocation`
+      (whose key 11.1 changes) does not, so a runtime role that owned it would pass. The
+      check lists that table by name as well. This removes `043`'s last dependency on
+      `045` (whose task 2.4 adds only its own marker table) and closes that part of the
+      first-deployment gate here (design, Gates). Verify: `bootstrap-wiring.int.test.ts`
+      (in `apps/api/src/`, whose runtime-role suite runs `createAppFromEnv` with a
+      `NODE_ENV` other than `test`) covers startup failing when a runtime role owns
+      `machine_credential_revocation`, with the fixed message and no connection detail,
+      and still starting with the real `tayzu_app` and `tayzu_auth` roles.
 - [ ] 11.2 `identity.users.setStatus` for a human is **tenant-scoped** (Resolved
       decision Q25): it validates through `nextStatus`, checks the Cerbos grant, writes
       `_user.status` as `system` with `onBehalfOf` the admin (appending a change
@@ -1607,9 +1759,12 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       restores the same credential. Verify: `token-exchange.int.test.ts` covers the
       refusal for a `Disabled` and for a deleted service account, and "Re-enabling
       restores access without a new credential".
-- [ ] 11.8 `resolveContext` rejects a **human** whose `_user.status` in the active
-      tenant is `Disabled` (Resolved decision Q25), with `401
-      CATALOG_CONTEXT_REQUIRED` and the reason only in the log, like
+- [ ] 11.8 `resolveContext` admits a **human** only when their `_user.status` in the
+      active tenant is `Active` (Resolved decision Q105, part 3, which amends the
+      "`Disabled` only" rule of Q25: deny unless `Active`, like the machine branch of
+      11.6). Every other status (`Disabled`, `Invited`, `Staged`) is rejected with the
+      reason `user_disabled` (which therefore means "present and not `Active`"), answering
+      `401 CATALOG_CONTEXT_REQUIRED` with the reason only in the log, like
       `rejectMissingContext` (Resolved decision Q77). This is new code:
       `resolveContext`'s `_user` read (`readUserEntityGrants`) already reads
       `spec_properties`, so `status` is in the row, but it has no cache and on a lookup
@@ -1629,7 +1784,11 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the PR description calls the change out. Verify:
       `context-resolver.int.test.ts` covers "A disabled member is rejected in their
       tenant only": the same user accepted in `t2`, a second request within 5
-      seconds not repeating the lookup, a lookup failure rejecting and not being cached (the next request looks again,
+      seconds not repeating the lookup, "An `Invited` member is rejected by the
+      resolver" (a member whose `_user` in the tenant is `Invited`, as a failed
+      acceptance leaves it, and one whose `_user` is `Staged`, each rejected with 401
+      `CATALOG_CONTEXT_REQUIRED` and the reason `user_disabled` in the log, while the same
+      user is accepted in a tenant where the row is `Active`), a lookup failure rejecting and not being cached (the next request looks again,
       `context-resolver-principal.int.test.ts` around line 384), every rejection
       answering 401 `CATALOG_CONTEXT_REQUIRED` with no reason in the body, and a
       member with no `_user` row in the active tenant rejected with `user_missing`
@@ -2067,9 +2226,11 @@ SSO surfaces of M18) are recorded there with their justification.
       `catalog.security.invitation_accept_compensation_failed` and the new attributes
       (credential kind `agent`, rejection reasons `service_account_missing` and
       `user_missing`, denial reasons `csrf_rejected`, `origin_rejected`,
-      `inviter_not_active_admin` and `member_limit`, invitation cancel reason `inviter_disabled`,
+      `inviter_not_active_admin` and `member_limit`, invitation cancel reasons `inviter_disabled`
+      and `user_created` (7.13, Resolved decision Q110),
       `tayzu.identity.email.template`, `tayzu.identity.sign_in.channel`,
-      `tayzu.identity.sso_link.path` and `tayzu.identity.reconcile.orphans`) and the new value `sso_link_shed` of the
+      `tayzu.identity.sso_link.path` with its values `acceptance`, `membership_hook` and
+      `reconcile` (8.5l, Resolved decision Q105) and `tayzu.identity.reconcile.orphans`) and the new value `sso_link_shed` of the
       reason attribute of `002`'s `auth.security.session_revoked` (if the authz contract
       enumerates the reasons, the value is added there with its assertion extended,
       never loosened).
@@ -2092,8 +2253,10 @@ SSO surfaces of M18) are recorded there with their justification.
       password and a marker token (neither appears in any signal or error response),
       "The invitation link never leaves the email" (a marker token and the
       id-plus-token link appear in no signal, in no response of `invite` or `resend`
-      and in nothing the non-sending sender keeps), and "The email provider's
-      failure never leaks".
+      and in nothing the non-sending sender keeps), "The email provider's
+      failure never leaks", and the catalog spans of the `_user` writes that an invite,
+      an acceptance and a status change make carrying the placeholder of 4.1d and never
+      the invited email (Resolved decision Q107).
 - [ ] 15.5 For the routes of this capability the exported HTTP path is the route
       template, so no email, invitation id or credential id leaves the process; because
       `/v1/*` is one catch-all, the template is computed by matching the parsed pathname (as the guards of `002` read it, `002` Q74)
@@ -2108,7 +2271,8 @@ SSO surfaces of M18) are recorded there with their justification.
       attempt, a recipient refused by the non-production allowlist, an email suppressed
       for a disabled demo tenant, an SSO link shed (and the `auth.security.session_revoked` events with the reason
       `sso_link_shed`, also for an admin unlink), a provenance marker write that failed,
-      an acceptance compensation that failed, a reconcile run
+      an acceptance compensation that failed, an invitation cancelled by
+      `identity.users.create` (reason `user_created`), a reconcile run
       (`catalog.audit.users_reconciled`, with the operator id) and a suppressed or
       truncated notice (the user, credential and
       bootstrap events are declared and first tested in 13.3). In every audit event

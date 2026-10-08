@@ -208,7 +208,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `assertRuntimeRole` in `apps/api/src/bootstrap.ts` checks ownership only for
       relations whose name matches `catalog\_%`, which `tenant_deletion_marker` and
       `machine_credential_revocation` do not, so a runtime role that owned either
-      would pass. The check lists them by name as well, and the assertion is exported as a function the
+      would pass. `043`'s task 11.1c (its Resolved decision Q109) already adds `machine_credential_revocation` to the check, so this task adds only `tenant_deletion_marker`, and the `machine_credential_revocation` case of its Verify stays as a regression check. The check lists them by name as well, and the assertion is exported as a function the
       test can call, because the startup call is skipped under `NODE_ENV=test`
       (`bootstrap.ts`). Verify: `bootstrap-wiring.int.test.ts` (in `apps/api/src/`, whose
       runtime-role suite already exists; `bootstrap.test.ts` is the unit file) calls it
