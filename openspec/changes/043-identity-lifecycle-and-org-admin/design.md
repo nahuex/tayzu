@@ -17,8 +17,10 @@
   the pending-deletion check of the resolver) moved to
   `045-org-deletion-and-data-retention`, which depends on `002` and on this change and
   executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`). The amendment notes below
-  that described that design (and the decisions Q14, Q21, Q26-Q27, Q35, Q41, Q48-Q49,
-  Q55, Q59, Q64-Q65, Q68 and Q82, which `045` carries verbatim) were taken out with it;
+  that described that design (and the decisions Q14, Q21, Q26-Q27, Q35, Q48, Q55, Q59,
+  Q64-Q65, Q68, Q72 and Q82, which `045` carries verbatim (Q41, Q49 and the other rows
+  marked 'deletion part moved' are carried whole and stay in force here for their other
+  parts)) were taken out with it;
   where this change still touches the subject it points to `045`. This change keeps one
   migration, `0011`, and no migration is renumbered. The task groups after the old group
   12 moved up by one, though, so `002`'s references to `043`'s "group 14 (hand-offs)"
@@ -33,7 +35,8 @@
   `packages/authz`/`@tayzu/authz`, and the `user` Cerbos resource kind. Four
   substantive corrections were made then: the `_user.status` value casing
   matches `002`'s `Active`/`Disabled` exactly; the ADRs this change adds are
-  numbered 0017-0020 to avoid colliding with `002`'s own 0013-0016;
+  numbered in 0017-0020 (0017, 0018 and 0020; ADR-0019 is reserved for `045`, Q104)
+  to avoid colliding with `002`'s own 0013-0016;
   `AUTH_STEP_UP_REQUIRED` reuses `002`'s existing code (403); and the
   service-account credential mechanism reuses `002`'s single
   `machine-credential` apiKey config.
@@ -156,11 +159,13 @@
   - Every `service_account` route answers `CATALOG_NOT_FOUND` for a target that is
     not a service account, and `accountKind` reaches Cerbos with a deny (D3, D6,
     D14, Q62). Acceptance fails unless the inviter is still an active, non-banned
-    admin member, and disabling a user cancels the invitations that user created
+    admin member (the admin-role part is a Cerbos `user`/`invite` decision since Q108,
+    D4 step 2), and disabling a user cancels the invitations that user created
     (D4, D13, Q63).
   - The invitation caps keep 002's reset-after-a-quiet-window semantics, pinned by
     a test (D4, Q66). A real email sender outside production needs a
-    recipient-domain allowlist (D5, Q67). One
+    recipient-domain allowlist (D5, Q67) (**superseded by Q96 and Q99**: mandatory
+    only for a real provider under `NODE_ENV=test`, honored wherever it is set). One
     `auth-repository.ts` in `apps/api` serves every identity read of `apikey`,
     `invitation` and `member`, with a lint ban on direct adapter access (D14, Q69).
   - The breached-password check sees an NFC password: the body fields are
@@ -339,9 +344,8 @@
   the server (D14).
 - Make disable, rotate and revoke effective within seconds, not at token expiry
   (D13, Resolved decisions Q13 and Q25).
-- Add exactly **one SQL migration**, a Checkpoint 3 item, following the repo's
-  table-plus-grants pairing: `0011` (a composite `(tenant_id, credential_id)` key on the
-  revocation list). `045` owns `0012` to `0014`; no migration is renumbered. The `_user`
+- Add exactly **one SQL migration**, a Checkpoint 3 item: `0011` (a composite
+  `(tenant_id, credential_id)` key on the revocation list). `045` owns `0012` to `0014`; no migration is renumbered. The `_user`
   blueprint evolution itself stays a data-plane change.
 - Ship SEC11-hardened invitation email as this change's first outbound-email
   capability, and the first public (unauthenticated) route, the invitation
@@ -719,7 +723,10 @@ additive export, no behavior change; Q60, task 7.9b).
 
 **Hooks.** `afterCreateInvitation` → `_user.status = Invited` through
 `created_invited` (creating the `_user` entity first if the email has none yet;
-an existing `Disabled` user cannot be invited). `afterAcceptInvitation` is
+an existing `Disabled` user cannot be invited), through the Q30 adapter as `system`
+with `onBehalfOf` the admin, which `identity.users.invite` hands over through the
+`AsyncLocalStorage` of D2 that it runs around `createInvitation`; the operation makes
+no `_user` write of its own (Q76). `afterAcceptInvitation` is
 **not** used for status: acceptance is the in-process flow below, and it
 writes through `invitation_accepted`. Rejecting or cancelling an invitation
 does not touch `_user.status`.
@@ -1104,7 +1111,7 @@ so uncapped notices would be a mailbombing vector and a risk to the sender
 domain's reputation. They therefore go through the controls of the invitation
 email: the **global kill switch** (`INVITATION_EMAIL_KILL_SWITCH`, which stops
 every template despite its name), a **per-recipient bucket of their own** (scope
-`notice_recipient`, Resolved decision Q101: the 3 per 24 hours of Q53, keyed by the same
+`notice_recipient`, Resolved decision Q101: the 3 per 24 hours of Q15, which Q53 applies to the notices, keyed by the same
 HMAC of the canonical email, Q93, but counted apart from the invitation bucket, so that
 any tenant that invites an address three times cannot silence that person's notices and
 the notices cannot exhaust that person's invitation budget) and a
@@ -2217,7 +2224,7 @@ earlier found the seam gaps closed by D3/D6.
 | NB-1 a service-account route accepts a human target (Q62) | D3, D6, D14, spec "Service accounts" (scenario "A service-account route refuses a human target"), tasks 10.2, 10.7, 10.7b, 11.5, 2.2b |
 | NB-2 a pending invitation outlives its inviter's authority (Q63) | D4 step 2, D13, spec "Invitation acceptance" and "Disabling a human takes effect immediately", tasks 8.5f, 11.4b |
 | G-a creator of a service account or credential not visible | D6, D7, D8, tasks 9.2, 9.5, 10.3, 16.5 |
-| G-b wrapper versus parse order | D10, spec "Every identity route declares its authorization", task 14.10 |
+| G-b wrapper versus parse order | D10, spec "Every identity route declares its authorization", tasks 5.3b2, 14.10 |
 | G-c `044` not in the Gates | Gates |
 | G-d create and link cannot give "no oracle" | spec "Targets belong to the caller's tenant", task 13.3 |
 | G-e denylist provenance | task 1.3 |
@@ -2278,7 +2285,7 @@ earlier found the seam gaps closed by D3/D6.
 | SEC11 Phishing          | Yes, core new exposure | 48h expiry, one link, fixed subject and template with no tenant or inviter free text, link origin from `INVITATION_LINK_BASE_URL` only (Q32), exactly one recipient and no CC/BCC/attachments, ACS tracking disabled and no Reply-To, per-tenant, per-recipient and global caps (D4, D5); a second fixed notice tells the other admins, `Disabled` ones included, when an `admin` invitation is accepted (Q39); a real sender needs a mandatory recipient-domain allowlist under `NODE_ENV=test` and honors it wherever it is set (Q67, Q96, Q99), and a tenant on `EMAIL_DISABLED_TENANT_IDS` (a demo tenant) sends nothing (Q80); the notices share the kill switch, count in a per-recipient bucket of their own (Q101) and have a per-tenant notice cap and at most 20 recipients per notice (Q53). The SSA answers are Resolved decision Q34: one clickable link, unavoidable for a no-account invitee and mitigated by the fragment token, single use, 48-hour expiry and the configured origin; no attachments; only the recipient varies.                                                                                                                                                                                                    |
 | SEC12 Testing           | Yes                    | Every requirement has a scenario-backed test; every route a cross-tenant test; `cerbos compile` gates policies. The identity OpenAPI document has no request schemas (Q52), so a scan of it has limited value until schemas exist. The OpenAPI-driven ZAP scan (`002` NB1) would hit `rotate`, `revoke` and `invite` (and `045`'s `organization.delete`), so it needs a sandbox tenant, a non-sending email sender and a destructive-route exclusion; because the switch is off by default, a sandbox scan with the switch **on** is required before the first deployment (ticket and gate, Risks).                                                                                                                                                                                                                                                                                                                                                               |
 | SEC13 Deployment        | Partial                | The Communication Services connection string via Key Vault reference, `INVITATION_LINK_BASE_URL`, `INVITATION_EMAIL_KILL_SWITCH`, `MOUNT_IDENTITY_ROUTES`, and one Container Apps Job per maintenance script (Q49), the backfill and the reconcile, started by an operator under just-in-time access with a named second approver (D9; `045` adds the purge job and the reviewed `workflow_dispatch` workflow of Q41), so nothing runs against production from a workstation, except the bootstrap CLI, which an operator runs out of band as `002` designed it (Q91); a deployed environment fails startup without an explicit `EMAIL_PROVIDER` (Q96). |
-| SEC14 Infra permissions | Yes                    | One migration (Checkpoint 3): `0011` (composite key); `045` owns `0012` to `0014` and the purge role (Q103). No `SECURITY DEFINER` function is created here, Q48 and Q49. The startup assertion on the runtime roles also fails when one owns `machine_credential_revocation` (Q109, task 11.1c). |
+| SEC14 Infra permissions | Yes                    | One migration (Checkpoint 3): `0011` (composite key); `045` owns `0012` to `0014` and the purge role (Q103). No `SECURITY DEFINER` function is created here (`045`'s Q48 also avoids one for the purge). The startup assertion on the runtime roles also fails when one owns `machine_credential_revocation` (Q109, task 11.1c). |
 | SEC15 Network/host      | Partial                | Two new outbound calls, both HTTPS: Azure Communication Services, and the Pwned Passwords range query to `api.pwnedpasswords.com` (only the first five hex characters of the SHA-1 leave the system, Q23), plus the sender-domain DNS (SPF, DKIM, DMARC), recorded as egresses in the system diagram. ACS data location and retention are stated in `docs/security/data-retention.md`. DNS DDoS protection is deferred to `010`'s SSA (Q17).                                                                                                                                                                                                                                                                                                                                                                                      |
 | SEC16 Logging           | Yes                    | Twenty-five new log events (plus the reused `catalog.security.authz_denied`) in the contract, all sampling-exempt, opaque ids and enums only, with `tayzu.actor.id` pinned to the admin; `catalog.security.authz_denied` is emitted from the identity router; no identifier in a URL path reaches telemetry (D16).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
@@ -2571,8 +2578,7 @@ This change's own gates:
 1. **One SQL migration, Checkpoint 3**, with its
    `migrations/down/0011_machine_credential_revocation_tenant_key.down.sql` (the full
    tag, as `down/0010_auth_session_sso_sid.down.sql`), `meta/0011_snapshot.json` and
-   `_journal.json` entry, following the repo's pairing of a table migration with a
-   hand-written grants migration (0004+0005, 0008+0009):
+   `_journal.json` entry:
    - `0011_machine_credential_revocation_tenant_key`: a composite
      `(tenant_id, credential_id)` key on `machine_credential_revocation`, with the
      matching change in `packages/catalog/src/persistence/schema.ts` (task 11.1).
@@ -2583,10 +2589,11 @@ This change's own gates:
    The blueprint evolution of `_user` (D1) is not a migration: it is a
    `blueprints.update` per existing tenant plus the new-tenant constant.
 2. ⛔ **Checkpoint 3** also applies to every Cerbos policy file this change adds
-   or edits (D3): the `user.yaml` deny rules; the new `service_account.yaml` and
-   `credential.yaml`; and `admin.yaml`, `member.yaml` (if needed) and
-   `role_policies_test.yaml`; each presented with its `cerbos compile` test output,
-   separately.
+   or edits (D3): the `user.yaml` deny rules; the new `service_account.yaml` (with
+   its deny for any `accountKind` other than `service`, Q62) and `credential.yaml`;
+   `admin.yaml`, `member.yaml` (if needed) and `role_policies_test.yaml`; and the
+   `same_tenant_test.yaml` extension and the shared `testdata/` entries; each
+   presented with its `cerbos compile` test output, separately.
 3. Deploy: `@azure/communication-email` and its Key Vault secret
    (`ACS_CONNECTION_STRING`), `EMAIL_PROVIDER`, `IDENTITY_TOKEN_HMAC_SECRET` (a Key
    Vault secret, Q93), `INVITATION_LINK_BASE_URL`, the kill
@@ -2672,7 +2679,7 @@ this table:
 | Q46 | (Amendment Open Question, 2026-10-01) A human member with no `_user` row in the active tenant | _The rejection is `401 CATALOG_CONTEXT_REQUIRED` with the reason only in the log (Q77)._ _Extended by Q50: the rejection reason is `user_missing` and the reconcile creates the missing rows._ _Q105 widens the rule: any status other than `Active` is rejected too, and the reconcile sheds before it creates a row for a member of two or more tenants._ `resolveContext` rejects it (fail closed); the `_user` backfill runs before the first deployment so no legitimate member is locked out. |
 | Q47 | (deletion part moved to 045 by Q103) (Amendment choices confirmed by the human, 2026-10-01) Details settled while applying Q38-Q45 | (1) An acceptance request with no `Origin` header is rejected. (2) The org-deletion confirmation travels in the query (`?confirmation=`), which telemetry already drops. (3) Rotation is also serialized per credential for integrations with no service account. (4) Invitation cancel uses Better Auth's `cancelInvitation` with the admin's forwarded session headers, like `invite` (Q42). |
 | Q48 | (moved to 045 by Q103) (Drift N1, 2026-10-01) Catalog-side purge ownership | No `SECURITY DEFINER` functions: the purge job logs in as `tayzu_purge` and deletes under per-table RLS policies limited to tenants with a due marker and the amended append-only trigger; listing due tenants is a `SELECT` policy on the marker for `tayzu_purge`. Supersedes Q26's function wording; every other Q26 guarantee stands. |
-| Q49 | (moved to 045 by Q103) (VCDM G7, 2026-10-01) Auth-side purge privileges | _Refined: the Better Auth side is migration `0014` after the split (Q82)._ _The visibility of a user's other memberships to the purge role is settled by Q65._ A narrow mechanism gated on a due marker for the Better Auth rows, in migration `0014` (Checkpoint 3), and one Container Apps Job per script.|
+| Q49 | (deletion part moved to 045 by Q103; the one-Container-Apps-Job-per-script part stays in force here, D9) (VCDM G7, 2026-10-01) Auth-side purge privileges | _Refined: the Better Auth side is migration `0014` after the split (Q82)._ _The visibility of a user's other memberships to the purge role is settled by Q65._ A narrow mechanism gated on a due marker for the Better Auth rows, in migration `0014` (Checkpoint 3), and one Container Apps Job per script.|
 | Q50 | (Drift N3, VCDM G6, 2026-10-01) `_user` backfill | _Extended by Q75: the reconcile also removes an orphan `_user` (an `Active` human row with no membership)._ A repeatable reconcile that creates every missing `_user` row through the state machine (`created_active`), with a `user_missing` rejection reason and a spec scenario; it is also the repair path for a Q46 lockout. |
 | Q51 | (Drift N2, 2026-10-01) Bootstrap CLI location | The CLI moves to `apps/api/scripts/bootstrap-admin.ts`; `bootstrapAdmin()` and its test stay in `@tayzu/auth`. |
 | Q52 | (Drift N4, 2026-10-01) Identity OpenAPI content | Paths, methods, path parameters and `x-tayzu-risk` only, no new dependency; DAST value is documented as limited until schemas exist. |
@@ -2726,7 +2733,7 @@ this table:
 | Q100 | (Seventh-pass Open Question 2, 2026-10-07) A user stranded by a failed acceptance compensation | Repaired by an operator, driven by an alert on `invitation_accept_compensation_failed` and a runbook. |
 | Q101 | (Seventh-pass Open Question 3, G7-7, 2026-10-07) A separate per-recipient bucket for notices | A task before the mount switch. |
 | Q102 | (Seventh-pass Open Question 4, 2026-10-07) The ban hook and `admin_enable` | The ban hook writes only `admin_disable`; re-enabling goes through `setStatus` only. |
-| Q103 | (Drift C4, 2026-10-07) Change size against the roadmap budget | Org deletion and data retention (the two-phase purge, the deletion marker, the purge and deletion-admin roles, migrations `0012`-`0014`, the reversal and purge jobs and the maintenance workflow) move to a new change, `045-org-deletion-and-data-retention`, which depends on `002` and `043`, gets its own Checkpoint 1 and reviews, and executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`). The decisions about it recorded here (Q14, Q21, Q26-Q27, Q35, Q41, Q48-Q49, Q55, Q59, Q64-Q65, Q68, Q82 and the deletion parts of others) carry over to `045` unchanged. |
+| Q103 | (Drift C4, 2026-10-07) Change size against the roadmap budget | _(Row markers refine the list: Q41 and Q49 moved only in part, and Q72 moved too.)_ Org deletion and data retention (the two-phase purge, the deletion marker, the purge and deletion-admin roles, migrations `0012`-`0014`, the reversal and purge jobs and the maintenance workflow) move to a new change, `045-org-deletion-and-data-retention`, which depends on `002` and `043`, gets its own Checkpoint 1 and reviews, and executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`). The decisions about it recorded here (Q14, Q21, Q26-Q27, Q35, Q41, Q48-Q49, Q55, Q59, Q64-Q65, Q68, Q82 and the deletion parts of others) carry over to `045` unchanged. |
 | Q104 | (After the Q103 split, 2026-10-07) 043's size against the roadmap budget | Accepted: 043 keeps about 200 tasks, over the ~30-80 budget of `project.md` D9; splitting further would separate tightly coupled parts (invitations, status lifecycle, router authorization, credentials). The overrun is recorded in the proposal. The split choices made while applying Q103 (a minimal operator-run job for the `_user` backfill and reconcile until `045`'s workflow, a short D9 "maintenance scripts", `data-retention.md` created here and extended by `045`, ADR-0019 reserved for `045`, mixed decision rows copied to `045`, and the pending-deletion checks as `045` extensions) are confirmed. |
 | Q105 | (Eighth-pass VCDM NB-7, H-2, 2026-10-07) A failed or retried existing-account acceptance must still shed | Four parts: (1) the existing-account path records whether `addMember` created the membership and, if a later step fails before the token is consumed, deletes it (idempotently, logging `invitation_accept_compensation_failed` if the delete fails); (2) the acceptance runs the shed, with its session revocation and under the per-user lock, as an explicit idempotent step on every attempt once the membership exists, including when `addMember` was already done, before the token is consumed, and a shed failure fails the attempt (the hook keeps its shed for other membership paths); (3) `resolveContext` admits a human only when `_user.status` in the active tenant is `Active` (deny unless `Active`, like the machine branch), amending the D13 rule of Q25, Q46 and Q77; (4) the reconcile runs the shed before creating a `_user` for a member whose user holds two or more memberships. |
 | Q106 | (Eighth-pass VCDM G8-1, G8-2, H-1, 2026-10-07) Session paths the shed still misses | One task before the mount switch: the SSO callback refuses to create a session through an account that no longer exists, or that is unmarked while its user belongs to two or more tenants; the shed sweeps the user's sessions a second time after its deletion commits; and when the shed removed a link, the accepting session is also revoked after the acceptance commits (amends Q86's exemption, since the accepting session may itself have come through the shed link). |
@@ -2743,7 +2750,8 @@ deletion into `045` was approved the same day (Q103), and the eighth pass's and 
 eighth drift-check's decisions are Q105-Q110. A consistency check after applying them
 left one point that only the human can decide. It is also asked in chat, and nothing
 below counts as approved until the human answers; the answer is then recorded as a
-Resolved decision and applied to D2, tasks 3.2 and 4.4 and the spec ("User status has
+Resolved decision and applied to D2, the Risks bullet on failed acceptances, tasks 3.2,
+4.4 and 16.5, and the spec ("User status has
 four states with forward-only transitions" and its scenario "First sign-in activates a
 staged or invited user"). Until then those passages keep their current wording.
 

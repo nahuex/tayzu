@@ -108,9 +108,10 @@ re-enable a user disabled in one tenant.
 
 #### Scenario: A disabled user is not revived by signing in
 
-- **GIVEN** a `_user` entity with status `Disabled`
+- **GIVEN** a user whose only membership has its `_user` `Disabled` (so the disable also banned the user)
 - **WHEN** that user attempts to sign in
 - **THEN** sign-in is refused and the status stays `Disabled`
+- **AND** for a user disabled in one of two tenants, a sign-in leaves the `Disabled` status in that tenant unchanged and the resolver still rejects the user there
 
 #### Scenario: A disabled user is not revived by a pending invitation
 
@@ -209,8 +210,9 @@ session and any new sign-in, local or through SSO, stop granting access. A banne
 sign-in MUST fail with the same status, error code and body as any other sign-in
 failure, locally and through SSO, after the credential was verified (as Better Auth
 refuses a ban), so that the response never confirms a correct password. Enabling
-the user MUST reverse only what disabling did in that tenant (including the ban of a
-single-membership user). Every rejection by
+the user MUST restore the `_user` status in that tenant and, for a single-membership
+user, clear the ban the disable set; it MUST NOT restore cancelled invitations or revoked
+sessions, and MUST NOT affect another tenant. Every rejection by
 these checks MUST be logged as `catalog.security.principal_rejected` and counted.
 
 #### Scenario: A disabled user's sessions stop working
@@ -610,7 +612,7 @@ requires a fresh step-up verification.
 
 - **GIVEN** a session minted through an admin-recorded link before the user joins `t2`
 - **WHEN** the user joins `t2`, by acceptance or by a membership added directly
-- **THEN** that session is revoked, so `/organization/set-active` for `t2` and any `/v1` call with it are rejected, `auth.security.session_revoked` is logged with the reason `sso_link_shed`, and on the acceptance path the acceptance carried by another session completes
+- **THEN** that session is revoked, so `/organization/set-active` for `t2` and any `/v1` call with it are rejected, `auth.security.session_revoked` is logged with the reason `sso_link_shed`, and on the acceptance path the acceptance carried by another session completes, and that session is revoked once the acceptance has committed (Q106; see "The accepting session is revoked when the shed removed a link")
 
 #### Scenario: A retried acceptance still sheds the link and revokes the sessions
 

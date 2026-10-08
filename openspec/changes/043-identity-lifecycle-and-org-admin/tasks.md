@@ -171,8 +171,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       tenants from `auth.organization` through the `tayzu_auth` pool, because
       row-level security blocks enumerating tenants through `tayzu_app`, and writes
       each tenant through `tayzu_app`. In production it runs as an operator-started
-      Container Apps Job under just-in-time access (Azure PIM), with the operator id
-      supplied through the job's environment (design D9); `045`'s maintenance workflow
+      Container Apps Job under just-in-time access (Azure PIM; design D9); `045`'s maintenance workflow
       later takes over starting it (Resolved decision Q41). Verify:
       `backfill-user-blueprint.int.test.ts` (in `apps/api/src/identity/`, importing
       `../../scripts/backfill-user-blueprint.js`) seeds two tenants with the old schema, asserts the
@@ -570,8 +569,12 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       tell a target from a missing one": a caller without the grant gets the same
       `AUTH_FORBIDDEN` for a same-tenant target and for an unknown one, with the
       target resolver never called, and an authorized caller still gets
-      `CATALOG_NOT_FOUND` for the unknown one, and a recording Cerbos client showing the
-      first check of a `service_account` operation carrying `accountKind: service`.
+      `CATALOG_NOT_FOUND` for the unknown one; "An unauthorized caller gets no parse
+      error": a caller without the grant sending a malformed body, a body with an
+      undeclared field and a valid body gets the same `AUTH_FORBIDDEN` each time, with
+      the procedure's input parser (today's `parseInput`, the shared parser of 5.3d once
+      it replaces it) never called; and a recording Cerbos client showing the first
+      check of a `service_account` operation carrying `accountKind: service`.
 - [ ] 5.3b3 The wrapper fails closed (Resolved decision Q57): a Cerbos error, a
       malformed context and an empty role list each deny and never run the handler.
       Verify: `define-identity-operation-failclosed.test.ts` covers "The wrapper
@@ -830,7 +833,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       covers a zero notice cap failing startup.
 - [ ] 6.12b Notices get their own per-recipient bucket (scope `notice_recipient`, a new
       value of the closed `RateLimitScope` union and a rule of the helper of 6.10, keyed
-      by the HMAC of 6.7b, with the limit of 3 per 24 hours that Q53 set), separate from
+      by the HMAC of 6.7b, with the limit of 3 per 24 hours of Q15 (applied to the notices by Q53)), separate from
       the invitation bucket of 6.7, so that notices cannot exhaust a person's invitation
       budget and invitations cannot silence a notice (Resolved decision Q101; before the
       mount switch). The dispatcher of 6.12 consumes this bucket instead of the one of
@@ -862,17 +865,21 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `auth.api.createInvitation` in process **with the admin's session headers**
       (Resolved decision Q42): `/organization/invite-member` requires a real session
       and has no `userId` bypass, so the server puts the request headers in the router
-      context (like `__stepUpHeaders` today) and the re-invite cancel, the
-      100-invitation limit and `afterCreateInvitation` stay Better Auth's. It stores
-      the token digest in `auth.verification` (identifier
-      `invitation-accept:<invitationId>`, same expiry), creates or updates the `_user`
-      entity to `Invited` through `created_invited` as `system` with `onBehalfOf` the
-      admin, and sends exactly one email through the gate of 6.5c. The response of
+      context (like `__stepUpHeaders` today) and the re-invite cancel and the
+      100-invitation limit stay Better Auth's. It stores the token digest in
+      `auth.verification` (identifier `invitation-accept:<invitationId>`, same expiry)
+      and sends exactly one email through the gate of 6.5c. It makes no `_user` write
+      of its own (Resolved decision Q76): `afterCreateInvitation` (Better Auth's hook)
+      writes the `_user` to `Invited` through `created_invited` (creating the entity
+      first if the email has none yet, design D4 "Hooks"), via the Q30 adapter of 4.1,
+      as `system` with `onBehalfOf` the admin, handed over through the
+      `AsyncLocalStorage` of D2 that `invite` runs around `createInvitation`. The response of
       `invite` never carries the token or the link (the token proves mailbox control,
       so an inviter who saw it could accept as the invitee). Verify:
       `invitations.int.test.ts` mints a real session and covers "Invite sends exactly
       one email with exactly one link" and "Explicit invite starts a user as invited"
-      using the recording fake, "The invitation link never leaves the email" (neither
+      (one `_user` write, made by the hook, whose change event carries the admin as
+      `onBehalfOf`) using the recording fake, "The invitation link never leaves the email" (neither
       the token nor the id-plus-token link in the response, in any log record or in
       what the non-sending sender keeps) and a call whose context carries no valid
       session headers failing closed with nothing created.
@@ -1465,8 +1472,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       requires `headers` today, and `revokeMachineCredential` calls the session-bound
       `getApiKey` and `updateApiKey` with them, so it changes the same way: `headers`
       goes, the acting admin's `userId` is required, the key is read through the
-      adapter-level lookup of 9.11 (filtered by `referenceId` and `configId`) instead of
-      `getApiKey`, and `updateApiKey` is called headerless with `body.userId`. The grant is a permission set that only
+      adapter-level key lookup of the repository of 5.1b (filtered by `referenceId` and
+      `configId`; 9.11 adds the mapping of a foreign or unknown id to
+      `CATALOG_NOT_FOUND`) instead of `getApiKey`, and `updateApiKey` is called headerless with `body.userId`. The grant is a permission set that only
       Better Auth's check reads: it is neutralized, and ADR-0013 records that (16.3,
       Resolved decision Q94). Verify: `org-api-key-access.int.test.ts` covers a Better Auth
       `admin` member who is not the owner creating and revoking an org key through the
@@ -1574,8 +1582,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       credential": a second create for a service account with an active credential
       is refused, and one for a service account whose credential was revoked
       succeeds.
-- [ ] 9.5c Creation of a credential bound to a service account takes the **same
-      per-service-account advisory lock as rotation** (9.6b), so the check-then-insert
+- [ ] 9.5c Creation of a credential bound to a service account takes a
+      **per-service-account advisory lock**, introduced here, that rotation (9.6b) and
+      deletion (10.7) also take, so the check-then-insert
       of Q40 cannot be raced by two concurrent creates (the partial unique index of the
       same invariant is a ticket). Verify: `credentials.int.test.ts` covers
       "Concurrent credential creation for one service account yields one": two
@@ -1599,9 +1608,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the new secret once. Verify: `credentials.int.test.ts` covers "Rotating
       replaces the usable credential", asserting the old credential's already-issued
       token and any new exchange are rejected within the cache window.
-- [ ] 9.6b Rotation is serialized per service account (per credential for an
-      unbound integration or agent credential), for example by an advisory lock held
-      for the whole rotation, and a revoked credential may be rotated only when its
+- [ ] 9.6b Rotation is serialized per service account: it takes the
+      per-service-account lock of 9.5c for the whole rotation (per credential for an
+      unbound integration or agent credential), and a revoked credential may be rotated only when its
       service account has no active credential (Resolved decision Q40). Verify:
       `credentials.int.test.ts` covers "Concurrent rotation leaves exactly one active
       credential" (two concurrent rotations of one credential: exactly one succeeds,
@@ -1826,7 +1835,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       only the sessions of `t1` and does not set `banned`, so the same user keeps
       working in `t2`; enabling in `t1` restores only `t1`. Verify:
       `user-status-op.int.test.ts` covers "A member of two tenants is disabled in one
-      only".
+      only" and the two-tenant case of "A disabled user is not revived by signing in": a
+      sign-in of that user leaves the `Disabled` status of `t1` unchanged and the
+      resolver still rejects the user in `t1`.
 - [ ] 11.3 A user attempting to change their own status is denied and a
       `catalog.security.self_status_change_denied` event is logged. Verify:
       `user-status-op.int.test.ts` covers "A user cannot disable themselves" through

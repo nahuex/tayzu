@@ -238,9 +238,11 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   `user.invite`, `user.updateStatus`, `service_account.create`/`delete` and
   `credential.list`/`create`/`rotate`/`revoke` (each new policy with the explicit
   cross-tenant deny), the `user.yaml` deny rules (self-status and the
-  service-account ceiling), and the `admin.yaml`, `member.yaml` and
-  `role_policies_test.yaml` ceilings. ⛔ **Checkpoint 3 applies** to every one
-  of these, separately.
+  service-account ceiling), the `service_account.yaml` deny for any `accountKind`
+  other than `service` (Q62), the `admin.yaml`, `member.yaml` and
+  `role_policies_test.yaml` ceilings, the `same_tenant_test.yaml` extension and the
+  shared `testdata/` entries. ⛔ **Checkpoint 3 applies** to every one of these,
+  separately.
 - **Dependencies**: `@azure/communication-email` (`1.1.0` as of 2026-09-28,
   verified via `npm view`) for invitation email delivery. No other dependency:
   the password denylist is bundled, the token digest uses `node:crypto` and the
