@@ -12,15 +12,18 @@
   listener, and the `x-tayzu-risk: high` step-up-MFA mechanism.
 - **Split again on 2026-10-07 (Resolved decision Q103).** Org deletion and data
   retention (the two-phase purge, the deletion marker, the `tayzu_purge` and
-  `tayzu_deletion_admin` roles, migrations `0012`-`0014`, the purge, lister and reversal
-  jobs, the maintenance workflow and its `CODEOWNERS` entry, the org-deletion notice and
+  `tayzu_deletion_admin` roles, migrations `0012`-`0014`, the purge and reversal
+  jobs (the lister was removed by Q48), the maintenance workflow and its `CODEOWNERS` entry, the org-deletion notice and
   the pending-deletion check of the resolver) moved to
   `045-org-deletion-and-data-retention`, which depends on `002` and on this change and
   executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`). The amendment notes below
   that described that design (and the decisions Q14, Q21, Q26-Q27, Q35, Q41, Q48-Q49,
   Q55, Q59, Q64-Q65, Q68 and Q82, which `045` carries verbatim) were taken out with it;
   where this change still touches the subject it points to `045`. This change keeps one
-  migration, `0011`, and nothing is renumbered.
+  migration, `0011`, and no migration is renumbered. The task groups after the old group
+  12 moved up by one, though, so `002`'s references to `043`'s "group 14 (hand-offs)"
+  (`002` Q73 and its residual risks) and "task 14.2" (`002` Q84) mean group 13 and task
+  13.2 here, and group 14 is the mount group (Risks, "Hand-offs from `002`: traceability").
 - **Reconciled against `002`'s actual `design.md` on 2026-09-28.** This
   change was originally drafted in parallel with `002`, before `002`'s own
   `design.md` existed, from the shared research notes
@@ -79,8 +82,9 @@
     structural ports and the pure parts in `@tayzu/auth` (D10, Q30). There are
     fourteen routes, the three existing procedures included (Q31; fifteen with `045`'s).
   - `setStatus` is tenant-scoped and writes through the internal adapter, not
-    Better Auth's `banUser` (D13, Q25); the ban hook compares `banned` before and
-    after (D2).
+    Better Auth's `banUser` (D13, Q25); the ban hook goes through the state machine
+    (D2; **superseded** by the seventh amendment and Q102: the hook cannot see the old
+    value and writes only `admin_disable`, for `banned === true`).
   - Org keys are created headerless, with `admin` granted `apiKey` access (Q29),
     and the per-key rate limit is plugin-level configuration (D8).
   - New resource policies carry the explicit cross-tenant deny and guard every
@@ -133,7 +137,8 @@
     caller-tenant-first and fail-closed guarantees (D10, Q57).
   - The emails share the kill switch and the per-recipient bucket, with a
     per-tenant notice cap and at most 20 recipients per notice (D4, D5, Q53; the
-    org-deletion notice joins them in `045`). A banned user's sign-in fails like any
+    org-deletion notice joins them in `045`; since Q101 the notices count in a
+    per-recipient bucket of their own). A banned user's sign-in fails like any
     other failure (D13, Q54).
     Service accounts and credentials are capped per tenant (D6, D8, Q56).
   - Other fixes: `identity.users.create` and the membership hook no longer write
@@ -256,8 +261,8 @@
     references, the amendment header and the overlap of `Q70`-`Q84` with `002`'s own
     numbering were corrected (Resolved decisions).
 - **Amended an eighth time on 2026-10-07** after Resolved decisions Q105-Q110, an eighth
-  VCDM pass and an eighth drift-check, and with Q102 (answered with the seventh pass)
-  folded in. So that a reader of the older text is not surprised:
+  VCDM pass and an eighth drift-check, and with Q101 and Q102 (answered with the seventh
+  amendment) folded in. So that a reader of the older text is not surprised:
   - A failed or retried existing-account acceptance still sheds (Q105): the
     existing-account path deletes the membership it created when a later step fails, the
     acceptance runs the shed as an explicit idempotent step of every attempt once the
@@ -279,6 +284,25 @@
     covers `machine_credential_revocation` in this change, so the Gates no longer depend
     on `045` for it (Q109); and `identity.users.create` cancels a pending invitation of
     the same email in the tenant with the reason `user_created` (D4, Q110).
+  - Non-blocking items folded in: the notices count in a per-recipient bucket of their
+    own, under a new rate-limit scope `notice_recipient`, which makes six new scopes in all (D4, Q101); the account-linking
+    configuration is pinned, a self-service link with a different provider email is
+    refused, and a failed marker write deletes the link it was written for (D4 step 7);
+    `invitation_cancelled` carries the tenant and the actor and `invitation_resent` the
+    actor type (Observability contract); deleting a service account takes the
+    per-service-account lock, and creating one is refused while a credential is still
+    bound to its identifier (D6); two tickets (one Visma Connect link per user, and the
+    shed on a future member-role change).
+  - Drift fixes against the merged `002`: the shed lives in `apps/api` and reaches
+    `afterAddMember` through a structural port (D4 step 7); `emitSessionRevoked` is
+    exported with its reason as a parameter, and `sso_link_shed` amends `002`'s closed
+    reason enum (D13, Observability contract); a banned sign-in is refused by the admin
+    plugin before any session exists, so the uniform failure rewrites that error and logs
+    `login_failed` with `account_disabled` (D13); `tayzu.identity.service_account.id` is
+    the `svc-…` identifier (Q90, Observability contract); the role check before parsing is
+    true today only for `create` (D10); the Gates cite `002` Q58, Q62 and Q84; and the
+    stale "pending Q99", "fifteen routes", "lister", "nothing is renumbered" and
+    "deletion-marker lookups" texts were corrected.
 - Reused, not redefined: `CatalogContext`/`Principal`/`onBehalfOf`
   (`001` design D3), the mandatory-declaration pattern of the catalog operation
   pipeline (`defineCatalogOperation` is not exported from `@tayzu/catalog`, so D10
@@ -317,7 +341,7 @@
   (D13, Resolved decisions Q13 and Q25).
 - Add exactly **one SQL migration**, a Checkpoint 3 item, following the repo's
   table-plus-grants pairing: `0011` (a composite `(tenant_id, credential_id)` key on the
-  revocation list). `045` owns `0012` to `0014`; nothing is renumbered. The `_user`
+  revocation list). `045` owns `0012` to `0014`; no migration is renumbered. The `_user`
   blueprint evolution itself stays a data-plane change.
 - Ship SEC11-hardened invitation email as this change's first outbound-email
   capability, and the first public (unauthenticated) route, the invitation
@@ -470,7 +494,9 @@ identity operation hands the acting admin to it through an `AsyncLocalStorage`
 (`node:async_hooks`, no dependency; one store in
 `apps/api/src/identity/identity-context.ts`, which also carries the shed context of
 D4 step 7) that it runs around its in-process `auth.api` call, and the adapter reads
-it. Admin-created users start `Active`; `Staged` is the default only for an entity
+it. The hook itself lives in `packages/auth/src/auth.ts` and cannot import `apps/api`,
+so it never reads the store: the `apps/api` implementations of its ports (the
+`UserSyncPort` adapter here and the shed port of D4 step 7) do. Admin-created users start `Active`; `Staged` is the default only for an entity
 created without a status.
 
 The adapter's read-derive-write is not atomic, so a concurrent ban, first sign-in and
@@ -490,8 +516,9 @@ There are **two** sync types and both change: `UserSyncPort` and its input in
 `status`, a fixed actor and no `onBehalfOf`: it gains the four-value status of D1 and
 the optional `onBehalfOf`). `refreshDisplayData` (`auth.ts`) upserts display fields
 without a status and, with the new default `Staged`, would create a `Staged` row for
-a member who has none and so bypass the `user_missing` rejection of D13: it updates
-display data only for a row that exists and never creates one.
+a member who has none, which the resolver rejects (D13, Q105) and which the reconcile,
+which only creates missing rows, would never repair; so it updates display data only
+for a row that exists and never creates one.
 
 `createUserSync` lives in `@tayzu/catalog`, which cannot import `@tayzu/auth`
 (where `nextStatus` is), and today nothing in `apps/api` builds it:
@@ -717,8 +744,11 @@ query**. The body is an allowlist of exactly those fields: any other field
 (`role`, `email`, `organizationId`, `userId`, `tenantId`, `actor`) rejects the
 request with `CATALOG_VALIDATION_FAILED`, a shape check that reveals nothing about
 any invitation. The invitation id is checked for shape and length before any
-lookup or logging; one that fails the check is logged as a constant, never as the
-value, because this route is public and the value is attacker-controlled.
+lookup or logging; one that fails the check is logged as the constant `invalid`, never
+as the value, because this route is public and the value is attacker-controlled: it is
+the `tayzu.identity.invitation.id` of the `identity.invitation.accept` span and of
+`catalog.security.invitation_acceptance_denied`, whose denial reason for a rejected body
+or id shape is `malformed_request` (Observability contract).
 
 1. _Token._ Issued at invite/resend: 256 bits from a CSPRNG, shown only in the
    email link. Only `sha256(token)` is stored, in the `auth.verification`
@@ -738,7 +768,7 @@ value, because this route is public and the value is attacker-controlled.
    re-export and `@tayzu/auth` does not depend on, and `addMember` and
    `createOrganization` are not transactional anyway. So every step is
    **idempotent**, the token is consumed last, and what is left half-done is
-   repaired: by a compensation for what this attempt itself created (step 3) and, for
+   repaired: by a compensation for what this attempt itself created (steps 3 and 4) and, for
    an orphan `_user`, by the reconcile (D1). Resend issues a **new** token (the old one stops working)
    with the **same** expiry: the plaintext is not stored, so the same link
    cannot be re-sent.
@@ -779,7 +809,7 @@ value, because this route is public and the value is attacker-controlled.
    session**; the invitee then signs in through the normal route, and MFA
    enrollment follows `002` Q43 (an invited `admin` is therefore blocked by the
    admin MFA gate on every `/v1` call until they enrol). The acceptance **never
-   links** an account by the email claim from Visma Connect (`002` D24, Q18):
+   links** an account by the email claim from Visma Connect (`002` D24, `002` Q18):
    linking stays `sub`-keyed through `/link-social`, with step-up. An invitee who
    will only ever use Visma Connect is unsupported until `025` (`002` Q72): they
    need a local password first (Risks). The `_user` write is made by
@@ -804,7 +834,8 @@ value, because this route is public and the value is attacker-controlled.
    `getSession` on the request headers with `disableRefresh: true`, as the resolver
    reads it (a plain `getSession` can refresh the session's `updatedAt` and so extend
    a session that is about to idle out; this is the only public route that reads a
-   session), and that session passes the idle-timeout check of `resolveContext`
+   session; the step-up guard of (e) reads it again with a plain `getSession`,
+   `step-up.ts`, but only for an `admin` invitation and only after (a)-(d) passed), and that session passes the idle-timeout check of `resolveContext`
    (`isIdle`, which `session-idle.ts` exports and the package index does not, so the
    index exports it for the route), a banned check that the route makes itself by
    reading `user.banned` (the resolver's own banned check arrives with D13, after the
@@ -907,11 +938,21 @@ value, because this route is public and the value is attacker-controlled.
    ageing. `databaseHooks.account.delete.after` deletes the marker for **every**
    deletion path (the user's own `/unlink-account`, an admin unlink and the shed), so a
    later link of the same `sub` cannot inherit a stale marker. If the marker write
-   fails, the hook logs `catalog.security.sso_link_marker_failed` and throws, so the
-   link fails; and because an unmarked link counts as admin-recorded, a crash between
-   the link and its marker is **fail-closed by construction**. A link that pre-dates
-   this change has no marker and is shed too, and its user re-links through
-   `/link-social`.
+   fails, the hook deletes the `account` row it was written for (Better Auth has
+   already inserted it when `create.after` runs, and no transaction would undo it), logs
+   `catalog.security.sso_link_marker_failed` and throws, so the link fails and the state
+   agrees with the failed response; and because an unmarked link counts as
+   admin-recorded, a crash between the link and its marker is **fail-closed by
+   construction**. A link that pre-dates this change has no marker and is shed too, and
+   its user re-links through `/link-social`.
+
+   The marker is sound only while every account created with an endpoint context is a
+   link the user made. `auth.ts` sets `account.accountLinking.disableImplicitLinking:
+   true` and neither `trustedProviders` nor `allowDifferentEmails`, so the SSO callback
+   never links an account by its email and `/link-social` refuses a provider account
+   whose email differs from the user's; a test pins the three settings, and a
+   `/link-social` callback with a different provider email creates no account and no
+   marker (task 8.5g).
 
    **The shed.** Whenever the user holds a membership in another tenant, every
    non-`credential` account of the user without a marker is deleted,
@@ -935,7 +976,8 @@ value, because this route is public and the value is attacker-controlled.
    delegated to the identity provider, so it passes for the holder of the old `sub`.
    The shed therefore revokes every session of the user, not filtered on `ssoSid`
    (`002` Q83 admits SSO sessions created without one), and emits
-   `auth.security.session_revoked` with the new reason `sso_link_shed` for each; it
+   `auth.security.session_revoked` with the new reason `sso_link_shed` for each, through
+   the `emitSessionRevoked` that `@tayzu/auth` exports for it (D13); it
    **sweeps the sessions a second time after its deletion commits**, so a session that
    a callback created through the link while the deletion was in flight is revoked too
    (Q106). On the acceptance path the session that carries the acceptance request is
@@ -948,6 +990,21 @@ value, because this route is public and the value is attacker-controlled.
    internal adapter inside the shared context, so the account hook's own
    `auth.security.account_unlinked` with actor `self` is not emitted for it: the shed
    is attributed by `sso_link_shed` alone.
+
+   **Where the shed runs.** The hooks live in `packages/auth/src/auth.ts`
+   (`afterAddMember` in the `organization` plugin's `organizationHooks`, the account
+   hooks in `databaseHooks`), and `@tayzu/auth` cannot import `apps/api`. So the shed,
+   with its session revocation and `withUserLock`, is implemented in `apps/api`
+   (`apps/api/src/identity/sso-link-shed.ts`, Resolved decision Q30), and `afterAddMember`
+   reaches it through a structural port, `SsoLinkShedPort`
+   (`packages/auth/src/identity/ports.ts`), which `createAuth` takes as the option
+   `ssoLinkShed` the way it takes `userSync`; `createApp` and the bootstrap CLI pass it.
+   The hook calls the port after its `_user` write, and the port's implementation reads
+   the shared context of D2 and returns without shedding inside an acceptance. The
+   acceptance's explicit step and the reconcile call the same implementation directly.
+   The marker hooks and the callback check below need nothing from `apps/api`: they stay
+   in `auth.ts` and read and write `auth.verification`, `account` and `member` through
+   the hook's own adapter context.
 
    **The SSO callback refuses a session through a shed link** (Q106). A callback that
    read the account before the shed deleted it could otherwise still create its
@@ -1008,8 +1065,10 @@ under the app's trust setting (`server.ts` trusts every private range today, and
 gates `TRUST_PROXY` on the exact ingress hop count, so behind the ingress the limiter
 is only as good as that setting, Gates), and `hashBucketKey`, whose kinds are `'ip' | 'email' | 'user'` today, gains `'tenant'`
 for the tenant buckets. The closed `RateLimitScope` union gains `invitation_accept`,
-`invitation_tenant`, `invitation_recipient` and `notice_tenant` (the re-authorization
-callback adds a fifth, `reauthorization_callback`, in the hand-offs). Neither executable telemetry contract enumerates scope values, so
+`invitation_tenant`, `invitation_recipient`, `notice_tenant` and `notice_recipient`
+(the notices' own per-recipient bucket, Resolved decision Q101, below), and the
+re-authorization callback adds `reauthorization_callback` in the hand-offs: six new
+scopes in all. Neither executable telemetry contract enumerates scope values, so
 in code only the TypeScript union changes, but `002`'s design and
 `pre-auth-rate-limit.ts` declare the scope a closed three-value enum, on `002`'s
 rate-limit metric and log event as well. This change **amends** that enum and records
@@ -1036,16 +1095,19 @@ never resets the bucket, so the count accumulates until the cap. That is stricte
 restrictive side, so it is accepted and documented in
 `docs/security/data-retention.md`; a test pins the slow-trickle case, and no
 migration is added (a window-start column or a separate counter table is not built).
-The same holds for the per-recipient bucket the notices share (below).
+The same holds for the notices' own per-recipient bucket (below).
 
 **Notice emails (Resolved decision Q53).** The admin-accepted notice (D5), and
 the org-deletion notice that `045` adds, fan out one email per administrator, and a tenant admin
 can create `admin` accounts at third-party addresses with `identity.users.create`,
 so uncapped notices would be a mailbombing vector and a risk to the sender
-domain's reputation. They therefore go through the same controls as the invitation
+domain's reputation. They therefore go through the controls of the invitation
 email: the **global kill switch** (`INVITATION_EMAIL_KILL_SWITCH`, which stops
-every template despite its name), the **per-recipient bucket** (the same 3
-per 24 hours bucket, keyed by the HMAC of the canonical email, Q93) and a
+every template despite its name), a **per-recipient bucket of their own** (scope
+`notice_recipient`, Resolved decision Q101: the 3 per 24 hours of Q53, keyed by the same
+HMAC of the canonical email, Q93, but counted apart from the invitation bucket, so that
+any tenant that invites an address three times cannot silence that person's notices and
+the notices cannot exhaust that person's invitation budget) and a
 **per-tenant notice cap** (scope `notice_tenant`, its own bucket, counted in emails
 per hour, with its default in `apps/api/src/config.ts` and a disabled or zero value
 failing startup; the default is 60 per hour, Q58). A notice goes to **at most 20
@@ -1140,8 +1202,8 @@ The invitation email's content is a fixed contract (VCDM B9, SEC11):
   **recipient-domain allowlist** (`EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`, a list of
   domains in `apps/api/src/config.ts`; startup fails when a real provider is
   configured under `NODE_ENV=test` without it), and the wrapper below enforces the
-  list whenever it is set, in any environment (provisional, pending Q99:
-  the allowlist's role in a deployed staging environment), so a known demo login
+  list whenever it is set, in any environment, a deployed staging environment included
+  (Resolved decision Q99), so a known demo login
   cannot be used to relay phishing to a third party. The existing tests that load the
   configuration with a `NODE_ENV` other than `test` set `EMAIL_PROVIDER=none`. A wrapper around the real
   sender refuses any recipient whose domain is not on the list, treated exactly like
@@ -1196,7 +1258,8 @@ user id, recorded so that the viewer can show who created the credential (D7; a
 disabled admin's service accounts and credentials otherwise have no visible
 creator); (3) return `{ user, clientId, clientSecret }` once.
 If issuing the key fails after the `_user` was written, the `_user` is removed
-again (compensation) and the failure is logged, so no service account without a
+again (compensation) and the failure is recorded as the error of the
+`identity.service_account.create` span (no new event), so no service account without a
 credential is left behind. Service-account identifiers follow
 `^svc-[A-Za-z][A-Za-z0-9_-]{0,58}$` (not an email-shaped string), ADR-0017. A
 tenant holds at most **50 service accounts** (Resolved decision Q56; configurable
@@ -1216,8 +1279,8 @@ bound to), never as a source of authority: it is added where
 `token-exchange.ts` builds the signed payload, and the payload parser in
 `context-resolver.ts` ignores extra claims, so adding it is safe.
 `exchangeMachineToken(auth, params)` takes no database pool today, and the
-checks of D13 need the `_user` and deletion-marker lookups, so its signature
-gains those ports. A tampered `_user` row therefore cannot raise a service
+checks of D13 need the `_user` lookup, so its signature gains that port (the
+deletion-marker lookup is `045`'s, its D4 and task 5.6). A tampered `_user` row therefore cannot raise a service
 account above `member`.
 
 **Ceiling (Resolved decisions Q7, Q16).** A service account holds `member`
@@ -1234,8 +1297,16 @@ an optional `userId`, which is resolved server-side to a service-account `_user`
 of the caller's tenant (anything else is `CATALOG_NOT_FOUND`, D14) and is refused
 when that service account already has an active credential. A revoked credential
 may be rotated only when its service account has no active credential, and
-creation and rotation are serialized per service account by one advisory lock
-(D8), so two concurrent creates cannot both pass the check. A database constraint
+creation, rotation and deletion are serialized per service account by one advisory
+lock (D8), so two concurrent creates cannot both pass the check and a credential
+created or rotated while the account is being deleted cannot survive the deletion.
+Creating a service account is refused with `CATALOG_VALIDATION_FAILED` (the generic
+answer of task 13.3) while a non-revoked key of the tenant still carries its identifier
+as `metadata.userId`, for example one that survived the failed deletion of an earlier
+service account of the same identifier: the new account would otherwise start with a
+second active credential, against this rule, and the old key would resolve again as
+soon as the new `_user` exists. The check runs under the same lock, over the paged
+lookup of D7. A database constraint
 on the invariant (a partial unique index over `apikey`) is a ticket, because it
 needs a migration and `metadata` is a text column. The invariant is also enforced
 on the request path: the resolver and token exchange reject a token whose
@@ -1268,17 +1339,18 @@ Deletion is `identity.serviceAccounts.delete`: a plain
 `entities.delete` on `_user` is denied by the reserved-prefix rule, so an
 explicit operation revokes **every** non-revoked credential bound to the service
 account (every `apikey` with `referenceId = ctx.tenantId` and `metadata.userId`
-equal to the `_user` id, found by a paged scan of the tenant's keys (D7), through
+equal to the service account's `svc-…` identifier (Q90), found by a paged scan of the tenant's keys (D7), through
 the revocation list, permanent) and then removes
-the `_user` entity as `system` with `onBehalfOf` the admin.
+the `_user` entity as `system` with `onBehalfOf` the admin, holding the
+per-service-account lock of credential creation and rotation for the whole operation.
 
 - _Alternative:_ mint a synthetic `@service.tayzu.internal` email. Rejected: it
   invites accidental email delivery attempts and lookalike-phishing risk for no
   behavioral benefit.
-- _Alternative considered (Q4 option 2):_ allow admin-role service accounts
+- _Alternative considered (Q7 option 2):_ allow admin-role service accounts
   with a secondary approval/friction mechanism. Rejected: a new control to
   design and build for a capability nothing in the roadmap asks for.
-- _Alternative considered (Q4 option 3/4):_ accept the design as-is, or
+- _Alternative considered (Q7 option 3/4):_ accept the design as-is, or
   document a residual risk. Rejected: the fix is cheap relative to the blast
   radius; a service account needs least privilege at the role layer, since it
   cannot have MFA.
@@ -1298,7 +1370,8 @@ key's `metadata.userId` for service-account credentials. The kind is
 `id`, which rotate and revoke take as `{credential}` (the view had none, so a
 credential could not be addressed). The prefix is the constant `tayzu_mc_`, because
 no first characters of a secret are stored (D8), so it identifies nothing; `enabled`,
-`createdAt`, `lastRequest`, a computed `rotationDueAt` (D8) and `createdBy` (the
+`createdAt`, `lastRequest`, a computed `rotationDueAt` (from `metadata.rotatedAt`, or
+from `createdAt` for a key never rotated; D8) and `createdBy` (the
 opaque id the key's metadata records, absent for a key created before this change)
 are returned;
 the hashed `key` column is never selected into the response shape, so "never
@@ -1364,8 +1437,8 @@ required, and the metadata (`userId`, `createdBy`) is supplied by the caller. Th
 details make this work:
 
 - `body.userId` must be the **acting admin's Better Auth user id** (a member of
-  the organization with `apiKey` rights), not the `_user` id that goes in
-  `metadata.userId`.
+  the organization with `apiKey` rights), not the service account's `svc-…`
+  identifier (Q90) that goes in `metadata.userId`.
 - `organization()` has no `ac` or `roles` today, and custom roles **replace** the
   defaults, so the change defines all three roles (`owner`, `admin`, `member`)
   from the default statements, adding `apiKey` to `admin` only, and keeps every
@@ -1407,8 +1480,8 @@ A credential that belongs to another tenant is reported as `CATALOG_NOT_FOUND`
 - **Rotate**: create the new key, then revoke the old one, then return the new
   secret once. If the revoke fails, the new key is revoked as compensation so no
   second usable credential survives; if compensation also fails,
-  `catalog.security.credential_rotation_incomplete` is emitted. Rotation, and the creation of a
-  credential bound to a service account, are **serialized** per service account
+  `catalog.security.credential_rotation_incomplete` is emitted. Rotation, the creation of a
+  credential bound to a service account and the deletion of that service account (D6) are **serialized** per service account
   (per credential for an unbound integration or agent credential), for example by
   a Postgres advisory lock held for the whole operation: two concurrent rotations would otherwise each create a key and each
   revoke the old one, leaving two active credentials. The second one finds the old
@@ -1420,8 +1493,9 @@ A credential that belongs to another tenant is reported as `CATALOG_NOT_FOUND`
   most 5 seconds, failing closed (`002` D21). The revocation lookup and its
   cache are keyed by `(tenantId, credentialId)` (D13, tasks 11.1 and 11.1b), not
   by the credential id alone.
-- `rotatedAt`/`rotationDueAt` live in the new key's `metadata`; the viewer (D7)
-  computes "rotation due" against a Tayzu-chosen default interval (90 days,
+- `rotatedAt` lives in the new key's `metadata`; the viewer computes `rotationDueAt`
+  from it, or from `createdAt` for a key never rotated (D7), against a Tayzu-chosen
+  default interval (90 days,
   configurable, in `docs/security/data-retention.md`). It is a documented
   policy default, not a hard-enforced expiry: no credential is force-disabled
   solely for being overdue (Resolved decision Q20).
@@ -1445,7 +1519,8 @@ the mechanism of the scripts this change needs: the `_user` blueprint backfill a
 
 Each of the backfill and the reconcile is its own Container Apps Job with its own
 identity and secrets (Resolved decision Q49): it holds `tayzu_auth` (to list
-organizations and members) and `tayzu_app`, and no other role. Each script also
+organizations and members and, for the reconcile, to run the shed of D4 step 7, Q105)
+and `tayzu_app`, and no other role. Each script also
 **asserts its own database role** at start (`current_user` against the role or roles it
 declares), through the helper of task 2.0, and refuses to run otherwise: `002`'s
 runtime-role assertion runs only in `createAppFromEnv` (`002` Q62), which no script goes
@@ -1490,8 +1565,10 @@ switch is turned on (Gates, Migration Plan).
 **Thirteen oRPC procedures and one plain Fastify route** on the server `002`
 exposes: fourteen routes, all mounted behind the switch of D15 (`045` adds a
 fourteenth oRPC procedure, `identity.organization.delete`). Each oRPC
-procedure declares `.route({ method, path, spec: markHighRisk })` like
-`packages/catalog/src/api/contract.ts`, because step-up runs only in the OpenAPI
+procedure declares `.route({ method, path, spec: markHighRisk, inputStructure: 'detailed' })`
+like `packages/catalog/src/api/contract.ts` (every identity procedure sets
+`inputStructure: 'detailed'`, a per-route option, so every one of them receives the same
+`{ params, query, body }` shape), because step-up runs only in the OpenAPI
 interceptor keyed on the route spec (calls through `createRouterClient` skip it).
 The identity router lives in `apps/api` (`apps/api/src/identity-router.ts`, and
 `createApp` merges it with the catalog router into **one** router handed to the one
@@ -1569,8 +1646,8 @@ schemas. The `x-tayzu-risk` assertions run on it. Its DAST value is therefore
 limited until schemas exist (Risks), and extending the DAST scan to it stays a
 first-deployment gate.
 
-**`DELETE` routes.** `apps/api` uses `inputStructure: 'detailed'` so `DELETE` and
-`GET` routes read the query string at runtime. `DELETE /v1/service-accounts/{user}` and
+**`DELETE` routes.** They rely on the `inputStructure: 'detailed'` that every identity
+procedure declares (above), so `DELETE` and `GET` routes read the query string at runtime. `DELETE /v1/service-accounts/{user}` and
 `DELETE /v1/users/{user}/sso-account` take their target from the path; `045` adds
 `DELETE /v1/organization`, whose confirmation travels in the query string.
 
@@ -1611,7 +1688,9 @@ the unenrolled admin.
 
 **Input contract.** The root rule on untrusted input applies to every procedure,
 not only to the accept route. **The caller's role check of the wrapper comes before
-the input is parsed**, as `identity-router.ts` does today, so an unauthorized caller
+the input is parsed** for every procedure. In today's `identity-router.ts` that order
+holds only for `create`; `linkSsoAccount` and `unlinkSsoAccount` parse their input
+first, and the wrapper changes that. So an unauthorized caller
 learns nothing from a parse error and the tests of the input contract (task 14.10)
 run as an admin. One shared parser in `apps/api` parses each input
 into a null-prototype object, rejects `__proto__`, `constructor` and `prototype`
@@ -1682,7 +1761,9 @@ and what their windows mean (Q66), the cross-tenant denial-of-invitation trade-o
 ACS data location and retention; the email policy (the recipient-domain allowlist, Q67
 and Q96, and the demo-tenant list, Q80); the off-boarding step for a disabled admin's
 service accounts and credentials (listed by the `createdBy` of the viewer); the `_user`
-reconcile runbook; `045` extends the file with the retention policy, the erasure
+reconcile runbook; the operator repair of a user stranded by a failed acceptance
+compensation, driven by the alert on `invitation_accept_compensation_failed` (Resolved
+decision Q100); `045` extends the file with the retention policy, the erasure
 statement and the reversal runbook), updates `docs/security/secrets.md` (the
 Communication Services secret and its change procedure, the `IDENTITY_TOKEN_HMAC_SECRET`
 of the cap keys with its owner and rotation (a rotation resets the recipient buckets,
@@ -1698,7 +1779,10 @@ authentication to ACS) and `docs/security/dependencies.md` (license, `allowBuild
 SBOM review of `@azure/communication-email` and its transitives, the pinned image
 digests, and the source and license of the bundled common-password denylist),
 `docs/catalog/auth-and-rbac.md` (`002` D17: the resource-kind taxonomy, the telemetry
-reference and the amended rate-limit scope enum), and `docs/architecture/system-diagram.md`
+reference, the amended rate-limit scope enum and the amended reason enum of
+`auth.security.session_revoked`), `docs/catalog/catalog-core.md` (its `## Telemetry`
+section: the fixed placeholder that a catalog span carries instead of a `_user`
+identifier, Resolved decision Q107, task 4.1d), and `docs/architecture/system-diagram.md`
 (new external actors: the email provider, the invitee with their mailbox, the platform
 operator; new arrows: invite → email, the public accept route, ACS egress over HTTPS, the
 Pwned Passwords range query and the reconcile job).
@@ -1711,7 +1795,8 @@ decisions Q13, Q11 and Q25, `resolveContext` and token exchange gain these
 checks, all through the existing 5-second cache and **failing closed** on any
 lookup failure:
 
-- **A human is rejected when their Better Auth user is `banned` (task 13.4), and is
+- **A human is rejected when their Better Auth user is `banned` (task 13.4, the reason
+  `user_banned`), and is
   admitted only when their `_user.status` in the _active tenant_ is `Active`**
   (Resolved decision Q105, which amends the rule of Q25, Q46 and Q77: the first
   wording rejected only a `Disabled` status and a missing row, so a member whose
@@ -1738,16 +1823,22 @@ lookup failure:
   through the state machine, revokes **only the sessions whose active
   organization is that tenant** (each revocation emits `002`'s
   `auth.security.session_revoked` with the reason `admin_action`, as does the ban's
-  deletion of all sessions), and cancels the user's pending invitations of
+  deletion of all sessions; `emitSessionRevoked` is private in `auth.ts` today, with
+  its reason fixed to `password_change`, so `@tayzu/auth` exports it from its index with
+  the reason as a parameter, `password_change`, `admin_action` or `sso_link_shed`, task
+  8.5h), and cancels the user's pending invitations of
   that tenant (reason `user_disabled`) **and the pending invitations that user
   created** (reason `inviter_disabled`, Resolved decision Q63; the acceptance check
   of D4 is the authoritative control and also covers a user disabled by a path that
-  does not cancel, such as the ban hook); `Active` writes the status back and
-  restores no cancelled invitation. Only for a user with a **single**
-  membership does it also set `banned` (and delete all their sessions), because
+  does not cancel, such as the ban hook); `Active` writes the status back,
+  restores no cancelled invitation and, for a user whom the disable banned (a single
+  membership), clears `banned` through `internalAdapter.updateUser({ banned: false })`
+  (the ban hook is skipped without an endpoint context, and since Q102 it writes
+  nothing for `banned: false`). Only for a user with a **single**
+  membership does the disable also set `banned` (and delete all their sessions), because
   a global ban would lock the user out of another tenant (a member of two tenants
   cannot otherwise be off-boarded by one tenant's admin, and removing a member is
-  out of scope, Q16). The ban is made through the internal adapter
+  out of scope, Non-Goals; ticket "Member management"). The ban is made through the internal adapter
   (`internalAdapter.updateUser({ banned })` and `deleteUserSessions`, as
   `linkAccount` does in `identity-router.ts`), **not** Better Auth's
   `banUser`/`unbanUser`: those routes use `adminMiddleware` and `hasPermission`
@@ -1758,14 +1849,24 @@ lookup failure:
   refuses a banned user with a distinct error after a correct password, a
   credential-validity oracle, so the failure is made uniform locally and in the SSO
   callback (task 13.4b). Per Resolved decision Q97 the refusal is made **after the
-  credential was verified**, which is Better Auth's own ordering for a ban: the only
+  credential was verified**, which is Better Auth's own ordering for a ban: the admin
+  plugin's `session.create.before` hook throws FORBIDDEN `BANNED_USER` once the password
+  has verified, so **no session is created** for a banned user, while the only
   session-aware hook, `hooks.before`, runs before the password is checked, so a
   pre-check would differ in timing and would refuse a banned user whatever the password.
-  A `hooks.after` on the sign-in routes sees the session the sign-in just created,
-  deletes it and answers the same status, code and body as a wrong password. The
-  response is uniform; the timing of a correct-password attempt (one session created
-  and deleted) differs from a wrong password's, which is accepted and documented. An
-  expired temporary-password marker (Q36) is refused the same way (task 13.5d). The
+  A `hooks.after` on `/sign-in/email` therefore rewrites that `BANNED_USER` error into
+  the status, code and body of a wrong password; there is no session to delete. The
+  SSO callback needs no rewrite: `auth.ts` already turns every callback failure, a ban
+  included, into its one `401 AUTH_SSO_REJECTED`, so its part is a test. The response is
+  uniform; the timing of a correct-password attempt (the ban is found after the hash
+  comparison) may differ from a wrong password's, which is accepted and documented.
+  `002` declares the reason `account_disabled` of `auth.security.login_failed` for this
+  case (`002` design, Log events), while the existing sign-in hook logs every error of
+  the route as `bad_credentials`: the rewrite makes it log `account_disabled` for a ban,
+  as `002` declares. An expired temporary-password marker (Q36) is refused with the
+  same uniform answer, also after the password was verified (task 13.5d); nothing
+  refuses it before the session is created, so that case alone deletes the session the
+  sign-in just created. The
   attempt itself is not invisible: it is logged internally,
 with its channel (local or SSO) and the opaque user id and no email, as
 `catalog.security.banned_sign_in_attempt`, while the response stays uniform.
@@ -1807,8 +1908,8 @@ The `identity.*` data lives in the `auth` schema, which has no RLS (`tayzu_auth`
 `002` D6), and `same_tenant` is vacuous unless the real tenant is passed (D3).
 So the tenant boundary for these routes is code, and it is stated as a rule:
 
-- Every `{invitation}`, `{credential}`, `{user}` and `{serviceAccount}`
-  target, and the optional `userId` of `credentials.create` (which
+- Every `{invitation}`, `{credential}` and `{user}` target (on a service-account
+  route, `{user}` is the service account's `svc-…` identifier), and the optional `userId` of `credentials.create` (which
   must be a service-account `_user` of the tenant, D6), is resolved
   **server-side** and must belong to `ctx.tenantId`. Otherwise the answer is `CATALOG_NOT_FOUND`, identical to a
   nonexistent id (no existence oracle). A user belongs to the tenant when they
@@ -1885,10 +1986,12 @@ mechanical:
 - With the switch **on**, a test enumerates the Fastify route table and fails for
   any route outside an explicit public allowlist (the accept route is on it) that
   is not behind `resolveContext`, so a new route cannot become public by accident
-  (Resolved decision Q57, task 14.3b).
+  (VCDM G4, task 14.3b).
 - Task order matches: the group that registers the routes (group 14) comes
   **after** the hand-off group (group 13). No HTTP assertion about these routes
-  is written before group 13 is done; earlier groups test in process.
+  is written before group 13 is done; earlier groups test in process. `002` Q73
+  calls the hand-off group "`043`'s group 14", its number before the Q103 split moved
+  the old group 12 out (the numbering note of the traceability section, Risks).
 - The switch gates the **routes** only. The resolver checks of D13 (a human whose
   `_user` is not `Active`, a member with no `_user` row, a service account that is absent or not `Active`) apply to the existing catalog `/v1` routes
   from the deploy of this change, not from the mount, so the reconcile (D1) has to
@@ -1944,9 +2047,12 @@ the generic helper reports a denial on `002`'s existing rate-limit metric and lo
 with the new value (D4).
 
 Identifier rules for every signal: `tayzu.identity.user.id` is the Better Auth
-user id, `tayzu.identity.service_account.id` is the `_user` entity's opaque id,
-never the email or the `svc-…` identifier, and no invited email, token,
-credential name or secret appears anywhere. `tayzu.identity.operator.id` is the
+user id, `tayzu.identity.service_account.id` is the service account's `svc-…`
+identifier (Resolved decision Q90: it is the account's opaque id, the same value as the
+key's `metadata.userId` and Cerbos's `R.id`, and it is not an email; `EntityOutput` has
+no row id), and no invited email, token,
+credential name or secret appears anywhere. The `svc-…` identifier is replaced by the
+placeholder of Q107 only on the **catalog** spans, whose rule is per blueprint (below). `tayzu.identity.operator.id` is the
 platform operator's opaque identifier, supplied through the maintenance
 job's environment here (D9) and never an email; `045`'s workflow derives it from its
 authenticated actor (Q41): `gh:<numeric actor id>`. In every audit event
@@ -1972,7 +2078,7 @@ this change adds, a service account's `svc-…` identifier included.
 | Span name                               | When   | Required attributes                                                                                                               | Conditional attributes                                               |
 | --------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | `identity.invitation.create`            | op     | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.role` (`member`\|`admin`)                                              | —                                                                    |
-| `identity.invitation.accept`            | op     | `tayzu.identity.invitation.id`                                                                                                    | `tayzu.identity.invitation.path` (`new_account`\|`existing_account`) |
+| `identity.invitation.accept`            | op     | `tayzu.identity.invitation.id` (the constant `invalid` for an id that fails its shape or length check, D4)                       | `tayzu.identity.invitation.path` (`new_account`\|`existing_account`) |
 | `identity.invitation.cancel`            | op     | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason` (`admin_cancel`\|`re_invite`\|`user_disabled`\|`inviter_disabled`\|`user_created`) | —                                                                    |
 | `identity.invitation.resend`            | op     | `tayzu.identity.invitation.id`                                                                                                    | —                                                                    |
 | `identity.user.set_status`              | op     | `tayzu.identity.user.status.from`, `tayzu.identity.user.status.to`                                                                | —                                                                    |
@@ -1996,7 +2102,7 @@ sanitized exception, no message/SQL).
 | `tayzu.identity.user_status_changes`  | Counter, `{change}`     | `tayzu.tenant.id`, `tayzu.identity.user.status.to`, `tayzu.actor.type`                                                                                                  | Lifecycle churn                                                                                                                       |
 | `tayzu.identity.service_accounts`     | Counter, `{account}`    | `tayzu.tenant.id`, `tayzu.identity.service_account.mutation` (`created`\|`disabled`\|`enabled`\|`deleted`)                                                              | Service-account volume                                                                                                                |
 | `tayzu.identity.credential_mutations` | Counter, `{mutation}`   | `tayzu.tenant.id`, `tayzu.identity.credential.kind` (`service_account`\|`integration`\|`agent`), `tayzu.identity.credential.mutation` (`created`\|`rotated`\|`revoked`) | Credential hygiene signal                                                                                                             |
-| `tayzu.identity.principal_rejections` | Counter, `{rejection}`  | `tayzu.identity.rejection.reason` (`user_disabled`\|`service_account_disabled`\|`service_account_missing`\|`user_missing`; `user_disabled` is a human `_user` present and not `Active`, Q105), `tayzu.actor.type`               | Enforcement of D13 is visible and alertable                                                                                           |
+| `tayzu.identity.principal_rejections` | Counter, `{rejection}`  | `tayzu.identity.rejection.reason` (`user_disabled`\|`user_banned`\|`service_account_disabled`\|`service_account_missing`\|`user_missing`; `user_disabled` is a human `_user` present and not `Active`, Q105; `user_banned` is a human whose Better Auth user is `banned`, D13), `tayzu.actor.type`               | Enforcement of D13 is visible and alertable                                                                                           |
 
 `tayzu.identity.step_up_denials` from the earlier draft is **dropped**: the
 step-up guard already emits `auth.security.step_up_required` and
@@ -2014,30 +2120,30 @@ are **never** attributes on any signal — the cardinality guard extends
 | ------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `catalog.audit.invitation_created`                | INFO     | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id`, `tayzu.identity.invitation.role`                                                                                                                                                                                   | Audit; the role is logged (VCDM B2)                                                                              |
 | `catalog.audit.invitation_accepted`               | INFO     | same, plus `tayzu.identity.user.id` and `tayzu.identity.invitation.path`                                                                                                                                                                                                                                    | Audit                                                                                                            |
-| `catalog.audit.invitation_cancelled`              | INFO     | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason`                                                                                                                                                                                                                                          | Audit                                                                                                            |
-| `catalog.audit.invitation_resent`                 | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.invitation.id`                                                                                                                                                                                                                                         | Audit (new)                                                                                                      |
+| `catalog.audit.invitation_cancelled`              | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason`                                                                                                                                                                                                                                          | Audit                                                                                                            |
+| `catalog.audit.invitation_resent`                 | INFO     | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id`                                                                                                                                                                                                                                         | Audit (new)                                                                                                      |
 | `catalog.audit.user_created`                      | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.user.id`, `tayzu.identity.user.role` (`member`\|`admin`), `tayzu.identity.user.source` (`admin`\|`bootstrap`)                                                                                                                                          | Audit for `identity.users.create` and bootstrap (`002` Q42, new)                                                 |
-| `catalog.audit.user_status_changed`               | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.user.id`, `tayzu.identity.user.status.from`, `tayzu.identity.user.status.to`, `tayzu.identity.user.account_kind`                                                                                                                                       | Audit of every status change, including service accounts disabled and enabled (new)                              |
+| `catalog.audit.user_status_changed`               | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.user.id` (a human's Better Auth user id) or, in its place when `tayzu.identity.user.account_kind` is `service`, `tayzu.identity.service_account.id` (the `svc-…` identifier, Q90), `tayzu.identity.user.status.from`, `tayzu.identity.user.status.to`, `tayzu.identity.user.account_kind` | Audit of every status change, including service accounts disabled and enabled (new)                              |
 | `catalog.audit.service_account_created`           | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.service_account.id`                                                                                                                                                                                                                                    | Audit                                                                                                            |
 | `catalog.audit.service_account_deleted`           | INFO     | same                                                                                                                                                                                                                                                                                                        | Audit (new)                                                                                                      |
 | `catalog.audit.credential_created`                | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id`, `tayzu.identity.credential.kind`                                                                                                                                                                                                       | Audit (`002` Q42, new)                                                                                           |
 | `catalog.audit.credential_rotated`                | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id`                                                                                                                                                                                                 | Audit — opaque IDs only, never secrets                                                                           |
 | `catalog.security.authz_denied`                   | WARN     | as already declared by `001`/`002`                                                                                                                                                                                                                                                                          | Reused: the identity router now emits it on every Cerbos deny (it threw silently before)                         |
-| `catalog.security.invitation_acceptance_denied`   | WARN     | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.denial_reason` (`expired`\|`cancelled`\|`rejected`\|`already_accepted`\|`token_mismatch`\|`disabled_user`\|`not_found`\|`session_required`\|`email_mismatch`\|`account_conflict`\|`csrf_rejected`\|`origin_rejected`\|`inviter_not_active_admin`\|`member_limit`) | Misuse of dead/foreign invitations (SEC06/SEC11); the reason lives only here, never in the HTTP response         |
+| `catalog.security.invitation_acceptance_denied`   | WARN     | `tayzu.identity.invitation.id` (the constant `invalid` for a malformed id, D4), `tayzu.identity.invitation.denial_reason` (`malformed_request`\|`expired`\|`cancelled`\|`rejected`\|`already_accepted`\|`token_mismatch`\|`disabled_user`\|`not_found`\|`session_required`\|`email_mismatch`\|`account_conflict`\|`csrf_rejected`\|`origin_rejected`\|`inviter_not_active_admin`\|`member_limit`) | Misuse of dead/foreign invitations (SEC06/SEC11); the reason lives only here, never in the HTTP response         |
 | `catalog.security.invitation_rate_limited`        | WARN     | `tayzu.tenant.id`, `tayzu.identity.invitation.limit_scope` (`tenant`\|`recipient`\|`global`)                                                                                                                                                                                                                | Invite/resend volume abuse signal; no invited email present                                                      |
 | `catalog.security.self_status_change_denied`      | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                                                                                                                                                                                                                         | Self-service status tampering                                                                                    |
-| `catalog.security.principal_rejected`             | WARN     | `tayzu.identity.rejection.reason`, `tayzu.actor.type`                                                                                                                                                                                                                                                       | A principal that is not `Active` (a human, Q105, or a service account) or is missing was refused (D13, new) |
+| `catalog.security.principal_rejected`             | WARN     | `tayzu.identity.rejection.reason` (the values of `tayzu.identity.principal_rejections`), `tayzu.actor.type`                                                                                                                                                                                                                                                       | A principal that is not `Active` (a human, Q105, or a service account) or is missing was refused (D13, new) |
 | `catalog.security.credential_revoked`             | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id`                                                                                                                                                                                                                                         | Security-relevant, not routine                                                                                   |
 | `catalog.security.credential_rotation_incomplete` | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id`                                                                                                                                                                                                 | Overdue signal: a rotation left two usable credentials or none (new)                                             |
 | `catalog.security.admin_notice_failed`            | WARN     | `tayzu.tenant.id`                                                                                                                                                                                                                                                                                           | The admin-accepted notice (Q39) could not be sent to an administrator; the acceptance is not blocked (new)       |
 | `catalog.audit.users_reconciled` | INFO | `tayzu.tenant.id`, `tayzu.identity.operator.id`, `tayzu.identity.reconcile.created`, `tayzu.identity.reconcile.orphans` | The reconcile created the missing `_user` rows of a tenant and removed its orphans; the operator's opaque id is recorded (new) |
 | `catalog.security.notice_suppressed` | WARN | `tayzu.tenant.id`, `tayzu.identity.notice.template` (`admin_accepted`), `tayzu.identity.notice.suppression` (`global`\|`tenant`\|`recipient`\|`truncated`), `tayzu.identity.notice.dropped` | A notice was suppressed or truncated by the kill switch, a cap or the 20-recipient limit; the operation is not blocked (new) |
-| `catalog.security.email_recipient_blocked` | WARN | `tayzu.identity.email.template` (`invitation`\|`admin_accepted`) | The non-production recipient-domain allowlist refused a recipient (Q67); no address is logged (new) |
+| `catalog.security.email_recipient_blocked` | WARN | `tayzu.identity.email.template` (`invitation`\|`admin_accepted`) | The recipient-domain allowlist, wherever it is set, refused a recipient (Q67, Q99); no address is logged (new) |
 | `catalog.security.banned_sign_in_attempt` | WARN | `tayzu.identity.user.id`, `tayzu.identity.sign_in.channel` (`local`\|`sso`) | A banned user tried to sign in; the response stays uniform (D13, Q54), the attempt is visible internally (new) |
 | `catalog.security.email_tenant_blocked` | WARN | `tayzu.tenant.id`, `tayzu.identity.email.template` (`invitation`\|`admin_accepted`) | An email was suppressed because its tenant is on `EMAIL_DISABLED_TENANT_IDS` (D5, Q80); no address is logged (new) |
 | `catalog.security.sso_link_shed` | WARN | `tayzu.tenant.id` (the tenant joined), `tayzu.identity.user.id`, `tayzu.identity.sso_link.path` (`acceptance`\|`membership_hook`\|`reconcile`) | An unmarked (admin-recorded) SSO link was deleted, and the user's sessions revoked, when the user joined a second tenant or before the reconcile created their `_user` (D4 step 7, Q73, Q86, Q87, Q105, Q106); no email or `sub` is logged (new) |
 | `catalog.security.sso_link_marker_failed` | WARN | `tayzu.identity.user.id` | The provenance marker of a link the user made could not be written (D4 step 7, Q87); the link fails, and an unmarked link would be shed as admin-recorded (new) |
-| `catalog.security.invitation_accept_compensation_failed` | WARN | `tayzu.identity.invitation.id` | A failed acceptance could not undo what it had created (D4 step 3, Q89); the reconcile or an operator repairs it (new) |
+| `catalog.security.invitation_accept_compensation_failed` | WARN | `tayzu.identity.invitation.id` | A failed acceptance could not undo what it had created (D4 step 3, Q89; on the existing-account path, D4 step 4, Q105); the reconcile or an operator repairs it (new) |
 
 Every event above is exempt from sampling and from any downstream filter/drop
 rule, per `001`'s existing rule for `catalog.audit.*`/`catalog.security.*`
@@ -2049,9 +2155,16 @@ unlink already have `auth.security.account_linked` and `account_unlinked`. These
 events are declared in the identity contract module by task 13.3, before the routes
 exist, because `002` Q42 forbids mounting an operation whose events are not declared;
 the remaining names are declared by task 15.1. The reason `sso_link_shed` (Q86) is a
-new value of the reason attribute of `002`'s `auth.security.session_revoked`: the
-identity contract module lists it, and if the authz contract enumerates the reasons
-the value is added there with its assertion extended, never loosened (task 15.1).
+new value of the reason attribute of `002`'s `auth.security.session_revoked`, whose
+design declares a closed two-value enum (`password_change`\|`admin_action`): this change
+**amends** that enum, task 16.14 records the amendment in `docs/catalog/auth-and-rbac.md`,
+and the identity contract module lists the value. Neither executable contract
+enumerates the values (the authz contract lists the event's attribute keys only), so no
+assertion changes. The event is emitted by `emitSessionRevoked`, which is private in
+`auth.ts` today, with its reason fixed to `password_change`: `@tayzu/auth` exports it
+from its index with the reason as a parameter (task 8.5h), so the revocations of
+`setStatus` emit `admin_action` (declared by `002`, never emitted by its code) and those
+of the shed and of an admin unlink emit `sso_link_shed`.
 
 ## Security considerations (SSA SEC01-SEC16 posture)
 
@@ -2068,10 +2181,12 @@ tasks and tickets, and a sixth pass found one blocking gap (NB-4), fourteen
 non-blocking ones (G6-1 to G6-14) and the questions Q-A to Q-C, resolved by Q73, Q80
 and Q81, tasks and tickets, and a seventh pass found two blocking gaps (NB-5 and NB-6),
 ten non-blocking ones (G7-1 to G7-10) and three questions, resolved by Q86-Q88, tasks
-and tickets, and an eighth pass found two blocking gaps (NB-7 and NB-8) and non-blocking
-ones (G8-1 to G8-12), resolved by Q101, Q102, Q105, Q106 and Q110, tasks and tickets; all
+and tickets, and an eighth pass found two blocking gaps (NB-7 and NB-8) and ten
+non-blocking ones (G8-1 to G8-9 and G8-12; its report assigns no G8-10 or G8-11),
+resolved by Q101, Q102, Q105, Q106 and Q110, tasks and tickets; all
 are folded below, and each is also a requirement or scenario
-in the spec and a task. A joint pre-assessment with `002` (`002/ssa-pre-assessment.md`)
+in the spec and a task, except the gaps that moved to `045` with org deletion (Q103),
+which one row below lists and `045` closes. A joint pre-assessment with `002` (`002/ssa-pre-assessment.md`)
 earlier found the seam gaps closed by D3/D6.
 
 | Gap                                                                                   | Where it is closed                                                                                                                                            |
@@ -2080,7 +2195,8 @@ earlier found the seam gaps closed by D3/D6.
 | B2 unconstrained invited role                                                         | D4 (`member`\|`admin`), spec "Invitation lifecycle", task 7.4                                                                                                 |
 | B3 no server-side tenant binding                                                      | D14, spec "Targets belong to the caller's tenant", group 12 |
 | B4 disable/rotate not immediate, state machine bypass                                 | D2, D8, D13, spec "Disabling a human takes effect immediately", groups 4, 9, 10, 11                                                                           |
-| B6 Q73 gate not enforced                                                              | D15, spec "Identity routes are unreachable until mounted", group 13 before 14, with every `002` hand-off item traced to a task or a recorded deferral (Risks) |
+| B5, NB3, NB4, NB-3, G7, G8, G6-2, G-g (org deletion, the purge and the maintenance workflow) | moved to `045` by Q103 (its design, Security considerations) |
+| B6 `002` Q73 gate not enforced                                                        | D15, spec "Identity routes are unreachable until mounted", group 13 before 14, with every `002` hand-off item traced to a task or a recorded deferral (Risks) |
 | B7 security logging gaps                                                              | Observability contract, spec "Security-relevant events are logged"                                                                                            |
 | B8 paths leak identifiers                                                             | D16, spec "Telemetry contract", task 15.5                                                                                                                     |
 | B9 email injection, origin, caps                                                      | D4, D5, spec "Invitation email is fixed and capped", group 6                                                                                                  |
@@ -2104,12 +2220,12 @@ earlier found the seam gaps closed by D3/D6.
 | G-b wrapper versus parse order | D10, spec "Every identity route declares its authorization", task 14.10 |
 | G-c `044` not in the Gates | Gates |
 | G-d create and link cannot give "no oracle" | spec "Targets belong to the caller's tenant", task 13.3 |
-| G-e denylist provenance | tasks 1.3, 16.5 |
+| G-e denylist provenance | task 1.3 |
 | G-f notice bucket drainable cross-tenant | Task 6.12b (Q101) |
 | G-h banned-attempt log, notice recipients (the repeated-request log moved to `045`) | D4 step 6, D13, tasks 13.4b, 6.12 |
 | Q-B email outside production (Q67) | D5, spec "Invitation email is fixed and capped", tasks 6.5, 6.5b |
 | Q-D hand-written `auth`-schema readers (Q69) | D14, tasks 5.1b, 5.1c |
-| NB-4 an admin-recorded SSO link survives into a second tenant (Q73) | D4 step 7, D14, spec "An admin-recorded SSO link does not survive into a second tenant", tasks 8.5b, 8.5g, 8.5h, 15.1 |
+| NB-4 an admin-recorded SSO link survives into a second tenant (Q73) | D4 step 7, D14, spec "An SSO link that its user did not make does not survive into a second tenant", tasks 8.5b, 8.5g, 8.5h, 15.1 |
 | G6-1 the invite and resend responses and the non-sending sender could expose the token | D5, spec "Invitation email is fixed and capped" (scenario "The invitation link never leaves the email"), tasks 6.5, 7.3, 7.7, 15.4 |
 | G6-3 `credentials.create` `userId` resolver | D6, tasks 9.5b, 10.7b |
 | G6-4 the accept route bypasses the temporary-password marker | D4 step 4, task 13.5c |
@@ -2137,7 +2253,15 @@ earlier found the seam gaps closed by D3/D6.
 | NB-7 a failed or retried existing-account acceptance skips the shed and the session revocation (Q105) | D1, D4 steps 4 and 7, D13, spec "Invitation acceptance", "An SSO link that its user did not make does not survive into a second tenant", "Disabling a human takes effect immediately" and "Every member has a `_user` row", tasks 2.2b, 8.1e, 8.5b, 8.5h, 8.5i, 8.5l, 11.8 |
 | NB-8 the ban hook re-enables a user disabled in one tenant (Q102) | D2, spec "User status has four states with forward-only transitions", task 4.5; the ticket "Ban-hook mirror" is resolved |
 | G8-1, G8-2 sessions that the shed still misses (Q106) | D4 step 7, spec "An SSO link that its user did not make does not survive into a second tenant", task 8.5k |
+| G8-3, G8-4 the marker's soundness rests on the linking configuration, and a failed marker write leaves the link | D4 step 7, spec "An SSO link that its user did not make does not survive into a second tenant", task 8.5g |
+| G8-5 the notices share the invitation bucket (Q101) | D4, D5, spec "Invitation email is fixed and capped", tasks 6.10, 6.12b, 13.9, 16.14 |
+| G8-6 `invitation_cancelled` and `invitation_resent` lack the tenant or the actor | Observability contract, spec "Security-relevant events are logged", tasks 15.1, 15.6 |
+| G8-7 a deletion races credential creation, and a re-created identifier inherits a surviving key | D6, D8, spec "Service accounts are non-human users created API-only", tasks 10.3, 10.7 |
+| G8-8 stale text | Context (eighth amendment), tasks 1.1, 1.2, 6.5, 8.1e, 16.10 |
+| G8-9 (ticket TK-1) and the eighth-pass ticket TK-2: one Visma Connect link per user, and the shed on a member-role change (TK-3 and TK-4 are tasks 8.5k and 7.13, Q106 and Q110) | Tickets ("One Visma Connect link per user", "Member-role changes and SSO links") |
+| Eighth drift-check A-1 to A-17 | Context (eighth amendment) and the sections and tasks it names |
 | G8-12 `users.create` leaves a pending invitation of the same email (Q110) | D4, spec "Invitation lifecycle", task 7.13 |
+| G8-10, G8-11 | Not assigned: the eighth pass's report numbers its ten non-blocking gaps G8-1 to G8-9 and G8-12, so no gap carries these ids |
 | Eighth drift-check B-1 to B-3 (`_user` emails in catalog spans, the inviter re-check, the runtime-role assertion; Q107-Q109) | Observability contract, D4 step 2, Gates, spec "Telemetry contract", "Invitation acceptance" and "The hand-offs from the authentication baseline hold", tasks 4.1d, 8.5f, 11.1c, 15.4 |
 
 | Section                 | Applies                | Posture                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -2151,7 +2275,7 @@ earlier found the seam gaps closed by D3/D6.
 | SEC07 Dependencies      | Yes                    | `@azure/communication-email` joins the Dependabot/`pnpm audit`/quarterly-EOL process; license, `allowBuilds` and SBOM review are recorded in `docs/security/dependencies.md` (task 1.3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | SEC08 File upload       | N/A                    | No file upload surface.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | SEC09/SEC10 Secrets     | Yes                    | The Communication Services connection string is a new Key Vault secret on a dedicated send-only ACS resource, with a change procedure in `docs/security/secrets.md`; a managed identity is a first-deployment gate (Q28). The `tayzu_auth` secret of the backfill and reconcile jobs is documented with owner and rotation, each job with its own identity, and so is the `IDENTITY_TOKEN_HMAC_SECRET` of the cap keys (Q93).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| SEC11 Phishing          | Yes, core new exposure | 48h expiry, one link, fixed subject and template with no tenant or inviter free text, link origin from `INVITATION_LINK_BASE_URL` only (Q32), exactly one recipient and no CC/BCC/attachments, ACS tracking disabled and no Reply-To, per-tenant, per-recipient and global caps (D4, D5); a second fixed notice tells the other admins, `Disabled` ones included, when an `admin` invitation is accepted (Q39); a real sender needs a mandatory recipient-domain allowlist under `NODE_ENV=test` and honors it wherever it is set (Q67, Q96, pending Q99), and a tenant on `EMAIL_DISABLED_TENANT_IDS` (a demo tenant) sends nothing (Q80); the notices share the kill switch and the per-recipient bucket, with a per-tenant notice cap and at most 20 recipients per notice (Q53). The SSA answers are Resolved decision Q34: one clickable link, unavoidable for a no-account invitee and mitigated by the fragment token, single use, 48-hour expiry and the configured origin; no attachments; only the recipient varies.                                                                                                                                                                                                    |
+| SEC11 Phishing          | Yes, core new exposure | 48h expiry, one link, fixed subject and template with no tenant or inviter free text, link origin from `INVITATION_LINK_BASE_URL` only (Q32), exactly one recipient and no CC/BCC/attachments, ACS tracking disabled and no Reply-To, per-tenant, per-recipient and global caps (D4, D5); a second fixed notice tells the other admins, `Disabled` ones included, when an `admin` invitation is accepted (Q39); a real sender needs a mandatory recipient-domain allowlist under `NODE_ENV=test` and honors it wherever it is set (Q67, Q96, Q99), and a tenant on `EMAIL_DISABLED_TENANT_IDS` (a demo tenant) sends nothing (Q80); the notices share the kill switch, count in a per-recipient bucket of their own (Q101) and have a per-tenant notice cap and at most 20 recipients per notice (Q53). The SSA answers are Resolved decision Q34: one clickable link, unavoidable for a no-account invitee and mitigated by the fragment token, single use, 48-hour expiry and the configured origin; no attachments; only the recipient varies.                                                                                                                                                                                                    |
 | SEC12 Testing           | Yes                    | Every requirement has a scenario-backed test; every route a cross-tenant test; `cerbos compile` gates policies. The identity OpenAPI document has no request schemas (Q52), so a scan of it has limited value until schemas exist. The OpenAPI-driven ZAP scan (`002` NB1) would hit `rotate`, `revoke` and `invite` (and `045`'s `organization.delete`), so it needs a sandbox tenant, a non-sending email sender and a destructive-route exclusion; because the switch is off by default, a sandbox scan with the switch **on** is required before the first deployment (ticket and gate, Risks).                                                                                                                                                                                                                                                                                                                                                               |
 | SEC13 Deployment        | Partial                | The Communication Services connection string via Key Vault reference, `INVITATION_LINK_BASE_URL`, `INVITATION_EMAIL_KILL_SWITCH`, `MOUNT_IDENTITY_ROUTES`, and one Container Apps Job per maintenance script (Q49), the backfill and the reconcile, started by an operator under just-in-time access with a named second approver (D9; `045` adds the purge job and the reviewed `workflow_dispatch` workflow of Q41), so nothing runs against production from a workstation, except the bootstrap CLI, which an operator runs out of band as `002` designed it (Q91); a deployed environment fails startup without an explicit `EMAIL_PROVIDER` (Q96). |
 | SEC14 Infra permissions | Yes                    | One migration (Checkpoint 3): `0011` (composite key); `045` owns `0012` to `0014` and the purge role (Q103). No `SECURITY DEFINER` function is created here, Q48 and Q49. The startup assertion on the runtime roles also fails when one owns `machine_credential_revocation` (Q109, task 11.1c). |
@@ -2219,7 +2343,14 @@ earlier found the seam gaps closed by D3/D6.
   `Active` orphan would block a later invitation of the same email] → The reconcile
   removes the orphan `_user` after a one-hour grace period (D1, Q84); a stranded user
   and a membership left by a failed compensation are an operator repair driven by the
-  alert on `invitation_accept_compensation_failed` (Q100).
+  alert on `invitation_accept_compensation_failed` (Q100). A membership left by a failed
+  existing-account compensation can carry an unshed SSO link and live sessions: its
+  `_user` is `Active` when the shed was the step that failed, so the resolver admits the
+  member in that tenant until the repair, or `Invited` when the `_user` write failed,
+  which the resolver rejects (Q105 part 3) unless the first-sign-in hook activates it
+  (Open Question 1). The repair removes the membership, which ends the member's access
+  to that tenant, and the invitee is invited again, whose acceptance runs the shed with
+  its session revocation (Q105 part 2).
 - [The inviter check reads membership and `banned` from `tayzu_auth` and the `_user`
   status from `tayzu_app`, and asks Cerbos (Q108), with no transaction around the acceptance (Q89)] → A race of
   a few seconds at most: an inviter disabled between the check and the consumption of
@@ -2234,10 +2365,10 @@ earlier found the seam gaps closed by D3/D6.
   and `addMember` could create two rows for one user, and the resolver's `memberRoleOf`
   reads one] → Ticket "Member uniqueness" (a migration, Checkpoint 3); the idempotent
   `addMember` step of the acceptance (Q89) narrows the window.
-- [The notices consume the per-recipient bucket (Q53): an admin who was just
-  invited three times does not get the admin-accepted notice, and a notice that
-  exceeds a cap is dropped] → Accepted; the operation is never blocked and the drop
-  is logged as `catalog.security.notice_suppressed`. The kill switch stops every
+- [The notices consume a per-recipient bucket (Q53; since Q101 their own, not the
+  invitation one): an admin who already got three notices in the window does not get
+  the next one, and a notice that exceeds a cap is dropped] → Accepted; the operation is
+  never blocked and the drop is logged as `catalog.security.notice_suppressed`. The kill switch stops every
   email, so flipping it also stops the notices (and `045`'s deletion notice).
 - [The invitation caps are stricter than their nominal rate (Q66): `002`'s store
   resets a bucket only after a full window with no allowed request, so a slow
@@ -2246,22 +2377,25 @@ earlier found the seam gaps closed by D3/D6.
   migration. A window-start column would be a later change.
 - [Any tenant's admin can drain a victim admin's per-recipient bucket with three
   invitations and so suppress their admin-accepted notice, and `045`'s deletion notice (the shared
-  bucket of Q53 is now attacker-controllable)] → Accepted for now, the drop is
-  logged; a separate notice-recipient bucket is task 6.12b (Q101).
+  bucket of Q53 is now attacker-controllable)] → Closed by Q101 (task 6.12b): the
+  notices count in a bucket of their own (scope `notice_recipient`), so invitations no
+  longer drain it; only notices of a tenant where the person is an administrator count
+  toward it, and a drop is still logged.
 - [A disabled admin's service accounts and credentials stay valid, and the creator
   was visible only in change events and logs] → The key metadata records
   `createdBy` and the viewer shows it (D7); the off-boarding step in the runbook
   lists them by creator; a creator filter is a ticket.
 - [A real email sender outside production could relay phishing through a known
   demo login (Q67)] → A recipient-domain allowlist is mandatory for a real sender
-  under `NODE_ENV=test` and is honored wherever it is set (Q67, Q96, pending Open
-  Question 1); demo tenants are kept off a real sender by `EMAIL_DISABLED_TENANT_IDS`
+  under `NODE_ENV=test` and is honored wherever it is set (Q67, Q96, Q99); demo tenants are kept off a real sender by `EMAIL_DISABLED_TENANT_IDS`
   (Q80); CI and DAST use the non-sending sender.
 - [The reconcile and the blueprint backfill list organizations and members
   through `tayzu_auth`, which has full CRUD on every tenant's auth data] → Each
   script is its own Container Apps Job with its own identity (Q49) and runs as an
   operator-started job under just-in-time access (D9; `045` puts it behind a reviewed
-  workflow); a read-only role is a ticket.
+  workflow); a read-only role is a ticket and applies to the backfill only, because the
+  reconcile also runs the shed (deletes `account` rows and their `verification` markers,
+  revokes `session` rows and takes the advisory lock, Q105).
 - [Until `045`'s workflow lands, the operator id of the backfill and the reconcile is
   whatever the operator who starts the job sets, not an authenticated identity] →
   The named second approver and the Azure PIM record are the control (D9); `045`
@@ -2286,16 +2420,25 @@ it anyway (task 13.6), because it is the check-then-act of the catalog pipeline 
 the identity operations share, and it is recorded here for traceability. The item
 descriptions are recorded here so that the gate can be checked against the
 repo. Every item is either a task in group 13 (or another named task) or an
-explicit deferral with its justification; the rule "no mount before group 13 is
-done" therefore covers all of them.
+explicit deferral with its justification. The items closed by group 13 are behind the
+rule "no mount before group 13 is done"; the ones closed by other named tasks (M19:
+16.7, 16.13) are Checkpoint 2 items and gate the switch through the first-deployment
+gates.
+
+**Numbering.** `002`'s design was written before the Q103 split moved the old group 12
+(org deletion) out of this file, so its references to this change's tasks are one group
+off: "`043`'s group 14 (hand-offs from `002`)" in `002` Q73 and in `002`'s residual risks
+is group 13 here, and "`043` task 14.2" in `002` Q84 (the multi-tenant identity case) is
+task 13.2. Group 14 here is the mount group. `002` is not edited; this note is the
+mapping. The migrations were not renumbered.
 
 | Item | What it is                                                                                                                                                                                  | Where it is closed                                                                                                                                                                                                                                                                                                                                                                                                |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | M4 (not in `002`'s list; closed here) | Attributes are loaded and authorized in one transaction and the write runs in another (check-then-act)                                                                                      | Task 13.6                                                                                                                                                                                                                                                                                                                                                                                                         |
 | M5   | Password policy: the minimum was 8, no breached-password check, only a rate limit                                                                                                           | Resolved decisions Q22, Q23; tasks 8.1, 8.1a, 8.1b, 8.1c, 8.1d, 13.5, 13.5b                                                                                                                                                                                                                                                                                                                                             |
-| M9   | Composite `(tenant_id, credential_id)` key, credential routes behind Cerbos, create/link existence oracles, the Q42 audit events                                                            | Tasks 11.1, 13.1, 13.3, 15.6                                                                                                                                                                                                                                                                                                                                                                                      |
+| M9   | Composite `(tenant_id, credential_id)` key, credential routes behind Cerbos, create/link existence oracles, the `002` Q42 audit events                                                      | Tasks 11.1, 13.1, 13.3, 15.6                                                                                                                                                                                                                                                                                                                                                                                      |
 | M10  | Identity operations assume one tenant per user; a two-tenant user lets an admin link an SSO `sub` and take the account over                                                                 | Task 13.2 (D14)                                                                                                                                                                                                                                                                                                                                                                                                   |
-| M11  | Temporary passwords have no forced change or expiry                                                                                                                                         | Tasks 13.5 and 13.5b (Q36)                                                                                                                                                                                                                                                                                                                                                                                        |
+| M11  | Temporary passwords have no forced change or expiry                                                                                                                                         | Tasks 13.5 (the forced change) and 13.5d (the expiry) (Q36); 13.5b is M5's generator                                                                                                                                                                                                                                                                                                                                                                                        |
 | M12  | `NODE_ENV=test` relaxes the https, role-assertion and OTLP guards                                                                                                                           | Task 13.8                                                                                                                                                                                                                                                                                                                                                                                                         |
 | M13  | Per-replica in-memory limiters; the re-auth callback has no limiter and deletes a row per hit; `reauthorization.start` inserts a row per blocked attempt                                    | Tasks 13.9 (the callback) and 13.9b (`start`); the invitation caps and the accept route use the DB-backed store (6.10, 8.13); **deferred** to `010` for the in-memory `@fastify/rate-limit` budgets of `/v1`, token exchange and back-channel logout: the multiplication by replica count is a deployment fact, there is no behavior to build here, and the shared-store check is a first-deployment gate (Gates) |
 | M14  | A back-channel logout token with neither `sid` nor `sub` is accepted and consumes its `jti`; discovery and JWKS are fetched before the cheap claim checks; `typ: logout+jwt` is unconfirmed | Tasks 13.10, 13.11; the `typ` confirmation is added to `002`'s Q57 pre-deployment checklist (Gates)                                                                                                                                                                                                                                                                                                                   |
@@ -2326,11 +2469,11 @@ that this list is the whole list; each stays a gate of `002` as well:
   `BYPASSRLS` (task 11.1c makes it cover `machine_credential_revocation` in this change,
   Resolved decision Q109, so this gate does not depend on `045`, whose task 2.4 adds only
   its own marker table), and the real `MIGRATION_DATABASE_URL`
-  wiring (`002` Q57).
+  wiring (`002` Q58, Q62).
 - `TRUST_PROXY` made configurable, set to the exact ingress hop count and verified
-  against the Container Apps ingress peer range (`002` Q57, Q84): the accept route's
+  against the Container Apps ingress peer range (`002` Q58, Q84): the accept route's
   limiter keys on `request.ip`, which is only as trustworthy as this setting.
-- The Cerbos audit log sent to stdout and on to Azure Monitor (`002` Q57).
+- The Cerbos audit log sent to stdout and on to Azure Monitor (`002` Q58).
 - The SSO step-up callback bound to the browser that started it: `nonce`,
   `response_mode=query` and the session cookie at the callback (`002` Q71).
 - The rate-limit stores shared across replicas (`002` Q73; the invitation caps and the
@@ -2350,7 +2493,9 @@ This change's own gates:
   multiply by the replica count until moved to a shared store (M13, `002` Q73
   gate).
 - `MOUNT_IDENTITY_ROUTES` is turned on only after every task in group 13 is
-  ticked, and after `003` serves the accept page at `INVITATION_LINK_BASE_URL`.
+  ticked, together with the other named tasks that close a `002` hand-off item (M19:
+  16.7, 16.13; the traceability table above), and after `003` serves the accept page
+  at `INVITATION_LINK_BASE_URL`.
 - A verified Communication Services sender domain (SPF, DKIM, DMARC) and the
   secret in Key Vault on a dedicated send-only ACS resource; the migration from
   the connection string to a managed identity is done (Q28).
@@ -2366,7 +2511,7 @@ This change's own gates:
   (Q46, Q50, D15). `045` adds the reviewed workflow and its own gates (the GitHub and
   Azure settings checklist, the purge job, the pre-purge warning and the marker alert).
 - A real email sender under `NODE_ENV=test` is configured only with its
-  recipient-domain allowlist (Q67, Q96, pending Q99); every deployed
+  recipient-domain allowlist, which is honored wherever it is set (Q67, Q96, Q99); every deployed
   environment sets `EMAIL_PROVIDER` explicitly, and CI, DAST and demo tenants use the
   non-sending sender.
 - `044` (the recovery path for a squatted account) ships before the mount switch is
@@ -2390,8 +2535,8 @@ This change's own gates:
 | Ticket                                 | Item                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Last-active-admin protection           | Two admins can disable each other; the last admin can be disabled.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Member management                      | `updateMemberRole`, `removeMember`, `setActiveOrganization` as Cerbos-gated procedures (`002` D18), after this change.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| User notifications                     | Status, role and credential changes, and an admin linking or unlinking an SSO identity or a shed removing one on the user's account, notify the user (SEC06). The shed is silent and also signs the user out of every other device (Q86), so this ticket's priority is raised. The shed event already covers part of the SSO case.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Member management                      | `updateMemberRole`, `removeMember`, `setActiveOrganization` as Cerbos-gated procedures (`002` D18), after this change; a promotion to `admin` or `owner` must shed links (ticket "Member-role changes and SSO links").                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| User notifications                     | Status, role and credential changes, and an admin linking or unlinking an SSO identity or a shed removing one on the user's account, notify the user (SEC06). The shed is silent and also signs the user out of every device, the accepting one included once the acceptance commits (Q86, Q106), so this ticket's priority is raised. The shed event already covers part of the SSO case.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Service-account read scope             | A service account as `member` can list all users' emails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Credential hygiene alerts | Alert on a credential whose `lastRequest` is stale or whose rotation is overdue: with no hard expiry (Q20) the rotation-due flag is only a display hint, and a more precise hygiene alert would combine both signals (SEC09/SEC10). |
 | ZAP guards                             | Sandbox tenant, no-send email sender, destructive-route exclusion, and a sandbox scan with the mount switch on.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -2404,7 +2549,7 @@ This change's own gates:
 | `principal_rejected` log flood         | A disabled user's session emits the WARN log on every request. Aggregate or rate-limit it and keep the counter (SEC16).                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Ban-hook mirror (**resolved by Q102, task 4.5; no longer a ticket**) | The ban hook (D2) wrote `admin_enable` to every membership on a global unban, which could revert a tenant-scoped disable made by `setStatus`. It cannot see the old `banned` value, so any `user.update` that carries `banned: false` (enrolling a second factor, for example) sent `admin_enable` too, and the adapter's no-op covered only a user who was already `Active`: a user disabled in one of two tenants (not banned) would have been re-enabled there. Q102 settles it: the hook writes only `admin_disable`, for `banned === true`, and re-enabling goes through `setStatus` only. |
 | One-active-credential constraint | A partial unique index over `apikey` on the "one active credential per service account" invariant, as defence in depth beside the advisory lock (needs a migration, Checkpoint 3, and `apikey.metadata` is a text column) (SEC03/SEC10). |
-| Auth-schema repository module (**promoted into this change by Q69, tasks 5.1b and 5.1c**) | One repository module that requires `tenantId` for every adapter read of `apikey`, `invitation` and `member`, plus a lint ban on direct adapter access to those models elsewhere, because the `auth` schema has no row-level security and the tenant filter is repeated by hand (SEC03/SEC14). |
+| Auth-schema repository module (**promoted into this change by Q69, tasks 5.1b and 5.1c**) | One repository module that requires `tenantId` for every adapter read of `apikey`, `invitation`, `member` and `session`, and reads `user` and `account` only through `global…` functions (D14, sixth amendment), plus a lint ban on direct adapter access to those six models elsewhere, because the `auth` schema has no row-level security and the tenant filter is repeated by hand (SEC03/SEC14). |
 | Bounce and complaint handling | Bounce, complaint and suppression handling for the ACS sender domain, with the operator procedure if the sender's reputation is hit (SEC11). |
 | In-app invitation inbox | Revisit removing the emailed link once `003` offers an in-app invitation inbox (SEC11 Q2; the justification is Q34). |
 | FQDN egress allowlist | FQDN egress allowlisting for ACS and `api.pwnedpasswords.com`, with `010` (SEC15). |
@@ -2414,10 +2559,12 @@ This change's own gates:
 | Offline breached-password corpus | Evaluate an offline corpus to remove the SHA-1 prefix egress to `api.pwnedpasswords.com` (Resolved decision Q81; SEC05/SEC15). |
 | Per-candidate `view` redaction | The item `002` Q84 handed to a gate or a `043` ticket: per-candidate redaction in catalog `view` results. It concerns the catalog read path, not an identity operation. |
 | Off-boarding review by creator | A disabled admin's service accounts and credentials stay valid, and so do the SSO links the admin recorded: they carry no creator (the provenance marker records only the links users made, Q87), so the creator is in the `auth.security.account_linked` events and a runbook step lists them. The viewer shows `createdBy`; add a creator filter and a runbook-driven review that lists and rotates or revokes everything a disabled admin created (SEC03/SEC10). |
-| Read-only role for the maintenance scripts | The reconcile and the blueprint backfill need only to read organizations and members, but they hold `tayzu_auth` (full CRUD); a read-only auth role would narrow them (SEC14). |
+| Read-only role for the maintenance scripts | The blueprint backfill needs only to read organizations; the reconcile also deletes `account` rows and their `verification` markers and revokes `session` rows for the shed (Q105), so a narrowed role for it must keep those deletes. Both hold `tayzu_auth` (full CRUD); a narrower auth role would limit them (SEC14). |
 | Password, MFA and email-change notifications | `002` Q46 handed them to `043`/`044`. `043` adds password-setting paths and an email sender but builds none of these notices: **deferred to `044`** (Resolved decision Q92) (SEC06). |
 | Member uniqueness | A `UNIQUE (organization_id, user_id)` index on `auth.member` (a migration, Checkpoint 3): a concurrent acceptance and `addMember` could otherwise create two rows for one user, and `memberRoleOf` reads one (SEC03). |
 | Alerts for `010` | Alert on `catalog.security.sso_link_shed`, a volume of `catalog.security.principal_rejected`, `catalog.security.credential_rotation_incomplete`, `catalog.security.sso_link_marker_failed` and `catalog.security.invitation_accept_compensation_failed`. |
+| One Visma Connect link per user | Eighth pass, TK-1. A user can hold more than one `visma-connect` account, and `ssoSidForSignIn` (`auth.ts`) reads the first `visma-connect` account of the user, not the account the callback signed in through, so a session's `ssoSid` can come from another link. `linkSsoAccount` should refuse a target that already has a `visma-connect` account, and `ssoSidForSignIn` should read the account the callback signed in through (SEC03). |
+| Member-role changes and SSO links | Eighth pass, TK-2. The refusal of Q88 holds at link time only, so the future member management (ticket "Member management") must, when it promotes a member to `admin` or `owner`, shed that user's unmarked links and revoke their sessions, as a join does (D4 step 7), or a link an admin recorded on a plain member would survive the promotion (SEC03). |
 
 ## Migration Plan
 
@@ -2430,8 +2577,8 @@ This change's own gates:
      `(tenant_id, credential_id)` key on `machine_credential_revocation`, with the
      matching change in `packages/catalog/src/persistence/schema.ts` (task 11.1).
    - `045` owns `0012` to `0014` (the deletion marker, the `tayzu_purge` and
-     `tayzu_deletion_admin` roles and the row-level policies of the purge); nothing is
-     renumbered.
+     `tayzu_deletion_admin` roles and the row-level policies of the purge); no migration
+     is renumbered.
 
    The blueprint evolution of `_user` (D1) is not a migration: it is a
    `blueprints.update` per existing tenant plus the new-tenant constant.
@@ -2465,7 +2612,10 @@ This change's own gates:
 Rows marked "(moved to 045 by Q103)" are carried verbatim in
 `045-org-deletion-and-data-retention`'s design, where they now govern; rows marked
 "(deletion part moved to 045 by Q103)" are carried there whole too, and stay in force
-here for their other parts. A mention of org deletion, the purge, the marker or the
+here for their other parts. The one exception is Q85: its deletion part, "Require review
+from Code Owners" as the fifth Q55 checklist item, is stated in `045`'s D3 and docs task
+under Q55 and Q64, but `045`'s table does not carry the row; carrying it there is a `045`
+edit, outside this change. A mention of org deletion, the purge, the marker or the
 maintenance workflow inside a row of this table is therefore about `045`.
 
 Per `openspec/project.md` §20, drawn from the shared `002`/`043` decision set
@@ -2488,7 +2638,7 @@ this table:
 | Q12 | (Drift b3/b4, VCDM, 2026-10-01) Service-account principal                                                                                                     | The signed machine claim stays `member` with no teams and no moderated blueprints (002 Q28); `userId` is added only as an attribution claim. Routes address a user by its `_user` entity identifier (email or `svc-…`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Q13 | (Drift b5, VCDM B4, 2026-10-01) Immediacy of disable, rotate and revoke                                                                                       | Rotate and revoke write the revocation list (effective within seconds). Disable is a `_user.status` check on the resolver's machine branch with the 5-second cache, failing closed, so a disabled service account can be re-enabled without a migration.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Q14 | (moved to 045 by Q103) (Drift b6, VCDM B5, 2026-10-01) Org deletion                                                                                                                  | Two phases: access is revoked immediately and the tenant is marked pending deletion; after a 7-to-14-day window a job purges in idempotent steps (catalog data, then Better Auth rows). The purge of append-only rows goes through a `SECURITY DEFINER` function owned by `tayzu_migrator` that deletes only for a tenant marked for deletion (a migration, Checkpoint 3). **The `tayzu_migrator` owner is superseded by Q26, and Q48 then removed the function altogether**; the two phases and the window stand.                                                                                                                                                                                         |
-| Q15 | (VCDM B9, 2026-10-01) Invitation email abuse limits | _Extended by Q53: the kill switch and the per-recipient bucket also cover the two notice templates. Semantics of the windows on `002`'s store: Q66._ 30 per hour per tenant, 3 per 24 hours per recipient across all tenants (keyed by an HMAC, Q93), and a global kill switch (environment variable), on a shared store before the first deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Q15 | (VCDM B9, 2026-10-01) Invitation email abuse limits | _Extended by Q53: the kill switch and the per-recipient bucket also cover the two notice templates. Semantics of the windows on `002`'s store: Q66. Q101 gives the notices a per-recipient bucket of their own._ 30 per hour per tenant, 3 per 24 hours per recipient across all tenants (keyed by an HMAC, Q93), and a global kill switch (environment variable), on a shared store before the first deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Q16 | (Drift b7, 2026-10-01) Testing the service-account role ceiling                                                                                               | The Cerbos rule stays as a defensive layer, tested at the policy level, plus a `system`-actor test; no new role-editing operation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Q17 | (VCDM, 2026-10-01) Human attestations                                                                                                                         | Deferred to `010`'s SSA, as 002 Q59 and Q79.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Q18 | (Amendment question, 2026-10-01) Invitation for an email that already has an account                                                                          | _Extended by Q73, Q86 and Q87: an SSO link without a provenance marker is shed at acceptance and the user's other sessions are revoked; Q105 makes the shed an explicit step of every attempt and compensates the membership; Q106 also revokes the accepting session after the acceptance commits when a link was shed._ Acceptance requires an authenticated session of that same account plus the token; it adds only the membership, activates the `_user` and sets no password. |
@@ -2504,7 +2654,7 @@ this table:
 | Q28 | (VCDM re-run Q6, 2026-10-01) ACS authentication                                                                                                               | Connection string in Key Vault, on a dedicated send-only ACS resource restricted to the sender domain, rotation documented; a managed identity is a first-deployment gate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Q29 | (Drift Q-A, 2026-10-01) Org API keys by a non-owner admin                                                                                                     | The organization plugin's access control grants the `admin` role `apiKey` create/read/update/delete, and Better Auth is called headerless with `body.userId`; Cerbos stays the real gate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Q30 | (Drift Q-B, 2026-10-01) Where the identity operations live                                                                                                    | Orchestration in `apps/api` with structural ports in `@tayzu/auth` (the `UserSyncPort` pattern); pure parts (status machine, token, password policy, email port) stay in `packages/auth`. No new dependency.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Q31 | (Drift Q-C, 2026-10-01) The three existing identity procedures                                                                                                | _Q73's provenance marker on a link recorded through `linkSsoAccount` is superseded by Q87: the marker is written for the links users make, and `linkSsoAccount` refuses an admin or owner target (Q88)._ `create`, `linkSsoAccount` and `unlinkSsoAccount` get HTTP routes and join the mounted set (fifteen routes), so their step-up is tested over HTTP. |
+| Q31 | (Drift Q-C, 2026-10-01) The three existing identity procedures                                                                                                | _Q73's provenance marker on a link recorded through `linkSsoAccount` is superseded by Q87: the marker is written for the links users make, and `linkSsoAccount` refuses an admin or owner target (Q88)._ _(After Q103: 14 routes, 13 oRPC; the "fifteen" below counted `045`'s `organization.delete`.)_ `create`, `linkSsoAccount` and `unlinkSsoAccount` get HTTP routes and join the mounted set (fifteen routes), so their step-up is tested over HTTP. |
 | Q32 | (Drift Q-D, 2026-10-01) Invitation link origin                                                                                                                | `INVITATION_LINK_BASE_URL` (https outside test, must be one of `ALLOWED_ORIGINS`) with a fixed path; the link stays inert until `003` builds the page, documented.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Q33 | (Drift Q-E, 2026-10-01) Emails the entity identifier cannot hold                                                                                              | Rejected with `CATALOG_VALIDATION_FAILED` in `invite` and `create`, documented; no `001` change.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Q34 | (VCDM re-run Q7, 2026-10-01) SEC11 answers                                                                                                                    | Q1 yes. Q2: one clickable link, the invitation-accept link, unavoidable for a no-account invitee, mitigated by a fragment token, single use, 48-hour expiry and a configured origin. Q3 yes, only the recipient address varies. Q4 no attachments. Q5 fixed template, validated recipient.                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -2518,7 +2668,7 @@ this table:
 | Q42 | (Drift B2, 2026-10-01) How `invite` reaches Better Auth                                                                                                       | The admin's session headers are forwarded into `auth.api.createInvitation` (headers in the context, like the step-up headers); re-invite cancel, the invitation limit and the hooks stay Better Auth's.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Q43 | (Drift B3, 2026-10-01) OpenAPI document for the identity routes | _Narrowed by Q52: paths, methods, path parameters and `x-tayzu-risk` only, no schemas._ A second committed document, `openapi/identity.openapi.json`, generated in `apps/api` with its own `contract:generate` and `contract:check`; the `x-tayzu-risk` assertions run on it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Q44 | (Drift B4, 2026-10-01) Per-key API rate limit                                                                                                                 | 60 verifications per hour per key, configurable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Q45 | (VCDM B2, 2026-10-01) Mandatory authorization in the identity router | _Extended by Q57: the wrapper checks the caller's tenant first and fails closed._ A `defineIdentityOperation({ authorization, handler })` wrapper resolves the target server-side, calls Cerbos and emits `authz_denied`; a test forbids a bare handler; a route-table-driven HTTP matrix covers each of the 14 oRPC routes (admin allowed, member 403, machine token 403, unauthenticated 401, foreign target 404).                                                                                                                                                                                                                                                                                                                                                                    |
+| Q45 | (VCDM B2, 2026-10-01) Mandatory authorization in the identity router | _Extended by Q57: the wrapper checks the caller's tenant first and fails closed._ _(After Q103: 13 oRPC routes, 14 in all; the "14 oRPC routes" below counted `045`'s `organization.delete`.)_ A `defineIdentityOperation({ authorization, handler })` wrapper resolves the target server-side, calls Cerbos and emits `authz_denied`; a test forbids a bare handler; a route-table-driven HTTP matrix covers each of the 14 oRPC routes (admin allowed, member 403, machine token 403, unauthenticated 401, foreign target 404).                                                                                                                                                                                                                                                                                                                                                                    |
 | Q46 | (Amendment Open Question, 2026-10-01) A human member with no `_user` row in the active tenant | _The rejection is `401 CATALOG_CONTEXT_REQUIRED` with the reason only in the log (Q77)._ _Extended by Q50: the rejection reason is `user_missing` and the reconcile creates the missing rows._ _Q105 widens the rule: any status other than `Active` is rejected too, and the reconcile sheds before it creates a row for a member of two or more tenants._ `resolveContext` rejects it (fail closed); the `_user` backfill runs before the first deployment so no legitimate member is locked out. |
 | Q47 | (deletion part moved to 045 by Q103) (Amendment choices confirmed by the human, 2026-10-01) Details settled while applying Q38-Q45 | (1) An acceptance request with no `Origin` header is rejected. (2) The org-deletion confirmation travels in the query (`?confirmation=`), which telemetry already drops. (3) Rotation is also serialized per credential for integrations with no service account. (4) Invitation cancel uses Better Auth's `cancelInvitation` with the admin's forwarded session headers, like `invite` (Q42). |
 | Q48 | (moved to 045 by Q103) (Drift N1, 2026-10-01) Catalog-side purge ownership | No `SECURITY DEFINER` functions: the purge job logs in as `tayzu_purge` and deletes under per-table RLS policies limited to tenants with a due marker and the amended append-only trigger; listing due tenants is a `SELECT` policy on the marker for `tayzu_purge`. Supersedes Q26's function wording; every other Q26 guarantee stands. |
@@ -2526,7 +2676,7 @@ this table:
 | Q50 | (Drift N3, VCDM G6, 2026-10-01) `_user` backfill | _Extended by Q75: the reconcile also removes an orphan `_user` (an `Active` human row with no membership)._ A repeatable reconcile that creates every missing `_user` row through the state machine (`created_active`), with a `user_missing` rejection reason and a spec scenario; it is also the repair path for a Q46 lockout. |
 | Q51 | (Drift N2, 2026-10-01) Bootstrap CLI location | The CLI moves to `apps/api/scripts/bootstrap-admin.ts`; `bootstrapAdmin()` and its test stay in `@tayzu/auth`. |
 | Q52 | (Drift N4, 2026-10-01) Identity OpenAPI content | Paths, methods, path parameters and `x-tayzu-risk` only, no new dependency; DAST value is documented as limited until schemas exist. |
-| Q53 | (deletion part moved to 045 by Q103) (VCDM G1, 2026-10-01) Notice-email abuse controls | All three templates are under the kill switch and the per-recipient bucket, with a per-tenant notice cap and at most 20 recipients per notice (truncation logged). |
+| Q53 | (deletion part moved to 045 by Q103) (VCDM G1, 2026-10-01) Notice-email abuse controls | _Q101: the notices' per-recipient bucket is their own, not the invitation one._ All three templates are under the kill switch and the per-recipient bucket, with a per-tenant notice cap and at most 20 recipients per notice (truncation logged). |
 | Q54 | (VCDM G3, 2026-10-01) Banned-sign-in oracle | A group-13 task: a banned user's sign-in fails exactly like any other failure, local and SSO, with a banned case in the enumeration test. |
 | Q55 | (moved to 045 by Q103) (VCDM G8, 2026-10-01) GitHub settings for the maintenance workflow | _Extended by Q64: a fourth checklist item, the federated identity's Azure role limited to starting the named jobs._ Required reviewers with "prevent self-review", deployment branch limited to `master`, OIDC subject pinned to the environment, recorded in a settings checklist the human applies. |
 | Q56 | (VCDM G12, 2026-10-01) Per-tenant caps | 50 service accounts and 200 credentials per tenant, configurable in `apps/api/src/config.ts`; zero or a disabled value fails startup. |
@@ -2540,9 +2690,9 @@ this table:
 | Q64 | (moved to 045 by Q103) (VCDM NB-3, 2026-10-01) Maintenance workflow inputs and OIDC scope | Inputs are `choice` or regex-validated and reach the job only through `env`; a test fails on `${{ inputs.* }}`, `github.event.*` or `github.head_ref` inside `run:`; the federated identity's Azure role only starts the named jobs (a fourth item in the Q55 checklist); CODEOWNERS covers the workflow and `apps/api/scripts/**`; actions are pinned by SHA. |
 | Q65 | (moved to 045 by Q103) (Drift B1, 2026-10-01) Purge visibility of a user's memberships | The purge role gets read-only `SELECT` on every `auth.member` row; its deletes stay limited to tenants with a due marker. Q59 is reworded accordingly: `tayzu_auth` keeps a permissive policy, and the due-tenant restriction applies to the purge role. |
 | Q66 | (Drift B2, 2026-10-01) Invitation cap semantics on 002's store | Accepted and documented: a bucket resets only after a full window with no allowed request, which is stricter than nominal; a test pins the slow-trickle case; no migration. |
-| Q67 | (VCDM Q-B, 2026-10-01) Email outside production | _Extended by Q80: demo tenants are also kept off a real sender by the `EMAIL_DISABLED_TENANT_IDS` list._ _Q96 redefines "production" as `NODE_ENV !== 'test'`, which empties "outside production": wording provisional, pending Open Question 1._ A real sender outside production requires a mandatory recipient-domain allowlist (startup fails without it); CI, DAST and demo tenants use the non-sending sender. |
+| Q67 | (VCDM Q-B, 2026-10-01) Email outside production | _Extended by Q80: demo tenants are also kept off a real sender by the `EMAIL_DISABLED_TENANT_IDS` list._ _Q96 redefines "production" as `NODE_ENV !== 'test'`, which empties "outside production"; settled by Q99: the allowlist is honored wherever it is set and is mandatory only for a real provider under `NODE_ENV=test`._ A real sender outside production requires a mandatory recipient-domain allowlist (startup fails without it); CI, DAST and demo tenants use the non-sending sender. |
 | Q68 | (moved to 045 by Q103) (VCDM Q-C, 2026-10-01) Pre-purge warning and orphan-marker alert | A first-deployment gate for `010`, which owns alerting. |
-| Q69 | (VCDM Q-D, 2026-10-01) Hand-written `auth`-schema readers | One `auth-repository.ts` in `apps/api` requiring `tenantId` on every read of `apikey`, `invitation` and `member`, plus a lint ban on direct adapter access to those models from the identity code. |
+| Q69 | (VCDM Q-D, 2026-10-01) Hand-written `auth`-schema readers | _Extended (G6-5, sixth amendment): also `session`, `user` and `account`, the last two through `global…` functions._ One `auth-repository.ts` in `apps/api` requiring `tenantId` on every read of `apikey`, `invitation` and `member`, plus a lint ban on direct adapter access to those models from the identity code. |
 | Q70 | (deletion part moved to 045 by Q103) (Amendment Open Question 1, 2026-10-01) `onBehalfOf` principal for maintenance scripts | `gh:<numeric GitHub actor id>` with actor type `user`; it fits 002's id pattern, is authenticated by the workflow and changes nothing in 002. |
 | Q71 | (Amendment Open Question 2, 2026-10-01) DAST seed and the breached-password check | _Refined (tasks 8.1a and 4.6b): the stub is an `.mjs` module, and `dast.sh` loads it for the whole `dast.sh up`, which includes the API server._ The CI step injects the range-API stub with `NODE_OPTIONS=--import`; no seam in production code. |
 | Q72 | (moved to 045 by Q103) (Amendment, 2026-10-01) CODEOWNERS owner | `@nahuex` (the repository owner) owns the maintenance workflow and `apps/api/scripts/**`. |
@@ -2555,10 +2705,10 @@ this table:
 | Q79 | (deletion part moved to 045 by Q103) (Drift B6, 2026-10-01) Telemetry in maintenance scripts | Each script starts telemetry, emits its audit events and flushes before exit; the environment names are documented. |
 | Q80 | (VCDM Q-B, 2026-10-01) Demo tenants and the real sender | An `EMAIL_DISABLED_TENANT_IDS` list honored by the invitation and notice dispatcher; a listed tenant's emails are suppressed and logged as `catalog.security.email_tenant_blocked`. |
 | Q81 | (VCDM Q-C, 2026-10-01) SHA-1 prefix of the breached-password query | Recorded in `crypto-inventory.md` as a protocol-mandated exception (five hex characters leave, SHA-1 is not used for storage or authentication), with a ticket to evaluate an offline corpus. |
-| Q82 | (moved to 045 by Q103) (Sixth-pass Open Question 1, drift B7, 2026-10-07) Approving the two purge-grant blocks | Split into `0013_tenant_deletion_grants` (task 12.1b, catalog side) and `0014_tenant_deletion_auth_grants` (task 12.1c, Better Auth side), each approved separately at Checkpoint 3 and never edited afterwards. Four migrations in total. |
+| Q82 | (moved to 045 by Q103) (Sixth-pass Open Question 1, drift B7, 2026-10-07) Approving the two purge-grant blocks | _(043's old tasks 12.1b and 12.1c are `045`'s tasks 2.2 and 2.3; 043 keeps one migration, `0011`.)_ Split into `0013_tenant_deletion_grants` (task 12.1b, catalog side) and `0014_tenant_deletion_auth_grants` (task 12.1c, Better Auth side), each approved separately at Checkpoint 3 and never edited afterwards. Four migrations in total. |
 | Q83 | (Sixth-pass Open Question 2, drift M12, 2026-10-07) Concurrent `_user` status writes | The status adapter writes with the `expectedVersion` of the row it read and retries at most 3 times before failing closed; a race never revives a `Disabled` user. |
-| Q84 | (Sixth-pass Open Question 3, Q75 follow-up, 2026-10-07) Reconcile of an orphan `_user` | The reconcile removes a human `_user` that is `Active` and has no `member` row in its tenant (never `Invited`, `Staged` or a service account), as `system` with `onBehalfOf` the operator, and counts it. |
-| Q85 | (Amendment details confirmed by the human, 2026-10-07) Names and values fixed during the Q73-Q81 amendment | `ACS_CONNECTION_STRING` and `EMAIL_PROVIDER` (`acs` or `none`); Better Auth's `maxPasswordLength` 256 (UTF-16 units) while Q22 keeps 128 code points; a credential-viewer page of 200; "Require review from Code Owners" as the fifth Q55 checklist item; SSO-link markers identified `sso-link:<accountId>` (Q87 pins `<accountId>` to the `account` row's own id, not the provider's `accountId` column). |
+| Q84 | (Sixth-pass Open Question 3, Q75 follow-up, 2026-10-07) Reconcile of an orphan `_user` | _Q89: an orphan is removed only when its `createdAt` is more than one hour old._ The reconcile removes a human `_user` that is `Active` and has no `member` row in its tenant (never `Invited`, `Staged` or a service account), as `system` with `onBehalfOf` the operator, and counts it. |
+| Q85 | (deletion part moved to 045 by Q103) (Amendment details confirmed by the human, 2026-10-07) Names and values fixed during the Q73-Q81 amendment | `ACS_CONNECTION_STRING` and `EMAIL_PROVIDER` (`acs` or `none`); Better Auth's `maxPasswordLength` 256 (UTF-16 units) while Q22 keeps 128 code points; a credential-viewer page of 200; "Require review from Code Owners" as the fifth Q55 checklist item; SSO-link markers identified `sso-link:<accountId>` (Q87 pins `<accountId>` to the `account` row's own id, not the provider's `accountId` column). |
 | Q86 | (VCDM NB-5, 2026-10-07) Sessions issued through a shed or admin-unlinked SSO link | _**The exemption of the accepting session is amended by Q106**: when the shed removed a link, the accepting session is revoked too, after the acceptance commits, and the shed sweeps the sessions a second time after its deletion commits._ On a shed and on an admin `unlinkSsoAccount`, every session of the user is revoked except the one carrying the acceptance request (the hook path revokes all), not filtered on `ssoSid`; `auth.security.session_revoked` gets the reason `sso_link_shed`. |
 | Q87 | (VCDM NB-6, 2026-10-07) Fail-closed link provenance | _Q105: the acceptance takes the lock in its explicit shed step and the reconcile takes it in its own shed._ Positive provenance: a marker is written for self-service links (`account.create.after` with an endpoint context), keyed by `account.id`, deleted in `account.delete.after` on every path, with a far-future sentinel expiry; every unmarked link counts as admin-recorded and is shed. Link, acceptance and `afterAddMember` take one Postgres advisory lock per user id. Supersedes Q73's admin-side marker. |
 | Q88 | (VCDM G7-2, 2026-10-07) Admin-recorded SSO links on admins or owners | Refused with the generic rejection; admin accounts self-link through `/link-social` with step-up. |
@@ -2587,4 +2737,49 @@ this table:
 
 ## Open Questions
 
-None. The seventh pass's four questions were answered on 2026-10-07 (Q99-Q102), the split of org deletion into `045` was approved the same day (Q103), and the eighth pass's and the eighth drift-check's decisions are Q105-Q110.
+The four open questions left by the seventh amendment were answered on 2026-10-07
+(Q99-Q102); the seventh VCDM pass's three questions are Q86-Q88; the split of org
+deletion into `045` was approved the same day (Q103), and the eighth pass's and the
+eighth drift-check's decisions are Q105-Q110. A consistency check after applying them
+left one point that only the human can decide. It is also asked in chat, and nothing
+below counts as approved until the human answers; the answer is then recorded as a
+Resolved decision and applied to D2, tasks 3.2 and 4.4 and the spec ("User status has
+four states with forward-only transitions" and its scenario "First sign-in activates a
+staged or invited user"). Until then those passages keep their current wording.
+
+**Open Question 1: may the first-sign-in hook activate the `_user` of a second tenant
+without the shed (Q105)?** Q105 part 3 rejects an `Invited` or `Staged` member in the
+resolver, and the spec scenario "An `Invited` member is rejected by the resolver" names
+a failed acceptance as the case. But the first-sign-in hook (D2, task 4.4) moves a
+`Staged` or `Invited` `_user` to `Active` on the user's next sign-in, is not scoped to a
+tenant and runs no shed. If an existing-account acceptance fails at its `_user` write
+and its compensation fails too (D4 step 4, Q105 part 1), the membership remains, its
+`_user` is `Invited` and an unmarked SSO link can still be in place (the SSO callback
+refuses a session through it, Q106, but a local sign-in does not). One local sign-in then
+activates the row, and the member is admitted to the second tenant without the shed that
+Q105 requires. In the normal flows the hook is never needed for a second tenant: the
+membership hook already writes `invitation_accepted` (D2). Options:
+
+1. **(Recommended)** The hook writes `first_sign_in` only for a user who holds exactly
+   one membership, to that membership's `_user`; for a user of two or more tenants it
+   writes nothing, so such a `_user` stays rejected by the resolver (Q105 part 3) until
+   a path that sheds activates it (a new acceptance, the membership hook or the
+   reconcile) or the operator repair of Q100 removes the membership. Task 4.4 gains a
+   two-tenant case. Why: the hook is reached for a second tenant only in a failure
+   state, for which Q100 already chose an operator repair; this adds no shed caller, no
+   session revocation inside a sign-in and no new attribute value, and the spec
+   sentence stays true for a single-tenant user (it gains "of a single tenant").
+2. For a user of two or more tenants the hook first runs the shed of D4 step 7 through
+   `SsoLinkShedPort`, with its session revocation (which can revoke the session the
+   sign-in is creating) and under the per-user lock, and activates only when the shed
+   succeeded; `tayzu.identity.sso_link.path` gains the value `first_sign_in`, and task
+   4.4 gains a two-tenant case. The spec sentence stays as written for every user, at
+   the cost of a fourth shed caller on the sign-in path.
+3. Drop `Invited` from the `first_sign_in` row, so that `Invited` reaches `Active` only
+   through `invitation_accepted`. The smallest change to the table, but a `Staged`
+   `_user` beside another membership is still activated without the shed, and the spec
+   sentence and task 3.2 change.
+
+The residual that no option removes, the same double fault with an `Active` `_user`
+(the shed failed, then the compensation failed), is named in Risks and in the runbook of
+task 16.5 under Q100.

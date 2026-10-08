@@ -62,7 +62,9 @@ invitation in the tenant cancels that invitation.
   one once the acceptance has committed, when the user joins a second tenant; the SSO
   callback creates no session through a shed link, so an invitation cannot turn it, or
   a session issued through it, into a way into the second tenant; an admin cannot
-  record such a link on an admin or an owner. This is the first unauthenticated route and needs its
+  record such a link on an admin or an owner. The account-linking configuration is pinned
+  so that only the links a user makes carry a provenance marker, and a link whose marker
+  cannot be written is removed. This is the first unauthenticated route and needs its
   own SSA row.
 - **Invitation email (SEC11-hardened).** A new outbound-email capability with a
   fixed template and subject, exactly one recipient and one link, the link
@@ -75,8 +77,9 @@ email provider explicitly, a real sender under the test environment needs a mand
 recipient-domain allowlist (honored wherever it is set), CI and DAST use the
 non-sending sender, and a list of disabled tenants keeps demo tenants from sending real
 mail. A second fixed template tells the other admins of an accepted
-  `admin` invitation; the notices share the kill switch and the per-recipient
-  bucket, with a per-tenant notice cap and at most 20 recipients per notice (the
+  `admin` invitation; the notices share the kill switch, count in a per-recipient
+  bucket of their own (so invitations cannot exhaust it, nor the notices the invitation
+  budget), and have a per-tenant notice cap and at most 20 recipients per notice (the
   org-deletion notice of `045` joins them), and the invitation caps answer with one
   uniform `Retry-After`.
 - **Service accounts.** A `_user` sub-kind for non-human actors, API-only
@@ -90,7 +93,9 @@ mail. A second fixed template tells the other admins of an accepted
   target with the answer for an unknown id, and a credential records the admin who
   created it.
   Disable is enforced on the request path within seconds and is reversible; delete
-  is an explicit operation that revokes every bound credential, and a token whose
+  is an explicit operation that revokes every bound credential, serialized with the
+  creation and rotation of its credentials, a service account cannot be created while a
+  credential is still bound to its identifier, and a token whose
   service account is absent or not `Active` is rejected.
 - **Org API-credentials viewer.** A read surface over org-scoped API keys
   (service accounts and integrations) showing name, kind, prefix, created,
@@ -110,7 +115,7 @@ mail. A second fixed template tells the other admins of an accepted
 - **Every member has a `_user` row.** A member with no `_user` row is rejected
   (reason `user_missing`), and a repeatable reconcile, run as an operator-started job, creates every missing row through the state machine (shedding first the SSO links
   that a member of two tenants did not make) and removes an orphan
-  row that a rolled-back acceptance leaves; it is also the repair path for a member
+  row that a failed acceptance leaves (there is no transaction, Q89); it is also the repair path for a member
   that predates this change. A banned user's sign-in fails exactly like any other
   failure, and every identity procedure parses its input strictly.
 - **Org deletion and data retention** are not part of this change: the two-phase
@@ -140,7 +145,8 @@ mail. A second fixed template tells the other admins of an accepted
   auth events; no identifier in a URL path reaches telemetry, and no catalog span
   carries a `_user` identifier (a fixed placeholder replaces it).
 - **Hand-offs from `002` (`002` Q73).** Every item (M5, M9-M15, M17-M20) is a task in
-  group 13 or a recorded deferral: composite credential-revocation key, Cerbos in
+  group 13, another named task (for example 16.7 and 16.13 for M19) or a recorded
+  deferral: composite credential-revocation key, Cerbos in
   front of the machine-credential operations, the SSO-link tenant check, no
   existence oracle, banned-user rejection, temporary-password rules, the
   ownership items, the startup and limiter fixes, and the CI and diagram items
@@ -210,13 +216,19 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   settings, the `createAppFromEnv` refusal, the runtime-role assertion and the
   route-template paths), `packages/catalog/src/service/entities.ts` and the catalog
   telemetry contract (the `_user` identifier placeholder),
+  `apps/api/src/error-mapping.ts` and `packages/auth/src/errors.ts` (the
+  `AuthRateLimitedError` and its `Retry-After`), `packages/catalog/src/domain/limits.ts`
+  and `identifiers.ts` (one exported `ENTITY_IDENTIFIER_PATTERN`), the `@tayzu/auth`
+  fixture `packages/auth/src/__fixtures__/admin-user.ts` (it gains a `tayzu_app` pool
+  parameter), a new `scripts/ci/dast-coverage.ts` (the DAST scan's 2xx check),
   `eslint.config.js` and a new restriction module, `vitest.shared.ts` and `turbo.json`
   (the breached-password stub), the test harness `packages/db/src/harness.ts`,
   `packages/catalog/src/persistence/schema.ts`, `.github/dependabot.yml`, and ADR-0013.
 - **Database**: **one migration, a Checkpoint 3 item.** `0011` adds a
   composite `(tenant_id, credential_id)` key to `machine_credential_revocation`.
   `045` owns `0012`-`0014` (the deletion marker, the purge and deletion-admin
-  roles and the row-level policies); nothing is renumbered. The `_user`
+  roles and the row-level policies); no migration is renumbered (the task groups after
+  the old group 12 moved up by one, so `002`'s "`043` group 14" is group 13 here). The `_user`
   blueprint gains `accountKind` and a four-value `status` through the catalog's
   blueprint-update operation, run once per existing tenant (a data-plane
   change, not DDL, per `001` design D7). Everything else reuses tables `002`
@@ -249,15 +261,17 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   blocking ones (the sessions issued through that link surviving, and the link's
   provenance failing open), ten non-blocking ones and three questions, and an eighth pass
   that found two blocking ones (a failed or retried existing-account acceptance skipping
-  the shed, and the ban hook re-enabling a user disabled in one tenant) and twelve
-  non-blocking ones. All are folded into
-  `design.md` under "Security considerations", into the spec and into the tasks.
+  the shed, and the ban hook re-enabling a user disabled in one tenant) and ten
+  non-blocking ones (G8-1 to G8-9 and G8-12). All are folded into
+  `design.md` under "Security considerations", into the spec and into the tasks, except
+  the org-deletion gaps, which moved to `045` with Q103 and are closed there.
   New surface: the first public route, the first outbound email and the Pwned
   Passwords egress.
 - **Docs**: `docs/security/data-retention.md` (new, for the operational policies; `045`
-  extends it with the retention policy), and updates to
+  extends it with the retention policy), new ADRs 0017, 0018 and 0020, and updates to
   `secrets.md`, `attack-surfaces.md`, `crypto-inventory.md`, `dependencies.md`,
-  `docs/catalog/auth-and-rbac.md` and `docs/architecture/system-diagram.md`, and
+  `docs/catalog/auth-and-rbac.md`, `docs/catalog/catalog-core.md` (the `_user`
+  identifier placeholder) and `docs/architecture/system-diagram.md`, and
   an amendment of `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Better Auth's
   `ac` roles are neutralized).
 

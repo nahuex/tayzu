@@ -118,6 +118,12 @@ re-enable a user disabled in one tenant.
 - **WHEN** the invitation is accepted with its valid token
 - **THEN** the acceptance fails in the same way as any other rejected acceptance and `bob` stays `Disabled`
 
+#### Scenario: A disabled user is not revived by a hook
+
+- **GIVEN** a `_user` entity with status `Disabled`
+- **WHEN** a membership of that user is added again, or any other status hook runs for them
+- **THEN** no status event revives the user and the status stays `Disabled`
+
 ### Requirement: Only an admin may invite a user or change another user's status
 
 Inviting, cancelling or resending an invitation, and changing a user's status
@@ -195,7 +201,7 @@ user's pending invitations of that tenant, and cancel the pending invitations th
 user created in that tenant. Only for a user whose single membership
 is that tenant MUST it also ban the user and revoke all their sessions. The ban
 MUST NOT use Better Auth's admin-plugin ban routes, which the global role `user`
-cannot call. `resolveContext` MUST reject a banned user, and MUST admit a human only
+cannot call. `resolveContext` MUST reject a banned user (reason `user_banned`), and MUST admit a human only
 when their `_user` status in the active tenant is `Active`: a `Disabled`, `Invited` or
 `Staged` status and a missing `_user` row (reason `user_missing`) MUST be rejected, with
 the answer `CATALOG_CONTEXT_REQUIRED` (401) and the reason only in the log, so that an existing
@@ -203,7 +209,8 @@ session and any new sign-in, local or through SSO, stop granting access. A banne
 sign-in MUST fail with the same status, error code and body as any other sign-in
 failure, locally and through SSO, after the credential was verified (as Better Auth
 refuses a ban), so that the response never confirms a correct password. Enabling
-the user MUST reverse only what disabling did in that tenant. Every rejection by
+the user MUST reverse only what disabling did in that tenant (including the ban of a
+single-membership user). Every rejection by
 these checks MUST be logged as `catalog.security.principal_rejected` and counted.
 
 #### Scenario: A disabled user's sessions stop working
@@ -569,7 +576,10 @@ keyed by the link's own row identifier (never by the identity provider's subject
 written when the link is created and removed whenever the link is removed, by any
 path, and a link without a marker MUST count as recorded by an admin. A marker MUST NOT
 expire and MUST carry no email, subject or tenant. A failed marker write MUST fail the
-link and MUST be logged. An admin MUST NOT be able to record a link on a user who is an
+link, MUST remove the link it was written for and MUST be logged. Only a link the user
+makes MAY carry a marker: signing in MUST NOT link an account implicitly by its email,
+and the self-service link MUST refuse a provider account whose email differs from the
+user's. An admin MUST NOT be able to record a link on a user who is an
 `admin` or an `owner` of the tenant. At existing-account acceptance, whenever a
 membership is added to a user who already belongs to another tenant, and before the
 reconcile creates a `_user` for a member of two or more tenants, every unmarked link
@@ -648,7 +658,13 @@ requires a fresh step-up verification.
 
 - **GIVEN** the marker write fails while a user links through the self-service route
 - **WHEN** the link is attempted
-- **THEN** the link fails and `catalog.security.sso_link_marker_failed` is logged, and an unmarked link left behind would be shed like an admin-recorded one
+- **THEN** the link fails, no account row of that link remains, and `catalog.security.sso_link_marker_failed` is logged, and an unmarked link left behind by a crash would be shed like an admin-recorded one
+
+#### Scenario: A link to a provider account with another email is refused
+
+- **GIVEN** a user, a provider account whose email differs from the user's, and a provider account whose email matches another user's
+- **WHEN** the user links the first through the self-service route, and the second signs in through the identity provider
+- **THEN** neither creates an account row or a marker, and the account-linking configuration that guarantees it (implicit linking disabled, no trusted providers, different emails not allowed) is pinned by a test
 
 #### Scenario: A marker does not outlive its link
 
@@ -680,8 +696,11 @@ forwarded header, and the link MUST carry the invitation id and token in the
 URL fragment, on a fixed path. The only other email this capability sends is the notice to the other admins when an
 `admin` invitation is accepted, a fixed template with no interpolated value, with no link
 or any tenant, actor or invitee free text (`045` adds the org-deletion notice to the
-same controls). Every notice MUST go through the same global kill switch and
-per-recipient cap as the invitation email, MUST be capped per tenant, and MUST go to
+same controls). Every notice MUST go through the same global kill switch as the
+invitation email and through a per-recipient cap of its own, with the same limit of 3 per
+24 hours and the same keyed hash of the normalized email, counted apart from the
+invitation cap, so that invitations cannot exhaust a person's notice budget and notices
+cannot exhaust their invitation budget; every notice MUST be capped per tenant, and MUST go to
 at most 20 recipients, the administrators who have been members the longest; a
 suppressed or truncated notice MUST NOT block the operation that triggered it and
 MUST be logged as `catalog.security.notice_suppressed`. The token and the link MUST NOT appear in the response of the operation
@@ -745,6 +764,12 @@ template.
 - **WHEN** an `admin` invitation is accepted
 - **THEN** the operation succeeds, no email goes to the affected recipients, and `catalog.security.notice_suppressed` is logged with the template and the reason
 
+#### Scenario: Notices and invitations count in separate recipient buckets
+
+- **GIVEN** two administrators of a tenant, the first with a full invitation bucket after three invitations from other tenants, the second with a full notice bucket after three notices
+- **WHEN** an `admin` invitation is accepted in that tenant, and another tenant then invites the second administrator
+- **THEN** the first administrator receives the notice, the second one's notice is suppressed with the reason `recipient`, and the invitation of the second one is sent
+
 #### Scenario: A notice goes to at most 20 recipients
 
 - **GIVEN** an organization with 25 administrators
@@ -798,8 +823,8 @@ A service account MUST be a `_user` entity with `accountKind: "service"`
 (as opposed to `"standard"` for a human user), identified by
 `^svc-[A-Za-z][A-Za-z0-9_-]{0,58}$`. Creating a service account MUST be
 authorized to admins only, MUST require a fresh step-up verification, MUST set
-its status to `Active` immediately with no invitation email sent, and MUST
-atomically issue one organization-owned machine credential
+its status to `Active` immediately with no invitation email sent, and MUST, in the
+same operation, issue one organization-owned machine credential
 (`clientId`/`clientSecret`) for it. The credential's secret MUST be returned
 exactly once, in the creation response, and MUST NOT be retrievable again.
 Every service-account route MUST resolve its target on the server and MUST answer
@@ -817,7 +842,11 @@ bound `_user` is absent or not `Active` MUST be rejected, and no token MUST be
 issued for it, so a surviving credential of a deleted service account never
 resolves. Deleting a service account MUST be an explicit operation that revokes
 (not merely disables) **every** credential bound to it and then removes its
-`_user` entity. If issuing the credential fails after the `_user` was written, the
+`_user` entity, serialized with the creation and rotation of that service account's
+credentials so that no credential created or rotated during the deletion survives it.
+Creating a service account MUST be refused with `CATALOG_VALIDATION_FAILED` while a
+non-revoked credential of the tenant is still bound to its identifier. If issuing the
+credential fails after the `_user` was written, the
 `_user` MUST be removed again. A tenant MUST NOT hold more than 50 service accounts
 (configurable, a disabled or zero value fails startup), and the creation of one
 beyond the cap MUST fail with `CATALOG_VALIDATION_FAILED`, including under
@@ -843,7 +872,7 @@ user's role or `moderatedBlueprints`.
 #### Scenario: A service-account route refuses a human target
 
 - **GIVEN** a human `_user` such as `alice@example.com`, the admin's own address and an owner
-- **WHEN** an admin deletes or changes the status of any of them through a service-account route
+- **WHEN** an admin deletes any of them through `DELETE /v1/service-accounts/{user}`
 - **THEN** each answers the same `CATALOG_NOT_FOUND` as an unknown id, the human's row and status are intact, no credential is revoked and no event is emitted
 
 #### Scenario: The per-tenant service-account cap holds
@@ -905,6 +934,18 @@ user's role or `moderatedBlueprints`.
 - **GIVEN** a service account with two non-revoked credentials, for example seeded before the one-credential rule
 - **WHEN** an admin deletes it
 - **THEN** both credentials are rejected within the cache window
+
+#### Scenario: A credential created during a deletion does not survive it
+
+- **GIVEN** a service account being deleted while an admin creates or rotates a credential bound to it
+- **WHEN** both complete
+- **THEN** no non-revoked credential is bound to the deleted identifier
+
+#### Scenario: A new service account does not inherit a surviving credential
+
+- **GIVEN** a non-revoked credential still bound to `svc-ci-github`, whose service account no longer exists
+- **WHEN** an admin creates the service account `svc-ci-github` again
+- **THEN** the creation fails with `CATALOG_VALIDATION_FAILED`, nothing is created and the old credential still does not resolve
 
 #### Scenario: A token for a deleted service account is rejected
 
@@ -1056,7 +1097,7 @@ belong to the host's `tenantId`; otherwise the operation MUST fail with
 target's real tenant, not the caller's echoed back. Every Better Auth
 call MUST be given the host tenant only.
 
-#### Scenario: Another tenant's invitation cannot be cancelled, resent or accepted
+#### Scenario: Another tenant's invitation cannot be cancelled or resent
 
 - **GIVEN** a pending invitation of tenant `t2`
 - **WHEN** an admin of tenant `t1` cancels or resends it by its id
@@ -1178,15 +1219,17 @@ the authenticated context resolution.
 Every Cerbos deny, status change, service-account disable, enable and
 deletion, invitation resend, user creation (including the bootstrap user),
 credential creation, rotation and revocation, rejected principal, rate-limit
-excess, an invitation cancelled by a user creation, a failed admin-accepted notice, a suppressed or truncated notice, a
-recipient refused by the non-production allowlist, an email suppressed for a disabled
+excess, every invitation cancellation (an invitation cancelled by a user creation
+included), a failed admin-accepted notice, a suppressed or truncated notice, a
+recipient refused by the recipient-domain allowlist, an email suppressed for a disabled
 tenant, an SSO link shed (and the session revocations it causes), a provenance marker write that
 failed, an acceptance compensation that failed, a banned user's sign-in attempt and a
 reconcile run, MUST be logged as the
 corresponding `catalog.audit.*` or `catalog.security.*` event declared in the
 Observability contract, with opaque identifiers and enumerated values only, and the
 actor of an audit event MUST be the admin who acted, never the `system` actor of the
-write.
+write. The audit events of an invitation's creation, cancellation and resend MUST carry the
+tenant and the acting admin, and those of its creation and resend also the actor type.
 
 #### Scenario: Each lifecycle action emits its declared event
 
@@ -1205,8 +1248,9 @@ log events declared in this change's Observability contract, using the
 declared names and attributes. The names MUST be declared in a contract module of their
 own that the telemetry smoke check also enforces, and the authentication contract of
 `002` MUST stay unchanged. Telemetry MUST NOT contain invited email
-addresses, invitation tokens, credential names, credential secrets, `_user`
-identifiers, or any other tenant-supplied free text, and no identifier in a URL
+addresses, invitation tokens, credential names, credential secrets, the email identifier
+of a human `_user`, or any other tenant-supplied free text (a service account's `svc-`
+identifier is its opaque id, not an email, and MAY identify it in the identity signals), and no identifier in a URL
 path (an email, an invitation id or a credential id) MUST reach any exported
 span, metric or log: for the routes of this capability the exported path MUST
 be the route template. A catalog span of a `_user` entity MUST carry a fixed placeholder
