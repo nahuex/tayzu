@@ -274,7 +274,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       staged", and `system-blueprints.test.ts` (in `packages/catalog`) covers the
       index exporting the constant and the input builder and the built input
       validating.
-- [ ] 2.2 A one-off, idempotent `tsx` script
+- [x] 2.2 A one-off, idempotent `tsx` script
       (`apps/api/scripts/backfill-user-blueprint.ts`, started through the helper of 2.0)
       runs `blueprints.update` as the `system` actor once per existing tenant to bring
       `_user` forward, with the full input built from the `USER_BLUEPRINT` that 2.1
