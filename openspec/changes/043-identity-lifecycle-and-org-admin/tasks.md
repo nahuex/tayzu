@@ -30,12 +30,13 @@ when the consumption changes no row, whether or not the attempt's own `_user` st
 activated the row, and a compensated failure sends none) is applied to tasks 8.1e and
 8.15; Q128 (the window between the `pending` check of resend and cancel and the
 acceptance's `accepted` write is a documented residual, with the ticket TK12-1 as its
-structural fix) changes no task, so tasks 7.6, 7.7, 7.13, 8.10, 11.4 and 11.4b add no
-race case and tasks 5.1b, 7.2, 7.5 and 8.3 stay as they are; Q129 (an admin's cancel of
-an invitation that is not `pending` answers the resend's `CATALOG_VALIDATION_FAILED`
-with the same fixed message, changes nothing and logs nothing) is applied to tasks 7.6
-and 8.10; and Q130 (Q125's rewrite extends to the catalog's redaction fixture and three
-catalog integration tests) to task 4.1d. The hold that kept tasks 7.6, 7.7, 7.13, 8.1e,
+structural fix) adds no race case to any task: tasks 7.6, 7.7 and 8.10 cite the
+residual, tasks 7.13, 11.4 and 11.4b are unchanged by it, and tasks 5.1b, 7.2, 7.5 and
+8.3 stay as they are; Q129 (an admin's cancel of an invitation that is not `pending`
+answers the resend's `CATALOG_VALIDATION_FAILED` with the same fixed message, changes
+nothing and logs nothing) is applied to tasks 7.6, 7.13 and 8.10; and Q130 (Q125's rewrite
+extends to three catalog integration tests, and the catalog's redaction fixture they use
+has only its header comment corrected) to task 4.1d. The hold that kept tasks 7.6, 7.7, 7.13, 8.1e,
 8.10, 8.15, 11.4 and 11.4b unticked until those answers is released. The tenth
 amendment's Open Question 1 is Q122: on the existing-account
 path the revocation of the accepting session and of the session an earlier attempt's
@@ -45,8 +46,8 @@ path the notice follows the commit or, since Q127, a consumption that changes no
 applied to tasks 8.1e, 8.5b, 8.5h, 8.5k,
 8.5m, 8.15 and 16.5. Q123 (the acceptance marks the invitation `accepted` with the
 consumption of its token, and resend, cancel and the disable-time cancellations skip an
-invitation that is not `pending`) is applied to tasks 5.1b, 7.6, 7.7, 8.1e, 8.3, 8.10,
-11.4 and 11.4b; Q124 (the orphan grace period runs from the `_user` row's `updatedAt`) to tasks
+invitation that is not `pending`) is applied to tasks 5.1b, 7.6, 7.7, 7.13, 8.1e, 8.3,
+8.10, 11.4 and 11.4b; Q124 (the orphan grace period runs from the `_user` row's `updatedAt`) to tasks
 4.2b and 16.5; Q125 (the rewrite of the existing case of `redaction.test.ts`, extended
 by Q130) to task 4.1d; and Q126 (the subject of the `created_invited` status event) is the existing
 wording of tasks 4.1e, 7.3 and 15.1, with the optional `invitationId` of task 4.1's port
@@ -99,7 +100,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 1. Setup and coordination with `002`
 
 - [ ] 1.1 _(setup)_ The drift-check against the merged `002` was run on
-      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to twelfth drift-checks and VCDM passes (2026-10-01, 2026-10-07, 2026-10-08 and 2026-10-09) are folded in too. At
+      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to thirteenth drift-checks and VCDM passes (2026-10-01, 2026-10-07, 2026-10-08 and 2026-10-09) are folded in too. At
       implementation time this task is a last drift-check of the files the design
       names (`user-sync.ts`, `identity-router.ts`, `context-resolver.ts`,
       `token-exchange.ts`, `server.ts`, `policies/`) and adjusts import paths and
@@ -144,7 +145,11 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       drift-check's mechanical items (N12-2 and N12-3) and a follow-up of G11-2 need no
       decision and are folded into the design, these tasks, the Gates and the ticket
       "Alerts for `010`"; a consistency check of the thirteenth amendment folds its
-      fixes into the design, the spec and these tasks with no new decision. Attach the
+      fixes into the design, the spec and these tasks with no new decision. The
+      thirteenth pass's low gap G13-1 (the thirteenth drift-check's N13-1) and its
+      V13-note, the thirteenth drift-check's N13-2 and N13-3 and a final consistency check
+      of the thirteenth amendment (C-1 to C-10) need no decision and are folded into the
+      design, the spec, these tasks and the Gates by the fourteenth amendment. Attach the
       reports to the PR. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded.
 - [ ] 1.3 _(setup)_ Add `@azure/communication-email` (`1.1.0`) to
@@ -429,8 +434,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       blueprint is `_user` (a mechanical fix within Q119, no new decision), and
       `redactUnreadable` (`packages/authz/src/redaction.ts`, which the catalog's referrer
       redaction calls) sends each candidate's position as its resource id and maps the
-      decisions back to the identifiers in process. Every other blueprint's checks keep
-      their identifiers, and `docs/catalog/catalog-core.md` records this as well.
+      decisions back to the identifiers in process. Every other blueprint's single-entity
+      checks (the operation's own check and `mayUpdateReferrer`) keep their identifiers;
+      the redaction batch is positional for every blueprint (Q130).
+      `docs/catalog/catalog-core.md` records this as well.
       Verify: `contract.test.ts` (in
       `packages/catalog/src/telemetry/`) covers the contract exporting the placeholder,
       the six entity spans still declaring `tayzu.catalog.entity.identifier` as a required
@@ -455,7 +462,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       relation to the deleted entity) sending the placeholder as that referrer's
       `resource.id` in its `update` check and the marker in no field, while a referrer of
       another blueprint is checked with its identifier, and a delete blocked by referrers
-      sending positional ids; `redaction.test.ts` (in
+      sending positional ids whatever their blueprint; `redaction.test.ts` (in
       `packages/authz/src/`) covers the candidates being sent as positional ids, the
       readable identifiers coming back in their original order and a candidate missing
       from the response still counting as not visible. Its existing case ("N identifiers
@@ -464,15 +471,38 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       identifier, and its assertion at `:61-63` changes from "the request ids equal the
       candidate ids" to "the request ids are the candidates' positions and no candidate
       id appears in the request", which is stricter; the PR description calls the rewrite
-      out, as Q76 and Q77 did for theirs. The catalog's `002` redaction fixture and three
-      catalog integration tests contradict Q119 the same way and are **rewritten** too
-      (Resolved decision Q130, which extends Q125), not loosened:
+      out, as Q76 and Q77 did for theirs. Three catalog integration tests contradict Q119
+      the same way and are **rewritten** too (Resolved decision Q130, which extends Q125),
+      not loosened, and the catalog's `002` redaction fixture they use keeps its logic and
+      has only its header comment corrected:
       `packages/catalog/src/service/__fixtures__/redaction-authz.ts` records each
       request's `resource.id` and answers `readable.has(resource.id)` (`:50`, `:57`), so
-      it decides by position instead, and the tests pass it the readable positions, which
-      are deterministic because `selectSpecReferrers` orders referrers by identifier
-      (`packages/catalog/src/persistence/entities-repository.ts:409-424`) and the
-      blueprint tests seed known lists; and each `batches[].ids` assertion of
+      it keeps answering by the `resource.id` it receives, which for the redaction batch
+      is now a position, and the tests pass it the readable positions together with the
+      identifiers of single-resource checks that keep theirs (in
+      `entities-delete.int.test.ts`, `team-a`, the deleted entity's own check: the
+      fixture answers every batch whose resources are all `catalog_entity` (`:43-58`),
+      the operation's own check of `pipeline.ts` included, so the readable sets of `:646`
+      and `:670` keep `team-a` beside the positions; `readable.has(resource.id)` already
+      works with such a mixed set, and the fixture's answering logic is unchanged; its
+      only edit is its header comment (`:6-10`), which must say that every batch whose
+      resources are all `catalog_entity`, the operation's own check included, is answered
+      from `readable` by the `resource.id` it receives (a position for the redaction
+      batch, an identifier for a single-resource check)). The readable positions are
+      deterministic only where the candidates come in a known order:
+      `selectSpecReferrers` orders referrers by identifier
+      (`packages/catalog/src/persistence/entities-repository.ts:409-424`) for
+      `entities-delete.int.test.ts`, and `selectBlueprintEntityIdentifiers` orders them by
+      identifier (`packages/catalog/src/persistence/blueprints-repository.ts:214`) for
+      `blueprints.int.test.ts`. `blueprints-update.int.test.ts` seeds through `seedEntity`,
+      whose row ids are `randomUUID()`
+      (`packages/catalog/src/service/__fixtures__/blueprint-test-helpers.ts:195`), and the
+      compatibility check streams entities `order by id` (`streamBlueprintEntities`,
+      `blueprints-repository.ts:334-340` and `:406`), an order `checkCompatibility` keeps
+      (`packages/catalog/src/domain/compatibility.ts:141-153`), so hard-coded positions
+      would be flaky: that test derives the readable positions from the seeded rows read
+      back in `id` order (the stream order), and no helper or production code changes
+      (Resolved decision Q130); and each `batches[].ids` assertion of
       `entities-delete.int.test.ts` (`:659`, `:683`), `blueprints.int.test.ts` (`:521`)
       and `blueprints-update.int.test.ts` (`:321`), all in `packages/catalog/src/service/`,
       changes from "the batch ids equal the candidate identifiers" to "the ids are
@@ -1383,8 +1413,12 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       a user cancels a pending invitation of the same email": a pending invitation of `t1`
       to `bob@example.com`, followed by `identity.users.create` for `bob@example.com` in
       `t1`, leaves the invitation `cancelled` with the reason `user_created` and the event
-      emitted with it; a pending invitation of `t2` to the same email stays `pending`; and
-      a `create` refused at the member limit of 7.12 leaves the invitation `pending`.
+      emitted with it; a pending invitation of `t2` to the same email stays `pending`;
+      a `create` refused at the member limit of 7.12 leaves the invitation `pending`; and
+      an invitation of `t1` to the same email that is already `cancelled` (by an earlier
+      cancel of 7.6) or seeded directly as `rejected` stays as it is, and the creation
+      logs no `catalog.audit.invitation_cancelled` with the reason `user_created` for it
+      (Resolved decisions Q123 and Q129).
 
 ## 8. Invitation acceptance
 
@@ -1611,8 +1645,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `invitation_accepted` (by the acceptance's own `_user` step, which fails closed;
       inside the acceptance's shared context the membership hook makes no `_user` write
       for the acceptance's own member (Q120), Resolved decision Q112) and creates **no
-      session**. A failure of any step, the `_user` write included, is compensated
-      (8.1e) and leaves the token unconsumed. Verify:
+      session**. A failure of any step after the user is created, the `_user` write
+      included, other than a lost consume race (which compensates nothing, 8.1e, Resolved
+      decision Q127), is compensated (8.1e) and leaves the token unconsumed. Verify:
       `invitation-accept.int.test.ts` covers "A new person accepts and can then sign
       in" (sign-in through the normal route succeeds afterward, also with the password
       presented in its NFD form, the normalization of 8.1d) and "A failed
@@ -1736,10 +1771,10 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       local mapping of the membership role and keeps `002` D2's single decision point):
       the principal is built from the inviter's member row (the inviter's Better Auth
       user id, the roles `resolveContext` derives from that membership role, through the
-      same mapping, `toCerbosRole` in `context-resolver.ts`, exported for it, and the
-      invitation's tenant), and the resource has the id `new` and the invitation's
-      `organizationId` as its tenant. A missing membership, a banned or non-`Active`
-      inviter, a Cerbos deny and a Cerbos error each answer the uniform rejection with
+      same mapping, `toCerbosRole` in `context-resolver.ts`, exported for it and added to
+      the package index (as 8.5e does for `isIdle`), and the invitation's tenant), and
+      the resource has the id `new` and the invitation's `organizationId` as its tenant.
+      A missing membership, a banned or non-`Active` inviter, a Cerbos deny and a Cerbos error each answer the uniform rejection with
       the denial reason `inviter_not_active_admin`, and the token is not consumed
       (Resolved decision Q63; design D4 step 2). The reads go through
       the repository of 5.1b (`tayzu_auth`) and the `_user` status is read from
@@ -3512,7 +3547,7 @@ SSO surfaces of M18) are recorded there with their justification.
       the audit step runs with `--prod`.
       Verify: attach the command output to the PR description.
 - [ ] 16.10 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
-      implemented code, and resolve or explicitly defer every blocking gap (the twelve
+      implemented code, and resolve or explicitly defer every blocking gap (the thirteen
       passes folded into this change before implementation are listed in 1.2).
       Verify: the report is attached to the PR with zero open blocking gaps.
 - [ ] 16.11 Run `/security-review` on the branch and fix or justify every

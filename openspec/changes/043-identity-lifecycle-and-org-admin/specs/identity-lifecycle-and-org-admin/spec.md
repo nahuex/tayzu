@@ -404,9 +404,10 @@ user and the membership exist, and MUST leave an invitation of another tenant un
 
 #### Scenario: Creating a user cancels a pending invitation of the same email
 
-- **GIVEN** a pending invitation of `t1` to `bob@example.com` and another of `t2` to the same address
+- **GIVEN** a pending invitation of `t1` to `bob@example.com` and another of `t2` to the same address, and an invitation of `t1` to the same address that is already `cancelled` or `rejected`
 - **WHEN** an admin of `t1` creates the user `bob@example.com` through `identity.users.create`
-- **THEN** the `t1` invitation becomes `cancelled` with the reason `user_created` and `catalog.audit.invitation_cancelled` is logged with that reason, the `t2` invitation stays `pending`, and a creation that fails leaves the `t1` invitation `pending`
+- **THEN** the pending `t1` invitation becomes `cancelled` with the reason `user_created` and `catalog.audit.invitation_cancelled` is logged with that reason, the `t2` invitation stays `pending`, and a creation that fails leaves the pending `t1` invitation `pending`
+- **AND** an invitation of `t1` to the same address that is already `cancelled` or `rejected` stays as it is, and the creation logs no `catalog.audit.invitation_cancelled` with the reason `user_created` for it
 
 #### Scenario: A disabled user cannot be invited
 
@@ -1452,12 +1453,13 @@ the database keeps the identifier and is found from the audit event by its tenan
 sequence number. The catalog's authorization requests MUST NOT carry it either: for a
 `_user` entity the resource identifier sent to the authorization engine, whose decision
 log records it, MUST be the same placeholder, whether the entity is the one operated on
-or a referrer whose update permission a delete that detaches references checks, and a redaction that checks several candidates MUST send
-positional identifiers instead of theirs, while the entities of other blueprints keep
-their identifiers; and the exported path of a catalog entity route of the `_user`
-blueprint MUST be its route template, while the routes of other blueprints keep their
-paths. Opaque identifiers and
-enumerated values (status, invitation state, account kind, credential kind) are permitted.
+or a referrer whose update permission a delete that detaches references checks, and a
+redaction MUST send positional identifiers for every candidate, however many it checks
+and whatever their blueprint, while the operation's own check and a referrer's update
+check of an entity of another blueprint keep its identifier; and the exported path of a
+catalog entity route of the `_user` blueprint MUST be its route template, while the
+routes of other blueprints keep their paths. Opaque identifiers and enumerated values
+(status, invitation state, account kind, credential kind) are permitted.
 
 #### Scenario: Declared telemetry is emitted
 
@@ -1483,7 +1485,7 @@ enumerated values (status, invitation state, account kind, credential kind) are 
 #### Scenario: A `_user` email never reaches the Cerbos decision log
 
 - **WHEN** a `_user` entity whose identifier is `marker-user@example.com` is created, read, updated, deleted or listed through the catalog, a delete that detaches references has that entity as a referrer, and a delete is blocked by referrers
-- **THEN** every authorization request carries the fixed placeholder as the resource identifier of that entity and the email in no field, the referrer's update check included, the referrer redaction sends positional identifiers, and an entity of another blueprint is checked with its identifier
+- **THEN** every authorization request carries the fixed placeholder as the resource identifier of that entity and the email in no field, the referrer's update check included, the referrer redaction sends positional identifiers, and an entity of another blueprint is checked with its identifier in the operation's own check and the referrer's update check, while the redaction sends its position too
 
 #### Scenario: A `_user` email never reaches a catalog HTTP span
 

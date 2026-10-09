@@ -113,9 +113,9 @@ mail. A second fixed template tells the other admins of an accepted
   always `member` with no teams and no moderated blueprints, taken from the
   signed machine claim (never from its `_user`), with an independent Cerbos
   deny rule as a second layer. A service account holds exactly one active credential, and a tenant holds at most
-  50 service accounts and 200 credentials. Every service-account route refuses a human
-  target with the answer for an unknown id, and a credential records the admin who
-  created it.
+  50 service accounts and 200 credentials by default (both configurable, Q56). Every
+  service-account route refuses a human target with the answer for an unknown id, and a
+  credential records the admin who created it.
   Disable is enforced on the request path within seconds and is reversible; delete
   is an explicit operation that revokes every bound credential, serialized with the
   creation and rotation of its credentials, a service account cannot be created while a
@@ -186,8 +186,8 @@ mail. A second fixed template tells the other admins of an accepted
   `_user` blueprint included), and no catalog span, catalog audit event or catalog
   request to Cerbos carries a `_user` identifier (a fixed placeholder replaces it, and the
   referrer redaction sends positional ids, which rewrites one unit test, the catalog
-  redaction fixture and three integration tests of `002` to stricter assertions, called
-  out in the PR). Every audit event names the principal who
+  redaction fixture (its header comment only) and three integration tests of `002` to
+  stricter assertions, called out in the PR). Every audit event names the principal who
   acted: the admin, the invitee of an acceptance, the user of their own first sign-in,
   or the operator's opaque id for the reconcile and the bootstrap, which requires it, and
   none for a status change that mirrors a ban; every status change is logged, by any
@@ -261,12 +261,12 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   membership, ban, first-sign-in and account hooks, the uniform banned sign-in and
   the transaction-free acceptance support), `context-resolver.ts`, `token-exchange.ts`
   and `pre-auth-rate-limit.ts` (the resolver checks and the `toCerbosRole` export, the
-  `userId` claim and the new rate-limit scopes and helper), `session-idle.ts` and the package index (`isIdle`),
-  `machine-credentials.ts` (headerless calls), `apps/api/src/server.ts`, `config.ts`,
-  `bootstrap.ts`, `identity-router.ts` and `telemetry.ts` (the merged router, the new
-  settings, the `createAppFromEnv` refusal, the runtime-role assertion and the
-  route-template paths), `packages/catalog/src/service/entities.ts`,
-  `packages/catalog/src/service/pipeline.ts` and the catalog telemetry contract (the
+  `userId` claim and the new rate-limit scopes and helper), the package index (`isIdle`,
+  already exported by `session-idle.ts`, and `toCerbosRole`), `machine-credentials.ts`
+  (headerless calls), `apps/api/src/server.ts`, `config.ts`, `bootstrap.ts`,
+  `identity-router.ts` and `telemetry.ts` (the merged router, the new settings, the
+  `createAppFromEnv` refusal, the runtime-role assertion and the route-template paths),
+  `packages/catalog/src/service/entities.ts`, `packages/catalog/src/service/pipeline.ts` and the catalog telemetry contract (the
   `_user` identifier placeholder on the spans, on `catalog.audit.mutation` and as the
   Cerbos resource id), `packages/authz/src/redaction.ts` (positional resource ids),
   `apps/api/src/error-mapping.ts` and `packages/auth/src/errors.ts` (the
@@ -274,8 +274,10 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   and `identifiers.ts` (one exported `ENTITY_IDENTIFIER_PATTERN`), the `@tayzu/auth`
   fixture `packages/auth/src/__fixtures__/admin-user.ts` (it gains a `tayzu_app` pool
   parameter), the `@tayzu/catalog` fixture
-  `packages/catalog/src/service/__fixtures__/redaction-authz.ts` (it decides by
-  position, Q130), a new `scripts/ci/dast-coverage.ts` (the DAST scan's 2xx check),
+  `packages/catalog/src/service/__fixtures__/redaction-authz.ts` (its header comment: it
+  answers every all-`catalog_entity` batch, the operation's own check included, by the
+  `resource.id` it receives, which for the redaction batch is now a position, Q130),
+  a new `scripts/ci/dast-coverage.ts` (the DAST scan's 2xx check),
   `eslint.config.js` and a new restriction module, `vitest.shared.ts` and `turbo.json`
   (the breached-password stub), the test harness `packages/db/src/harness.ts`,
   `packages/catalog/src/persistence/schema.ts`, `.github/dependabot.yml`, and ADR-0013.
@@ -329,7 +331,11 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   non-blocking ones (G12-1 and G12-2: no alert on a token consumption that changes no
   row, which keeps a join whose acceptance never committed, and no admin notice for a
   compensated new-account attempt whose retry runs the existing-account path, a
-  documented residual of Q127).
+  documented residual of Q127), and a thirteenth pass that found one non-blocking one
+  (G13-1: the readable positions that Q130's rewritten tests pass to the fixture are not
+  deterministic in `blueprints-update.int.test.ts`, whose candidates stream in random-id
+  order) and a note
+  (V13-note: a Cerbos child process in a job stays pinned to the sidecar's digest).
   All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks, except
   the org-deletion gaps, which moved to `045` with Q103 and are closed there. Three
