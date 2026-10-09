@@ -2,8 +2,8 @@
  * The user status state machine (`043` design D2): Staged, Invited, Active and
  * Disabled, and the events that move between them. Pure, no I/O.
  *
- * Tasks 3.1 to 3.4 add the creation, activation and admin events; the
- * exhaustive matrix check arrives with task 3.5.
+ * Exhaustive: every `(status, event)` pair not in the table throws
+ * `StatusTransitionError`, and the table covers every event by type.
  */
 export type UserStatus = 'Staged' | 'Invited' | 'Active' | 'Disabled';
 
@@ -36,7 +36,7 @@ interface Transition {
   readonly to: UserStatus;
 }
 
-const TRANSITIONS: Partial<Record<StatusEvent, Transition>> = {
+const TRANSITIONS: Record<StatusEvent, Transition> = {
   created_staged: { from: [null], to: 'Staged' },
   created_invited: { from: [null, 'Staged', 'Invited'], to: 'Invited' },
   created_active: { from: [null], to: 'Active' },
@@ -49,7 +49,7 @@ const TRANSITIONS: Partial<Record<StatusEvent, Transition>> = {
 /** Returns the status after `event`, or throws `StatusTransitionError`. */
 export function nextStatus(current: UserStatus | null, event: StatusEvent): UserStatus {
   const transition = TRANSITIONS[event];
-  if (transition?.from.includes(current) !== true) {
+  if (!transition.from.includes(current)) {
     throw new StatusTransitionError();
   }
   return transition.to;

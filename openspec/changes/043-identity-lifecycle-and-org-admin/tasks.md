@@ -327,7 +327,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `Active`) and `admin_enable` (from `Disabled` only). Verify:
       `user-status.test.ts` covers "Disable and re-enable" and rejects
       `admin_enable` from a non-`Disabled` status.
-- [ ] 3.5 `nextStatus` is exhaustive: every `(status, event)` pair not
+- [x] 3.5 `nextStatus` is exhaustive: every `(status, event)` pair not
       explicitly allowed throws `StatusTransitionError`, never returns
       `undefined`. Verify: `user-status.test.ts` iterates the full matrix (`null`
       and the four statuses against the seven events) and asserts every cell is

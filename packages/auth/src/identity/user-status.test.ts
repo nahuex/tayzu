@@ -114,3 +114,104 @@ describe('nextStatus: admin events', () => {
     },
   );
 });
+
+/**
+ * `043` task 3.5 (design D2): the full `(status, event)` matrix. The expected table
+ * is written out cell by cell from the design's transition table, so a cell that is
+ * not listed as allowed must be an explicit `StatusTransitionError`, never
+ * `undefined` and never a silent value.
+ */
+describe('nextStatus: exhaustive matrix', () => {
+  const statuses = [null, 'Staged', 'Invited', 'Active', 'Disabled'] as const;
+  const events = [
+    'created_staged',
+    'created_invited',
+    'created_active',
+    'invitation_accepted',
+    'first_sign_in',
+    'admin_disable',
+    'admin_enable',
+  ] as const;
+
+  type Cell = (typeof statuses)[number];
+  type Expected = 'Staged' | 'Invited' | 'Active' | 'Disabled' | 'rejected';
+
+  const expected: Record<(typeof events)[number], Record<'none' | NonNullable<Cell>, Expected>> = {
+    created_staged: {
+      none: 'Staged',
+      Staged: 'rejected',
+      Invited: 'rejected',
+      Active: 'rejected',
+      Disabled: 'rejected',
+    },
+    created_invited: {
+      none: 'Invited',
+      Staged: 'Invited',
+      Invited: 'Invited',
+      Active: 'rejected',
+      Disabled: 'rejected',
+    },
+    created_active: {
+      none: 'Active',
+      Staged: 'rejected',
+      Invited: 'rejected',
+      Active: 'rejected',
+      Disabled: 'rejected',
+    },
+    invitation_accepted: {
+      none: 'rejected',
+      Staged: 'Active',
+      Invited: 'Active',
+      Active: 'rejected',
+      Disabled: 'rejected',
+    },
+    first_sign_in: {
+      none: 'rejected',
+      Staged: 'Active',
+      Invited: 'Active',
+      Active: 'rejected',
+      Disabled: 'rejected',
+    },
+    admin_disable: {
+      none: 'rejected',
+      Staged: 'Disabled',
+      Invited: 'Disabled',
+      Active: 'Disabled',
+      Disabled: 'rejected',
+    },
+    admin_enable: {
+      none: 'rejected',
+      Staged: 'rejected',
+      Invited: 'rejected',
+      Active: 'rejected',
+      Disabled: 'Active',
+    },
+  };
+
+  const cells = events.flatMap((event) =>
+    statuses.map((status) => ({
+      event,
+      status,
+      want: expected[event][status ?? 'none'],
+    })),
+  );
+
+  it('covers 5 statuses against 7 events', () => {
+    expect(cells).toHaveLength(35);
+  });
+
+  it.each(cells)('cell ($status, $event) is $want', ({ status, event, want }) => {
+    if (want === 'rejected') {
+      expect(() => nextStatus(status, event)).toThrow(StatusTransitionError);
+      return;
+    }
+    expect(nextStatus(status, event)).toBe(want);
+  });
+
+  it('never returns undefined for any cell', () => {
+    for (const { status, event, want } of cells) {
+      if (want === 'rejected') continue;
+      expect(nextStatus(status, event)).toBeDefined();
+    }
+  });
+});
