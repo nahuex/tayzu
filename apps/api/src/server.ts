@@ -36,10 +36,16 @@ import {
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import type { createPool } from '@tayzu/db';
-import { createBlueprintService, createCatalogRouter, createEntityService } from '@tayzu/catalog';
+import {
+  createBlueprintService,
+  createCatalogRouter,
+  createEntityService,
+  createUserSync,
+} from '@tayzu/catalog';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
+import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
 import { assertDiscoverable } from './sso-discovery.js';
@@ -180,8 +186,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const authDb = drizzle(options.authPool, { schema: authSchema });
   const appPool = options.appPool;
 
+  const authz = createCerbosClient({
+    address: options.cerbosAddress,
+    tls: !CERBOS_TLS_LOOPBACK_ONLY.test(options.cerbosAddress),
+  });
+  // Q30: the status adapter every `_user` writer goes through.
+  const userSync = createUserSyncAdapter({ userSync: createUserSync({ pool: appPool, authz }) });
+
   const auth = createAuth({
     db: authDb,
+    userSync,
     secret: options.authSecret,
     ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
     trustedOrigins: options.allowedOrigins,
@@ -190,10 +204,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
 
-  const authz = createCerbosClient({
-    address: options.cerbosAddress,
-    tls: !CERBOS_TLS_LOOPBACK_ONLY.test(options.cerbosAddress),
-  });
   const router = createCatalogRouter({
     blueprints: createBlueprintService({ pool: appPool, authz }),
     entities: createEntityService({ pool: appPool, authz }),

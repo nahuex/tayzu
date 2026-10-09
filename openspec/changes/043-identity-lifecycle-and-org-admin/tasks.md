@@ -580,7 +580,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       the acceptance's entry point, given the `membership_added` intent, returning
       `invitation_accepted` for an `Invited` row it activates, `created_active` for a
       missing row it creates and no status event for an `Active` row it leaves as it is.
-- [ ] 4.1b `createApp` builds the adapter of 4.1 and passes it to `createAuth` as
+- [x] 4.1b `createApp` builds the adapter of 4.1 and passes it to `createAuth` as
       `userSync` (today it passes none, so every status hook is a no-op in the running
       app). It runs after 4.2, whose derivation of the `membership_added` intent the
       wiring test exercises (tasks header). Verify: `user-sync-wiring.int.test.ts` boots
