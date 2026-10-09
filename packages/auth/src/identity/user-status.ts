@@ -2,7 +2,51 @@
  * The user status state machine (`043` design D2): Staged, Invited, Active and
  * Disabled, and the events that move between them. Pure, no I/O.
  *
- * Scaffolded by `043` task 1.4 (design Q30); its behavior arrives with task
- * group 3.
+ * Task 3.1 adds the creation events; the other events arrive with the rest of
+ * task group 3.
  */
-export {};
+export type UserStatus = 'Staged' | 'Invited' | 'Active' | 'Disabled';
+
+export type StatusEvent =
+  | 'created_staged'
+  | 'created_invited'
+  | 'created_active'
+  | 'invitation_accepted'
+  | 'first_sign_in'
+  | 'admin_disable'
+  | 'admin_enable';
+
+/**
+ * Thrown for a `(status, event)` pair the table does not allow. Package-local,
+ * structural-shape error (`@tayzu/auth` does not depend on `@tayzu/catalog`).
+ * It carries no status, event or tenant data.
+ */
+export class StatusTransitionError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED';
+
+  constructor() {
+    super('The status transition is not allowed');
+    this.name = 'StatusTransitionError';
+  }
+}
+
+interface Transition {
+  /** Allowed current statuses; `null` is "the entity does not exist yet". */
+  readonly from: readonly (UserStatus | null)[];
+  readonly to: UserStatus;
+}
+
+const TRANSITIONS: Partial<Record<StatusEvent, Transition>> = {
+  created_staged: { from: [null], to: 'Staged' },
+  created_invited: { from: [null, 'Staged', 'Invited'], to: 'Invited' },
+  created_active: { from: [null], to: 'Active' },
+};
+
+/** Returns the status after `event`, or throws `StatusTransitionError`. */
+export function nextStatus(current: UserStatus | null, event: StatusEvent): UserStatus {
+  const transition = TRANSITIONS[event];
+  if (transition?.from.includes(current) !== true) {
+    throw new StatusTransitionError();
+  }
+  return transition.to;
+}

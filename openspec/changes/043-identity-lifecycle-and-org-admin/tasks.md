@@ -305,7 +305,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 3. User status state machine (pure)
 
-- [ ] 3.1 `nextStatus(current, event)` for the creation events
+- [x] 3.1 `nextStatus(current, event)` for the creation events
       (`created_staged` from none → `Staged`, `created_invited` from none, `Staged`
       or `Invited` → `Invited`, `created_active` from none → `Active`). Verify:
       `user-status.test.ts` covers "New entity without a status starts staged",
