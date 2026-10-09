@@ -786,7 +786,9 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           },
         },
       },
-      // Ban/unban: mirror `banned` onto every membership's `_user` entity.
+      // Ban: mirror `banned: true` onto every membership's `_user` entity. It only ever
+      // disables: an update with `banned: false` writes nothing, because re-enabling
+      // goes through `setStatus` only (design D2, Resolved decision Q102).
       user: {
         update: {
           after: async (user, context) => {
@@ -794,7 +796,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               return;
             }
             const row = user as unknown as SyncUserRow;
-            if (typeof row.banned !== 'boolean') {
+            if (row.banned !== true) {
               return;
             }
             const memberships = await context.context.adapter.findMany<MembershipRow>({
@@ -807,7 +809,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 email: row.email,
                 name: row.name,
                 userId: row.id,
-                change: row.banned ? 'admin_disable' : 'admin_enable',
+                change: 'admin_disable',
               });
             }
           },

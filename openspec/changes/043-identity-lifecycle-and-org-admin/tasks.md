@@ -706,7 +706,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       locally with no row created, no status write and no status event, while the
       display-refresh test of 4.1c gains a second membership in its setup so that it
       isolates the refresh again, its assertions unchanged.
-- [ ] 4.5 The ban hook (`databaseHooks.user.update.after` in `auth.ts`) writes through
+- [x] 4.5 The ban hook (`databaseHooks.user.update.after` in `auth.ts`) writes through
       the state machine instead of `Disabled`/`Active` directly, and **only ever
       disables** (Resolved decision Q102; design D2). It fires on every `user.update`
       that carries a boolean `banned` and runs with an endpoint context (for example
@@ -731,7 +731,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `Active` user does not throw and leaves the status `Active`, and a user who belongs
       to `t1` and `t2`, `Disabled` in `t1` only (written through the adapter with
       `admin_disable`, as `setStatus` of 11.2 does, and not banned), who enrols TOTP from
-      a session of `t2` stays `Disabled` in `t1` and `Active` in `t2`.
+      a session of `t2` stays `Disabled` in `t1` and `Active` in `t2`. `002`'s test
+      "banning sets Disabled, unbanning sets Active again" (`user-sync.int.test.ts:177`)
+      contradicts Q102 and is **rewritten** (Resolved decision Q134), not loosened: after
+      the unban the status stays `Disabled` and nothing is written; the PR calls it out.
 - [ ] 4.6 `bootstrapAdmin()` moves out of the script file into
       `packages/auth/src/bootstrap-admin.ts` and the package index (design D2):
       today it shares `packages/auth/scripts/bootstrap-admin.ts` with the CLI

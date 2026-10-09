@@ -174,7 +174,7 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
     expect(entity.createdBy.type).toBe('system');
   });
 
-  it('Disabling a user updates its `_user` entity status: banning sets Disabled, unbanning sets Active again', async () => {
+  it('Disabling a user updates its `_user` entity status: banning sets Disabled, unbanning does not re-enable and writes nothing', async () => {
     // Better Auth's admin plugin requires an authenticated admin session on
     // banUser / unbanUser (adminMiddleware): sign in a real admin of the org.
     const adminCreds = fresh();
@@ -211,8 +211,13 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
       'Disabled',
     );
 
+    // Q102/Q134: the ban hook only disables; an unban re-enables nothing and writes nothing.
+    const afterBan = await readUser(organizationId, member.email);
     await api.unbanUser({ body: { userId: created.userId }, headers: adminHeaders });
-    expect((await readUser(organizationId, member.email)).spec.properties['status']).toBe('Active');
+    const afterUnban = await readUser(organizationId, member.email);
+    expect(afterUnban.spec.properties['status']).toBe('Disabled');
+    // The whole entity, version and updatedAt included, is unchanged: nothing was written.
+    expect(afterUnban).toEqual(afterBan);
   });
 });
 
