@@ -552,7 +552,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       with no `tayzu.identity.user.id`, an input's `userId` becoming
       `tayzu.identity.user.id` (the membership hook's, the ban hook's and the first
       sign-in's are cases of 4.2, 4.5 and 4.4), and no email in any attribute.
-- [ ] 4.2 `afterAddMember` is the **single writer** for a membership (Resolved
+- [x] 4.2 `afterAddMember` is the **single writer** for a membership (Resolved
       decisions Q11 and Q76, design D2), except for the acceptance's own member (the
       `(tenantId, userId)` that the acceptance's shared context carries, Resolved
       decision Q120), for whom it makes no `_user` write and the acceptance's own `_user`

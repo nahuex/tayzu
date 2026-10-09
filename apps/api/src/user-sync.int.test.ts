@@ -1040,3 +1040,96 @@ describe('The adapter audits every status change (task 4.1e)', () => {
     expect(serialized).not.toContain('@example.test');
   }, 60_000);
 });
+
+/**
+ * Task 4.2 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * decision Q76): the acceptance's entry point, given the `membership_added`
+ * intent, derives the event from the stored status and returns it, or none.
+ *
+ * ## Production symbols assumed
+ *
+ * - `createUserSyncAdapter(...).writeUserChange` accepts
+ *   `change: { intent: 'membership_added', banned: boolean }` (the
+ *   `MembershipAddedIntent` of `@tayzu/auth`) and returns `invitation_accepted`
+ *   for an `Invited` row it activates, `created_active` for a missing row it
+ *   creates, and `undefined` for an `Active` row it leaves as it is.
+ */
+describe('The acceptance entry point derives the event for the membership_added intent (task 4.2)', () => {
+  let cerbosUserSync: ReturnType<typeof createUserSync>;
+  let readStatus: (tenantId: string, email: string) => Promise<string | undefined>;
+
+  interface IntentInput {
+    readonly tenantId: string;
+    readonly email: string;
+    readonly name: string;
+    readonly change: { readonly intent: 'membership_added'; readonly banned: boolean };
+    readonly userId: string;
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    await runMigrations(pools.authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    cerbosUserSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    readStatus = async (tenantId, email) =>
+      (await cerbosUserSync.getUser({ tenantId, email }))?.status;
+  }, 60_000);
+
+  function fresh(): IntentInput {
+    return {
+      tenantId: `t${randomUUID().replaceAll('-', '')}`,
+      email: `intent-${randomUUID()}@example.test`,
+      name: 'Some Person',
+      change: { intent: 'membership_added', banned: false },
+      userId: `user-${randomUUID()}`,
+    };
+  }
+
+  function entryPoint(): {
+    writeUserChange(input: IntentInput): Promise<string | undefined>;
+  } {
+    return createUserSyncAdapter({ userSync: cerbosUserSync });
+  }
+
+  it('returns invitation_accepted for an Invited row it activates', async () => {
+    const input = fresh();
+    await cerbosUserSync.upsertUser({
+      tenantId: input.tenantId,
+      email: input.email,
+      name: input.name,
+      status: 'Invited',
+    });
+
+    const written = await entryPoint().writeUserChange(input);
+
+    expect(written).toBe('invitation_accepted');
+    expect(await readStatus(input.tenantId, input.email)).toBe('Active');
+  }, 60_000);
+
+  it('returns created_active for a missing row it creates', async () => {
+    const input = fresh();
+
+    const written = await entryPoint().writeUserChange(input);
+
+    expect(written).toBe('created_active');
+    expect(await readStatus(input.tenantId, input.email)).toBe('Active');
+  }, 60_000);
+
+  it('returns no status event for an Active row it leaves as it is', async () => {
+    const input = fresh();
+    await cerbosUserSync.upsertUser({
+      tenantId: input.tenantId,
+      email: input.email,
+      name: input.name,
+      status: 'Active',
+    });
+    const before = await cerbosUserSync.getUser({ tenantId: input.tenantId, email: input.email });
+
+    const written = await entryPoint().writeUserChange(input);
+
+    expect(written).toBeUndefined();
+    expect(await cerbosUserSync.getUser({ tenantId: input.tenantId, email: input.email })).toEqual(
+      before,
+    );
+  }, 60_000);
+});
