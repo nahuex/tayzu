@@ -432,7 +432,7 @@ describe('Every status writer goes through the state machine: the adapter (task 
   }, 60_000);
 
   function adapterOver(userSync: ReturnType<typeof createUserSync>): AdapterSurface {
-    return createUserSyncAdapter({ userSync }) as unknown as AdapterSurface;
+    return createUserSyncAdapter({ userSync });
   }
 
   function adapter(): AdapterSurface {

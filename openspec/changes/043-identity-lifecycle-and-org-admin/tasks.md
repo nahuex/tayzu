@@ -398,7 +398,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `describe` of `user-sync.int.test.ts` and `sso-jit-refresh.int.test.ts` around
       line 179 among them) migrates to the adapter, because the port's input no longer
       has a `status`.
-- [ ] 4.1c `refreshDisplayData` (`auth.ts`) upserts a member's display fields
+- [x] 4.1c `refreshDisplayData` (`auth.ts`) upserts a member's display fields
       without a status. With the new default `Staged` it would create a `Staged` row
       for a member who has none, which the resolver rejects (11.8, Resolved decision
       Q105) and which the reconcile, which only creates missing rows, would never

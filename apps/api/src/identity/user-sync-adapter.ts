@@ -16,11 +16,12 @@ type UpsertInput = Parameters<UserSyncPort['upsertUser']>[0];
 export interface UserSyncAdapter extends UserSyncPort {
   /**
    * The acceptance's entry point: same input as `upsertUser`, and it returns
-   * the status event it wrote, or `undefined` when it wrote nothing. The invitee's
-   * `userId` is required (Resolved decision Q120).
+   * the status event it wrote, or `undefined` when it wrote nothing. `userId`
+   * is absent only for the invitation hook's `created_invited` write, which
+   * passes `invitationId` instead (Resolved decisions Q120 and Q126).
    */
   readonly writeUserChange: (
-    input: UpsertInput & { readonly userId: string },
+    input: UpsertInput & { readonly userId?: string; readonly invitationId?: string },
   ) => Promise<StatusEvent | undefined>;
 }
 
@@ -84,7 +85,10 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
   async function writeUserChange(input: UpsertInput): Promise<StatusEvent | undefined> {
     const { change } = input;
     if (change === undefined) {
-      // Display data and role only: no status is written.
+      // Display data and role only: no status is written, and a member with no
+      // row gets none (the reconcile and the membership hook create rows).
+      const existing = await userSync.getUser({ tenantId: input.tenantId, email: input.email });
+      if (existing === null) return undefined;
       await userSync.upsertUser({
         tenantId: input.tenantId,
         email: input.email,
