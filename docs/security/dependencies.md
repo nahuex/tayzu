@@ -203,3 +203,76 @@ only for low-entropy secrets such as user passwords. Conditions:
 `disableKeyHashing` stays `false`, `customKeyGenerator` is not used to shorten
 the key, and `defaultKeyLength` is not lowered. Re-verify on every upgrade of
 this package.
+
+## Email delivery SDK (`@azure/communication-email`)
+
+Adopted by `043-identity-lifecycle-and-org-admin` (task 1.3, design D5) for
+invitation and notice email through Azure Communication Services. It is pinned
+exactly to `1.1.0` (published 2025-10-08) in `packages/auth/package.json`.
+Reviewed on 2026-10-09:
+
+- **License**: MIT, on the allowlist. The 16 transitive packages it adds to the
+  lockfile are MIT too (checked in each installed `package.json`; the SBOM
+  records them as `NOASSERTION` because Syft reads the lockfile):
+
+  | Package                       | Version | License |
+  | ----------------------------- | ------- | ------- |
+  | `@azure-rest/core-client`     | 2.9.0   | MIT     |
+  | `@azure/abort-controller`     | 2.2.0   | MIT     |
+  | `@azure/communication-common` | 2.5.0   | MIT     |
+  | `@azure/core-auth`            | 1.11.0  | MIT     |
+  | `@azure/core-client`          | 1.11.1  | MIT     |
+  | `@azure/core-lro`             | 2.7.2   | MIT     |
+  | `@azure/core-rest-pipeline`   | 1.25.0  | MIT     |
+  | `@azure/core-tracing`         | 1.4.0   | MIT     |
+  | `@azure/core-util`            | 1.14.0  | MIT     |
+  | `@azure/logger`               | 1.4.0   | MIT     |
+  | `@typespec/ts-http-runtime`   | 0.3.9   | MIT     |
+  | `agent-base`                  | 7.1.4   | MIT     |
+  | `events`                      | 3.3.0   | MIT     |
+  | `http-proxy-agent`            | 7.0.2   | MIT     |
+  | `https-proxy-agent`           | 7.0.6   | MIT     |
+  | `jwt-decode`                  | 4.0.0   | MIT     |
+
+- **Install scripts (`allowBuilds`)**: none of the 17 packages declares a
+  `preinstall`, `install` or `postinstall` script. `jwt-decode` declares only
+  `prepare` (`husky install`), which pnpm never runs for a registry tarball.
+  `allowBuilds` in `pnpm-workspace.yaml` is unchanged.
+- **SBOM review**: the SPDX SBOM of `scripts/ci/syft.sh` lists all 17
+  packages at the versions above.
+- **Advisories**: `pnpm audit --prod --audit-level=high` reports no known
+  vulnerabilities.
+- **Runtime notes**: the SDK sends to the endpoint named in
+  `ACS_CONNECTION_STRING`, a Key Vault secret ([Secrets](secrets.md)) for a
+  dedicated send-only resource (design Q28). `@azure/core-rest-pipeline`
+  honors the standard `HTTPS_PROXY` and `NO_PROXY` variables, which is where
+  `http-proxy-agent` and `https-proxy-agent` come from. No deployed
+  environment sets them.
+
+## Bundled data: common-password denylist
+
+The password policy (`043` task 8.1, design Resolved decisions Q22 and Q132)
+refuses passwords on a bundled common-password denylist, with no external
+call and no new dependency. The list is data, not a dependency, so its
+provenance is recorded here.
+
+- **File**: `packages/auth/src/identity/common-passwords.ts`, 502 entries.
+  It is generated once, never edited by hand, and changed only by a reviewed
+  pull request that updates its header and this section.
+- **Source**: SecLists,
+  `Passwords/Common-Credentials/Pwdb_top-1000000.txt` at commit
+  `27c08068f849227f2fc1c8f7f00afae365957b96` (file SHA-256
+  `e9a88f67aafe65496682dc374559ee714e978bee50314767494c3e37a18c9fc8`).
+- **License**: MIT (Copyright (c) 2018 Daniel Miessler). The copyright and
+  permission notice are reproduced in the file header, as the license
+  requires.
+- **Derivation**:
+  1. Decode hashcat `$HEX[...]` entries as UTF-8.
+  2. NFC-normalize every entry.
+  3. Keep only entries of 20 to 128 code points made solely of printable ASCII
+     (U+0020-U+007E). Shorter entries are already refused by the length rule;
+     the few non-ASCII entries are mis-encoded text.
+  4. Lower-case, de-duplicate and sort.
+- **Matching**: exact, against the candidate after NFC normalization and
+  lower-casing. The breached-password check (Q23) remains the main control;
+  this list is the offline layer.

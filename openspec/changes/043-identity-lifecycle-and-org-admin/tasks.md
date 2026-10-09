@@ -158,7 +158,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       amendment's drift-check's N14-1 needs no decision and its N14-2 is resolved by
       Q131 (task 15.2). Attach the reports to the PR. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded.
-- [ ] 1.3 _(setup)_ Add `@azure/communication-email` (`1.1.0`) to
+- [x] 1.3 _(setup)_ Add `@azure/communication-email` (`1.1.0`) to
       `packages/auth/package.json`, and add the Communication Services connection
       string as a Key Vault secret reference, following `002`'s existing pattern
       for the database credential. Check its license, its install scripts (keep
