@@ -42,3 +42,15 @@ export {
   type BackchannelLogoutOutcome,
 } from './backchannel-logout-telemetry.js';
 export { emitRateLimited, type RateLimitScope } from './rate-limit/pre-auth-rate-limit.js';
+export {
+  emitIdentityEvent,
+  recordIdentityMetric,
+  withIdentitySpan,
+  type IdentityAttributes,
+  type IdentitySeverity,
+} from './telemetry/identity-telemetry.js';
+export {
+  IDENTITY_LOG_EVENTS,
+  IDENTITY_METRICS,
+  IDENTITY_SPANS,
+} from './telemetry/identity-contract.js';

@@ -245,7 +245,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `BETTER_AUTH_SECRET`, each of the two declaring `CERBOS_ADDRESS` and refusing to
       start without it, and the reconcile and the bootstrap CLI each declaring
       `TAYZU_OPERATOR_ID` and refusing to start when it is missing.
-- [ ] 2.0c `@tayzu/auth` exports the helpers through which `apps/api` creates every
+- [x] 2.0c `@tayzu/auth` exports the helpers through which `apps/api` creates every
       identity log event, span and counter, before the first task that emits one
       (design, Observability contract): an event emitter, a span helper and a metric
       recorder over the `@tayzu/auth` tracer and meter, like `emitAccountLinkEvent`,
