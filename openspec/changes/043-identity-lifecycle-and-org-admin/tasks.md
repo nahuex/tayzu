@@ -965,7 +965,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `auth-repository.ts` passing, the `sql.raw` and `actor.type` bans still firing on a scratch
       source inside the scoped paths, and `pnpm lint` staying green on the real
       tree.
-- [ ] 5.2 Every target of an `identity.*` operation is resolved on the server by
+- [x] 5.2 Every target of an `identity.*` operation is resolved on the server by
       one helper (which reads `apikey`, `invitation` and `member` only through the repository of 5.1b), and a target of another tenant answers `CATALOG_NOT_FOUND`,
       identical to a nonexistent id; `tenantId` and `actor` are never read from
       input. Verify: `identity-target.int.test.ts` covers a foreign and an unknown
