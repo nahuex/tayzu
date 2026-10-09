@@ -832,7 +832,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 5. Cerbos foundations, ⛔ Checkpoint 3
 
-- [ ] 5.1 `RESOURCE_KINDS` gains `service_account` and
+- [x] 5.1 `RESOURCE_KINDS` gains `service_account` and
       `credential`, and the Cerbos attributes are built from a resolved target
       (`assertMayOnUser` in `apps/api/src/identity-router.ts` is today `'create' |
 'update'` with empty attributes, and is replaced by the wrapper of 5.3b):
