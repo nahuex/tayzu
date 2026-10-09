@@ -5,8 +5,11 @@ export {
   createAuth,
   type AuthInstance,
   type CreateAuthOptions,
+  type MembershipAddedIntent,
+  type UserSyncChange,
   type UserSyncPort,
 } from './auth.js';
+export { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 export {
   createContextResolver,
   type ContextResolver,

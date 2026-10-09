@@ -83,6 +83,7 @@ import {
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import type { StatusEvent } from './identity/user-status.js';
 import { isIdle } from './session-idle.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
 import {
@@ -456,6 +457,7 @@ async function refreshDisplayData(
         tenantId: membership.organizationId,
         email: user.email,
         name: info.name ?? user.name,
+        userId: account.userId,
         ...(info.email === undefined ? {} : { contactEmail: info.email }),
       });
     }
@@ -510,9 +512,32 @@ export interface UserSyncPort {
     /** Display-only Visma Connect email (design D24); never an identity key. */
     readonly contactEmail?: string;
     readonly portRole?: 'admin' | 'member';
-    readonly status?: 'Active' | 'Disabled';
+    /**
+     * The status change (design D2): a `StatusEvent`, or the `membership_added`
+     * intent, from which the adapter derives the event. Absent for a write of
+     * display data only.
+     */
+    readonly change?: UserSyncChange;
+    /** The Better Auth user id of the write's subject; absent for `created_invited`. */
+    readonly userId?: string;
+    /** The `invitation.id` of a `created_invited` write (Resolved decision Q126). */
+    readonly invitationId?: string;
+    /** The principal an admin-initiated write is attributed to (Resolved decision Q10). */
+    readonly onBehalfOf?: {
+      readonly type: 'user' | 'agent' | 'integration' | 'system';
+      readonly id: string;
+    };
   }): Promise<void>;
 }
+
+/** The intent the membership hook passes; the adapter derives the event from the stored status. */
+export interface MembershipAddedIntent {
+  readonly intent: 'membership_added';
+  /** Whether the member's Better Auth user is banned. */
+  readonly banned: boolean;
+}
+
+export type UserSyncChange = StatusEvent | MembershipAddedIntent;
 
 /** The `auth.user` columns the `_user` sync reads. */
 interface SyncUserRow {
@@ -649,7 +674,11 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               email: user.email,
               name: user.name,
               portRole: portRoleFor(member.role),
-              status: (user as { banned?: boolean | null }).banned === true ? 'Disabled' : 'Active',
+              userId: user.id,
+              change: {
+                intent: 'membership_added',
+                banned: (user as { banned?: boolean | null }).banned === true,
+              },
             });
           },
         },
@@ -728,7 +757,8 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 tenantId: membership.organizationId,
                 email: row.email,
                 name: row.name,
-                status: row.banned ? 'Disabled' : 'Active',
+                userId: row.id,
+                change: row.banned ? 'admin_disable' : 'admin_enable',
               });
             }
           },

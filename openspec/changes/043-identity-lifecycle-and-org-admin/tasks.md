@@ -335,7 +335,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 4. Every status writer goes through the state machine
 
-- [ ] 4.1 The status writers take a `StatusEvent`. There are **two** sync types and
+- [x] 4.1 The status writers take a `StatusEvent`. There are **two** sync types and
       both change (Resolved decision Q10, design D2). In `@tayzu/auth`,
       `UserSyncPort` and its input (`auth.ts`) replace the two-value `status`
       (`'Active' | 'Disabled'`) with a `change`, which is a `StatusEvent` or the

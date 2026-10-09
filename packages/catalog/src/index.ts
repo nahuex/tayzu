@@ -10,6 +10,7 @@ export { CATALOG_ERROR_HTTP_STATUS } from './api/errors.js';
 export {
   createUserSync,
   type CreateUserSyncOptions,
+  type UserReadModel,
   type UserSync,
   type UserSyncInput,
 } from './service/user-sync.js';

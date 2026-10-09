@@ -48,6 +48,7 @@ import type { Pool } from 'pg';
 
 import { harnessPools } from './__fixtures__/pools.js';
 import { createIdentityRouter } from './identity-router.js';
+import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import {
   createAdminUser,
   signInAdminUser,
@@ -88,7 +89,9 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
     auth = createAuth({
       db: drizzle(pools.authPool, { schema: authSchema }),
       secret: TEST_SECRET,
-      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+      userSync: createUserSyncAdapter({
+        userSync: createUserSync({ pool: appPool, authz: cerbos }),
+      }),
     });
     api = auth.api as BetterAuthAdminSurface;
     const entities = createEntityService({ pool: appPool, authz: cerbos });
@@ -233,7 +236,7 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
  */
 describe('Creating a user creates a matching `_user` entity, without a Better Auth hook (task 18.5)', () => {
   let auth: AuthInstance;
-  let userSync: ReturnType<typeof createUserSync>;
+  let userSync: ReturnType<typeof createUserSyncAdapter>;
   let client: ReturnType<
     typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
   >;
@@ -247,7 +250,9 @@ describe('Creating a user creates a matching `_user` entity, without a Better Au
       db: drizzle(pools.authPool, { schema: authSchema }),
       secret: TEST_SECRET,
     });
-    userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    userSync = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
+    });
     client = createRouterClient(createIdentityRouter({ auth, authz: cerbos, userSync }), {
       context: (raw: Record<string, unknown>) => raw,
     });
@@ -334,5 +339,370 @@ describe('Creating a user creates a matching `_user` entity, without a Better Au
     expect(entity?.spec.properties['status']).toBe('Active');
     expect(entity?.spec.properties['portRole']).toBe('admin');
     expect(entity?.createdBy.type).toBe('system');
+  }, 60_000);
+});
+
+/**
+ * Task 4.1 of openspec/changes/043-identity-lifecycle-and-org-admin (spec "User
+ * status has four states with forward-only transitions"; design D2; Resolved
+ * decisions Q10 and Q83).
+ *
+ * ## Production symbols assumed (none of them exists yet)
+ *
+ * - `apps/api/src/identity/user-sync-adapter.ts` exports
+ *   `createUserSyncAdapter({ userSync })`, where `userSync` is `@tayzu/catalog`'s
+ *   `UserSync` extended with a read path `getUser({ tenantId, email })` returning
+ *   `{ status, version }` or `null` (see `packages/catalog/src/service/user-sync.int.test.ts`),
+ *   and an `upsertUser` that accepts `status` (four values), `expectedVersion` and
+ *   `onBehalfOf`. The adapter implements `UserSyncPort`:
+ *   - `upsertUser(input): Promise<void>`, whose input carries `change` (a
+ *     `StatusEvent`, or the intent `membership_added`, not exercised here), `tenantId`,
+ *     `email`, `name`, and optional `userId`, `invitationId` and `onBehalfOf`.
+ *   - `writeUserChange(input): Promise<StatusEvent | undefined>`, the acceptance's
+ *     entry point: same input, returns the status event it wrote, or `undefined`
+ *     when it wrote nothing.
+ *   It reads the current status and version through `userSync.getUser`, derives the
+ *   status with `nextStatus`, and writes it. An existing row is written with the
+ *   version it read as `expectedVersion`; a missing row is created, and a create race
+ *   (`CATALOG_ALREADY_EXISTS`) or a version conflict (`CATALOG_VERSION_CONFLICT`) is
+ *   re-read and retried a bounded number of times (3), then fails closed. A redundant
+ *   event writes nothing. A disallowed pair rejects with `CATALOG_VALIDATION_FAILED`.
+ * - The writes are made by the `system` actor with the input's `onBehalfOf` (a
+ *   `{ type: 'user', id }` principal) on the change event.
+ */
+type StatusEventName =
+  | 'created_staged'
+  | 'created_invited'
+  | 'created_active'
+  | 'invitation_accepted'
+  | 'first_sign_in'
+  | 'admin_disable'
+  | 'admin_enable';
+type StatusName = 'Staged' | 'Invited' | 'Active' | 'Disabled';
+
+interface UserReadModel {
+  readonly status: StatusName;
+  readonly version: number;
+}
+
+interface WriteInput {
+  readonly tenantId: string;
+  readonly email: string;
+  readonly name: string;
+  readonly change: StatusEventName;
+  readonly userId?: string;
+  readonly onBehalfOf?: { readonly type: 'user'; readonly id: string };
+}
+
+interface AdapterSurface {
+  upsertUser(input: WriteInput): Promise<void>;
+  writeUserChange(input: WriteInput): Promise<StatusEventName | undefined>;
+}
+
+describe('Every status writer goes through the state machine: the adapter (task 4.1)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let cerbosUserSync: ReturnType<typeof createUserSync>;
+  let readStatus: (tenantId: string, email: string) => Promise<StatusName | undefined>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    cerbosUserSync = createUserSync({ pool: appPool, authz: cerbos });
+    const entities = createEntityService({ pool: appPool, authz: cerbos });
+    readStatus = async (tenantId, email) => {
+      try {
+        const entity = await entities.get(
+          {
+            tenantId,
+            actor: { type: 'system', id: 'user-sync-adapter-test' },
+            principal: { roles: ['admin'] },
+          },
+          { blueprint: '_user', identifier: email },
+        );
+        return entity.spec.properties['status'] as StatusName;
+      } catch (error) {
+        if ((error as { code?: unknown }).code === 'CATALOG_NOT_FOUND') return undefined;
+        throw error;
+      }
+    };
+  }, 60_000);
+
+  function adapterOver(userSync: ReturnType<typeof createUserSync>): AdapterSurface {
+    return createUserSyncAdapter({ userSync }) as unknown as AdapterSurface;
+  }
+
+  function adapter(): AdapterSurface {
+    return adapterOver(cerbosUserSync);
+  }
+
+  function fresh(): { tenantId: string; email: string } {
+    return {
+      tenantId: `t${randomUUID().replaceAll('-', '')}`,
+      email: `ad-${randomUUID()}@example.test`,
+    };
+  }
+
+  async function seed(tenantId: string, email: string, status: StatusName): Promise<void> {
+    await cerbosUserSync.upsertUser({ tenantId, email, name: 'Seeded Person', status });
+  }
+
+  async function read(tenantId: string, email: string): Promise<UserReadModel | null> {
+    return await cerbosUserSync.getUser({ tenantId, email });
+  }
+
+  async function changeEventCount(tenantId: string, email: string): Promise<number> {
+    const result = await authPool.query<{ n: string }>(
+      `select count(*)::text as n from catalog_change_event
+       where tenant_id = $1 and blueprint_identifier = '_user' and resource_identifier = $2`,
+      [tenantId, email],
+    );
+    return Number(result.rows[0]?.n);
+  }
+
+  const ALLOWED: readonly (readonly [StatusEventName, StatusName | null, StatusName])[] = [
+    ['created_staged', null, 'Staged'],
+    ['created_invited', null, 'Invited'],
+    ['created_invited', 'Staged', 'Invited'],
+    ['created_active', null, 'Active'],
+    ['invitation_accepted', 'Staged', 'Active'],
+    ['invitation_accepted', 'Invited', 'Active'],
+    ['first_sign_in', 'Staged', 'Active'],
+    ['first_sign_in', 'Invited', 'Active'],
+    ['admin_disable', 'Staged', 'Disabled'],
+    ['admin_disable', 'Invited', 'Disabled'],
+    ['admin_disable', 'Active', 'Disabled'],
+    ['admin_enable', 'Disabled', 'Active'],
+  ];
+
+  it.each(ALLOWED)(
+    'a write for the allowed event %s from %s ends %s',
+    async (event, from, to) => {
+      const { tenantId, email } = fresh();
+      if (from !== null) await seed(tenantId, email, from);
+
+      await adapter().upsertUser({ tenantId, email, name: 'Some Person', change: event });
+
+      expect(await readStatus(tenantId, email)).toBe(to);
+    },
+    60_000,
+  );
+
+  it('Active never regresses to invited or staged: a rejected Active to Staged write fails with CATALOG_VALIDATION_FAILED and leaves Active', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Active');
+
+    const error: unknown = await adapter()
+      .upsertUser({ tenantId, email, name: 'Some Person', change: 'created_staged' })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+    expect(error, 'the write must reject').toBeDefined();
+    expect((error as { code?: unknown }).code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(await readStatus(tenantId, email)).toBe('Active');
+  }, 60_000);
+
+  it('Disable and re-enable: each change event is written as system with onBehalfOf set to the admin', async () => {
+    const { tenantId, email } = fresh();
+    const adminId = `admin-${randomUUID()}`;
+    await seed(tenantId, email, 'Active');
+    const onBehalfOf = { type: 'user', id: adminId } as const;
+
+    await adapter().upsertUser({
+      tenantId,
+      email,
+      name: 'Some Person',
+      change: 'admin_disable',
+      onBehalfOf,
+    });
+    expect(await readStatus(tenantId, email)).toBe('Disabled');
+    await adapter().upsertUser({
+      tenantId,
+      email,
+      name: 'Some Person',
+      change: 'admin_enable',
+      onBehalfOf,
+    });
+    expect(await readStatus(tenantId, email)).toBe('Active');
+
+    const events = await authPool.query<{
+      actor_type: string;
+      on_behalf_of_type: string | null;
+      on_behalf_of_id: string | null;
+    }>(
+      `select actor_type, on_behalf_of_type, on_behalf_of_id from catalog_change_event
+       where tenant_id = $1 and blueprint_identifier = '_user' and resource_identifier = $2
+       order by seq`,
+      [tenantId, email],
+    );
+    const lastTwo = events.rows.slice(-2);
+    expect(lastTwo).toHaveLength(2);
+    for (const row of lastTwo) {
+      expect(row.actor_type).toBe('system');
+      expect(row.on_behalf_of_type).toBe('user');
+      expect(row.on_behalf_of_id).toBe(adminId);
+    }
+  }, 60_000);
+
+  it('A concurrent admin_disable between the adapter read and its write is never overwritten: the user stays Disabled', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Invited');
+    let raced = false;
+    const racing = {
+      ...cerbosUserSync,
+      upsertUser: cerbosUserSync.upsertUser.bind(cerbosUserSync),
+      getUser: async (input: { tenantId: string; email: string }) => {
+        const snapshot = await read(input.tenantId, input.email);
+        if (!raced) {
+          raced = true;
+          await seed(input.tenantId, input.email, 'Disabled');
+        }
+        return snapshot;
+      },
+    };
+
+    // The outcome of the lost write is open (it may reject on the transition from
+    // Disabled or write nothing); only the status is asserted.
+    await adapterOver(racing)
+      .upsertUser({ tenantId, email, name: 'Some Person', change: 'first_sign_in' })
+      .catch(() => undefined);
+
+    expect(raced, 'the competing write ran').toBe(true);
+    expect(await readStatus(tenantId, email)).toBe('Disabled');
+  }, 60_000);
+
+  it('A create race for a missing row (CATALOG_ALREADY_EXISTS) is retried like a version conflict, against the row the winner created', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Invited');
+    let reads = 0;
+    const racing = {
+      ...cerbosUserSync,
+      upsertUser: cerbosUserSync.upsertUser.bind(cerbosUserSync),
+      getUser: async (input: { tenantId: string; email: string }) => {
+        reads += 1;
+        if (reads === 1) return null;
+        return await read(input.tenantId, input.email);
+      },
+    };
+
+    await adapterOver(racing).upsertUser({
+      tenantId,
+      email,
+      name: 'Some Person',
+      change: 'created_invited',
+    });
+
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(await readStatus(tenantId, email)).toBe('Invited');
+  }, 60_000);
+
+  it('A redundant event writes nothing: admin_enable on Active and admin_disable on Disabled', async () => {
+    const enabled = fresh();
+    await seed(enabled.tenantId, enabled.email, 'Active');
+    const disabled = fresh();
+    await seed(disabled.tenantId, disabled.email, 'Disabled');
+    const enabledBefore = await read(enabled.tenantId, enabled.email);
+    const disabledBefore = await read(disabled.tenantId, disabled.email);
+    const enabledEvents = await changeEventCount(enabled.tenantId, enabled.email);
+    const disabledEvents = await changeEventCount(disabled.tenantId, disabled.email);
+
+    await adapter().upsertUser({
+      tenantId: enabled.tenantId,
+      email: enabled.email,
+      name: 'Some Person',
+      change: 'admin_enable',
+    });
+    await adapter().upsertUser({
+      tenantId: disabled.tenantId,
+      email: disabled.email,
+      name: 'Some Person',
+      change: 'admin_disable',
+    });
+
+    expect(await read(enabled.tenantId, enabled.email)).toEqual(enabledBefore);
+    expect(await read(disabled.tenantId, disabled.email)).toEqual(disabledBefore);
+    expect(await changeEventCount(enabled.tenantId, enabled.email)).toBe(enabledEvents);
+    expect(await changeEventCount(disabled.tenantId, disabled.email)).toBe(disabledEvents);
+  }, 60_000);
+
+  it('A write fails closed once the retries are exhausted', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Invited');
+    let reads = 0;
+    const stale = {
+      ...cerbosUserSync,
+      upsertUser: cerbosUserSync.upsertUser.bind(cerbosUserSync),
+      getUser: async (input: { tenantId: string; email: string }) => {
+        reads += 1;
+        const current = await read(input.tenantId, input.email);
+        // Version 0 never exists, so every write is a version conflict.
+        return current === null ? null : { status: current.status, version: 0 };
+      },
+    };
+
+    await expect(
+      adapterOver(stale).upsertUser({
+        tenantId,
+        email,
+        name: 'Some Person',
+        change: 'first_sign_in',
+      }),
+    ).rejects.toThrow();
+
+    expect(reads, 'it retried before failing').toBeGreaterThan(1);
+    expect(
+      reads,
+      'the retries are bounded (3 retries after the first attempt)',
+    ).toBeLessThanOrEqual(4);
+    expect(await readStatus(tenantId, email)).toBe('Invited');
+  }, 60_000);
+
+  it('The acceptance entry point returns invitation_accepted for an Invited row it activates', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Invited');
+
+    const written = await adapter().writeUserChange({
+      tenantId,
+      email,
+      name: 'Some Person',
+      change: 'invitation_accepted',
+    });
+
+    expect(written).toBe('invitation_accepted');
+    expect(await readStatus(tenantId, email)).toBe('Active');
+  }, 60_000);
+
+  it('The acceptance entry point returns created_active for a missing row it creates', async () => {
+    const { tenantId, email } = fresh();
+
+    const written = await adapter().writeUserChange({
+      tenantId,
+      email,
+      name: 'Some Person',
+      change: 'created_active',
+    });
+
+    expect(written).toBe('created_active');
+    expect(await readStatus(tenantId, email)).toBe('Active');
+  }, 60_000);
+
+  it('The acceptance entry point returns no status event for a redundant event that writes nothing', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Active');
+
+    const written = await adapter().writeUserChange({
+      tenantId,
+      email,
+      name: 'Some Person',
+      change: 'admin_enable',
+    });
+
+    expect(written).toBeUndefined();
+    expect(await readStatus(tenantId, email)).toBe('Active');
   }, 60_000);
 });

@@ -1,0 +1,112 @@
+/**
+ * The `UserSyncPort` adapter (`043` design D2, Resolved decisions Q10, Q30 and
+ * Q83). Every `_user` status writer goes through it: it reads the current
+ * status and version, derives the next status with `nextStatus`, and writes it
+ * with the version it read. A version conflict or a create race re-reads and
+ * retries a bounded number of times before it fails closed.
+ */
+import { nextStatus, type StatusEvent, type UserStatus, type UserSyncPort } from '@tayzu/auth';
+import type { UserSync, UserReadModel } from '@tayzu/catalog';
+
+/** Retries after the first attempt (Q83). */
+const MAX_RETRIES = 3;
+
+type UpsertInput = Parameters<UserSyncPort['upsertUser']>[0];
+
+export interface UserSyncAdapter extends UserSyncPort {
+  /**
+   * The acceptance's entry point: same input as `upsertUser`, and it returns
+   * the status event it wrote, or `undefined` when it wrote nothing. The invitee's
+   * `userId` is required (Resolved decision Q120).
+   */
+  readonly writeUserChange: (
+    input: UpsertInput & { readonly userId: string },
+  ) => Promise<StatusEvent | undefined>;
+}
+
+export interface CreateUserSyncAdapterOptions {
+  readonly userSync: UserSync;
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === 'object' && error !== null
+    ? (error as { code?: unknown }).code
+    : undefined;
+}
+
+/** The event the `membership_added` intent maps to; a hook never revives a user. */
+function membershipEvent(current: UserStatus | null): StatusEvent | undefined {
+  if (current === null) return 'created_active';
+  return current === 'Staged' || current === 'Invited' ? 'invitation_accepted' : undefined;
+}
+
+/** A redundant event leaves the status as it already is. */
+function isRedundant(event: StatusEvent, current: UserStatus | null): boolean {
+  return (
+    (event === 'admin_enable' && current === 'Active') ||
+    (event === 'admin_disable' && current === 'Disabled')
+  );
+}
+
+export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): UserSyncAdapter {
+  const { userSync } = options;
+
+  /** Writes one event: read, derive, write; retried on a conflict. Returns the event written, if any. */
+  async function writeEvent(
+    input: UpsertInput,
+    pick: (current: UserReadModel | null) => StatusEvent | undefined,
+  ): Promise<StatusEvent | undefined> {
+    for (let attempt = 0; ; attempt += 1) {
+      const current = await userSync.getUser({ tenantId: input.tenantId, email: input.email });
+      const event = pick(current);
+      if (event === undefined || isRedundant(event, current?.status ?? null)) return undefined;
+      const status = nextStatus(current?.status ?? null, event);
+      try {
+        await userSync.upsertUser({
+          tenantId: input.tenantId,
+          email: input.email,
+          name: input.name,
+          ...(input.contactEmail === undefined ? {} : { contactEmail: input.contactEmail }),
+          ...(input.portRole === undefined ? {} : { portRole: input.portRole }),
+          status,
+          ...(input.onBehalfOf === undefined ? {} : { onBehalfOf: input.onBehalfOf }),
+          ...(current === null ? { createOnly: true } : { expectedVersion: current.version }),
+        });
+        return event;
+      } catch (error) {
+        const code = errorCode(error);
+        const conflict = code === 'CATALOG_VERSION_CONFLICT' || code === 'CATALOG_ALREADY_EXISTS';
+        if (!conflict || attempt >= MAX_RETRIES) throw error;
+      }
+    }
+  }
+
+  async function writeUserChange(input: UpsertInput): Promise<StatusEvent | undefined> {
+    const { change } = input;
+    if (change === undefined) {
+      // Display data and role only: no status is written.
+      await userSync.upsertUser({
+        tenantId: input.tenantId,
+        email: input.email,
+        name: input.name,
+        ...(input.contactEmail === undefined ? {} : { contactEmail: input.contactEmail }),
+        ...(input.portRole === undefined ? {} : { portRole: input.portRole }),
+      });
+      return undefined;
+    }
+    if (typeof change === 'string') {
+      return await writeEvent(input, () => change);
+    }
+    const first = await writeEvent(input, (current) => membershipEvent(current?.status ?? null));
+    if (first !== 'created_active' || !change.banned) return first;
+    // A banned member with no row is created, then disabled.
+    return (await writeEvent(input, () => 'admin_disable')) ?? first;
+  }
+
+  return {
+    async upsertUser(input) {
+      await writeUserChange(input);
+    },
+    writeUserChange,
+  };
+}

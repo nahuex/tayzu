@@ -301,7 +301,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             email: user.email,
             name: input.name,
             portRole: input.role === 'admin' ? 'admin' : 'member',
-            status: 'Active',
+            change: { intent: 'membership_added', banned: false },
           });
           return { userId: user.id, email: user.email, temporaryPassword };
         }),

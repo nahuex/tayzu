@@ -8,6 +8,8 @@
 import type { CerbosClient } from '@tayzu/authz';
 import type { Pool } from 'pg';
 
+import type { Principal } from '../domain/context.js';
+import { CatalogError } from '../domain/errors.js';
 import { createEntityService } from './entities.js';
 import { bootstrapSystemBlueprints } from './system-blueprints.js';
 
@@ -20,11 +22,28 @@ export interface UserSyncInput {
   readonly contactEmail?: string;
   /** Omitted fields keep their stored value (merge upsert). */
   readonly portRole?: 'admin' | 'member';
-  readonly status?: 'Active' | 'Disabled';
+  readonly status?: 'Staged' | 'Invited' | 'Active' | 'Disabled';
+  /** The principal an admin-initiated write is attributed to (design D2, Q10). */
+  readonly onBehalfOf?: Principal;
+  /** For an existing row: the version the caller read; a stale one is a version conflict. */
+  readonly expectedVersion?: number;
+  /** Create the row instead of upserting it: an existing row is `CATALOG_ALREADY_EXISTS`. */
+  readonly createOnly?: boolean;
+}
+
+/** The stored status and entity version of a tenant's `_user` entity. */
+export interface UserReadModel {
+  readonly status: 'Staged' | 'Invited' | 'Active' | 'Disabled';
+  readonly version: number;
 }
 
 export interface UserSync {
   upsertUser(input: UserSyncInput): Promise<void>;
+  /** Reads the `_user` entity addressed by `email`, or `null` when it does not exist. */
+  getUser(input: {
+    readonly tenantId: string;
+    readonly email: string;
+  }): Promise<UserReadModel | null>;
 }
 
 export interface CreateUserSyncOptions {
@@ -48,20 +67,48 @@ export function createUserSync(options: CreateUserSyncOptions): UserSync {
       if (input.status !== undefined) properties['status'] = input.status;
       if (input.portRole !== undefined) properties['portRole'] = input.portRole;
       if (input.contactEmail !== undefined) properties['contactEmail'] = input.contactEmail;
-      await entities.upsert(
-        {
-          tenantId: input.tenantId,
-          actor: SYSTEM_SYNC_ACTOR,
-          principal: { roles: ['admin'] },
-        },
-        {
-          blueprint: '_user',
-          identifier: input.email,
-          title: input.name,
-          mode: 'merge',
-          spec: { properties },
-        },
-      );
+      const context = {
+        tenantId: input.tenantId,
+        actor:
+          input.onBehalfOf === undefined
+            ? SYSTEM_SYNC_ACTOR
+            : { ...SYSTEM_SYNC_ACTOR, onBehalfOf: input.onBehalfOf },
+        principal: { roles: ['admin'] },
+      };
+      const write = {
+        blueprint: '_user',
+        identifier: input.email,
+        title: input.name,
+        spec: { properties },
+      };
+      if (input.createOnly === true) {
+        await entities.create(context, write);
+        return;
+      }
+      await entities.upsert(context, {
+        ...write,
+        mode: 'merge',
+        ...(input.expectedVersion === undefined ? {} : { expectedVersion: input.expectedVersion }),
+      });
+    },
+    async getUser(input) {
+      try {
+        const entity = await entities.get(
+          {
+            tenantId: input.tenantId,
+            actor: SYSTEM_SYNC_ACTOR,
+            principal: { roles: ['admin'] },
+          },
+          { blueprint: '_user', identifier: input.email },
+        );
+        return {
+          status: entity.spec.properties['status'] as UserReadModel['status'],
+          version: entity.version,
+        };
+      } catch (error) {
+        if (error instanceof CatalogError && error.code === 'CATALOG_NOT_FOUND') return null;
+        throw error;
+      }
     },
   };
 }

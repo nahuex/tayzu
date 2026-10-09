@@ -166,7 +166,7 @@ export async function bootstrapAdmin(
     email: params.adminEmail,
     name: params.adminName,
     portRole: 'admin',
-    status: 'Active',
+    change: { intent: 'membership_added', banned: false },
   });
 
   return { ...noOp, created: true, temporaryPassword };
