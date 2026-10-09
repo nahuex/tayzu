@@ -17,6 +17,7 @@ import { randomBytes } from 'node:crypto';
 import { os, type Route } from '@orpc/server';
 import { emitAccountLinkEvent, wouldLeaveNoSignInMethod, type AuthInstance } from '@tayzu/auth';
 import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
+import { recordAuthzDecision } from '@tayzu/catalog';
 
 import type { AuthRepository } from './identity/auth-repository.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
@@ -133,7 +134,7 @@ async function assertMayOnUser(
 ): Promise<void> {
   const { tenantId, actor, principal } = rawContext as {
     tenantId?: unknown;
-    actor?: { id?: unknown } | null;
+    actor?: { id?: unknown; type?: unknown } | null;
     principal?: { roles?: unknown } | null;
   };
   const roles = principal?.roles;
@@ -164,6 +165,16 @@ async function assertMayOnUser(
     allowed = checked.results[0]?.isAllowed(action) === true;
   } catch {
     allowed = false;
+  }
+  // The cross-tenant probe of `authorizeTarget` is not a decision of its own.
+  if (resourceTenantId === undefined) {
+    const actorType = isNonEmptyString(actor.type) ? actor.type : 'unknown';
+    recordAuthzDecision(
+      { tenantId, actor: { type: actorType, id: actor.id } },
+      RESOURCE_KINDS.user,
+      action,
+      allowed,
+    );
   }
   if (!allowed) throw new IdentityForbiddenError();
 }

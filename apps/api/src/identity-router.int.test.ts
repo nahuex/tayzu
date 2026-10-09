@@ -205,3 +205,184 @@ describe('identity.users.create writes the _user through the membership hook onl
     expect(calls, 'the router writes nothing through a userSync').toEqual([]);
   }, 60_000);
 });
+
+/**
+ * Task 5.3 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * "Only an admin may invite a user or change another user's status": the
+ * identity pipeline MUST emit `catalog.security.authz_denied` on every Cerbos
+ * deny and increment the authorization-decision metric; scenario "Non-admin
+ * cannot invite": denied with `AUTH_FORBIDDEN`, `catalog.security.authz_denied`
+ * is logged).
+ *
+ * Task 5.3: "a denied call logs the event and records one `deny` decision and
+ * an allowed call one `allow`, with no email or identifier of the target."
+ *
+ * ## Production symbols expected
+ *
+ * - `createIdentityRouter` (`./identity-router.js`) emits
+ *   `catalog.security.authz_denied` (attributes `tayzu.tenant.id`,
+ *   `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.authz.resource.kind`,
+ *   `tayzu.authz.action`) on a deny and adds one `tayzu.authz.decisions`
+ *   point (`tayzu.authz.decision` = `allow` | `deny`) per call, through a
+ *   helper exported by `@tayzu/catalog` (not asserted here: only the effects).
+ *
+ * ## Why this fails right now
+ *
+ * The router throws `AUTH_FORBIDDEN` silently: no log record, no decision.
+ */
+describe('identity router authorization telemetry (task 5.3)', () => {
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    client = createRouterClient(
+      createIdentityRouter({ auth, authz: cerbos, authRepository: createAuthRepository(authPool) }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  async function freshTenantId(): Promise<string> {
+    const id = randomUUID();
+    const owner = await createAdminUser(auth, {
+      name: 'Tenant Owner',
+      email: `owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await (auth.api as CreateOrganizationSurface).createOrganization({
+      body: {
+        name: 'Identity Telemetry Org',
+        slug: `identity-telemetry-${id}`,
+        userId: owner.userId,
+      },
+    });
+    return org.id;
+  }
+
+  function callerContext(
+    tenantId: string,
+    actorId: string,
+    roles: readonly string[],
+  ): Record<string, unknown> {
+    return { tenantId, actor: { type: 'user', id: actorId }, principal: { roles } };
+  }
+
+  /** `user`/`create` decisions of one tenant (the catalog's own `_user` writes are other kinds). */
+  async function decisionTotal(tenantId: string, decision: 'allow' | 'deny'): Promise<number> {
+    await harness.forceFlush();
+    let total = 0;
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (metric.descriptor.name !== 'tayzu.authz.decisions') continue;
+          for (const point of metric.dataPoints) {
+            if (
+              point.attributes['tayzu.tenant.id'] === tenantId &&
+              point.attributes['tayzu.authz.resource.kind'] === 'user' &&
+              point.attributes['tayzu.authz.action'] === 'create' &&
+              point.attributes['tayzu.authz.decision'] === decision
+            ) {
+              total += point.value as number;
+            }
+          }
+        }
+      }
+    }
+    return total;
+  }
+
+  async function deniedLogs(tenantId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === 'catalog.security.authz_denied' &&
+        record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+  }
+
+  function allPointAttributes(tenantId: string): string {
+    const seen: unknown[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (metric.descriptor.name !== 'tayzu.authz.decisions') continue;
+          for (const point of metric.dataPoints) {
+            if (point.attributes['tayzu.tenant.id'] === tenantId) seen.push(point.attributes);
+          }
+        }
+      }
+    }
+    return JSON.stringify(seen);
+  }
+
+  it('Non-admin cannot invite: a denied call is AUTH_FORBIDDEN, logs catalog.security.authz_denied once and records one deny decision, with no email or name', async () => {
+    const tenantId = await freshTenantId();
+    const actorId = `member-${randomUUID()}`;
+    const email = `denied-${randomUUID()}@example.test`;
+    const name = `Secret Name ${randomUUID()}`;
+
+    await expect(
+      client.identity.users.create(
+        { email, name, role: 'member' },
+        { context: callerContext(tenantId, actorId, ['member']) },
+      ),
+    ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
+
+    const logs = await deniedLogs(tenantId);
+    expect(logs, 'exactly one authz_denied log for the deny').toHaveLength(1);
+    const attributes = logs[0]?.attributes ?? {};
+    expect(attributes).toMatchObject({
+      'tayzu.tenant.id': tenantId,
+      'tayzu.actor.type': 'user',
+      'tayzu.actor.id': actorId,
+      'tayzu.authz.resource.kind': 'user',
+      'tayzu.authz.action': 'create',
+    });
+    expect(logs[0]?.severityText ?? 'WARN').toBe('WARN');
+    expect(JSON.stringify(logs[0])).not.toContain(email);
+    expect(JSON.stringify(logs[0])).not.toContain(name);
+
+    expect(await decisionTotal(tenantId, 'deny')).toBe(1);
+    expect(await decisionTotal(tenantId, 'allow')).toBe(0);
+    expect(allPointAttributes(tenantId)).not.toContain(email);
+    expect(allPointAttributes(tenantId)).not.toContain(name);
+  }, 60_000);
+
+  it('An allowed call records one allow decision and no authz_denied log, with no email or name', async () => {
+    const tenantId = await freshTenantId();
+    const adminId = `admin-${randomUUID()}`;
+    const email = `allowed-${randomUUID()}@example.test`;
+    const name = `Allowed Name ${randomUUID()}`;
+
+    const created = await client.identity.users.create(
+      { email, name, role: 'member' },
+      { context: callerContext(tenantId, adminId, ['admin']) },
+    );
+
+    expect(await decisionTotal(tenantId, 'allow')).toBe(1);
+    expect(await decisionTotal(tenantId, 'deny')).toBe(0);
+    expect(await deniedLogs(tenantId)).toHaveLength(0);
+    expect(allPointAttributes(tenantId)).not.toContain(email);
+    expect(allPointAttributes(tenantId)).not.toContain(name);
+    expect(allPointAttributes(tenantId)).not.toContain(created.userId);
+  }, 60_000);
+});

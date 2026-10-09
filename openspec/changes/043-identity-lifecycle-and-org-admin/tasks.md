@@ -971,7 +971,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       input. Verify: `identity-target.int.test.ts` covers a foreign and an unknown
       invitation, credential and user answering the same, and a body with a
       `tenantId` field being rejected.
-- [ ] 5.3 The identity router emits `catalog.security.authz_denied` on every Cerbos
+- [x] 5.3 The identity router emits `catalog.security.authz_denied` on every Cerbos
       deny (it threw silently before) and records every decision on
       `tayzu.authz.decisions` (the catalog's counter takes allow and deny through
       its `decision` attribute, `pipeline.ts`), through a helper exported by

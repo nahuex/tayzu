@@ -421,6 +421,24 @@ async function authorize(
     [AUTHZ_KIND_ATTRIBUTE]: kind,
   });
 
+  recordAuthzDecision(ctx, kind, action, allowed);
+  if (!allowed) throw new AuthorizationError();
+}
+
+/**
+ * Counts one authorization decision and, on a deny, emits
+ * `catalog.security.authz_denied`. Shared with the identity router (043 task
+ * 5.3), so there is a single instrument. Carries opaque identifiers only.
+ */
+export function recordAuthzDecision(
+  ctx: {
+    readonly tenantId: string;
+    readonly actor: { readonly type: string; readonly id: string };
+  },
+  kind: string,
+  action: string,
+  allowed: boolean,
+): void {
   authzDecisionsCounter.add(1, {
     [TENANT_ATTRIBUTE]: ctx.tenantId,
     [AUTHZ_KIND_ATTRIBUTE]: kind,
@@ -440,7 +458,6 @@ async function authorize(
       [AUTHZ_ACTION_ATTRIBUTE]: action,
     },
   });
-  throw new AuthorizationError();
 }
 
 function elapsedSeconds(startedAtMillis: number): number {
