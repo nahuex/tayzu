@@ -586,7 +586,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       wiring test exercises (tasks header). Verify: `user-sync-wiring.int.test.ts` boots
       `createApp` and covers a membership added through Better Auth writing the `_user`
       entity through the state machine.
-- [ ] 4.2b A repeatable `_user` reconcile script
+- [x] 4.2b A repeatable `_user` reconcile script
       (`apps/api/scripts/reconcile-users.ts`, `pnpm --filter @tayzu/api
       identity:reconcile-users`, started through the helper of 2.0; Resolved
       decision Q50) creates the `_user` entity of every existing member that has
