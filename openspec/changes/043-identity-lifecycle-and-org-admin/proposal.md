@@ -185,9 +185,12 @@ mail. A second fixed template tells the other admins of an accepted
   auth events; no identifier in a URL path reaches telemetry (the catalog routes of the
   `_user` blueprint included), and no catalog span, catalog audit event or catalog
   request to Cerbos carries a `_user` identifier (a fixed placeholder replaces it, and the
-  referrer redaction sends positional ids, which rewrites one unit test, the catalog
-  redaction fixture (its header comment only) and three integration tests of `002` to
-  stricter assertions, called out in the PR). Every audit event names the principal who
+  referrer redaction sends positional ids). Some `002` tests are rewritten to stricter
+  assertions, called out in the PR: the positional ids rewrite one unit test, the catalog
+  redaction fixture (its header comment only) and three integration tests, and because a
+  banned sign-in logs `002`'s declared reason `account_disabled`, the smoke check's
+  assertion on the reasons of `auth.security.login_failed` becomes the exact set
+  `bad_credentials`, `mfa_failed` and `account_disabled` (Q131). Every audit event names the principal who
   acted: the admin, the invitee of an acceptance, the user of their own first sign-in,
   or the operator's opaque id for the reconcile and the bootstrap, which requires it, and
   none for a status change that mirrors a ban; every status change is logged, by any
@@ -276,8 +279,9 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   parameter), the `@tayzu/catalog` fixture
   `packages/catalog/src/service/__fixtures__/redaction-authz.ts` (its header comment: it
   answers every all-`catalog_entity` batch by the `resource.id` it receives, an
-  identifier for an entity operation's own check and for `mayUpdateReferrer`'s and a
-  position for the redaction batch, while a blueprint operation's own
+  identifier (the fixed placeholder for a `_user` entity, Q119) for an entity
+  operation's own check and for `mayUpdateReferrer`'s and a position for the
+  redaction batch, while a blueprint operation's own
   `catalog_blueprint` check still reaches the real policies, Q130),
   a new `scripts/ci/dast-coverage.ts` (the DAST scan's 2xx check),
   `eslint.config.js` and a new restriction module, `vitest.shared.ts` and `turbo.json`
@@ -345,8 +349,11 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   of a new-account join whose token consumption changes no row, the window between
   the `pending` check of resend and cancel and the acceptance, and what an admin's
   cancel of an invitation that is not `pending` answers) were answered by Q127, Q128
-  (a documented residual, with a ticket for the structural fix) and Q129, and no
-  question is open.
+  (a documented residual, with a ticket for the structural fix) and Q129. The twelfth
+  drift-check's N12-1 (how Q119's positional ids meet `002`'s redaction fixture and
+  tests) was answered by Q130, and the fourteenth amendment's drift-check raised one
+  more (whether the smoke check's `login_failed` assertion gains `account_disabled`
+  once a banned sign-in logs it), answered by Q131. No question is open.
   New surface: the first public route, the first outbound email and the Pwned
   Passwords egress.
 - **Docs**: `docs/security/data-retention.md` (new, for the operational policies; `045`

@@ -1466,6 +1466,11 @@ routes of other blueprints keep their paths. Opaque identifiers and enumerated v
 - **WHEN** each operation in this capability is executed once, successfully and with a denied/failed case, under an in-memory telemetry exporter
 - **THEN** every span, metric and log event declared in the contract is observed with its required attributes
 
+#### Scenario: A banned sign-in's failure reason is observed by the smoke check
+
+- **WHEN** the telemetry smoke check drives a sign-in with a wrong password, a failed second factor and a banned user's local sign-in with the correct password
+- **THEN** the reasons it observes on `auth.security.login_failed` are exactly `bad_credentials`, `mfa_failed` and `account_disabled`, all of them already declared by the authentication contract of `002`
+
 #### Scenario: Invited email never reaches telemetry
 
 - **WHEN** `marker-user@example.com` is invited, and later fails to accept an expired invitation

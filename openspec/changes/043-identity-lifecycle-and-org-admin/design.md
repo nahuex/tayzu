@@ -651,9 +651,10 @@
 - **Amended a fourteenth time on 2026-10-09** with the mechanical fixes of a final
   consistency check of the thirteenth amendment (C-1 to C-10), of the thirteenth
   drift-check (N13-1 to N13-3, N13-1 being the thirteenth pass's G13-1) and of the
-  thirteenth pass's V13-note, all within Resolved decisions Q1-Q130: no new decision, and
-  no question is open (Open Questions). So that a reader of the older text is not
-  surprised:
+  thirteenth pass's V13-note, all within Resolved decisions Q1-Q130 (no new decision),
+  and with Resolved decision Q131, which answers its own drift-check's N14-2 (the last
+  bullet below); no question is open (Open Questions). So that a reader of the older
+  text is not surprised:
   - `toCerbosRole` is exported from `context-resolver.ts` and added to the `@tayzu/auth`
     package index, as `isIdle` is, because the acceptance that rebuilds the inviter's
     principal lives in `apps/api` and `@tayzu/auth`'s `exports` map has no entry for
@@ -665,9 +666,9 @@
     contract, Q119 annotated, spec "Telemetry contract", task 4.1d; C-2). The catalog's
     redaction fixture keeps answering by the `resource.id` it receives (only its header
     comment changes, to say that it answers an entity operation's own check and
-    `mayUpdateReferrer`'s by identifier and the redaction batch by position, while a
-    blueprint operation's own `catalog_blueprint` check still reaches the real policies;
-    N14-1), so the tests
+    `mayUpdateReferrer`'s by identifier (the fixed placeholder for a `_user` entity,
+    Q119) and the redaction batch by position, while a blueprint operation's own
+    `catalog_blueprint` check still reaches the real policies; N14-1), so the tests
     pass it the readable positions together with the identifiers of the single-resource
     checks that keep theirs (`team-a` in `entities-delete.int.test.ts`, the deleted entity's own
     check), and `blueprints-update.int.test.ts` derives its readable positions from the
@@ -678,9 +679,9 @@
   - Task 7.13 and the spec scenario "Creating a user cancels a pending invitation of the
     same email" assert that the `user_created` cancellation leaves an invitation of the
     same email that is already `cancelled` or `rejected` as it is and logs no
-    `catalog.audit.invitation_cancelled` with the reason `user_created` for it (Q123,
-    Q129; C-4). Task 8.2 no longer says that every failure is compensated: a
-    lost consume race compensates nothing (8.1e, Q127; C-5).
+    `catalog.audit.invitation_cancelled` with the reason `user_created` for it (Q129;
+    C-4). Task 8.2 no longer says that every failure is compensated: a lost consume race
+    compensates nothing (8.1e, Q127; C-5).
   - TK12-1's lock does not close the `re_invite` variant of the G12-1 cancel race,
     because Better Auth makes that cancellation inside `createInvitation`, outside the
     lock (the thirteenth amendment, Risks, Tickets, Q128 annotated; C-6). The Q127 row,
@@ -697,10 +698,12 @@
     same SHA-pinned pipeline (`002` SEC13) (D9, Gates; V13-note). The pass counts name
     thirteen passes (proposal, Security considerations, tasks 1.1, 1.2 and 16.10).
   - A follow-up consistency check of this amendment made five more mechanical fixes: the
-    tasks header cites task 7.13 under Q129, which decided the `user_created` skip (a
-    later fix removed it from Q123's list, which covers only the disable-time cancellations); this Context and the
-    findings-to-coverage table say that `@tayzu/auth`'s `exports` map has no entry for
-    `context-resolver.ts` (only its index and, from task 9.1c, the `machine-credentials`
+    tasks header cites task 7.13 under Q129 and task 7.13's skip case cites Q129 alone
+    (its cancellation stays under Q110), because Q129 decided the `user_created` skip
+    (a later fix removed it from Q123's task list: of the internal cancellations, Q123
+    names only `user_disabled` and `inviter_disabled`); this
+    Context and the findings-to-coverage table say that `@tayzu/auth`'s `exports` map
+    has no entry for `context-resolver.ts` (only its index and, from task 9.1c, the `machine-credentials`
     subpath of Q78) instead of saying that it exports only its index; the THEN line of
     the spec scenario "Creating a user cancels a pending invitation of the same email"
     names the pending `t1` invitation; task 4.1d, the tasks header, the proposal's
@@ -708,6 +711,19 @@
     fixture keeps its logic and has only its header comment corrected; and task 4.1d's
     Verify clause says that a blocked delete sends positional ids whatever the
     referrers' blueprint (completing C-2).
+  - A drift-check of this amendment found two more items. N14-1 (mechanical, within
+    Q130): the fixture's header comment must say that it answers an entity operation's
+    own check and `mayUpdateReferrer`'s by identifier (the fixed placeholder for a
+    `_user` entity, Q119) and the redaction batch by position, while a blueprint
+    operation's own `catalog_blueprint` check still reaches the real policies; the
+    second bullet above, the Q130 annotation, the proposal and task 4.1d say so. N14-2
+    (Q131, answered with its recommended option): once the uniform banned sign-in logs
+    `account_disabled` (C-8), task 15.2 drives a banned local sign-in and the `002` smoke check's assertion at
+    `apps/api/src/otel-smoke-check.int.test.ts:1008-1012` becomes the exact set
+    `{bad_credentials, mfa_failed, account_disabled}`, which is stricter; no contract
+    name or value is added, `002`'s `contract.test.ts` stays untouched, and the PR calls
+    the rewrite out (Observability contract, Q74 annotated, proposal, spec "Telemetry
+    contract", tasks header, tasks 1.1, 1.2, 13.4b, 15.1 and 15.2).
 - Reused, not redefined: `CatalogContext`/`Principal`/`onBehalfOf`
   (`001` design D3), the mandatory-declaration pattern of the catalog operation
   pipeline (`defineCatalogOperation` is not exported from `@tayzu/catalog`, so D10
@@ -3121,7 +3137,13 @@ of the shed and of an admin unlink emit `sso_link_shed`.
 
 `002`'s `auth.security.login_failed` is reused unchanged: the uniform banned sign-in logs
 its already declared reason `account_disabled` instead of `bad_credentials` (D13, task
-13.4b), so no name or value is added and no contract assertion changes.
+13.4b), so no contract name or value is added; the smoke check's value-set assertion
+gains `account_disabled` (Q131). Task 15.2 drives a banned local sign-in, and the `002`
+assertion at `apps/api/src/otel-smoke-check.int.test.ts:1008-1012`, today the exact set
+`{bad_credentials, mfa_failed}`, becomes the exact set
+`{bad_credentials, mfa_failed, account_disabled}`, which is stricter: the smoke check
+then also requires the value that `002` declares but never emitted. The PR calls the
+rewrite out, as for Q76, Q77, Q125 and Q130.
 
 ## Security considerations (SSA SEC01-SEC16 posture)
 
@@ -3160,7 +3182,9 @@ and tasks, with no new decision, and a thirteenth pass's low gap G13-1 (the thir
 drift-check's N13-1) and its V13-note, with the thirteenth drift-check's N13-2 and N13-3
 and a final consistency check of the thirteenth amendment, are folded by the fourteenth
 amendment into D4, D9, the Observability contract, the Risks, the Tickets, a gate, the
-spec and tasks, with no new decision; all
+spec and tasks, with no new decision, and that amendment's own drift-check found N14-1
+(mechanical) and N14-2 (Q131), folded into the Context, the Observability contract,
+Q74 and Q130 annotated, Q131, Open Questions, the proposal, the spec and tasks; all
 are folded below, and each is also a requirement or scenario
 in the spec and a task, except the gaps that moved to `045` with org deletion (Q103),
 which one row below lists and `045` closes. A joint pre-assessment with `002` (`002/ssa-pre-assessment.md`)
@@ -3296,7 +3320,9 @@ earlier found the seam gaps closed by D3/D6.
 | Thirteenth drift-check N13-2 (mechanical, within Q130; the same issue as C-3): the redaction fixture also answers the operation's own single-resource check, so the readable set keeps `team-a` beside the positions | Context (fourteenth amendment), Q130 annotated, proposal, task 4.1d |
 | Thirteenth drift-check N13-3 (mechanical, no new decision; the same issue as C-1): `toCerbosRole` is private to `context-resolver.ts` and must also reach the package index | Context (fourteenth amendment), Goals / Non-Goals, D4 step 2, proposal, task 8.5f |
 | Thirteenth-pass VCDM V13-note (mechanical, no new decision): a Cerbos child process inside a job container stays pinned to the sidecar's image digest and is tracked by task 13.12's Dependabot, and its policy bundle is the `apps/api` revision's, shipped through the SHA-pinned pipeline (`002` SEC13) | Context (fourteenth amendment), D9, Gates |
-| Fourteenth-amendment consistency check (no new decision): the tasks header did not cite task 7.13 under Q129 (the `user_created` skip; Q123 covers only the disable-time cancellations); "`@tayzu/auth` exports only its index" contradicted the `machine-credentials` subpath of Q78 (task 9.1c); the THEN line of the spec scenario on the `user_created` cancellation did not say which `t1` invitation it meant once a non-pending one was added; task 4.1d's lead-in, the tasks header, the proposal's G13-1 line and the Q125 annotation still said the fixture was rewritten; task 4.1d's Verify clause did not say "whatever their blueprint" for a blocked delete | Context (fourteenth amendment), findings-to-coverage table (row C-1), Q125 annotated, proposal, spec, tasks header, task 4.1d |
+| Fourteenth-amendment consistency check (no new decision): the tasks header did not cite task 7.13 under Q129 (the `user_created` skip; of the internal cancellations, Q123 names only `user_disabled` and `inviter_disabled`); "`@tayzu/auth` exports only its index" contradicted the `machine-credentials` subpath of Q78 (task 9.1c); the THEN line of the spec scenario on the `user_created` cancellation did not say which `t1` invitation it meant once a non-pending one was added; task 4.1d's lead-in, the tasks header, the proposal's G13-1 line and the Q125 annotation still said the fixture was rewritten; task 4.1d's Verify clause did not say "whatever their blueprint" for a blocked delete | Context (fourteenth amendment), findings-to-coverage table (row C-1), Q125 annotated, proposal, spec, tasks header, task 4.1d, task 7.13 |
+| Fourteenth drift-check N14-1 (mechanical, within Q130): the header comment prescribed for the redaction fixture (Context, Q130 annotated, proposal, task 4.1d) said only that it also answers the operation's own check (the fixture's current header, `:6-10`, says that check keeps hitting the real policies), not that it answers an entity operation's own check and `mayUpdateReferrer`'s by identifier (the fixed placeholder for a `_user` entity, Q119) and the redaction batch by position, while a blueprint operation's own `catalog_blueprint` check still reaches the real policies | Context (fourteenth amendment), Q130 annotated, proposal, task 4.1d |
+| Fourteenth drift-check N14-2: the uniform banned sign-in logs `account_disabled` (C-8), but the `002` smoke check drove no banned sign-in, and its assertion at `apps/api/src/otel-smoke-check.int.test.ts:1008-1012`, the exact set `{bad_credentials, mfa_failed}`, did not require that declared value; it becomes the exact set `{bad_credentials, mfa_failed, account_disabled}` (Q131) | Context (fourteenth amendment), this table, Observability contract, Q74 annotated, Open Questions, proposal, spec "Telemetry contract", tasks header, tasks 1.1, 1.2, 13.4b, 15.1 and 15.2 |
 
 | Section                 | Applies                | Posture                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ----------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -3840,7 +3866,7 @@ this table:
 | Q71 | (Amendment Open Question 2, 2026-10-01) DAST seed and the breached-password check | _Refined (tasks 8.1a and 4.6b): the stub is an `.mjs` module, and `dast.sh` loads it for the whole `dast.sh up`, which includes the API server._ The CI step injects the range-API stub with `NODE_OPTIONS=--import`; no seam in production code. |
 | Q72 | (moved to 045 by Q103) (Amendment, 2026-10-01) CODEOWNERS owner | `@nahuex` (the repository owner) owns the maintenance workflow and `apps/api/scripts/**`. |
 | Q73 | (VCDM NB-4, 2026-10-01) Admin-recorded SSO links surviving into a second tenant | _Superseded in part by Q86, Q87 and Q88: the marker is not written by `linkSsoAccount` but for the links users make, and the shed also revokes sessions; the shed and its event stand._ `linkSsoAccount` records the linking tenant in an `auth.verification` marker (no migration). At existing-account acceptance, and in `afterAddMember` whenever the user already has another membership, every admin-recorded SSO link from a different tenant is deleted, `catalog.security.sso_link_shed` is emitted, and the user may re-link through `/link-social` with step-up. |
-| Q74 | (Drift B1, 2026-10-01) Identity telemetry names | A separate identity contract module that `otel-smoke-check` also imports; 002's contract assertions stay untouched. |
+| Q74 | (Drift B1, 2026-10-01) Identity telemetry names | _Q131: `002`'s `contract.test.ts` stays untouched; the `otel-smoke-check` value-set assertion on the reasons of `auth.security.login_failed` is rewritten to the exact set `{bad_credentials, mfa_failed, account_disabled}` (task 15.2)._ A separate identity contract module that `otel-smoke-check` also imports; 002's contract assertions stay untouched. |
 | Q75 | (Drift B2, 2026-10-01) Atomic invitation acceptance | _Superseded by Q89: no single transaction; idempotent steps, the token consumed last, a compensation and the reconcile._ Better Auth `transaction: true`; consuming the token and creating the user and member happen in one transaction; the `_user` write runs in `afterAddMember`, failing closed; the reconcile repairs an orphan `_user`. |
 | Q76 | (Drift B3, 2026-10-01) Hook-only `_user` writes | _Amended by Q112: inside the acceptance's shared context the hook makes no `_user` write, and the acceptance's own `_user` step writes it after the shed; on every other path the hook stays the only writer and sheds before it writes._ _Q120: only for the acceptance's own `(tenantId, userId)`; any other membership inside the context is written and shed by the hook._ Approved by the human: `_user` is written only by the hook, reversing 002 task 18.5's direct writes; the two direct-write tests in `user-sync.int.test.ts` are rewritten to build `auth` with `userSync`, and task 4.6's wording is corrected. |
 | Q77 | (Drift B4, 2026-10-01) Rejection code for a `Disabled` or missing human `_user` | _Q105 applies the same code to every human `_user` status other than `Active`._ `401 CATALOG_CONTEXT_REQUIRED` with the reason only in logs, like `rejectMissingContext`; approved by the human, the test at `context-resolver-principal.int.test.ts:364-390` is rewritten to this requirement and the change is called out in the PR. |
@@ -3896,7 +3922,7 @@ this table:
 | Q127 | (Twelfth-amendment Open Question 1, 2026-10-09) The admin notice of a new-account attempt whose consumption changes no row | _Fourteenth amendment (consistency fix C-7, no new decision; the residual was named by the thirteenth amendment's third consistency pass): a third residual, a duplicate notice when a new-account attempt and a concurrent existing-account attempt of the same invitation each send it, is named in Risks and D4 step 6; ticket TK12-1 would close it._ Option 1. On the new-account path the notice is sent after the acceptance commits (the token consumed) or when the consumption changes no row (D4 step 1), which compensates nothing and leaves the join standing; a failure that is compensated (D4 step 3) sends none. On the new-account path this holds whether or not the attempt's own `_user` step activated the row, so a new-account retry after a compensated failure still announces the join; the existing-account path keeps Q122's rule (the attempt whose `_user` step activated the row sends it). Task 8.15 adds a new-account `admin` attempt whose token delete removes zero rows because a resend replaced the digest after its `_user` step, sending exactly one notice, and the acceptance with the resent token sending none. Residuals, in Risks: a crash between the zero-row consumption and the notice loses the notice (as in Q122), and an attempt compensated on the new-account path whose retry runs the existing-account path, because an account for the email was created meanwhile, sends no notice (twelfth-pass VCDM G12-2). |
 | Q128 | (Twelfth-amendment Open Question 2, 2026-10-09) The window between the `pending` check of resend and cancel and the acceptance's `accepted` write | _Fourteenth amendment (consistency fixes, no new decision): "the cancel race of the twelfth-pass VCDM G12-1" below excludes its `re_invite` variant, because Better Auth makes the re-invite cancellation inside `createInvitation`, outside TK12-1's lock, so that variant keeps its window (Q42; Risks, Tickets). "No task changes" below means that no task gains a race case: tasks 7.6, 7.7 and 8.10 cite the residual._ Option 1: accepted as a documented residual. D4 "Resend" and Risks state it, the spec qualifies the two requirements with "except for a cancel or resend that races the consumption (Risks)", and no task changes. The structural fix is ticket TK12-1: one per-invitation lock (extending TK9-2's advisory lock) taken by the acceptance after its token verifies and held until the consumption commits, and by resend, the admin cancel and the `user_created`, `user_disabled` and `inviter_disabled` cancellations before they read `pending`; it would close this window, the cancel race of the twelfth-pass VCDM G12-1 and TK9-2, at the cost of one `tayzu_auth` connection per in-flight acceptance. Better Auth's re-invite cancel keeps its window either way (Q42). |
 | Q129 | (Twelfth-amendment Open Question 3, 2026-10-09) What an admin's cancel of an invitation that is not `pending` answers | Option 1: refused like the resend, `CATALOG_VALIDATION_FAILED` with the same fixed message, nothing changed and nothing logged; the internal cancellations (`user_created`, `user_disabled`, `inviter_disabled`) answer nothing and only skip. A missing or foreign invitation still answers `CATALOG_NOT_FOUND` (D14). Under Q128 the refusal is best-effort inside the race window. Task 8.10 asserts it. |
-| Q130 | (Twelfth-pass drift N12-1, 2026-10-09) Q119's positional ids against the catalog's 002 redaction fixture and integration tests | _Fourteenth amendment (consistency fixes and the thirteenth drift-check's N13-1 and N13-2, no new decision): "it decides by position" below means that the fixture keeps answering by the `resource.id` it receives, which for the redaction batch is now a position, and the tests pass it the readable positions together with the identifiers of single-resource checks that keep theirs (in `entities-delete.int.test.ts`, `team-a`, the deleted entity's own check, which the fixture also answers; its `readable.has(resource.id)` already works with such a mixed set, so its answering logic is unchanged and only its header comment changes, to say that it answers every all-`catalog_entity` batch by the `resource.id` it receives: an entity operation's own check and `mayUpdateReferrer`'s by identifier, the redaction batch by position, while a blueprint operation's own `catalog_blueprint` check still reaches the real policies; N14-1). "Deterministic because ... the blueprint tests seed known lists" below holds for `entities-delete.int.test.ts` (`selectSpecReferrers` orders by identifier) and `blueprints.int.test.ts` (`selectBlueprintEntityIdentifiers` orders by identifier), not for `blueprints-update.int.test.ts`: `seedEntity` gives each row a `randomUUID()` id and the compatibility check streams entities `order by id`, so that test derives the readable positions from the seeded rows read back in `id` order (the stream order), with no helper or production code change (task 4.1d; G13-1)._ Q125 is extended to `packages/catalog/src/service/__fixtures__/redaction-authz.ts` (it decides by position; the tests pass the readable positions, which are deterministic because `selectSpecReferrers` orders referrers by identifier and the blueprint tests seed known lists), `entities-delete.int.test.ts`, `blueprints.int.test.ts` and `blueprints-update.int.test.ts`: each `batches[].ids` assertion becomes "the ids are positions and no candidate identifier is in the request", which is stricter, and the `referrers`, `notVisible` and no-leak assertions stay as they are. Task 4.1d names the four files, the PR calls out the rewrite, and the proposal's "one existing `002` unit test" becomes "one unit test, the catalog redaction fixture and three integration tests". |
+| Q130 | (Twelfth-pass drift N12-1, 2026-10-09) Q119's positional ids against the catalog's 002 redaction fixture and integration tests | _Fourteenth amendment (consistency fixes, the thirteenth drift-check's N13-1 and N13-2 and its own drift-check's N14-1, no new decision): "it decides by position" below means that the fixture keeps answering by the `resource.id` it receives, which for the redaction batch is now a position, and the tests pass it the readable positions together with the identifiers of single-resource checks that keep theirs (in `entities-delete.int.test.ts`, `team-a`, the deleted entity's own check, which the fixture also answers; its `readable.has(resource.id)` already works with such a mixed set, so its answering logic is unchanged and only its header comment changes, to say that it answers every all-`catalog_entity` batch by the `resource.id` it receives: an entity operation's own check and `mayUpdateReferrer`'s by identifier (the fixed placeholder for a `_user` entity, Q119), the redaction batch by position, while a blueprint operation's own `catalog_blueprint` check still reaches the real policies; N14-1). "Deterministic because ... the blueprint tests seed known lists" below holds for `entities-delete.int.test.ts` (`selectSpecReferrers` orders by identifier) and `blueprints.int.test.ts` (`selectBlueprintEntityIdentifiers` orders by identifier), not for `blueprints-update.int.test.ts`: `seedEntity` gives each row a `randomUUID()` id and the compatibility check streams entities `order by id`, so that test derives the readable positions from the seeded rows read back in `id` order (the stream order), with no helper or production code change (task 4.1d; G13-1)._ Q125 is extended to `packages/catalog/src/service/__fixtures__/redaction-authz.ts` (it decides by position; the tests pass the readable positions, which are deterministic because `selectSpecReferrers` orders referrers by identifier and the blueprint tests seed known lists), `entities-delete.int.test.ts`, `blueprints.int.test.ts` and `blueprints-update.int.test.ts`: each `batches[].ids` assertion becomes "the ids are positions and no candidate identifier is in the request", which is stricter, and the `referrers`, `notVisible` and no-leak assertions stay as they are. Task 4.1d names the four files, the PR calls out the rewrite, and the proposal's "one existing `002` unit test" becomes "one unit test, the catalog redaction fixture and three integration tests". |
 | Q131 | (Fourteenth-amendment drift N14-2, 2026-10-09) The smoke check's `login_failed` reasons once a banned sign-in logs `account_disabled` | Option 1. Task 15.2 drives a banned local sign-in, and the `002` assertion at `apps/api/src/otel-smoke-check.int.test.ts:1008-1012` changes to the exact set `{bad_credentials, mfa_failed, account_disabled}`, which is stricter: the smoke check then also requires the value `002` declares (`002` design `:1050`) but never emitted. Task 15.2 names the rewrite and the PR calls it out, as Q76, Q77, Q125 and Q130 did. The Observability contract paragraph reads "no contract name or value is added; the smoke check's value-set assertion gains `account_disabled`". |
 
 ## Open Questions
@@ -3913,4 +3939,8 @@ none), how the window between the `pending` check of resend and cancel and the
 acceptance's `accepted` write is treated (Q128: a documented residual, with the ticket
 TK12-1 as its structural fix), and what an admin's cancel of an invitation that is not
 `pending` answers (Q129: the resend's `CATALOG_VALIDATION_FAILED`, with nothing changed
-and nothing logged). The fourteenth amendment's mechanical fixes raised no question.
+and nothing logged). The fourteenth amendment's mechanical fixes raised no question; the
+one that its drift-check raised (N14-2: whether the smoke check's `login_failed`
+assertion gains `account_disabled` once a banned sign-in logs it) was answered on
+2026-10-09 with its recommended option and is recorded as Q131 (Context, fourteenth
+amendment).

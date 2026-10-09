@@ -18,7 +18,7 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1 and Q4-Q130 in `design.md` (there is no Q2 or
+Tasks follow the Resolved decisions Q1 and Q4-Q131 in `design.md` (there is no Q2 or
 Q3). The ninth amendment's two open questions are Q116 (the invitee is the actor of an
 acceptance, and the bootstrap records the operator's opaque id) and Q117
 (`catalog.audit.user_status_changed` records every status change, with the principal of
@@ -38,7 +38,11 @@ nothing and logs nothing, and the internal cancellations, `user_created` include
 skip it) is applied to tasks 7.6, 7.13 and 8.10; and Q130 (Q125's rewrite
 extends to three catalog integration tests, and the catalog's redaction fixture they use
 has only its header comment corrected) to task 4.1d. The hold that kept tasks 7.6, 7.7, 7.13, 8.1e,
-8.10, 8.15, 11.4 and 11.4b unticked until those answers is released. The tenth
+8.10, 8.15, 11.4 and 11.4b unticked until those answers is released. Q131 (the
+fourteenth amendment's drift N14-2: once a banned sign-in logs `account_disabled`, the
+`002` smoke check's assertion on the reasons of `auth.security.login_failed` becomes the
+exact set `{bad_credentials, mfa_failed, account_disabled}`) is applied to task 15.2,
+and tasks 13.4b and 15.1 point to it. The tenth
 amendment's Open Question 1 is Q122: on the existing-account
 path the revocation of the accepting session and of the session an earlier attempt's
 shed recorded, and the admin notice, run as soon as the attempt's `_user` step has run,
@@ -101,7 +105,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 1. Setup and coordination with `002`
 
 - [ ] 1.1 _(setup)_ The drift-check against the merged `002` was run on
-      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to thirteenth drift-checks and VCDM passes (2026-10-01, 2026-10-07, 2026-10-08 and 2026-10-09) are folded in too. At
+      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to fourteenth drift-checks and the second to thirteenth VCDM passes (2026-10-01, 2026-10-07, 2026-10-08 and 2026-10-09) are folded in too. At
       implementation time this task is a last drift-check of the files the design
       names (`user-sync.ts`, `identity-router.ts`, `context-resolver.ts`,
       `token-exchange.ts`, `server.ts`, `policies/`) and adjusts import paths and
@@ -150,8 +154,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       thirteenth pass's low gap G13-1 (the thirteenth drift-check's N13-1) and its
       V13-note, the thirteenth drift-check's N13-2 and N13-3 and a final consistency check
       of the thirteenth amendment (C-1 to C-10) need no decision and are folded into the
-      design, the spec, these tasks and the Gates by the fourteenth amendment. Attach the
-      reports to the PR. Verify: the report is attached to the PR with zero open
+      design, the spec, these tasks and the Gates by the fourteenth amendment, and that
+      amendment's drift-check's N14-1 needs no decision and its N14-2 is resolved by
+      Q131 (task 15.2). Attach the reports to the PR. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded.
 - [ ] 1.3 _(setup)_ Add `@azure/communication-email` (`1.1.0`) to
       `packages/auth/package.json`, and add the Communication Services connection
@@ -488,8 +493,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       works with such a mixed set, and the fixture's answering logic is unchanged; its
       only edit is its header comment (`:6-10`), which must say that every batch whose
       resources are all `catalog_entity` is answered from `readable` by the `resource.id`
-      it receives: by identifier for an entity operation's own check (`pipeline.ts:372`)
-      and for `mayUpdateReferrer`'s check (`entities.ts:884`), by position for the
+      it receives: by identifier (the fixed placeholder for a `_user` entity, Q119)
+      for an entity operation's own check (`pipeline.ts:372`) and for
+      `mayUpdateReferrer`'s check (`entities.ts:884`), by position for the
       redaction batch, while a blueprint operation's own check (`catalog_blueprint`)
       still reaches the real policies). The readable positions are
       deterministic only where the candidates come in a known order:
@@ -2963,7 +2969,10 @@ SSO surfaces of M18) are recorded there with their justification.
       `account_disabled` for this case (`002` design, Log events): the rewrite logs
       `account_disabled` for a ban. The attempt itself is logged internally as
       `catalog.security.banned_sign_in_attempt` (declared in 15.1) with its channel and
-      the opaque user id and no email, while the response stays uniform (design D13). Verify: `enumeration-resistance.int.test.ts` (in `packages/auth/src/`)
+      the opaque user id and no email, while the response stays uniform (design D13).
+      The smoke check drives no banned sign-in before 15.2, so `002`'s exact-set
+      assertion on the reasons of `login_failed` stays green here; 15.2 drives one and
+      rewrites that assertion (Resolved decision Q131). Verify: `enumeration-resistance.int.test.ts` (in `packages/auth/src/`)
       gains a banned case, in which a banned user with the correct password, a wrong
       password and an unknown email get responses with the same status, error code and body at local sign-in through
       `auth.handler` (the response's own status compared, not only the body; the timing
@@ -3319,7 +3328,11 @@ SSO surfaces of M18) are recorded there with their justification.
       value `sso_link_shed` of the reason attribute of `002`'s
       `auth.security.session_revoked`. The authz contract lists that event's attribute
       keys, not their values, so it is not edited; the amendment of `002`'s closed
-      two-value reason enum is recorded by 16.14.
+      two-value reason enum is recorded by 16.14. `002`'s `auth.security.login_failed`
+      and its reason `account_disabled`, which the banned sign-in of 13.4b logs, are
+      already declared, so neither module gains a name or a value for them; only the
+      smoke check's value-set assertion gains `account_disabled` (15.2, Resolved
+      decision Q131).
       `otel-smoke-check` imports the module in addition to `@tayzu/authz`'s
       contract. Verify: `identity-contract.test.ts` snapshot-asserts every declared
       name and the attributes of every declared event (the invitation events above,
@@ -3328,9 +3341,26 @@ SSO surfaces of M18) are recorded there with their justification.
       `otel-smoke-check.int.test.ts` fails when a declared name is missing from the
       imported module.
 - [ ] 15.2 Extend `otel-smoke-check` to run every operation in this change once
-      successfully and once per applicable error or denial class. Verify:
+      successfully and once per applicable error or denial class. Among them it drives
+      a banned user's local sign-in with the correct password, which logs
+      `auth.security.login_failed` with `002`'s declared reason `account_disabled`
+      (13.4b), so the `002` case "login_failed covers bad_credentials and mfa_failed"
+      (`apps/api/src/otel-smoke-check.int.test.ts:1008-1012` today; earlier tasks (5.3c,
+      9.1b, 9.1c, 11.0 and 15.1) edit the same file first, so the case is found by its
+      title), whose
+      assertion is today the exact set `{bad_credentials, mfa_failed}`, is
+      **rewritten** (Resolved decision Q131), not loosened: its assertion becomes the
+      exact set `{bad_credentials, mfa_failed, account_disabled}`, which is stricter,
+      because the smoke check then also requires the value that `002` declares but
+      never emitted, and its title names the three reasons ("login_failed covers
+      bad_credentials, mfa_failed and account_disabled").
+      No contract name or value is added (15.1). The PR description calls the rewrite
+      out, as Q76, Q77, Q125 and Q130 did for theirs. Verify:
       `pnpm otel-smoke-check` is green, and removing one declared span in a scratch
-      branch makes it fail.
+      branch makes it fail; the rewritten case asserts that the values of
+      `tayzu.auth.failure_reason` on `auth.security.login_failed` equal exactly
+      `{bad_credentials, mfa_failed, account_disabled}`, and logging the banned sign-in
+      as `bad_credentials` in a scratch branch makes it fail.
 - [ ] 15.3 Extend the cardinality guard to `tayzu.identity.*` metrics: no
       attribute key outside the contract's allowed set. Verify: `otel-smoke-check`
       fails when a deliberately added `tayzu.identity.invitation.email` metric
