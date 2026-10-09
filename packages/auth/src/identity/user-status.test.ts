@@ -83,3 +83,34 @@ describe('nextStatus: Active never regresses', () => {
     },
   );
 });
+
+/**
+ * `043` task 3.4 (design D2): the admin events. `admin_disable` moves a staged,
+ * invited or active user to `Disabled`; `admin_enable` is only valid from
+ * `Disabled` and always lands on `Active`.
+ */
+describe('nextStatus: admin events', () => {
+  it.each(['Staged', 'Invited', 'Active'] as const)(
+    'Disable and re-enable: admin_disable from %s gives Disabled',
+    (current) => {
+      expect(nextStatus(current, 'admin_disable')).toBe('Disabled');
+    },
+  );
+
+  it('Disable and re-enable: an active user is disabled and then re-enabled to Active', () => {
+    const disabled = nextStatus('Active', 'admin_disable');
+    expect(disabled).toBe('Disabled');
+    expect(nextStatus(disabled, 'admin_enable')).toBe('Active');
+  });
+
+  it('Disable and re-enable: admin_enable from Disabled gives Active', () => {
+    expect(nextStatus('Disabled', 'admin_enable')).toBe('Active');
+  });
+
+  it.each([null, 'Staged', 'Invited', 'Active'] as const)(
+    'admin_enable is rejected from a non-Disabled status: %s throws StatusTransitionError',
+    (current) => {
+      expect(() => nextStatus(current, 'admin_enable')).toThrow(StatusTransitionError);
+    },
+  );
+});

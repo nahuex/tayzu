@@ -323,7 +323,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `code` is `CATALOG_VALIDATION_FAILED` (no `@tayzu/catalog` dependency).
       Verify: `user-status.test.ts` covers "Active never regresses to invited or
       staged" and the error code.
-- [ ] 3.4 `nextStatus` for `admin_disable` (from `Staged`, `Invited` and
+- [x] 3.4 `nextStatus` for `admin_disable` (from `Staged`, `Invited` and
       `Active`) and `admin_enable` (from `Disabled` only). Verify:
       `user-status.test.ts` covers "Disable and re-enable" and rejects
       `admin_enable` from a non-`Disabled` status.

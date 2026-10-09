@@ -2,8 +2,8 @@
  * The user status state machine (`043` design D2): Staged, Invited, Active and
  * Disabled, and the events that move between them. Pure, no I/O.
  *
- * Tasks 3.1 and 3.2 add the creation and activation events; the other events
- * arrive with the rest of task group 3.
+ * Tasks 3.1 to 3.4 add the creation, activation and admin events; the
+ * exhaustive matrix check arrives with task 3.5.
  */
 export type UserStatus = 'Staged' | 'Invited' | 'Active' | 'Disabled';
 
@@ -42,6 +42,8 @@ const TRANSITIONS: Partial<Record<StatusEvent, Transition>> = {
   created_active: { from: [null], to: 'Active' },
   invitation_accepted: { from: ['Staged', 'Invited'], to: 'Active' },
   first_sign_in: { from: ['Staged', 'Invited'], to: 'Active' },
+  admin_disable: { from: ['Staged', 'Invited', 'Active'], to: 'Disabled' },
+  admin_enable: { from: ['Disabled'], to: 'Active' },
 };
 
 /** Returns the status after `event`, or throws `StatusTransitionError`. */
