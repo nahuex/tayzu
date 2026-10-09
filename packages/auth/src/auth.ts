@@ -522,6 +522,16 @@ export interface UserSyncPort {
     readonly userId?: string;
     /** The `invitation.id` of a `created_invited` write (Resolved decision Q126). */
     readonly invitationId?: string;
+    /**
+     * The principal the writer hands the adapter with its kind, for the status
+     * audit event (Resolved decision Q117); absent for the ban hook.
+     */
+    readonly principal?: {
+      readonly kind: 'admin' | 'user' | 'operator';
+      readonly id: string;
+    };
+    /** `service` for a service account, whose `userId` is its `svc-…` identifier. */
+    readonly accountKind?: 'standard' | 'service';
     /** The principal an admin-initiated write is attributed to (Resolved decision Q10). */
     readonly onBehalfOf?: {
       readonly type: 'user' | 'agent' | 'integration' | 'system';

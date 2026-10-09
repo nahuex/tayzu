@@ -5,7 +5,13 @@
  * with the version it read. A version conflict or a create race re-reads and
  * retries a bounded number of times before it fails closed.
  */
-import { nextStatus, type StatusEvent, type UserStatus, type UserSyncPort } from '@tayzu/auth';
+import {
+  emitIdentityEvent,
+  nextStatus,
+  type StatusEvent,
+  type UserStatus,
+  type UserSyncPort,
+} from '@tayzu/auth';
 import type { UserSync, UserReadModel } from '@tayzu/catalog';
 
 /** Retries after the first attempt (Q83). */
@@ -49,6 +55,40 @@ function isRedundant(event: StatusEvent, current: UserStatus | null): boolean {
   );
 }
 
+/** Emits `catalog.audit.user_status_changed` (Resolved decisions Q117 and Q126): identifiers only. */
+function emitStatusChanged(
+  input: UpsertInput,
+  from: UserStatus | null,
+  to: UserStatus,
+  event: StatusEvent,
+): void {
+  const service = input.accountKind === 'service';
+  const { principal } = input;
+  emitIdentityEvent({
+    name: 'catalog.audit.user_status_changed',
+    severity: 'INFO',
+    attributes: {
+      'tayzu.tenant.id': input.tenantId,
+      ...(from === null ? {} : { 'tayzu.identity.user.status.from': from }),
+      'tayzu.identity.user.status.to': to,
+      'tayzu.identity.user.status.event': event,
+      'tayzu.identity.user.account_kind': service ? 'service' : 'standard',
+      ...(input.userId === undefined
+        ? input.invitationId === undefined
+          ? {}
+          : { 'tayzu.identity.invitation.id': input.invitationId }
+        : service
+          ? { 'tayzu.identity.service_account.id': input.userId }
+          : { 'tayzu.identity.user.id': input.userId }),
+      ...(principal === undefined
+        ? {}
+        : principal.kind === 'operator'
+          ? { 'tayzu.identity.operator.id': principal.id }
+          : { 'tayzu.actor.id': principal.id }),
+    },
+  });
+}
+
 export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): UserSyncAdapter {
   const { userSync } = options;
 
@@ -73,6 +113,10 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
           ...(input.onBehalfOf === undefined ? {} : { onBehalfOf: input.onBehalfOf }),
           ...(current === null ? { createOnly: true } : { expectedVersion: current.version }),
         });
+        // An event that leaves the status as it was (`created_invited` for an Invited row) is not a change.
+        if (current?.status !== status) {
+          emitStatusChanged(input, current?.status ?? null, status, event);
+        }
         return event;
       } catch (error) {
         const code = errorCode(error);

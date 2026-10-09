@@ -36,6 +36,9 @@
  */
 import { randomUUID } from 'node:crypto';
 
+// Load-bearing import order (design D1): the telemetry harness registers
+// before anything that loads `@tayzu/auth` creates its logger.
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { createRouterClient } from '@orpc/server';
 import { bootstrapAdmin } from '../../../packages/auth/scripts/bootstrap-admin.js';
 import { createAuth, authSchema, type AuthInstance } from '@tayzu/auth';
@@ -704,5 +707,336 @@ describe('Every status writer goes through the state machine: the adapter (task 
 
     expect(written).toBeUndefined();
     expect(await readStatus(tenantId, email)).toBe('Active');
+  }, 60_000);
+});
+
+/**
+ * Task 4.1e of openspec/changes/043-identity-lifecycle-and-org-admin (spec "Every
+ * status change names its principal"; design D2 "Every status change is audited",
+ * Observability contract; Resolved decisions Q117 and Q126).
+ *
+ * ## Production symbols assumed (none of them exists yet)
+ *
+ * - `createUserSyncAdapter` (`apps/api/src/identity/user-sync-adapter.ts`) emits,
+ *   through `emitIdentityEvent` of `@tayzu/auth` (task 2.0c), one INFO log event
+ *   `catalog.audit.user_status_changed` after each write that changes a status.
+ * - The port input (`UserSyncPort.upsertUser` and `writeUserChange`) gains two
+ *   optional fields, which the task leaves unnamed and this test fixes:
+ *   - `principal?: { kind: 'admin' | 'user' | 'operator'; id: string }`: the
+ *     principal the writer hands over with its kind. `admin` and `user` map to
+ *     `tayzu.actor.id`, `operator` to `tayzu.identity.operator.id` (and no
+ *     `tayzu.actor.id`); absent maps to neither.
+ *   - `accountKind?: 'standard' | 'service'` (default `standard`), exported as
+ *     `tayzu.identity.user.account_kind`. For `service`, `userId` (the `svc-…`
+ *     identifier) is exported as `tayzu.identity.service_account.id` in place of
+ *     `tayzu.identity.user.id`.
+ * - Attributes: `tayzu.tenant.id`, `tayzu.identity.user.status.from` (absent for
+ *   a new row), `tayzu.identity.user.status.to`, `tayzu.identity.user.status.event`,
+ *   `tayzu.identity.user.account_kind`, and the subject: `tayzu.identity.user.id`
+ *   (input `userId`), or `tayzu.identity.invitation.id` (input `invitationId`
+ *   when there is no `userId`). The email is never an attribute value.
+ */
+describe('The adapter audits every status change (task 4.1e)', () => {
+  const EVENT_NAME = 'catalog.audit.user_status_changed';
+  let harness: TelemetryTestHarness;
+  let appPool: Pool;
+  let cerbosUserSync: ReturnType<typeof createUserSync>;
+
+  interface PrincipalInput {
+    readonly kind: 'admin' | 'user' | 'operator';
+    readonly id: string;
+  }
+  interface AuditInput {
+    readonly tenantId: string;
+    readonly email: string;
+    readonly name: string;
+    readonly change: StatusEventName;
+    readonly userId?: string;
+    readonly invitationId?: string;
+    readonly principal?: PrincipalInput;
+    readonly accountKind?: 'standard' | 'service';
+  }
+  interface AuditAdapter {
+    upsertUser(input: AuditInput): Promise<void>;
+    writeUserChange(input: AuditInput): Promise<StatusEventName | undefined>;
+  }
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    await runMigrations(pools.authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    cerbosUserSync = createUserSync({ pool: appPool, authz: cerbos });
+  }, 60_000);
+
+  function adapterOver(userSync: ReturnType<typeof createUserSync>): AuditAdapter {
+    return createUserSyncAdapter({ userSync });
+  }
+
+  function adapter(): AuditAdapter {
+    return adapterOver(cerbosUserSync);
+  }
+
+  function fresh(): { tenantId: string; email: string } {
+    return {
+      tenantId: `t${randomUUID().replaceAll('-', '')}`,
+      email: `audit-${randomUUID()}@example.test`,
+    };
+  }
+
+  async function seed(tenantId: string, email: string, status: StatusName): Promise<void> {
+    await cerbosUserSync.upsertUser({ tenantId, email, name: 'Seeded Person', status });
+  }
+
+  async function auditEvents(tenantId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === EVENT_NAME && record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+  }
+
+  function base(tenantId: string, email: string): AuditInput {
+    return { tenantId, email, name: 'Some Person', change: 'created_active' };
+  }
+
+  it('emits one event per status-changing write with its from, to and status event', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Active');
+    const before = (await auditEvents(tenantId)).length;
+
+    await adapter().upsertUser({ ...base(tenantId, email), change: 'admin_disable' });
+    await adapter().upsertUser({ ...base(tenantId, email), change: 'admin_enable' });
+
+    const events = (await auditEvents(tenantId)).slice(before);
+    expect(events).toHaveLength(2);
+    expect(events[0]?.severityText).toBe('INFO');
+    expect(events[0]?.attributes).toMatchObject({
+      'tayzu.tenant.id': tenantId,
+      'tayzu.identity.user.status.from': 'Active',
+      'tayzu.identity.user.status.to': 'Disabled',
+      'tayzu.identity.user.status.event': 'admin_disable',
+      'tayzu.identity.user.account_kind': 'standard',
+    });
+    expect(events[1]?.attributes).toMatchObject({
+      'tayzu.identity.user.status.from': 'Disabled',
+      'tayzu.identity.user.status.to': 'Active',
+      'tayzu.identity.user.status.event': 'admin_enable',
+    });
+  }, 60_000);
+
+  it('a created row event carries its first status and no from', async () => {
+    const { tenantId, email } = fresh();
+
+    await adapter().upsertUser({ ...base(tenantId, email), change: 'created_staged' });
+
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes).toMatchObject({
+      'tayzu.identity.user.status.to': 'Staged',
+      'tayzu.identity.user.status.event': 'created_staged',
+    });
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.identity.user.status.from');
+  }, 60_000);
+
+  it('a redundant event emits none', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Active');
+
+    await adapter().upsertUser({ ...base(tenantId, email), change: 'admin_enable' });
+
+    expect(await auditEvents(tenantId)).toHaveLength(0);
+  }, 60_000);
+
+  it('created_invited for an Invited row leaves the status as it was and emits none', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Invited');
+
+    await adapter().upsertUser({
+      ...base(tenantId, email),
+      change: 'created_invited',
+      invitationId: `inv-${randomUUID()}`,
+    });
+
+    expect(await auditEvents(tenantId)).toHaveLength(0);
+  }, 60_000);
+
+  it('a rejected write emits none', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Active');
+
+    await expect(
+      adapter().upsertUser({ ...base(tenantId, email), change: 'created_staged' }),
+    ).rejects.toThrow();
+
+    expect(await auditEvents(tenantId)).toHaveLength(0);
+  }, 60_000);
+
+  it('a write that fails after its retries emits none', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Invited');
+    const stale = {
+      ...cerbosUserSync,
+      upsertUser: cerbosUserSync.upsertUser.bind(cerbosUserSync),
+      getUser: async (input: { tenantId: string; email: string }) => {
+        const current = await cerbosUserSync.getUser(input);
+        return current === null ? null : { status: current.status, version: 0 };
+      },
+    };
+
+    await expect(
+      adapterOver(stale).upsertUser({ ...base(tenantId, email), change: 'first_sign_in' }),
+    ).rejects.toThrow();
+
+    expect(await auditEvents(tenantId)).toHaveLength(0);
+  }, 60_000);
+
+  it.each([
+    ['admin', 'tayzu.actor.id'],
+    ['user', 'tayzu.actor.id'],
+  ] as const)(
+    'a %s principal maps to %s and to no operator id',
+    async (kind, attribute) => {
+      const { tenantId, email } = fresh();
+      const id = `principal-${randomUUID()}`;
+
+      await adapter().upsertUser({
+        ...base(tenantId, email),
+        userId: `user-${randomUUID()}`,
+        principal: { kind, id },
+      });
+
+      const events = await auditEvents(tenantId);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.attributes[attribute]).toBe(id);
+      expect(events[0]?.attributes).not.toHaveProperty('tayzu.identity.operator.id');
+    },
+    60_000,
+  );
+
+  it('an operator principal maps to tayzu.identity.operator.id and to no tayzu.actor.id', async () => {
+    const { tenantId, email } = fresh();
+    const id = `gh:${String(Math.floor(Math.random() * 1_000_000))}`;
+
+    await adapter().upsertUser({
+      ...base(tenantId, email),
+      userId: `user-${randomUUID()}`,
+      principal: { kind: 'operator', id },
+    });
+
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes['tayzu.identity.operator.id']).toBe(id);
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.actor.id');
+  }, 60_000);
+
+  it('no principal maps to neither attribute', async () => {
+    const { tenantId, email } = fresh();
+
+    await adapter().upsertUser({ ...base(tenantId, email), userId: `user-${randomUUID()}` });
+
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.actor.id');
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.identity.operator.id');
+  }, 60_000);
+
+  it('a service account carries tayzu.identity.service_account.id in place of the user id', async () => {
+    const { tenantId } = fresh();
+    const serviceId = `svc-${randomUUID()}`;
+
+    await adapter().upsertUser({
+      tenantId,
+      email: serviceId,
+      name: 'A Service',
+      change: 'created_active',
+      userId: serviceId,
+      accountKind: 'service',
+      principal: { kind: 'admin', id: `admin-${randomUUID()}` },
+    });
+
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes).toMatchObject({
+      'tayzu.identity.user.account_kind': 'service',
+      'tayzu.identity.service_account.id': serviceId,
+    });
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.identity.user.id');
+  }, 60_000);
+
+  it('a created_invited write with an invitationId and no userId names the invitation as its subject', async () => {
+    const { tenantId, email } = fresh();
+    const invitationId = `inv-${randomUUID()}`;
+
+    await adapter().upsertUser({
+      ...base(tenantId, email),
+      change: 'created_invited',
+      invitationId,
+    });
+
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes['tayzu.identity.invitation.id']).toBe(invitationId);
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.identity.user.id');
+    expect(events[0]?.attributes['tayzu.identity.user.status.event']).toBe('created_invited');
+  }, 60_000);
+
+  it("an input's userId becomes tayzu.identity.user.id", async () => {
+    const { tenantId, email } = fresh();
+    const userId = `user-${randomUUID()}`;
+
+    await adapter().upsertUser({ ...base(tenantId, email), userId });
+
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes['tayzu.identity.user.id']).toBe(userId);
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.identity.invitation.id');
+    expect(events[0]?.attributes).not.toHaveProperty('tayzu.identity.service_account.id');
+  }, 60_000);
+
+  it('the acceptance entry point emits the same event for the write it returns', async () => {
+    const { tenantId, email } = fresh();
+    await seed(tenantId, email, 'Invited');
+    const inviteeId = `invitee-${randomUUID()}`;
+
+    const written = await adapter().writeUserChange({
+      ...base(tenantId, email),
+      change: 'invitation_accepted',
+      userId: inviteeId,
+      principal: { kind: 'user', id: inviteeId },
+    });
+
+    expect(written).toBe('invitation_accepted');
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes).toMatchObject({
+      'tayzu.identity.user.status.from': 'Invited',
+      'tayzu.identity.user.status.to': 'Active',
+      'tayzu.identity.user.status.event': 'invitation_accepted',
+      'tayzu.actor.id': inviteeId,
+      'tayzu.identity.user.id': inviteeId,
+    });
+  }, 60_000);
+
+  it('no attribute carries an email', async () => {
+    const { tenantId, email } = fresh();
+
+    await adapter().upsertUser({
+      ...base(tenantId, email),
+      userId: `user-${randomUUID()}`,
+      principal: { kind: 'admin', id: `admin-${randomUUID()}` },
+    });
+
+    const events = await auditEvents(tenantId);
+    expect(events).toHaveLength(1);
+    const serialized = JSON.stringify(events[0]?.attributes);
+    expect(serialized).not.toContain(email);
+    expect(serialized).not.toContain('@example.test');
   }, 60_000);
 });

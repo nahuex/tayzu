@@ -522,7 +522,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       green; `docs-telemetry.test.ts` stays green and `docs/catalog/catalog-core.md`
       names the placeholder for the span attribute, the audit event and the Cerbos
       resource id, and the positional ids of the referrer redaction.
-- [ ] 4.1e The adapter of 4.1 audits every status change (Resolved decision Q117; design
+- [x] 4.1e The adapter of 4.1 audits every status change (Resolved decision Q117; design
       D2, Observability contract). After each write that changes a status, a row created
       with its first status included, it emits `catalog.audit.user_status_changed`
       (declared in 15.1) through the helpers of 2.0c, and it emits nothing for a write
