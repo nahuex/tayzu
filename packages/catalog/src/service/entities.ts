@@ -91,7 +91,12 @@ import {
   loadEntityAuthzAttributes as loadEntityAttributes,
   newEntityAuthzAttributes,
 } from './entity-authz-attributes.js';
-import { PLAN_AUTHORIZED, defineCatalogOperation, inputString } from './pipeline.js';
+import {
+  PLAN_AUTHORIZED,
+  defineCatalogOperation,
+  inputString,
+  maskUserIdentifier,
+} from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
 export interface EntitySpecWriteInput {
@@ -894,7 +899,7 @@ async function mayUpdateReferrer(
       {
         resource: {
           kind: RESOURCE_KINDS.catalogEntity,
-          id: identifier,
+          id: maskUserIdentifier(blueprint, identifier),
           attr: buildAttributes(ctx.tenantId, { blueprintId: blueprint, ...attributes }),
         },
         actions: ['update'],
@@ -983,7 +988,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'create',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input: rawInput }) => {
@@ -991,7 +999,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, identifier),
+        );
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
       const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, {
@@ -1115,7 +1128,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorizationWhenMissing: ({ ctx, input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'create',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: {
         blueprintId: inputString(input, 'blueprint'),
         ...newEntityAuthzAttributes({ ctx, input }),
@@ -1130,14 +1146,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       return {
         kind: RESOURCE_KINDS.catalogEntity,
         action: 'create',
-        resourceId: inputString(input, 'identifier'),
+        resourceId: maskUserIdentifier(
+          inputString(input, 'blueprint'),
+          inputString(input, 'identifier'),
+        ),
         attributes: { blueprintId: inputString(input, 'blueprint'), ...next },
       };
     },
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input: rawInput }) => {
@@ -1145,7 +1167,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, identifier),
+        );
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.upsert.mode', input.mode);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
@@ -1396,7 +1423,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input: rawInput }) => {
@@ -1404,7 +1434,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, identifier),
+        );
       const source = parseStatusSource(input.source, limits);
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.status.source', source);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
@@ -1555,12 +1590,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'view',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, input.identifier),
+        );
       const tx = drizzle(client);
 
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);
@@ -1642,13 +1685,21 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'delete',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input }) => {
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, input.identifier),
+        );
       const detachReferences = input.detachReferences ?? false;
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.detach_references', detachReferences);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
@@ -1802,12 +1853,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'view',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, input.identifier),
+        );
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.related.direction', input.direction);
       const scopeFilter = input.scope ?? 'both';
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.related.scope', scopeFilter);

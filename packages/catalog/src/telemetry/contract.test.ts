@@ -85,6 +85,7 @@ import {
   SAMPLING_EXEMPT_SIGNALS,
   SLIS,
   SPANS,
+  USER_ENTITY_IDENTIFIER_PLACEHOLDER,
   type LogEventContract,
   type MetricContract,
   type SpanContract,
@@ -461,6 +462,37 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
 
     it("never exempts catalog.internal_error (it is not named in design.md's sampling-exemption paragraph)", () => {
       expect(SAMPLING_EXEMPT_SIGNALS).not.toContain('catalog.internal_error');
+    });
+  });
+
+  // Task 4.1d of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+  // decisions Q107, Q113, Q119): a `_user` identifier is the member's email, so the
+  // entity spans, the audit event and the Cerbos resource id carry one fixed
+  // placeholder instead. The placeholder is exported by this module under the
+  // name `USER_ENTITY_IDENTIFIER_PLACEHOLDER` (a non-empty string, never an email).
+  describe('`_user` identifier placeholder (043 task 4.1d; Q107, Q113, Q119)', () => {
+    it('exports one fixed, non-empty placeholder that cannot be an email address', () => {
+      expect(typeof USER_ENTITY_IDENTIFIER_PLACEHOLDER).toBe('string');
+      expect(USER_ENTITY_IDENTIFIER_PLACEHOLDER.length).toBeGreaterThan(0);
+      expect(USER_ENTITY_IDENTIFIER_PLACEHOLDER).not.toContain('@');
+    });
+
+    it.each([
+      'catalog.entity.create',
+      'catalog.entity.upsert',
+      'catalog.entity.get',
+      'catalog.entity.delete',
+      'catalog.entity.status.write',
+      'catalog.entity.related.list',
+    ])('span %s still declares tayzu.catalog.entity.identifier as a required attribute', (name) => {
+      const span = byName(SPANS).get(name);
+      expect(span, `contract.ts must declare span ${name}`).toBeDefined();
+      expect(span?.requiredAttributes).toContain('tayzu.catalog.entity.identifier');
+    });
+
+    it('catalog.audit.mutation still declares tayzu.catalog.resource.identifier', () => {
+      const event = byName(LOG_EVENTS).get('catalog.audit.mutation');
+      expect(event?.attributes).toContain('tayzu.catalog.resource.identifier');
     });
   });
 });

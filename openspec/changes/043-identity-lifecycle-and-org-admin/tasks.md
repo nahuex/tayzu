@@ -406,7 +406,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       one or writes a status. Verify: `display-data.int.test.ts` covers a member with no
       `_user` row still having none after a profile refresh, and a member with a row
       having only its display fields updated, the status unchanged.
-- [ ] 4.1d No catalog span and no catalog audit event carries a `_user` identifier
+- [x] 4.1d No catalog span and no catalog audit event carries a `_user` identifier
       (Resolved decisions Q107 and Q113; design, Observability contract). `packages/catalog/src/service/entities.ts` sets
       `tayzu.catalog.entity.identifier` to the raw identifier on `catalog.entity.create`,
       `upsert`, `get`, `delete`, `status.write` and `related.list`, and a `_user`

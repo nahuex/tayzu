@@ -192,6 +192,18 @@ event can be joined. The durable audit record is the append-only
 `catalog_change_event` table; `catalog.audit.mutation` is a best-effort copy
 for centralized logging.
 
+A `_user` identifier is the member's email, so for an entity of the reserved
+`_user` blueprint the placeholder `_user_redacted`
+(`USER_ENTITY_IDENTIFIER_PLACEHOLDER`) replaces the identifier in
+`tayzu.catalog.entity.identifier` on the six entity spans, in
+`tayzu.catalog.resource.identifier` of `catalog.audit.mutation`, and in the
+`resource.id` of the Cerbos `catalog_entity` checks (so it never reaches
+Cerbos's decision log). The attributes stay declared and required; every other
+blueprint keeps its identifier, and the `catalog_change_event` row keeps the
+real identifier (find it by `tayzu.tenant.id` and
+`tayzu.catalog.change_event.seq`). The redaction batch sends each candidate's
+position as its `resource.id` for every blueprint.
+
 These signals must never be sampled or dropped by a downstream pipeline:
 `catalog.audit.mutation`, `catalog.security.context_rejected`, `catalog.security.reserved_identifier_denied`, `tayzu.catalog.context.rejections`, `tayzu.catalog.validation.failures`.
 

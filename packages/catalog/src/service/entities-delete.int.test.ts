@@ -643,7 +643,20 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
 
     // WHEN `team-a` is deleted without `detachReferences`
     const c = await seed(false);
-    const spy = redactingAuthz(new Set(['visible-1', 'team-a']));
+    // Candidates come ordered by identifier (hidden-1..4, visible-1), so the
+    // readable referrer `visible-1` is position 4; `team-a` is the single
+    // identifier-keyed check of the deleted entity itself (Q119, Q130).
+    const readableSet = new Set(['4', 'team-a']);
+    const positions = ['0', '1', '2', '3', '4'];
+    const expectPositionalBatch = (ids: readonly string[] | undefined): void => {
+      // Rewritten (Q119, Q130; stricter): the ids are positions and no
+      // candidate identifier is in the request.
+      expect(ids).toEqual(positions);
+      for (const identifier of ['visible-1', ...hidden]) {
+        expect(JSON.stringify(ids)).not.toContain(identifier);
+      }
+    };
+    const spy = redactingAuthz(readableSet);
     const redacting = createEntityService({ pool, authz: spy.client });
     const error = await expectCatalogErrorCode(
       redacting.delete(c, { blueprint: 'team', identifier: 'team-a' }),
@@ -656,7 +669,7 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     // answered readable by the fixture's set; it is not the redaction batch)
     const redactionBatches = spy.batches.filter((batch) => batch.ids.length > 1);
     expect(redactionBatches).toHaveLength(1);
-    expect([...(redactionBatches[0]?.ids ?? [])].sort()).toEqual(['visible-1', ...hidden].sort());
+    expectPositionalBatch(redactionBatches[0]?.ids);
     expect(new Set(redactionBatches[0]?.attrTenantIds)).toEqual(new Set([c.tenantId]));
 
     // AND the entity is still there
@@ -667,7 +680,7 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     // The `detachReferences` case (task 10.3): required referrers still block
     // the delete, and the error is redacted the same way.
     const cRequired = await seed(true);
-    const detachSpy = redactingAuthz(new Set(['visible-1', 'team-a']));
+    const detachSpy = redactingAuthz(readableSet);
     const detaching = createEntityService({ pool, authz: detachSpy.client });
     const detachError = await expectCatalogErrorCode(
       detaching.delete(cRequired, {
@@ -680,6 +693,6 @@ describe('entities.delete (task 8.6; spec "Entity read, list and delete", "Actor
     expectRedacted(detachError, detachError.details);
     const detachBatches = detachSpy.batches.filter((batch) => batch.ids.length > 1);
     expect(detachBatches).toHaveLength(1);
-    expect([...(detachBatches[0]?.ids ?? [])].sort()).toEqual(['visible-1', ...hidden].sort());
+    expectPositionalBatch(detachBatches[0]?.ids);
   });
 });

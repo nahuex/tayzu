@@ -493,7 +493,9 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
       for (const identifier of ['visible-1', ...hidden]) {
         await seedEntity(db, tenantId, blueprintId, identifier);
       }
-      const spy = redactingAuthz(new Set(['visible-1']));
+      // Candidates come ordered by identifier (hidden-1..4, visible-1), so the
+      // readable entity `visible-1` is position 4 (Q119, Q130).
+      const spy = redactingAuthz(new Set(['4']));
       const redacting = createBlueprintService({ pool, authz: spy.client });
 
       // WHEN the blueprint is deleted
@@ -518,7 +520,12 @@ describe('blueprint operations (service; design D3-D5, D9-D11; tasks 7.1, 7.2, 7
 
       // AND the redaction was one batch check over the candidates, in this tenant
       expect(spy.batches).toHaveLength(1);
-      expect([...(spy.batches[0]?.ids ?? [])].sort()).toEqual(['visible-1', ...hidden].sort());
+      // Rewritten (Q119, Q130; stricter): the ids are positions and no
+      // candidate identifier is in the request.
+      expect(spy.batches[0]?.ids).toEqual(['0', '1', '2', '3', '4']);
+      for (const identifier of ['visible-1', ...hidden]) {
+        expect(JSON.stringify(spy.batches[0])).not.toContain(identifier);
+      }
       expect(new Set(spy.batches[0]?.attrTenantIds)).toEqual(new Set([tenantId]));
 
       // AND the blueprint is still there

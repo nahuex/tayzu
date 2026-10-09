@@ -53,6 +53,7 @@ import {
   isCatalogError,
   type CatalogErrorCode,
 } from '../domain/errors.js';
+import { USER_ENTITY_IDENTIFIER_PLACEHOLDER } from '../telemetry/contract.js';
 import { pgErrorInfo } from '../persistence/db-errors.js';
 import {
   authzCheckDurationHistogram,
@@ -116,6 +117,8 @@ export interface CatalogOperationResult<Output> {
   readonly output: Output;
   readonly audit?: CatalogMutationAudit;
 }
+
+const USER_BLUEPRINT_IDENTIFIER = '_user';
 
 export interface CatalogOperationHandlerParams<Input> {
   readonly ctx: CatalogContext;
@@ -288,6 +291,15 @@ function emitInternalErrorLog(operationName: string, sanitized: Attributes): voi
   });
 }
 
+/**
+ * A `_user` entity's identifier is the member's email (or a service account's
+ * id), so telemetry and Cerbos requests carry one fixed placeholder instead
+ * (043 Q107, Q113, Q119). Other blueprints keep their identifier.
+ */
+export function maskUserIdentifier(blueprint: string, identifier: string): string {
+  return blueprint === USER_BLUEPRINT_IDENTIFIER ? USER_ENTITY_IDENTIFIER_PLACEHOLDER : identifier;
+}
+
 /** Design.md, log events table: `catalog.audit.mutation`, emitted after the transaction commits. */
 function emitAuditMutationLog(ctx: CatalogContext, audit: CatalogMutationAudit): void {
   const attributes: Record<string, string | number> = {
@@ -297,7 +309,10 @@ function emitAuditMutationLog(ctx: CatalogContext, audit: CatalogMutationAudit):
     'tayzu.catalog.mutation': audit.mutation,
     'tayzu.catalog.resource.kind': audit.resourceKind,
     'tayzu.catalog.blueprint.identifier': audit.blueprintIdentifier,
-    'tayzu.catalog.resource.identifier': audit.resourceIdentifier,
+    'tayzu.catalog.resource.identifier':
+      audit.resourceKind === 'entity'
+        ? maskUserIdentifier(audit.blueprintIdentifier, audit.resourceIdentifier)
+        : audit.resourceIdentifier,
     'tayzu.catalog.version': audit.version,
     'tayzu.catalog.change_event.seq': Number(audit.changeEventSeq),
   };

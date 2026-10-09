@@ -13,6 +13,13 @@
  */
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 
+/**
+ * 043 Q107, Q113, Q119: the value of `tayzu.catalog.entity.identifier`,
+ * `tayzu.catalog.resource.identifier` and the Cerbos `resource.id` for an
+ * entity of the reserved `_user` blueprint, whose identifier is an email.
+ */
+export const USER_ENTITY_IDENTIFIER_PLACEHOLDER = '_user_redacted';
+
 /** design.md, "Instrumentation scope": tracer and meter name. */
 export const INSTRUMENTATION_SCOPE_NAME = '@tayzu/catalog';
 

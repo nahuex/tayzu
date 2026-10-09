@@ -276,12 +276,22 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
     const blueprintId = await blueprintRowId(db, tenantId, 'service');
     const visible = ['visible-1', 'visible-2'];
     const hidden = ['hidden-1', 'hidden-2', 'hidden-3'];
+    const seeded: { identifier: string; id: string }[] = [];
     for (const identifier of [...visible, ...hidden]) {
-      await seedEntity(db, tenantId, blueprintId, identifier, {
+      const id = await seedEntity(db, tenantId, blueprintId, identifier, {
         specProperties: { language: 'go' },
       });
+      seeded.push({ identifier, id });
     }
-    const spy = redactingAuthz(new Set(visible));
+    // The compatibility check streams entities `order by id` (random UUIDs), so
+    // the readable positions are derived from the rows in id order (Q130).
+    // Lowercase hyphenated UUIDs compare as Postgres orders them.
+    const inStreamOrder = [...seeded].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const readablePositions = inStreamOrder.flatMap((row, position) =>
+      visible.includes(row.identifier) ? [String(position)] : [],
+    );
+    expect(readablePositions).toHaveLength(visible.length);
+    const spy = redactingAuthz(new Set(readablePositions));
     const redacting = createBlueprintService({ pool, authz: spy.client });
 
     // WHEN the caller updates it with an incompatible schema change
@@ -318,7 +328,12 @@ describe('blueprints.update: safe schema evolution (task 7.4; design D7; spec "S
 
     // AND the redaction was one batch check over the offending entities, in this tenant
     expect(spy.batches).toHaveLength(1);
-    expect([...(spy.batches[0]?.ids ?? [])].sort()).toEqual([...visible, ...hidden].sort());
+    // Rewritten (Q119, Q130; stricter): the ids are positions and no candidate
+    // identifier is in the request.
+    expect(spy.batches[0]?.ids).toEqual(inStreamOrder.map((_row, position) => String(position)));
+    for (const identifier of [...visible, ...hidden]) {
+      expect(JSON.stringify(spy.batches[0])).not.toContain(identifier);
+    }
     expect(new Set(spy.batches[0]?.attrTenantIds)).toEqual(new Set([tenantId]));
 
     // AND the blueprint is unchanged
