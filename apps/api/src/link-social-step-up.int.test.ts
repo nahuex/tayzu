@@ -80,6 +80,7 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { enrollTotp, sessionTokenOfCookie, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAuthRepository } from './identity/auth-repository.js';
 import { createAppFromEnv } from './bootstrap.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
@@ -1066,8 +1067,10 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
     expect(await linkedAccountCount(user.userId), 'the account is still linked').toBe(1);
   }, 60_000);
 
-  it('identity.users.linkSsoAccount and unlinkSsoAccount are marked x-tayzu-risk: high (step-up applies)', () => {
+  it('identity.users.linkSsoAccount and unlinkSsoAccount are marked x-tayzu-risk: high (step-up applies)', async () => {
+    const { authPool } = await harnessPools();
     const router = createIdentityRouter({
+      authRepository: createAuthRepository(authPool),
       auth: app.auth,
       authz: createCerbosClient({ address: 'localhost:3593', tls: false }),
     });

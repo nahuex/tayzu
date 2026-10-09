@@ -59,6 +59,7 @@ import type { Pool } from 'pg';
 
 import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAuthRepository } from './identity/auth-repository.js';
 import { createIdentityRouter } from './identity-router.js';
 import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
@@ -109,9 +110,16 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
       cerbosRequests.push(request);
       return cerbos.checkResources(request);
     };
-    client = createRouterClient(createIdentityRouter({ auth, authz: recording }), {
-      context: (raw: Record<string, unknown>) => raw,
-    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: recording,
+        authRepository: createAuthRepository(authPool),
+      }),
+      {
+        context: (raw: Record<string, unknown>) => raw,
+      },
+    );
   }, 60_000);
 
   async function freshTenantId(): Promise<string> {

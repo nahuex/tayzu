@@ -18,6 +18,7 @@ import { os, type Route } from '@orpc/server';
 import { emitAccountLinkEvent, wouldLeaveNoSignInMethod, type AuthInstance } from '@tayzu/auth';
 import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
+import type { AuthRepository } from './identity/auth-repository.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
 
 /** Same code and message as the catalog's `AuthorizationError` (design D11). */
@@ -74,6 +75,8 @@ class IdentityInputError extends Error {
 export interface CreateIdentityRouterOptions {
   readonly auth: AuthInstance;
   readonly authz: CerbosClient;
+  /** The only reader of the `auth` schema (design D14). */
+  readonly authRepository: AuthRepository;
 }
 
 export interface CreateUserInput {
@@ -195,12 +198,7 @@ interface AccountAdapterSurface {
       providerId: string;
       accountId: string;
     }): Promise<unknown>;
-    findAccounts(userId: string): Promise<{ id: string; providerId: string }[]>;
-    findAccountByKey(key: { providerId: string; accountId: string }): Promise<unknown>;
     deleteAccount(id: string): Promise<void>;
-  };
-  readonly adapter: {
-    findMany<T>(args: { model: string; where: { field: string; value: string }[] }): Promise<T[]>;
   };
 }
 
@@ -250,15 +248,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   async function authorizeTarget(context: RawContext, targetUserId: string): Promise<void> {
     await assertMayOnUser(options.authz, context, 'update', targetUserId);
     const callerTenant = rawTenantId(context);
-    const memberships = await (
-      await authContext()
-    ).adapter.findMany<{ organizationId: string }>({
-      model: 'member',
-      where: [{ field: 'userId', value: targetUserId }],
-    });
-    const tenants = memberships.map((m) => m.organizationId);
-    if (tenants.includes(callerTenant)) return;
-    const [targetTenant] = tenants;
+    if ((await options.authRepository.memberOf(callerTenant, targetUserId)) !== undefined) return;
+    const [targetTenant] = await options.authRepository.globalMembershipTenantsOf(targetUserId);
     if (targetTenant === undefined) throw new IdentityNotFoundError();
     try {
       await assertMayOnUser(options.authz, context, 'update', targetUserId, targetTenant);
@@ -305,9 +296,11 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             const input = parseLinkInput(rawInput);
             await authorizeTarget(context, input.userId);
             const adapter = (await authContext()).internalAdapter;
-            const key = { providerId: SSO_PROVIDER_ID, accountId: input.subject };
-            if ((await adapter.findAccountByKey(key)) != null)
-              throw new IdentityLinkRejectedError();
+            const existing = await options.authRepository.globalAccountByKey(
+              SSO_PROVIDER_ID,
+              input.subject,
+            );
+            if (existing !== undefined) throw new IdentityLinkRejectedError();
             try {
               await adapter.linkAccount({
                 userId: input.userId,
@@ -327,7 +320,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             const userId = parseLinkInputUserId(rawInput);
             await authorizeTarget(context, userId);
             const adapter = (await authContext()).internalAdapter;
-            const accounts = await adapter.findAccounts(userId);
+            const accounts = await options.authRepository.globalAccountsOf(userId);
             const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);
             // Design D24: never leave the user with no password and no linked SSO account.
             if (sso.length > 0 && wouldLeaveNoSignInMethod(accounts, sso)) {

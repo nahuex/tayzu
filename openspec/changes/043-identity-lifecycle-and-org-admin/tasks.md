@@ -929,7 +929,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       ones without a `tenantId`; and the existing `account-linking.int.test.ts` (in
       `apps/api/src/`) staying green, with its "sub already linked" and "only sign-in
       method" cases now served by the two readers.
-- [ ] 5.1c A lint rule bans direct adapter access to the `apikey`, `invitation`,
+- [x] 5.1c A lint rule bans direct adapter access to the `apikey`, `invitation`,
       `member`, `session`, `user` and `account` models from
       `apps/api/src/identity/**` and from `apps/api/src/identity-router.ts` (whose
       `authorizeTarget` reads `member` today, outside the `identity/` folder)

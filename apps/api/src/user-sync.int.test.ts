@@ -49,6 +49,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAuthRepository } from './identity/auth-repository.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import {
@@ -255,9 +256,16 @@ describe('Creating a user creates a matching `_user` entity, written only by the
         userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
       }),
     });
-    client = createRouterClient(createIdentityRouter({ auth, authz: cerbos }), {
-      context: (raw: Record<string, unknown>) => raw,
-    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(pools.authPool),
+      }),
+      {
+        context: (raw: Record<string, unknown>) => raw,
+      },
+    );
     const entities = createEntityService({ pool: pools.appPool, authz: cerbos });
     tryReadUser = async (tenantId, email) => {
       try {

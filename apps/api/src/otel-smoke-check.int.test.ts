@@ -97,6 +97,7 @@ import { LOG_EVENTS, METRICS, SPANS } from '../../../packages/authz/src/telemetr
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAuthRepository } from './identity/auth-repository.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -282,6 +283,7 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
     account = app.auth.api as AccountApi;
     identity = createRouterClient(
       createIdentityRouter({
+        authRepository: createAuthRepository(authPool),
         auth: app.auth,
         authz: createCerbosClient({ address: 'localhost:3593', tls: false }),
       }),
