@@ -166,7 +166,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       its transitive dependencies. Verify: `pnpm install` succeeds, and
       `docs/security/dependencies.md` lists the new package with the license, the
       `allowBuilds` decision and the SBOM review, and with the source and license of the bundled common-password denylist of 8.1 (it is data, not a dependency, so its provenance has to be on record).
-- [ ] 1.4 _(setup)_ Scaffold the homes of the identity code (Resolved decision
+- [x] 1.4 _(setup)_ Scaffold the homes of the identity code (Resolved decision
       Q30): `packages/auth/src/identity/` for the pure parts and the structural ports
       (empty modules for `user-status.ts`, `invitation-token.ts`, `password-policy.ts`,
       `email/sender.ts`, `ports.ts`), `apps/api/src/identity/` for the

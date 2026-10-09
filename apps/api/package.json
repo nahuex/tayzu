@@ -13,7 +13,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "otel-smoke-check": "vitest run src/otel-smoke-check.int.test.ts",
-    "test:unit": "vitest run --project \"*unit*\""
+    "test:unit": "vitest run --project \"*unit*\"",
+    "identity:backfill-user-blueprint": "tsx scripts/backfill-user-blueprint.ts",
+    "identity:reconcile-users": "tsx scripts/reconcile-users.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
