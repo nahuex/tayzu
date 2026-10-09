@@ -298,7 +298,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       changes nothing: no version bump and no new change event. The script reaches the
       Cerbos test container through `CERBOS_ADDRESS`, and a run whose `CERBOS_ADDRESS`
       is unreachable updates no tenant (the pipeline fails closed).
-- [ ] 2.3 Every reader of `accountKind` treats an absent value as `standard`,
+- [x] 2.3 Every reader of `accountKind` treats an absent value as `standard`,
       because a blueprint default applies only on write (design D1). Verify:
       `account-kind.test.ts` covers a `_user` read without the property resolving to
       `standard` (the Cerbos attribute built from such an entity is 5.1's case).
