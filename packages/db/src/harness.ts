@@ -79,6 +79,7 @@ function requireDatabaseUrl(): string {
 /** Design D6's migration/runtime role names. */
 const MIGRATOR_ROLE = 'tayzu_migrator';
 const APP_ROLE = 'tayzu_app';
+const AUTH_ROLE = 'tayzu_auth';
 
 /**
  * Fixed literal (task 6.3): never interpolated, never built from input, so it
@@ -87,6 +88,8 @@ const APP_ROLE = 'tayzu_app';
  * parameter in Postgres).
  */
 const APP_ROLE_SET_STATEMENT = 'SET ROLE tayzu_app';
+/** Same rule as `APP_ROLE_SET_STATEMENT`, for the `tayzu_auth` pool (`043` task 2.0b). */
+const AUTH_ROLE_SET_STATEMENT = 'SET ROLE tayzu_auth';
 
 /**
  * Advisory-lock key serializing this harness's own bootstrap (role creation,
@@ -318,6 +321,22 @@ async function grantAppRoleMembership(bootstrap: Client): Promise<void> {
 }
 
 /**
+ * `043` task 2.0b: grants the bootstrap connection's role membership in
+ * `tayzu_auth` (migration 0003 creates the role with `LOGIN`), so that
+ * `getAuthTestDatabase()` can `SET ROLE` to it. A bare `GRANT` carries
+ * `set_option` and `inherit_option`, which is all that needs. Test-harness-only.
+ */
+async function grantAuthRoleMembership(bootstrap: Client): Promise<void> {
+  await bootstrap.query(`
+    DO $$
+    BEGIN
+      EXECUTE format('GRANT ${AUTH_ROLE} TO %I', current_user);
+    END
+    $$;
+  `);
+}
+
+/**
  * Grants `tayzu_app` read access to drizzle-orm's own migration journal
  * (`drizzle.__drizzle_migrations`), test-harness-only: since task 6.3 hands
  * every caller a pool that runs *as* `tayzu_app` (`SET ROLE`, not merely
@@ -371,6 +390,7 @@ async function migrateTestDatabase(url: string): Promise<void> {
       await reassignCatalogTableOwnership(postMigration);
       await reassignAuthOwnership(postMigration);
       await grantAppRoleMembership(postMigration);
+      await grantAuthRoleMembership(postMigration);
       await grantAppRoleJournalAccess(postMigration);
     });
   } finally {
@@ -457,6 +477,43 @@ export function getOwnerPool(): Promise<Pool> {
   void current.catch(() => {
     if (ownerPool === current) {
       ownerPool = undefined;
+    }
+  });
+  return current;
+}
+
+/** Memoized across concurrent callers within the same process (module instance). */
+let authTestDatabase: Promise<TestDatabase> | undefined;
+
+async function initializeAuthTestDatabase(): Promise<TestDatabase> {
+  const url = requireDatabaseUrl();
+  assertVerifiedTlsOrLocal(url);
+  await migrateTestDatabase(url);
+
+  const pool = new Pool({ connectionString: url });
+  pool.on('connect', (client) => {
+    void client.query(AUTH_ROLE_SET_STATEMENT).catch(() => {
+      // Same pattern as `initializeTestDatabase`: a failure surfaces as the
+      // next query's permission error, never as a silent wrong identity.
+    });
+  });
+  return { pool };
+}
+
+/**
+ * `043` task 2.0b: a pool whose every connection runs *as* `tayzu_auth`
+ * (`SET ROLE`, a fixed literal queued before any caller query), the role the
+ * backfill and the reconcile list organizations and members through, and the
+ * reconcile runs the shed of task 8.5l through. A distinct, separately
+ * memoized pool from `getTestDatabase()`'s and `getOwnerPool()`'s: the roles
+ * never share a physical connection.
+ */
+export function getAuthTestDatabase(): Promise<TestDatabase> {
+  authTestDatabase ??= initializeAuthTestDatabase();
+  const current = authTestDatabase;
+  void current.catch(() => {
+    if (authTestDatabase === current) {
+      authTestDatabase = undefined;
     }
   });
   return current;

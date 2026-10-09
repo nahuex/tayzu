@@ -214,7 +214,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       the reconcile and the bootstrap CLI) starting through it (a test that reads the
       three script modules), and a script that
       runs as a role it did not declare being refused before it does any work.
-- [ ] 2.0b _(setup)_ The scripts read a **separate configuration loader**, and the test
+- [x] 2.0b _(setup)_ The scripts read a **separate configuration loader**, and the test
       harness gains the role they need. `loadConfig` in `apps/api/src/config.ts` requires
       `DATABASE_URL`, `AUTH_DATABASE_URL`, the secret and Cerbos for every caller, which a
       script that holds one role, or no `BETTER_AUTH_SECRET`, cannot supply, so the scripts read
