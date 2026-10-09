@@ -261,7 +261,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       and rethrowing it, the metric recorder adding to a counter under that scope, and
       the identity contract module being importable from the package index with no name
       declared.
-- [ ] 2.1 `USER_BLUEPRINT` carries the optional `accountKind` (`"standard"` |
+- [x] 2.1 `USER_BLUEPRINT` carries the optional `accountKind` (`"standard"` |
       `"service"`, default `"standard"`, applied on write only) and a four-value
       `status` enum (`Staged`, `Invited`, `Active`, `Disabled`, default `Staged`)
       for every new tenant. `USER_BLUEPRINT` and `bootstrapSystemBlueprints` are

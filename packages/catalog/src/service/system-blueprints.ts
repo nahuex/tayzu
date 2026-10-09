@@ -19,12 +19,24 @@ export interface BootstrapSystemBlueprintsOptions {
 
 const SYSTEM_BOOTSTRAP_ACTOR = { type: 'system', id: 'tenant-bootstrap' } as const;
 
-const USER_BLUEPRINT: CreateBlueprintInput = {
+/** The `_user` blueprint (043 design D1): account kind and four-state status. */
+export const USER_BLUEPRINT: CreateBlueprintInput = {
   identifier: '_user',
   title: { en: 'User' },
   schema: {
     properties: {
-      status: { type: 'string', title: { en: 'Status' }, enum: ['Active', 'Disabled'] },
+      accountKind: {
+        type: 'string',
+        title: { en: 'Account kind' },
+        enum: ['standard', 'service'],
+        default: 'standard',
+      },
+      status: {
+        type: 'string',
+        title: { en: 'Status' },
+        enum: ['Staged', 'Invited', 'Active', 'Disabled'],
+        default: 'Staged',
+      },
       portRole: { type: 'string', title: { en: 'Port role' }, enum: ['admin', 'member'] },
       contactEmail: { type: 'string', title: { en: 'Contact email' } },
       moderatedBlueprints: {
@@ -36,6 +48,11 @@ const USER_BLUEPRINT: CreateBlueprintInput = {
     },
   },
 };
+
+/** A fresh, deep copy of the full `_user` input, as `blueprints.update` takes it. */
+export function buildUserBlueprintInput(): CreateBlueprintInput {
+  return structuredClone(USER_BLUEPRINT);
+}
 
 const TEAM_BLUEPRINT: CreateBlueprintInput = {
   identifier: '_team',

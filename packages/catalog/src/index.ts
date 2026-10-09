@@ -13,3 +13,4 @@ export {
   type UserSync,
   type UserSyncInput,
 } from './service/user-sync.js';
+export { USER_BLUEPRINT, buildUserBlueprintInput } from './service/system-blueprints.js';
