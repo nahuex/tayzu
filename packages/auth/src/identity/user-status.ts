@@ -2,8 +2,8 @@
  * The user status state machine (`043` design D2): Staged, Invited, Active and
  * Disabled, and the events that move between them. Pure, no I/O.
  *
- * Task 3.1 adds the creation events; the other events arrive with the rest of
- * task group 3.
+ * Tasks 3.1 and 3.2 add the creation and activation events; the other events
+ * arrive with the rest of task group 3.
  */
 export type UserStatus = 'Staged' | 'Invited' | 'Active' | 'Disabled';
 
@@ -40,6 +40,8 @@ const TRANSITIONS: Partial<Record<StatusEvent, Transition>> = {
   created_staged: { from: [null], to: 'Staged' },
   created_invited: { from: [null, 'Staged', 'Invited'], to: 'Invited' },
   created_active: { from: [null], to: 'Active' },
+  invitation_accepted: { from: ['Staged', 'Invited'], to: 'Active' },
+  first_sign_in: { from: ['Staged', 'Invited'], to: 'Active' },
 };
 
 /** Returns the status after `event`, or throws `StatusTransitionError`. */

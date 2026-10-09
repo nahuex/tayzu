@@ -311,7 +311,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `user-status.test.ts` covers "New entity without a status starts staged",
       "Explicit invite starts a user as invited" and "A user created by an admin is
       active" at the pure level.
-- [ ] 3.2 `nextStatus` for `first_sign_in` and `invitation_accepted` from
+- [x] 3.2 `nextStatus` for `first_sign_in` and `invitation_accepted` from
       `Staged` and `Invited` → `Active`, and rejection of both from `Disabled`. The pure
       transition is unchanged by Resolved decision Q111: limiting `first_sign_in` to a
       user who holds exactly one membership is the hook's rule (4.4), not the table's.
