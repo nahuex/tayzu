@@ -735,7 +735,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       "banning sets Disabled, unbanning sets Active again" (`user-sync.int.test.ts:177`)
       contradicts Q102 and is **rewritten** (Resolved decision Q134), not loosened: after
       the unban the status stays `Disabled` and nothing is written; the PR calls it out.
-- [ ] 4.6 `bootstrapAdmin()` moves out of the script file into
+- [x] 4.6 `bootstrapAdmin()` moves out of the script file into
       `packages/auth/src/bootstrap-admin.ts` and the package index (design D2):
       today it shares `packages/auth/scripts/bootstrap-admin.ts` with the CLI
       `main()`, and `bootstrap.int.test.ts`, `user-sync.int.test.ts`,

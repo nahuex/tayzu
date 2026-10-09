@@ -57,3 +57,9 @@ export {
   IDENTITY_METRICS,
   IDENTITY_SPANS,
 } from './telemetry/identity-contract.js';
+export {
+  bootstrapAdmin,
+  type BootstrapAdminOptions,
+  type BootstrapAdminParams,
+  type BootstrapAdminResult,
+} from './bootstrap-admin.js';

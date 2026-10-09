@@ -40,8 +40,7 @@ import { randomUUID } from 'node:crypto';
 // before anything that loads `@tayzu/auth` creates its logger.
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { createRouterClient } from '@orpc/server';
-import { bootstrapAdmin } from '../../../packages/auth/scripts/bootstrap-admin.js';
-import { createAuth, authSchema, type AuthInstance } from '@tayzu/auth';
+import { bootstrapAdmin, createAuth, authSchema, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import { createEntityService, createUserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
@@ -151,7 +150,7 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
       adminName: 'First Admin',
       adminEmail: `sync-boot-${randomUUID()}@example.test`,
     };
-    await bootstrapAdmin(auth, params);
+    await bootstrapAdmin(auth, params, { operatorId: 'gh:424242' });
 
     const org = await (
       auth.$context as Promise<{
@@ -314,7 +313,7 @@ describe('Creating a user creates a matching `_user` entity, written only by the
       adminName: 'First Admin',
       adminEmail: `sync-boot-185-${randomUUID()}@example.test`,
     };
-    await bootstrapAdmin(auth, params);
+    await bootstrapAdmin(auth, params, { operatorId: 'gh:424242' });
 
     const org = await (
       auth.$context as Promise<{
