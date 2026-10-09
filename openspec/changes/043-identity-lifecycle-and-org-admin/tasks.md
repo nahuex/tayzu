@@ -851,7 +851,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       attributes carry the target's tenant and the three attributes and that the
       resource id is the opaque id for an email-addressed target, that a `service_account` resource carries the resolved `accountKind` (and `service` for a create), a `_user` read without `accountKind` being sent as `standard` (through the reader of 2.3), the resource id of every operation being the one named above, and
       `resource-kinds.test.ts` that the kinds exist.
-- [ ] 5.1b `apps/api/src/identity/auth-repository.ts` (Resolved decision Q69; design
+- [x] 5.1b `apps/api/src/identity/auth-repository.ts` (Resolved decision Q69; design
       D14) is the only module through which the identity code reads `apikey`,
       `invitation`, `member`, `session`, `user` and `account`. Every function that
       reads a tenant-keyed model **requires a `tenantId`** and filters by it
