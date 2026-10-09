@@ -49,12 +49,20 @@ function membershipEvent(current: UserStatus | null): StatusEvent | undefined {
   return current === 'Staged' || current === 'Invited' ? 'invitation_accepted' : undefined;
 }
 
-/** A redundant event leaves the status as it already is. */
+/** The status each event leads to (the target column of the `@tayzu/auth` transition table). */
+const EVENT_TARGET: Record<StatusEvent, UserStatus> = {
+  created_staged: 'Staged',
+  created_invited: 'Invited',
+  created_active: 'Active',
+  invitation_accepted: 'Active',
+  first_sign_in: 'Active',
+  admin_disable: 'Disabled',
+  admin_enable: 'Active',
+};
+
+/** A redundant event (the status already is its target) writes and emits nothing. */
 function isRedundant(event: StatusEvent, current: UserStatus | null): boolean {
-  return (
-    (event === 'admin_enable' && current === 'Active') ||
-    (event === 'admin_disable' && current === 'Disabled')
-  );
+  return current === EVENT_TARGET[event];
 }
 
 /** Emits `catalog.audit.user_status_changed` (Resolved decisions Q117 and Q126): identifiers only. */
@@ -103,6 +111,8 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
       const current = await userSync.getUser({ tenantId: input.tenantId, email: input.email });
       const event = pick(current);
       if (event === undefined || isRedundant(event, current?.status ?? null)) return undefined;
+      // A first sign-in with no `_user` row writes and emits nothing (Q133).
+      if (event === 'first_sign_in' && current === null) return undefined;
       const status = nextStatus(current?.status ?? null, event);
       try {
         await userSync.upsertUser({

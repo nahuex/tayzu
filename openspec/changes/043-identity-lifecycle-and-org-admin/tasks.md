@@ -678,7 +678,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       carrying the admin as `onBehalfOf` and one `catalog.audit.user_status_changed`
       with the admin as `tayzu.actor.id` and the status event `created_active`, and `createIdentityRouter` no longer
       accepting a `userSync` (a `@ts-expect-error` case).
-- [ ] 4.4 A first-sign-in hook writes `first_sign_in`, through the adapter of 4.1, **only
+- [x] 4.4 A first-sign-in hook writes `first_sign_in`, through the adapter of 4.1, **only
       for a user who holds exactly one membership**, to that membership's `_user`: a
       `Staged` or `Invited` user becomes `Active`, and a `Disabled` user stays `Disabled`.
       For a user of two or more memberships it writes nothing (Resolved decision Q111;
@@ -701,7 +701,11 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       who belongs to `t1`, where the `_user` is `Active`, and to `t2`, where the `_user`
       is `Invited` (seeded directly, as a failed acceptance whose compensation failed
       leaves it), signs in locally, both rows are unchanged and no status write or status
-      event happens, and the same holds for a `Staged` row in `t2`.
+      event happens, and the same holds for a `Staged` row in `t2`; and (Resolved
+      decision Q133) a member whose single membership has no `_user` row signs in
+      locally with no row created, no status write and no status event, while the
+      display-refresh test of 4.1c gains a second membership in its setup so that it
+      isolates the refresh again, its assertions unchanged.
 - [ ] 4.5 The ban hook (`databaseHooks.user.update.after` in `auth.ts`) writes through
       the state machine instead of `Disabled`/`Active` directly, and **only ever
       disables** (Resolved decision Q102; design D2). It fires on every `user.update`

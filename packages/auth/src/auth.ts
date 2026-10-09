@@ -466,6 +466,45 @@ async function refreshDisplayData(
   }
 }
 
+/**
+ * Task 4.4 (design D2, Resolved decision Q111): the first-sign-in hook. Writes
+ * `first_sign_in` to the `_user` of the user's membership only when the user
+ * holds exactly one; with two or more it writes nothing, so a second tenant's
+ * `Invited`/`Staged` row stays rejected by the resolver. The user is the
+ * principal of their own write (Resolved decision Q117).
+ */
+async function activateOnFirstSignIn(
+  options: CreateAuthOptions,
+  userId: string,
+  context: Parameters<typeof getSessionFromCtx>[0],
+): Promise<void> {
+  if (options.userSync === undefined) {
+    return;
+  }
+  const memberships = await context.context.adapter.findMany<MembershipRow>({
+    model: 'member',
+    where: [{ field: 'userId', value: userId }],
+    limit: 2,
+  });
+  const [only] = memberships;
+  if (memberships.length !== 1 || only === undefined) {
+    return;
+  }
+  const user = await context.context.internalAdapter.findUserById(userId);
+  if (user === null) {
+    return;
+  }
+  await options.userSync.upsertUser({
+    tenantId: only.organizationId,
+    email: user.email,
+    name: user.name,
+    userId,
+    change: 'first_sign_in',
+    principal: { kind: 'user', id: userId },
+    onBehalfOf: { type: 'user', id: userId },
+  });
+}
+
 export interface CreateAuthOptions {
   /**
    * A `@better-auth/drizzle-adapter`-compatible DB handle. The adapter never
@@ -803,7 +842,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           },
           // Task 24.5, design Q54: a Visma Connect callback sign-in creates its
           // session here (a `form_post` redirect hop creates none).
-          after: (session, context) => {
+          after: async (session, context) => {
             if (context?.path === GENERIC_OAUTH_CALLBACK_ROUTE) {
               const row = session as { userId: string; activeOrganizationId?: string | null };
               emitLoginSucceeded({
@@ -811,7 +850,9 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 tenantId: row.activeOrganizationId ?? undefined,
               });
             }
-            return Promise.resolve();
+            if (context) {
+              await activateOnFirstSignIn(options, session.userId, context);
+            }
           },
         },
       },

@@ -12,8 +12,10 @@
  *   instance with no user sync), a Visma Connect sign-in refreshes the profile,
  *   and `getUser` still finds no row.
  * - "A member with a _user row has only its display fields updated, the status
- *   unchanged": the row is `Invited`; after the refresh the title and
- *   `contactEmail` follow Visma Connect, and the status is still `Invited`.
+ *   unchanged": the member has two memberships (Q133), so the first-sign-in hook
+ *   writes nothing (Q111) and only the refresh can touch the row. The row is
+ *   `Invited`; after the refresh the title and `contactEmail` follow Visma
+ *   Connect, and the status is still `Invited`.
  *
  * ## Production symbols assumed
  *
@@ -191,6 +193,7 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
     localEmail: string;
     organizationId: string;
     sub: string;
+    userId: string;
   }> {
     const localEmail = `display-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(bootstrapAuth, {
@@ -207,7 +210,7 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
        values ($1, $2, $3, $4, now(), now())`,
       [randomUUID(), sub, PROVIDER_ID, tenant.userId],
     );
-    return { localEmail, organizationId: tenant.organizationId, sub };
+    return { localEmail, organizationId: tenant.organizationId, sub, userId: tenant.userId };
   }
 
   async function signInThroughVisma(identity: {
@@ -246,6 +249,25 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
 
   it('A member with a _user row has only its display fields updated, the status unchanged', async () => {
     const member = await memberWithoutRow();
+    // A second membership, in a second organization, keeps the first-sign-in hook from
+    // writing anything (Q111, Q133), so only the display refresh can touch the row.
+    const secondOrg = await bootstrapTestTenant(bootstrapAuth, {
+      name: 'Second Org Owner',
+      email: `display-owner-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Second Display Org',
+      organizationSlug: `display-second-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    await (
+      bootstrapAuth.api as {
+        addMember(args: {
+          body: { userId: string; organizationId: string; role: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({
+      body: { userId: member.userId, organizationId: secondOrg.organizationId, role: 'member' },
+    });
     // An Invited row is one a refresh must not promote or replace with a default.
     const written = await adapter.writeUserChange({
       tenantId: member.organizationId,
