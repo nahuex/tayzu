@@ -34,7 +34,8 @@ structural fix) adds no race case to any task: tasks 7.6, 7.7 and 8.10 cite the
 residual, tasks 7.13, 11.4 and 11.4b are unchanged by it, and tasks 5.1b, 7.2, 7.5 and
 8.3 stay as they are; Q129 (an admin's cancel of an invitation that is not `pending`
 answers the resend's `CATALOG_VALIDATION_FAILED` with the same fixed message, changes
-nothing and logs nothing) is applied to tasks 7.6, 7.13 and 8.10; and Q130 (Q125's rewrite
+nothing and logs nothing, and the internal cancellations, `user_created` included, only
+skip it) is applied to tasks 7.6, 7.13 and 8.10; and Q130 (Q125's rewrite
 extends to three catalog integration tests, and the catalog's redaction fixture they use
 has only its header comment corrected) to task 4.1d. The hold that kept tasks 7.6, 7.7, 7.13, 8.1e,
 8.10, 8.15, 11.4 and 11.4b unticked until those answers is released. The tenth
@@ -46,7 +47,7 @@ path the notice follows the commit or, since Q127, a consumption that changes no
 applied to tasks 8.1e, 8.5b, 8.5h, 8.5k,
 8.5m, 8.15 and 16.5. Q123 (the acceptance marks the invitation `accepted` with the
 consumption of its token, and resend, cancel and the disable-time cancellations skip an
-invitation that is not `pending`) is applied to tasks 5.1b, 7.6, 7.7, 7.13, 8.1e, 8.3,
+invitation that is not `pending`) is applied to tasks 5.1b, 7.6, 7.7, 8.1e, 8.3,
 8.10, 11.4 and 11.4b; Q124 (the orphan grace period runs from the `_user` row's `updatedAt`) to tasks
 4.2b and 16.5; Q125 (the rewrite of the existing case of `redaction.test.ts`, extended
 by Q130) to task 4.1d; and Q126 (the subject of the `created_invited` status event) is the existing
@@ -482,13 +483,15 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       identifiers of single-resource checks that keep theirs (in
       `entities-delete.int.test.ts`, `team-a`, the deleted entity's own check: the
       fixture answers every batch whose resources are all `catalog_entity` (`:43-58`),
-      the operation's own check of `pipeline.ts` included, so the readable sets of `:646`
+      an entity operation's own check of `pipeline.ts` included, so the readable sets of `:646`
       and `:670` keep `team-a` beside the positions; `readable.has(resource.id)` already
       works with such a mixed set, and the fixture's answering logic is unchanged; its
       only edit is its header comment (`:6-10`), which must say that every batch whose
-      resources are all `catalog_entity`, the operation's own check included, is answered
-      from `readable` by the `resource.id` it receives (a position for the redaction
-      batch, an identifier for a single-resource check)). The readable positions are
+      resources are all `catalog_entity` is answered from `readable` by the `resource.id`
+      it receives: by identifier for an entity operation's own check (`pipeline.ts:372`)
+      and for `mayUpdateReferrer`'s check (`entities.ts:884`), by position for the
+      redaction batch, while a blueprint operation's own check (`catalog_blueprint`)
+      still reaches the real policies). The readable positions are
       deterministic only where the candidates come in a known order:
       `selectSpecReferrers` orders referrers by identifier
       (`packages/catalog/src/persistence/entities-repository.ts:409-424`) for
@@ -1418,7 +1421,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       an invitation of `t1` to the same email that is already `cancelled` (by an earlier
       cancel of 7.6) or seeded directly as `rejected` stays as it is, and the creation
       logs no `catalog.audit.invitation_cancelled` with the reason `user_created` for it
-      (Resolved decisions Q123 and Q129).
+      (Resolved decision Q129).
 
 ## 8. Invitation acceptance
 

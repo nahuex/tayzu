@@ -275,8 +275,10 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   fixture `packages/auth/src/__fixtures__/admin-user.ts` (it gains a `tayzu_app` pool
   parameter), the `@tayzu/catalog` fixture
   `packages/catalog/src/service/__fixtures__/redaction-authz.ts` (its header comment: it
-  answers every all-`catalog_entity` batch, the operation's own check included, by the
-  `resource.id` it receives, which for the redaction batch is now a position, Q130),
+  answers every all-`catalog_entity` batch by the `resource.id` it receives, an
+  identifier for an entity operation's own check and for `mayUpdateReferrer`'s and a
+  position for the redaction batch, while a blueprint operation's own
+  `catalog_blueprint` check still reaches the real policies, Q130),
   a new `scripts/ci/dast-coverage.ts` (the DAST scan's 2xx check),
   `eslint.config.js` and a new restriction module, `vitest.shared.ts` and `turbo.json`
   (the breached-password stub), the test harness `packages/db/src/harness.ts`,
