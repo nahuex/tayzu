@@ -5,4 +5,9 @@
  * Scaffolded by `043` task 1.4 (design Q30); its behavior arrives with task
  * 4.2b.
  */
-export {};
+import { runScript } from './run-script.js';
+
+/** Starts through `runScript` (task 2.0); the behavior arrives with task 4.2b. */
+export function main(): Promise<void> {
+  return runScript('reconcile-users', () => undefined);
+}

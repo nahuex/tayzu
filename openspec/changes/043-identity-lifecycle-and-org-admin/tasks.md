@@ -188,7 +188,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 2. `_user` blueprint extension (no migration)
 
-- [ ] 2.0 Every maintenance script starts telemetry, emits its audit events and
+- [x] 2.0 Every maintenance script starts telemetry, emits its audit events and
       flushes before it exits (Resolved decision Q79). Telemetry starts only in
       `apps/api/src/main.ts` today, so the durable `catalog.audit.*` events of a
       short job (`users_reconciled` and the bootstrap's `user_created`; `045`'s
