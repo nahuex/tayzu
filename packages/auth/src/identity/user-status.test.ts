@@ -55,3 +55,31 @@ describe('nextStatus: activation events', () => {
     expect(() => nextStatus('Disabled', 'invitation_accepted')).toThrow(StatusTransitionError);
   });
 });
+
+/**
+ * `043` task 3.3 (design D2): an `Active` user never regresses to `Invited` or
+ * `Staged`, and the rejection carries the catalog validation code without a
+ * dependency on `@tayzu/catalog`.
+ */
+describe('nextStatus: Active never regresses', () => {
+  it.each(['created_invited', 'created_staged'] as const)(
+    'Active never regresses to invited or staged: %s from Active throws StatusTransitionError',
+    (event) => {
+      expect(() => nextStatus('Active', event)).toThrow(StatusTransitionError);
+    },
+  );
+
+  it.each(['created_invited', 'created_staged'] as const)(
+    'Active never regresses to invited or staged: the %s error code is CATALOG_VALIDATION_FAILED',
+    (event) => {
+      let thrown: unknown;
+      try {
+        nextStatus('Active', event);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(StatusTransitionError);
+      expect((thrown as StatusTransitionError).code).toBe('CATALOG_VALIDATION_FAILED');
+    },
+  );
+});

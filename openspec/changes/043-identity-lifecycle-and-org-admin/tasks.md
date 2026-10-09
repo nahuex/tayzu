@@ -318,7 +318,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       Verify: `user-status.test.ts` covers "First sign-in activates a staged or
       invited user", "A disabled user is not revived by signing in" and "A disabled
       user is not revived by a pending invitation" at the pure level.
-- [ ] 3.3 `nextStatus` rejects any transition from `Active` to `Invited` or
+- [x] 3.3 `nextStatus` rejects any transition from `Active` to `Invited` or
       `Staged` by throwing a package-local `StatusTransitionError` whose
       `code` is `CATALOG_VALIDATION_FAILED` (no `@tayzu/catalog` dependency).
       Verify: `user-status.test.ts` covers "Active never regresses to invited or
