@@ -769,7 +769,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       file and its `bootstrapAdmin` calls) and `sso-jit-refresh.int.test.ts` (around
       line 179) pass the catalog `createUserSync` too and migrate to the adapter of 4.1. The PR description calls out that this reverses `002`
       task 18.5.
-- [ ] 4.6b The bootstrap CLI (`main()` and the `bootstrap:admin` package script,
+- [x] 4.6b The bootstrap CLI (`main()` and the `bootstrap:admin` package script,
       today in `packages/auth/scripts/bootstrap-admin.ts`) moves to
       `apps/api/scripts/bootstrap-admin.ts` (Resolved decision Q51), because
       `@tayzu/auth` depends only on `@tayzu/db` and `@tayzu/observability` and

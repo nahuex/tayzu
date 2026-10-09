@@ -271,3 +271,106 @@ describe('ZAP baseline workflow pin (Q30)', () => {
     expect(workflow).toContain('ZAP_AUTH_HEADER');
   });
 });
+
+/**
+ * `043` task 4.6b: the bootstrap CLI moved to `apps/api/scripts/bootstrap-admin.ts`
+ * and needs the `tayzu_app` `DATABASE_URL`, `AUTH_DATABASE_URL`, `CERBOS_ADDRESS`
+ * and the allowed origins, plus the operator's opaque id (`TAYZU_OPERATOR_ID`,
+ * Resolved decision Q116). The new variables are required for the seed run only.
+ *
+ * ## Production symbols expected (scripts/ci/zap-seed.ts)
+ *
+ * ```ts
+ * export interface ZapSeedConfig {
+ *   // ...the existing fields, plus:
+ *   authDatabaseUrl: string;  // AUTH_DATABASE_URL (seed mode)
+ *   cerbosAddress: string;    // CERBOS_ADDRESS (seed mode)
+ *   allowedOrigins: string;   // ALLOWED_ORIGINS (seed mode)
+ *   operatorId: string;       // TAYZU_OPERATOR_ID (seed mode), the catalog id pattern
+ * }
+ * // The existing one-argument call keeps its behavior (it is what `--refresh`
+ * // uses). The seed run passes `{ mode: 'seed' }`, which requires the new variables.
+ * export function parseZapSeedConfig(
+ *   env: Readonly<Record<string, string | undefined>>,
+ *   options?: { readonly mode?: 'seed' | 'refresh' },
+ * ): ZapSeedConfig;
+ * ```
+ */
+describe('ZAP seed script: the moved bootstrap CLI (task 4.6b)', () => {
+  const seedEnv = {
+    ...completeEnv,
+    AUTH_DATABASE_URL: `postgres://tayzu_auth:${DB_MARKER}@localhost:5432/tayzu_ci`,
+    CERBOS_ADDRESS: 'localhost:3593',
+    ALLOWED_ORIGINS: 'https://localhost:3000',
+    TAYZU_OPERATOR_ID: 'ci:zap-seed',
+  } as const;
+
+  it('reads the four variables of the CLI and the operator id in seed mode', () => {
+    const config = parseZapSeedConfig(seedEnv, { mode: 'seed' });
+
+    expect(config.databaseUrl).toBe(seedEnv.DATABASE_URL);
+    expect(config.authDatabaseUrl).toBe(seedEnv.AUTH_DATABASE_URL);
+    expect(config.cerbosAddress).toBe('localhost:3593');
+    expect(config.allowedOrigins).toBe('https://localhost:3000');
+    expect(config.operatorId).toBe('ci:zap-seed');
+  });
+
+  it.each(['AUTH_DATABASE_URL', 'CERBOS_ADDRESS', 'ALLOWED_ORIGINS', 'TAYZU_OPERATOR_ID'] as const)(
+    'seed mode fails fast naming %s when it is missing or blank, without echoing any value',
+    (name) => {
+      for (const bad of [undefined, '', '   ']) {
+        let message = '';
+        try {
+          parseZapSeedConfig({ ...seedEnv, [name]: bad }, { mode: 'seed' });
+        } catch (error) {
+          message = error instanceof Error ? error.message : String(error);
+        }
+        expect(message).toContain(name);
+        expect(message).not.toContain(SECRET_MARKER);
+        expect(message).not.toContain(DB_MARKER);
+      }
+    },
+  );
+
+  it.each(['operator@example.test', 'has space', '', 'a'.repeat(129)])(
+    'seed mode rejects the operator id %j, which is not of the catalog id pattern',
+    (operatorId) => {
+      expect(() =>
+        parseZapSeedConfig({ ...seedEnv, TAYZU_OPERATOR_ID: operatorId }, { mode: 'seed' }),
+      ).toThrow(/TAYZU_OPERATOR_ID/);
+    },
+  );
+
+  it('--refresh still parses with DATABASE_URL=unused and none of the new variables', () => {
+    const refreshEnv = {
+      DATABASE_URL: 'unused',
+      BETTER_AUTH_SECRET: 'unused',
+      ZAP_TARGET_URL: 'http://localhost:3000',
+      ZAP_SEED_ORIGIN: 'https://localhost:3000',
+    };
+
+    expect(() => parseZapSeedConfig(refreshEnv)).not.toThrow();
+    expect(() => parseZapSeedConfig(refreshEnv, { mode: 'refresh' })).not.toThrow();
+    expect(() => parseZapSeedConfig(refreshEnv, { mode: 'seed' })).toThrow();
+  });
+
+  it('the seed runs the moved CLI through @tayzu/api and no longer touches packages/auth', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('../../../scripts/ci/zap-seed.ts', import.meta.url)),
+      'utf8',
+    );
+
+    expect(source).toContain('apps/api/scripts/bootstrap-admin');
+    expect(source).toContain('@tayzu/api');
+    expect(source).not.toContain('packages/auth/scripts/bootstrap-admin');
+    expect(source).not.toContain('@tayzu/auth');
+    for (const name of [
+      'AUTH_DATABASE_URL',
+      'CERBOS_ADDRESS',
+      'ALLOWED_ORIGINS',
+      'TAYZU_OPERATOR_ID',
+    ]) {
+      expect(source, name).toContain(name);
+    }
+  });
+});

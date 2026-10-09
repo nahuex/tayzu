@@ -162,6 +162,8 @@ up() {
   export ZAP_TARGET_URL="http://localhost:${API_PORT}"
   # Q41: an explicit opt-out; the throwaway stack has no OTLP collector.
   export TAYZU_TELEMETRY_DISABLED="true"
+  # Q96: no email provider in the throwaway stack.
+  export EMAIL_PROVIDER=none
 
   log "waiting for PostgreSQL (verified TLS)"
   wait_for 60 postgres_accepts_tls || fail "PostgreSQL did not accept a verified TLS connection in time"
@@ -189,8 +191,9 @@ up() {
   fi
 
   log "seeding an organization and a session"
-  # The bootstrap writes only the auth schema, so it runs as tayzu_auth.
-  (cd "$REPO_ROOT" && DATABASE_URL="$AUTH_DATABASE_URL" ZAP_ENV_FILE="$STATE_DIR/zap.env" \
+  # The bootstrap CLI holds both runtime roles: DATABASE_URL (tayzu_app) and
+  # AUTH_DATABASE_URL (tayzu_auth), with a fixed CI operator id (Q116).
+  (cd "$REPO_ROOT" && TAYZU_OPERATOR_ID="ci:zap-seed" ZAP_ENV_FILE="$STATE_DIR/zap.env" \
     ZAP_TOTP_SECRET_FILE="$STATE_DIR/totp.secret" pnpm exec tsx scripts/ci/zap-seed.ts)
   # What `api-scan` needs to renew the step-up in a later CI step.
   printf '%s\n' "ZAP_TARGET_URL=$ZAP_TARGET_URL" "ZAP_SEED_ORIGIN=$ZAP_SEED_ORIGIN" \

@@ -15,7 +15,8 @@
     "otel-smoke-check": "vitest run src/otel-smoke-check.int.test.ts",
     "test:unit": "vitest run --project \"*unit*\"",
     "identity:backfill-user-blueprint": "tsx scripts/backfill-user-blueprint.ts",
-    "identity:reconcile-users": "tsx scripts/reconcile-users.ts"
+    "identity:reconcile-users": "tsx scripts/reconcile-users.ts",
+    "bootstrap:admin": "tsx scripts/bootstrap-admin.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",

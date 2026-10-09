@@ -11,8 +11,7 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run --project \"*unit*\"",
-    "bootstrap:admin": "tsx scripts/bootstrap-admin.ts"
+    "test:unit": "vitest run --project \"*unit*\""
   },
   "dependencies": {
     "@azure/communication-email": "1.1.0",

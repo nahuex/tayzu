@@ -1,7 +1,7 @@
 /**
  * CI seed for the OWASP ZAP baseline job (task 15.1, design D16, resolved
  * decision Q30). Creates one organization and its first admin through
- * `packages/auth/scripts/bootstrap-admin.ts`, signs in over HTTP against the
+ * `apps/api/scripts/bootstrap-admin.ts`, signs in over HTTP against the
  * already-running `apps/api` (started by the workflow with `main.ts`) and
  * writes the session cookie header ZAP replays (`ZAP_AUTH_HEADER`). It never
  * prints the one-time password, the secret or the cookie.
@@ -24,7 +24,15 @@ export interface ZapSeedConfig {
   organizationSlug: string;
   adminName: string;
   adminEmail: string;
+  /** Seed mode only (the moved bootstrap CLI, task 4.6b): the `tayzu_auth` URL. */
+  authDatabaseUrl: string;
+  cerbosAddress: string;
+  allowedOrigins: string;
+  /** The operator's opaque id (Resolved decision Q116): the catalog id pattern, never an email. */
+  operatorId: string;
 }
+
+const OPERATOR_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** Fails closed naming the variable only, never its value. */
 function required(env: Env, name: string): string {
@@ -53,8 +61,24 @@ function parseTargetUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, '');
 }
 
-export function parseZapSeedConfig(env: Env): ZapSeedConfig {
+/**
+ * `refresh` (the default) only renews tokens, so the variables of the
+ * bootstrap CLI are required in `seed` mode only.
+ */
+export function parseZapSeedConfig(
+  env: Env,
+  options: { readonly mode?: 'seed' | 'refresh' } = {},
+): ZapSeedConfig {
+  const seed = options.mode === 'seed';
+  const operatorId = seed ? required(env, 'TAYZU_OPERATOR_ID') : '';
+  if (seed && !OPERATOR_ID_PATTERN.test(operatorId)) {
+    throw new Error('TAYZU_OPERATOR_ID is malformed (1 to 128 of A-Z a-z 0-9 _ . : -).');
+  }
   return {
+    authDatabaseUrl: seed ? required(env, 'AUTH_DATABASE_URL') : '',
+    cerbosAddress: seed ? required(env, 'CERBOS_ADDRESS') : '',
+    allowedOrigins: seed ? required(env, 'ALLOWED_ORIGINS') : '',
+    operatorId,
     databaseUrl: required(env, 'DATABASE_URL'),
     betterAuthSecret: required(env, 'BETTER_AUTH_SECRET'),
     baseUrl: parseTargetUrl(required(env, 'ZAP_TARGET_URL')),
@@ -136,20 +160,24 @@ function publishHeader(env: Env, cookie: string): void {
 }
 
 /**
- * Runs `packages/auth/scripts/bootstrap-admin.ts` as the operator would (it
+ * Runs `apps/api/scripts/bootstrap-admin.ts` through `@tayzu/api` as the operator would (it
  * resolves its own workspace dependencies) and reads the one-time password
  * from its output. The output is never echoed.
  */
 function bootstrapFirstAdmin(config: ZapSeedConfig): string {
   const script = fileURLToPath(
-    new URL('../../packages/auth/scripts/bootstrap-admin.ts', import.meta.url),
+    new URL('../../apps/api/scripts/bootstrap-admin.ts', import.meta.url),
   );
-  const output = execFileSync('pnpm', ['--filter', '@tayzu/auth', 'exec', 'tsx', script], {
+  const output = execFileSync('pnpm', ['--filter', '@tayzu/api', 'exec', 'tsx', script], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
     env: {
       ...process.env,
       DATABASE_URL: config.databaseUrl,
+      AUTH_DATABASE_URL: config.authDatabaseUrl,
+      CERBOS_ADDRESS: config.cerbosAddress,
+      ALLOWED_ORIGINS: config.allowedOrigins,
+      TAYZU_OPERATOR_ID: config.operatorId,
       BETTER_AUTH_SECRET: config.betterAuthSecret,
       BOOTSTRAP_ORGANIZATION_NAME: config.organizationName,
       BOOTSTRAP_ORGANIZATION_SLUG: config.organizationSlug,
@@ -304,7 +332,7 @@ function secretFile(env: Env): string {
 }
 
 async function main(): Promise<void> {
-  const config = parseZapSeedConfig(process.env);
+  const config = parseZapSeedConfig(process.env, { mode: 'seed' });
   const client: SeedClient = { baseUrl: config.baseUrl, origin: config.origin, fetch };
   const { cookie, secret } = await mfaSessionCookie(client, {
     email: config.adminEmail,
