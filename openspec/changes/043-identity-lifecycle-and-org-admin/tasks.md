@@ -18,31 +18,37 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1 and Q4-Q126 in `design.md` (there is no Q2 or
+Tasks follow the Resolved decisions Q1 and Q4-Q130 in `design.md` (there is no Q2 or
 Q3). The ninth amendment's two open questions are Q116 (the invitee is the actor of an
 acceptance, and the bootstrap records the operator's opaque id) and Q117
 (`catalog.audit.user_status_changed` records every status change, with the principal of
 its write and the status event), applied to tasks 4.1e, 4.2b, 4.3, 4.4, 4.5, 4.6, 4.6b,
-7.3, 8.1e, 8.2, 8.5b, 10.3, 11.2, 11.5, 13.3, 15.1 and 15.6. Three questions are open
-(design, Open Questions 1 to 3, raised by the twelfth amendment's consistency check):
-whether a new-account attempt whose consumption changes no row after its `_user` step
-sends the admin notice (tasks 8.1e and 8.15), how the window between the `pending`
-check of resend and cancel and the acceptance's `accepted` write is treated (tasks 7.6,
-7.7, 7.13, 8.10, 11.4 and 11.4b, and, depending on the option, 5.1b, 7.2, 7.5 and
-8.3), and what an admin's cancel of an invitation that is not `pending` answers, success
-or the `CATALOG_VALIDATION_FAILED` of the refused resend (tasks 7.6 and 8.10). Until the human
-answers them those tasks keep their current wording, and none of them is ticked before
-the answer is applied. The tenth amendment's Open Question 1 is Q122: on the existing-account
+7.3, 8.1e, 8.2, 8.5b, 10.3, 11.2, 11.5, 13.3, 15.1 and 15.6. The twelfth amendment's
+three open questions are answered (design, thirteenth amendment; no question is open):
+Q127 (on the new-account path the admin notice is sent after the acceptance commits or
+when the consumption changes no row, whether or not the attempt's own `_user` step
+activated the row, and a compensated failure sends none) is applied to tasks 8.1e and
+8.15; Q128 (the window between the `pending` check of resend and cancel and the
+acceptance's `accepted` write is a documented residual, with the ticket TK12-1 as its
+structural fix) changes no task, so tasks 7.6, 7.7, 7.13, 8.10, 11.4 and 11.4b add no
+race case and tasks 5.1b, 7.2, 7.5 and 8.3 stay as they are; Q129 (an admin's cancel of
+an invitation that is not `pending` answers the resend's `CATALOG_VALIDATION_FAILED`
+with the same fixed message, changes nothing and logs nothing) is applied to tasks 7.6
+and 8.10; and Q130 (Q125's rewrite extends to the catalog's redaction fixture and three
+catalog integration tests) to task 4.1d. The hold that kept tasks 7.6, 7.7, 7.13, 8.1e,
+8.10, 8.15, 11.4 and 11.4b unticked until those answers is released. The tenth
+amendment's Open Question 1 is Q122: on the existing-account
 path the revocation of the accepting session and of the session an earlier attempt's
 shed recorded, and the admin notice, run as soon as the attempt's `_user` step has run,
 before the `emailVerified` write and the consumption of the token (on the new-account
-path the notice still follows the commit), applied to tasks 8.1e, 8.5b, 8.5h, 8.5k,
+path the notice follows the commit or, since Q127, a consumption that changes no row),
+applied to tasks 8.1e, 8.5b, 8.5h, 8.5k,
 8.5m, 8.15 and 16.5. Q123 (the acceptance marks the invitation `accepted` with the
 consumption of its token, and resend, cancel and the disable-time cancellations skip an
 invitation that is not `pending`) is applied to tasks 5.1b, 7.6, 7.7, 8.1e, 8.3, 8.10,
 11.4 and 11.4b; Q124 (the orphan grace period runs from the `_user` row's `updatedAt`) to tasks
-4.2b and 16.5; Q125 (the rewrite of the existing case of `redaction.test.ts`) to task
-4.1d; and Q126 (the subject of the `created_invited` status event) is the existing
+4.2b and 16.5; Q125 (the rewrite of the existing case of `redaction.test.ts`, extended
+by Q130) to task 4.1d; and Q126 (the subject of the `created_invited` status event) is the existing
 wording of tasks 4.1e, 7.3 and 15.1, with the optional `invitationId` of task 4.1's port
 input carrying that subject to the adapter (twelfth amendment, no new decision).
 The eighth amendment's Open Question 1 is Q111, applied to design D2, the Risks
@@ -71,8 +77,11 @@ key create and revoke through the identity operation are 9.5's and 9.9's (9.1b c
 helpers directly), an `id` that `rotate` accepts is 9.6's (9.2 asserts the id), a
 surviving key of an identifier with no `_user` not resolving is 11.6's and 11.7's (10.3
 asserts the refused creation), the one fixed message of every conflict is 13.3's (10.3
-and 13.2b assert `CATALOG_VALIDATION_FAILED`), and the route list of the generated
-identity document is 14.1c's (14.1 calls the procedures). The
+and 13.2b assert `CATALOG_VALIDATION_FAILED`), the result of the acceptance's entry
+point for the `membership_added` intent and the membership hook's `userId` subject are
+4.2's (the tests of 4.1 and 4.1e pass explicit `StatusEvent` inputs and port inputs),
+and the route list of the generated identity document is 14.1c's (14.1 calls the
+procedures). The
 `_user` reconcile, which writes through the adapter of 4.1 and the `membership_added`
 intent of 4.2, is task 4.2b; it was numbered 2.2b, so `045`'s reference to `043`'s task
 2.2b means task 4.2b here (`045` is not edited; this note is the mapping).
@@ -90,7 +99,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 1. Setup and coordination with `002`
 
 - [ ] 1.1 _(setup)_ The drift-check against the merged `002` was run on
-      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to eleventh drift-checks and VCDM passes (2026-10-01, 2026-10-07 and 2026-10-08) are folded in too. At
+      2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to twelfth drift-checks and VCDM passes (2026-10-01, 2026-10-07, 2026-10-08 and 2026-10-09) are folded in too. At
       implementation time this task is a last drift-check of the files the design
       names (`user-sync.ts`, `identity-router.ts`, `context-resolver.ts`,
       `token-exchange.ts`, `server.ts`, `policies/`) and adjusts import paths and
@@ -128,9 +137,14 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       (G11-2, G11-3, G11-4 and G11-6) and the eleventh drift-check's mechanical items
       (N-2 to N-5, N-5 being G11-3) need no decision and are folded into the design,
       these tasks, the Gates and the ticket TK11-1. The twelfth amendment's consistency
-      check folds its fixes into the design and these tasks with no new decision and
-      leaves the design's Open Questions 1 to 3 open until the human answers them.
-      Attach the
+      check folds its fixes into the design and these tasks with no new decision, and
+      its Open Questions 1 to 3 are resolved by Q127, Q128 (with the ticket TK12-1) and
+      Q129, and the twelfth drift-check's N12-1 by Q130 (the thirteenth amendment); the
+      twelfth pass's low gaps (G12-1, and G12-2, a residual of Q127), the twelfth
+      drift-check's mechanical items (N12-2 and N12-3) and a follow-up of G11-2 need no
+      decision and are folded into the design, these tasks, the Gates and the ticket
+      "Alerts for `010`"; a consistency check of the thirteenth amendment folds its
+      fixes into the design, the spec and these tasks with no new decision. Attach the
       reports to the PR. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded.
 - [ ] 1.3 _(setup)_ Add `@azure/communication-email` (`1.1.0`) to
@@ -322,12 +336,14 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       8.1e) nor name the subject of a hook write (Q117, 4.1e): it is the Better Auth user
       id of a human, which the membership hook passes from
       `afterAddMember({ member, user })`'s `user`, the ban hook from the row it receives
-      (`SyncUserRow.id`) and the first-sign-in hook of 4.4 from the user who signed in,
-      while the `apps/api` writers pass the id they hold; it is the `svc-…` identifier of
-      a service account (Resolved decision Q90); and it is absent only for the invitation
-      hook's `created_invited` write, which passes the optional **`invitationId`** (the
-      `invitation.id` that `afterCreateInvitation` receives) instead (Resolved decision
-      Q126; a consistency fix within it, no new decision). The port has only
+      (`SyncUserRow.id`), the first-sign-in hook of 4.4 from the user who signed in and
+      `refreshDisplayData` (4.1c, the `upsertUser` caller in `auth.ts` beside the
+      hooks) from its `account.userId`, while the `apps/api` writers pass the id they
+      hold; it is the `svc-…` identifier of a service account (Resolved decision Q90);
+      and it is absent only for the invitation hook's `created_invited` write, which
+      passes the optional **`invitationId`** (the `invitation.id` that
+      `afterCreateInvitation` receives) instead (Resolved decision Q126; a consistency
+      fix within it, no new decision). The port has only
       `upsertUser`, so a hook cannot read the current status: `afterAddMember`
       passes the intent and the adapter derives the event (4.2). In
       `@tayzu/catalog`, `UserSyncInput` in
@@ -337,7 +353,13 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       cannot import `@tayzu/auth`, so the Q30 adapter in
       `apps/api/src/identity/user-sync-adapter.ts` implements `UserSyncPort`: it
       reads the current status and the entity version, calls `nextStatus` and writes
-      the resulting status, never a raw one. `UserSyncInput` also gains an optional
+      the resulting status, never a raw one. The adapter's entry point that the
+      acceptance's `_user` step calls (8.1e) **returns the status event it wrote, or
+      none** when it wrote nothing: `invitation_accepted` or `created_active` means that
+      the attempt activated the row, which decides the existing-account admin notice of
+      8.15 (Resolved decision Q122); the hook-facing `UserSyncPort.upsertUser` stays
+      `Promise<void>` (design D2; a consistency fix within Q122, no new decision).
+      `UserSyncInput` also gains an optional
       `expectedVersion` and `createUserSync` a read path (`entities.get`, which the
       adapter uses): for an existing row the write passes the version it read as
       `expectedVersion` to `entities.upsert`, and for a missing row it is
@@ -352,7 +374,12 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       event, a concurrent `admin_disable` between the adapter's read and its write
       never being overwritten (the user stays `Disabled`), a create race for a missing
       row (`CATALOG_ALREADY_EXISTS`) being retried like a version conflict, a redundant
-      event writing nothing and a write failing closed once the retries are exhausted, and a
+      event writing nothing and a write failing closed once the retries are exhausted, the
+      acceptance's entry point, given explicit `StatusEvent` inputs, returning the status
+      event it wrote (`invitation_accepted` for an `Invited` row it activates,
+      `created_active` for a missing row it creates) and no status event for a redundant
+      event that writes nothing (its result for the `membership_added` intent, whose
+      derivation is 4.2's, is a case of 4.2), and a
       new `packages/catalog/src/service/user-sync.int.test.ts` (no test of
       `createUserSync` exists in `@tayzu/catalog` today) covers `createUserSync` with the
       four-value status, the read path, `expectedVersion` and `onBehalfOf`. Every test
@@ -437,7 +464,22 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       identifier, and its assertion at `:61-63` changes from "the request ids equal the
       candidate ids" to "the request ids are the candidates' positions and no candidate
       id appears in the request", which is stricter; the PR description calls the rewrite
-      out, as Q76 and Q77 did for theirs. `redaction.int.test.ts` stays
+      out, as Q76 and Q77 did for theirs. The catalog's `002` redaction fixture and three
+      catalog integration tests contradict Q119 the same way and are **rewritten** too
+      (Resolved decision Q130, which extends Q125), not loosened:
+      `packages/catalog/src/service/__fixtures__/redaction-authz.ts` records each
+      request's `resource.id` and answers `readable.has(resource.id)` (`:50`, `:57`), so
+      it decides by position instead, and the tests pass it the readable positions, which
+      are deterministic because `selectSpecReferrers` orders referrers by identifier
+      (`packages/catalog/src/persistence/entities-repository.ts:409-424`) and the
+      blueprint tests seed known lists; and each `batches[].ids` assertion of
+      `entities-delete.int.test.ts` (`:659`, `:683`), `blueprints.int.test.ts` (`:521`)
+      and `blueprints-update.int.test.ts` (`:321`), all in `packages/catalog/src/service/`,
+      changes from "the batch ids equal the candidate identifiers" to "the ids are
+      positions and no candidate identifier is in the request", which is stricter, while
+      their `referrers`, `notVisible` and no-leak assertions stay as they are; the PR
+      description calls out these rewrites with the one above, and the three tests pass
+      after them. `redaction.int.test.ts` stays
       green; `docs-telemetry.test.ts` stays green and `docs/catalog/catalog-core.md`
       names the placeholder for the span attribute, the audit event and the Cerbos
       resource id, and the positional ids of the referrer redaction.
@@ -469,10 +511,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `tayzu.identity.service_account.id`, a `created_invited` write whose input carries
       an `invitationId` and no `userId` naming that id as `tayzu.identity.invitation.id`
       with no `tayzu.identity.user.id`, an input's `userId` becoming
-      `tayzu.identity.user.id`, a membership added through an `auth` built with the
-      adapter naming its user's Better Auth id from `afterAddMember`'s `user` (the ban
-      hook's and the first sign-in's are cases of 4.5 and 4.4), and no email in any
-      attribute.
+      `tayzu.identity.user.id` (the membership hook's, the ban hook's and the first
+      sign-in's are cases of 4.2, 4.5 and 4.4), and no email in any attribute.
 - [ ] 4.2 `afterAddMember` is the **single writer** for a membership (Resolved
       decisions Q11 and Q76, design D2), except for the acceptance's own member (the
       `(tenantId, userId)` that the acceptance's shared context carries, Resolved
@@ -488,10 +528,19 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       and never throws on a second write. For a member whose Better Auth user is
       `banned` and who has no row, the adapter writes `created_active` and then
       `admin_disable`, keeping the `Disabled` it writes for a banned member today
-      (Resolved decision Q62). Verify: `auth-hooks.int.test.ts` covers "A disabled
+      (Resolved decision Q62). The hook passes as the port's `userId` the Better Auth id
+      of `afterAddMember`'s `user` (4.1), and the acceptance's entry point of 4.1, which
+      the acceptance's `_user` step calls with the same intent (8.1e), returns the event
+      that this derivation wrote, or none. Verify: `auth-hooks.int.test.ts` covers "A disabled
       user is not revived by a hook" and one case per current status (none,
       `Invited`, `Staged`, `Active`, `Disabled`), asserting the event written or the
-      absence of a write, and a banned member with no row ending `Disabled`.
+      absence of a write, a banned member with no row ending `Disabled`, and, under an
+      in-memory log exporter, a membership added through an `auth` built with the adapter
+      naming its user's Better Auth id from `afterAddMember`'s `user` as
+      `tayzu.identity.user.id` (4.1e); and `user-sync.int.test.ts` (in `apps/api`) covers
+      the acceptance's entry point, given the `membership_added` intent, returning
+      `invitation_accepted` for an `Invited` row it activates, `created_active` for a
+      missing row it creates and no status event for an `Active` row it leaves as it is.
 - [ ] 4.1b `createApp` builds the adapter of 4.1 and passes it to `createAuth` as
       `userSync` (today it passes none, so every status hook is a no-op in the running
       app). It runs after 4.2, whose derivation of the `membership_added` intent the
@@ -685,7 +734,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       and passes the adapter as `userSync`, so the hook writes the `_user` (4.6;
       `002` left this as a follow-up). It therefore needs `DATABASE_URL` (the
       `tayzu_app` pool), `AUTH_DATABASE_URL`, `CERBOS_ADDRESS` and the allowed
-      origins, and it starts through the helper of 2.0. It also requires the operator's
+      origins, and it starts through the helper of 2.0 and declares the roles
+      `tayzu_auth` (the `AUTH_DATABASE_URL` pool) and `tayzu_app` (the `DATABASE_URL`
+      pool) for its role assertion. It also requires the operator's
       opaque id (Resolved decision Q116; design D9), read through `script-config.ts`
       (2.0b) under the same name as the reconcile's, `TAYZU_OPERATOR_ID`, and validated
       against the same id pattern (`[A-Za-z0-9_.:-]{1,128}`, never an email), and refuses to run without
@@ -722,8 +773,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `catalog.audit.user_created` (source `bootstrap`) and
       `catalog.audit.user_status_changed` carrying it as `tayzu.identity.operator.id` and
       no `tayzu.actor.id`, that a run with no operator id, or with an email as the
-      operator id, is refused before any write, and that `packages/auth` contains neither
-      the script nor its package script;
+      operator id, is refused before any write, that a run whose pool connects as a role
+      it did not declare is refused before any write, and that `packages/auth` contains
+      neither the script nor its package script;
       `zap-seed.test.ts` covers the seed using the moved CLI, its four variables and the
       operator id,
       and `--refresh` still parsing with `DATABASE_URL=unused`
@@ -1032,7 +1084,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       non-sending sender neither retains nor logs the message, the link or the
       token.
 - [ ] 6.5b A wrapper around the real sender refuses a recipient whose domain is not on
-      the allowlist of 6.5 (Resolved decision Q67): the refusal is sanitized, is
+      the allowlist of 6.5, wherever it is set (Resolved decisions Q67 and Q99): the
+      refusal is sanitized, is
       handled exactly like a provider failure and logs
       `catalog.security.email_recipient_blocked` (declared in 15.1) with the template
       and no address. Verify: `email-allowlist.test.ts` covers a recipient on the list
@@ -1256,10 +1309,13 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `user.invite`, resolving the invitation on the server and cancelling through
       Better Auth's `cancelInvitation` with the same forwarded session headers (it is
       session-bound too). It skips an invitation that is not `pending`, which 8.10 adds
-      once 8.3 marks an accepted invitation (Resolved decision Q123); what that skipped
-      cancel answers is the design's Open Question 3 and how the window of its `pending`
-      check is treated is its Open Question 2 (twelfth amendment), so this task is not
-      ticked before both answers are applied. Verify:
+      once 8.3 marks an accepted invitation (Resolved decision Q123): such a cancel is
+      refused like the resend of 7.7, with `CATALOG_VALIDATION_FAILED` and the same
+      fixed message, changes nothing and logs nothing (Resolved decision Q129; design D4
+      "Resend"), and a missing or foreign invitation still answers `CATALOG_NOT_FOUND`
+      (D14). The window between its `pending` read and the acceptance's `accepted` write
+      is a documented residual with no race case (Resolved decision Q128; design Risks,
+      ticket TK12-1). Verify:
       `invitations.int.test.ts` covers "Admin can cancel a pending invitation".
 - [ ] 7.7 `identity.users.resendInvitation` issues a **new** token (the old one
       stops working), keeps the original expiry and sends one email, and does **not**
@@ -1267,7 +1323,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       to now + 48 hours. Its response never carries the token or the link, and it sends
       through the gate of 6.5c. It refuses an invitation that is not `pending` with
       `CATALOG_VALIDATION_FAILED` and one fixed message (design D4 "Resend"), which 8.10
-      adds once 8.3 marks an accepted invitation (Resolved decision Q123). Verify: `invitations.int.test.ts` covers "Resending
+      adds once 8.3 marks an accepted invitation (Resolved decision Q123); the window
+      between its `pending` read and the acceptance's `accepted` write is a documented
+      residual with no race case (Resolved decision Q128). Verify: `invitations.int.test.ts` covers "Resending
       issues a new link and keeps the expiry", asserting the invitation's `expiresAt`
       is unchanged after the resend, the old token no longer verifies and the response
       carries neither the token nor the link.
@@ -1439,7 +1497,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       Resolved decision Q122), and set `emailVerified`) and **consume the token last**
       (the delete conditioned on its digest, which 8.3 puts in one short `tayzu_auth`
       transaction with the invitation's `accepted` write, Resolved decision Q123); on the
-      new-account path the admin notice of 8.15 follows that commit. The flow sets the acceptance's shared context
+      new-account path the admin notice of 8.15 follows that commit or a consumption that
+      changes no row, whether or not the attempt's own `_user` step activated the row,
+      and a compensated failure sends none (Resolved decision Q127). The flow sets the acceptance's shared context
       (`apps/api/src/identity/identity-context.ts`) on both paths, inside which
       `afterAddMember` makes **no** `_user` write (Resolved decision Q112) for the
       acceptance's own member: the context carries the acceptance's `(tenantId,
@@ -1493,9 +1553,9 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       cannot tell that case from a token delete that removes zero rows because a
       concurrent resend replaced the digest (Q122), or from an `accepted` write that
       changes no row because a concurrent cancellation committed first (Q123), where no
-      attempt won, so it handles them all alike and the join stands (design Risks;
-      whether a new-account attempt then sends the admin notice is the design's Open
-      Question 1, twelfth amendment); it answers the uniform rejection
+      attempt won, so it handles them all alike and the join stands (design Risks; on the
+      new-account path the attempt then still sends the admin notice of 8.15, because its
+      consumption undid nothing, Resolved decision Q127); it answers the uniform rejection
       (`CATALOG_NOT_FOUND`) and logs `catalog.security.invitation_acceptance_denied`
       with the reason `consume_conflict` (design D4 steps 4 and 5; declared in 15.1),
       not the sanitized generic error of the other failures after the `_user` step. The
@@ -1530,7 +1590,12 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       resend replaced the digest after the `_user` step (a seam) being handled as a lost
       race: the attempt answers the uniform rejection with the reason `consume_conflict`,
       deletes nothing and keeps the membership and the `Active` `_user`, and an
-      acceptance with the resent token completes; the acceptance's
+      acceptance with the resent token completes; on the new-account path the same seam
+      after the `_user` step leaving the user, the membership and the `Active` `_user` in
+      place (nothing compensated), answering the uniform rejection with the reason
+      `consume_conflict` and running the slot for the admin notice after that zero-row
+      consumption, while a new-account failure that is compensated does not run it (the
+      recording seam; the notice itself is 8.15's case, Resolved decision Q127); the acceptance's
       `_user` step writing with the invitee's Better Auth user id as `onBehalfOf` on both
       paths, its `catalog.audit.user_status_changed` naming the invitee; and "The
       acceptance holds back only its own member's hooks": a test-only seam that adds,
@@ -2066,15 +2131,16 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       fails", using a clock seam to advance past 48 hours.
 - [ ] 8.10 A cancelled or already-accepted invitation fails, and a wrong token
       leaves the invitation `pending`. An accepted invitation, which 8.3 marks
-      `accepted`, is skipped by resend (7.7) and cancel (7.6), which read its status
+      `accepted`, and a cancelled or rejected one are skipped by resend (7.7) and cancel
+      (7.6), which read its status
       through the repository of 5.1b and act only on a `pending` invitation (Resolved
       decision Q123; Better Auth's `cancelInvitation` does not check the status), and it
       no longer counts toward the 100 pending invitations of 7.12. The status read is not
-      atomic with the `accepted` write of 8.3; how that window is treated is the design's
-      Open Question 2 (twelfth amendment), whose answer may add a race case here, and what
-      the skipped cancel answers is its Open Question 3, so this task is not ticked before
-      both answers are applied. The refused resend answers `CATALOG_VALIDATION_FAILED`
-      with one fixed message (design D4 "Resend"). Verify:
+      atomic with the `accepted` write of 8.3; that window is a documented residual and
+      adds no race case here (Resolved decision Q128; design Risks, ticket TK12-1). The
+      refused resend answers `CATALOG_VALIDATION_FAILED` with one fixed message (design
+      D4 "Resend"), and the refused cancel answers the same code with the same message,
+      changing nothing and logging nothing (Resolved decision Q129). Verify:
       `invitation-accept.int.test.ts`
       covers "Accepting a cancelled or already-accepted invitation fails" (the accepted
       one denied with the reason `already_accepted`) and "A
@@ -2082,8 +2148,14 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       not resent or cancelled": after an acceptance, a resend is refused with
       `CATALOG_VALIDATION_FAILED`, its fixed message and no provider text, with no new
       token row, no email to the recording fake and no `catalog.audit.invitation_resent`,
-      an explicit cancel changes nothing and logs no `catalog.audit.invitation_cancelled`,
-      the invitation staying `accepted` throughout, and an organization holding 99
+      an explicit cancel is refused with `CATALOG_VALIDATION_FAILED` and the same fixed
+      message, with no provider text, changes nothing and logs nothing (no
+      `catalog.audit.invitation_cancelled` and no other log event of the cancel), the
+      invitation staying `accepted` throughout, the same two refusals, with nothing
+      changed and nothing logged, for an invitation already `cancelled` by an earlier
+      cancel and for one seeded directly as `rejected` (Resolved decisions Q123 and
+      Q129), a cancel of a missing or foreign invitation still answering
+      `CATALOG_NOT_FOUND`, and an organization holding 99
       pending invitations and that accepted one (seeded directly) still allowing a new
       invitation, its 100th pending one.
 - [ ] 8.11 A pending invitation of a user who was disabled afterward does not
@@ -2121,14 +2193,15 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       blocks the acceptance and logs `catalog.security.admin_notice_failed`, and a
       suppression logs `catalog.security.notice_suppressed`. **When** it is sent depends
       on the path (Resolved decision Q122; design D4 step 6): on the existing-account path
-      the attempt whose `_user` step activated the row sends it in the slot that 8.1e
+      the attempt whose `_user` step activated the row (the adapter's entry point of 4.1
+      returning `invitation_accepted` or `created_active`; on no status event it sends
+      none) sends it in the slot that 8.1e
       runs right after that step, before the `emailVerified` write and the consumption of
       the token, and a retry, whose `_user` step writes nothing, sends none; on the
-      new-account path it is sent after the acceptance commits (the token consumed),
-      because a failure there still compensates the whole join. Whether a new-account
-      attempt whose consumption changes no row after its `_user` step (8.1e) also sends it
-      is the design's Open Question 1 (twelfth amendment), whose answer may add a case
-      here, so this task is not ticked before that answer is applied. Verify:
+      new-account path it is sent after the acceptance commits (the token consumed), or
+      when the consumption changes no row (8.1e), which compensates nothing, whether or
+      not the attempt's own `_user` step activated the row, and a failure that is
+      compensated sends none (Resolved decision Q127; design D4 step 6). Verify:
       `invitation-accept-notice.int.test.ts` covers "An accepted admin invitation
       notifies the other admins" with the recording fake (an owner, two admins other
       than the invitee and a `Disabled` admin each receive exactly one email, a plain member and the invitee
@@ -2136,15 +2209,22 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       acceptance; "A failure after the `_user` step has already notified the other
       admins": an existing-account `admin` acceptance whose attempt fails at the
       `emailVerified` write (a failure seam) having already sent exactly one notice per
-      recipient, with no retry needed, and a retry with the same token completing the
-      acceptance with no second notice, while a new-account `admin` acceptance whose
+      recipient, with no retry needed, and a retry with the same token, whose `_user`
+      step returns no status event, completing the acceptance with no second notice, while a new-account `admin` acceptance whose
       attempt fails and is compensated sends none and its retry that commits sends one;
       and "A token replaced by a concurrent resend leaves nothing owed": an
       existing-account `admin` attempt whose token delete removes zero rows because a
       resend replaced the digest after its `_user` step (a seam) having already sent the
       notice and answering the uniform rejection with the reason `consume_conflict`, the
       invitation staying `pending`, and the acceptance with the resent token completing
-      with no second notice.
+      with no second notice; and "A new-account join whose token was replaced by a
+      concurrent resend notifies the other admins" (Resolved decision Q127): a
+      new-account `admin` attempt whose token delete removes zero rows because a resend
+      replaced the digest after its `_user` step (a seam) answering the uniform rejection
+      with the reason `consume_conflict` and sending exactly one notice per recipient,
+      and the acceptance with the resent token (which runs the existing-account path,
+      the account now existing) completing with no second notice, while a new-account
+      `admin` attempt that fails and is compensated sends none.
 
 ## 9. Org API credentials: viewer, create, rotate and revoke
 
@@ -2225,10 +2305,11 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       and has no server-side `userId`, so the read is an adapter-level query,
       through the repository of 5.1b, of the `apikey` table filtered by `referenceId
       = ctx.tenantId` and the `machine-credential` `configId`. The page is at most
-      **200** entries, the credential cap of 9.5d, with the non-revoked credentials
-      listed before the revoked ones and `truncated: true` when revoked ones were
-      left out, so no credential a tenant can hold is hidden from an admin who needs
-      to revoke it (a tenant holds at most 200 non-revoked). `apikey.metadata` is a
+      the configured credential cap of 9.5d (**200** by default), with the
+      non-revoked credentials listed before the revoked ones and `truncated: true`
+      when revoked ones were left out, so no credential a tenant can hold is hidden
+      from an admin who needs to revoke it (a tenant holds at most the cap of
+      non-revoked ones). `apikey.metadata` is a
       `text` column in SQL, but the adapter returns an object because of the
       plugin's `transform.output` (a raw SQL read returns text), so the
       `metadata.userId` and `actorKind` filters are an application-side filter over
@@ -2239,7 +2320,8 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       Verify: `credentials.int.test.ts` covers "Listing never includes the secret",
       "Non-admin cannot list credentials", the page limit applying, a tenant with
       200 non-revoked and 30 revoked credentials listing all 200 non-revoked ones
-      with `truncated` set, an `id` in each entry equal to the key's opaque `apikey` id
+      with `truncated` set, with the cap configured to a value other than 200 every
+      non-revoked credential up to that cap being listed, an `id` in each entry equal to the key's opaque `apikey` id
       (that `rotate` accepts it is 9.6's case), `createdBy`
       being the creating admin's opaque id, the adapter's `metadata` shape (an
       object) being pinned by an assertion while the reader accepts both an object
@@ -2435,7 +2517,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `_user` row does not raise the principal".
 - [ ] 10.7 `identity.serviceAccounts.delete`: revokes **every** non-revoked
       `apikey` with `referenceId = ctx.tenantId` and `metadata.userId` equal to the
-      service account's `svc-…` identifier (Q90) through the revocation list (found by the paged adapter-level lookup of 9.11, never limited like the viewer, not only "the" credential), after the target has been resolved by the service-account resolver of 10.7b, then removes the
+      service account's `svc-…` identifier (Q90) through the revocation list (found by the paged adapter-level lookup of 9.11, never limited like the viewer, not only "the" credential), after the target has been resolved through the service-account resolver of 10.7b once that exists (a lookup of the same shape through the target helper of 5.2 until then; the refusal of a human target is 10.7b's case), then removes the
       `_user` entity as `system` with `onBehalfOf` the admin (Resolved decision Q40), with
       `detachReferences`, because a relation that targets the `_user` is a `RESTRICT`
       foreign key (`catalog_entity_relation_target_fk`) that would otherwise fail the
@@ -3310,10 +3392,13 @@ SSO surfaces of M18) are recorded there with their justification.
       retention policy and the erasure statement of org deletion): the credential
       rotation cadence; the invitation caps, what their windows mean (a bucket resets
       only after a full window with no allowed request, Resolved decision Q66) and the
-      cross-tenant denial-of-invitation trade-off; the email policy (the
-      recipient-domain allowlist, Resolved decisions Q67 and Q96, the explicit
-      `EMAIL_PROVIDER`, and ACS data location and retention) and the demo-tenant
-      provisioning runbook, which adds each demo tenant to `EMAIL_DISABLED_TENANT_IDS`
+      cross-tenant denial-of-invitation trade-off; that the kill switch is an
+      environment variable, so flipping it needs a new app revision (the emergency flip
+      is in `docs/security/secrets.md`, 16.8); the email policy (the
+      recipient-domain allowlist, mandatory only for a real provider under
+      `NODE_ENV=test` and honored wherever it is set, Resolved decisions Q67, Q96 and
+      Q99, the explicit `EMAIL_PROVIDER`, and ACS data location and retention) and the
+      demo-tenant provisioning runbook, which adds each demo tenant to `EMAIL_DISABLED_TENANT_IDS`
       (Resolved decision Q80); the `_user` reconcile as the repair for a member rejected
       with `user_missing`, and the operator-started job that runs it (design D9), with its
       orphan rule: an `Active` human `_user` with no membership is removed only once its
@@ -3427,7 +3512,7 @@ SSO surfaces of M18) are recorded there with their justification.
       the audit step runs with `--prod`.
       Verify: attach the command output to the PR description.
 - [ ] 16.10 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
-      implemented code, and resolve or explicitly defer every blocking gap (the eleven
+      implemented code, and resolve or explicitly defer every blocking gap (the twelve
       passes folded into this change before implementation are listed in 1.2).
       Verify: the report is attached to the PR with zero open blocking gaps.
 - [ ] 16.11 Run `/security-review` on the branch and fix or justify every

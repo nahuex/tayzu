@@ -214,7 +214,7 @@ the user's sessions whose active organization is that tenant (logging each as
 `auth.security.session_revoked` with the reason `admin_action`), cancel the
 user's pending invitations of that tenant, and cancel the pending invitations that
 user created in that tenant, skipping any invitation that is no longer `pending`, such
-as an accepted one. Only for a user whose single membership
+as an accepted one, except for a cancellation that races the consumption (Risks). Only for a user whose single membership
 is that tenant MUST it also ban the user and revoke all their sessions. The ban
 MUST NOT use Better Auth's admin-plugin ban routes, which the global role `user`
 cannot call. `resolveContext` MUST reject a banned user (reason `user_banned`), and MUST admit a human only
@@ -338,11 +338,14 @@ invitation on the server and MUST apply only to an invitation of the caller's
 tenant. Only a `pending`, non-expired invitation MUST be acceptable. An accepted
 invitation MUST reach the state `accepted` together with the consumption of its token,
 and not before. Resending and cancelling, and the cancellations that disabling a user
-makes, MUST skip an invitation whose stored state is not `pending` (an accepted,
-cancelled or rejected one): a resend of it MUST be
-refused with `CATALOG_VALIDATION_FAILED`, without a new token or an email, and a
-cancellation of it MUST change nothing and log nothing. An accepted invitation MUST NOT count toward the per-organization limit
-of pending invitations. Creating a user
+or creating one makes, MUST skip an invitation whose stored state is not `pending` (an
+accepted, cancelled or rejected one), except for a cancel or resend that races the
+consumption (Risks): a resend of it and an admin's cancel of it MUST be refused with
+`CATALOG_VALIDATION_FAILED` and the same fixed message, the resend without a new token
+or an email, and a cancellation of it MUST change nothing and log nothing; a cancellation
+that disabling or creating a user makes MUST only skip it, and a missing invitation or
+one of another tenant MUST still answer `CATALOG_NOT_FOUND`. An accepted invitation MUST
+NOT count toward the per-organization limit of pending invitations. Creating a user
 through `identity.users.create` for an email that has a `pending` invitation in the
 caller's tenant MUST cancel that invitation, with the reason `user_created`, once the
 user and the membership exist, and MUST leave an invitation of another tenant untouched.
@@ -390,8 +393,8 @@ user and the membership exist, and MUST leave an invitation of another tenant un
 #### Scenario: An accepted invitation is not resent or cancelled
 
 - **GIVEN** an invitation to `bob@example.com` that `bob` has accepted
-- **WHEN** the admin resends it, and then cancels it
-- **THEN** the resend is refused with `CATALOG_VALIDATION_FAILED`, no token is issued and no email is sent, the cancel changes nothing, the invitation stays `accepted`, and neither `catalog.audit.invitation_resent` nor `catalog.audit.invitation_cancelled` is logged
+- **WHEN** the admin resends it, and then cancels it, neither of them racing the consumption (Risks)
+- **THEN** the resend is refused with `CATALOG_VALIDATION_FAILED`, no token is issued and no email is sent, the cancel is refused with `CATALOG_VALIDATION_FAILED` and the same fixed message and changes nothing, the invitation stays `accepted`, and neither `catalog.audit.invitation_resent` nor `catalog.audit.invitation_cancelled` is logged
 - **AND** the accepted invitation does not count toward the organization's limit of pending invitations
 
 #### Scenario: An address the platform cannot hold is rejected
@@ -503,8 +506,17 @@ per-tenant notice caps and at most 20 recipients); a send failure MUST NOT block
 acceptance and MUST be logged. On the existing-account path the notice MUST be sent by
 the attempt whose `_user` step activated the member, as soon as that step has run and
 before the email is marked verified and the token is consumed, and a retry MUST NOT send
-a second one; on the new-account path it MUST be sent only once the acceptance has
-committed, so that an attempt that is undone sends none.
+a second one; on the new-account path it MUST be sent once the acceptance has committed,
+or when the consumption changes nothing (which undoes nothing), whether or not the
+attempt's own `_user` step activated the member, and an attempt that is undone MUST send
+none; the only exceptions are three residuals recorded in the design's Risks: a crash
+between the step after which the notice is owed and the notice, which loses it, an
+attempt undone on the new-account path whose retry runs the existing-account path,
+because an account for the email was created meanwhile, which sends no notice (the undone
+attempt sends none and the retry's `_user` step activates nothing), and a new-account
+attempt and a concurrent existing-account attempt of the same invitation (the invitee
+signing in with the password the first attempt set, before that attempt's `_user` step),
+which can each send the notice, a harmless duplicate.
 
 #### Scenario: A new person accepts and can then sign in
 
@@ -560,7 +572,7 @@ committed, so that an attempt that is undone sends none.
 - **GIVEN** a pending `admin` invitation to `carol@example.com`, who has an account, a session and a fresh step-up verification, in an organization with two other admins, and an attempt that fails after her `_user` was activated
 - **WHEN** `carol` presents the token, and the attempt fails, whether or not she retries it with the same token
 - **THEN** each other admin has already received exactly one notice, sent by the failed attempt right after it activated her `_user`, and a retry that completes the acceptance sends no second notice
-- **AND** on the new-account path an attempt that fails and is undone sends no notice, and the retry that completes the acceptance sends it once
+- **AND** on the new-account path an attempt that fails and is undone sends no notice, and a new-account retry that completes the acceptance sends it once
 
 #### Scenario: A token replaced by a concurrent resend leaves nothing owed
 
@@ -568,6 +580,13 @@ committed, so that an attempt that is undone sends none.
 - **WHEN** the attempt consumes its token and the delete changes nothing
 - **THEN** the attempt fails as a lost race, answering the uniform rejection with the reason `consume_conflict`, and deletes nothing, the session that carried it is already revoked and the other admins already notified, and the invitation stays `pending`
 - **AND** an acceptance with the resent token completes it, revokes nothing more and sends no second notice
+
+#### Scenario: A new-account join whose token was replaced by a concurrent resend notifies the other admins
+
+- **GIVEN** a pending `admin` invitation to `dave@example.com`, who has no account, in an organization with two other admins, and a resend of the same invitation that replaces the token after the attempt's `_user` step and before its consumption
+- **WHEN** `dave` presents the invitation id, the original token and a policy-compliant password, and the consumption changes nothing
+- **THEN** the attempt answers the uniform rejection with the reason `consume_conflict` and deletes nothing, and each other admin receives exactly one notice
+- **AND** an acceptance with the resent token, which finds the account the first attempt created and so takes the existing-account path, completes it and sends no second notice
 
 #### Scenario: A replayed acceptance is recorded as already accepted
 

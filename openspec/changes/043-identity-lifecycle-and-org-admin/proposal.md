@@ -42,9 +42,11 @@ and executes after `044` (`002 -> 043 -> 044 -> 045 -> 003`).
   invitation record (48-hour expiry); resend and cancel; a state-machine guard
   so accepting an expired, cancelled, rejected or already-accepted invitation always fails, with
 indistinguishable error responses across every rejection reason. The acceptance marks
-the invitation `accepted` together with the consumption of its token, so an accepted
-invitation is never resent or cancelled (by an admin or by a disable) and no longer
-counts toward the per-organization pending limit. An invitation does
+the invitation `accepted` together with the consumption of its token, so a resend or an
+admin's cancel of an accepted invitation is refused with `CATALOG_VALIDATION_FAILED` and
+changes nothing, a disable's cancellations skip it, and it no longer counts toward the
+per-organization pending limit, except for a cancel or resend that races the
+consumption, a documented residual whose structural fix is a ticket. An invitation does
 not outlive its inviter's authority: acceptance fails unless the inviter is still an
 active, non-banned member whom Cerbos still allows to invite, and disabling a user
 cancels the invitations they created. Creating a user for an email with a pending
@@ -57,9 +59,14 @@ invitation in the tenant cancels that invitation.
   with a breached-password check. A person who already has an account accepts with
   their own session plus the token (CSRF header, its own origin check, matching
   email, step-up for an `admin` role) and only gains the membership. Every other
-  admin is notified when an `admin` invitation is accepted, once: for an existing
+  admin is notified when an `admin` invitation is accepted, once (a concurrent second
+  attempt can duplicate it, Risks): for an existing
   account by the attempt that activates the member, as soon as it does, and for a new
-  account once the acceptance has committed. The steps of the acceptance
+  account once the acceptance has committed or its token consumption has changed no row
+  (which undoes nothing), never by an attempt that is undone (two residuals that lose it
+  are documented in the design's Risks: a crash before the notice loses it, and an undone
+  new-account attempt whose retry runs the existing-account path, because an account for
+  the email was created meanwhile, sends none). The steps of the acceptance
   are idempotent, the token is consumed last, the `_user` write fails closed and what
   a failed attempt created is undone (except after a lost race to consume the token, a
   token delete or `accepted` write that changes no row, which undoes nothing on either
@@ -178,8 +185,9 @@ mail. A second fixed template tells the other admins of an accepted
   auth events; no identifier in a URL path reaches telemetry (the catalog routes of the
   `_user` blueprint included), and no catalog span, catalog audit event or catalog
   request to Cerbos carries a `_user` identifier (a fixed placeholder replaces it, and the
-  referrer redaction sends positional ids, which rewrites one existing `002` unit test
-  to a stricter assertion, called out in the PR). Every audit event names the principal who
+  referrer redaction sends positional ids, which rewrites one unit test, the catalog
+  redaction fixture and three integration tests of `002` to stricter assertions, called
+  out in the PR). Every audit event names the principal who
   acted: the admin, the invitee of an acceptance, the user of their own first sign-in,
   or the operator's opaque id for the reconcile and the bootstrap, which requires it, and
   none for a status change that mirrors a ban; every status change is logged, by any
@@ -252,8 +260,8 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   `packages/auth/src/auth.ts` (the `organization` roles, the password configuration, the
   membership, ban, first-sign-in and account hooks, the uniform banned sign-in and
   the transaction-free acceptance support), `context-resolver.ts`, `token-exchange.ts`
-  and `pre-auth-rate-limit.ts` (the resolver checks, the `userId` claim and the new
-  rate-limit scopes), `session-idle.ts` and the package index (`isIdle`),
+  and `pre-auth-rate-limit.ts` (the resolver checks and the `toCerbosRole` export, the
+  `userId` claim and the new rate-limit scopes and helper), `session-idle.ts` and the package index (`isIdle`),
   `machine-credentials.ts` (headerless calls), `apps/api/src/server.ts`, `config.ts`,
   `bootstrap.ts`, `identity-router.ts` and `telemetry.ts` (the merged router, the new
   settings, the `createAppFromEnv` refusal, the runtime-role assertion and the
@@ -265,7 +273,9 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   `AuthRateLimitedError` and its `Retry-After`), `packages/catalog/src/domain/limits.ts`
   and `identifiers.ts` (one exported `ENTITY_IDENTIFIER_PATTERN`), the `@tayzu/auth`
   fixture `packages/auth/src/__fixtures__/admin-user.ts` (it gains a `tayzu_app` pool
-  parameter), a new `scripts/ci/dast-coverage.ts` (the DAST scan's 2xx check),
+  parameter), the `@tayzu/catalog` fixture
+  `packages/catalog/src/service/__fixtures__/redaction-authz.ts` (it decides by
+  position, Q130), a new `scripts/ci/dast-coverage.ts` (the DAST scan's 2xx check),
   `eslint.config.js` and a new restriction module, `vitest.shared.ts` and `turbo.json`
   (the breached-password stub), the test harness `packages/db/src/harness.ts`,
   `packages/catalog/src/persistence/schema.ts`, `.github/dependabot.yml`, and ADR-0013.
@@ -315,15 +325,20 @@ multi-org UX (`042`), and org deletion with data retention (`045`).
   non-blocking ones (G10-1 to G10-4, among them `_user` emails in Cerbos's decision log),
   and an eleventh pass that found six non-blocking ones (G11-1 to G11-6, among them an
   accepted invitation that stayed `pending`, and a `_user` referrer's identifier still
-  sent to Cerbos by a delete's referrer check).
+  sent to Cerbos by a delete's referrer check), and a twelfth pass that found two
+  non-blocking ones (G12-1 and G12-2: no alert on a token consumption that changes no
+  row, which keeps a join whose acceptance never committed, and no admin notice for a
+  compensated new-account attempt whose retry runs the existing-account path, a
+  documented residual of Q127).
   All are folded into
   `design.md` under "Security considerations", into the spec and into the tasks, except
   the org-deletion gaps, which moved to `045` with Q103 and are closed there. Three
   questions that a consistency check of the eleventh amendment raised (the admin notice
   of a new-account join whose token consumption changes no row, the window between
   the `pending` check of resend and cancel and the acceptance, and what an admin's
-  cancel of an invitation that is not `pending` answers) are open in `design.md`
-  until the human answers them.
+  cancel of an invitation that is not `pending` answers) were answered by Q127, Q128
+  (a documented residual, with a ticket for the structural fix) and Q129, and no
+  question is open.
   New surface: the first public route, the first outbound email and the Pwned
   Passwords egress.
 - **Docs**: `docs/security/data-retention.md` (new, for the operational policies; `045`
