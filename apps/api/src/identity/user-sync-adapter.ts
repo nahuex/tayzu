@@ -14,6 +14,8 @@ import {
 } from '@tayzu/auth';
 import type { UserSync, UserReadModel } from '@tayzu/catalog';
 
+import { currentIdentityContext } from './identity-context.js';
+
 /** Retries after the first attempt (Q83). */
 const MAX_RETRIES = 3;
 
@@ -126,7 +128,17 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
     }
   }
 
-  async function writeUserChange(input: UpsertInput): Promise<StatusEvent | undefined> {
+  async function writeUserChange(rawInput: UpsertInput): Promise<StatusEvent | undefined> {
+    // A hook write inside an admin's operation is attributed to that admin (Q10, Q117).
+    const admin = currentIdentityContext();
+    const input: UpsertInput =
+      admin === undefined || rawInput.onBehalfOf !== undefined || rawInput.principal !== undefined
+        ? rawInput
+        : {
+            ...rawInput,
+            onBehalfOf: { type: 'user', id: admin.adminId },
+            principal: { kind: 'admin', id: admin.adminId },
+          };
     const { change } = input;
     if (change === undefined) {
       // Display data and role only: no status is written, and a member with no

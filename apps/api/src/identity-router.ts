@@ -15,13 +15,10 @@
 import { randomBytes } from 'node:crypto';
 
 import { os, type Route } from '@orpc/server';
-import {
-  emitAccountLinkEvent,
-  wouldLeaveNoSignInMethod,
-  type AuthInstance,
-  type UserSyncPort,
-} from '@tayzu/auth';
+import { emitAccountLinkEvent, wouldLeaveNoSignInMethod, type AuthInstance } from '@tayzu/auth';
 import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
+
+import { runWithIdentityContext } from './identity/identity-context.js';
 
 /** Same code and message as the catalog's `AuthorizationError` (design D11). */
 class IdentityForbiddenError extends Error {
@@ -77,11 +74,6 @@ class IdentityInputError extends Error {
 export interface CreateIdentityRouterOptions {
   readonly auth: AuthInstance;
   readonly authz: CerbosClient;
-  /**
-   * Task 18.5 (design D22): upserts the created user's `_user` entity through
-   * the `system` actor path, directly and not through a Better Auth hook.
-   */
-  readonly userSync?: UserSyncPort;
 }
 
 export interface CreateUserInput {
@@ -284,24 +276,25 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           await assertMayOnUser(options.authz, context, 'create', 'new');
           const input = parseInput(rawInput);
           const temporaryPassword = generateTemporaryPassword();
-          const { user } = await userApi.createUser({
-            body: {
-              name: input.name,
-              email: input.email,
-              password: temporaryPassword,
-              role: GLOBAL_USER_ROLE,
-            },
-          });
-          // Same operation: the org plugin's member hooks keep syncing `_user`.
-          await userApi.addMember({
-            body: { userId: user.id, role: input.role, organizationId: rawTenantId(context) },
-          });
-          await options.userSync?.upsertUser({
-            tenantId: rawTenantId(context),
-            email: user.email,
-            name: input.name,
-            portRole: input.role === 'admin' ? 'admin' : 'member',
-            change: { intent: 'membership_added', banned: false },
+          const adminId = (context['actor'] as { id: string }).id;
+          // The membership hook is the single `_user` writer; it reads the admin from the store (Q76, Q117).
+          const { user } = await runWithIdentityContext({ adminId }, async () => {
+            const created = await userApi.createUser({
+              body: {
+                name: input.name,
+                email: input.email,
+                password: temporaryPassword,
+                role: GLOBAL_USER_ROLE,
+              },
+            });
+            await userApi.addMember({
+              body: {
+                userId: created.user.id,
+                role: input.role,
+                organizationId: rawTenantId(context),
+              },
+            });
+            return created;
           });
           return { userId: user.id, email: user.email, temporaryPassword };
         }),

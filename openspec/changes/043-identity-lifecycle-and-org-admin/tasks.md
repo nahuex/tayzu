@@ -662,7 +662,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       seam); and a run whose
       `CERBOS_ADDRESS` is unreachable creating and removing no `_user` row (the pipeline
       fails closed).
-- [ ] 4.3 `identity.users.create` performs **no** `_user` write of its own: the hook
+- [x] 4.3 `identity.users.create` performs **no** `_user` write of its own: the hook
       of 4.2 writes it (today the operation writes twice, through the hook and
       through an explicit upsert, and the second write would throw because
       `created_active` is allowed only from none). The operation hands the acting

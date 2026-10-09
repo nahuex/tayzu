@@ -217,29 +217,24 @@ describe('Better Auth hooks upsert the matching `_user` entity (task 12.2)', () 
 });
 
 /**
- * Task 18.5 (design D22): `identity.users.create` and the bootstrap script
- * upsert the `_user` entity themselves through the `system` actor path, no
- * longer relying on a Better Auth hook.
+ * Task 18.5 (design D22), rewritten by task 4.3 of change 043 (Resolved decision
+ * Q76): the `_user` entity is written only by the Better Auth membership hook,
+ * which reverses 002 task 18.5's direct writes. `identity.users.create` and the
+ * bootstrap script no longer upsert the `_user` themselves.
  *
- * ## Production symbols assumed (task 18.5, none exist yet)
+ * ## Production symbols assumed
  *
- * - `createIdentityRouter({ auth, authz, userSync })` takes a `UserSync`
- *   (`@tayzu/catalog`'s `createUserSync`) and, after `auth.api.createUser`
- *   succeeds, calls `userSync.upsertUser({ tenantId: context.tenantId, email,
- *   name, status: 'Active', ... })`, so a `_user` entity exists in the
- *   caller's tenant. The `portRole` mapping of the input `role` is not
- *   asserted (the spec leaves it open).
- * - `bootstrapAdmin(auth, params, { userSync })` takes an optional third
- *   argument carrying a `UserSync`; after creating the organization it
- *   upserts the first admin's `_user` entity (`status` `Active`, `portRole`
- *   `admin`) in that organization's tenant.
- *
- * To prove the wiring is direct and not the Better Auth hook, the `auth`
- * instance below is built WITHOUT `userSync`, so no hook can create the entity.
+ * - `createAuth({ userSync })` receives the `createUserSyncAdapter` over
+ *   `@tayzu/catalog`'s `createUserSync`; `afterAddMember` writes the `_user` in
+ *   the member's tenant when `identity.users.create` and `bootstrapAdmin` add
+ *   the membership. The `portRole` mapping of the input `role` is not asserted
+ *   (the spec leaves it open).
+ * - `createIdentityRouter({ auth, authz })` takes no `userSync` option.
+ * - `bootstrapAdmin(auth, params)` is called without a `userSync` option, so the
+ *   hook is the single writer of the first admin's `_user` entity.
  */
-describe('Creating a user creates a matching `_user` entity, without a Better Auth hook (task 18.5)', () => {
+describe('Creating a user creates a matching `_user` entity, written only by the membership hook (task 18.5, Q76)', () => {
   let auth: AuthInstance;
-  let userSync: ReturnType<typeof createUserSyncAdapter>;
   let client: ReturnType<
     typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
   >;
@@ -252,11 +247,11 @@ describe('Creating a user creates a matching `_user` entity, without a Better Au
     auth = createAuth({
       db: drizzle(pools.authPool, { schema: authSchema }),
       secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({
+        userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
+      }),
     });
-    userSync = createUserSyncAdapter({
-      userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
-    });
-    client = createRouterClient(createIdentityRouter({ auth, authz: cerbos, userSync }), {
+    client = createRouterClient(createIdentityRouter({ auth, authz: cerbos }), {
       context: (raw: Record<string, unknown>) => raw,
     });
     const entities = createEntityService({ pool: pools.appPool, authz: cerbos });
@@ -314,13 +309,7 @@ describe('Creating a user creates a matching `_user` entity, without a Better Au
       adminName: 'First Admin',
       adminEmail: `sync-boot-185-${randomUUID()}@example.test`,
     };
-    await (
-      bootstrapAdmin as (
-        a: AuthInstance,
-        p: typeof params,
-        o: { userSync: typeof userSync },
-      ) => Promise<unknown>
-    )(auth, params, { userSync });
+    await bootstrapAdmin(auth, params);
 
     const org = await (
       auth.$context as Promise<{
