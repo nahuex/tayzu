@@ -704,4 +704,136 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     });
     expect(JSON.stringify(denied[0])).not.toContain(email);
   }, 60_000);
+
+  // Task 7.12 (spec "Invitation lifecycle"; design D2/D4 plugin options, Resolved
+  // decisions Q105, Q123). Better Auth's own errors never reach the response as
+  // they are: `USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION`, the default
+  // `invitationLimit` of 100 pending invitations (FORBIDDEN
+  // `INVITATION_LIMIT_REACHED`) and the default `membershipLimit` of 100 members
+  // (`addMember` FORBIDDEN) all map to `CATALOG_VALIDATION_FAILED` with no
+  // provider text. The acceptance's `member_limit` reason belongs to task 8.7.
+  // Expected production behavior: the `identity.users.invite` and
+  // `identity.users.create` handlers (apps/api/src/identity-router.ts) catch
+  // Better Auth's APIError and rethrow the router's generic
+  // `CATALOG_VALIDATION_FAILED` error (fixed message, no provider code or text).
+  const PROVIDER_TEXT =
+    /already|member|limit|forbidden|INVITATION_LIMIT|USER_IS|reached|organization/i;
+  const PLATFORM_LIMIT = 100;
+
+  async function rejection(call: Promise<unknown>): Promise<unknown> {
+    const thrown: unknown = await call.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    return thrown;
+  }
+
+  function expectGenericRejection(thrown: unknown): void {
+    expect((thrown as { code?: unknown }).code).toBe('CATALOG_VALIDATION_FAILED');
+    const error = thrown as { message?: unknown; data?: unknown; status?: unknown };
+    const visible = JSON.stringify({
+      code: (thrown as { code?: unknown }).code,
+      message: error.message,
+      data: error.data,
+    }).replace('CATALOG_VALIDATION_FAILED', '');
+    expect(visible, 'no provider text and no membership information').not.toMatch(PROVIDER_TEXT);
+  }
+
+  async function seedUsers(count: number, tag: string): Promise<readonly string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i += 1) ids.push(`seed-${tag}-${i.toString(10)}`);
+    await authPool.query(
+      `insert into auth."user" (id, name, email, email_verified, created_at, updated_at)
+       select id, 'Seed', id || '@example.test', false, now(), now() from unnest($1::text[]) as id`,
+      [ids],
+    );
+    return ids;
+  }
+
+  async function memberCount(tenantId: string): Promise<number> {
+    const result = await authPool.query<{ n: string }>(
+      `select count(*) as n from auth.member where organization_id = $1`,
+      [tenantId],
+    );
+    return Number(result.rows[0]?.n ?? '0');
+  }
+
+  it('Inviting an existing member is rejected generically: CATALOG_VALIDATION_FAILED, no provider text, no membership information, nothing created or sent', async () => {
+    const tenant = await freshTenant();
+    const email = `member-${randomUUID()}@example.test`;
+    await client.identity.users.create(
+      { email, name: 'Existing Member', role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+    const sentBefore = emailsTo(email).length;
+
+    // WHEN an admin invites an email that already belongs to a member.
+    const thrown = await rejection(
+      client.identity.users.invite({ email, role: 'member' }, { context: sessionContext(tenant) }),
+    );
+
+    // THEN the generic code answers, without Better Auth's text or any membership hint...
+    expectGenericRejection(thrown);
+    // ...and no invitation or email results.
+    expect(await invitationsOf(tenant.tenantId, email), 'no invitation').toEqual([]);
+    expect(emailsTo(email).length, 'no email').toBe(sentBefore);
+  }, 60_000);
+
+  it('Exceeding 100 pending invitations is rejected generically: CATALOG_VALIDATION_FAILED, no provider text, no invitation or email', async () => {
+    const tenant = await freshTenant();
+    // GIVEN 100 pending invitations in the organization.
+    await authPool.query(
+      `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+       select 'seed-inv-' || $1 || '-' || n, $1, 'pending-' || n || '-' || $1 || '@example.test',
+              'member', 'pending', now() + interval '48 hours', now(), $2
+       from generate_series(1, $3::int) as n`,
+      [tenant.tenantId, tenant.adminId, PLATFORM_LIMIT],
+    );
+    const pending = await authPool.query<{ n: string }>(
+      `select count(*) as n from auth.invitation where organization_id = $1 and status = 'pending'`,
+      [tenant.tenantId],
+    );
+    expect(Number(pending.rows[0]?.n)).toBe(PLATFORM_LIMIT);
+    const email = `over-${randomUUID()}@example.test`;
+
+    // WHEN an admin invites a 101st address.
+    const thrown = await rejection(
+      client.identity.users.invite({ email, role: 'member' }, { context: sessionContext(tenant) }),
+    );
+
+    // THEN the generic code answers, with no provider text...
+    expectGenericRejection(thrown);
+    // ...and nothing is created or sent.
+    expect(await invitationsOf(tenant.tenantId, email), 'no invitation').toEqual([]);
+    expect(emailsTo(email), 'no email').toEqual([]);
+    expect(await userSync.getUser({ tenantId: tenant.tenantId, email }), 'no _user').toBeNull();
+  }, 60_000);
+
+  it('identity.users.create in an organization with 100 members is rejected generically: CATALOG_VALIDATION_FAILED, no provider text, no membership', async () => {
+    const tenant = await freshTenant();
+    // GIVEN an organization with 100 members (the admin plus 99).
+    const ids = await seedUsers(PLATFORM_LIMIT - 1, tenant.tenantId.slice(0, 8));
+    await authPool.query(
+      `insert into auth.member (id, organization_id, user_id, role, created_at)
+       select 'seed-mem-' || id, $1, id, 'member', now() from unnest($2::text[]) as id`,
+      [tenant.tenantId, ids],
+    );
+    expect(await memberCount(tenant.tenantId)).toBe(PLATFORM_LIMIT);
+    const email = `full-${randomUUID()}@example.test`;
+
+    // WHEN an admin creates a 101st user.
+    const thrown = await rejection(
+      client.identity.users.create(
+        { email, name: 'Over Limit', role: 'member' },
+        { context: sessionContext(tenant) },
+      ),
+    );
+
+    // THEN the generic code answers, with no provider text...
+    expectGenericRejection(thrown);
+    // ...and no membership and no `_user` entity exist for the address.
+    expect(await memberCount(tenant.tenantId), 'still 100 members').toBe(PLATFORM_LIMIT);
+    expect(await userSync.getUser({ tenantId: tenant.tenantId, email }), 'no _user').toBeNull();
+  }, 60_000);
 });

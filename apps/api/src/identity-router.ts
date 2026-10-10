@@ -68,6 +68,35 @@ class IdentityInputError extends Error {
   }
 }
 
+/** Better Auth's `APIError` shape, read structurally: its `status` name and `body.code`. */
+function providerError(error: unknown): { status?: unknown; code?: unknown } {
+  if (typeof error !== 'object' || error === null) return {};
+  const { status, body } = error as { status?: unknown; body?: { code?: unknown } | null };
+  return { status, code: body?.code };
+}
+
+/** Provider codes of an invitation refused for an existing member or a full invitation list (task 7.12). */
+const INVITATION_REFUSAL_CODES: readonly unknown[] = [
+  'USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION',
+  'INVITATION_LIMIT_REACHED',
+];
+
+/**
+ * Rethrows the generic rejection when `refused` matches a Better Auth refusal, so no
+ * provider text or membership information reaches the response (task 7.12).
+ */
+async function withGenericRefusal<T>(
+  call: () => Promise<T>,
+  refused: (error: { status?: unknown; code?: unknown }) => boolean,
+): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (refused(providerError(error))) throw new IdentityInputError();
+    throw error;
+  }
+}
+
 export interface CreateIdentityRouterOptions {
   readonly auth: AuthInstance;
   readonly authz: CerbosClient;
@@ -307,13 +336,18 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                   role: GLOBAL_USER_ROLE,
                 },
               });
-              await userApi.addMember({
-                body: {
-                  userId: created.user.id,
-                  role: input.role,
-                  organizationId: rawTenantId(context),
-                },
-              });
+              // `addMember` answers FORBIDDEN past the membership limit.
+              await withGenericRefusal(
+                () =>
+                  userApi.addMember({
+                    body: {
+                      userId: created.user.id,
+                      role: input.role,
+                      organizationId: rawTenantId(context),
+                    },
+                  }),
+                ({ status }) => status === 'FORBIDDEN',
+              );
               return created;
             });
             return { userId: user.id, email: user.email, temporaryPassword };
@@ -338,10 +372,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             const tenantId = rawTenantId(context);
             const adminId = (context['actor'] as { id: string }).id;
             const invitation = await runWithIdentityContext({ adminId }, () =>
-              inviteApi.createInvitation({
-                body: { email: input.email, role: input.role, organizationId: tenantId },
-                headers,
-              }),
+              withGenericRefusal(
+                () =>
+                  inviteApi.createInvitation({
+                    body: { email: input.email, role: input.role, organizationId: tenantId },
+                    headers,
+                  }),
+                ({ code }) => INVITATION_REFUSAL_CODES.includes(code),
+              ),
             );
             const token = generateInvitationToken();
             await (

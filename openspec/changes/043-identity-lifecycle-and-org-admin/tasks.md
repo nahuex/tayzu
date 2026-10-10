@@ -1413,7 +1413,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       cap increment. Verify: `email-boundary.int.test.ts` covers both operations
       refusing `a+b@example.com` and `a/b@example.com` with nothing created, and a
       plus-alias therefore not reaching the per-recipient cap.
-- [ ] 7.12 Better Auth's own errors never reach the response as they are:
+- [x] 7.12 Better Auth's own errors never reach the response as they are:
       `USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION` and the default
       `invitationLimit` of 100 pending invitations per organization (a FORBIDDEN
       `INVITATION_LIMIT_REACHED`) map to `CATALOG_VALIDATION_FAILED` with no provider
