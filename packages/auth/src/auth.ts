@@ -721,6 +721,17 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         invitationExpiresIn: 48 * 60 * 60,
         cancelPendingInvitationsOnReInvite: true,
         organizationHooks: {
+          // Task 7.3 (design D4 "Hooks"): the invited email starts as `Invited`,
+          // keyed by the invitation (the email may have no Better Auth user yet).
+          afterCreateInvitation: async ({ invitation }) => {
+            await options.userSync?.upsertUser({
+              tenantId: invitation.organizationId,
+              email: invitation.email,
+              name: invitation.email,
+              change: 'created_invited',
+              invitationId: invitation.id,
+            });
+          },
           afterAddMember: async ({ member, user }) => {
             await options.userSync?.upsertUser({
               tenantId: member.organizationId,

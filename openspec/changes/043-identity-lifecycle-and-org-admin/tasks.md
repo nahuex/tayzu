@@ -1313,7 +1313,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `cancelled`, `expired` derived from `expiresAt`). Verify:
       `invitation-config.int.test.ts` asserts the 48-hour `expiresAt` on a real
       invitation and the mapped states.
-- [ ] 7.3 `identity.users.invite` (in `apps/api`) calls
+- [x] 7.3 `identity.users.invite` (in `apps/api`) calls
       `auth.api.createInvitation` in process **with the admin's session headers**
       (Resolved decision Q42): `/organization/invite-member` requires a real session
       and has no `userId` bypass, so the server puts the request headers in the router

@@ -78,3 +78,8 @@ export {
   type BootstrapAdminParams,
   type BootstrapAdminResult,
 } from './bootstrap-admin.js';
+export {
+  digestInvitationToken,
+  generateInvitationToken,
+  verifyInvitationToken,
+} from './identity/invitation-token.js';

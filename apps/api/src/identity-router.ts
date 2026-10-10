@@ -15,10 +15,18 @@
 import { randomBytes } from 'node:crypto';
 
 import type { Route } from '@orpc/server';
-import { emitAccountLinkEvent, wouldLeaveNoSignInMethod, type AuthInstance } from '@tayzu/auth';
+import {
+  digestInvitationToken,
+  emitAccountLinkEvent,
+  generateInvitationToken,
+  wouldLeaveNoSignInMethod,
+  type AuthInstance,
+} from '@tayzu/auth';
 import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 import type { AuthRepository } from './identity/auth-repository.js';
+import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import { buildInvitationLink } from './identity/invitation-link.js';
 import { createDefineIdentityOperation } from './identity/define-operation.js';
 import {
   createIdentityTargetResolver,
@@ -63,6 +71,10 @@ export interface CreateIdentityRouterOptions {
   readonly authz: CerbosClient;
   /** The only reader of the `auth` schema (design D14). */
   readonly authRepository: AuthRepository;
+  /** The one gate that sends invitation emails (task 6.5c). */
+  readonly emailGate?: EmailTenantGate;
+  /** The trusted `INVITATION_LINK_BASE_URL`; the link's origin comes only from it. */
+  readonly invitationLinkBaseUrl?: string;
 }
 
 export interface CreateUserInput {
@@ -93,6 +105,39 @@ type AssignableOrgRole = (typeof ASSIGNABLE_ORG_ROLES)[number];
 /** The fixed global Better Auth role every created user gets (design Q37). */
 const GLOBAL_USER_ROLE = 'user';
 
+/** The expiry the invitation email states; matches `invitationExpiresIn` (48 hours). */
+const INVITATION_EXPIRY_TEXT = '48 hours';
+
+/** The host key carrying the request's session headers (Resolved decision Q42). */
+const REQUEST_HEADERS = '__requestHeaders';
+
+interface InviteApiSurface {
+  createInvitation(args: {
+    body: { email: string; role: 'member' | 'admin'; organizationId: string };
+    headers: Headers;
+  }): Promise<{ id: string; expiresAt: Date | string }>;
+}
+
+interface VerificationAdapterSurface {
+  readonly internalAdapter: {
+    createVerificationValue(data: {
+      identifier: string;
+      value: string;
+      expiresAt: Date;
+    }): Promise<unknown>;
+  };
+}
+
+export interface InviteUserInput {
+  readonly email: string;
+  readonly role: AssignableOrgRole;
+}
+
+/** Never carries the token or the link: only the email does. */
+export interface InviteUserOutput {
+  readonly invitationId: string;
+}
+
 type RawContext = Record<string, unknown>;
 
 function isNonEmptyString(value: unknown): value is string {
@@ -107,6 +152,13 @@ function parseInput(raw: unknown): CreateUserInput {
   }
   if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
   return { email, name, role: role as AssignableOrgRole };
+}
+
+function parseInviteInput(raw: unknown): InviteUserInput {
+  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
+  const { email, role } = raw as Record<string, unknown>;
+  if (!isNonEmptyString(email) || !isNonEmptyString(role)) throw new IdentityInputError();
+  return { email, role: role as AssignableOrgRole };
 }
 
 /** The Visma Connect provider id of the `account` row (design D23/D24). */
@@ -167,6 +219,9 @@ const HIGH_RISK_ROUTE = {
 
 export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   const userApi = options.auth.api as CreateUserApiSurface;
+  const inviteApi = options.auth.api as InviteApiSurface;
+  const verificationContext = (): Promise<VerificationAdapterSurface> =>
+    options.auth.$context as Promise<VerificationAdapterSurface>;
   const authContext = (): Promise<AccountAdapterSurface> =>
     options.auth.$context as Promise<AccountAdapterSurface>;
 
@@ -236,6 +291,54 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               return created;
             });
             return { userId: user.id, email: user.email, temporaryPassword };
+          },
+        }),
+        // Design D4 (Q42, Q76): the admin's session headers go to Better Auth; its hook writes the `_user`.
+        invite: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'invite',
+            resolveTarget: () => undefined,
+          },
+          handler: async ({ context, input: rawInput }): Promise<InviteUserOutput> => {
+            const input = parseInviteInput(rawInput);
+            const { emailGate, invitationLinkBaseUrl } = options;
+            // Fail closed when the host did not wire the email path: nothing is created.
+            if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
+              throw new IdentityInputError();
+            }
+            const headers = context[REQUEST_HEADERS];
+            if (!(headers instanceof Headers)) throw new IdentityInputError();
+            const tenantId = rawTenantId(context);
+            const adminId = (context['actor'] as { id: string }).id;
+            const invitation = await runWithIdentityContext({ adminId }, () =>
+              inviteApi.createInvitation({
+                body: { email: input.email, role: input.role, organizationId: tenantId },
+                headers,
+              }),
+            );
+            const token = generateInvitationToken();
+            await (
+              await verificationContext()
+            ).internalAdapter.createVerificationValue({
+              identifier: `invitation-accept:${invitation.id}`,
+              value: digestInvitationToken(token),
+              expiresAt: new Date(invitation.expiresAt),
+            });
+            await emailGate.send({
+              tenantId,
+              to: input.email,
+              template: {
+                kind: 'InvitationEmail',
+                link: buildInvitationLink({
+                  baseUrl: invitationLinkBaseUrl,
+                  invitationId: invitation.id,
+                  token,
+                }),
+                expiryText: INVITATION_EXPIRY_TEXT,
+              },
+            });
+            return { invitationId: invitation.id };
           },
         }),
         // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.
