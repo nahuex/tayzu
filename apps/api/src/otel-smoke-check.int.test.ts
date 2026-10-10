@@ -106,7 +106,7 @@ import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret
 // shared in the test database and encrypted with whichever secret created it first, so
 // the token-exchange drive below needs the secret those tests use.
 const TEST_PASSWORD = 'correct horse battery staple';
-const NEW_PASSWORD = 'a different correct horse battery staple';
+const NEW_PASSWORD = 'A-different-Correct-Horse-Battery-Staple-42!';
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
 const AUTH_ORIGIN = 'http://localhost:3000';
 const PROVIDER_ID = 'visma-connect';

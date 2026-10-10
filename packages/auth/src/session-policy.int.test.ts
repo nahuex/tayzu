@@ -567,7 +567,7 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
   /** design.md, Log events table: `auth.security.session_revoked`'s only reason this task exercises. */
   const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
 
-  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+  const NEW_PASSWORD = 'A-brand-new-Correct-Horse-Battery-Staple-42!';
 
   /**
    * The narrow slice of `auth.api` this describe block additionally needs
@@ -746,7 +746,7 @@ describe('POST /change-password over HTTP revokes other sessions (task 23.16, de
         },
         body: JSON.stringify({
           currentPassword: TEST_PASSWORD,
-          newPassword: 'a brand new correct horse battery staple',
+          newPassword: 'A-brand-new-Correct-Horse-Battery-Staple-42!',
         }),
       }),
     );

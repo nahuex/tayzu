@@ -90,6 +90,7 @@ import {
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import { validatePassword } from './identity/password-policy.js';
 import type { StatusEvent } from './identity/user-status.js';
 import { isIdle } from './session-idle.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
@@ -703,9 +704,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       encryptOAuthTokens: true,
       accountLinking: { disableImplicitLinking: true },
     },
-    // Email/password sign-up and sign-in (task 2.3). No `minPasswordLength`
-    // override: Better Auth's own default (8 characters) is the policy this
-    // change fixes; a stricter policy is not named anywhere in the design.
+    // Email/password sign-in (task 2.3). Task 8.1c (design Q22): Better Auth counts
+    // UTF-16 units of the raw string and 128 code points can take 256 units, so its
+    // maximum must never reject a compliant password; the exact bounds in code
+    // points are the password policy module's.
     // `disableSignUp: true` (task 18.1/18.2, design D22): public self
     // sign-up is disabled under every circumstance -- users are created only
     // through the admin-creation path (`identity.users.create`, task 18.3)
@@ -715,6 +717,8 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
     emailAndPassword: {
       enabled: true,
       disableSignUp: true,
+      minPasswordLength: 20,
+      maxPasswordLength: 256,
     },
     // `enabled: false` (task 2.5, design D20): Better Auth's own built-in
     // database-backed rate limiter can only key by IP+path and its blocked
@@ -980,6 +984,14 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         }
         if (ctx.path !== CHANGE_PASSWORD_PATH) {
           return undefined;
+        }
+        // Task 8.1c (design Q22): the new password must meet the policy before anything is written.
+        const newPassword = (ctx.body as { newPassword?: unknown } | null | undefined)?.newPassword;
+        if (typeof newPassword === 'string' && !validatePassword(newPassword).ok) {
+          throw new APIError('BAD_REQUEST', {
+            code: 'PASSWORD_POLICY_VIOLATION',
+            message: 'PASSWORD_POLICY_VIOLATION',
+          });
         }
         // Q70, Q51: a user with an enrolled MFA factor needs a fresh `mfa`
         // marker. Without a session, Better Auth's own route answers 401.

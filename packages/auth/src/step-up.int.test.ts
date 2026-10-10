@@ -1096,7 +1096,7 @@ describe('/change-password requires a fresh MFA step-up for enrolled users (task
   let auth: AuthInstance;
   let api: AuthApiSurface;
 
-  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+  const NEW_PASSWORD = 'A-brand-new-Correct-Horse-Battery-Staple-42!';
 
   beforeAll(async () => {
     db = connect(databaseUrl());

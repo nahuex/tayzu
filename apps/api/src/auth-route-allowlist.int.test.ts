@@ -409,7 +409,7 @@ describe('apps/api /api/auth/* allowlist: Visma Connect routes (task 19.3, desig
 
 describe('apps/api /api/auth/change-password (task 23.16, design Q46 and D18)', () => {
   let app: App;
-  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+  const NEW_PASSWORD = 'A-brand-new-Correct-Horse-Battery-Staple-42!';
 
   beforeAll(async () => {
     const pools = await harnessPools();

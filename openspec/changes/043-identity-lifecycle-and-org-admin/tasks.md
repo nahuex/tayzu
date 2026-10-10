@@ -1499,7 +1499,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       refusing the password (the plugin's fail-closed 500 `APIError`) with the sanitized
       generic `INTERNAL` (500) error at the boundary, the only generic error the mapping
       has, so no new code is introduced and no provider text leaks.
-- [ ] 8.1c Better Auth's own password configuration enforces the policy on its
+- [x] 8.1c Better Auth's own password configuration enforces the policy on its
       routes: `minPasswordLength` 20 and `maxPasswordLength` 256 (Better Auth counts
       UTF-16 units of the raw string, and 128 code points can take 256 units, so its
       bounds must never reject a compliant password; the exact bounds in code points

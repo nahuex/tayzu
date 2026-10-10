@@ -19,6 +19,7 @@ import {
   emitIdentityEvent,
   generateInvitationToken,
   generateTemporaryPassword,
+  validatePassword,
   withIdentitySpan,
   wouldLeaveNoSignInMethod,
   type AuthInstance,
@@ -320,6 +321,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           handler: async ({ context, input: rawInput }): Promise<CreateUserOutput> => {
             const input = parseInput(rawInput);
             const temporaryPassword = generateTemporaryPassword();
+            // Admin `createUser` enforces only the maximum length: the policy minimum is applied here (Q22).
+            if (!validatePassword(temporaryPassword).ok) throw new IdentityInputError();
             const adminId = (context['actor'] as { id: string }).id;
             // The membership hook is the single `_user` writer; it reads the admin from the store (Q76, Q117).
             const { user } = await runWithIdentityContext({ adminId }, async () => {
