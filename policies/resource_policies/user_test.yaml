@@ -192,3 +192,147 @@ tests:
         resource: user_member_t1
         actions:
           updateStatus: EFFECT_DENY
+
+  # Task 5.5 (Checkpoint 3). Scenario: "The Cerbos ceiling denies an elevated
+  # service-account resource". Today's callers send none of the ceiling
+  # attributes (user_t1, user_new_t1 above): those cases stay allowed for an
+  # admin in the suites above, and are repeated here with the guard in mind.
+  - name: Ceiling does not fire for a call with none of the attributes
+    input:
+      principals: [admin_t1, member_t1]
+      resources: [user_t1, user_new_t1]
+      actions: [view, create, update, delete, invite, updateStatus]
+    expected:
+      - principal: admin_t1
+        resource: user_t1
+        actions: &admin_all_allowed
+          view: EFFECT_ALLOW
+          create: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+          delete: EFFECT_ALLOW
+          invite: EFFECT_ALLOW
+          updateStatus: EFFECT_ALLOW
+      - principal: admin_t1
+        resource: user_new_t1
+        actions: *admin_all_allowed
+      - principal: member_t1
+        resource: user_t1
+        actions: &member_view_only
+          view: EFFECT_ALLOW
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+          invite: EFFECT_DENY
+          updateStatus: EFFECT_DENY
+      - principal: member_t1
+        resource: user_new_t1
+        actions: *member_view_only
+
+  - name: Compliant service account (member role, no moderation) is unaffected
+    input:
+      principals: [admin_t1, member_t1]
+      resources: [user_svc_member_t1, user_svc_bare_t1]
+      actions: [view, create, update, delete, invite, updateStatus]
+    expected:
+      - principal: admin_t1
+        resource: user_svc_member_t1
+        actions: *admin_all_allowed
+      - principal: admin_t1
+        resource: user_svc_bare_t1
+        actions: *admin_all_allowed
+      - principal: member_t1
+        resource: user_svc_member_t1
+        actions: *member_view_only
+      - principal: member_t1
+        resource: user_svc_bare_t1
+        actions: *member_view_only
+
+  - name: Service account resource with role admin or any moderated blueprint is denied every action
+    input:
+      principals: [admin_t1, member_t1, member_moderator_service_t1]
+      resources:
+        - user_svc_admin_t1
+        - user_svc_moderator_t1
+        - user_svc_admin_moderator_t1
+        - user_svc_moderator_only_t1
+        - user_svc_admin_only_t1
+      actions: [view, list, create, update, delete, invite, updateStatus, export]
+    expected:
+      - principal: admin_t1
+        resource: user_svc_admin_t1
+        actions: &ceiling_denied
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          delete: EFFECT_DENY
+          invite: EFFECT_DENY
+          updateStatus: EFFECT_DENY
+          export: EFFECT_DENY
+      - principal: admin_t1
+        resource: user_svc_moderator_t1
+        actions: *ceiling_denied
+      - principal: admin_t1
+        resource: user_svc_admin_moderator_t1
+        actions: *ceiling_denied
+      - principal: admin_t1
+        resource: user_svc_moderator_only_t1
+        actions: *ceiling_denied
+      - principal: admin_t1
+        resource: user_svc_admin_only_t1
+        actions: *ceiling_denied
+      # The member's view and list, allowed on a compliant user, are denied too.
+      - principal: member_t1
+        resource: user_svc_admin_t1
+        actions: *ceiling_denied
+      - principal: member_t1
+        resource: user_svc_moderator_t1
+        actions: *ceiling_denied
+      - principal: member_moderator_service_t1
+        resource: user_svc_admin_moderator_t1
+        actions: *ceiling_denied
+
+  - name: Equivalent standard account with the same elevated values is unaffected
+    input:
+      principals: [admin_t1, member_t1]
+      resources: [user_standard_admin_t1, user_standard_moderator_t1, user_no_kind_elevated_t1]
+      actions: [view, create, update, delete, invite, updateStatus]
+    expected:
+      - principal: admin_t1
+        resource: user_standard_admin_t1
+        actions: *admin_all_allowed
+      - principal: admin_t1
+        resource: user_standard_moderator_t1
+        actions: *admin_all_allowed
+      - principal: admin_t1
+        resource: user_no_kind_elevated_t1
+        actions: *admin_all_allowed
+      - principal: member_t1
+        resource: user_standard_admin_t1
+        actions: *member_view_only
+      - principal: member_t1
+        resource: user_standard_moderator_t1
+        actions: *member_view_only
+      - principal: member_t1
+        resource: user_no_kind_elevated_t1
+        actions: *member_view_only
+
+  - name: Ceiling and tenant isolation both hold for an elevated service account of another tenant
+    input:
+      principals: [admin_t1, admin_t2, member_platform_t2]
+      resources: [user_svc_admin_t2]
+      actions: [view, update, invite, updateStatus]
+    expected:
+      - principal: admin_t1
+        resource: user_svc_admin_t2
+        actions: &four_denied
+          view: EFFECT_DENY
+          update: EFFECT_DENY
+          invite: EFFECT_DENY
+          updateStatus: EFFECT_DENY
+      - principal: admin_t2
+        resource: user_svc_admin_t2
+        actions: *four_denied
+      - principal: member_platform_t2
+        resource: user_svc_admin_t2
+        actions: *four_denied

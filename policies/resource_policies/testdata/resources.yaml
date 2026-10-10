@@ -40,6 +40,101 @@ resources:
     id: new
     attr:
       tenantId: t1
+  # Task 5.5 (design D3 ceiling): `user` resources carrying the resulting
+  # accountKind, portRole and moderatedBlueprints. Opaque ids, never an admin's.
+  # Compliant service account: member role, no moderation.
+  user_svc_member_t1:
+    kind: user
+    id: svc-ok
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: member
+      moderatedBlueprints: []
+  # Service account whose resulting role is admin.
+  user_svc_admin_t1:
+    kind: user
+    id: svc-admin
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: admin
+      moderatedBlueprints: []
+  # Service account holding a Moderator grant.
+  user_svc_moderator_t1:
+    kind: user
+    id: svc-moderator
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: member
+      moderatedBlueprints: [service]
+  # Service account elevated on both axes.
+  user_svc_admin_moderator_t1:
+    kind: user
+    id: svc-admin-moderator
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: admin
+      moderatedBlueprints: [service]
+  # Service account with only the moderation list (no portRole key).
+  user_svc_moderator_only_t1:
+    kind: user
+    id: svc-moderator-only
+    attr:
+      tenantId: t1
+      accountKind: service
+      moderatedBlueprints: [service]
+  # Service account with only the role key, elevated (no moderation key).
+  user_svc_admin_only_t1:
+    kind: user
+    id: svc-admin-only
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: admin
+  # Service account with only accountKind: nothing elevated is stated.
+  user_svc_bare_t1:
+    kind: user
+    id: svc-bare
+    attr:
+      tenantId: t1
+      accountKind: service
+  # Equivalent standard accounts: the same elevated values, but not a service.
+  user_standard_admin_t1:
+    kind: user
+    id: human-admin
+    attr:
+      tenantId: t1
+      accountKind: standard
+      portRole: admin
+      moderatedBlueprints: [service]
+  user_standard_moderator_t1:
+    kind: user
+    id: human-moderator
+    attr:
+      tenantId: t1
+      accountKind: standard
+      portRole: member
+      moderatedBlueprints: [service]
+  # Elevated values without accountKind: absent means standard (design D1).
+  user_no_kind_elevated_t1:
+    kind: user
+    id: legacy-elevated
+    attr:
+      tenantId: t1
+      portRole: admin
+      moderatedBlueprints: [service]
+  # Elevated service account of another tenant.
+  user_svc_admin_t2:
+    kind: user
+    id: svc-admin-t2
+    attr:
+      tenantId: t2
+      accountKind: service
+      portRole: admin
+      moderatedBlueprints: []
   # No ownership configured.
   entity_service_unowned_t1:
     kind: catalog_entity

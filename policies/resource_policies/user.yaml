@@ -23,6 +23,26 @@ resourcePolicy:
       condition:
         match:
           expr: R.id == P.id
+    # Task 5.5 (design D3, Resolved decisions Q7 and Q16): service-account
+    # ceiling. A service account holds `member` and no Moderator grant, always.
+    # Any action on a service-account resource whose resulting portRole is not
+    # `member`, or whose resulting moderatedBlueprints is non-empty, is denied
+    # for every role, including the `system` actor. Every attribute is guarded
+    # with has() because strictEvaluation turns a CEL error into a deny of the
+    # whole action and today's callers send none of these keys; an absent
+    # accountKind is `standard` (D1) and the rule does not fire.
+    - actions: ['*']
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          all:
+            of:
+              - expr: has(R.attr.accountKind) && R.attr.accountKind == "service"
+              - any:
+                  of:
+                    - expr: has(R.attr.portRole) && R.attr.portRole != "member"
+                    - expr: has(R.attr.moderatedBlueprints) && size(R.attr.moderatedBlueprints) > 0
     - actions: ['*']
       effect: EFFECT_ALLOW
       derivedRoles: [same_tenant]

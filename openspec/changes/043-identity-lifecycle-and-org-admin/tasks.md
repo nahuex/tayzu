@@ -1047,7 +1047,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (`R.id` being the opaque user id, design D3). Verify: `cerbos compile` runs `policies/resource_policies/user_test.yaml` covering both actions ×
       admin/non-admin × self/non-self × same/other tenant. ⛔ **Stop for
       Checkpoint 3 approval of the policy diff before continuing.**
-- [ ] 5.5 (Checkpoint 3) Cerbos policy: an `EFFECT_DENY` rule on `user.yaml` for
+- [x] 5.5 (Checkpoint 3) Cerbos policy: an `EFFECT_DENY` rule on `user.yaml` for
       any action when `R.attr.accountKind == "service"` and (`R.attr.portRole !=
 "member"` or `R.attr.moderatedBlueprints` is non-empty), using the resulting
       values, with every attribute reference guarded by `has()` because
