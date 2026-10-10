@@ -1382,7 +1382,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 7.8 An invitation for an email whose existing user is `Disabled` is
       refused and sends nothing. Verify: `invitations.int.test.ts` covers "A
       disabled user cannot be invited".
-- [ ] 7.9 A non-admin attempting `identity.users.invite` is denied with
+- [x] 7.9 A non-admin attempting `identity.users.invite` is denied with
       `AUTH_FORBIDDEN`, no invitation is created and `catalog.security.authz_denied`
       is logged. Verify: `invitations.int.test.ts` covers "Non-admin cannot invite"
       against the real Cerbos container.

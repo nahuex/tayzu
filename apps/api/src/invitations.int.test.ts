@@ -645,4 +645,63 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     expect(emailsTo(email), 'no email').toEqual([]);
     expect((await userSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe('Disabled');
   }, 60_000);
+
+  // Task 7.9 (spec "Only an admin may invite a user or change another user's
+  // status"; design D4, Cerbos `user` / `invite`). Scenario "Non-admin cannot
+  // invite": WHEN an actor without the invite grant attempts to invite a user,
+  // THEN the operation is denied with `AUTH_FORBIDDEN`, no invitation is
+  // created and `catalog.security.authz_denied` is logged.
+  // Runs against the real Cerbos container (`cerbos` above). The caller holds a
+  // valid session (the tenant's admin cookie) but the host-resolved principal
+  // carries only the `member` role, so the wrapper's Cerbos check must deny
+  // before Better Auth is reached.
+  it('Non-admin cannot invite: AUTH_FORBIDDEN, no invitation, no _user, no email, and catalog.security.authz_denied is logged', async () => {
+    const tenant = await freshTenant();
+    const memberId = `member-${randomUUID()}`;
+    const email = `denied-${randomUUID()}@example.test`;
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+
+    // WHEN an actor without the invite grant attempts to invite a user.
+    const thrown: unknown = await client.identity.users
+      .invite(
+        { email, role: 'member' },
+        {
+          context: {
+            tenantId: tenant.tenantId,
+            actor: { type: 'user', id: memberId },
+            principal: { roles: ['member'] },
+            __requestHeaders: headers,
+            __stepUpHeaders: headers,
+          },
+        },
+      )
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    // THEN the operation is denied with AUTH_FORBIDDEN...
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    expect((thrown as { code?: unknown }).code).toBe('AUTH_FORBIDDEN');
+
+    // ...no invitation is created (nor a _user, nor an email)...
+    expect(await invitationsOf(tenant.tenantId, email), 'no invitation').toEqual([]);
+    expect(await userSync.getUser({ tenantId: tenant.tenantId, email }), 'no _user').toBeNull();
+    expect(emailsTo(email), 'no email').toEqual([]);
+
+    // ...and catalog.security.authz_denied is logged.
+    const denied = (await logRecords()).filter(
+      (record) =>
+        record.eventName === 'catalog.security.authz_denied' &&
+        record.attributes['tayzu.tenant.id'] === tenant.tenantId,
+    );
+    expect(denied, 'exactly one authz_denied log').toHaveLength(1);
+    expect(denied[0]?.attributes).toMatchObject({
+      'tayzu.actor.type': 'user',
+      'tayzu.actor.id': memberId,
+      'tayzu.authz.resource.kind': 'user',
+      'tayzu.authz.action': 'invite',
+    });
+    expect(JSON.stringify(denied[0])).not.toContain(email);
+  }, 60_000);
 });
