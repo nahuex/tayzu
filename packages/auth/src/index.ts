@@ -28,7 +28,7 @@ export {
   type ResolvedContext,
 } from './context-resolver.js';
 export * as authSchema from './persistence/schema.js';
-export { AuthContextError, AuthStepUpError } from './errors.js';
+export { AuthContextError, AuthRateLimitedError, AuthStepUpError } from './errors.js';
 export {
   exchangeMachineToken,
   type ExchangeMachineTokenParams,

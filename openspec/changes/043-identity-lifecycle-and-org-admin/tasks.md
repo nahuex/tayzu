@@ -1161,7 +1161,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       tenant and the template and no address, the gate returning normally (the operation
       is not blocked), and `config.test.ts` a malformed tenant id in the list failing
       startup.
-- [ ] 6.8b Every limiter of this change answers with a `Retry-After` header, as
+- [x] 6.8b Every limiter of this change answers with a `Retry-After` header, as
       `002` requires (design D4). `ORPCError` carries no header and `errors.ts` has
       no `AuthRateLimitedError`, so `@tayzu/auth` gains that class with
       `retryAfterSeconds` and exports it from its index, and the three caps of 6.6,
