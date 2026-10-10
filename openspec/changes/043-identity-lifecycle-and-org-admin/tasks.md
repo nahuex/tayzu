@@ -1133,7 +1133,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       selecting the non-sending sender, and `non-sending-sender.test.ts` that the
       non-sending sender neither retains nor logs the message, the link or the
       token.
-- [ ] 6.5b A wrapper around the real sender refuses a recipient whose domain is not on
+- [x] 6.5b A wrapper around the real sender refuses a recipient whose domain is not on
       the allowlist of 6.5, wherever it is set (Resolved decisions Q67 and Q99): the
       refusal is sanitized, is
       handled exactly like a provider failure and logs
