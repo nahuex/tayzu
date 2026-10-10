@@ -1379,7 +1379,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       issues a new link and keeps the expiry", asserting the invitation's `expiresAt`
       is unchanged after the resend, the old token no longer verifies and the response
       carries neither the token nor the link.
-- [ ] 7.8 An invitation for an email whose existing user is `Disabled` is
+- [x] 7.8 An invitation for an email whose existing user is `Disabled` is
       refused and sends nothing. Verify: `invitations.int.test.ts` covers "A
       disabled user cannot be invited".
 - [ ] 7.9 A non-admin attempting `identity.users.invite` is denied with

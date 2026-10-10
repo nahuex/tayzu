@@ -610,4 +610,39 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     expect(serialized).not.toContain('/accept-invitation');
     expect(serialized).not.toContain(`invitation=${created.invitationId}`);
   }, 60_000);
+
+  // Task 7.8 (spec "Invitation lifecycle"; design D4 "Hooks"). Scenario "A
+  // disabled user cannot be invited": GIVEN a `Disabled` user
+  // `bob@example.com`, WHEN an admin invites `bob@example.com`, THEN the
+  // operation fails and no email is sent.
+  // Setup: the `Disabled` `_user` is written through the same Q30 adapter the
+  // hooks use (`created_active`, then `admin_disable`), so the status is real.
+  // Expected production behavior: `identity.users.invite` (or the
+  // `afterCreateInvitation` hook it runs) rejects the invite of an email whose
+  // `_user` is `Disabled`, before any email is sent. The error code is not
+  // asserted (the scenario only says "fails"). The user stays `Disabled`.
+  it('A disabled user cannot be invited: the operation fails, no email is sent and the user stays Disabled', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+
+    // GIVEN a `Disabled` user `bob@example.com`.
+    const adapter = createUserSyncAdapter({ userSync });
+    const base = { tenantId: tenant.tenantId, email, name: 'Bob' };
+    await adapter.writeUserChange({ ...base, change: 'created_active' });
+    await adapter.writeUserChange({ ...base, change: 'admin_disable' });
+    expect((await userSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe('Disabled');
+
+    // WHEN an admin invites `bob@example.com`.
+    const thrown: unknown = await client.identity.users
+      .invite({ email, role: 'member' }, { context: sessionContext(tenant) })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    // THEN the operation fails and no email is sent.
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    expect(emailsTo(email), 'no email').toEqual([]);
+    expect((await userSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe('Disabled');
+  }, 60_000);
 });
