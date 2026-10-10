@@ -204,6 +204,9 @@ const FALLBACK_IP_KEY = 'no-trusted-ip';
 
 const RATE_LIMIT_MODEL = 'rateLimit';
 
+/** Bound on compare-and-set retries before failing closed. */
+const MAX_CAS_ATTEMPTS = 5;
+
 /** Mirrors `../persistence/schema.ts`'s `rateLimit` table (`id`, `key`, `count`, `last_request`). */
 interface RateLimitBucketRow {
   readonly key: string;
@@ -304,9 +307,9 @@ async function resolveSessionUserId(
 
 /**
  * Atomically records one request against `key` within `rule.window` and
- * reports whether it is allowed, using `adapter`'s race-safe `incrementOne`
- * primitive (the same one Better Auth's own database-backed rate-limit
- * storage would use) so concurrent requests across every ACA replica cannot
+ * reports whether it is allowed, using a compare-and-set `updateMany` on the
+ * exact `count`/`lastRequest` just read (`incrementOne`'s subquery WHERE is
+ * not re-checked under READ COMMITTED, so it over-admits) so concurrent requests across every ACA replica cannot
  * all pass a stale read before any increment lands (design D20, "storage
  * shared across every running replica").
  */
@@ -322,42 +325,36 @@ export async function consumeRateLimitBucket(
     return { allowed: true, retryAfterSeconds: null };
   }
 
-  const row = await adapter.findOne<RateLimitBucketRow>({
-    model: RATE_LIMIT_MODEL,
-    where: [{ field: 'key', value: key }],
-  });
-  if (row === null) {
-    // The row disappeared between the failed create and this read (for
-    // example, pruned concurrently): fail closed rather than treat the
-    // bucket as unlimited.
-    return { allowed: false, retryAfterSeconds: rule.window };
-  }
-
-  if (now - row.lastRequest.getTime() >= windowMs) {
-    const reset = await adapter.incrementOne<RateLimitBucketRow>({
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const row = await adapter.findOne<RateLimitBucketRow>({
       model: RATE_LIMIT_MODEL,
-      where: [
-        { field: 'key', value: key },
-        { field: 'lastRequest', operator: 'lte', value: row.lastRequest },
-      ],
-      increment: {},
-      set: { count: 1, lastRequest: new Date(now) },
+      where: [{ field: 'key', value: key }],
     });
-    if (reset !== null) {
-      return { allowed: true, retryAfterSeconds: null };
+    if (row === null) {
+      // The row disappeared between the failed create and this read (for
+      // example, pruned concurrently): fail closed rather than treat the
+      // bucket as unlimited.
+      return { allowed: false, retryAfterSeconds: rule.window };
     }
-  } else {
-    const incremented = await adapter.incrementOne<RateLimitBucketRow>({
+
+    const attemptNow = Date.now();
+    const expired = attemptNow - row.lastRequest.getTime() >= windowMs;
+    if (!expired && row.count >= rule.max) {
+      break;
+    }
+    // Compare-and-set on the exact values just read: `updateMany`'s WHERE is
+    // applied to the table itself, so PostgreSQL re-checks it against the
+    // new row version when concurrent updates serialize on the row lock.
+    const updated = await adapter.updateMany({
       model: RATE_LIMIT_MODEL,
       where: [
         { field: 'key', value: key },
-        { field: 'lastRequest', operator: 'gt', value: new Date(now - windowMs) },
-        { field: 'count', operator: 'lt', value: rule.max },
+        { field: 'count', value: row.count },
+        { field: 'lastRequest', value: row.lastRequest },
       ],
-      increment: { count: 1 },
-      set: { lastRequest: new Date(now) },
+      update: { count: expired ? 1 : row.count + 1, lastRequest: new Date(attemptNow) },
     });
-    if (incremented !== null) {
+    if (updated === 1) {
       return { allowed: true, retryAfterSeconds: null };
     }
   }
