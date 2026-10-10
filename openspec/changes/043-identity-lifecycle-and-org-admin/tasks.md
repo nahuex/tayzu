@@ -1678,7 +1678,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `catalog.audit.invitation_accepted` with `tayzu.actor.type` `user` and
       `tayzu.actor.id` the new user's Better Auth user id, the same value as its
       `tayzu.identity.user.id` (Resolved decision Q116).
-- [ ] 8.3 The token is verified without consuming it and then consumed **last** (8.1e),
+- [x] 8.3 The token is verified without consuming it and then consumed **last** (8.1e),
       with one atomic delete **conditioned on its digest**, so it
       works exactly once. The same short `tayzu_auth` transaction sets the invitation's
       status to `accepted` (Resolved decision Q123; design D4 step 1) through a third

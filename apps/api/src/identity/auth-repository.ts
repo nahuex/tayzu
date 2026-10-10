@@ -67,6 +67,15 @@ export interface AuthRepository {
   deleteMember: (tenantId: string, memberId: string) => Promise<boolean>;
   /** Deletes the user's sessions whose active organization is the tenant; rows deleted. */
   deleteSessionsOf: (tenantId: string, userId: string) => Promise<number>;
+  /**
+   * Sets a `pending` invitation of the tenant to `accepted`; true when a row changed.
+   * `db` lets the acceptance run it inside its own transaction.
+   */
+  markInvitationAccepted: (
+    tenantId: string,
+    invitationId: string,
+    db?: Pick<Pool, 'query'>,
+  ) => Promise<boolean>;
   globalUserByEmail: (email: string) => Promise<UserRead | undefined>;
   globalUserById: (userId: string) => Promise<UserRead | undefined>;
   globalAccountByKey: (providerId: string, accountId: string) => Promise<AccountRead | undefined>;
@@ -255,6 +264,16 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [tenantId, userId],
       );
       return result.rowCount ?? 0;
+    },
+
+    async markInvitationAccepted(tenantId, invitationId, db = authPool) {
+      requireTenant(tenantId);
+      const result = await db.query(
+        `update auth.invitation set status = 'accepted'
+         where organization_id = $1 and id = $2 and status = 'pending'`,
+        [tenantId, invitationId],
+      );
+      return (result.rowCount ?? 0) > 0;
     },
 
     async globalUserByEmail(email) {

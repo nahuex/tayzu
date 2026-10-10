@@ -23,6 +23,7 @@ type Step =
   | 'join_owed'
   | 'email_verified'
   | 'consume'
+  | 'consume_in_transaction'
   | 'admin_notice';
 
 export interface AcceptFlowOptions {
@@ -92,6 +93,17 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
   async function accept(input: AcceptInput): Promise<{ userId: string }> {
     const invitation = await repository.globalInvitationById(input.invitationId);
     if (invitation === undefined) throw notFound();
+    if (invitation.status === 'accepted') {
+      emitIdentityEvent({
+        name: 'catalog.security.invitation_acceptance_denied',
+        severity: 'WARN',
+        attributes: {
+          'tayzu.identity.invitation.id': invitation.id,
+          'tayzu.identity.invitation.denial_reason': 'already_accepted',
+        },
+      });
+      throw notFound();
+    }
     const stored = await authPool.query<{ value: string }>(
       'select value from auth.verification where identifier = $1',
       [tokenIdentifier(invitation.id)],
@@ -147,11 +159,26 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
 
     const consume = async (): Promise<void> => {
       await step('consume');
-      const result = await authPool.query(
-        'delete from auth.verification where identifier = $1 and value = $2',
-        [tokenIdentifier(invitation.id), digest],
-      );
-      if ((result.rowCount ?? 0) === 0) throw new ConsumeConflictError();
+      // The token delete and the `accepted` write are one short transaction.
+      const client = await authPool.connect();
+      try {
+        await client.query('begin');
+        const deleted = await client.query(
+          'delete from auth.verification where identifier = $1 and value = $2',
+          [tokenIdentifier(invitation.id), digest],
+        );
+        if ((deleted.rowCount ?? 0) === 0) throw new ConsumeConflictError();
+        if (!(await repository.markInvitationAccepted(tenantId, invitation.id, client))) {
+          throw new ConsumeConflictError();
+        }
+        await step('consume_in_transaction');
+        await client.query('commit');
+      } catch (error) {
+        await client.query('rollback');
+        throw error;
+      } finally {
+        client.release();
+      }
     };
 
     const joinSteps = async (userId: string): Promise<void> => {

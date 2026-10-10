@@ -39,7 +39,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
-import { bootstrapTestTenant } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  createAdminUser,
+} from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import {
   TEST_PASSWORD,
   TEST_SECRET,
@@ -52,7 +55,7 @@ import {
 import { harnessPools } from '../__fixtures__/pools.js';
 import { toOrpcError } from '../error-mapping.js';
 import { createAcceptFlow } from './accept-flow.js';
-import { createAuthRepository } from './auth-repository.js';
+import { createAuthRepository, type AuthRepository } from './auth-repository.js';
 import { runWithIdentityContext } from './identity-context.js';
 import { createUserSyncAdapter } from './user-sync-adapter.js';
 
@@ -329,4 +332,340 @@ describe('A new person accepts an invitation (task 8.2, design D4, Resolved deci
     expect(attributes?.['tayzu.identity.user.id']).toBe(userId);
     expect(attributes?.['tayzu.tenant.id']).toBe(tenant.tenantId);
   }, 60_000);
+});
+
+/**
+ * Task 8.3 (spec "Invitation acceptance"; design D4 steps 1, 4 and 5; Resolved
+ * decisions Q89 and Q123).
+ *
+ * Scenarios:
+ * - "A new person accepts and can then sign in" (its AND clause): the invitation
+ *   is `accepted` and the token cannot be used a second time.
+ * - "A replayed acceptance is recorded as already accepted".
+ * - The requirement's single use: two concurrent attempts, exactly one succeeds
+ *   and the loser answers the uniform rejection with `consume_conflict`; the
+ *   `accepted` status is written in the same transaction as the token delete; an
+ *   `accepted` write that changes no row fails as a lost race.
+ *
+ * ## Production symbols expected
+ *
+ * - `apps/api/src/identity/auth-repository.ts`: `AuthRepository.markInvitationAccepted(
+ *   tenantId: string, invitationId: string): Promise<boolean>`, the third tenant-keyed
+ *   write of 5.1b. It requires a `tenantId` (throws without one), filters by
+ *   `organization_id` and the invitation id, updates only while the status is
+ *   `pending`, and resolves true when a row changed.
+ * - `apps/api/src/identity/accept-flow.ts`: the token delete conditioned on its digest
+ *   and the `accepted` write run in one short `authPool` transaction. A new `onStep`
+ *   name, `consume_in_transaction`, is awaited inside that transaction after the token
+ *   delete and before the commit; a throw rolls the transaction back.
+ * - A replay (the invitation's status is `accepted`) logs
+ *   `catalog.security.invitation_acceptance_denied` with
+ *   `tayzu.identity.invitation.denial_reason` `already_accepted` and answers
+ *   `CATALOG_NOT_FOUND`.
+ */
+describe('single-use token and the accepted status (task 8.3, Resolved decision Q123)', () => {
+  const DENIED_EVENT = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let repository: AuthRepository;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  type StepSeam = (step: string) => void | Promise<void>;
+
+  function flowWith(onStep?: StepSeam) {
+    return createAcceptFlow({
+      auth,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+      ...(onStep === undefined ? {} : { onStep }),
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function existingAccount(email: string): Promise<{ userId: string; sessionId: string }> {
+    const created = await createAdminUser(auth, {
+      name: 'Existing Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    return { userId: created.userId, sessionId: randomUUID() };
+  }
+
+  async function tokenRowCount(invitationId: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth.verification where identifier = $1`, [
+      `invitation-accept:${invitationId}`,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function statusOf(invitationId: string): Promise<string | undefined> {
+    const result = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitationId],
+    );
+    return result.rows[0]?.status;
+  }
+
+  async function memberCount(tenantId: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      tenantId,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED_EVENT &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  it('A new person accepts and can then sign in: the invitation is accepted and the token cannot be used a second time', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+
+    await flowWith().accept({ ...invitation, password: PASSWORD_NFC });
+
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await tokenRowCount(invitation.invitationId), 'the token row is consumed').toBe(0);
+    const second = await failureOf(flowWith().accept({ ...invitation, password: PASSWORD_NFC }));
+    expect(second?.code, 'the second use of the token fails').toBe('CATALOG_NOT_FOUND');
+  }, 60_000);
+
+  it('A replayed acceptance is recorded as already accepted: the uniform rejection, the reason already_accepted (not token_mismatch) and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+    const { userId } = await flowWith().accept({ ...invitation, password: PASSWORD_NFC });
+    const members = await memberCount(tenant.tenantId);
+
+    // WHEN the same acceptance request is sent again.
+    const replay = await failureOf(flowWith().accept({ ...invitation, password: PASSWORD_NFC }));
+
+    // THEN the uniform rejection, recorded as `already_accepted`, with nothing changed.
+    expect(replay?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['already_accepted']);
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await memberCount(tenant.tenantId)).toBe(members);
+    const users = await authPool.query(`select 1 from auth."user" where email = $1`, [email]);
+    expect(users.rowCount).toBe(1);
+    const rows = await authPool.query(`select 1 from auth.member where user_id = $1`, [userId]);
+    expect(rows.rowCount).toBe(1);
+  }, 60_000);
+
+  it('two concurrent attempts: exactly one succeeds and the loser, held before its consumption until the winner committed, answers the uniform rejection with consume_conflict', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await existingAccount(email);
+    const invitation = await invite(tenant, email);
+
+    // GIVEN the loser reaches its consumption first and is held there.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached: () => void = () => undefined;
+    const loserAtConsume = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const loser = failureOf(
+      flowWith(async (step) => {
+        if (step !== 'consume') return;
+        reached();
+        await held;
+      }).accept({ ...invitation, session: carol }),
+    );
+    await loserAtConsume;
+
+    // WHEN the winner runs to completion and the loser is released.
+    const winner = await failureOf(flowWith().accept({ ...invitation, session: carol }));
+    release();
+    const lost = await loser;
+
+    // THEN exactly one succeeded and the loser answered the uniform rejection.
+    expect(winner, 'the winner succeeds').toBeUndefined();
+    expect(lost?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['consume_conflict']);
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await tokenRowCount(invitation.invitationId)).toBe(0);
+  }, 60_000);
+
+  it('the accepted status is written in the same transaction as the token delete: a failure after the delete leaves the token row in place and the invitation pending', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await existingAccount(email);
+    const invitation = await invite(tenant, email);
+
+    const failure = await failureOf(
+      flowWith((step) => {
+        if (step === 'consume_in_transaction') throw new Error('injected failure');
+      }).accept({ ...invitation, session: carol }),
+    );
+
+    expect(failure, 'the attempt fails').toBeDefined();
+    expect(await tokenRowCount(invitation.invitationId), 'the delete was rolled back').toBe(1);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+  }, 60_000);
+
+  it('a consumption whose accepted write changes no row (the invitation cancelled after the token verified) leaves the token row and the cancelled status untouched and fails as a lost race', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await existingAccount(email);
+    const invitation = await invite(tenant, email);
+
+    // GIVEN a cancellation that commits after the token verified.
+    const failure = await failureOf(
+      flowWith(async (step) => {
+        if (step !== 'add_member') return;
+        await authPool.query(`update auth.invitation set status = 'canceled' where id = $1`, [
+          invitation.invitationId,
+        ]);
+      }).accept({ ...invitation, session: carol }),
+    );
+
+    // THEN the same answer and reason as a lost race, and the consumption changed nothing.
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['consume_conflict']);
+    expect(await tokenRowCount(invitation.invitationId), 'the token row stays').toBe(1);
+    expect(await statusOf(invitation.invitationId)).toBe('canceled');
+  }, 60_000);
+
+  describe('the repository write markInvitationAccepted', () => {
+    async function seedInvitation(tenantId: string, status = 'pending'): Promise<string> {
+      const inviterId = `usr-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth."user" (id, name, email, email_verified, created_at, updated_at)
+         values ($1, 'Inviter', $2, true, now(), now())`,
+        [inviterId, `inviter-${randomUUID()}@example.test`],
+      );
+      const id = `inv-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+         values ($1, $2, $3, 'member', $4, now() + interval '1 day', now(), $5)`,
+        [id, tenantId, `invitee-${randomUUID()}@example.test`, status, inviterId],
+      );
+      return id;
+    }
+
+    async function seedTenant(): Promise<string> {
+      const id = `org-${randomUUID()}`;
+      await authPool.query(
+        'insert into auth.organization (id, name, slug, created_at) values ($1, $2, $3, now())',
+        [id, 'Org', `slug-${id}`],
+      );
+      return id;
+    }
+
+    it('sets pending to accepted once, and only while the status is still pending', async () => {
+      const tenantId = await seedTenant();
+      const pending = await seedInvitation(tenantId);
+      const cancelled = await seedInvitation(tenantId, 'canceled');
+
+      expect(await repository.markInvitationAccepted(tenantId, pending)).toBe(true);
+      expect(await statusOf(pending)).toBe('accepted');
+      expect(await repository.markInvitationAccepted(tenantId, pending), 'a second write').toBe(
+        false,
+      );
+      expect(await repository.markInvitationAccepted(tenantId, cancelled)).toBe(false);
+      expect(await statusOf(cancelled)).toBe('canceled');
+    });
+
+    it('changes no invitation of another tenant', async () => {
+      const tenantId = await seedTenant();
+      const otherTenantId = await seedTenant();
+      const invitationId = await seedInvitation(otherTenantId);
+
+      expect(await repository.markInvitationAccepted(tenantId, invitationId)).toBe(false);
+      expect(await statusOf(invitationId)).toBe('pending');
+    });
+
+    it('refuses a call without a tenantId', async () => {
+      const tenantId = await seedTenant();
+      const invitationId = await seedInvitation(tenantId);
+      const call = (...args: unknown[]): Promise<unknown> =>
+        Promise.resolve().then(() =>
+          (repository.markInvitationAccepted as (...a: unknown[]) => unknown)(...args),
+        );
+
+      for (const bad of ['', undefined, null]) {
+        await expect(call(bad, invitationId)).rejects.toThrow('a tenantId is required');
+      }
+      expect(await statusOf(invitationId)).toBe('pending');
+    });
+  });
 });
