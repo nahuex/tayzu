@@ -40,6 +40,8 @@ export interface Config {
   readonly rateLimit: RateLimit;
   /** `POST /v1/auth/token` limit (D20). */
   readonly tokenExchangeRateLimit: RateLimit;
+  /** Invitation emails per tenant, shared by invite and resend (Q15); window in seconds. */
+  readonly invitationTenantCap: { readonly max: number; readonly windowSeconds: number };
   /** Maximum request body in bytes (D13). */
   readonly bodyLimit: number;
   /** Back-channel logout budget per source IP per minute (D26, Q32). */
@@ -60,6 +62,7 @@ const DEFAULT_SIGN_IN_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PASSWORD_CHECK_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
 const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
+const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 
 const MIN_SECRET_LENGTH = 32;
@@ -306,6 +309,12 @@ export function loadConfig(env: Env): Config {
     'TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_TOKEN_EXCHANGE_LIMIT,
   );
+  const invitationTenantCap = limitWithDefaults(
+    env,
+    'INVITATION_TENANT_RATE_LIMIT_MAX',
+    'INVITATION_TENANT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_INVITATION_TENANT_LIMIT,
+  );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const backchannelLogoutRateLimitPerMinute =
     optionalPositiveInt(env, 'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE') ??
@@ -326,6 +335,7 @@ export function loadConfig(env: Env): Config {
     preAuthPasswordCheckRateLimit: { max: passwordCheck.max, window: passwordCheck.windowSeconds },
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
+    invitationTenantCap,
     bodyLimit,
     telemetryDisabled: loadTelemetryDisabled(env),
   };

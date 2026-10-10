@@ -1173,7 +1173,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       today). Verify: `error-mapping.test.ts` covers the class mapping to status
       429, code `AUTH_RATE_LIMITED` and a `Retry-After` equal to its
       `retryAfterSeconds` (the HTTP twin is in 14.5).
-- [ ] 6.6 A per-tenant cap of 30 invitation emails per hour, shared by invite and
+- [x] 6.6 A per-tenant cap of 30 invitation emails per hour, shared by invite and
       resend, on a store interface (in memory in tests), with its default in
       `apps/api/src/config.ts` following its `limitWithDefaults` pattern. Exceeding it
       fails with `AUTH_RATE_LIMITED` (the `AuthRateLimitedError` of 6.8b), sends

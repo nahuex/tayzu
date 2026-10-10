@@ -4,7 +4,12 @@
  * consumed; nothing reaches the sender, the operation is not blocked, and the event
  * carries the tenant and the template, never an address.
  */
-import { emitIdentityEvent, type EmailSender, type EmailTemplate } from '@tayzu/auth';
+import {
+  AuthRateLimitedError,
+  emitIdentityEvent,
+  type EmailSender,
+  type EmailTemplate,
+} from '@tayzu/auth';
 
 /** The port of the caps of 6.6 to 6.8 and 6.10. */
 export interface EmailCapStore {
@@ -42,6 +47,21 @@ export function createEmailTenantGate(deps: {
           },
         });
         return;
+      }
+      try {
+        await deps.capStore.consume('tenant', tenantId);
+      } catch (error) {
+        if (error instanceof AuthRateLimitedError) {
+          emitIdentityEvent({
+            name: 'catalog.security.invitation_rate_limited',
+            severity: 'WARN',
+            attributes: {
+              'tayzu.tenant.id': tenantId,
+              'tayzu.identity.invitation.limit_scope': 'tenant',
+            },
+          });
+        }
+        throw error;
       }
       await deps.sender.send(to, template);
     },
