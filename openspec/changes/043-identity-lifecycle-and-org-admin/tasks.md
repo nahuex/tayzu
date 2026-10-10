@@ -1040,7 +1040,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       lookup. Verify: `parse-input.test.ts` covers each rejection at depth 1 and at
       depth 3, an undeclared field, an over-length value being refused before any
       lookup spy is called, and a clean body being parsed.
-- [ ] 5.4 (Checkpoint 3) Cerbos policy: `user.invite` (which also covers cancel
+- [x] 5.4 (Checkpoint 3) Cerbos policy: `user.invite` (which also covers cancel
       and resend) and `user.updateStatus` on resource kind `user`, importing
       `002`'s `same_tenant` derived role. `user.yaml` already allows `*` to admin,
       so the new content is an `EFFECT_DENY` for `updateStatus` when `R.id == P.id`

@@ -15,6 +15,14 @@ resourcePolicy:
       condition:
         match:
           expr: R.attr.tenantId != P.attr.tenantId
+    # Task 5.4 (design D3): nobody changes their own status. R.id is the opaque
+    # user id (never an email), so the comparison with P.id is not vacuous.
+    - actions: [updateStatus]
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          expr: R.id == P.id
     - actions: ['*']
       effect: EFFECT_ALLOW
       derivedRoles: [same_tenant]

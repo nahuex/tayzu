@@ -17,6 +17,29 @@ resources:
     id: someone
     attr:
       tenantId: t1
+  # Task 5.4: the resource id is the opaque user id (design D3). These targets
+  # carry the id of a test principal, so `R.id == P.id` is a self-target.
+  user_admin_t1:
+    kind: user
+    id: admin_t1
+    attr:
+      tenantId: t1
+  user_member_t1:
+    kind: user
+    id: member_t1
+    attr:
+      tenantId: t1
+  user_admin_t2:
+    kind: user
+    id: admin_t2
+    attr:
+      tenantId: t2
+  # Invitation targets (cancel, resend) and `new` for invite: opaque ids.
+  user_new_t1:
+    kind: user
+    id: new
+    attr:
+      tenantId: t1
   # No ownership configured.
   entity_service_unowned_t1:
     kind: catalog_entity

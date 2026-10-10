@@ -68,3 +68,127 @@ tests:
           create: EFFECT_DENY
           update: EFFECT_DENY
           delete: EFFECT_DENY
+
+  # Task 5.4 (Checkpoint 3). Scenarios: "Non-admin cannot invite" and
+  # "A user cannot disable themselves" (including "A user's self-deny uses the
+  # resolved identity": the resource id is the opaque user id, never an email).
+  - name: Invite is admin-only and tenant-bound
+    input:
+      principals:
+        [admin_t1, admin_t2, member_t1, member_platform_t1, unknown_role_t1, admin_no_tenant]
+      resources: [user_new_t1]
+      actions: [invite]
+    expected:
+      - principal: admin_t1
+        resource: user_new_t1
+        actions:
+          invite: EFFECT_ALLOW
+      - principal: admin_t2
+        resource: user_new_t1
+        actions:
+          invite: EFFECT_DENY
+      - principal: member_t1
+        resource: user_new_t1
+        actions:
+          invite: EFFECT_DENY
+      - principal: member_platform_t1
+        resource: user_new_t1
+        actions:
+          invite: EFFECT_DENY
+      - principal: unknown_role_t1
+        resource: user_new_t1
+        actions:
+          invite: EFFECT_DENY
+      - principal: admin_no_tenant
+        resource: user_new_t1
+        actions:
+          invite: EFFECT_DENY
+
+  - name: Admin may update the status of another user of the same tenant
+    input:
+      principals: [admin_t1]
+      resources: [user_t1, user_member_t1]
+      actions: [updateStatus, invite]
+    expected:
+      - principal: admin_t1
+        resource: user_t1
+        actions:
+          updateStatus: EFFECT_ALLOW
+          invite: EFFECT_ALLOW
+      - principal: admin_t1
+        resource: user_member_t1
+        actions:
+          updateStatus: EFFECT_ALLOW
+          invite: EFFECT_ALLOW
+
+  - name: Admin cannot update their own status, but keeps every other action on themselves
+    input:
+      principals: [admin_t1]
+      resources: [user_admin_t1]
+      actions: [updateStatus, invite, view, update]
+    expected:
+      - principal: admin_t1
+        resource: user_admin_t1
+        actions:
+          updateStatus: EFFECT_DENY
+          invite: EFFECT_ALLOW
+          view: EFFECT_ALLOW
+          update: EFFECT_ALLOW
+
+  - name: Admin of another tenant cannot update the status of any user, self id included
+    input:
+      principals: [admin_t2]
+      resources: [user_t1, user_admin_t1, user_admin_t2]
+      actions: [updateStatus, invite]
+    expected:
+      - principal: admin_t2
+        resource: user_t1
+        actions:
+          updateStatus: EFFECT_DENY
+          invite: EFFECT_DENY
+      - principal: admin_t2
+        resource: user_admin_t1
+        actions:
+          updateStatus: EFFECT_DENY
+          invite: EFFECT_DENY
+      # Own id, but the target belongs to the admin's own tenant t2: self-deny.
+      - principal: admin_t2
+        resource: user_admin_t2
+        actions:
+          updateStatus: EFFECT_DENY
+          invite: EFFECT_ALLOW
+
+  - name: Admin of tenant t1 cannot act on a user resolved to tenant t2
+    input:
+      principals: [admin_t1]
+      resources: [user_admin_t2]
+      actions: [updateStatus, invite]
+    expected:
+      - principal: admin_t1
+        resource: user_admin_t2
+        actions:
+          updateStatus: EFFECT_DENY
+          invite: EFFECT_DENY
+
+  - name: Member cannot update status, not even their own
+    input:
+      principals: [member_t1, member_platform_t2]
+      resources: [user_t1, user_member_t1]
+      actions: [updateStatus]
+    expected:
+      - principal: member_t1
+        resource: user_t1
+        actions:
+          updateStatus: EFFECT_DENY
+      - principal: member_t1
+        resource: user_member_t1
+        actions:
+          updateStatus: EFFECT_DENY
+      - principal: member_platform_t2
+        resource: user_t1
+        actions:
+          updateStatus: EFFECT_DENY
+      - principal: member_platform_t2
+        resource: user_member_t1
+        actions:
+          updateStatus: EFFECT_DENY
