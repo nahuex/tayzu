@@ -1016,7 +1016,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the procedure's input parser (today's `parseInput`, the shared parser of 5.3d once
       it replaces it) never called; and a recording Cerbos client showing the first
       check of a `service_account` operation carrying `accountKind: service`.
-- [ ] 5.3b3 The wrapper fails closed (Resolved decision Q57): a Cerbos error, a
+- [x] 5.3b3 The wrapper fails closed (Resolved decision Q57): a Cerbos error, a
       malformed context and an empty role list each deny and never run the handler.
       Verify: `define-identity-operation-failclosed.test.ts` covers "The wrapper
       fails closed" for each of the three, with a Cerbos client that throws, a context
