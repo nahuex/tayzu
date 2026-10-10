@@ -1254,7 +1254,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       "A slow trickle never resets a bucket": with a clock seam, requests spaced just
       under the window keep accumulating to the cap of 3 per 24 hours, the next one is
       refused, and a gap of a full window resets the bucket.
-- [ ] 6.11 The `AdminAcceptedNotice` template (Resolved decision Q39) has a fixed
+- [x] 6.11 The `AdminAcceptedNotice` template (Resolved decision Q39) has a fixed
       subject and body with no interpolated value, no link and no tenant, actor or
       invitee free text. Verify: `admin-accepted-notice-template.test.ts` covers "The
       admin notice carries no free text" (an organization named `<b>Pay now</b>` and a
