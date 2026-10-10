@@ -1408,7 +1408,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       and a plain address accepted, and `email-allowlist.test.ts` (6.5b) covers a
       recipient written `Bob@Allowed.Example ` reaching the stubbed provider when
       `allowed.example` is on the list.
-- [ ] 7.11 `identity.users.invite` and `identity.users.create` reject such an
+- [x] 7.11 `identity.users.invite` and `identity.users.create` reject such an
       address with `CATALOG_VALIDATION_FAILED`, before any invitation, user, email or
       cap increment. Verify: `email-boundary.int.test.ts` covers both operations
       refusing `a+b@example.com` and `a/b@example.com` with nothing created, and a

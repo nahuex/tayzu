@@ -27,6 +27,7 @@ import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import { canonicalEmail, isValidIdentityEmail } from './identity/email-canonical.js';
 import { buildInvitationLink } from './identity/invitation-link.js';
 import { createDefineIdentityOperation } from './identity/define-operation.js';
 import {
@@ -150,6 +151,13 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== '';
 }
 
+/** Canonicalizes an address and rejects one the platform cannot hold (Q33), before any side effect. */
+function holdableEmail(raw: string): string {
+  const canonical = canonicalEmail(raw);
+  if (!isValidIdentityEmail(canonical)) throw new IdentityInputError();
+  return canonical;
+}
+
 function parseInput(raw: unknown): CreateUserInput {
   if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
   const { email, name, role } = raw as Record<string, unknown>;
@@ -157,7 +165,7 @@ function parseInput(raw: unknown): CreateUserInput {
     throw new IdentityInputError();
   }
   if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
-  return { email, name, role: role as AssignableOrgRole };
+  return { email: holdableEmail(email), name, role: role as AssignableOrgRole };
 }
 
 function parseInviteInput(raw: unknown): InviteUserInput {
@@ -166,7 +174,7 @@ function parseInviteInput(raw: unknown): InviteUserInput {
   if (!isNonEmptyString(email) || !isNonEmptyString(role)) throw new IdentityInputError();
   // Exact match (design D4 "Roles"): no splitting, trimming or case folding.
   if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
-  return { email, role: role as AssignableOrgRole };
+  return { email: holdableEmail(email), role: role as AssignableOrgRole };
 }
 
 /** The `{invitation}` identifier of a cancel as an invitation target; malformed input yields an id the resolver rejects. */
