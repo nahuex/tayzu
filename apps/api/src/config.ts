@@ -14,6 +14,8 @@ export interface Config {
   readonly allowedOrigins: readonly string[];
   /** Public base URL of the API (Q40): `https` outside test; undefined only in test. */
   readonly betterAuthUrl?: string;
+  /** Origin of invitation links (Q32): `https` and in `allowedOrigins` outside test; undefined only in test. */
+  readonly invitationLinkBaseUrl?: string;
   /** Visma Connect SSO (D23); undefined when none of its variables is set. */
   readonly sso?: {
     readonly discoveryUrl: string;
@@ -142,6 +144,37 @@ function loadBetterAuthUrl(env: Env): string | undefined {
   return value;
 }
 
+/** `INVITATION_LINK_BASE_URL` (Q32): outside test it is required, `https` and one of `ALLOWED_ORIGINS`. */
+function loadInvitationLinkBaseUrl(
+  env: Env,
+  allowedOrigins: readonly string[],
+): string | undefined {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest && env['INVITATION_LINK_BASE_URL'] === undefined) {
+    return undefined;
+  }
+  const value = required(env, 'INVITATION_LINK_BASE_URL').trim();
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('INVITATION_LINK_BASE_URL is malformed (an absolute URL is required).');
+  }
+  if (isTest) {
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+    }
+    return value;
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+  }
+  if (!allowedOrigins.includes(url.origin)) {
+    throw new Error('INVITATION_LINK_BASE_URL is malformed (it must be one of ALLOWED_ORIGINS).');
+  }
+  return value;
+}
+
 /** `ALLOWED_ORIGINS` (Q56, Q40): `https` and wildcard-free outside test; origins are never echoed. */
 function validateAllowedOrigins(env: Env, origins: readonly string[]): void {
   const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
@@ -185,6 +218,7 @@ export function loadConfig(env: Env): Config {
     .filter((origin) => origin !== '');
   validateAllowedOrigins(env, allowedOrigins);
   const betterAuthUrl = loadBetterAuthUrl(env);
+  const invitationLinkBaseUrl = loadInvitationLinkBaseUrl(env, allowedOrigins);
   const sso = loadSso(env);
   const signIn = limitWithDefaults(
     env,
@@ -221,6 +255,7 @@ export function loadConfig(env: Env): Config {
     cerbosAddress,
     allowedOrigins,
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
+    ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
     backchannelLogoutRateLimitPerMinute,
     ...(sso === undefined ? {} : { sso }),
     preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds },

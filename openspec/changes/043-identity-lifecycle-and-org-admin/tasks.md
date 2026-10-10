@@ -1086,7 +1086,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       template carries no free text" (an organization named `<b>Pay now</b>` and a
       markup-bearing inviter name never appear) and "Invite sends exactly one email
       with exactly one link" by parsing the rendered HTML and text.
-- [ ] 6.3 The link origin comes from the dedicated `INVITATION_LINK_BASE_URL`
+- [x] 6.3 The link origin comes from the dedicated `INVITATION_LINK_BASE_URL`
       setting (Resolved decision Q32), never from `BETTER_AUTH_URL`, `Host` or a
       forwarded header; it must be `https` outside test and one of `ALLOWED_ORIGINS`,
       and the path is fixed (`/accept-invitation`) with the invitation id and token in

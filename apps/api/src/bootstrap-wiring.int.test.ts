@@ -96,6 +96,7 @@ const ENV: Record<string, string> = {
   BETTER_AUTH_SECRET: TEST_SECRET,
   CERBOS_ADDRESS: 'localhost:3593',
   ALLOWED_ORIGINS: ORIGIN,
+  INVITATION_LINK_BASE_URL: ORIGIN,
 };
 
 function randomIp(): string {

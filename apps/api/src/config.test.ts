@@ -61,6 +61,7 @@ function env(
     AUTH_SECRET: SECRET,
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
+    INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
     ...overrides,
   };
 }
@@ -331,6 +332,61 @@ describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.
     expect(loadConfig(origins('http://localhost', 'test')).allowedOrigins).toEqual([
       'http://localhost',
     ]);
+  });
+});
+
+/**
+ * `043` task 6.3 (design D5, Resolved decision Q32): `INVITATION_LINK_BASE_URL`
+ * is `https` outside test and one of `ALLOWED_ORIGINS`. Production symbol:
+ * `Config.invitationLinkBaseUrl?: string` (undefined only in test when unset);
+ * `loadConfig` throws an `Error` naming the variable and never echoing the value.
+ */
+describe('INVITATION_LINK_BASE_URL (043 task 6.3, Q32)', () => {
+  const NAME = 'INVITATION_LINK_BASE_URL';
+  const link = (value: string | undefined, nodeEnv: string): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      [NAME]: value,
+    });
+
+  it('rejects an http value outside test, naming the variable and not echoing it', () => {
+    const value = 'http://app.tayzu.test';
+    const error = thrown(() => loadConfig(link(value, 'production')));
+    expect(error.message).toContain(NAME);
+    expect(error.message).not.toContain(value);
+  });
+
+  it('rejects a value outside ALLOWED_ORIGINS, naming the variable and not echoing it', () => {
+    const value = 'https://elsewhere.tayzu.invalid';
+    const error = thrown(() => loadConfig(link(value, 'production')));
+    expect(error.message).toContain(NAME);
+    expect(error.message).not.toContain(value);
+  });
+
+  it('rejects a missing value outside test', () => {
+    const error = thrown(() => loadConfig(link(undefined, 'production')));
+    expect(error.message).toContain(NAME);
+  });
+
+  it('rejects a malformed value outside test', () => {
+    const error = thrown(() => loadConfig(link('not a url', 'production')));
+    expect(error.message).toContain(NAME);
+  });
+
+  it('accepts an https value on ALLOWED_ORIGINS outside test', () => {
+    const config = loadConfig(link('https://app.tayzu.test', 'production'));
+    expect(config.invitationLinkBaseUrl).toBe('https://app.tayzu.test');
+  });
+
+  it('accepts an http value in test', () => {
+    const config = loadConfig(link('http://localhost:3000', 'test'));
+    expect(config.invitationLinkBaseUrl).toBe('http://localhost:3000');
+  });
+
+  it('is undefined in test when unset', () => {
+    expect(loadConfig(link(undefined, 'test')).invitationLinkBaseUrl).toBeUndefined();
   });
 });
 
