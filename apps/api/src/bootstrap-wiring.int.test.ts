@@ -1378,6 +1378,7 @@ describe('production app wiring: runtime database roles are checked at startup (
     DATABASE_URL: `postgres://tayzu_app:${APP_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
     AUTH_DATABASE_URL: `postgres://tayzu_auth:${AUTH_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
     NODE_ENV: 'production',
+    EMAIL_PROVIDER: 'none',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     TAYZU_TELEMETRY_DISABLED: 'true',
   };

@@ -233,7 +233,11 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
     );
     vi.stubEnv('NODE_ENV', 'production');
 
-    const outcome = await startupOutcome({ ...withoutUrl, NODE_ENV: 'production' });
+    const outcome = await startupOutcome({
+      ...withoutUrl,
+      NODE_ENV: 'production',
+      EMAIL_PROVIDER: 'none',
+    });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');
     expect(outcome).toContain('BETTER_AUTH_URL');
@@ -246,6 +250,7 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
       ...ENV,
       BETTER_AUTH_URL: 'http://api.tayzu.test',
       NODE_ENV: 'production',
+      EMAIL_PROVIDER: 'none',
     });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');

@@ -252,6 +252,7 @@ describe('VISMA_CONNECT_DISCOVERY_URL must be https outside test (task 23.18, Q4
   const sso = (url: string, nodeEnv: string): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
       BETTER_AUTH_URL: 'https://api.tayzu.test',
       VISMA_CONNECT_DISCOVERY_URL: url,
       VISMA_CONNECT_CLIENT_ID: 'client-id',
@@ -293,6 +294,7 @@ describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.
   const origins = (value: string, nodeEnv: string): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
       BETTER_AUTH_URL: 'https://api.tayzu.test',
       ALLOWED_ORIGINS: value,
     });
@@ -346,6 +348,7 @@ describe('INVITATION_LINK_BASE_URL (043 task 6.3, Q32)', () => {
   const link = (value: string | undefined, nodeEnv: string): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
       BETTER_AUTH_URL: 'https://api.tayzu.test',
       ALLOWED_ORIGINS: 'https://app.tayzu.test',
       [NAME]: value,
@@ -434,5 +437,143 @@ describe('pre-auth password-check limit from the environment (task 24.12, Q39, Q
   )('%s=%j (disabled or malformed) fails startup naming the variable', (name, value) => {
     const error = thrown(() => loadConfig(env({ [name]: value })));
     expect(error.message).toContain(name);
+  });
+});
+
+/**
+ * `043` task 6.5 (design D5, Resolved decisions Q28, Q67, Q96, Q99): the email
+ * provider is chosen by `EMAIL_PROVIDER` (`acs` or `none`). "Production" is
+ * `NODE_ENV !== 'test'`.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `emailProvider?: 'acs' | 'none'` (undefined only under test when unset);
+ * - `acsConnectionString?: string` (from `ACS_CONNECTION_STRING`);
+ * - `emailRecipientDomainAllowlist: readonly string[]` (from
+ *   `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`, a comma-separated list; `[]` when unset).
+ * `acs` also reads `EMAIL_SENDER_ADDRESS` (6.4); no test here depends on how.
+ * Errors name the variable and never echo its value.
+ */
+describe('email provider selection (043 task 6.5, Q28, Q67, Q96, Q99)', () => {
+  const CONNECTION_STRING =
+    'endpoint=https://acs-test.communication.azure.com/;accesskey=c2VjcmV0LWtleQ==';
+  const mail = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
+      ...overrides,
+    });
+  const field = (config: Config, name: string): unknown =>
+    (config as unknown as Record<string, unknown>)[name];
+
+  it.each(['production', 'staging', 'development'])(
+    'a deployed environment (NODE_ENV=%s) with no EMAIL_PROVIDER fails startup naming the variable',
+    (nodeEnv) => {
+      const error = thrown(() => loadConfig(mail(nodeEnv)));
+      expect(error.message).toContain('EMAIL_PROVIDER');
+    },
+  );
+
+  it.each(['', '   ', 'smtp', 'ACS', 'resend', 'true'])(
+    'a deployed environment with EMAIL_PROVIDER=%j fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(mail('production', { EMAIL_PROVIDER: value })));
+      expect(error.message).toContain('EMAIL_PROVIDER');
+    },
+  );
+
+  it('EMAIL_PROVIDER=none starts in a deployed environment', () => {
+    const config = loadConfig(mail('production', { EMAIL_PROVIDER: 'none' }));
+    expect(field(config, 'emailProvider')).toBe('none');
+  });
+
+  it('EMAIL_PROVIDER=acs starts in a deployed environment and reads the connection string', () => {
+    const config = loadConfig(
+      mail('production', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+    );
+    expect(field(config, 'emailProvider')).toBe('acs');
+    expect(field(config, 'acsConnectionString')).toBe(CONNECTION_STRING);
+  });
+
+  it('EMAIL_PROVIDER=acs without ACS_CONNECTION_STRING fails startup naming the variable', () => {
+    const error = thrown(() => loadConfig(mail('production', { EMAIL_PROVIDER: 'acs' })));
+    expect(error.message).toContain('ACS_CONNECTION_STRING');
+  });
+
+  it('EMAIL_PROVIDER=acs with a blank ACS_CONNECTION_STRING fails startup naming the variable', () => {
+    const error = thrown(() =>
+      loadConfig(mail('production', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: '  ' })),
+    );
+    expect(error.message).toContain('ACS_CONNECTION_STRING');
+  });
+
+  it('no error message echoes the connection string', () => {
+    const failing = [
+      mail('test', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+      mail('production', { EMAIL_PROVIDER: 'smtp', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+    ];
+    for (const attempt of failing) {
+      const error = thrown(() => loadConfig(attempt));
+      expect(error.message).toMatch(/EMAIL_/);
+      expect(error.message).not.toContain(CONNECTION_STRING);
+      expect(error.message).not.toContain('c2VjcmV0LWtleQ==');
+    }
+  });
+
+  it('a real provider under NODE_ENV=test without the allowlist fails startup naming it', () => {
+    const error = thrown(() =>
+      loadConfig(mail('test', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING })),
+    );
+    expect(error.message).toContain('EMAIL_RECIPIENT_DOMAIN_ALLOWLIST');
+  });
+
+  it('a real provider under NODE_ENV=test with an empty allowlist fails startup naming it', () => {
+    const error = thrown(() =>
+      loadConfig(
+        mail('test', {
+          EMAIL_PROVIDER: 'acs',
+          ACS_CONNECTION_STRING: CONNECTION_STRING,
+          EMAIL_RECIPIENT_DOMAIN_ALLOWLIST: ' , ',
+        }),
+      ),
+    );
+    expect(error.message).toContain('EMAIL_RECIPIENT_DOMAIN_ALLOWLIST');
+  });
+
+  it('a real provider under NODE_ENV=test with the allowlist starts and exposes the domains', () => {
+    const config = loadConfig(
+      mail('test', {
+        EMAIL_PROVIDER: 'acs',
+        ACS_CONNECTION_STRING: CONNECTION_STRING,
+        EMAIL_RECIPIENT_DOMAIN_ALLOWLIST: 'example.com, tayzu.test',
+      }),
+    );
+    expect(field(config, 'emailProvider')).toBe('acs');
+    expect(field(config, 'emailRecipientDomainAllowlist')).toEqual(['example.com', 'tayzu.test']);
+  });
+
+  it('the allowlist is read in a deployed environment too (Q99), and is not mandatory there', () => {
+    const withList = loadConfig(
+      mail('production', {
+        EMAIL_PROVIDER: 'acs',
+        ACS_CONNECTION_STRING: CONNECTION_STRING,
+        EMAIL_RECIPIENT_DOMAIN_ALLOWLIST: 'example.com',
+      }),
+    );
+    const without = loadConfig(
+      mail('production', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+    );
+    expect(field(withList, 'emailRecipientDomainAllowlist')).toEqual(['example.com']);
+    expect(field(without, 'emailRecipientDomainAllowlist')).toEqual([]);
+  });
+
+  it('under NODE_ENV=test no EMAIL_PROVIDER is needed and none starts without an allowlist', () => {
+    expect(field(loadConfig(mail('test')), 'emailProvider')).toBeUndefined();
+    expect(field(loadConfig(mail('test', { EMAIL_PROVIDER: 'none' })), 'emailProvider')).toBe(
+      'none',
+    );
   });
 });

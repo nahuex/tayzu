@@ -36,6 +36,7 @@ function configEnv(): Record<string, string | undefined> {
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     INVITATION_LINK_BASE_URL: BASE_URL,
+    EMAIL_PROVIDER: 'none',
   };
 }
 

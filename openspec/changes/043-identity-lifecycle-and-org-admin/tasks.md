@@ -1105,7 +1105,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       tracking disabled and no Reply-To, and "The email provider's failure never
       leaks" with a stubbed client whose error contains the recipient; a documented
       manual smoke-check script exists for a real sandbox account outside CI.
-- [ ] 6.5 "Production" is `NODE_ENV !== 'test'`, as in `002` (Resolved decision Q96), so
+- [x] 6.5 "Production" is `NODE_ENV !== 'test'`, as in `002` (Resolved decision Q96), so
       every deployed environment counts: startup fails there unless `EMAIL_PROVIDER` is
       set (an unset value fails closed, and `none`, the explicit non-sending sender, is
       what `dast.sh` exports because it sets no `NODE_ENV`). The provider is chosen by

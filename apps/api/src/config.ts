@@ -16,6 +16,14 @@ export interface Config {
   readonly betterAuthUrl?: string;
   /** Origin of invitation links (Q32): `https` and in `allowedOrigins` outside test; undefined only in test. */
   readonly invitationLinkBaseUrl?: string;
+  /** Email provider (Q96): required outside test; undefined only under test when unset. */
+  readonly emailProvider?: 'acs' | 'none';
+  /** Communication Services connection string (Q28); set only for `acs`. */
+  readonly acsConnectionString?: string;
+  /** Sender address of the `acs` provider; set only for `acs`. */
+  readonly emailSenderAddress?: string;
+  /** Recipient domains a real sender may reach (Q67, Q99); empty when unset. */
+  readonly emailRecipientDomainAllowlist: readonly string[];
   /** Visma Connect SSO (D23); undefined when none of its variables is set. */
   readonly sso?: {
     readonly discoveryUrl: string;
@@ -194,6 +202,43 @@ function validateAllowedOrigins(env: Env, origins: readonly string[]): void {
   }
 }
 
+interface EmailSettings {
+  readonly emailProvider?: 'acs' | 'none';
+  readonly acsConnectionString?: string;
+  readonly emailSenderAddress?: string;
+  readonly emailRecipientDomainAllowlist: readonly string[];
+}
+
+/** `EMAIL_PROVIDER` (Q96, Q67, Q99): unset fails closed outside test; values are never echoed. */
+function loadEmail(env: Env): EmailSettings {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  const allowlist = (env['EMAIL_RECIPIENT_DOMAIN_ALLOWLIST'] ?? '')
+    .split(',')
+    .map((domain) => domain.trim())
+    .filter((domain) => domain !== '');
+  const provider = env['EMAIL_PROVIDER'];
+  if (provider === undefined && isTest) {
+    return { emailRecipientDomainAllowlist: allowlist };
+  }
+  if (provider === 'none') {
+    return { emailProvider: 'none', emailRecipientDomainAllowlist: allowlist };
+  }
+  if (provider !== 'acs') {
+    throw new Error('EMAIL_PROVIDER is required and must be acs or none.');
+  }
+  const acsConnectionString = required(env, 'ACS_CONNECTION_STRING');
+  const emailSenderAddress = required(env, 'EMAIL_SENDER_ADDRESS');
+  if (isTest && allowlist.length === 0) {
+    throw new Error('EMAIL_RECIPIENT_DOMAIN_ALLOWLIST is required for a real email provider.');
+  }
+  return {
+    emailProvider: 'acs',
+    acsConnectionString,
+    emailSenderAddress,
+    emailRecipientDomainAllowlist: allowlist,
+  };
+}
+
 /** `TAYZU_TELEMETRY_DISABLED`: unset or `false` is off, `true` is on, anything else fails. */
 function loadTelemetryDisabled(env: Env): boolean {
   const value = env['TAYZU_TELEMETRY_DISABLED'];
@@ -219,6 +264,7 @@ export function loadConfig(env: Env): Config {
   validateAllowedOrigins(env, allowedOrigins);
   const betterAuthUrl = loadBetterAuthUrl(env);
   const invitationLinkBaseUrl = loadInvitationLinkBaseUrl(env, allowedOrigins);
+  const email = loadEmail(env);
   const sso = loadSso(env);
   const signIn = limitWithDefaults(
     env,
@@ -257,6 +303,7 @@ export function loadConfig(env: Env): Config {
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
     ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
     backchannelLogoutRateLimitPerMinute,
+    ...email,
     ...(sso === undefined ? {} : { sso }),
     preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds },
     preAuthPasswordCheckRateLimit: { max: passwordCheck.max, window: passwordCheck.windowSeconds },

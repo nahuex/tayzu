@@ -9,6 +9,12 @@ export {
   type UserSyncChange,
   type UserSyncPort,
 } from './auth.js';
+export { createNonSendingEmailSender } from './identity/email/non-sending-sender.js';
+export { createRecordingEmailSender, type EmailSender } from './identity/email/sender.js';
+export {
+  createAzureCommunicationEmailSender,
+  parseAzureEmailConfig,
+} from './identity/email/azure-communication-email.js';
 export { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 export {
   createContextResolver,
