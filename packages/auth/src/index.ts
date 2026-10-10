@@ -10,7 +10,11 @@ export {
   type UserSyncPort,
 } from './auth.js';
 export { createNonSendingEmailSender } from './identity/email/non-sending-sender.js';
-export { createRecordingEmailSender, type EmailSender } from './identity/email/sender.js';
+export {
+  createRecordingEmailSender,
+  type EmailSender,
+  type EmailTemplate,
+} from './identity/email/sender.js';
 export {
   createAzureCommunicationEmailSender,
   parseAzureEmailConfig,

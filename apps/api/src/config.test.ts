@@ -577,3 +577,64 @@ describe('email provider selection (043 task 6.5, Q28, Q67, Q96, Q99)', () => {
     );
   });
 });
+
+/**
+ * `043` task 6.5c (design D5, Resolved decision Q80): `EMAIL_DISABLED_TENANT_IDS` is
+ * a comma-separated list of tenant ids, each checked against the catalog's tenant-id
+ * pattern (`^[A-Za-z0-9_-]{1,64}$`) at startup.
+ *
+ * Production symbol expected on `Config` (`apps/api/src/config.ts`):
+ * - `emailDisabledTenantIds: readonly string[]` (entries trimmed; `[]` when unset),
+ *   read in every environment. A malformed entry throws an `Error` naming
+ *   `EMAIL_DISABLED_TENANT_IDS` and never echoing the value.
+ */
+describe('EMAIL_DISABLED_TENANT_IDS (043 task 6.5c, Q80)', () => {
+  const base = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
+      EMAIL_PROVIDER: 'none',
+      ...overrides,
+    });
+  const field = (config: Config, name: string): unknown =>
+    (config as unknown as Record<string, unknown>)[name];
+
+  it.each(['test', 'production'])('is empty when unset (NODE_ENV=%s)', (nodeEnv) => {
+    expect(field(loadConfig(base(nodeEnv)), 'emailDisabledTenantIds')).toEqual([]);
+  });
+
+  it.each(['test', 'production'])(
+    'a well-formed list starts and exposes the ids (NODE_ENV=%s)',
+    (nodeEnv) => {
+      const config = loadConfig(
+        base(nodeEnv, { EMAIL_DISABLED_TENANT_IDS: 'demo-tenant, Demo_2 ,a' }),
+      );
+      expect(field(config, 'emailDisabledTenantIds')).toEqual(['demo-tenant', 'Demo_2', 'a']);
+    },
+  );
+
+  it.each([
+    ['a space inside an id', 'demo-tenant,bad tenant'],
+    ['a slash', 'demo/tenant'],
+    ['a dot', 'demo.tenant'],
+    ['a 65-character id', 'a'.repeat(65)],
+    ['a quote', "demo'tenant"],
+    ['a non-ASCII letter', 'démo'],
+  ])('a malformed tenant id (%s) fails startup naming the variable', (_label, value) => {
+    for (const nodeEnv of ['test', 'production']) {
+      const error = thrown(() => loadConfig(base(nodeEnv, { EMAIL_DISABLED_TENANT_IDS: value })));
+      expect(error.message).toContain('EMAIL_DISABLED_TENANT_IDS');
+      expect(error.message).not.toContain(value);
+    }
+  });
+
+  it('a 64-character id is accepted', () => {
+    const id = 'a'.repeat(64);
+    const config = loadConfig(base('production', { EMAIL_DISABLED_TENANT_IDS: id }));
+    expect(field(config, 'emailDisabledTenantIds')).toEqual([id]);
+  });
+});

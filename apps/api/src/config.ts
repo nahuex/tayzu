@@ -24,6 +24,8 @@ export interface Config {
   readonly emailSenderAddress?: string;
   /** Recipient domains a real sender may reach (Q67, Q99); empty when unset. */
   readonly emailRecipientDomainAllowlist: readonly string[];
+  /** Tenants whose emails are suppressed (Q80); empty when unset. */
+  readonly emailDisabledTenantIds: readonly string[];
   /** Visma Connect SSO (D23); undefined when none of its variables is set. */
   readonly sso?: {
     readonly discoveryUrl: string;
@@ -239,6 +241,20 @@ function loadEmail(env: Env): EmailSettings {
   };
 }
 
+const TENANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** `EMAIL_DISABLED_TENANT_IDS` (Q80): each entry matches the catalog's tenant-id pattern; values are never echoed. */
+function loadEmailDisabledTenantIds(env: Env): readonly string[] {
+  const ids = (env['EMAIL_DISABLED_TENANT_IDS'] ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '');
+  if (!ids.every((id) => TENANT_ID_PATTERN.test(id))) {
+    throw new Error('EMAIL_DISABLED_TENANT_IDS is malformed (tenant ids are required).');
+  }
+  return ids;
+}
+
 /** `TAYZU_TELEMETRY_DISABLED`: unset or `false` is off, `true` is on, anything else fails. */
 function loadTelemetryDisabled(env: Env): boolean {
   const value = env['TAYZU_TELEMETRY_DISABLED'];
@@ -304,6 +320,7 @@ export function loadConfig(env: Env): Config {
     ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
     backchannelLogoutRateLimitPerMinute,
     ...email,
+    emailDisabledTenantIds: loadEmailDisabledTenantIds(env),
     ...(sso === undefined ? {} : { sso }),
     preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds },
     preAuthPasswordCheckRateLimit: { max: passwordCheck.max, window: passwordCheck.windowSeconds },

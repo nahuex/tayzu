@@ -1142,7 +1142,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       reaching the stubbed provider, one off the list never reaching it, the sanitized
       refusal and the logged event carrying no address (the domain compared after the
       canonicalization of 7.10 is 7.10's case).
-- [ ] 6.5c An `EMAIL_DISABLED_TENANT_IDS` list (a comma-separated list of tenant
+- [x] 6.5c An `EMAIL_DISABLED_TENANT_IDS` list (a comma-separated list of tenant
       ids, each checked against the catalog's tenant-id pattern at startup, read by
       `apps/api/src/config.ts`; Resolved decision Q80) is honored by the one gate
       that sends invitation emails (7.3 and 7.7) and by the notice dispatcher of
