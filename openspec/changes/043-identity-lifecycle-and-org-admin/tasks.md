@@ -1246,7 +1246,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (the `tenant` kind included), and the new scopes being accepted by the helper
       while an unknown scope is refused, and a denial being reported on `002`'s rate-limit
       metric and log event with the new scope value.
-- [ ] 6.10b The cap windows have the semantics of `002`'s store, which is accepted
+- [x] 6.10b The cap windows have the semantics of `002`'s store, which is accepted
       and documented (Resolved decision Q66): a bucket resets only after a full window
       with **no allowed request**, because every allowed hit moves `lastRequest` and the
       table has no window-start column, so the caps are stricter than their nominal rate

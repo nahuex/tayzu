@@ -33,7 +33,7 @@ import { runMigrations } from '@tayzu/db';
 import type { DBAdapter } from 'better-auth/types';
 import { eq, like } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 // Import order is load-bearing: the telemetry harness registers before the modules
 // that create instruments at import time (see pre-auth-rate-limit.int.test.ts).
@@ -323,4 +323,47 @@ describe('Invitation rate-limit store on 002 auth.rate_limit (task 6.10)', () =>
       expect(snapshot, 'no bucket value in telemetry').not.toContain(bucket.value);
     },
   );
+
+  // Task 6.10b (Resolved decision Q66). The clock seam is a Date-only fake clock
+  // (`vi.useFakeTimers({ toFake: ['Date'] })`): the store reads `Date.now()`, and the
+  // pool's real timers stay untouched.
+  it('A slow trickle never resets a bucket', async () => {
+    const dayWindowSeconds = 24 * 60 * 60;
+    const dayStore = createRateLimitBucketStore({
+      adapter: adapterA,
+      rules: { invitation_recipient: { window: dayWindowSeconds, max: 3 } },
+    });
+    const bucket = freshBucket('invitation_recipient');
+    const justUnderWindowMs = (dayWindowSeconds - 60) * 1000;
+    const fullWindowMs = dayWindowSeconds * 1000;
+    const start = Date.now();
+
+    vi.useFakeTimers({ toFake: ['Date'], now: start });
+    try {
+      // GIVEN requests spaced just under 24 hours apart: all three are allowed.
+      for (let hit = 0; hit < 3; hit += 1) {
+        vi.setSystemTime(start + hit * justUnderWindowMs);
+        expect((await dayStore.consume(bucket)).allowed, `request ${String(hit + 1)}`).toBe(true);
+      }
+
+      // WHEN the fourth arrives, again just under a window after the third:
+      // THEN it is refused, because no quiet full window ever reset the bucket.
+      vi.setSystemTime(start + 3 * justUnderWindowMs);
+      const fourth = await dayStore.consume(bucket);
+      expect(fourth.allowed).toBe(false);
+      expect(fourth.retryAfterSeconds).toBeGreaterThan(0);
+
+      // AND a gap of a full window since the last allowed request resets it.
+      vi.setSystemTime(start + 2 * justUnderWindowMs + fullWindowMs);
+      expect((await dayStore.consume(bucket)).allowed).toBe(true);
+      for (let hit = 0; hit < 2; hit += 1) {
+        expect((await dayStore.consume(bucket)).allowed).toBe(true);
+      }
+      expect((await dayStore.consume(bucket)).allowed, 'the fresh bucket caps at 3 again').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
