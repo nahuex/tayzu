@@ -1095,7 +1095,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the id and token are after the `#`, and `config.test.ts` (in `apps/api`) covers
       an `http` value outside test and a value outside `ALLOWED_ORIGINS` failing
       startup.
-- [ ] 6.4 `AzureCommunicationEmailSender` (the real adapter over
+- [x] 6.4 `AzureCommunicationEmailSender` (the real adapter over
       `@azure/communication-email`), constructed from the Key Vault-backed
       connection string, never called in CI, with provider errors sanitized so no
       address or message text leaves it, ACS user-engagement and click tracking
