@@ -1300,7 +1300,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 
 ## 7. Invitation lifecycle
 
-- [ ] 7.1 `invitation-token.ts`: 256 bits from a CSPRNG, `sha256` digest for
+- [x] 7.1 `invitation-token.ts`: 256 bits from a CSPRNG, `sha256` digest for
       storage, constant-time comparison over equal-length digests, and a dummy
       comparison for a missing record. Verify: `invitation-token.test.ts` covers
       token length and uniqueness, that only the digest is derivable for storage,
