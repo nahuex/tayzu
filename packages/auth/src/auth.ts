@@ -716,6 +716,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // organization adapter writes members below `databaseHooks`, so the
       // plugin's own `organizationHooks` is the hook point.
       organization({
+        // Task 7.2 (design D4): 48-hour invitations; a re-invite cancels the
+        // previous pending one.
+        invitationExpiresIn: 48 * 60 * 60,
+        cancelPendingInvitationsOnReInvite: true,
         organizationHooks: {
           afterAddMember: async ({ member, user }) => {
             await options.userSync?.upsertUser({

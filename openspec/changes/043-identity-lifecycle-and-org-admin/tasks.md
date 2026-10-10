@@ -1306,7 +1306,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       token length and uniqueness, that only the digest is derivable for storage,
       that comparison is constant-time (`timingSafeEqual`) and that a missing record
       still performs one comparison.
-- [ ] 7.2 Configure Better Auth's `organization` invitation options
+- [x] 7.2 Configure Better Auth's `organization` invitation options
       (`invitationExpiresIn` 48 hours, `cancelPendingInvitationsOnReInvite: true`;
       `requireEmailVerificationOnInvitation` is not used because the native accept
       route stays off the allowlist), and the boundary mapper (`canceled` →
