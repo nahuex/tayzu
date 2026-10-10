@@ -1080,7 +1080,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       list separator, at most 254 characters. Verify: `email-sender.test.ts` covers
       "Injection through the invited address is impossible" for each rejected shape,
       and that the fake records `to`, link and expiry text.
-- [ ] 6.2 The invitation email template has a fixed subject and a fixed body,
+- [x] 6.2 The invitation email template has a fixed subject and a fixed body,
       interpolates only the link and the expiry text, and contains exactly one
       clickable link. Verify: `invitation-email-template.test.ts` covers "The
       template carries no free text" (an organization named `<b>Pay now</b>` and a
