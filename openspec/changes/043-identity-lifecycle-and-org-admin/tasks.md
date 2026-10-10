@@ -1724,7 +1724,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `invitation_acceptance_denied` logged with the reason `malformed_request`, and an
       over-long or malformed id never appearing in a log record, the id attribute being
       `invalid`.
-- [ ] 8.5 For an email that already has an account and a request **without** a
+- [x] 8.5 For an email that already has an account and a request **without** a
       session, acceptance never sets or changes a password and answers the uniform
       rejection (Resolved decisions Q18 and Q24). Verify:
       `invitation-accept.int.test.ts` covers "Acceptance does not touch an existing

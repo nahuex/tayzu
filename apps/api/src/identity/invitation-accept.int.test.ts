@@ -981,3 +981,199 @@ describe('the accept body is an allowlist and the tenant comes from the invitati
     }
   }, 60_000);
 });
+
+/**
+ * Task 8.5 (spec "Invitation acceptance", scenario "Acceptance does not touch an
+ * existing account"; Resolved decisions Q18 and Q24).
+ *
+ * - GIVEN a pending invitation to an email that already has an account, WHEN it is
+ *   accepted with its valid token and a password, without a session, THEN the
+ *   existing account's password is unchanged, no password is set, and the answer is
+ *   the uniform rejection (`CATALOG_NOT_FOUND`). A `password` in the body is ignored.
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createAcceptFlow(...).accept` and `.acceptRequest` of
+ * `apps/api/src/identity/accept-flow.ts`. Without a session of the existing account
+ * they answer the uniform rejection and write nothing.
+ */
+describe('Acceptance does not touch an existing account (task 8.5, Resolved decisions Q18 and Q24)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let flow: ReturnType<typeof createAcceptFlow>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    const adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    flow = createAcceptFlow({
+      auth,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function count(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function accounts(userId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ provider_id: string; password: string | null }>(
+      `select provider_id, password from auth.account where user_id = $1 order by id`,
+      [userId],
+    );
+    return result.rows.map((row) => `${row.provider_id}:${row.password ?? ''}`);
+  }
+
+  async function signIn(email: string, password: string): Promise<number> {
+    const response = await (
+      auth as unknown as { handler: (r: Request) => Promise<Response> }
+    ).handler(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: 'http://localhost:3000',
+        },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+    return response.status;
+  }
+
+  const NEW_PASSWORD = 'Another-Passphrase-For-Mallory-2026!';
+
+  async function scenario() {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const existing = await createAdminUser(auth, {
+      name: 'Existing Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const invitation = await invite(tenant, email);
+    return { tenant, email, userId: existing.userId, invitation };
+  }
+
+  async function expectUntouched(
+    s: Awaited<ReturnType<typeof scenario>>,
+    before: readonly string[],
+  ) {
+    expect(await accounts(s.userId), 'the accounts and the password hash are unchanged').toEqual(
+      before,
+    );
+    expect(await signIn(s.email, TEST_PASSWORD), 'the old password still signs in').toBe(200);
+    expect(await signIn(s.email, NEW_PASSWORD), 'the body password was not set').not.toBe(200);
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        s.tenant.tenantId,
+        s.userId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await count(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${s.invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await count(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        s.invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect(
+      (await catalogSync.getUser({ tenantId: s.tenant.tenantId, email: s.email }))?.status,
+    ).toBe('Invited');
+  }
+
+  it('Acceptance does not touch an existing account: with the valid token and a password, without a session, the account is unchanged and the answer is the uniform rejection', async () => {
+    const s = await scenario();
+    const before = await accounts(s.userId);
+    expect(before).toHaveLength(1);
+
+    const failure = await failureOf(flow.accept({ ...s.invitation, password: NEW_PASSWORD }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectUntouched(s, before);
+  }, 60_000);
+
+  it('Acceptance does not touch an existing account: a password in the request body is ignored and the answer is the uniform rejection', async () => {
+    const s = await scenario();
+    const before = await accounts(s.userId);
+
+    const failure = await failureOf(
+      flow.acceptRequest({ body: { ...s.invitation, password: NEW_PASSWORD } }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectUntouched(s, before);
+  }, 60_000);
+
+  it('Acceptance does not touch an existing account: without a password either, the answer is the same uniform rejection', async () => {
+    const s = await scenario();
+    const before = await accounts(s.userId);
+
+    const failure = await failureOf(flow.acceptRequest({ body: { ...s.invitation } }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectUntouched(s, before);
+  }, 60_000);
+});
