@@ -1283,7 +1283,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       consumed, with nothing sent and `catalog.security.email_tenant_blocked` logged with
       the tenant and the template `admin_accepted` and no address; `config.test.ts`
       covers a zero notice cap failing startup.
-- [ ] 6.12b Notices get their own per-recipient bucket (scope `notice_recipient`, a new
+- [x] 6.12b Notices get their own per-recipient bucket (scope `notice_recipient`, a new
       value of the closed `RateLimitScope` union and a rule of the helper of 6.10, keyed
       by the HMAC of 6.7b, with the limit of 3 per 24 hours of Q15 (applied to the notices by Q53)), separate from
       the invitation bucket of 6.7, so that notices cannot exhaust a person's invitation

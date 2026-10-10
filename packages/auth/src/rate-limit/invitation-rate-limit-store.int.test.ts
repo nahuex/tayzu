@@ -324,6 +324,125 @@ describe('Invitation rate-limit store on 002 auth.rate_limit (task 6.10)', () =>
     },
   );
 
+  // Task 6.12b (Resolved decision Q101): `notice_recipient`, a seventh value of the closed
+  // `RateLimitScope` union (it must be added to the union for this file to typecheck),
+  // keyed by the HMAC of the address, which the helper only sees as an opaque `email` value.
+  describe('the notice_recipient scope (task 6.12b)', () => {
+    const noticeRules = { notice_recipient: { window: 24 * 60 * 60, max: MAX } } as const;
+    let noticeA: BucketStore;
+    let noticeB: BucketStore;
+
+    function noticeBucket() {
+      return {
+        scope: 'notice_recipient',
+        kind: 'email',
+        value: `hmac-${randomUUID()}`,
+      } as const;
+    }
+
+    function noticeKey(bucket: { scope: string; kind: string; value: string }): string {
+      return createHash('sha256')
+        .update(`${bucket.scope}:${bucket.kind}:${bucket.value}`)
+        .digest('hex');
+    }
+
+    beforeAll(async () => {
+      noticeA = createRateLimitBucketStore({ adapter: adapterA, rules: noticeRules });
+      noticeB = createRateLimitBucketStore({
+        adapter: await adapterOf(dbB),
+        rules: noticeRules,
+      });
+    });
+
+    it('is accepted by the helper and shared by two instances up to the cap of 3', async () => {
+      const bucket = noticeBucket();
+
+      expect((await noticeA.consume(bucket)).allowed).toBe(true);
+      expect((await noticeB.consume(bucket)).allowed).toBe(true);
+      expect((await noticeA.consume(bucket)).allowed).toBe(true);
+      const denied = await noticeB.consume(bucket);
+      expect(denied.allowed).toBe(false);
+      expect(denied.retryAfterSeconds).toBeGreaterThan(0);
+
+      const rows = await rowsWithKey(noticeKey(bucket));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.count).toBe(MAX);
+    });
+
+    it('is separate from the invitation_recipient bucket of the same value', async () => {
+      const bucket = noticeBucket();
+      const invitations = createRateLimitBucketStore({
+        adapter: adapterA,
+        rules: { invitation_recipient: { window: 24 * 60 * 60, max: MAX } },
+      });
+      for (let hit = 0; hit < MAX; hit += 1) {
+        expect(
+          (await invitations.consume({ ...bucket, scope: 'invitation_recipient' })).allowed,
+        ).toBe(true);
+      }
+
+      expect((await noticeA.consume(bucket)).allowed).toBe(true);
+    });
+
+    it('stores its key only as a hash', async () => {
+      const bucket = noticeBucket();
+
+      await noticeA.consume(bucket);
+
+      const rows = await rowsWithKey(noticeKey(bucket));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.key).toMatch(/^[0-9a-f]{64}$/);
+      const leaked = await dbA
+        .select({ key: authSchema.rateLimit.key })
+        .from(authSchema.rateLimit)
+        .where(like(authSchema.rateLimit.key, `%${bucket.value}%`));
+      expect(leaked).toHaveLength(0);
+    });
+
+    it('reports a denial on the rate-limit metric and log event with the value notice_recipient', async () => {
+      const bucket = noticeBucket();
+      for (let hit = 0; hit < MAX; hit += 1) {
+        expect((await noticeA.consume(bucket)).allowed).toBe(true);
+      }
+      await harness.forceFlush();
+      expect(
+        [...harness.logExporter.getFinishedLogRecords()].filter(
+          (record) => record.eventName === 'auth.security.rate_limited',
+        ),
+      ).toHaveLength(0);
+
+      expect((await noticeB.consume(bucket)).allowed).toBe(false);
+      await harness.forceFlush();
+
+      const logs = [...harness.logExporter.getFinishedLogRecords()].filter(
+        (record) => record.eventName === 'auth.security.rate_limited',
+      );
+      expect(logs).toHaveLength(1);
+      expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+      expect(logs[0]?.attributes).toEqual({ [RATE_LIMIT_SCOPE_ATTRIBUTE]: 'notice_recipient' });
+
+      const points: { attributes: Attributes; value: number }[] = [];
+      for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+        for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+          for (const metric of scopeMetrics.metrics) {
+            if (
+              metric.descriptor.name === 'tayzu.auth.rate_limit.events' &&
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+              metric.dataPointType === METRIC_DATA_POINT_TYPE_SUM
+            ) {
+              for (const dataPoint of metric.dataPoints) {
+                points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+              }
+            }
+          }
+        }
+      }
+      expect(points).toHaveLength(1);
+      expect(points[0]?.value).toBe(1);
+      expect(points[0]?.attributes).toEqual({ [RATE_LIMIT_SCOPE_ATTRIBUTE]: 'notice_recipient' });
+    });
+  });
+
   // Task 6.10b (Resolved decision Q66). The clock seam is a Date-only fake clock
   // (`vi.useFakeTimers({ toFake: ['Date'] })`): the store reads `Date.now()`, and the
   // pool's real timers stay untouched.
