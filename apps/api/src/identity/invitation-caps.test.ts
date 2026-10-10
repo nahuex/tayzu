@@ -355,3 +355,71 @@ describe('the global invitation kill switch (043 task 6.8, Q15)', () => {
     expect(await limitedEvents()).toHaveLength(0);
   });
 });
+
+/**
+ * 043 task 6.8c (VCDM G2, Q61): every `AUTH_RATE_LIMITED` of the invitation caps carries the
+ * same `retryAfterSeconds` (the shortest window, one hour), whichever bucket tripped.
+ * No new production symbol: the in-memory store and the gate must stop leaking the window.
+ */
+describe('the uniform Retry-After of the invitation caps (043 task 6.8c, Q61)', () => {
+  it('Every cap answers with the same Retry-After', async () => {
+    async function rejection(promise: Promise<void>): Promise<AuthRateLimitedError> {
+      const error = await promise.then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(AuthRateLimitedError);
+      return error as AuthRateLimitedError;
+    }
+
+    // WHEN the per-tenant cap rejects an invitation
+    const tenantGate = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore: createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP }),
+      sender: createRecordingEmailSender(),
+      recipientKeySecret: HMAC_SECRET,
+    });
+    const full = tenantId();
+    for (let i = 0; i < 30; i += 1) {
+      await tenantGate.send({
+        tenantId: full,
+        to: `invitee-${String(i)}@example.test`,
+        template: INVITATION,
+      });
+    }
+    const tenantRejection = await rejection(
+      tenantGate.send({ tenantId: full, to: RECIPIENT, template: INVITATION }),
+    );
+
+    // AND the per-recipient cap rejects another
+    const recipientGate = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore: createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP }),
+      sender: createRecordingEmailSender(),
+      recipientKeySecret: HMAC_SECRET,
+    });
+    for (let i = 0; i < 3; i += 1) {
+      await recipientGate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION });
+    }
+    const recipientRejection = await rejection(
+      recipientGate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION }),
+    );
+
+    // AND the kill switch rejects a third
+    const killGate = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore: createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP }),
+      sender: createRecordingEmailSender(),
+      recipientKeySecret: HMAC_SECRET,
+      killSwitch: true,
+    });
+    const killRejection = await rejection(
+      killGate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION }),
+    );
+
+    // THEN all answers carry the same Retry-After: the shortest window, one hour
+    expect(tenantRejection.retryAfterSeconds).toBe(3600);
+    expect(recipientRejection.retryAfterSeconds).toBe(tenantRejection.retryAfterSeconds);
+    expect(killRejection.retryAfterSeconds).toBe(tenantRejection.retryAfterSeconds);
+  });
+});

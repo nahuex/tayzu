@@ -58,7 +58,11 @@ export function createEmailTenantGate(deps: {
     try {
       await deps.capStore.consume(scope, key);
     } catch (error) {
-      if (error instanceof AuthRateLimitedError) emitLimited(scope, tenantId);
+      if (error instanceof AuthRateLimitedError) {
+        emitLimited(scope, tenantId);
+        // Every bucket answers with the same window, so the header does not reveal which tripped.
+        throw new AuthRateLimitedError(INVITATION_RETRY_AFTER_SECONDS);
+      }
       throw error;
     }
   }

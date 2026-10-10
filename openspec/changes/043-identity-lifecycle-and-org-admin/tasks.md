@@ -1217,7 +1217,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 6.8 A global kill switch (`INVITATION_EMAIL_KILL_SWITCH`). Verify:
       `invitation-caps.test.ts` covers "The global kill switch stops all invitation
       email" with scope `global`.
-- [ ] 6.8c Every `AUTH_RATE_LIMITED` of the invitation caps (tenant, recipient and
+- [x] 6.8c Every `AUTH_RATE_LIMITED` of the invitation caps (tenant, recipient and
       global) carries the **same** `Retry-After` (the shortest window, one hour), so
       the header does not reveal which bucket tripped (VCDM G2; Q61).
       Verify: `invitation-caps.test.ts` covers "Every cap answers with the same
