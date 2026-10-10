@@ -1657,7 +1657,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       user in another tenant, each of whose `afterAddMember` writes its `_user` as
       outside the context, while the acceptance's own member gets no hook write (the
       shed port's half is 8.5h's case).
-- [ ] 8.2 The acceptance service function (in `apps/api`, served by the plain route
+- [x] 8.2 The acceptance service function (in `apps/api`, served by the plain route
       of 14.1b) for an email with no account runs the steps of 8.1e: it verifies
       the token, creates the user (global role `user`), sets the
       password the invitee supplied under the policy, marks the email verified, adds

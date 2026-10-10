@@ -214,7 +214,21 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       if (existing === undefined || !progress.userStepRan) await compensate();
       throw acceptanceFailed();
     }
-    if (existing === undefined && role === 'admin') await step('admin_notice');
+    if (existing === undefined) {
+      // The invitee acts on a public route: they are the actor (Q116).
+      emitIdentityEvent({
+        name: 'catalog.audit.invitation_accepted',
+        severity: 'INFO',
+        attributes: {
+          'tayzu.tenant.id': tenantId,
+          'tayzu.identity.invitation.id': invitation.id,
+          'tayzu.actor.type': 'user',
+          'tayzu.actor.id': userId,
+          'tayzu.identity.user.id': userId,
+        },
+      });
+      if (role === 'admin') await step('admin_notice');
+    }
     return { userId };
   }
 
