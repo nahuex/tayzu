@@ -20,6 +20,7 @@ export interface InvitationRead {
   readonly organizationId: string;
   readonly email: string;
   readonly status: string;
+  readonly expiresAt: Date;
 }
 
 export interface MemberRead {
@@ -81,6 +82,7 @@ interface InvitationRow {
   organization_id: string;
   email: string;
   status: string;
+  expires_at: Date;
 }
 interface MemberRow {
   id: string;
@@ -110,6 +112,7 @@ const toInvitation = (r: InvitationRow): InvitationRead => ({
   organizationId: r.organization_id,
   email: r.email,
   status: r.status,
+  expiresAt: r.expires_at,
 });
 const toMember = (r: MemberRow): MemberRead => ({
   id: r.id,
@@ -138,7 +141,7 @@ function requireTenant(tenantId: unknown): asserts tenantId is string {
 
 export function createAuthRepository(authPool: Pool): AuthRepository {
   const MEMBER_COLUMNS = 'id, organization_id, user_id, role';
-  const INVITATION_COLUMNS = 'id, organization_id, email, status';
+  const INVITATION_COLUMNS = 'id, organization_id, email, status, expires_at';
 
   return {
     async listApiKeys(tenantId, page) {

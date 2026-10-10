@@ -130,6 +130,7 @@ interface VerificationAdapterSurface {
       value: string;
       expiresAt: Date;
     }): Promise<unknown>;
+    updateVerificationByIdentifier(identifier: string, data: { value: string }): Promise<unknown>;
   };
 }
 
@@ -383,6 +384,46 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               body: { invitationId: (target as ResolvedIdentityTarget).id },
               headers,
             });
+          },
+        }),
+        // Design D4 "Resend": a new token on the same verification row, so the expiry and the invitation stay as they are.
+        resendInvitation: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'invite',
+            resolveTarget: invitationTargetOf,
+          },
+          handler: async ({ context, target }): Promise<InviteUserOutput> => {
+            const { emailGate, invitationLinkBaseUrl } = options;
+            if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
+              throw new IdentityInputError();
+            }
+            const tenantId = rawTenantId(context);
+            const invitation = await options.authRepository.invitationById(
+              tenantId,
+              (target as ResolvedIdentityTarget).id,
+            );
+            if (invitation === undefined) throw new IdentityInputError();
+            const token = generateInvitationToken();
+            await (
+              await verificationContext()
+            ).internalAdapter.updateVerificationByIdentifier(`invitation-accept:${invitation.id}`, {
+              value: digestInvitationToken(token),
+            });
+            await emailGate.send({
+              tenantId,
+              to: invitation.email,
+              template: {
+                kind: 'InvitationEmail',
+                link: buildInvitationLink({
+                  baseUrl: invitationLinkBaseUrl,
+                  invitationId: invitation.id,
+                  token,
+                }),
+                expiryText: INVITATION_EXPIRY_TEXT,
+              },
+            });
+            return { invitationId: invitation.id };
           },
         }),
         // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.

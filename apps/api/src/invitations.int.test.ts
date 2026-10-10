@@ -525,4 +525,89 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     // ...so it is no longer a pending, acceptable invitation.
     expect(after.filter((row) => row.status === 'pending')).toEqual([]);
   }, 60_000);
+
+  // Task 7.7 (spec "Invitation lifecycle"; design D4 "Resend", Resolved
+  // decisions Q123 and Q128). Scenario "Resending issues a new link and keeps
+  // the expiry": GIVEN a pending invitation to `bob@example.com` created 10
+  // hours ago, WHEN the admin resends it, THEN another email is sent to it whose
+  // link works and whose earlier link no longer works, AND the invitation's
+  // expiry is still 48 hours from its original creation, not from the resend.
+  // Task 7.7 Verify adds: the response carries neither the token nor the link.
+  // Expected production behavior: `identity.users.resendInvitation`
+  // (apps/api/src/identity-router.ts), input `{ invitation: <id> }`, Cerbos
+  // `user` / `invite`, which replaces the digest in `auth.verification`
+  // (identifier `invitation-accept:<id>`) for the same invitation, leaves
+  // `auth.invitation.expires_at` alone and sends one `InvitationEmail` through
+  // the gate. "Works" / "no longer works" is asserted with
+  // `verifyInvitationToken` against the stored digest.
+  it('Resending issues a new link and keeps the expiry: a second email with a working link, the old token no longer verifies, expiresAt is unchanged and the response carries neither token nor link', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const TEN_HOURS_SECONDS = 10 * 60 * 60;
+
+    // GIVEN a pending invitation to `bob@example.com` created 10 hours ago.
+    const created = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+    await authPool.query(
+      `update auth.invitation set expires_at = expires_at - make_interval(secs => $2)
+       where id = $1`,
+      [created.invitationId, TEN_HOURS_SECONDS],
+    );
+    await authPool.query(
+      `update auth.verification set expires_at = expires_at - make_interval(secs => $2)
+       where identifier = $1`,
+      [`invitation-accept:${created.invitationId}`, TEN_HOURS_SECONDS],
+    );
+    const firstTemplate = emailsTo(email)[0]?.template;
+    if (firstTemplate?.kind !== 'InvitationEmail') throw new Error('the first email was not sent');
+    const oldToken =
+      new URLSearchParams(new URL(firstTemplate.link).hash.slice(1)).get('token') ?? '';
+    expect(oldToken.length).toBeGreaterThan(0);
+    const beforeRows = await invitationsOf(tenant.tenantId, email);
+    expect(beforeRows[0]?.status).toBe('pending');
+    const expiryBefore = beforeRows[0]?.expires_ms;
+    const verificationBefore = await verificationOf(created.invitationId);
+    expect(verificationBefore).toHaveLength(1);
+    expect(verifyInvitationToken(oldToken, verificationBefore[0]?.value ?? null)).toBe(true);
+
+    // WHEN the admin resends it.
+    const response = await client.identity.users.resendInvitation(
+      { invitation: created.invitationId },
+      { context: sessionContext(tenant) },
+    );
+
+    // THEN another email is sent to `bob@example.com`...
+    const messages = emailsTo(email);
+    expect(messages, 'the invite email and exactly one resend email').toHaveLength(2);
+    const template = messages[1]?.template;
+    if (template?.kind !== 'InvitationEmail') throw new Error('the resend email was not sent');
+    const fragment = new URLSearchParams(new URL(template.link).hash.slice(1));
+    expect(fragment.get('invitation')).toBe(created.invitationId);
+    const newToken = fragment.get('token') ?? '';
+    expect(newToken.length).toBeGreaterThan(0);
+    expect(newToken).not.toBe(oldToken);
+
+    // ...whose link works and whose earlier link no longer works.
+    const stored = await verificationOf(created.invitationId);
+    expect(stored, 'still one verification row for the invitation').toHaveLength(1);
+    expect(verifyInvitationToken(newToken, stored[0]?.value ?? null)).toBe(true);
+    expect(verifyInvitationToken(oldToken, stored[0]?.value ?? null)).toBe(false);
+
+    // AND the invitation's expiry is unchanged (not reset to now + 48 hours).
+    const afterRows = await invitationsOf(tenant.tenantId, email);
+    expect(afterRows).toHaveLength(1);
+    expect(afterRows[0]?.status).toBe('pending');
+    expect(afterRows[0]?.expires_ms).toBe(expiryBefore);
+    expect(stored[0]?.expires_ms).toBe(expiryBefore);
+
+    // The response carries neither the token nor the link.
+    const serialized = JSON.stringify(response);
+    expect(serialized).not.toContain(newToken);
+    expect(serialized).not.toContain(oldToken);
+    expect(serialized).not.toContain(template.link);
+    expect(serialized).not.toContain('/accept-invitation');
+    expect(serialized).not.toContain(`invitation=${created.invitationId}`);
+  }, 60_000);
 });

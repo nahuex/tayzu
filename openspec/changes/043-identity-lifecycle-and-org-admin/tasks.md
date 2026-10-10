@@ -1367,7 +1367,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       is a documented residual with no race case (Resolved decision Q128; design Risks,
       ticket TK12-1). Verify:
       `invitations.int.test.ts` covers "Admin can cancel a pending invitation".
-- [ ] 7.7 `identity.users.resendInvitation` issues a **new** token (the old one
+- [x] 7.7 `identity.users.resendInvitation` issues a **new** token (the old one
       stops working), keeps the original expiry and sends one email, and does **not**
       use Better Auth's `inviteMember` with `resend: true`, which resets `expiresAt`
       to now + 48 hours. Its response never carries the token or the link, and it sends
