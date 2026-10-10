@@ -27,3 +27,24 @@ export function runWithIdentityContext<T>(
 export function currentIdentityContext(): IdentityContext | undefined {
   return store.getStore();
 }
+
+/** The member an acceptance adds: its hook write is the acceptance's own `_user` step (Q112, Q120). */
+export interface AcceptanceContext {
+  readonly tenantId: string;
+  readonly userId: string;
+}
+
+const acceptanceStore = new AsyncLocalStorage<AcceptanceContext>();
+
+/** Runs `fn` as the acceptance of `context`'s member. */
+export function runWithAcceptanceContext<T>(
+  context: AcceptanceContext,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return acceptanceStore.run(context, fn);
+}
+
+/** The acceptance in progress, if any. */
+export function currentAcceptanceContext(): AcceptanceContext | undefined {
+  return acceptanceStore.getStore();
+}

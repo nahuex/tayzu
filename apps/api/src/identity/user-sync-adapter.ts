@@ -14,7 +14,7 @@ import {
 } from '@tayzu/auth';
 import type { UserSync, UserReadModel } from '@tayzu/catalog';
 
-import { currentIdentityContext } from './identity-context.js';
+import { currentAcceptanceContext, currentIdentityContext } from './identity-context.js';
 
 /** Retries after the first attempt (Q83). */
 const MAX_RETRIES = 3;
@@ -175,6 +175,17 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
 
   return {
     async upsertUser(input) {
+      // The membership hook makes no write for the acceptance's own member (Q112, Q120).
+      const acceptance = currentAcceptanceContext();
+      const hookChange = input.change;
+      if (
+        acceptance !== undefined &&
+        typeof hookChange === 'object' &&
+        input.tenantId === acceptance.tenantId &&
+        input.userId === acceptance.userId
+      ) {
+        return;
+      }
       await writeUserChange(input);
     },
     writeUserChange,

@@ -21,6 +21,8 @@ export interface InvitationRead {
   readonly email: string;
   readonly status: string;
   readonly expiresAt: Date;
+  /** The invited role as stored (`member` or `admin`); null when none was set. */
+  readonly role: string | null;
 }
 
 export interface MemberRead {
@@ -85,6 +87,7 @@ interface InvitationRow {
   email: string;
   status: string;
   expires_at: Date;
+  role: string | null;
 }
 interface MemberRow {
   id: string;
@@ -115,6 +118,7 @@ const toInvitation = (r: InvitationRow): InvitationRead => ({
   email: r.email,
   status: r.status,
   expiresAt: r.expires_at,
+  role: r.role,
 });
 const toMember = (r: MemberRow): MemberRead => ({
   id: r.id,
@@ -143,7 +147,7 @@ function requireTenant(tenantId: unknown): asserts tenantId is string {
 
 export function createAuthRepository(authPool: Pool): AuthRepository {
   const MEMBER_COLUMNS = 'id, organization_id, user_id, role';
-  const INVITATION_COLUMNS = 'id, organization_id, email, status, expires_at';
+  const INVITATION_COLUMNS = 'id, organization_id, email, status, expires_at, role';
 
   return {
     async listApiKeys(tenantId, page) {

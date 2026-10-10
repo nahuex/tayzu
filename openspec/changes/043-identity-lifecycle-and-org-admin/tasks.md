@@ -1535,7 +1535,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       runs before the plugin), an endpoint outside any list verifying in NFD too (the
       normalization is in the function), and the hook leaving a body without those
       fields untouched.
-- [ ] 8.1e The acceptance runs as a sequence of **idempotent steps with no
+- [x] 8.1e The acceptance runs as a sequence of **idempotent steps with no
       transaction around it** (Resolved decision Q89, which supersedes Q75's
       `transaction: true`: a Better Auth transaction would need `transaction: true` in
       `drizzleAdapter(...)`, which `auth.ts` sets nowhere, **and** `runWithTransaction`
