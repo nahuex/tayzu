@@ -11,6 +11,8 @@ import {
   type EmailTemplate,
 } from '@tayzu/auth';
 
+import { recipientKey } from './recipient-key.js';
+
 /** The port of the caps of 6.6 to 6.8 and 6.10. */
 export interface EmailCapStore {
   consume(scope: string, key: string): Promise<void>;
@@ -33,8 +35,27 @@ export function createEmailTenantGate(deps: {
   readonly disabledTenantIds: readonly string[];
   readonly capStore: EmailCapStore;
   readonly sender: EmailSender;
+  /** The HMAC secret of the recipient key (6.7b); the recipient cap runs only when set. */
+  readonly recipientKeySecret?: string;
 }): EmailTenantGate {
   const disabled = new Set(deps.disabledTenantIds);
+  async function consumeCap(scope: 'tenant' | 'recipient', key: string, tenantId: string) {
+    try {
+      await deps.capStore.consume(scope, key);
+    } catch (error) {
+      if (error instanceof AuthRateLimitedError) {
+        emitIdentityEvent({
+          name: 'catalog.security.invitation_rate_limited',
+          severity: 'WARN',
+          attributes: {
+            'tayzu.tenant.id': tenantId,
+            'tayzu.identity.invitation.limit_scope': scope,
+          },
+        });
+      }
+      throw error;
+    }
+  }
   return {
     async send({ tenantId, to, template }) {
       if (disabled.has(tenantId)) {
@@ -48,20 +69,9 @@ export function createEmailTenantGate(deps: {
         });
         return;
       }
-      try {
-        await deps.capStore.consume('tenant', tenantId);
-      } catch (error) {
-        if (error instanceof AuthRateLimitedError) {
-          emitIdentityEvent({
-            name: 'catalog.security.invitation_rate_limited',
-            severity: 'WARN',
-            attributes: {
-              'tayzu.tenant.id': tenantId,
-              'tayzu.identity.invitation.limit_scope': 'tenant',
-            },
-          });
-        }
-        throw error;
+      await consumeCap('tenant', tenantId, tenantId);
+      if (deps.recipientKeySecret !== undefined) {
+        await consumeCap('recipient', recipientKey(to, deps.recipientKeySecret), tenantId);
       }
       await deps.sender.send(to, template);
     },

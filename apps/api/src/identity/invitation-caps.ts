@@ -1,14 +1,20 @@
 /**
  * The invitation email caps (`043` design D5, Resolved decision Q15). The tenant cap is
  * 30 emails per hour, shared by invite and resend because both go through the one gate
- * and the one store. The recipient cap (6.7) and the kill switch (6.8) add to this file.
+ * and the one store. The recipient cap (6.7, 3 per 24 hours across tenants) is a second bucket; the kill switch (6.8) add to this file.
  */
 import { AuthRateLimitedError } from '@tayzu/auth';
 
 import type { EmailCapStore } from './email-tenant-gate.js';
 
+interface CapLimit {
+  readonly max: number;
+  readonly windowSeconds: number;
+}
+
 export interface InvitationCapLimits {
-  readonly tenant: { readonly max: number; readonly windowSeconds: number };
+  readonly tenant: CapLimit;
+  readonly recipient: CapLimit;
 }
 
 interface Bucket {
@@ -21,10 +27,10 @@ export function createInMemoryEmailCapStore(limits: InvitationCapLimits): EmailC
   const buckets = new Map<string, Bucket>();
   return {
     consume(scope, key) {
-      if (scope !== 'tenant') {
+      if (scope !== 'tenant' && scope !== 'recipient') {
         return Promise.reject(new Error(`Unsupported email cap scope: ${scope}`));
       }
-      const { max, windowSeconds } = limits.tenant;
+      const { max, windowSeconds } = limits[scope];
       const now = Date.now();
       const bucketKey = `${scope}:${key}`;
       let bucket = buckets.get(bucketKey);

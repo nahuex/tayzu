@@ -1209,7 +1209,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       covers `dast.sh` exporting `IDENTITY_TOKEN_HMAC_SECRET` and
       `INVITATION_LINK_BASE_URL`, the latter equal to its `ALLOWED_ORIGINS` value, port
       included.
-- [ ] 6.7 A per-recipient cap of 3 per 24 hours across all tenants, keyed by the
+- [x] 6.7 A per-recipient cap of 3 per 24 hours across all tenants, keyed by the
       HMAC of the canonical email (6.7b, 7.10). Verify: `invitation-caps.test.ts` covers
       "Exceeding the per-recipient cap blocks repeat invites across tenants",
       asserting scope `recipient` and that no address is in the event or the key

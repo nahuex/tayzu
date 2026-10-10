@@ -23,6 +23,18 @@
  * gate (or the store) emits `catalog.security.invitation_rate_limited` (WARN) with
  * `tayzu.tenant.id` and `tayzu.identity.invitation.limit_scope` = `tenant`, no address.
  * Invite and resend use the one gate, so they share the one bucket.
+ * 6.7 additionally expects:
+ *
+ * ```ts
+ * // InvitationCapLimits gains `recipient: { max: number; windowSeconds: number }` (3 / 86400).
+ * // createEmailTenantGate deps gain `recipientKeySecret?: string`. When set, after the tenant
+ * // bucket and before the sender, the gate calls capStore.consume('recipient',
+ * //   recipientKey(to, recipientKeySecret)) (`to` is already canonical). The in-memory store
+ * // supports scope 'recipient' (shared across tenants, one bucket per key) and rejects with
+ * // AuthRateLimitedError when full. The gate emits invitation_rate_limited with
+ * // limit_scope = 'recipient' (tenant id attribute, no address).
+ * ```
+ *
  * `Config` gains the tenant cap default (30 per 3600 s) following `limitWithDefaults`.
  */
 // Load-bearing import order (design D1): the telemetry harness registers before
@@ -33,8 +45,9 @@ import { randomUUID } from 'node:crypto';
 import { AuthRateLimitedError, createRecordingEmailSender, type EmailTemplate } from '@tayzu/auth';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { createEmailTenantGate } from './email-tenant-gate.js';
+import { createEmailTenantGate, type EmailCapStore } from './email-tenant-gate.js';
 import { createInMemoryEmailCapStore } from './invitation-caps.js';
+import { recipientKey } from './recipient-key.js';
 
 const EVENT = 'catalog.security.invitation_rate_limited';
 const RECIPIENT_LOCAL = 'marker-recipient';
@@ -43,6 +56,8 @@ const TOKEN = 'marker-token-7f3a9c';
 const LINK = `https://app.example.test/accept-invitation#invitation=marker-id-1&token=${TOKEN}`;
 const INVITATION: EmailTemplate = { kind: 'InvitationEmail', link: LINK, expiryText: '48 hours' };
 const TENANT_CAP = { max: 30, windowSeconds: 3600 };
+const RECIPIENT_CAP = { max: 3, windowSeconds: 86_400 };
+const HMAC_SECRET = 'invitation-caps-test-only-secret-0123456789-abcdef';
 
 function tenantId(): string {
   return `tenant-${randomUUID()}`;
@@ -73,10 +88,20 @@ describe('the per-tenant invitation cap (043 task 6.6, Q15)', () => {
     // GIVEN a tenant that has already created or resent 30 invitations in the current hour
     const tenant = tenantId();
     const sender = createRecordingEmailSender();
-    const capStore = createInMemoryEmailCapStore({ tenant: TENANT_CAP });
+    const capStore = createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP });
     // invite and resend are two services over the one gate and the one store
-    const invite = createEmailTenantGate({ disabledTenantIds: [], capStore, sender });
-    const resend = createEmailTenantGate({ disabledTenantIds: [], capStore, sender });
+    const invite = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore,
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
+    const resend = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore,
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
     for (let i = 0; i < 20; i += 1) {
       await invite.send({
         tenantId: tenant,
@@ -137,7 +162,8 @@ describe('the per-tenant invitation cap (043 task 6.6, Q15)', () => {
     const sender = createRecordingEmailSender();
     const gate = createEmailTenantGate({
       disabledTenantIds: [],
-      capStore: createInMemoryEmailCapStore({ tenant: TENANT_CAP }),
+      recipientKeySecret: HMAC_SECRET,
+      capStore: createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP }),
       sender,
     });
     for (let i = 0; i < 30; i += 1) {
@@ -154,5 +180,89 @@ describe('the per-tenant invitation cap (043 task 6.6, Q15)', () => {
     await gate.send({ tenantId: other, to: RECIPIENT, template: INVITATION });
 
     expect(sender.sent).toHaveLength(31);
+  });
+});
+
+describe('the per-recipient invitation cap (043 task 6.7, Q15, Q93)', () => {
+  it('Exceeding the per-recipient cap blocks repeat invites across tenants', async () => {
+    // GIVEN three invitations to the recipient in 24 hours from any tenants
+    const sender = createRecordingEmailSender();
+    const consumed: { scope: string; key: string }[] = [];
+    const inner = createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP });
+    const capStore: EmailCapStore = {
+      async consume(scope, key) {
+        consumed.push({ scope, key });
+        await inner.consume(scope, key);
+      },
+    };
+    const gate = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore,
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
+    for (let i = 0; i < 3; i += 1) {
+      await gate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION });
+    }
+    expect(sender.sent).toHaveLength(3);
+    expect(await limitedEvents()).toHaveLength(0);
+
+    // WHEN another tenant invites the same recipient
+    const attacker = tenantId();
+    const rejected = await gate
+      .send({ tenantId: attacker, to: RECIPIENT, template: INVITATION })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    // THEN the operation fails with AUTH_RATE_LIMITED
+    expect(rejected).toBeInstanceOf(AuthRateLimitedError);
+    expect((rejected as AuthRateLimitedError).code).toBe('AUTH_RATE_LIMITED');
+
+    // AND no email is sent
+    expect(sender.sent).toHaveLength(3);
+
+    // AND the event has scope recipient and no email address
+    const records = await limitedEvents();
+    expect(records).toHaveLength(1);
+    const [record] = records;
+    expect(record?.severityText).toBe('WARN');
+    expect(record?.attributes['tayzu.identity.invitation.limit_scope']).toBe('recipient');
+    const serialized = JSON.stringify([record?.attributes, record?.body]);
+    for (const secret of [RECIPIENT, RECIPIENT_LOCAL, 'example.test', TOKEN, LINK, HMAC_SECRET]) {
+      expect(serialized).not.toContain(secret);
+    }
+
+    // AND no address is in the key store: the keys are the HMAC of the address
+    const recipientCalls = consumed.filter((call) => call.scope === 'recipient');
+    expect(recipientCalls).toHaveLength(4);
+    for (const call of recipientCalls) {
+      expect(call.key).toBe(recipientKey(RECIPIENT, HMAC_SECRET));
+    }
+    for (const call of consumed) {
+      expect(call.key).not.toContain(RECIPIENT);
+      expect(call.key).not.toContain(RECIPIENT_LOCAL);
+      expect(call.key).not.toContain('example.test');
+    }
+  });
+
+  it('a different recipient is not blocked by a full recipient bucket', async () => {
+    const sender = createRecordingEmailSender();
+    const gate = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore: createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP }),
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
+    for (let i = 0; i < 3; i += 1) {
+      await gate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION });
+    }
+    await gate.send({
+      tenantId: tenantId(),
+      to: 'someone-else@example.test',
+      template: INVITATION,
+    });
+    expect(sender.sent).toHaveLength(4);
   });
 });
