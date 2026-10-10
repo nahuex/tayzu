@@ -1455,7 +1455,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       character refused, a denylisted password refused, a compliant 20-character
       password accepted, and the refusal naming only the failed rule, never the
       password.
-- [ ] 8.1a _(setup)_ A shared stub for the breached-password range query, as a
+- [x] 8.1a _(setup)_ A shared stub for the breached-password range query, as a
       `setupFiles` entry of the `int` project in `vitest.shared.ts` (a new
       `vitest.int.stub.mjs` beside it; an `.mjs` file, because a `.ts` file in
       `NODE_OPTIONS` depends on loader ordering). The root `vitest.int.setup.ts` is

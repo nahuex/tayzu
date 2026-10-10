@@ -130,6 +130,11 @@ up() {
   mkdir -p "$STATE_DIR"
   chmod 700 "$STATE_DIR"
 
+  # The breached-password plugin would call api.pwnedpasswords.com from the
+  # API server and the seed's bootstrap child. Both load the shared stub of
+  # task 8.1a (an empty range) for the whole `up` (Q71).
+  export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=file://$REPO_ROOT/vitest.int.stub.mjs"
+
   local password app_password auth_password secret hmac_secret database_url tls
   password="$(openssl rand -hex 24)"
   app_password="$(openssl rand -hex 24)"

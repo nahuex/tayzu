@@ -9,6 +9,9 @@ export const INTEGRATION_TEST_GLOB = 'src/**/*.int.test.ts';
 
 const integrationGlobalSetup = fileURLToPath(new URL('./vitest.int.setup.ts', import.meta.url));
 
+/** Per-worker stub of the breached-password range query (task 8.1a). */
+const integrationFetchStub = fileURLToPath(new URL('./vitest.int.stub.mjs', import.meta.url));
+
 /**
  * The Vitest config of one workspace package. It declares two nested
  * projects, `<name> (unit)` and `<name> (int)`:
@@ -38,6 +41,7 @@ export function definePackageConfig(name: string): UserWorkspaceConfig {
             environment: 'node',
             include: [INTEGRATION_TEST_GLOB],
             globalSetup: [integrationGlobalSetup],
+            setupFiles: [integrationFetchStub],
             // Integration tests hash passwords and round-trip Postgres and
             // Cerbos; under Turborepo's parallel package runs one shared
             // database and CPU make 5 s (the default) too tight. A timeout
