@@ -215,7 +215,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     // GIVEN a caller with the `admin` role; WHEN they record a Visma Connect
     // UserID on another user's account.
     await client.identity.users.linkSsoAccount(
-      { userId: target.userId, subject },
+      { user: target.email, subject },
       { context: context(tenantId, ['admin']) },
     );
 
@@ -259,10 +259,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
 
     // GIVEN a user whose only sign-in method is their linked Visma Connect
     // account, with no password set.
-    await client.identity.users.linkSsoAccount(
-      { userId: target.userId, subject },
-      { context: admin },
-    );
+    await client.identity.users.linkSsoAccount({ user: target.email, subject }, { context: admin });
     await removePassword(target.userId);
     expect(await credentialAccountsOf(target.userId), 'precondition: no password').toHaveLength(0);
     const before = await accountsOfUser(target.userId);
@@ -270,7 +267,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
 
     // WHEN an admin attempts to unlink it THEN the request is rejected...
     await rejection(
-      client.identity.users.unlinkSsoAccount({ userId: target.userId }, { context: admin }),
+      client.identity.users.unlinkSsoAccount({ user: target.email }, { context: admin }),
     );
 
     // ...and the account remains linked.
@@ -286,11 +283,11 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     await join(target.userId, tenantId);
     const admin = context(tenantId, ['admin']);
     await client.identity.users.linkSsoAccount(
-      { userId: target.userId, subject: `visma-sub-${randomUUID()}` },
+      { user: target.email, subject: `visma-sub-${randomUUID()}` },
       { context: admin },
     );
 
-    await client.identity.users.unlinkSsoAccount({ userId: target.userId }, { context: admin });
+    await client.identity.users.unlinkSsoAccount({ user: target.email }, { context: admin });
 
     expect(await accountsOfUser(target.userId)).toHaveLength(0);
     expect(await credentialAccountsOf(target.userId)).toHaveLength(1);
@@ -306,24 +303,24 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     // Tenant B already has a legitimate link for the victim (written by B's admin).
     const existingSub = `visma-sub-${randomUUID()}`;
     await client.identity.users.linkSsoAccount(
-      { userId: victim.userId, subject: existingSub },
+      { user: victim.email, subject: existingSub },
       { context: context(tenantB, ['admin']) },
     );
     expect(await accountsOfUser(victim.userId), 'precondition: victim linked').toHaveLength(1);
 
     const newSub = `visma-sub-${randomUUID()}`;
-    const ghostId = randomUUID();
+    const ghostUser = `ghost-${randomUUID()}@example.test`;
 
     // Link: cross-tenant target vs. nonexistent target.
     const crossLink = await rejection(
       client.identity.users.linkSsoAccount(
-        { userId: victim.userId, subject: newSub },
+        { user: victim.email, subject: newSub },
         { context: adminA },
       ),
     );
     const ghostLink = await rejection(
       client.identity.users.linkSsoAccount(
-        { userId: ghostId, subject: `visma-sub-${randomUUID()}` },
+        { user: ghostUser, subject: `visma-sub-${randomUUID()}` },
         { context: adminA },
       ),
     );
@@ -336,10 +333,10 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
 
     // Unlink: cross-tenant target vs. nonexistent target.
     const crossUnlink = await rejection(
-      client.identity.users.unlinkSsoAccount({ userId: victim.userId }, { context: adminA }),
+      client.identity.users.unlinkSsoAccount({ user: victim.email }, { context: adminA }),
     );
     const ghostUnlink = await rejection(
-      client.identity.users.unlinkSsoAccount({ userId: ghostId }, { context: adminA }),
+      client.identity.users.unlinkSsoAccount({ user: ghostUser }, { context: adminA }),
     );
     expect(shape(crossUnlink)).toEqual(shape(ghostUnlink));
     expect((crossUnlink as Error & { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
@@ -357,18 +354,12 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     const subject = `visma-sub-${randomUUID()}`;
     const admin = context(tenantId, ['admin']);
 
-    await client.identity.users.linkSsoAccount(
-      { userId: owner.userId, subject },
-      { context: admin },
-    );
+    await client.identity.users.linkSsoAccount({ user: owner.email, subject }, { context: admin });
     const before = await ssoAccountsFor(subject);
     expect(before, 'precondition: linked to the owner').toHaveLength(1);
 
     const error = await rejection(
-      client.identity.users.linkSsoAccount(
-        { userId: intruder.userId, subject },
-        { context: admin },
-      ),
+      client.identity.users.linkSsoAccount({ user: intruder.email, subject }, { context: admin }),
     );
 
     // No second link, the existing link untouched.
@@ -399,14 +390,14 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     cerbosRequests.length = 0;
     const crossLink = await rejection(
       client.identity.users.linkSsoAccount(
-        { userId: victim.userId, subject },
+        { user: victim.email, subject },
         { context: context(tenantA, ['admin']) },
       ),
     );
     const crossRequests = [...cerbosRequests];
     const ghostLink = await rejection(
       client.identity.users.linkSsoAccount(
-        { userId: randomUUID(), subject: `visma-sub-${randomUUID()}` },
+        { user: `ghost-${randomUUID()}@example.test`, subject: `visma-sub-${randomUUID()}` },
         { context: context(tenantA, ['admin']) },
       ),
     );
@@ -422,7 +413,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     // Control: tenant B's own admin is allowed and the check carries tenant B on both sides.
     cerbosRequests.length = 0;
     await client.identity.users.linkSsoAccount(
-      { userId: victim.userId, subject },
+      { user: victim.email, subject },
       { context: context(tenantB, ['admin']) },
     );
     const own = cerbosRequests.at(-1);
@@ -459,7 +450,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     await harness.reset();
 
     await client.identity.users.linkSsoAccount(
-      { userId: target.userId, subject },
+      { user: target.email, subject },
       { context: adminContext },
     );
 
@@ -488,15 +479,12 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     const adminContext = context(tenantId, ['admin']);
     const adminActorId = (adminContext['actor'] as { id: string }).id;
     await client.identity.users.linkSsoAccount(
-      { userId: target.userId, subject: `visma-sub-${randomUUID()}` },
+      { user: target.email, subject: `visma-sub-${randomUUID()}` },
       { context: adminContext },
     );
     await harness.reset();
 
-    await client.identity.users.unlinkSsoAccount(
-      { userId: target.userId },
-      { context: adminContext },
-    );
+    await client.identity.users.unlinkSsoAccount({ user: target.email }, { context: adminContext });
 
     const events = await linkLogEvents(harness, 'auth.security.account_unlinked');
     expect(events).toHaveLength(1);
@@ -518,21 +506,15 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     await join(intruder.userId, tenantId);
     const subject = `visma-sub-${randomUUID()}`;
     const admin = context(tenantId, ['admin']);
-    await client.identity.users.linkSsoAccount(
-      { userId: owner.userId, subject },
-      { context: admin },
-    );
+    await client.identity.users.linkSsoAccount({ user: owner.email, subject }, { context: admin });
     await removePassword(owner.userId);
     await harness.reset();
 
     await rejection(
-      client.identity.users.linkSsoAccount(
-        { userId: intruder.userId, subject },
-        { context: admin },
-      ),
+      client.identity.users.linkSsoAccount({ user: intruder.email, subject }, { context: admin }),
     );
     await rejection(
-      client.identity.users.unlinkSsoAccount({ userId: owner.userId }, { context: admin }),
+      client.identity.users.unlinkSsoAccount({ user: owner.email }, { context: admin }),
     );
 
     expect(await linkLogEvents(harness, 'auth.security.account_linked')).toHaveLength(0);
@@ -557,13 +539,13 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     await join(second.userId, tenantId);
     const refSubject = `visma-sub-${randomUUID()}`;
     await client.identity.users.linkSsoAccount(
-      { userId: first.userId, subject: refSubject },
+      { user: first.email, subject: refSubject },
       { context: admin },
     );
     const reference = shape(
       await rejection(
         client.identity.users.linkSsoAccount(
-          { userId: second.userId, subject: refSubject },
+          { user: second.email, subject: refSubject },
           { context: admin },
         ),
       ),
@@ -578,8 +560,8 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
       const subject = `visma-sub-${randomUUID()}`;
 
       const results = await Promise.allSettled([
-        client.identity.users.linkSsoAccount({ userId: a.userId, subject }, { context: admin }),
-        client.identity.users.linkSsoAccount({ userId: b.userId, subject }, { context: admin }),
+        client.identity.users.linkSsoAccount({ user: a.email, subject }, { context: admin }),
+        client.identity.users.linkSsoAccount({ user: b.email, subject }, { context: admin }),
       ]);
 
       expect(

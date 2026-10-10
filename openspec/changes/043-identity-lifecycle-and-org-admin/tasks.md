@@ -1022,7 +1022,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       fails closed" for each of the three, with a Cerbos client that throws, a context
       with no tenant or no actor, and a principal with an empty role list, asserting
       the denial and that the handler was never called.
-- [ ] 5.3c The three existing procedures take the `{user}` identifier (Resolved
+- [x] 5.3c The three existing procedures take the `{user}` identifier (Resolved
       decision Q31), resolved on the server to the Better Auth user, instead of a
       Better Auth `userId`, and the five existing integration test files that build
       `createIdentityRouter` with a `userId` body (`account-linking`,

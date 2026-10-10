@@ -20,7 +20,11 @@ import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 import type { AuthRepository } from './identity/auth-repository.js';
 import { createDefineIdentityOperation } from './identity/define-operation.js';
-import { createIdentityTargetResolver } from './identity/identity-target.js';
+import {
+  createIdentityTargetResolver,
+  type IdentityTargetResolver,
+  type ResolvedIdentityTarget,
+} from './identity/identity-target.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
 
 /** Generic on purpose: never says which user, if any, already holds the subject. */
@@ -105,26 +109,20 @@ function parseInput(raw: unknown): CreateUserInput {
   return { email, name, role: role as AssignableOrgRole };
 }
 
-function parseLinkInputUserId(raw: unknown): string {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { userId } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(userId)) throw new IdentityInputError();
-  return userId;
-}
-
 /** The Visma Connect provider id of the `account` row (design D23/D24). */
 const SSO_PROVIDER_ID = 'visma-connect';
 
 export interface SsoLinkInput {
-  readonly userId: string;
+  /** The `_user` identifier of the target (Resolved decision Q31), not a Better Auth id. */
+  readonly user: string;
   readonly subject: string;
 }
 
 function parseLinkInput(raw: unknown): SsoLinkInput {
   if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { userId, subject } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(userId) || !isNonEmptyString(subject)) throw new IdentityInputError();
-  return { userId, subject };
+  const { user, subject } = raw as Record<string, unknown>;
+  if (!isNonEmptyString(user) || !isNonEmptyString(subject)) throw new IdentityInputError();
+  return { user, subject };
 }
 
 /** The slice of Better Auth's internal adapter the admin-recorded linking uses (design D24 path (b)). */
@@ -172,18 +170,36 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   const authContext = (): Promise<AccountAdapterSurface> =>
     options.auth.$context as Promise<AccountAdapterSurface>;
 
+  const baseResolver = createIdentityTargetResolver({ authRepository: options.authRepository });
+  /**
+   * Maps the `{user}` identifier to the Better Auth user before the tenant check
+   * (Resolved decision Q31). An identifier with no user is passed on as is, so
+   * the resolver answers it exactly like any other unknown target.
+   */
+  const targetResolver: IdentityTargetResolver = {
+    async resolve(context, rawTarget) {
+      const identifier = (rawTarget as { id?: unknown }).id;
+      if (typeof identifier === 'string') {
+        const found = await options.authRepository.globalUserByEmail(identifier);
+        if (found !== undefined)
+          return baseResolver.resolve(context, { kind: 'user', id: found.id });
+      }
+      return baseResolver.resolve(context, rawTarget);
+    },
+  };
+
   const defineIdentityOperation = createDefineIdentityOperation({
     authz: options.authz,
-    targetResolver: createIdentityTargetResolver({ authRepository: options.authRepository }),
+    targetResolver,
   });
 
-  /** The `userId` of a link/unlink body as a user target; malformed input yields an id the resolver rejects. */
+  /** The `user` identifier of a link/unlink body as a user target; malformed input yields an id the resolver rejects. */
   function userTargetOf(raw: unknown): { kind: 'user'; id: string } {
-    const userId =
+    const user =
       typeof raw === 'object' && raw !== null
-        ? (raw as Record<string, unknown>)['userId']
+        ? (raw as Record<string, unknown>)['user']
         : undefined;
-    return { kind: 'user', id: userId as string };
+    return { kind: 'user', id: user as string };
   }
 
   return {
@@ -230,7 +246,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: userTargetOf,
           },
           route: HIGH_RISK_ROUTE,
-          handler: async ({ context, input: rawInput }): Promise<void> => {
+          handler: async ({ context, input: rawInput, target }): Promise<void> => {
             const input = parseLinkInput(rawInput);
             const adapter = (await authContext()).internalAdapter;
             const existing = await options.authRepository.globalAccountByKey(
@@ -240,7 +256,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             if (existing !== undefined) throw new IdentityLinkRejectedError();
             try {
               await adapter.linkAccount({
-                userId: input.userId,
+                userId: (target as ResolvedIdentityTarget).id,
                 providerId: SSO_PROVIDER_ID,
                 accountId: input.subject,
               });
@@ -259,8 +275,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: userTargetOf,
           },
           route: HIGH_RISK_ROUTE,
-          handler: async ({ context, input: rawInput }): Promise<void> => {
-            const userId = parseLinkInputUserId(rawInput);
+          handler: async ({ context, target }): Promise<void> => {
+            const userId = (target as ResolvedIdentityTarget).id;
             const adapter = (await authContext()).internalAdapter;
             const accounts = await options.authRepository.globalAccountsOf(userId);
             const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);

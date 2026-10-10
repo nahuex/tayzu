@@ -68,6 +68,12 @@ interface CreateOrganizationSurface {
   }): Promise<{ id: string }>;
 }
 
+interface AddMemberSurface {
+  addMember(args: {
+    body: { userId: string; organizationId: string; role: string };
+  }): Promise<unknown>;
+}
+
 const EVENT_NAME = 'catalog.audit.user_status_changed';
 
 describe('identity.users.create writes the _user through the membership hook only (task 4.3)', () => {
@@ -384,5 +390,78 @@ describe('identity router authorization telemetry (task 5.3)', () => {
     expect(allPointAttributes(tenantId)).not.toContain(email);
     expect(allPointAttributes(tenantId)).not.toContain(name);
     expect(allPointAttributes(tenantId)).not.toContain(created.userId);
+  }, 60_000);
+
+  // Task 5.3c (Resolved decision Q31): the three existing procedures take the
+  // `{user}` identifier (the member's email), resolved on the server to the
+  // Better Auth user, and no longer take a Better Auth `userId`.
+  async function ssoAccountCount(userId: string): Promise<number> {
+    const result = await authPool.query<{ count: string }>(
+      `select count(*)::text as count from auth.account
+       where user_id = $1 and provider_id = 'visma-connect'`,
+      [userId],
+    );
+    return Number(result.rows[0]?.count);
+  }
+
+  async function memberOfTenant(tenantId: string): Promise<{ userId: string; email: string }> {
+    const email = `member-${randomUUID()}@example.test`;
+    const user = await createAdminUser(auth, {
+      name: 'Identifier Target',
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (auth.api as AddMemberSurface).addMember({
+      body: { userId: user.userId, organizationId: tenantId, role: 'member' },
+    });
+    return user;
+  }
+
+  it('An unknown {user} identifier is rejected with CATALOG_NOT_FOUND by link and unlink', async () => {
+    const tenantId = await freshTenantId();
+    const admin = callerContext(tenantId, `admin-${randomUUID()}`, ['admin']);
+    const subject = `visma-sub-${randomUUID()}`;
+    const unknown = `nobody-${randomUUID()}@example.test`;
+
+    await expect(
+      client.identity.users.linkSsoAccount({ user: unknown, subject }, { context: admin }),
+    ).rejects.toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+    await expect(
+      client.identity.users.unlinkSsoAccount({ user: unknown }, { context: admin }),
+    ).rejects.toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+
+    const written = await authPool.query(
+      `select 1 from auth.account where provider_id = 'visma-connect' and account_id = $1`,
+      [subject],
+    );
+    expect(written.rows, 'nothing was linked').toHaveLength(0);
+  }, 60_000);
+
+  it('A Better Auth userId body is rejected by link and unlink, and nothing is written or deleted', async () => {
+    const tenantId = await freshTenantId();
+    const admin = callerContext(tenantId, `admin-${randomUUID()}`, ['admin']);
+    const target = await memberOfTenant(tenantId);
+    const subject = `visma-sub-${randomUUID()}`;
+
+    // Control: the same target, addressed by its identifier, is linked.
+    await client.identity.users.linkSsoAccount(
+      { user: target.email, subject: `visma-sub-${randomUUID()}` },
+      { context: admin },
+    );
+    expect(await ssoAccountCount(target.userId), 'control: linked by identifier').toBe(1);
+
+    await expect(
+      client.identity.users.linkSsoAccount({ userId: target.userId, subject }, { context: admin }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    await expect(
+      client.identity.users.unlinkSsoAccount({ userId: target.userId }, { context: admin }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    const written = await authPool.query(
+      `select 1 from auth.account where provider_id = 'visma-connect' and account_id = $1`,
+      [subject],
+    );
+    expect(written.rows, 'the userId link wrote nothing').toHaveLength(0);
+    expect(await ssoAccountCount(target.userId), 'the userId unlink deleted nothing').toBe(1);
   }, 60_000);
 });
