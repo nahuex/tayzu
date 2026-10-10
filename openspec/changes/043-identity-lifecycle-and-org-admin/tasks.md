@@ -1073,7 +1073,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 
 ## 6. Invitation email and caps
 
-- [ ] 6.1 `EmailSender` port (one `send(to, template)` over a closed union of two
+- [x] 6.1 `EmailSender` port (one `send(to, template)` over a closed union of two
       fixed templates, `InvitationEmail` and `AdminAcceptedNotice`, which `045` extends
       with `OrgDeletionNotice`; no CC, BCC or attachment field) with a recording fake,
       and a recipient validator: a single plain address, no CR/LF, no display name, no
