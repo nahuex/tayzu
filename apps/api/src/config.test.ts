@@ -686,3 +686,61 @@ describe('IDENTITY_TOKEN_HMAC_SECRET (043 task 6.7b, Q93)', () => {
     expect(field(config, 'identityTokenHmacSecret')).toBeUndefined();
   });
 });
+
+/**
+ * `043` task 6.9 (design D5, Resolved decisions Q15 and `002` Q39): a disabled or zero
+ * invitation cap fails startup. Each cap is a max/window pair that follows the
+ * `limitWithDefaults` positive-integer pattern: the defaults are enabled in code and the
+ * environment only tunes them.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `invitationTenantCap: { max: number; windowSeconds: number }` (exists; 30 per hour),
+ *   from `INVITATION_TENANT_RATE_LIMIT_MAX` and `INVITATION_TENANT_RATE_LIMIT_WINDOW_SECONDS`;
+ * - `invitationRecipientCap: { max: number; windowSeconds: number }` (new; 3 per 24 hours),
+ *   from `INVITATION_RECIPIENT_RATE_LIMIT_MAX` and
+ *   `INVITATION_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS`.
+ * The global kill switch is a boolean, not a cap (6.8), and the notice cap is 6.12's case.
+ */
+describe('a disabled or zero invitation cap fails startup (043 task 6.9, Q15, 002 Q39)', () => {
+  const CAPS = [
+    {
+      key: 'invitationTenantCap',
+      max: 'INVITATION_TENANT_RATE_LIMIT_MAX',
+      window: 'INVITATION_TENANT_RATE_LIMIT_WINDOW_SECONDS',
+      defaults: { max: 30, windowSeconds: 3600 },
+    },
+    {
+      key: 'invitationRecipientCap',
+      max: 'INVITATION_RECIPIENT_RATE_LIMIT_MAX',
+      window: 'INVITATION_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS',
+      defaults: { max: 3, windowSeconds: 86_400 },
+    },
+  ] as const;
+
+  const read = (config: Config, key: string): unknown =>
+    (config as unknown as Record<string, unknown>)[key];
+
+  it.each(CAPS)('$key is enabled by default in code', ({ key, defaults }) => {
+    expect(read(loadConfig(env()), key)).toEqual(defaults);
+  });
+
+  it.each(CAPS)('$key is only tuned by the environment', ({ key, max, window }) => {
+    expect(read(loadConfig(env({ [max]: '7', [window]: '120' })), key)).toEqual({
+      max: 7,
+      windowSeconds: 120,
+    });
+  });
+
+  it.each(
+    CAPS.flatMap(({ max, window }) =>
+      [max, window].flatMap((name) =>
+        ['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'].map(
+          (value) => [name, value] as const,
+        ),
+      ),
+    ),
+  )('%s=%j (disabled or zero) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});

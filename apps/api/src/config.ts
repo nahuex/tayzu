@@ -44,6 +44,8 @@ export interface Config {
   readonly tokenExchangeRateLimit: RateLimit;
   /** Invitation emails per tenant, shared by invite and resend (Q15); window in seconds. */
   readonly invitationTenantCap: { readonly max: number; readonly windowSeconds: number };
+  /** Invitation emails per recipient (Q15); window in seconds. */
+  readonly invitationRecipientCap: { readonly max: number; readonly windowSeconds: number };
   /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
   readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
@@ -67,6 +69,7 @@ const DEFAULT_PASSWORD_CHECK_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
 const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
 const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
+const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 
 const MIN_SECRET_LENGTH = 32;
@@ -345,6 +348,12 @@ export function loadConfig(env: Env): Config {
     'INVITATION_TENANT_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_INVITATION_TENANT_LIMIT,
   );
+  const invitationRecipientCap = limitWithDefaults(
+    env,
+    'INVITATION_RECIPIENT_RATE_LIMIT_MAX',
+    'INVITATION_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_INVITATION_RECIPIENT_LIMIT,
+  );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const backchannelLogoutRateLimitPerMinute =
     optionalPositiveInt(env, 'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE') ??
@@ -367,6 +376,7 @@ export function loadConfig(env: Env): Config {
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
     invitationTenantCap,
+    invitationRecipientCap,
     invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     telemetryDisabled: loadTelemetryDisabled(env),

@@ -1223,7 +1223,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       Verify: `invitation-caps.test.ts` covers "Every cap answers with the same
       Retry-After": the tenant, recipient and kill-switch rejections carry an equal
       `retryAfterSeconds`.
-- [ ] 6.9 A disabled or zero cap fails startup (`002` Q39). Verify:
+- [x] 6.9 A disabled or zero cap fails startup (`002` Q39). Verify:
       `config.test.ts` covers a zero or disabled value for each invitation cap throwing
       at startup (the notice cap's is 6.12's case).
 - [ ] 6.10 The production store for the caps and the accept route's limiter is
