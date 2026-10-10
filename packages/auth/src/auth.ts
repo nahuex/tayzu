@@ -63,6 +63,7 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
 import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
+import { hashPassword, verifyPassword } from 'better-auth/crypto';
 import { decryptOAuthToken, setTokenUtil } from 'better-auth/oauth2';
 import {
   admin,
@@ -220,6 +221,25 @@ function unmatchedRouteResponse(): Response {
 /** A single `auth.member` row: the shape `databaseHooks.session.create.before` needs. */
 interface MembershipRow {
   readonly organizationId: string;
+}
+
+/** The body fields that carry a password (task 8.1d), selected by name, never by path. */
+const PASSWORD_BODY_FIELDS = ['password', 'newPassword', 'currentPassword'] as const;
+
+/** The password fields of `body` that change under NFC (empty when the body has none, or is not an object). */
+function normalizedPasswordFields(body: unknown): Record<string, string> {
+  const changed: Record<string, string> = {};
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return changed;
+  }
+  const record = body as Record<string, unknown>;
+  for (const field of PASSWORD_BODY_FIELDS) {
+    const value = record[field];
+    if (typeof value === 'string' && value !== value.normalize('NFC')) {
+      changed[field] = value.normalize('NFC');
+    }
+  }
+  return changed;
 }
 
 /**
@@ -719,6 +739,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       disableSignUp: true,
       minPasswordLength: 20,
       maxPasswordLength: 256,
+      // Task 8.1d (design Q22, Q132), layer 1: both functions NFC-normalize first, so
+      // every verifying path is covered without a list of paths.
+      password: {
+        hash: (password) => hashPassword(password.normalize('NFC')),
+        verify: ({ hash, password }) =>
+          verifyPassword({ hash, password: password.normalize('NFC') }),
+      },
     },
     // `enabled: false` (task 2.5, design D20): Better Auth's own built-in
     // database-backed rate limiter can only key by IP+path and its blocked
@@ -909,104 +936,121 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // Better Auth's own `dispatchAuthEndpoint`, both verified against the
       // installed source), leaving `currentPassword`/`newPassword` untouched.
       before: createAuthMiddleware(async (ctx) => {
-        // Task 27.3, design Q75, Q7: the 12-hour idle check on every
-        // session-bearing route except sign-in, so a stale cookie cannot
-        // reach Better Auth's refresh-on-read and reset the idle clock.
-        if (!SIGN_IN_PATH_PREFIXES.some((prefix) => ctx.path.startsWith(prefix))) {
-          const peek = await getSessionFromCtx(ctx, { disableRefresh: true }).catch(() => null);
-          // Drop the cached peek so the endpoint reads (and refreshes) normally.
-          ctx.context.session = null;
-          if (peek && isIdle(peek.session.updatedAt)) {
-            throw new APIError('UNAUTHORIZED', {
-              code: 'UNAUTHORIZED',
-              message: 'UNAUTHORIZED',
+        // Task 8.1d (design Q22, Q132), layer 2: NFC-normalize the password-bearing body
+        // fields by name, ahead of every plugin, so the breach check sees the NFC form.
+        const normalizedFields = normalizedPasswordFields(ctx.body);
+        ctx.body = { ...(ctx.body as object), ...normalizedFields };
+        const checked = await (async () => {
+          // Task 27.3, design Q75, Q7: the 12-hour idle check on every
+          // session-bearing route except sign-in, so a stale cookie cannot
+          // reach Better Auth's refresh-on-read and reset the idle clock.
+          if (!SIGN_IN_PATH_PREFIXES.some((prefix) => ctx.path.startsWith(prefix))) {
+            const peek = await getSessionFromCtx(ctx, { disableRefresh: true }).catch(() => null);
+            // Drop the cached peek so the endpoint reads (and refreshes) normally.
+            ctx.context.session = null;
+            if (peek && isIdle(peek.session.updatedAt)) {
+              throw new APIError('UNAUTHORIZED', {
+                code: 'UNAUTHORIZED',
+                message: 'UNAUTHORIZED',
+              });
+            }
+          }
+          if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
+            // Task 3.5, design D19: snapshot the session's current active
+            // organization before Better Auth's own route runs, so
+            // `hooks.after` can restore it if the membership check rejects the
+            // attempt (see this file's own doc comment). `getSessionFromCtx`
+            // is the same helper Better Auth's own `sessionMiddleware` calls,
+            // so this caches the read rather than adding a second one.
+            const session = await getSessionFromCtx(ctx).catch(() => null);
+            if (session) {
+              activeOrganizationBeforeAttempt.set(ctx.context, {
+                sessionToken: session.session.token,
+                previousActiveOrganizationId:
+                  (session.session.activeOrganizationId as string | null | undefined) ?? null,
+              });
+            }
+            return undefined;
+          }
+          if (ctx.path === GENERATE_BACKUP_CODES_PATH) {
+            // Q52, D18: regenerating backup codes needs a fresh `mfa` marker; a
+            // password alone (even the correct one) never suffices (Q51).
+            const session = await getSessionFromCtx(ctx).catch(() => null);
+            const factor = session
+              ? await currentFreshFactor(ctx.context.internalAdapter, session.session.token)
+              : null;
+            if (factor !== 'mfa') {
+              throw new APIError('FORBIDDEN', {
+                code: 'AUTH_STEP_UP_REQUIRED',
+                message: 'AUTH_STEP_UP_REQUIRED',
+              });
+            }
+            return undefined;
+          }
+          if (VERIFY_TWO_FACTOR_PATHS.includes(ctx.path)) {
+            // Q61, Q43: refuse `trustDevice: true` so every sign-in of an enrolled
+            // user is MFA-checked; nothing is verified and no cookie is set.
+            const body = ctx.body as { trustDevice?: unknown } | null | undefined;
+            if (body?.trustDevice === true) {
+              throw new APIError('BAD_REQUEST', {
+                code: 'TRUST_DEVICE_NOT_SUPPORTED',
+                message: 'TRUST_DEVICE_NOT_SUPPORTED',
+              });
+            }
+            return undefined;
+          }
+          if (ctx.path === CREATE_USER_PATH) {
+            // Task 8.1b: `/admin/create-user` inserts the user before it hashes the
+            // password, so the plugin's hash-time check would leave an orphan user
+            // behind. Checking here refuses the password before anything is written.
+            const body = ctx.body as { password?: unknown } | null | undefined;
+            if (typeof body?.password === 'string') {
+              if (await isPasswordCompromised(body.password)) {
+                throw new APIError('BAD_REQUEST', {
+                  code: 'PASSWORD_COMPROMISED',
+                  message: 'PASSWORD_COMPROMISED',
+                });
+              }
+            }
+            return undefined;
+          }
+          if (ctx.path !== CHANGE_PASSWORD_PATH) {
+            return undefined;
+          }
+          // Task 8.1c (design Q22): the new password must meet the policy before anything is written.
+          const newPassword = (ctx.body as { newPassword?: unknown } | null | undefined)
+            ?.newPassword;
+          if (typeof newPassword === 'string' && !validatePassword(newPassword).ok) {
+            throw new APIError('BAD_REQUEST', {
+              code: 'PASSWORD_POLICY_VIOLATION',
+              message: 'PASSWORD_POLICY_VIOLATION',
             });
           }
-        }
-        if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
-          // Task 3.5, design D19: snapshot the session's current active
-          // organization before Better Auth's own route runs, so
-          // `hooks.after` can restore it if the membership check rejects the
-          // attempt (see this file's own doc comment). `getSessionFromCtx`
-          // is the same helper Better Auth's own `sessionMiddleware` calls,
-          // so this caches the read rather than adding a second one.
+          // Q70, Q51: a user with an enrolled MFA factor needs a fresh `mfa`
+          // marker. Without a session, Better Auth's own route answers 401.
           const session = await getSessionFromCtx(ctx).catch(() => null);
-          if (session) {
-            activeOrganizationBeforeAttempt.set(ctx.context, {
-              sessionToken: session.session.token,
-              previousActiveOrganizationId:
-                (session.session.activeOrganizationId as string | null | undefined) ?? null,
-            });
-          }
-          return undefined;
-        }
-        if (ctx.path === GENERATE_BACKUP_CODES_PATH) {
-          // Q52, D18: regenerating backup codes needs a fresh `mfa` marker; a
-          // password alone (even the correct one) never suffices (Q51).
-          const session = await getSessionFromCtx(ctx).catch(() => null);
-          const factor = session
-            ? await currentFreshFactor(ctx.context.internalAdapter, session.session.token)
-            : null;
-          if (factor !== 'mfa') {
+          if (
+            session &&
+            (session.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true &&
+            (await currentFreshFactor(ctx.context.internalAdapter, session.session.token)) !== 'mfa'
+          ) {
             throw new APIError('FORBIDDEN', {
               code: 'AUTH_STEP_UP_REQUIRED',
               message: 'AUTH_STEP_UP_REQUIRED',
             });
           }
-          return undefined;
+          return { context: { body: { revokeOtherSessions: true } } };
+        })();
+        if (Object.keys(normalizedFields).length === 0) {
+          return checked;
         }
-        if (VERIFY_TWO_FACTOR_PATHS.includes(ctx.path)) {
-          // Q61, Q43: refuse `trustDevice: true` so every sign-in of an enrolled
-          // user is MFA-checked; nothing is verified and no cookie is set.
-          const body = ctx.body as { trustDevice?: unknown } | null | undefined;
-          if (body?.trustDevice === true) {
-            throw new APIError('BAD_REQUEST', {
-              code: 'TRUST_DEVICE_NOT_SUPPORTED',
-              message: 'TRUST_DEVICE_NOT_SUPPORTED',
-            });
-          }
-          return undefined;
-        }
-        if (ctx.path === CREATE_USER_PATH) {
-          // Task 8.1b: `/admin/create-user` inserts the user before it hashes the
-          // password, so the plugin's hash-time check would leave an orphan user
-          // behind. Checking here refuses the password before anything is written.
-          const body = ctx.body as { password?: unknown } | null | undefined;
-          if (typeof body?.password === 'string') {
-            if (await isPasswordCompromised(body.password)) {
-              throw new APIError('BAD_REQUEST', {
-                code: 'PASSWORD_COMPROMISED',
-                message: 'PASSWORD_COMPROMISED',
-              });
-            }
-          }
-          return undefined;
-        }
-        if (ctx.path !== CHANGE_PASSWORD_PATH) {
-          return undefined;
-        }
-        // Task 8.1c (design Q22): the new password must meet the policy before anything is written.
-        const newPassword = (ctx.body as { newPassword?: unknown } | null | undefined)?.newPassword;
-        if (typeof newPassword === 'string' && !validatePassword(newPassword).ok) {
-          throw new APIError('BAD_REQUEST', {
-            code: 'PASSWORD_POLICY_VIOLATION',
-            message: 'PASSWORD_POLICY_VIOLATION',
-          });
-        }
-        // Q70, Q51: a user with an enrolled MFA factor needs a fresh `mfa`
-        // marker. Without a session, Better Auth's own route answers 401.
-        const session = await getSessionFromCtx(ctx).catch(() => null);
-        if (
-          session &&
-          (session.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true &&
-          (await currentFreshFactor(ctx.context.internalAdapter, session.session.token)) !== 'mfa'
-        ) {
-          throw new APIError('FORBIDDEN', {
-            code: 'AUTH_STEP_UP_REQUIRED',
-            message: 'AUTH_STEP_UP_REQUIRED',
-          });
-        }
-        return { context: { body: { revokeOtherSessions: true } } };
+        // The returned body deep-merges onto the endpoint's own, so the normalized fields
+        // reach the plugins and the endpoint itself.
+        return {
+          context: {
+            body: { ...normalizedFields, ...(checked?.context.body as object | undefined) },
+          },
+        };
       }),
       after: createAuthMiddleware(async (ctx) => {
         if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {

@@ -1511,7 +1511,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       accepting a compliant one (including one of 128 astral code points), `identity.users.create` refusing a 19-character
       password, and `pnpm --filter @tayzu/auth test` still passing with the updated
       fixtures.
-- [ ] 8.1d The password is NFC-normalized in **two layers**. (1) Inside the hash and
+- [x] 8.1d The password is NFC-normalized in **two layers**. (1) Inside the hash and
       verify functions (Better Auth's `emailAndPassword.password.hash` and `.verify`,
       wrapping its own scrypt functions; `auth.ts` has no override today), so that every
       verifying path is covered without a list (a password hashed in NFC fails to sign in
