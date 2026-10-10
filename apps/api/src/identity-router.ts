@@ -14,33 +14,14 @@
  */
 import { randomBytes } from 'node:crypto';
 
-import { os, type Route } from '@orpc/server';
+import type { Route } from '@orpc/server';
 import { emitAccountLinkEvent, wouldLeaveNoSignInMethod, type AuthInstance } from '@tayzu/auth';
-import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
-import { recordAuthzDecision } from '@tayzu/catalog';
+import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 import type { AuthRepository } from './identity/auth-repository.js';
+import { createDefineIdentityOperation } from './identity/define-operation.js';
+import { createIdentityTargetResolver } from './identity/identity-target.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
-
-/** Same code and message as the catalog's `AuthorizationError` (design D11). */
-class IdentityForbiddenError extends Error {
-  readonly code = 'AUTH_FORBIDDEN' as const;
-
-  constructor() {
-    super('Action is not permitted');
-    this.name = 'IdentityForbiddenError';
-  }
-}
-
-/** Same code as the catalog's not-found; a cross-tenant and a nonexistent target are indistinguishable. */
-class IdentityNotFoundError extends Error {
-  readonly code = 'CATALOG_NOT_FOUND' as const;
-
-  constructor() {
-    super('The requested resource was not found');
-    this.name = 'IdentityNotFoundError';
-  }
-}
 
 /** Generic on purpose: never says which user, if any, already holds the subject. */
 class IdentityLinkRejectedError extends Error {
@@ -124,61 +105,6 @@ function parseInput(raw: unknown): CreateUserInput {
   return { email, name, role: role as AssignableOrgRole };
 }
 
-/** Cerbos `user` / `<action>` for the host-supplied principal; anything but an explicit allow is a deny. */
-async function assertMayOnUser(
-  authz: CerbosClient,
-  rawContext: RawContext,
-  action: 'create' | 'update',
-  resourceId: string,
-  resourceTenantId?: string,
-): Promise<void> {
-  const { tenantId, actor, principal } = rawContext as {
-    tenantId?: unknown;
-    actor?: { id?: unknown; type?: unknown } | null;
-    principal?: { roles?: unknown } | null;
-  };
-  const roles = principal?.roles;
-  if (
-    !isNonEmptyString(tenantId) ||
-    !isNonEmptyString(actor?.id) ||
-    !Array.isArray(roles) ||
-    roles.length === 0 ||
-    !roles.every(isNonEmptyString)
-  ) {
-    throw new IdentityForbiddenError();
-  }
-  let allowed: boolean;
-  try {
-    const checked = await authz.checkResources({
-      principal: { id: actor.id, roles: [...roles], attr: buildAttributes(tenantId, {}) },
-      resources: [
-        {
-          resource: {
-            kind: RESOURCE_KINDS.user,
-            id: resourceId,
-            attr: buildAttributes(resourceTenantId ?? tenantId, {}),
-          },
-          actions: [action],
-        },
-      ],
-    });
-    allowed = checked.results[0]?.isAllowed(action) === true;
-  } catch {
-    allowed = false;
-  }
-  // The cross-tenant probe of `authorizeTarget` is not a decision of its own.
-  if (resourceTenantId === undefined) {
-    const actorType = isNonEmptyString(actor.type) ? actor.type : 'unknown';
-    recordAuthzDecision(
-      { tenantId, actor: { type: actorType, id: actor.id } },
-      RESOURCE_KINDS.user,
-      action,
-      allowed,
-    );
-  }
-  if (!allowed) throw new IdentityForbiddenError();
-}
-
 function parseLinkInputUserId(raw: unknown): string {
   if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
   const { userId } = raw as Record<string, unknown>;
@@ -213,12 +139,12 @@ interface AccountAdapterSurface {
   };
 }
 
-/** The tenant of the caller; `assertMayCreateUser` already proved it is a non-empty string. */
+/** The tenant of the caller; the wrapper already proved it is a non-empty string. */
 function rawTenantId(context: RawContext): string {
   return context['tenantId'] as string;
 }
 
-/** Audit signal for an admin-recorded link/unlink (design D24); the context was validated by `authorizeTarget`. */
+/** Audit signal for an admin-recorded link/unlink (design D24); the context was validated by `the wrapper`. */
 function emitAdminLinkEvent(event: 'linked' | 'unlinked', context: RawContext): void {
   emitAccountLinkEvent(event, 'admin', {
     actorId: (context['actor'] as { id: string }).id,
@@ -242,70 +168,70 @@ const HIGH_RISK_ROUTE = {
 };
 
 export function createIdentityRouter(options: CreateIdentityRouterOptions) {
-  const base = os.$context<RawContext>();
   const userApi = options.auth.api as CreateUserApiSurface;
   const authContext = (): Promise<AccountAdapterSurface> =>
     options.auth.$context as Promise<AccountAdapterSurface>;
 
-  /**
-   * Design D24 / spec "cross-tenant looks like not found": the Cerbos resource
-   * carries the target's real tenant, resolved server-side from its
-   * memberships, never taken from input. The caller-tenant check runs first, so
-   * an unauthorized caller gets the same deny for any target; then, when the
-   * target is not a member of the caller's tenant, the check against the
-   * target's tenant denies and is reported as not-found (as is a nonexistent
-   * target).
-   */
-  async function authorizeTarget(context: RawContext, targetUserId: string): Promise<void> {
-    await assertMayOnUser(options.authz, context, 'update', targetUserId);
-    const callerTenant = rawTenantId(context);
-    if ((await options.authRepository.memberOf(callerTenant, targetUserId)) !== undefined) return;
-    const [targetTenant] = await options.authRepository.globalMembershipTenantsOf(targetUserId);
-    if (targetTenant === undefined) throw new IdentityNotFoundError();
-    try {
-      await assertMayOnUser(options.authz, context, 'update', targetUserId, targetTenant);
-    } catch {
-      // Denied by the cross-tenant rule (or Cerbos failed): fail closed as not-found.
-    }
-    throw new IdentityNotFoundError();
+  const defineIdentityOperation = createDefineIdentityOperation({
+    authz: options.authz,
+    targetResolver: createIdentityTargetResolver({ authRepository: options.authRepository }),
+  });
+
+  /** The `userId` of a link/unlink body as a user target; malformed input yields an id the resolver rejects. */
+  function userTargetOf(raw: unknown): { kind: 'user'; id: string } {
+    const userId =
+      typeof raw === 'object' && raw !== null
+        ? (raw as Record<string, unknown>)['userId']
+        : undefined;
+    return { kind: 'user', id: userId as string };
   }
 
   return {
     identity: {
       users: {
         // Authorization runs before input parsing: a denied caller learns nothing about validity.
-        create: base.handler(async ({ context, input: rawInput }): Promise<CreateUserOutput> => {
-          await assertMayOnUser(options.authz, context, 'create', 'new');
-          const input = parseInput(rawInput);
-          const temporaryPassword = generateTemporaryPassword();
-          const adminId = (context['actor'] as { id: string }).id;
-          // The membership hook is the single `_user` writer; it reads the admin from the store (Q76, Q117).
-          const { user } = await runWithIdentityContext({ adminId }, async () => {
-            const created = await userApi.createUser({
-              body: {
-                name: input.name,
-                email: input.email,
-                password: temporaryPassword,
-                role: GLOBAL_USER_ROLE,
-              },
+        create: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'create',
+            resolveTarget: () => undefined,
+          },
+          handler: async ({ context, input: rawInput }): Promise<CreateUserOutput> => {
+            const input = parseInput(rawInput);
+            const temporaryPassword = generateTemporaryPassword();
+            const adminId = (context['actor'] as { id: string }).id;
+            // The membership hook is the single `_user` writer; it reads the admin from the store (Q76, Q117).
+            const { user } = await runWithIdentityContext({ adminId }, async () => {
+              const created = await userApi.createUser({
+                body: {
+                  name: input.name,
+                  email: input.email,
+                  password: temporaryPassword,
+                  role: GLOBAL_USER_ROLE,
+                },
+              });
+              await userApi.addMember({
+                body: {
+                  userId: created.user.id,
+                  role: input.role,
+                  organizationId: rawTenantId(context),
+                },
+              });
+              return created;
             });
-            await userApi.addMember({
-              body: {
-                userId: created.user.id,
-                role: input.role,
-                organizationId: rawTenantId(context),
-              },
-            });
-            return created;
-          });
-          return { userId: user.id, email: user.email, temporaryPassword };
+            return { userId: user.id, email: user.email, temporaryPassword };
+          },
         }),
         // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.
-        linkSsoAccount: base
-          .route(HIGH_RISK_ROUTE)
-          .handler(async ({ context, input: rawInput }): Promise<void> => {
+        linkSsoAccount: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'update',
+            resolveTarget: userTargetOf,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: async ({ context, input: rawInput }): Promise<void> => {
             const input = parseLinkInput(rawInput);
-            await authorizeTarget(context, input.userId);
             const adapter = (await authContext()).internalAdapter;
             const existing = await options.authRepository.globalAccountByKey(
               SSO_PROVIDER_ID,
@@ -324,12 +250,17 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               throw error;
             }
             emitAdminLinkEvent('linked', context);
-          }),
-        unlinkSsoAccount: base
-          .route(HIGH_RISK_ROUTE)
-          .handler(async ({ context, input: rawInput }): Promise<void> => {
+          },
+        }),
+        unlinkSsoAccount: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'update',
+            resolveTarget: userTargetOf,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: async ({ context, input: rawInput }): Promise<void> => {
             const userId = parseLinkInputUserId(rawInput);
-            await authorizeTarget(context, userId);
             const adapter = (await authContext()).internalAdapter;
             const accounts = await options.authRepository.globalAccountsOf(userId);
             const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);
@@ -339,7 +270,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             }
             for (const account of sso) await adapter.deleteAccount(account.id);
             if (sso.length > 0) emitAdminLinkEvent('unlinked', context);
-          }),
+          },
+        }),
       },
     },
   };

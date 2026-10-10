@@ -981,7 +981,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `identity-router.int.test.ts` covers that a denied call logs the event and
       records one `deny` decision and an allowed call one `allow`, with no email or
       identifier of the target.
-- [ ] 5.3b `defineIdentityOperation({ authorization: { kind, action,
+- [x] 5.3b `defineIdentityOperation({ authorization: { kind, action,
 resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (Resolved decisions Q45 and Q57) is the only way to build an identity
       procedure: it brands what it returns, resolves the target with the helper of
@@ -995,7 +995,11 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `identity-router-structure.test.ts` fails when a procedure of the identity
       router is not branded, including one built by chaining and one built from an
       unwrapped builder (a text scan for a bare `.handler(` is bypassable, so the test
-      checks the brand or a registry).
+      checks the brand or a registry). `002`'s test "The Cerbos check uses the target
+      user's real tenant, and a principal of another tenant is denied"
+      (`account-linking.int.test.ts:389`) is **rewritten** to 5.2 (Resolved decision
+      Q135), not loosened: the cross-tenant attempt answers `CATALOG_NOT_FOUND` and no
+      Cerbos request carries a resource of the other tenant; the PR calls it out.
 - [ ] 5.3b2 The wrapper checks the **caller's role in the caller's own tenant
       first**, with no target (Resolved decision Q57; `002`'s `assertMayOnUser` did),
       then resolves the target, then re-checks with the target's real tenant. For the
@@ -2831,9 +2835,13 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       credential answer `CATALOG_NOT_FOUND`. Verify: the same scenario for rotate
       and revoke, asserting the credential is still usable and no revocation row was
       written.
-- [ ] 12.8 Cerbos receives the target's real tenant, not the caller's. Verify: a
-      call whose target belongs to `t2` reaches Cerbos with resource tenant `t2`
-      (a recording Cerbos client), and the `same_tenant` policy denies it.
+- [ ] 12.8 Cerbos receives the target's real tenant, not the caller's (Resolved
+      decision Q135): the resource tenant comes from the resolved record, never from
+      `ctx.tenantId`. Verify: with a recording Cerbos client, a call on a target of the
+      caller's tenant reaches Cerbos with the resource tenant taken from the record, and
+      a call whose target belongs to `t2` answers `CATALOG_NOT_FOUND` with no Cerbos
+      request carrying a resource of `t2`; the `same_tenant` denial of a principal of
+      one tenant on a resource of another is pinned by the Cerbos policy tests.
 - [ ] 12.9 `identity.users.create`, `linkSsoAccount` and `unlinkSsoAccount` (the
       three routes `002` already had, Resolved decision Q31): `create` writes only the
       host tenant, a target of another tenant answers `CATALOG_NOT_FOUND`, and a target

@@ -386,32 +386,38 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
     expect(revealed).not.toContain(subject);
   }, 60_000);
 
-  it("The Cerbos check uses the target user's real tenant, and a principal of another tenant is denied", async () => {
+  it("A cross-tenant link answers CATALOG_NOT_FOUND like an unknown user, with no Cerbos request for the other tenant's resource", async () => {
+    // Rewritten to 043 Resolved decision Q135: the target is resolved inside the
+    // caller's tenant, so another tenant's user is "not found" before Cerbos sees it.
     const tenantA = await freshTenantId();
     const tenantB = await freshTenantId();
     const victim = await newUser('cerbos-victim');
     await join(victim.userId, tenantB);
     const subject = `visma-sub-${randomUUID()}`;
 
-    // Cross-tenant caller: the check must be made against tenant B's resource.
+    // Cross-tenant caller: rejected exactly like a nonexistent user.
     cerbosRequests.length = 0;
-    await rejection(
+    const crossLink = await rejection(
       client.identity.users.linkSsoAccount(
         { userId: victim.userId, subject },
         { context: context(tenantA, ['admin']) },
       ),
     );
-    const cross = cerbosRequests.filter((r) =>
+    const crossRequests = [...cerbosRequests];
+    const ghostLink = await rejection(
+      client.identity.users.linkSsoAccount(
+        { userId: randomUUID(), subject: `visma-sub-${randomUUID()}` },
+        { context: context(tenantA, ['admin']) },
+      ),
+    );
+    expect((crossLink as Error & { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+    expect(shape(crossLink)).toEqual(shape(ghostLink));
+    const leaked = crossRequests.filter((r) =>
       r.resources.some((entry) => entry.resource.attr?.['tenantId'] === tenantB),
     );
-    expect(cross.length, 'Cerbos was asked about a tenant-B resource').toBeGreaterThan(0);
-    const request = cross[0];
-    expect(request?.principal.attr?.['tenantId']).toBe(tenantA);
-
-    // Replayed against the real Cerbos, that principal is denied.
-    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
-    const decision = await cerbos.checkResources(request as CheckResourcesRequest);
-    expect(decision.results[0]?.isAllowed('update')).toBe(false);
+    expect(leaked, 'no Cerbos request carries a tenant-B resource').toHaveLength(0);
+    expect(await ssoAccountsFor(subject), 'no account was linked').toHaveLength(0);
+    expect(await accountsOfUser(victim.userId), 'no account was linked').toHaveLength(0);
 
     // Control: tenant B's own admin is allowed and the check carries tenant B on both sides.
     cerbosRequests.length = 0;
