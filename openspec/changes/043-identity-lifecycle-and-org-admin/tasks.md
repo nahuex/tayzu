@@ -1482,7 +1482,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `dast-script.test.ts` (4.6b) covers the stub being imported through
       `NODE_OPTIONS` before the API server and the seed start, and `turbo.json` lists
       the file.
-- [ ] 8.1b Breached-password check (design Q23): Better Auth's built-in
+- [x] 8.1b Breached-password check (design Q23): Better Auth's built-in
       `haveIBeenPwned` plugin is enabled for every path the policy covers, with a
       sanitized refusal and fail-closed behavior. The plugin checks only the endpoint
       paths in its list (it covers `/admin/create-user`) and silently skips a hash

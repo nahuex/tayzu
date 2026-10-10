@@ -64,7 +64,14 @@ import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
 import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
 import { decryptOAuthToken, setTokenUtil } from 'better-auth/oauth2';
-import { admin, jwt, organization, twoFactor } from 'better-auth/plugins';
+import {
+  admin,
+  haveIBeenPwned,
+  isPasswordCompromised,
+  jwt,
+  organization,
+  twoFactor,
+} from 'better-auth/plugins';
 
 import {
   preAuthRateLimitPlugin,
@@ -105,6 +112,17 @@ const SIGN_IN_PATH_PREFIXES: readonly string[] = ['/sign-in/', '/callback/'];
 const SIGN_OUT_PATH = '/sign-out';
 const SIGN_IN_SOCIAL_PATH = '/sign-in/social';
 const CHANGE_PASSWORD_PATH = '/change-password';
+const CREATE_USER_PATH = '/admin/create-user';
+
+/** The paths the `haveIBeenPwned` plugin checks at hash time: its defaults minus `CREATE_USER_PATH`. */
+const BREACH_CHECKED_PATHS: string[] = [
+  '/sign-up/email',
+  CHANGE_PASSWORD_PATH,
+  '/reset-password',
+  '/email-otp/reset-password',
+  '/phone-number/reset-password',
+  '/admin/set-user-password',
+];
 const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 /** design D4: every `two-factor` verify endpoint (`/two-factor/verify-totp`, `-backup-code`, `-otp`). */
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
@@ -748,6 +766,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         },
       }),
       admin(),
+      // Task 8.1b (design Q23): k-anonymity breach check; fails closed with a 500
+      // when the range service is unreachable. `/admin/create-user` is checked by
+      // the `before` hook instead (see `CREATE_USER_PATH`), so it is not listed.
+      haveIBeenPwned({ paths: BREACH_CHECKED_PATHS }),
       twoFactor(),
       // Task 5.4 fix (this file's own `MACHINE_TOKEN_ISSUER`/`_AUDIENCE` doc
       // comment): a fixed, non-empty `iss`/`aud` default, required for
@@ -938,6 +960,21 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               code: 'TRUST_DEVICE_NOT_SUPPORTED',
               message: 'TRUST_DEVICE_NOT_SUPPORTED',
             });
+          }
+          return undefined;
+        }
+        if (ctx.path === CREATE_USER_PATH) {
+          // Task 8.1b: `/admin/create-user` inserts the user before it hashes the
+          // password, so the plugin's hash-time check would leave an orphan user
+          // behind. Checking here refuses the password before anything is written.
+          const body = ctx.body as { password?: unknown } | null | undefined;
+          if (typeof body?.password === 'string') {
+            if (await isPasswordCompromised(body.password)) {
+              throw new APIError('BAD_REQUEST', {
+                code: 'PASSWORD_COMPROMISED',
+                message: 'PASSWORD_COMPROMISED',
+              });
+            }
           }
           return undefined;
         }
