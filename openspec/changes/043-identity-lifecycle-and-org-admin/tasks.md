@@ -1386,7 +1386,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `AUTH_FORBIDDEN`, no invitation is created and `catalog.security.authz_denied`
       is logged. Verify: `invitations.int.test.ts` covers "Non-admin cannot invite"
       against the real Cerbos container.
-- [ ] 7.9b `@tayzu/catalog` exports `ENTITY_IDENTIFIER_PATTERN` unchanged (Resolved
+- [x] 7.9b `@tayzu/catalog` exports `ENTITY_IDENTIFIER_PATTERN` unchanged (Resolved
       decision Q60), from one source of truth. The constant exists as two private
       copies today (`packages/catalog/src/domain/limits.ts` and
       `packages/catalog/src/domain/identifiers.ts`): `identifiers.ts` is the source,

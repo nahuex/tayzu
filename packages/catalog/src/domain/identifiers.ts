@@ -19,7 +19,7 @@ const NAME_IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const BLUEPRINT_IDENTIFIER_PATTERN = /^_?[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 /** Entity identifiers: max 256 chars, path-like character class. */
-const ENTITY_IDENTIFIER_PATTERN = /^[A-Za-z0-9@_.:/=-]{1,256}$/;
+export const ENTITY_IDENTIFIER_PATTERN = /^[A-Za-z0-9@_.:/=-]{1,256}$/;
 
 /** Rejected in every key position of catalog input (spec Conventions, "Unsafe keys"). */
 const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
