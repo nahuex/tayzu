@@ -1729,7 +1729,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       rejection (Resolved decisions Q18 and Q24). Verify:
       `invitation-accept.int.test.ts` covers "Acceptance does not touch an existing
       account", including a `password` in the body being ignored.
-- [ ] 8.5b For an existing account with a session of that same account and the valid
+- [x] 8.5b For an existing account with a session of that same account and the valid
       token, acceptance adds only the membership with the invited role and, **after** its
       explicit shed step (8.5h), activates the `_user` through `invitation_accepted` and
       sets `emailVerified` (Resolved decision Q38: the token proves the mailbox; Resolved
