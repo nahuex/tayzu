@@ -1226,7 +1226,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 6.9 A disabled or zero cap fails startup (`002` Q39). Verify:
       `config.test.ts` covers a zero or disabled value for each invitation cap throwing
       at startup (the notice cap's is 6.12's case).
-- [ ] 6.10 The production store for the caps and the accept route's limiter is
+- [x] 6.10 The production store for the caps and the accept route's limiter is
       `002`'s DB-backed atomic store (`auth.rate_limit`, hashed keys, no migration).
       `consumeRateLimitBucket` is not exported today and is tied to the Better Auth
       plugin's rule table (`pre-auth-rate-limit.ts`), so `@tayzu/auth` exports a

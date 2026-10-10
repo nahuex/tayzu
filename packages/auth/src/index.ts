@@ -56,6 +56,11 @@ export {
 } from './backchannel-logout-telemetry.js';
 export { emitRateLimited, type RateLimitScope } from './rate-limit/pre-auth-rate-limit.js';
 export {
+  createRateLimitBucketStore,
+  type RateLimitBucketStore,
+  type RateLimitBucketStoreOptions,
+} from './rate-limit/bucket-store.js';
+export {
   emitIdentityEvent,
   recordIdentityMetric,
   withIdentitySpan,

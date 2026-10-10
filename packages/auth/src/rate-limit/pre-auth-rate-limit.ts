@@ -57,7 +57,18 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import { logger, rateLimitEventsCounter } from '../telemetry/instruments.js';
 
 /** design.md, Metrics/Log events tables: `tayzu.auth.rate_limit.scope`'s closed enum (design D20). */
-export type RateLimitScope = 'sign_in' | 'two_factor_verify' | 'token_exchange';
+export type RateLimitScope =
+  | 'sign_in'
+  | 'two_factor_verify'
+  | 'token_exchange'
+  // Change 043 (task 6.10): invitation caps and the accept route's limiter.
+  | 'invitation_accept'
+  | 'invitation_tenant'
+  | 'invitation_recipient'
+  | 'notice_tenant';
+
+/** The kinds a bucket key can be namespaced by; `tenant` was added by change 043 (task 6.10). */
+export type BucketKeyKind = 'ip' | 'email' | 'user' | 'tenant';
 
 /** design.md, Log events table: `auth.security.rate_limited`'s only attribute (design D20). */
 const RATE_LIMIT_SCOPE_ATTRIBUTE = 'tayzu.auth.rate_limit.scope';
@@ -200,18 +211,14 @@ interface RateLimitBucketRow {
   readonly lastRequest: Date;
 }
 
-interface ConsumeResult {
+export interface ConsumeResult {
   readonly allowed: boolean;
   /** Seconds until the bucket frees up; only meaningful when `allowed` is `false`. */
   readonly retryAfterSeconds: number | null;
 }
 
 /** SHA-256 of `scope:kind:value`, hex-encoded: no IP address or email is ever persisted in clear (design D20). */
-function hashBucketKey(
-  scope: RateLimitScope,
-  kind: 'ip' | 'email' | 'user',
-  value: string,
-): string {
+export function hashBucketKey(scope: RateLimitScope, kind: BucketKeyKind, value: string): string {
   return createHash('sha256').update(`${scope}:${kind}:${value}`).digest('hex');
 }
 
@@ -303,7 +310,7 @@ async function resolveSessionUserId(
  * all pass a stale read before any increment lands (design D20, "storage
  * shared across every running replica").
  */
-async function consumeRateLimitBucket(
+export async function consumeRateLimitBucket(
   adapter: DBAdapter,
   key: string,
   rule: RateLimitRuleOptions,
