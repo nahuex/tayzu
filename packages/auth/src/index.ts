@@ -83,3 +83,4 @@ export {
   generateInvitationToken,
   verifyInvitationToken,
 } from './identity/invitation-token.js';
+export { generateTemporaryPassword } from './identity/temporary-password.js';

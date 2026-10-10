@@ -12,14 +12,13 @@
  * created. The system-generated temporary password is returned in the
  * creation response only, never logged or emailed.
  */
-import { randomBytes } from 'node:crypto';
-
 import type { Route } from '@orpc/server';
 import {
   digestInvitationToken,
   emitAccountLinkEvent,
   emitIdentityEvent,
   generateInvitationToken,
+  generateTemporaryPassword,
   withIdentitySpan,
   wouldLeaveNoSignInMethod,
   type AuthInstance,
@@ -255,11 +254,6 @@ function emitAdminLinkEvent(event: 'linked' | 'unlinked', context: RawContext): 
     actorId: (context['actor'] as { id: string }).id,
     tenantId: rawTenantId(context),
   });
-}
-
-/** A single-use, system-generated temporary password (design D22's "shown once" discipline). */
-function generateTemporaryPassword(): string {
-  return randomBytes(24).toString('base64url');
 }
 
 type OperationObject = Parameters<Extract<Route['spec'], (...args: never[]) => unknown>>[0];

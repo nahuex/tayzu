@@ -31,11 +31,10 @@
  * The CLI entry point stays in `scripts/bootstrap-admin.ts` until task 4.6b
  * moves it to `apps/api`.
  */
-import { randomBytes } from 'node:crypto';
-
 import { isAPIError } from 'better-auth/api';
 
 import type { AuthInstance } from './auth.js';
+import { generateTemporaryPassword } from './identity/temporary-password.js';
 import { emitIdentityEvent } from './telemetry/identity-telemetry.js';
 
 export interface BootstrapAdminParams {
@@ -99,15 +98,6 @@ const ORGANIZATION_ALREADY_EXISTS_CODE = 'ORGANIZATION_ALREADY_EXISTS';
 /** The Better Auth error code carried on a thrown `auth.api.*` `APIError`, if any. */
 function errorCode(error: unknown): string | undefined {
   return isAPIError(error) ? error.body?.code : undefined;
-}
-
-/**
- * A single-use, system-generated temporary password (design D22's "shown
- * once" discipline) -- never persisted anywhere beyond the one Better Auth
- * credential account it seeds, never logged.
- */
-function generateTemporaryPassword(): string {
-  return randomBytes(24).toString('base64url');
 }
 
 /**

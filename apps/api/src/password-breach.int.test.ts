@@ -20,13 +20,15 @@
  * The test installs its own `fetch` over the shared stub of task 8.1a
  * (`vitest.int.stub.mjs`) with `vi.stubGlobal`, only inside each test and after the
  * tenant setup, so the setup passwords never meet it. The temporary and bootstrap
- * passwords are random; `node:crypto`'s `randomBytes(24)` (the generator of both)
- * is made deterministic here so the stubbed range can contain their SHA-1 suffix.
+ * passwords are random; both come from `generateTemporaryPassword()` (`@tayzu/auth`),
+ * which draws with `node:crypto`'s `randomInt`. `randomInt` is made deterministic
+ * here (always 0), so the generated password is fixed and policy-compliant, and the
+ * stubbed range can contain its SHA-1 suffix.
  */
 import { createHash, randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
-import { authSchema, createAuth, type AuthInstance } from '@tayzu/auth';
+import { authSchema, createAuth, generateTemporaryPassword, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
@@ -42,18 +44,13 @@ import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-u
 import { bootstrapAdmin } from '../../../packages/auth/src/bootstrap-admin.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
-/** The generator of the temporary and bootstrap passwords, fixed for this file. */
-const FIXED_RANDOM_BYTES = 24;
-const FIXED_TEMPORARY_PASSWORD = Buffer.alloc(FIXED_RANDOM_BYTES, 7).toString('base64url');
-
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
-  return {
-    ...actual,
-    randomBytes: (size: number): Buffer =>
-      size === 24 ? Buffer.alloc(24, 7) : actual.randomBytes(size),
-  };
+  return { ...actual, randomInt: (): number => 0 };
 });
+
+/** The temporary and bootstrap password under the deterministic `randomInt` above. */
+const FIXED_TEMPORARY_PASSWORD = generateTemporaryPassword();
 
 const OPERATOR_ID = 'gh:424242';
 const BREACHED_PASSWORD = 'Correct-Horse-Battery-Staple-2026!';
