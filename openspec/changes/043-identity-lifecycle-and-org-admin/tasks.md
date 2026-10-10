@@ -1442,7 +1442,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 
 ## 8. Invitation acceptance
 
-- [ ] 8.1 A password policy module (design Q22): NFC-normalized, 20 to 128
+- [x] 8.1 A password policy module (design Q22): NFC-normalized, 20 to 128
       characters (counted as Unicode code points after normalization), at least one
       upper-case letter, lower-case letter, digit and symbol, no control characters
       (U+0000-U+001F, U+007F-U+009F), unpaired surrogates or Unicode format
