@@ -1355,7 +1355,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       previous invitation (reason `re_invite`) and creates a fresh one. Verify:
       `invitations.int.test.ts` covers "Re-inviting cancels the previous
       invitation".
-- [ ] 7.6 `identity.users.cancelInvitation`, Cerbos-gated to admins through
+- [x] 7.6 `identity.users.cancelInvitation`, Cerbos-gated to admins through
       `user.invite`, resolving the invitation on the server and cancelling through
       Better Auth's `cancelInvitation` with the same forwarded session headers (it is
       session-bound too). It skips an invitation that is not `pending`, which 8.10 adds

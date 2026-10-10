@@ -485,4 +485,44 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     expect(expiresAt).toBeLessThanOrEqual(after + HOURS_48_MS + TOLERANCE_MS);
     expect(rows.filter((row) => row.status === 'pending')).toHaveLength(1);
   }, 60_000);
+
+  // Task 7.6 (spec "Invitation lifecycle"; design D4 "Resend", D14, Resolved
+  // decisions Q47 and Q129). Scenario "Admin can cancel a pending invitation":
+  // GIVEN a pending invitation to `bob@example.com`, WHEN the admin cancels it,
+  // THEN its state becomes `cancelled` and it can no longer be accepted.
+  // Expected production behavior: `identity.users.cancelInvitation`
+  // (apps/api/src/identity-router.ts), input `{ invitation: <id> }` (the
+  // `{invitation}` path parameter), Cerbos `user` / `invite`, which resolves the
+  // invitation of the caller's tenant on the server and cancels it through Better
+  // Auth's `cancelInvitation` with the forwarded session headers. Stored
+  // `cancelled` is Better Auth's `canceled`. "Can no longer be accepted" is
+  // asserted as the stored status leaving `pending`, the only state the
+  // acceptance (task 8) takes (spec: only a `pending` invitation is acceptable).
+  it('Admin can cancel a pending invitation: its state becomes cancelled and it is no longer pending', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+
+    // GIVEN a pending invitation to `bob@example.com`.
+    const created = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+    const before = await invitationsOf(tenant.tenantId, email);
+    expect(before).toHaveLength(1);
+    expect(before[0]?.id).toBe(created.invitationId);
+    expect(before[0]?.status).toBe('pending');
+
+    // WHEN the admin cancels it.
+    await client.identity.users.cancelInvitation(
+      { invitation: created.invitationId },
+      { context: sessionContext(tenant) },
+    );
+
+    // THEN its state becomes cancelled (Better Auth stores `canceled`)...
+    const after = await invitationsOf(tenant.tenantId, email);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.status).toBe('canceled');
+    // ...so it is no longer a pending, acceptable invitation.
+    expect(after.filter((row) => row.status === 'pending')).toEqual([]);
+  }, 60_000);
 });

@@ -119,6 +119,10 @@ interface InviteApiSurface {
   }): Promise<{ id: string; expiresAt: Date | string }>;
 }
 
+interface CancelInvitationApiSurface {
+  cancelInvitation(args: { body: { invitationId: string }; headers: Headers }): Promise<unknown>;
+}
+
 interface VerificationAdapterSurface {
   readonly internalAdapter: {
     createVerificationValue(data: {
@@ -162,6 +166,15 @@ function parseInviteInput(raw: unknown): InviteUserInput {
   // Exact match (design D4 "Roles"): no splitting, trimming or case folding.
   if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
   return { email, role: role as AssignableOrgRole };
+}
+
+/** The `{invitation}` identifier of a cancel as an invitation target; malformed input yields an id the resolver rejects. */
+function invitationTargetOf(raw: unknown): { kind: 'invitation'; id: string } {
+  const invitation =
+    typeof raw === 'object' && raw !== null
+      ? (raw as Record<string, unknown>)['invitation']
+      : undefined;
+  return { kind: 'invitation', id: invitation as string };
 }
 
 /** The Visma Connect provider id of the `account` row (design D23/D24). */
@@ -223,6 +236,7 @@ const HIGH_RISK_ROUTE = {
 export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   const userApi = options.auth.api as CreateUserApiSurface;
   const inviteApi = options.auth.api as InviteApiSurface;
+  const cancelApi = options.auth.api as CancelInvitationApiSurface;
   const verificationContext = (): Promise<VerificationAdapterSurface> =>
     options.auth.$context as Promise<VerificationAdapterSurface>;
   const authContext = (): Promise<AccountAdapterSurface> =>
@@ -353,6 +367,22 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               },
             });
             return { invitationId: invitation.id };
+          },
+        }),
+        // Design D4 (Q47): resolved on the server, cancelled with the admin's forwarded session headers.
+        cancelInvitation: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'invite',
+            resolveTarget: invitationTargetOf,
+          },
+          handler: async ({ context, target }): Promise<void> => {
+            const headers = context[REQUEST_HEADERS];
+            if (!(headers instanceof Headers)) throw new IdentityInputError();
+            await cancelApi.cancelInvitation({
+              body: { invitationId: (target as ResolvedIdentityTarget).id },
+              headers,
+            });
           },
         }),
         // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.
