@@ -1344,7 +1344,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the token nor the id-plus-token link in the response, in any log record or in
       what the non-sending sender keeps) and a call whose context carries no valid
       session headers failing closed with nothing created.
-- [ ] 7.4 The invited role is exactly the string `member` or `admin`, never
+- [x] 7.4 The invited role is exactly the string `member` or `admin`, never
       `owner`, and is logged on `catalog.audit.invitation_created`. Better Auth's
       `inviteMember` accepts comma-separated strings and arrays and the Cerbos role
       mapper splits them, so the validation is an exact match. Verify:

@@ -18,6 +18,7 @@ import type { Route } from '@orpc/server';
 import {
   digestInvitationToken,
   emitAccountLinkEvent,
+  emitIdentityEvent,
   generateInvitationToken,
   wouldLeaveNoSignInMethod,
   type AuthInstance,
@@ -158,6 +159,8 @@ function parseInviteInput(raw: unknown): InviteUserInput {
   if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
   const { email, role } = raw as Record<string, unknown>;
   if (!isNonEmptyString(email) || !isNonEmptyString(role)) throw new IdentityInputError();
+  // Exact match (design D4 "Roles"): no splitting, trimming or case folding.
+  if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
   return { email, role: role as AssignableOrgRole };
 }
 
@@ -336,6 +339,17 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                   token,
                 }),
                 expiryText: INVITATION_EXPIRY_TEXT,
+              },
+            });
+            emitIdentityEvent({
+              name: 'catalog.audit.invitation_created',
+              severity: 'INFO',
+              attributes: {
+                'tayzu.tenant.id': tenantId,
+                'tayzu.actor.type': (context['actor'] as { type: string }).type,
+                'tayzu.actor.id': adminId,
+                'tayzu.identity.invitation.id': invitation.id,
+                'tayzu.identity.invitation.role': input.role,
               },
             });
             return { invitationId: invitation.id };

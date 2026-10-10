@@ -367,4 +367,74 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
       expect(emailsTo(email), 'no email').toEqual([]);
     }
   }, 60_000);
+
+  // Task 7.4 (design D4 "Roles", Resolved decisions Q9 and Q19). Scenarios:
+  // - "Inviting with the owner role is rejected" / "A role that is not exactly
+  //   member or admin is rejected": the operation fails with
+  //   `CATALOG_VALIDATION_FAILED` and no invitation, `_user` entity or email is
+  //   created. The role is an exact match: `inviteMember` accepts
+  //   comma-separated strings and arrays, so those must be rejected too.
+  // - "An admin invitation is logged with its role": `catalog.audit.invitation_created`
+  //   is logged with role `admin`.
+  // Expected production behavior: `parseInviteInput` (apps/api/src/identity-router.ts)
+  // accepts only the strings `member` and `admin`; the invite handler emits the
+  // `catalog.audit.invitation_created` log event with `tayzu.tenant.id`,
+  // `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id` and
+  // `tayzu.identity.invitation.role`.
+  const REJECTED_ROLES: readonly [string, unknown][] = [
+    ['owner', 'owner'],
+    ['member,owner', 'member,owner'],
+    ["['owner']", ['owner']],
+    ['Admin', 'Admin'],
+    ['an arbitrary value', 'superuser'],
+  ];
+
+  it.each(REJECTED_ROLES)(
+    'Inviting with the owner role is rejected: role %s fails with CATALOG_VALIDATION_FAILED and nothing is created',
+    async (_label, role) => {
+      const tenant = await freshTenant();
+      const email = `badrole-${randomUUID()}@example.test`;
+
+      const thrown: unknown = await client.identity.users
+        .invite({ email, role }, { context: sessionContext(tenant) })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+      expect(thrown, 'the call must be rejected').toBeDefined();
+      expect((thrown as { code?: unknown }).code).toBe('CATALOG_VALIDATION_FAILED');
+      expect(await invitationsOf(tenant.tenantId, email), 'no invitation').toEqual([]);
+      expect(await userSync.getUser({ tenantId: tenant.tenantId, email }), 'no _user').toBeNull();
+      expect(emailsTo(email), 'no email').toEqual([]);
+    },
+    60_000,
+  );
+
+  it('An admin invitation is logged with its role: catalog.audit.invitation_created carries role admin, the admin and the invitation id, and no email', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+
+    // WHEN an admin invites `bob@example.com` with role `admin`.
+    await client.identity.users.invite(
+      { email, role: 'admin' },
+      { context: sessionContext(tenant) },
+    );
+
+    // THEN `catalog.audit.invitation_created` is logged with role `admin`.
+    const invitations = await invitationsOf(tenant.tenantId, email);
+    expect(invitations).toHaveLength(1);
+    const created = (await logRecords()).filter(
+      (record) =>
+        record.eventName === 'catalog.audit.invitation_created' &&
+        record.attributes['tayzu.tenant.id'] === tenant.tenantId,
+    );
+    expect(created, 'exactly one invitation_created event').toHaveLength(1);
+    const attributes = created[0]?.attributes;
+    expect(attributes?.['tayzu.identity.invitation.role']).toBe('admin');
+    expect(attributes?.['tayzu.actor.type']).toBe('user');
+    expect(attributes?.['tayzu.actor.id']).toBe(tenant.adminId);
+    expect(attributes?.['tayzu.identity.invitation.id']).toBe(invitations[0]?.id);
+    expect(JSON.stringify(attributes)).not.toContain(email);
+  }, 60_000);
 });
