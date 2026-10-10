@@ -836,4 +836,154 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     expect(await memberCount(tenant.tenantId), 'still 100 members').toBe(PLATFORM_LIMIT);
     expect(await userSync.getUser({ tenantId: tenant.tenantId, email }), 'no _user').toBeNull();
   }, 60_000);
+
+  // Task 7.13 (spec "Invitation lifecycle"; design D4 "users.create and a
+  // pending invitation", Resolved decisions Q110 and Q129). Scenario "Creating
+  // a user cancels a pending invitation of the same email": GIVEN a pending
+  // invitation of `t1` to `bob@example.com` and another of `t2` to the same
+  // address, and an invitation of `t1` to the same address that is already
+  // `cancelled` or `rejected`; WHEN an admin of `t1` creates the user through
+  // `identity.users.create`; THEN the pending `t1` invitation becomes
+  // `cancelled` with the reason `user_created` and
+  // `catalog.audit.invitation_cancelled` is logged with that reason, the `t2`
+  // invitation stays `pending`, and a creation that fails leaves the pending
+  // `t1` invitation `pending`; AND an invitation of `t1` that is already
+  // `cancelled` or `rejected` stays as it is, and the creation logs no
+  // `catalog.audit.invitation_cancelled` with the reason `user_created` for it.
+  // Stored `cancelled` is Better Auth's `canceled`.
+  // Expected production behavior: the `identity.users.create` handler
+  // (apps/api/src/identity-router.ts), once `addMember` succeeded, reads the
+  // pending invitations of the caller's tenant for the email, cancels each
+  // through Better Auth's `cancelInvitation` with the admin's forwarded session
+  // headers, and emits the span `identity.invitation.cancel`
+  // (`tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason` =
+  // `user_created`) and the log `catalog.audit.invitation_cancelled`
+  // (`tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.invitation.id`,
+  // `tayzu.identity.invitation.reason` = `user_created`).
+  const CANCELLED_EVENT = 'catalog.audit.invitation_cancelled';
+  const CANCEL_SPAN = 'identity.invitation.cancel';
+
+  async function userCreatedCancellations(tenantId: string) {
+    return (await logRecords()).filter(
+      (record) =>
+        record.eventName === CANCELLED_EVENT &&
+        record.attributes['tayzu.tenant.id'] === tenantId &&
+        record.attributes['tayzu.identity.invitation.reason'] === 'user_created',
+    );
+  }
+
+  it('Creating a user cancels a pending invitation of the same email: the t1 invitation becomes cancelled with the reason user_created, the event and span carry it, the t2 invitation stays pending and the non-pending t1 invitations are untouched', async () => {
+    const t1 = await freshTenant();
+    const t2 = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+
+    // GIVEN an invitation of `t1` that is already cancelled (by an explicit cancel)...
+    const earlier = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(t1) },
+    );
+    await client.identity.users.cancelInvitation(
+      { invitation: earlier.invitationId },
+      { context: sessionContext(t1) },
+    );
+    // ...one that is rejected (seeded directly)...
+    const rejectedId = `seed-rejected-${randomUUID()}`;
+    await authPool.query(
+      `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+       values ($1, $2, $3, 'member', 'rejected', now() + interval '48 hours', now(), $4)`,
+      [rejectedId, t1.tenantId, email, t1.adminId],
+    );
+    // ...a pending one of `t1`, and another pending one of `t2` to the same address.
+    const pending = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(t1) },
+    );
+    const other = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(t2) },
+    );
+    const statusOf = async (tenantId: string, id: string): Promise<string | undefined> =>
+      (await invitationsOf(tenantId, email)).find((row) => row.id === id)?.status;
+    expect(await statusOf(t1.tenantId, earlier.invitationId)).toBe('canceled');
+    expect(await statusOf(t1.tenantId, rejectedId)).toBe('rejected');
+    expect(await statusOf(t1.tenantId, pending.invitationId)).toBe('pending');
+    expect(await statusOf(t2.tenantId, other.invitationId)).toBe('pending');
+
+    // WHEN an admin of `t1` creates the user `bob@example.com`.
+    await client.identity.users.create(
+      { email, name: 'Bob', role: 'member' },
+      { context: sessionContext(t1) },
+    );
+
+    // THEN the pending `t1` invitation becomes cancelled...
+    expect(await statusOf(t1.tenantId, pending.invitationId)).toBe('canceled');
+    // ...the `t2` invitation stays pending...
+    expect(await statusOf(t2.tenantId, other.invitationId)).toBe('pending');
+    // ...and the non-pending `t1` invitations stay as they are.
+    expect(await statusOf(t1.tenantId, earlier.invitationId)).toBe('canceled');
+    expect(await statusOf(t1.tenantId, rejectedId)).toBe('rejected');
+
+    // The event is logged with the reason, the tenant, the admin and the invitation id, once, and nothing for the others.
+    const events = await userCreatedCancellations(t1.tenantId);
+    expect(events, 'exactly one user_created cancellation event').toHaveLength(1);
+    const attributes = events[0]?.attributes;
+    expect(attributes?.['tayzu.actor.id']).toBe(t1.adminId);
+    expect(attributes?.['tayzu.identity.invitation.id']).toBe(pending.invitationId);
+    expect(JSON.stringify(attributes)).not.toContain(email);
+    expect(await userCreatedCancellations(t2.tenantId), 'nothing logged for t2').toEqual([]);
+
+    // The span `identity.invitation.cancel` carries the same id and reason.
+    await harness.forceFlush();
+    const spans = harness.spanExporter
+      .getFinishedSpans()
+      .filter(
+        (span) =>
+          span.name === CANCEL_SPAN &&
+          span.attributes['tayzu.identity.invitation.reason'] === 'user_created',
+      )
+      .filter((span) => span.attributes['tayzu.identity.invitation.id'] === pending.invitationId);
+    expect(spans, 'one cancel span with the reason user_created').toHaveLength(1);
+    const skippedSpans = harness.spanExporter
+      .getFinishedSpans()
+      .filter(
+        (span) =>
+          span.name === CANCEL_SPAN &&
+          [earlier.invitationId, rejectedId, other.invitationId].includes(
+            String(span.attributes['tayzu.identity.invitation.id']),
+          ) &&
+          span.attributes['tayzu.identity.invitation.reason'] === 'user_created',
+      );
+    expect(skippedSpans, 'no user_created span for the skipped invitations').toEqual([]);
+  }, 60_000);
+
+  it('Creating a user cancels a pending invitation of the same email: a create refused at the member limit leaves the pending invitation pending and logs no user_created cancellation', async () => {
+    const t1 = await freshTenant();
+    const email = `full-${randomUUID()}@example.test`;
+    const pending = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(t1) },
+    );
+    // GIVEN an organization with 100 members.
+    const ids = await seedUsers(PLATFORM_LIMIT - 1, t1.tenantId.slice(0, 8));
+    await authPool.query(
+      `insert into auth.member (id, organization_id, user_id, role, created_at)
+       select 'seed-mem-' || id, $1, id, 'member', now() from unnest($2::text[]) as id`,
+      [t1.tenantId, ids],
+    );
+    expect(await memberCount(t1.tenantId)).toBe(PLATFORM_LIMIT);
+
+    // WHEN the creation fails.
+    const thrown = await rejection(
+      client.identity.users.create(
+        { email, name: 'Over Limit', role: 'member' },
+        { context: sessionContext(t1) },
+      ),
+    );
+    expect((thrown as { code?: unknown }).code).toBe('CATALOG_VALIDATION_FAILED');
+
+    // THEN the pending invitation stays pending and nothing is logged for it.
+    const rows = await invitationsOf(t1.tenantId, email);
+    expect(rows.find((row) => row.id === pending.invitationId)?.status).toBe('pending');
+    expect(await userCreatedCancellations(t1.tenantId)).toEqual([]);
+  }, 60_000);
 });

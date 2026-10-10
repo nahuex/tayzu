@@ -1424,7 +1424,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       exceeding 100 pending invitations, asserting the generic code and no membership
       information in the response, and `identity.users.create` in an organization with
       100 members answering `CATALOG_VALIDATION_FAILED`.
-- [ ] 7.13 `identity.users.create` for an email that has a `pending` invitation in the
+- [x] 7.13 `identity.users.create` for an email that has a `pending` invitation in the
       caller's tenant cancels that invitation once the user and the membership exist, with
       the reason `user_created` (Resolved decision Q110; design D4), through Better Auth's
       `cancelInvitation` with the admin's forwarded session headers, like 7.6, and emits

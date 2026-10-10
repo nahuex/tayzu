@@ -55,6 +55,8 @@ export interface AuthRepository {
   ) => Promise<{ keys: ApiKeyRead[]; nextCursor?: string }>;
   apiKeyById: (tenantId: string, keyId: string) => Promise<ApiKeyRead | undefined>;
   invitationById: (tenantId: string, invitationId: string) => Promise<InvitationRead | undefined>;
+  /** The `pending` invitations of the tenant to the (canonical) email. */
+  pendingInvitationsByEmail: (tenantId: string, email: string) => Promise<InvitationRead[]>;
   listMembers: (tenantId: string) => Promise<MemberRead[]>;
   memberOf: (tenantId: string, userId: string) => Promise<MemberRead | undefined>;
   userInTenant: (tenantId: string, userId: string) => Promise<UserRead | undefined>;
@@ -180,6 +182,17 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       );
       const row = result.rows[0];
       return row === undefined ? undefined : toInvitation(row);
+    },
+
+    async pendingInvitationsByEmail(tenantId, email) {
+      requireTenant(tenantId);
+      const result = await authPool.query<InvitationRow>(
+        `select ${INVITATION_COLUMNS} from auth.invitation
+         where organization_id = $1 and lower(email) = lower($2) and status = 'pending'
+         order by id`,
+        [tenantId, email],
+      );
+      return result.rows.map(toInvitation);
     },
 
     async listMembers(tenantId) {

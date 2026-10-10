@@ -20,6 +20,7 @@ import {
   emitAccountLinkEvent,
   emitIdentityEvent,
   generateInvitationToken,
+  withIdentitySpan,
   wouldLeaveNoSignInMethod,
   type AuthInstance,
 } from '@tayzu/auth';
@@ -350,6 +351,32 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               );
               return created;
             });
+            // Design D4 (Q110): the user now exists, so a pending invitation of this tenant to the address is moot.
+            const tenantId = rawTenantId(context);
+            const pending = await options.authRepository.pendingInvitationsByEmail(
+              tenantId,
+              input.email,
+            );
+            for (const invitation of pending) {
+              const headers = context[REQUEST_HEADERS];
+              if (!(headers instanceof Headers)) throw new IdentityInputError();
+              const attributes = {
+                'tayzu.identity.invitation.id': invitation.id,
+                'tayzu.identity.invitation.reason': 'user_created',
+              };
+              await withIdentitySpan('identity.invitation.cancel', attributes, () =>
+                cancelApi.cancelInvitation({ body: { invitationId: invitation.id }, headers }),
+              );
+              emitIdentityEvent({
+                name: 'catalog.audit.invitation_cancelled',
+                severity: 'INFO',
+                attributes: {
+                  'tayzu.tenant.id': tenantId,
+                  'tayzu.actor.id': adminId,
+                  ...attributes,
+                },
+              });
+            }
             return { userId: user.id, email: user.email, temporaryPassword };
           },
         }),
