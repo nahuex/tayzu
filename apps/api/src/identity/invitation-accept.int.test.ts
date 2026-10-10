@@ -669,3 +669,315 @@ describe('single-use token and the accepted status (task 8.3, Resolved decision 
     });
   });
 });
+
+/**
+ * Task 8.4 (spec "Invitation acceptance", scenario "The tenant comes from the
+ * invitation"; design D4 "Acceptance", Observability contract).
+ *
+ * Scenarios:
+ * - "The tenant comes from the invitation": a body that carries `tenantId` or
+ *   `actor` (and `role`, `email`, `organizationId`, `userId`, or a forbidden
+ *   `__proto__`, `constructor`, `prototype` key) is rejected with
+ *   `CATALOG_VALIDATION_FAILED`, nothing is created, and
+ *   `catalog.security.invitation_acceptance_denied` is logged with the reason
+ *   `malformed_request`. A valid body acts on the invitation's own tenant.
+ * - An over-long or malformed invitation id is never logged as its value: the
+ *   `tayzu.identity.invitation.id` of the `identity.invitation.accept` span and of
+ *   the denied event is the constant `invalid`.
+ *
+ * ## Production symbols expected
+ *
+ * `apps/api/src/identity/accept-flow.ts`: `createAcceptFlow(...)` also returns
+ * `acceptRequest(request: { body: unknown; session?: { userId: string;
+ * sessionId: string } }): Promise<{ userId: string }>`, the service function behind
+ * the public route. It parses `request.body` (the raw JSON value) as an allowlist of
+ * exactly `invitationId`, `token` and, optionally, `password`, into null-prototype
+ * objects, through the shared parser of `parse-input.ts` (`parseIdentityInput` with a
+ * `body` section), checking shape and length of the id before any lookup or logging,
+ * and then runs `accept`. A rejected body or id shape throws the
+ * `CATALOG_VALIDATION_FAILED` input error, emits the denied event with
+ * `tayzu.identity.invitation.denial_reason` `malformed_request` and
+ * `tayzu.identity.invitation.id` `invalid`, and runs inside a span
+ * `identity.invitation.accept` whose `tayzu.identity.invitation.id` is `invalid` in
+ * that case (and the real id otherwise).
+ */
+describe('the accept body is an allowlist and the tenant comes from the invitation (task 8.4)', () => {
+  const DENIED_EVENT = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const ACCEPT_SPAN = 'identity.invitation.accept';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let flow: ReturnType<typeof createAcceptFlow>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    const adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    flow = createAcceptFlow({
+      auth,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function count(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedRecords() {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === DENIED_EVENT,
+    );
+  }
+
+  async function malformedCount(): Promise<number> {
+    return (await deniedRecords()).filter(
+      (record) => record.attributes[REASON] === 'malformed_request',
+    ).length;
+  }
+
+  async function acceptSpans() {
+    await harness.forceFlush();
+    return harness.spanExporter.getFinishedSpans().filter((span) => span.name === ACCEPT_SPAN);
+  }
+
+  async function everythingEmitted(): Promise<string> {
+    await harness.forceFlush();
+    const logs = [...harness.logExporter.getFinishedLogRecords()].map((record) => ({
+      eventName: record.eventName,
+      body: record.body,
+      attributes: record.attributes,
+    }));
+    const spans = harness.spanExporter.getFinishedSpans().map((span) => ({
+      name: span.name,
+      attributes: span.attributes,
+      events: span.events.map((event) => ({ name: event.name, attributes: event.attributes })),
+    }));
+    return JSON.stringify({ logs, spans });
+  }
+
+  it('The tenant comes from the invitation: a valid body (id, token, password only) joins the invitation’s own tenant and no other', async () => {
+    const tenant = await freshTenant();
+    const other = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    const { userId } = await flow.acceptRequest({
+      body: { ...invitation, password: PASSWORD_NFC },
+    });
+
+    const inTenant = await count(
+      `select 1 from auth.member where organization_id = $1 and user_id = $2`,
+      [tenant.tenantId, userId],
+    );
+    const inOther = await count(
+      `select 1 from auth.member where organization_id = $1 and user_id = $2`,
+      [other.tenantId, userId],
+    );
+    expect(inTenant, 'a member of the invitation’s tenant').toBe(1);
+    expect(inOther, 'no member of any other tenant').toBe(0);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Active',
+    );
+  }, 60_000);
+
+  const extraFields: readonly (readonly [string, unknown])[] = [
+    ['tenantId', 'any-tenant'],
+    ['actor', { type: 'user', id: 'someone' }],
+    ['role', 'admin'],
+    ['email', 'someone-else@example.test'],
+    ['organizationId', 'any-organization'],
+    ['userId', 'any-user'],
+  ];
+
+  it.each(extraFields)(
+    'The tenant comes from the invitation: a body carrying %s is rejected with CATALOG_VALIDATION_FAILED, nothing is created and malformed_request is logged',
+    async (field, value) => {
+      const tenant = await freshTenant();
+      const email = `bob-${randomUUID()}@example.test`;
+      const invitation = await invite(tenant, email);
+      const members = await count(`select 1 from auth.member where organization_id = $1`, [
+        tenant.tenantId,
+      ]);
+      const before = await malformedCount();
+
+      const failure = await failureOf(
+        flow.acceptRequest({ body: { ...invitation, password: PASSWORD_NFC, [field]: value } }),
+      );
+
+      expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+      expect(await count(`select 1 from auth."user" where email = $1`, [email]), 'no user').toBe(0);
+      expect(
+        await count(`select 1 from auth.member where organization_id = $1`, [tenant.tenantId]),
+        'no member',
+      ).toBe(members);
+      expect(
+        await count(`select 1 from auth.verification where identifier = $1`, [
+          `invitation-accept:${invitation.invitationId}`,
+        ]),
+        'the token row stays',
+      ).toBe(1);
+      expect(
+        await count(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+          invitation.invitationId,
+        ]),
+        'the invitation stays pending',
+      ).toBe(1);
+      expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+        'Invited',
+      );
+      expect(await malformedCount(), 'one malformed_request denial').toBe(before + 1);
+    },
+    60_000,
+  );
+
+  it.each(['__proto__', 'constructor', 'prototype'])(
+    'The tenant comes from the invitation: a %s key, at the top level or nested, is rejected with CATALOG_VALIDATION_FAILED and nothing is created',
+    async (key) => {
+      const tenant = await freshTenant();
+      const email = `bob-${randomUUID()}@example.test`;
+      const invitation = await invite(tenant, email);
+      const before = await malformedCount();
+      const json = JSON.stringify({ ...invitation, password: PASSWORD_NFC });
+      // JSON.parse creates an own `__proto__` key, as a request body would.
+      const top = JSON.parse(`${json.slice(0, -1)},${JSON.stringify(key)}:{"a":1}}`) as unknown;
+      const nested = JSON.parse(
+        `${json.slice(0, -1)},"token2":{"x":{${JSON.stringify(key)}:{}}}}`,
+      ) as unknown;
+      const nestedInField = JSON.parse(
+        JSON.stringify({ ...invitation }).slice(0, -1) +
+          `,"password":{"x":{${JSON.stringify(key)}:{}}}}`,
+      ) as unknown;
+
+      for (const body of [top, nested, nestedInField]) {
+        const failure = await failureOf(flow.acceptRequest({ body }));
+        expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+      }
+
+      expect(await count(`select 1 from auth."user" where email = $1`, [email])).toBe(0);
+      expect(
+        await count(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+          invitation.invitationId,
+        ]),
+      ).toBe(1);
+      expect(await malformedCount()).toBe(before + 3);
+    },
+    60_000,
+  );
+
+  it('The tenant comes from the invitation: a body that is not an object, or that lacks the id or the token, is rejected with CATALOG_VALIDATION_FAILED', async () => {
+    const tenant = await freshTenant();
+    const invitation = await invite(tenant, `bob-${randomUUID()}@example.test`);
+
+    for (const body of [
+      null,
+      'text',
+      [invitation],
+      { token: invitation.token },
+      { invitationId: invitation.invitationId },
+    ]) {
+      const failure = await failureOf(flow.acceptRequest({ body }));
+      expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+    }
+  }, 60_000);
+
+  it('an over-long or malformed invitation id never appears in a log record or span, the id attribute being invalid', async () => {
+    const marker = `evil-${randomUUID()}`;
+    const ids = [
+      `${marker}${'x'.repeat(10_000)}`,
+      `${marker}/../../etc/passwd;drop table "user"; --`,
+      `${marker} <script>alert(1)</script>\n`,
+    ];
+    const spansBefore = (await acceptSpans()).length;
+    const deniedBefore = (await deniedRecords()).length;
+
+    for (const invitationId of ids) {
+      const failure = await failureOf(
+        flow.acceptRequest({
+          body: { invitationId, token: generateInvitationToken(), password: PASSWORD_NFC },
+        }),
+      );
+      expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+    }
+
+    // THEN the value is nowhere in what was emitted...
+    expect(await everythingEmitted()).not.toContain(marker);
+    // ...the denied events carry the reason malformed_request and the constant id...
+    const denied = (await deniedRecords()).slice(deniedBefore);
+    expect(denied).toHaveLength(ids.length);
+    for (const record of denied) {
+      expect(record.attributes[REASON]).toBe('malformed_request');
+      expect(record.attributes['tayzu.identity.invitation.id']).toBe('invalid');
+    }
+    // ...and so do the spans.
+    const spans = (await acceptSpans()).slice(spansBefore);
+    expect(spans).toHaveLength(ids.length);
+    for (const span of spans) {
+      expect(span.attributes['tayzu.identity.invitation.id']).toBe('invalid');
+    }
+  }, 60_000);
+});

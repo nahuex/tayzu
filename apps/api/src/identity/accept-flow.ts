@@ -9,10 +9,16 @@
  */
 import type { Pool } from 'pg';
 
-import { emitIdentityEvent, verifyInvitationToken, type AuthInstance } from '@tayzu/auth';
+import {
+  emitIdentityEvent,
+  verifyInvitationToken,
+  withIdentitySpan,
+  type AuthInstance,
+} from '@tayzu/auth';
 
 import type { AuthRepository } from './auth-repository.js';
 import { runWithAcceptanceContext } from './identity-context.js';
+import { parseIdentityInput, type InputSchema } from './parse-input.js';
 import type { UserSyncAdapter } from './user-sync-adapter.js';
 
 type Step =
@@ -76,12 +82,28 @@ function acceptanceFailed(): Error {
 /** The consumption changed no row: a lost race, which compensates nothing. */
 class ConsumeConflictError extends Error {}
 
+/** The public body: an allowlist of exactly these fields (design D4 "Acceptance"). */
+const ACCEPT_BODY_SCHEMA: InputSchema = {
+  body: {
+    invitationId: { kind: 'string', maxLength: 64, pattern: /^[A-Za-z0-9_-]+$/ },
+    token: { kind: 'string', maxLength: 256 },
+    password: { kind: 'string', maxLength: 1024, optional: true },
+  },
+};
+
+/** The constant logged in place of an attacker-controlled invitation id. */
+const INVALID_ID = 'invalid';
+
 function tokenIdentifier(invitationId: string): string {
   return `invitation-accept:${invitationId}`;
 }
 
 export function createAcceptFlow(options: AcceptFlowOptions): {
   accept(input: AcceptInput): Promise<{ userId: string }>;
+  acceptRequest(request: {
+    body: unknown;
+    session?: { readonly userId: string; readonly sessionId: string };
+  }): Promise<{ userId: string }>;
 } {
   const { authRepository: repository, authPool, userSync } = options;
   const api = options.auth.api as AuthApiSurface;
@@ -259,5 +281,44 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     return { userId };
   }
 
-  return { accept };
+  /** The service function behind the public route: parses the raw body, then accepts. */
+  async function acceptRequest(request: {
+    body: unknown;
+    session?: { readonly userId: string; readonly sessionId: string };
+  }): Promise<{ userId: string }> {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseIdentityInput(ACCEPT_BODY_SCHEMA, { body: request.body }).body;
+    } catch (error) {
+      return withIdentitySpan(
+        'identity.invitation.accept',
+        { 'tayzu.identity.invitation.id': INVALID_ID },
+        () => {
+          emitIdentityEvent({
+            name: 'catalog.security.invitation_acceptance_denied',
+            severity: 'WARN',
+            attributes: {
+              'tayzu.identity.invitation.id': INVALID_ID,
+              'tayzu.identity.invitation.denial_reason': 'malformed_request',
+            },
+          });
+          throw error;
+        },
+      );
+    }
+    const invitationId = parsed['invitationId'] as string;
+    return withIdentitySpan(
+      'identity.invitation.accept',
+      { 'tayzu.identity.invitation.id': invitationId },
+      () =>
+        accept({
+          invitationId,
+          token: parsed['token'] as string,
+          ...(parsed['password'] !== undefined && { password: parsed['password'] as string }),
+          ...(request.session !== undefined && { session: request.session }),
+        }),
+    );
+  }
+
+  return { accept, acceptRequest };
 }

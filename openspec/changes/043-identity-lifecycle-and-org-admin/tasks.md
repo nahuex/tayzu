@@ -1708,7 +1708,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       as already accepted": the same request sent again after a success answering the
       uniform rejection with `catalog.security.invitation_acceptance_denied` recording
       `already_accepted`, and nothing changing.
-- [ ] 8.4 The tenant is derived from the invitation record, and the body is an
+- [x] 8.4 The tenant is derived from the invitation record, and the body is an
       allowlist of exactly the invitation id, the token and, for a new account, the
       password: a body that carries a tenant, an actor, `role`, `email`,
       `organizationId` or `userId` is rejected with `CATALOG_VALIDATION_FAILED`
