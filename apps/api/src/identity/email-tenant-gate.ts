@@ -26,6 +26,9 @@ export interface EmailTenantGate {
   }): Promise<void>;
 }
 
+/** The shortest cap window, one hour (Q61). */
+const INVITATION_RETRY_AFTER_SECONDS = 3600;
+
 const TEMPLATE_NAMES: Record<EmailTemplate['kind'], string> = {
   InvitationEmail: 'invitation',
   AdminAcceptedNotice: 'admin_accepted',
@@ -37,22 +40,25 @@ export function createEmailTenantGate(deps: {
   readonly sender: EmailSender;
   /** The HMAC secret of the recipient key (6.7b); the recipient cap runs only when set. */
   readonly recipientKeySecret?: string;
+  /** `INVITATION_EMAIL_KILL_SWITCH` (6.8): when on, every send is refused before any cap. */
+  readonly killSwitch?: boolean;
 }): EmailTenantGate {
   const disabled = new Set(deps.disabledTenantIds);
+  function emitLimited(scope: 'tenant' | 'recipient' | 'global', tenantId: string) {
+    emitIdentityEvent({
+      name: 'catalog.security.invitation_rate_limited',
+      severity: 'WARN',
+      attributes: {
+        'tayzu.tenant.id': tenantId,
+        'tayzu.identity.invitation.limit_scope': scope,
+      },
+    });
+  }
   async function consumeCap(scope: 'tenant' | 'recipient', key: string, tenantId: string) {
     try {
       await deps.capStore.consume(scope, key);
     } catch (error) {
-      if (error instanceof AuthRateLimitedError) {
-        emitIdentityEvent({
-          name: 'catalog.security.invitation_rate_limited',
-          severity: 'WARN',
-          attributes: {
-            'tayzu.tenant.id': tenantId,
-            'tayzu.identity.invitation.limit_scope': scope,
-          },
-        });
-      }
+      if (error instanceof AuthRateLimitedError) emitLimited(scope, tenantId);
       throw error;
     }
   }
@@ -68,6 +74,10 @@ export function createEmailTenantGate(deps: {
           },
         });
         return;
+      }
+      if (deps.killSwitch === true) {
+        emitLimited('global', tenantId);
+        throw new AuthRateLimitedError(INVITATION_RETRY_AFTER_SECONDS);
       }
       await consumeCap('tenant', tenantId, tenantId);
       if (deps.recipientKeySecret !== undefined) {

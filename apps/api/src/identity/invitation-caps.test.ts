@@ -266,3 +266,92 @@ describe('the per-recipient invitation cap (043 task 6.7, Q15, Q93)', () => {
     expect(sender.sent).toHaveLength(4);
   });
 });
+
+/**
+ * 043 task 6.8 additionally expects `createEmailTenantGate` deps to gain
+ * `killSwitch?: boolean` (the parsed `INVITATION_EMAIL_KILL_SWITCH`; `Config` gains the
+ * matching field). When true, `send` rejects with `AuthRateLimitedError` BEFORE any bucket
+ * is consumed and before the sender, and emits `catalog.security.invitation_rate_limited`
+ * with `tayzu.identity.invitation.limit_scope` = `global` and the tenant id, no address.
+ */
+describe('the global invitation kill switch (043 task 6.8, Q15)', () => {
+  it('The global kill switch stops all invitation email', async () => {
+    // GIVEN INVITATION_EMAIL_KILL_SWITCH is on
+    const sender = createRecordingEmailSender();
+    const consumed: { scope: string; key: string }[] = [];
+    const inner = createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP });
+    const capStore: EmailCapStore = {
+      async consume(scope, key) {
+        consumed.push({ scope, key });
+        await inner.consume(scope, key);
+      },
+    };
+    const invite = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore,
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+      killSwitch: true,
+    });
+    const resend = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore,
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+      killSwitch: true,
+    });
+    const tenant = tenantId();
+
+    // WHEN any invite or resend is attempted
+    const rejectedInvite = await invite
+      .send({ tenantId: tenant, to: RECIPIENT, template: INVITATION })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    const rejectedResend = await resend
+      .send({ tenantId: tenantId(), to: 'other@example.test', template: INVITATION })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    // THEN it fails with AUTH_RATE_LIMITED
+    for (const rejected of [rejectedInvite, rejectedResend]) {
+      expect(rejected).toBeInstanceOf(AuthRateLimitedError);
+      expect((rejected as AuthRateLimitedError).code).toBe('AUTH_RATE_LIMITED');
+    }
+
+    // AND no email is sent
+    expect(sender.sent).toHaveLength(0);
+
+    // AND the event carries scope global, the tenant and no address; no bucket was consumed
+    expect(consumed).toHaveLength(0);
+    const records = await limitedEvents();
+    expect(records).toHaveLength(2);
+    const [first] = records;
+    expect(first?.severityText).toBe('WARN');
+    expect(first?.attributes['tayzu.tenant.id']).toBe(tenant);
+    for (const record of records) {
+      expect(record.attributes['tayzu.identity.invitation.limit_scope']).toBe('global');
+      const serialized = JSON.stringify([record.attributes, record.body]);
+      for (const secret of [RECIPIENT, RECIPIENT_LOCAL, 'example.test', TOKEN, LINK, HMAC_SECRET]) {
+        expect(serialized).not.toContain(secret);
+      }
+    }
+  });
+
+  it('with the kill switch off, invitation email is sent', async () => {
+    const sender = createRecordingEmailSender();
+    const gate = createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore: createInMemoryEmailCapStore({ tenant: TENANT_CAP, recipient: RECIPIENT_CAP }),
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+      killSwitch: false,
+    });
+    await gate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION });
+    expect(sender.sent).toHaveLength(1);
+    expect(await limitedEvents()).toHaveLength(0);
+  });
+});

@@ -44,6 +44,8 @@ export interface Config {
   readonly tokenExchangeRateLimit: RateLimit;
   /** Invitation emails per tenant, shared by invite and resend (Q15); window in seconds. */
   readonly invitationTenantCap: { readonly max: number; readonly windowSeconds: number };
+  /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
+  readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
   readonly bodyLimit: number;
   /** Back-channel logout budget per source IP per minute (D26, Q32). */
@@ -285,6 +287,14 @@ function loadTelemetryDisabled(env: Env): boolean {
   throw new Error('TAYZU_TELEMETRY_DISABLED is malformed (true or false is required).');
 }
 
+/** `INVITATION_EMAIL_KILL_SWITCH`: unset or `false` is off, `true` is on, anything else fails. */
+function loadInvitationEmailKillSwitch(env: Env): boolean {
+  const value = env['INVITATION_EMAIL_KILL_SWITCH'];
+  if (value === undefined || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error('INVITATION_EMAIL_KILL_SWITCH is malformed (true or false is required).');
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
@@ -357,6 +367,7 @@ export function loadConfig(env: Env): Config {
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
     invitationTenantCap,
+    invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     telemetryDisabled: loadTelemetryDisabled(env),
   };

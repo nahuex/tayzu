@@ -1214,7 +1214,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       "Exceeding the per-recipient cap blocks repeat invites across tenants",
       asserting scope `recipient` and that no address is in the event or the key
       store.
-- [ ] 6.8 A global kill switch (`INVITATION_EMAIL_KILL_SWITCH`). Verify:
+- [x] 6.8 A global kill switch (`INVITATION_EMAIL_KILL_SWITCH`). Verify:
       `invitation-caps.test.ts` covers "The global kill switch stops all invitation
       email" with scope `global`.
 - [ ] 6.8c Every `AUTH_RATE_LIMITED` of the invitation caps (tenant, recipient and
