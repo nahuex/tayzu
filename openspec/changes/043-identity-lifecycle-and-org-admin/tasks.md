@@ -1031,7 +1031,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       Verify: those five files, updated, pass against the new input, and
       `identity-router.int.test.ts` covers an unknown identifier and a `userId` body
       each being rejected.
-- [ ] 5.3d One shared input parser for the identity router
+- [x] 5.3d One shared input parser for the identity router
       (`apps/api/src/identity/parse-input.ts`; design D10, the root untrusted-input
       rule) replaces today's `parseInput`, which ignores unknown fields, and parses the
       `inputStructure: 'detailed'` shape (`{ params, query, body }`) of the merged
