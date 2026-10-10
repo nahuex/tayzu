@@ -1181,7 +1181,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `tenant`. Verify: `invitation-caps.test.ts` covers "Exceeding the per-tenant
       cap blocks further invites", asserting the `EmailSender` fake recorded no
       further call.
-- [ ] 6.7b The per-recipient key is an **HMAC-SHA256** of the canonical email (7.10)
+- [x] 6.7b The per-recipient key is an **HMAC-SHA256** of the canonical email (7.10)
       under a server secret, `IDENTITY_TOKEN_HMAC_SECRET` (Resolved decision Q93), not a
       bare sha256: an unsalted digest is a pseudonym that anyone can recompute from an
       email, and the key persists in `auth.rate_limit` (`045`'s purge exempts it and its erasure

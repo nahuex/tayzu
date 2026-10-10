@@ -16,6 +16,8 @@ export interface Config {
   readonly betterAuthUrl?: string;
   /** Origin of invitation links (Q32): `https` and in `allowedOrigins` outside test; undefined only in test. */
   readonly invitationLinkBaseUrl?: string;
+  /** Key of the per-recipient caps (Q93): at least 32 bytes outside test; undefined only in test when unset. */
+  readonly identityTokenHmacSecret?: string;
   /** Email provider (Q96): required outside test; undefined only under test when unset. */
   readonly emailProvider?: 'acs' | 'none';
   /** Communication Services connection string (Q28); set only for `acs`. */
@@ -188,6 +190,23 @@ function loadInvitationLinkBaseUrl(
   return value;
 }
 
+const MIN_HMAC_SECRET_BYTES = 32;
+
+/** `IDENTITY_TOKEN_HMAC_SECRET` (Q93): required outside test, 32 bytes minimum, never echoed. */
+function loadIdentityTokenHmacSecret(env: Env): string | undefined {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest && env['IDENTITY_TOKEN_HMAC_SECRET'] === undefined) {
+    return undefined;
+  }
+  const value = required(env, 'IDENTITY_TOKEN_HMAC_SECRET');
+  if (Buffer.byteLength(value, 'utf8') < MIN_HMAC_SECRET_BYTES) {
+    throw new Error(
+      `IDENTITY_TOKEN_HMAC_SECRET is malformed (at least ${String(MIN_HMAC_SECRET_BYTES)} bytes).`,
+    );
+  }
+  return value;
+}
+
 /** `ALLOWED_ORIGINS` (Q56, Q40): `https` and wildcard-free outside test; origins are never echoed. */
 function validateAllowedOrigins(env: Env, origins: readonly string[]): void {
   const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
@@ -283,6 +302,7 @@ export function loadConfig(env: Env): Config {
   validateAllowedOrigins(env, allowedOrigins);
   const betterAuthUrl = loadBetterAuthUrl(env);
   const invitationLinkBaseUrl = loadInvitationLinkBaseUrl(env, allowedOrigins);
+  const identityTokenHmacSecret = loadIdentityTokenHmacSecret(env);
   const email = loadEmail(env);
   const sso = loadSso(env);
   const signIn = limitWithDefaults(
@@ -327,6 +347,7 @@ export function loadConfig(env: Env): Config {
     allowedOrigins,
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
     ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+    ...(identityTokenHmacSecret === undefined ? {} : { identityTokenHmacSecret }),
     backchannelLogoutRateLimitPerMinute,
     ...email,
     emailDisabledTenantIds: loadEmailDisabledTenantIds(env),

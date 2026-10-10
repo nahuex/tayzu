@@ -81,6 +81,7 @@ const ENV: Record<string, string> = {
   CERBOS_ADDRESS: 'localhost:3593',
   ALLOWED_ORIGINS: ALLOWED_ORIGIN,
   BETTER_AUTH_URL: AUTH_URL,
+  IDENTITY_TOKEN_HMAC_SECRET: 'cookies-hmac-test-only-secret-0123456789-abcde',
 };
 
 function randomIp(): string {

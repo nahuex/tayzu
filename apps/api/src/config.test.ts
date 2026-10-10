@@ -49,6 +49,7 @@ import { loadConfig, type Config } from './config.js';
 const APP_URL = 'postgres://tayzu_app:app-pw-s3cret@db.invalid:5432/tayzu?sslmode=verify-full';
 const AUTH_URL = 'postgres://tayzu_auth:auth-pw-s3cret@db.invalid:5432/tayzu?sslmode=verify-full';
 const SECRET = 'config-unit-test-only-secret-0123456789-abcdefghij';
+const HMAC_SECRET = 'config-hmac-test-only-secret-0123456789-abcdefgh';
 
 function env(
   overrides: Record<string, string | undefined> = {},
@@ -62,6 +63,7 @@ function env(
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
+    IDENTITY_TOKEN_HMAC_SECRET: HMAC_SECRET,
     ...overrides,
   };
 }
@@ -636,5 +638,51 @@ describe('EMAIL_DISABLED_TENANT_IDS (043 task 6.5c, Q80)', () => {
     const id = 'a'.repeat(64);
     const config = loadConfig(base('production', { EMAIL_DISABLED_TENANT_IDS: id }));
     expect(field(config, 'emailDisabledTenantIds')).toEqual([id]);
+  });
+});
+
+/**
+ * `043` task 6.7b (Resolved decision Q93): `IDENTITY_TOKEN_HMAC_SECRET` keys the
+ * per-recipient caps. Required outside `NODE_ENV=test`, at least 32 bytes, never
+ * echoed. Production symbol expected on `Config`: `identityTokenHmacSecret?: string`
+ * (undefined only under test when unset).
+ */
+describe('IDENTITY_TOKEN_HMAC_SECRET (043 task 6.7b, Q93)', () => {
+  const deployed = (
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: 'production',
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      ...overrides,
+    });
+  const field = (config: Config, name: string): unknown =>
+    (config as unknown as Record<string, unknown>)[name];
+
+  it('a deployed environment starts with a 32-byte secret and exposes it', () => {
+    const exactly32 = 'k'.repeat(32);
+    const config = loadConfig(deployed({ IDENTITY_TOKEN_HMAC_SECRET: exactly32 }));
+    expect(field(config, 'identityTokenHmacSecret')).toBe(exactly32);
+  });
+
+  it.each([undefined, '', '   '])(
+    'a deployed environment with the secret %j fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(deployed({ IDENTITY_TOKEN_HMAC_SECRET: value })));
+      expect(error.message).toContain('IDENTITY_TOKEN_HMAC_SECRET');
+    },
+  );
+
+  it('a deployed environment with a secret under 32 bytes fails without echoing it', () => {
+    const short = 'k'.repeat(31);
+    const error = thrown(() => loadConfig(deployed({ IDENTITY_TOKEN_HMAC_SECRET: short })));
+    expect(error.message).toContain('IDENTITY_TOKEN_HMAC_SECRET');
+    expect(error.message).not.toContain(short);
+  });
+
+  it('the test configuration needs no secret', () => {
+    const config = loadConfig(env({ NODE_ENV: 'test', IDENTITY_TOKEN_HMAC_SECRET: undefined }));
+    expect(field(config, 'identityTokenHmacSecret')).toBeUndefined();
   });
 });

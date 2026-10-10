@@ -33,6 +33,7 @@ function env(overrides: Record<string, string | undefined>): Record<string, stri
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
+    IDENTITY_TOKEN_HMAC_SECRET: 'sender-hmac-test-only-secret-0123456789-abcdef',
     ...overrides,
   };
 }

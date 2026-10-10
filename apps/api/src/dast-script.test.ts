@@ -77,6 +77,22 @@ describe('dast.sh follows the moved bootstrap CLI (task 4.6b)', () => {
     expect(upFunction()).toMatch(/^\s*export EMAIL_PROVIDER=["']?none["']?\s*$/m);
   });
 
+  it('IDENTITY_TOKEN_HMAC_SECRET is generated and exported without being printed (task 6.7b)', () => {
+    const up = upFunction();
+
+    expect(up).toMatch(/^\s*export IDENTITY_TOKEN_HMAC_SECRET="[^"\n]+"\s*$/m);
+    expect(up).not.toMatch(/(echo|printf|log)[^\n]*IDENTITY_TOKEN_HMAC_SECRET/);
+  });
+
+  it('INVITATION_LINK_BASE_URL is exported equal to the ALLOWED_ORIGINS value, port included (task 6.7b)', () => {
+    const up = upFunction();
+    const allowed = /^\s*export ALLOWED_ORIGINS="([^"\n]+)"\s*$/m.exec(up)?.[1];
+    const link = /^\s*export INVITATION_LINK_BASE_URL="([^"\n]+)"\s*$/m.exec(up)?.[1];
+
+    expect(allowed).toBe('https://localhost:${API_PORT}');
+    expect(link).toBe(allowed);
+  });
+
   it('the --refresh call of api-scan keeps DATABASE_URL=unused and gains no new variable', () => {
     const refresh = /DATABASE_URL=unused[^\n]*\n[^\n]*zap-seed\.ts --refresh/.exec(script);
 

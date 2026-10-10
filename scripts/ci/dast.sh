@@ -130,15 +130,17 @@ up() {
   mkdir -p "$STATE_DIR"
   chmod 700 "$STATE_DIR"
 
-  local password app_password auth_password secret database_url tls
+  local password app_password auth_password secret hmac_secret database_url tls
   password="$(openssl rand -hex 24)"
   app_password="$(openssl rand -hex 24)"
   auth_password="$(openssl rand -hex 24)"
   secret="$(openssl rand -hex 32)"
+  hmac_secret="$(openssl rand -hex 32)"
   mask "$password"
   mask "$app_password"
   mask "$auth_password"
   mask "$secret"
+  mask "$hmac_secret"
 
   generate_tls
   start_postgres "$password"
@@ -149,12 +151,16 @@ up() {
 
   export DATABASE_URL="$database_url"
   export BETTER_AUTH_SECRET="$secret"
+  # Q93: keys the per-recipient caps; random per run, never printed.
+  export IDENTITY_TOKEN_HMAC_SECRET="$hmac_secret"
   # Q40: https outside test. The scan reaches the listener over plain HTTP on
   # localhost; the configured origin only drives cookie and origin settings.
   export BETTER_AUTH_URL="https://localhost:${API_PORT}"
   # Q56: https origins only outside test. The seed sends this Origin, as a
   # browser on the https front end would.
   export ALLOWED_ORIGINS="https://localhost:${API_PORT}"
+  # 6.3: must be one of ALLOWED_ORIGINS, port included.
+  export INVITATION_LINK_BASE_URL="https://localhost:${API_PORT}"
   export ZAP_SEED_ORIGIN="https://localhost:${API_PORT}"
   export CERBOS_ADDRESS
   export PORT="$API_PORT"

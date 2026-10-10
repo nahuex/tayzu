@@ -32,6 +32,7 @@ function configEnv(): Record<string, string | undefined> {
     DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
     AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
     BETTER_AUTH_SECRET: 'invitation-link-test-only-secret-0123456789-abcdef',
+    IDENTITY_TOKEN_HMAC_SECRET: 'invitation-hmac-test-only-secret-0123456789-abcd',
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
