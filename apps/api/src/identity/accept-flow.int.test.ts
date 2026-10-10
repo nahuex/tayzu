@@ -66,7 +66,7 @@
 import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
 import { randomInt, randomUUID } from 'node:crypto';
 
-import { authSchema, createAuth, type AuthInstance } from '@tayzu/auth';
+import { authSchema, createAuth, createStepUpGuard, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
@@ -77,7 +77,9 @@ import type { Pool } from 'pg';
 import {
   bootstrapTestTenant,
   createAdminUser,
+  signInAdminUser,
 } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
+import { stepUpVerificationIdentifier } from '../../../../packages/auth/src/step-up.js';
 import {
   TEST_PASSWORD,
   TEST_SECRET,
@@ -601,15 +603,43 @@ describe('the acceptance as idempotent steps (task 8.1e, design D4, Resolved dec
   it('A token replaced by a concurrent resend leaves nothing owed: the zero-row consumption is a lost race that deletes nothing, and an acceptance with the resent token completes (existing account)', async () => {
     const tenant = await freshTenant();
     const email = `carol-${randomUUID()}@example.test`;
-    const carol = await existingAccount(email);
+    const plain = await existingAccount(email);
     const invitation = await invite(tenant, email, 'admin');
+
+    // Wiring only (task 8.5d): an `admin` invitation to an existing account needs
+    // the step-up guard and a fresh marker on her real session.
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, 'password', now() + interval '4 minutes')`,
+      [randomUUID(), stepUpVerificationIdentifier(signedIn.token)],
+    );
+    const carol = {
+      ...plain,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
+    const stepUpFlow = (onStep?: StepSeam) =>
+      createAcceptFlow({
+        auth,
+        authRepository: repository,
+        authPool,
+        userSync: adapter,
+        stepUp: createStepUpGuard({ auth }),
+        ...(onStep === undefined ? {} : { onStep }),
+      });
 
     // GIVEN a resend that replaces the token after the attempt's `_user` step and before its consumption.
     let resent = '';
     const first = recorder(async (step) => {
       if (step === 'consume') resent = await replaceToken(invitation.invitationId);
     });
-    const failure = await failureOf(flowWith(first.seam).accept({ ...invitation, session: carol }));
+    const failure = await failureOf(
+      stepUpFlow(first.seam).accept({ ...invitation, session: carol }),
+    );
 
     // THEN the attempt fails as a lost race and deletes nothing.
     expect(failure?.code).toBe('CATALOG_NOT_FOUND');
@@ -625,7 +655,7 @@ describe('the acceptance as idempotent steps (task 8.1e, design D4, Resolved dec
 
     // AND an acceptance with the resent token completes.
     const writesBefore = writesFor(tenant.tenantId, email).length;
-    await flowWith().accept({
+    await stepUpFlow().accept({
       invitationId: invitation.invitationId,
       token: resent,
       session: carol,

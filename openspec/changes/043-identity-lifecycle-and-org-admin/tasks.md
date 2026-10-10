@@ -1758,7 +1758,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       of another account cannot accept" (a different user's session) answering the
       uniform rejection with `denial_reason` `email_mismatch` or `session_required`, and
       an existing account whose email was never verified accepting successfully.
-- [ ] 8.5d When the invited role is `admin`, an existing-account acceptance
+- [x] 8.5d When the invited role is `admin`, an existing-account acceptance
       additionally requires a fresh step-up, checked with the guard of
       `packages/auth/src/step-up.ts` only after the session, the email and the token
       have all passed, so it answers `AUTH_STEP_UP_REQUIRED` to nobody without a valid

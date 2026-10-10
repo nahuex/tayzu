@@ -31,12 +31,12 @@
 import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
 import { randomInt, randomUUID } from 'node:crypto';
 
-import { authSchema, createAuth, type AuthInstance } from '@tayzu/auth';
+import { authSchema, createAuth, createStepUpGuard, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
 import {
@@ -53,8 +53,14 @@ import {
   generateInvitationToken,
   verifyInvitationToken,
 } from '../../../../packages/auth/src/identity/invitation-token.js';
+import {
+  startOidcStub,
+  type OidcStub,
+} from '../../../../packages/auth/src/__fixtures__/oidc-stub.js';
+import { stepUpVerificationIdentifier } from '../../../../packages/auth/src/step-up.js';
 import { harnessPools } from '../__fixtures__/pools.js';
 import { toOrpcError } from '../error-mapping.js';
+import { createReauthorization, type Reauthorization } from '../reauthorization.js';
 import { createAcceptFlow } from './accept-flow.js';
 import { createAuthRepository, type AuthRepository } from './auth-repository.js';
 import { runWithIdentityContext } from './identity-context.js';
@@ -1303,7 +1309,12 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
     );
     const sessionId = row.rows[0]?.id;
     if (sessionId === undefined) throw new Error('the session row is missing');
-    return { userId: created.userId, sessionId };
+    return {
+      userId: created.userId,
+      sessionId,
+      token: signedIn.token,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
   }
 
   async function snapshot(userId: string, sessionId: string) {
@@ -1352,11 +1363,19 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
     expect(before.accounts, 'precondition: one credential account').toHaveLength(1);
     expect(await emailVerified(carol.userId), 'precondition: not verified').toBe(false);
 
+    // Wiring only (task 8.5d): this is an `admin` invitation, so the acceptance
+    // needs the step-up guard and a fresh marker on her session.
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, 'password', now() + interval '4 minutes')`,
+      [randomUUID(), stepUpVerificationIdentifier(carol.token)],
+    );
     const flow = createAcceptFlow({
       auth,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
+      stepUp: createStepUpGuard({ auth }),
     });
     const result = await flow.accept({ ...invitation, session: carol });
 
@@ -1699,5 +1718,363 @@ describe('A session of another account cannot accept (task 8.5c, Resolved decisi
       ]),
     ).toBe(1);
     expect(await deniedReasons(invitation.invitationId)).toEqual([]);
+  }, 60_000);
+});
+
+/**
+ * Task 8.5d (spec "Invitation acceptance", scenario "An admin invitation to an
+ * existing account needs step-up"; design D4 step 4 (e)).
+ *
+ * Scenario clauses:
+ * - GIVEN a pending `admin` invitation and her matching session, WHEN she presents
+ *   the valid token without a fresh step-up verification, THEN it fails with
+ *   `AUTH_STEP_UP_REQUIRED` and nothing changes (and with a fresh marker it succeeds).
+ * - AND a caller with a wrong token gets the uniform rejection, not
+ *   `AUTH_STEP_UP_REQUIRED` (also a session of another account).
+ * - AND a session of the identity provider is sent to its re-authorization instead
+ *   of a local verification, and completes after it.
+ * - The guard applies to an `admin` invitation only.
+ *
+ * ## Production symbols expected
+ *
+ * `apps/api/src/identity/accept-flow.ts`:
+ * - `AcceptFlowOptions.stepUp?: StepUpGuard` (`@tayzu/auth`) and
+ *   `AcceptFlowOptions.reauthorization?: Reauthorization` (`../reauthorization.js`).
+ *   Without `stepUp`, an `admin` acceptance by an existing account fails closed with
+ *   `AUTH_STEP_UP_REQUIRED`.
+ * - `AcceptInput.session.headers?: Headers`: the request's headers, handed to the
+ *   guard and to `reauthorization.lookup` / `.start`.
+ * - Only after the session, the email and the token passed, for an `admin` invite on
+ *   the existing-account path, the flow calls `reauthorization.lookup(headers)`, then
+ *   the guard (`route: { riskLevel: 'high' }`, `reauthorization` when found); on an
+ *   `AuthStepUpError` it calls `reauthorization.start(headers)` and, when that gives a
+ *   URL, throws an `ORPCError('AUTH_STEP_UP_REQUIRED')` with
+ *   `data: { reauthorizationUrl }` (as `server.ts` does), else rethrows the guard error.
+ */
+describe('An admin invitation to an existing account needs step-up (task 8.5d, design D4 (e))', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REDIRECT_URI = 'http://localhost:3000/v1/auth/sso/reauthorize-callback';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let stub: OidcStub;
+  let reauthorization: Reauthorization;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    stub = await startOidcStub();
+    reauthorization = createReauthorization({
+      auth,
+      authPool,
+      discoveryUrl: stub.discoveryUrl,
+      clientId: stub.clientId,
+      clientSecret: stub.clientSecret,
+      redirectUri: REDIRECT_URI,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await stub.close();
+  });
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+      stepUp: createStepUpGuard({
+        auth,
+        sso: {
+          discoveryUrl: stub.discoveryUrl,
+          clientId: stub.clientId,
+          clientSecret: stub.clientSecret,
+        },
+      }),
+      reauthorization,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(
+    tenant: Tenant,
+    email: string,
+    role: 'member' | 'admin',
+  ): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role, organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** An account with a real session; its cookie travels as the request headers. */
+  async function accountWithSession(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      `select id from auth.session where token = $1`,
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    return {
+      userId: created.userId,
+      sessionId,
+      token: signedIn.token,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
+  }
+
+  async function markFresh(sessionToken: string): Promise<void> {
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, 'password', now() + interval '4 minutes')`,
+      [randomUUID(), stepUpVerificationIdentifier(sessionToken)],
+    );
+  }
+
+  async function failureOf(
+    attempt: Promise<unknown>,
+  ): Promise<{ code: string; data?: unknown } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function count(sql: string, params: unknown[]): Promise<number> {
+    return (await authPool.query(sql, params)).rowCount ?? 0;
+  }
+
+  async function expectNothingChanged(
+    tenant: Tenant,
+    userId: string,
+    email: string,
+    invitation: Invitation,
+  ): Promise<void> {
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        userId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+    expect(
+      await count(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token is not consumed',
+    ).toBe(1);
+    const status = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitation.invitationId],
+    );
+    expect(status.rows[0]?.status).toBe('pending');
+    const user = await authPool.query<{ email_verified: boolean }>(
+      `select email_verified from auth."user" where id = $1`,
+      [userId],
+    );
+    expect(user.rows[0]?.email_verified, 'email not marked verified').toBe(false);
+  }
+
+  it('An admin invitation to an existing account needs step-up: the valid token and her matching session without a fresh marker fail with AUTH_STEP_UP_REQUIRED and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'admin');
+
+    const failure = await failureOf(flow().accept({ ...invitation, session: carol }));
+
+    expect(failure?.code).toBe('AUTH_STEP_UP_REQUIRED');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: with a fresh marker on her session the acceptance succeeds', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'admin');
+    await markFresh(carol.token);
+
+    const result = await flow().accept({ ...invitation, session: carol });
+
+    expect(result.userId).toBe(carol.userId);
+    const member = await authPool.query<{ role: string }>(
+      `select role from auth.member where organization_id = $1 and user_id = $2`,
+      [tenant.tenantId, carol.userId],
+    );
+    expect(member.rows.map((row) => row.role)).toEqual(['admin']);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Active',
+    );
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: a wrong token with no marker gets the uniform rejection, not AUTH_STEP_UP_REQUIRED', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'admin');
+
+    const failure = await failureOf(
+      flow().accept({
+        invitationId: invitation.invitationId,
+        token: generateInvitationToken(),
+        session: carol,
+      }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: a session of another account with no marker gets the uniform rejection, not AUTH_STEP_UP_REQUIRED', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const mallory = await accountWithSession(`mallory-${randomUUID()}@example.test`);
+    const invitation = await invite(tenant, email, 'admin');
+
+    const failure = await failureOf(flow().accept({ ...invitation, session: mallory }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+    const reasons = (
+      await (async () => {
+        await harness.forceFlush();
+        return [...harness.logExporter.getFinishedLogRecords()];
+      })()
+    )
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitation.invitationId,
+      )
+      .map((record) => record.attributes['tayzu.identity.invitation.denial_reason']);
+    expect(reasons).toEqual(['email_mismatch']);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: the guard applies to an admin invitation only, a member invitation needs no marker', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'member');
+
+    const result = await flow().accept({ ...invitation, session: carol });
+
+    expect(result.userId).toBe(carol.userId);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: a session of the identity provider is sent to its re-authorization instead of a local verification, and completes after it', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const sid = `sid-${randomUUID()}`;
+    await authPool.query('update auth.session set sso_sid = $1 where id = $2', [
+      sid,
+      carol.sessionId,
+    ]);
+    // A local marker must not satisfy an identity-provider session (D25).
+    await markFresh(carol.token);
+    const invitation = await invite(tenant, email, 'admin');
+
+    // WHEN she presents the valid token: she is sent to the re-authorization.
+    const refused = await failureOf(flow().accept({ ...invitation, session: carol }));
+    expect(refused?.code).toBe('AUTH_STEP_UP_REQUIRED');
+    const raw = (refused?.data as { reauthorizationUrl?: unknown } | undefined)?.reauthorizationUrl;
+    if (typeof raw !== 'string') {
+      throw new Error('the refusal must carry data.reauthorizationUrl');
+    }
+    const url = new URL(raw);
+    expect(url.origin, 'the URL points at the (stub) identity provider').toBe(stub.issuer);
+    expect(url.searchParams.get('max_age')).toBe('300');
+    expect(url.searchParams.get('prompt')).toBe('login');
+    expect(url.searchParams.get('acr_values')).toBe('urn:idp:vismaconnect:mfa');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+
+    // AND the re-authorization completes with a qualifying fresh MFA claim.
+    stub.setSubject({
+      sub: `sso-sub-${randomUUID()}`,
+      sid,
+      claims: { auth_time: Math.floor(Date.now() / 1000) - 10, acr: 3, amr: ['pwd', 'otp'] },
+    });
+    const approval = await fetch(url, { redirect: 'manual' });
+    const location = approval.headers.get('location');
+    if (location === null) throw new Error('the OIDC stub must redirect with the code');
+    const callback = new URL(location, REDIRECT_URI);
+    expect(
+      await reauthorization.complete({
+        code: callback.searchParams.get('code'),
+        state: callback.searchParams.get('state'),
+      }),
+      'the callback stored the result',
+    ).toBe(true);
+
+    // THEN the acceptance now completes.
+    const result = await flow().accept({ ...invitation, session: carol });
+    expect(result.userId).toBe(carol.userId);
+    const member = await authPool.query<{ role: string }>(
+      `select role from auth.member where organization_id = $1 and user_id = $2`,
+      [tenant.tenantId, carol.userId],
+    );
+    expect(member.rows.map((row) => row.role)).toEqual(['admin']);
   }, 60_000);
 });

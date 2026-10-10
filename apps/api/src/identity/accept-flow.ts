@@ -7,15 +7,19 @@
  * The inviter check, the shed, the session revocation and the admin notice are
  * later tasks' (8.5f, 8.5h, 8.5m, 8.15): this flow only reserves their slots.
  */
+import { ORPCError } from '@orpc/server';
 import type { Pool } from 'pg';
 
 import {
+  AuthStepUpError,
   emitIdentityEvent,
   verifyInvitationToken,
   withIdentitySpan,
   type AuthInstance,
+  type StepUpGuard,
 } from '@tayzu/auth';
 
+import type { Reauthorization } from '../reauthorization.js';
 import type { AuthRepository } from './auth-repository.js';
 import { runWithAcceptanceContext } from './identity-context.js';
 import { parseIdentityInput, type InputSchema } from './parse-input.js';
@@ -38,6 +42,10 @@ export interface AcceptFlowOptions {
   /** The `tayzu_auth` pool: the token row of `auth.verification`. */
   readonly authPool: Pool;
   readonly userSync: UserSyncAdapter;
+  /** The step-up guard of an `admin` acceptance by an existing account (8.5d). */
+  readonly stepUp?: StepUpGuard;
+  /** The identity provider's re-authorization, for sessions that carry an `ssoSid`. */
+  readonly reauthorization?: Reauthorization;
   /** Test seam, awaited immediately before each step; a throw fails that step. */
   readonly onStep?: (step: Step) => void | Promise<void>;
 }
@@ -48,7 +56,12 @@ export interface AcceptInput {
   /** The password of the new-account path. */
   readonly password?: string;
   /** The already validated session of the existing-account path (opaque ids). */
-  readonly session?: { readonly userId: string; readonly sessionId: string };
+  readonly session?: {
+    readonly userId: string;
+    readonly sessionId: string;
+    /** The request's headers, handed to the step-up guard. */
+    readonly headers?: Headers;
+  };
 }
 
 interface AuthApiSurface {
@@ -102,7 +115,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
   accept(input: AcceptInput): Promise<{ userId: string }>;
   acceptRequest(request: {
     body: unknown;
-    session?: { readonly userId: string; readonly sessionId: string };
+    session?: AcceptInput['session'];
   }): Promise<{ userId: string }>;
 } {
   const { authRepository: repository, authPool, userSync } = options;
@@ -111,6 +124,39 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
   const step = async (name: Step): Promise<void> => {
     await options.onStep?.(name);
   };
+
+  /** Fails closed with `AUTH_STEP_UP_REQUIRED` unless a fresh step-up is on the session. */
+  async function requireStepUp(
+    tenantId: string,
+    userId: string,
+    headers: Headers | undefined,
+  ): Promise<void> {
+    const { stepUp, reauthorization } = options;
+    const requestHeaders = headers ?? new Headers();
+    if (stepUp === undefined) throw new AuthStepUpError();
+    const returned =
+      reauthorization === undefined ? null : await reauthorization.lookup(requestHeaders);
+    try {
+      await stepUp({
+        headers: requestHeaders,
+        tenantId,
+        actor: { type: 'user', id: userId },
+        route: { riskLevel: 'high' },
+        operation: 'identity.invitation.accept',
+        ...(returned === null ? {} : { reauthorization: returned }),
+      });
+    } catch (error) {
+      if (!(error instanceof AuthStepUpError)) throw error;
+      const reauthorizationUrl =
+        reauthorization === undefined ? null : await reauthorization.start(requestHeaders);
+      if (reauthorizationUrl === null) throw error;
+      throw new ORPCError('AUTH_STEP_UP_REQUIRED', {
+        status: 403,
+        message: error.message,
+        data: { reauthorizationUrl },
+      });
+    }
+  }
 
   async function accept(input: AcceptInput): Promise<{ userId: string }> {
     const invitation = await repository.globalInvitationById(input.invitationId);
@@ -151,6 +197,9 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       throw notFound();
     }
     if (existing === undefined && input.password === undefined) throw notFound();
+    // Only after the session, the email and the token have passed (8.5d).
+    if (existing !== undefined && role === 'admin')
+      await requireStepUp(tenantId, existing.id, input.session?.headers);
 
     let createdUserId: string | undefined;
     let createdMemberId: string | undefined;
@@ -295,7 +344,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
   /** The service function behind the public route: parses the raw body, then accepts. */
   async function acceptRequest(request: {
     body: unknown;
-    session?: { readonly userId: string; readonly sessionId: string };
+    session?: AcceptInput['session'];
   }): Promise<{ userId: string }> {
     let parsed: Record<string, unknown>;
     try {
