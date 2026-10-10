@@ -1060,7 +1060,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       same inputs against the real Cerbos container, including as the `system`
       actor ("The Cerbos ceiling denies an elevated service-account resource").
       ⛔ **Stop for Checkpoint 3 approval of the policy diff before continuing.**
-- [ ] 5.6 (Checkpoint 3) Role ceilings: `policies/role_policies/admin.yaml` lists
+- [x] 5.6 (Checkpoint 3) Role ceilings: `policies/role_policies/admin.yaml` lists
       `service_account` and `credential` (including `create`) explicitly, `member.yaml` states the ceiling if one is needed, and
       `role_policies_test.yaml` is extended. A role-policy allow does nothing
       without a resource-policy allow, and the resource policies of the two kinds

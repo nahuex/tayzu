@@ -135,6 +135,25 @@ resources:
       accountKind: service
       portRole: admin
       moderatedBlueprints: []
+  # Task 5.6 (design D3): the two new kinds. Opaque ids only: the `svc-...`
+  # identifier of a service account, the `apikey` id of a credential, and the
+  # fixed literal `list` for credentials.list (it has no target).
+  service_account_t1:
+    kind: service_account
+    id: svc-ok
+    attr:
+      tenantId: t1
+      accountKind: service
+  credential_t1:
+    kind: credential
+    id: apikey-1
+    attr:
+      tenantId: t1
+  credential_list_t1:
+    kind: credential
+    id: list
+    attr:
+      tenantId: t1
   # No ownership configured.
   entity_service_unowned_t1:
     kind: catalog_entity

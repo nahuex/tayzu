@@ -20,3 +20,12 @@ rolePolicy:
       allowActions: ['*']
     - resource: user
       allowActions: ['*']
+    # Task 5.6 (design D3, 043): the ceiling lists each new kind explicitly (no
+    # wildcard resource). Without these entries the admin is denied fail-closed
+    # on the two kinds. The allows themselves live in service_account.yaml and
+    # credential.yaml (tasks 9.1 and 10.2), with the tenant check and the
+    # explicit cross-tenant deny.
+    - resource: service_account
+      allowActions: [create, delete]
+    - resource: credential
+      allowActions: [list, create, rotate, revoke]

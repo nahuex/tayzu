@@ -15,6 +15,13 @@
 #
 # `user` and `team`: members may only view and list them (Checkpoint 3, Q3a).
 # Everything else on those kinds stays admin-only.
+#
+# `service_account` and `credential` (043, task 5.6) are deliberately NOT listed:
+# a member has no action on them. No resource-policy rule will ever allow
+# `member` there (tasks 9.1 and 10.2 allow `admin` only), so the absence of a
+# rule is the ceiling and the resource policies deny by default. A role-policy
+# rule cannot state an empty allow list, so no entry is written.
+# role_policies_test.yaml asserts the member denial on every action of both kinds.
 ---
 apiVersion: api.cerbos.dev/v1
 rolePolicy:
