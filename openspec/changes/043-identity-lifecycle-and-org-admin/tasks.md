@@ -1351,7 +1351,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `invitations.int.test.ts` covers "Inviting with the owner role is rejected" for
       `owner`, `member,owner`, `['owner']`, `Admin` and an arbitrary value, each with
       nothing created, and "An admin invitation is logged with its role".
-- [ ] 7.5 Re-inviting an email that has a `pending` invitation cancels the
+- [x] 7.5 Re-inviting an email that has a `pending` invitation cancels the
       previous invitation (reason `re_invite`) and creates a fresh one. Verify:
       `invitations.int.test.ts` covers "Re-inviting cancels the previous
       invitation".

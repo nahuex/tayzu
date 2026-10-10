@@ -437,4 +437,52 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     expect(attributes?.['tayzu.identity.invitation.id']).toBe(invitations[0]?.id);
     expect(JSON.stringify(attributes)).not.toContain(email);
   }, 60_000);
+
+  // Task 7.5 (spec "Invitation lifecycle"; design D4, Resolved decision Q42).
+  // Scenario "Re-inviting cancels the previous invitation": GIVEN a `pending`
+  // invitation to `bob@example.com`, WHEN the admin invites `bob@example.com`
+  // again, THEN the first invitation's state becomes `cancelled` and a new
+  // `pending` invitation is created with a fresh 48-hour expiry.
+  // Stored `cancelled` is Better Auth's `canceled`. The `re_invite` cancel
+  // reason (span `identity.invitation.cancel`) is not asserted: the scenario
+  // leaves open who emits it, since Better Auth makes the cancel itself.
+  it('Re-inviting cancels the previous invitation: the first becomes cancelled and a new pending one has a fresh 48-hour expiry', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const HOURS_48_MS = 48 * 60 * 60 * 1000;
+    const TOLERANCE_MS = 60_000;
+
+    // GIVEN a pending invitation to `bob@example.com`.
+    const first = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+    const firstRows = await invitationsOf(tenant.tenantId, email);
+    expect(firstRows).toHaveLength(1);
+    expect(firstRows[0]?.id).toBe(first.invitationId);
+    expect(firstRows[0]?.status).toBe('pending');
+
+    // WHEN the admin invites `bob@example.com` again.
+    const before = Date.now();
+    const second = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+    const after = Date.now();
+    expect(second.invitationId).not.toBe(first.invitationId);
+
+    // THEN the first invitation's state becomes cancelled...
+    const rows = await invitationsOf(tenant.tenantId, email);
+    expect(rows, 'two invitations exist for the email').toHaveLength(2);
+    const previous = rows.find((row) => row.id === first.invitationId);
+    expect(previous?.status, 'the first invitation is stored as canceled').toBe('canceled');
+
+    // ...and a new pending invitation exists with a fresh 48-hour expiry.
+    const fresh = rows.find((row) => row.id === second.invitationId);
+    expect(fresh?.status).toBe('pending');
+    const expiresAt = Number(fresh?.expires_ms ?? 0);
+    expect(expiresAt).toBeGreaterThanOrEqual(before + HOURS_48_MS - TOLERANCE_MS);
+    expect(expiresAt).toBeLessThanOrEqual(after + HOURS_48_MS + TOLERANCE_MS);
+    expect(rows.filter((row) => row.status === 'pending')).toHaveLength(1);
+  }, 60_000);
 });
