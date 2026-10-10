@@ -1261,7 +1261,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       markup-bearing invitee name never appear, and the rendered HTML and text contain
       no link) by parsing both.
 
-- [ ] 6.12 A notice dispatcher (`apps/api/src/identity/notices.ts`; Resolved
+- [x] 6.12 A notice dispatcher (`apps/api/src/identity/notices.ts`; Resolved
       decision Q53) is the only way a notice is sent: the
       `AdminAcceptedNotice` here, and `045`'s `OrgDeletionNotice` through it. It applies the global kill switch, the
       per-recipient bucket of 6.7 (keyed by the HMAC of the canonical email, 6.7b; 6.12b

@@ -744,3 +744,44 @@ describe('a disabled or zero invitation cap fails startup (043 task 6.9, Q15, 00
     expect(error.message).toContain(name);
   });
 });
+
+/**
+ * `043` task 6.12 (Resolved decision Q58): the per-tenant notice cap is a max/window pair
+ * with its enabled default (60 per hour) in code; a zero or disabled value fails startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `noticeTenantCap: { max: number; windowSeconds: number }` (60 per hour), from
+ *   `NOTICE_TENANT_RATE_LIMIT_MAX` and `NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS`.
+ */
+describe('a zero notice cap fails startup (043 task 6.12, Q58, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['noticeTenantCap'];
+
+  it('noticeTenantCap is enabled by default in code', () => {
+    expect(read(loadConfig(env()))).toEqual({ max: 60, windowSeconds: 3600 });
+  });
+
+  it('noticeTenantCap is only tuned by the environment', () => {
+    expect(
+      read(
+        loadConfig(
+          env({
+            NOTICE_TENANT_RATE_LIMIT_MAX: '7',
+            NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS: '120',
+          }),
+        ),
+      ),
+    ).toEqual({ max: 7, windowSeconds: 120 });
+  });
+
+  it.each(
+    ['NOTICE_TENANT_RATE_LIMIT_MAX', 'NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS'].flatMap((name) =>
+      ['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'].map(
+        (value) => [name, value] as const,
+      ),
+    ),
+  )('%s=%j (disabled or zero) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});

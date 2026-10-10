@@ -46,6 +46,8 @@ export interface Config {
   readonly invitationTenantCap: { readonly max: number; readonly windowSeconds: number };
   /** Invitation emails per recipient (Q15); window in seconds. */
   readonly invitationRecipientCap: { readonly max: number; readonly windowSeconds: number };
+  /** Notice emails per tenant (Q58); window in seconds. */
+  readonly noticeTenantCap: { readonly max: number; readonly windowSeconds: number };
   /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
   readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
@@ -70,6 +72,7 @@ const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
 const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
 const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
 const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
+const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 
 const MIN_SECRET_LENGTH = 32;
@@ -354,6 +357,12 @@ export function loadConfig(env: Env): Config {
     'INVITATION_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_INVITATION_RECIPIENT_LIMIT,
   );
+  const noticeTenantCap = limitWithDefaults(
+    env,
+    'NOTICE_TENANT_RATE_LIMIT_MAX',
+    'NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_NOTICE_TENANT_LIMIT,
+  );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const backchannelLogoutRateLimitPerMinute =
     optionalPositiveInt(env, 'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE') ??
@@ -377,6 +386,7 @@ export function loadConfig(env: Env): Config {
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
     invitationTenantCap,
     invitationRecipientCap,
+    noticeTenantCap,
     invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     telemetryDisabled: loadTelemetryDisabled(env),
