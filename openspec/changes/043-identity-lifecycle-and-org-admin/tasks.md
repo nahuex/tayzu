@@ -1000,7 +1000,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (`account-linking.int.test.ts:389`) is **rewritten** to 5.2 (Resolved decision
       Q135), not loosened: the cross-tenant attempt answers `CATALOG_NOT_FOUND` and no
       Cerbos request carries a resource of the other tenant; the PR calls it out.
-- [ ] 5.3b2 The wrapper checks the **caller's role in the caller's own tenant
+- [x] 5.3b2 The wrapper checks the **caller's role in the caller's own tenant
       first**, with no target (Resolved decision Q57; `002`'s `assertMayOnUser` did),
       then resolves the target, then re-checks with the target's real tenant. For the
       `service_account` kind the first check carries `accountKind: service`, because
