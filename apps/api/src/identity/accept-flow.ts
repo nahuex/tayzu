@@ -136,7 +136,20 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     const role = invitation.role === 'admin' ? 'admin' : 'member';
 
     const existing = await repository.globalUserByEmail(email);
-    if (existing !== undefined && input.session?.userId !== existing.id) throw notFound();
+    if (existing !== undefined && input.session?.userId !== existing.id) {
+      // The match is on the account of the invitation email only, with no
+      // verified-email condition (Q38).
+      emitIdentityEvent({
+        name: 'catalog.security.invitation_acceptance_denied',
+        severity: 'WARN',
+        attributes: {
+          'tayzu.identity.invitation.id': invitation.id,
+          'tayzu.identity.invitation.denial_reason':
+            input.session === undefined ? 'session_required' : 'email_mismatch',
+        },
+      });
+      throw notFound();
+    }
     if (existing === undefined && input.password === undefined) throw notFound();
 
     let createdUserId: string | undefined;

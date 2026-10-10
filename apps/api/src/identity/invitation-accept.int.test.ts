@@ -1456,3 +1456,248 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
     expect(attributes?.['tayzu.tenant.id']).toBe(target.tenantId);
   }, 60_000);
 });
+
+/**
+ * Task 8.5c (spec "Invitation acceptance", scenario "A session of another account
+ * cannot accept"; Resolved decision Q38).
+ *
+ * - GIVEN a pending invitation to `carol`, WHEN it is accepted with the valid token
+ *   and a session of another user, THEN the answer is the uniform rejection and
+ *   nothing changes; `catalog.security.invitation_acceptance_denied` records
+ *   `tayzu.identity.invitation.denial_reason` `email_mismatch` or `session_required`.
+ * - The match is on the email only: an existing account whose email was never
+ *   verified accepts successfully (Q38).
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createAcceptFlow(...).accept` of `apps/api/src/identity/accept-flow.ts`
+ * emits the denied event with the reason `email_mismatch` (a session of another
+ * user) or `session_required` (no session) before it answers the uniform rejection.
+ */
+describe('A session of another account cannot accept (task 8.5c, Resolved decision Q38)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flowOf() {
+    return createAcceptFlow({
+      auth,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** An account with a real session; its email is never verified. */
+  async function accountWithSession(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      `select id from auth.session where token = $1`,
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    return { userId: created.userId, sessionId };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function rows(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function expectNothingChanged(
+    tenant: Tenant,
+    invitation: Invitation,
+    email: string,
+    carolId: string,
+  ) {
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carolId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth."user" where id = $1 and email_verified = false`, [carolId]),
+      'her email is still unverified',
+    ).toBe(1);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+  }
+
+  it('A session of another account cannot accept: a different user’s session gets the uniform rejection, a denial reason and no change', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const mallory = await accountWithSession(`mallory-${randomUUID()}@example.test`);
+    const invitation = await invite(tenant, email);
+
+    const failure = await failureOf(flowOf().accept({ ...invitation, session: mallory }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, invitation, email, carol.userId);
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        mallory.userId,
+      ]),
+      'the other user gains no membership either',
+    ).toBe(0);
+    const reasons = await deniedReasons(invitation.invitationId);
+    expect(reasons).toHaveLength(1);
+    expect(['email_mismatch', 'session_required']).toContain(reasons[0]);
+  }, 60_000);
+
+  it('A session of another account cannot accept: through the request path too, the answer is the same uniform rejection', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const mallory = await accountWithSession(`mallory-${randomUUID()}@example.test`);
+    const invitation = await invite(tenant, email);
+
+    const failure = await failureOf(
+      flowOf().acceptRequest({ body: { ...invitation }, session: mallory }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, invitation, email, carol.userId);
+    expect(['email_mismatch', 'session_required']).toContain(
+      (await deniedReasons(invitation.invitationId))[0],
+    );
+  }, 60_000);
+
+  it('An existing account whose email was never verified accepts successfully with its own session', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    expect(
+      await rows(`select 1 from auth."user" where id = $1 and email_verified = false`, [
+        carol.userId,
+      ]),
+      'precondition: not verified',
+    ).toBe(1);
+
+    const result = await flowOf().accept({ ...invitation, session: carol });
+
+    expect(result.userId).toBe(carol.userId);
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+    ).toBe(1);
+    expect(await deniedReasons(invitation.invitationId)).toEqual([]);
+  }, 60_000);
+});

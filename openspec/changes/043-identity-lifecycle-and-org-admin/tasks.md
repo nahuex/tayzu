@@ -1751,7 +1751,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       step (a recording seam on the two steps), and `catalog.audit.invitation_accepted`
       naming the invitee (`tayzu.actor.type` `user`, `tayzu.actor.id` her Better Auth
       user id, Resolved decision Q116).
-- [ ] 8.5c The session user's email must equal the invitation email, with **no**
+- [x] 8.5c The session user's email must equal the invitation email, with **no**
       verified-email condition (Resolved decision Q38: `email_verified` is false for
       every account, so the condition would fail for all of them), and the session is
       read only on this path. Verify: `invitation-accept.int.test.ts` covers "A session
