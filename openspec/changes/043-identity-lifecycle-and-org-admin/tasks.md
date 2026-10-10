@@ -1396,7 +1396,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       before (an email, an `svc-` identifier, a value with `/`, an over-length
       value), `limits.ts` and `identifiers.ts` using the same constant, and `pnpm
       --filter @tayzu/catalog test` staying green.
-- [ ] 7.10 The canonical email form (NFC, trimmed, lower-cased) is one pure
+- [x] 7.10 The canonical email form (NFC, trimmed, lower-cased) is one pure
       function in `apps/api/src/identity/email-canonical.ts` (`@tayzu/auth` has no use
       for it and cannot import `@tayzu/catalog`; the `ENTITY_IDENTIFIER_PATTERN` it
       validates against is the one `@tayzu/catalog` exports in 7.9b, Q60), used for the `_user` identifier, the Better Auth email, the invitation

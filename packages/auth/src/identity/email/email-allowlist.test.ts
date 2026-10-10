@@ -113,6 +113,17 @@ describe('the recipient-domain allowlist wrapper (043 task 6.5b)', () => {
     expect(blocked).toHaveLength(0);
   });
 
+  it('a recipient written `Bob@Allowed.Example ` reaches the provider when `allowed.example` is on the list (task 7.10)', async () => {
+    const provider = stubProvider();
+    const sender = allowlist.createAllowlistEmailSender(provider, ['allowed.example']);
+
+    await sender.send('Bob@Allowed.Example ', INVITATION);
+
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]?.template).toEqual(INVITATION);
+    expect(provider.calls[0]?.to.trim().toLowerCase()).toBe('bob@allowed.example');
+  });
+
   it('a recipient off the list never reaches the provider', async () => {
     const provider = stubProvider();
     const sender = allowlist.createAllowlistEmailSender(provider, ['allowed.example']);

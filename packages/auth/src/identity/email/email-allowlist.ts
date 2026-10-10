@@ -1,7 +1,8 @@
 /**
  * The recipient-domain allowlist wrapper (`043` design D5, Resolved decisions Q67 and Q99).
  * A recipient off the list is refused like a provider failure and logged without any address.
- * Canonicalizing the address before the comparison is task 7.10's.
+ * The address is canonicalized (NFC, trimmed, lower-cased; the form of `apps/api`'s
+ * `email-canonical.ts`, which this package cannot import) before the comparison.
  */
 import { emitIdentityEvent } from '../../telemetry/identity-telemetry.js';
 import { EmailProviderError } from './azure-communication-email.js';
@@ -18,7 +19,8 @@ export function createAllowlistEmailSender(
 ): EmailSender {
   const allowed = new Set(allowedDomains);
   return {
-    async send(to, template) {
+    async send(rawTo, template) {
+      const to = rawTo.normalize('NFC').trim().toLowerCase();
       const domain = to.slice(to.lastIndexOf('@') + 1);
       if (!to.includes('@') || !allowed.has(domain)) {
         emitIdentityEvent({
