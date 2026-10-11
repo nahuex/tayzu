@@ -2727,3 +2727,115 @@ describe('An invitation does not outlive its inviter’s authority (task 8.5f, R
     );
   });
 });
+
+describe('Acceptance does not link an SSO account by email (task 8.6, Resolved decision Q18)', () => {
+  const SSO_PROVIDER = 'visma-connect';
+
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Link Admin',
+      email: `link-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Link Org',
+      organizationSlug: `link-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function providers(userId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ provider_id: string }>(
+      `select provider_id from auth.account where user_id = $1 order by provider_id`,
+      [userId],
+    );
+    return result.rows.map((row) => row.provider_id);
+  }
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  it('Acceptance does not link an SSO account by email: a new person ends with a credential account only and no visma-connect account', async () => {
+    const tenant = await freshTenant();
+    const email = `new-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    const result = await flow().accept({ ...invitation, password: PASSWORD_NFC });
+
+    expect(await providers(result.userId)).toEqual(['credential']);
+    const sso = await authPool.query(
+      `select 1 from auth.account where user_id = $1 and provider_id = $2`,
+      [result.userId, SSO_PROVIDER],
+    );
+    expect(sso.rowCount).toBe(0);
+  }, 60_000);
+
+  it('Acceptance does not link an SSO account by email: an existing account accepting with its session gains no visma-connect account and its accounts are unchanged', async () => {
+    const tenant = await freshTenant();
+    const email = `existing-${randomUUID()}@example.test`;
+    const existing = await createAdminUser(auth, {
+      name: 'Existing',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const invitation = await invite(tenant, email);
+    const before = await providers(existing.userId);
+
+    const result = await flow().accept({
+      ...invitation,
+      session: { userId: existing.userId, sessionId: randomUUID() },
+    });
+
+    expect(result.userId).toBe(existing.userId);
+    const after = await providers(existing.userId);
+    expect(after).toEqual(before);
+    expect(after).not.toContain(SSO_PROVIDER);
+  }, 60_000);
+});

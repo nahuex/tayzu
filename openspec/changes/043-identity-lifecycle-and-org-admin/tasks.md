@@ -2166,7 +2166,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       replaced the digest after the `_user` step (a seam), the attempt failing as a lost
       race (the uniform rejection, reason `consume_conflict`) with its session and the
       recorded one already revoked and the record gone.
-- [ ] 8.6 Acceptance never links an account by an email claim. Verify:
+- [x] 8.6 Acceptance never links an account by an email claim. Verify:
       `invitation-accept.int.test.ts` covers "Acceptance does not link an SSO
       account by email" (no `account` row for the SSO provider exists afterward).
 - [ ] 8.7 Every rejected acceptance (nonexistent, expired, cancelled, rejected,
