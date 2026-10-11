@@ -16,24 +16,24 @@
     "test:unit": "vitest run --project \"*unit*\""
   },
   "dependencies": {
-    "@fastify/cors": "^11.3.0",
-    "@fastify/helmet": "^13.1.1",
-    "@fastify/rate-limit": "^11.2.0",
-    "@opentelemetry/exporter-logs-otlp-http": "0.222.0",
-    "@opentelemetry/exporter-metrics-otlp-http": "0.222.0",
-    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
-    "@opentelemetry/instrumentation-http": "0.222.0",
-    "@opentelemetry/instrumentation-pg": "0.74.0",
-    "@opentelemetry/sdk-node": "0.222.0",
-    "@orpc/openapi": "^1.15.4",
-    "@orpc/server": "^1.15.4",
+    "@fastify/cors": "^11.3.1",
+    "@fastify/helmet": "^13.1.2",
+    "@fastify/rate-limit": "^11.2.1",
+    "@opentelemetry/exporter-logs-otlp-http": "0.223.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
+    "@opentelemetry/instrumentation-http": "0.223.0",
+    "@opentelemetry/instrumentation-pg": "0.75.0",
+    "@opentelemetry/sdk-node": "0.223.0",
+    "@orpc/openapi": "^1.15.5",
+    "@orpc/server": "^1.15.5",
     "@tayzu/auth": "workspace:*",
     "@tayzu/authz": "workspace:*",
     "@tayzu/catalog": "workspace:*",
     "@tayzu/db": "workspace:*",
-    "drizzle-orm": "^0.45.3",
+    "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.5",
-    "pg": "^8.23.0"
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1"
