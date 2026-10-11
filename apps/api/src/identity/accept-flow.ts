@@ -246,7 +246,11 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         ? { ...rawInput, session: await readSession(rawInput.headers) }
         : rawInput;
     const invitation = await repository.globalInvitationById(input.invitationId);
-    if (invitation === undefined) throw deny(input.invitationId, 'not_found');
+    if (invitation === undefined) {
+      // The same digest comparison as a wrong token, so timing does not reveal existence.
+      verifyInvitationToken(input.token, null);
+      throw deny(input.invitationId, 'not_found');
+    }
     // The state is derived at the boundary: `canceled` reads as cancelled, `expired` from `expiresAt`.
     if (invitation.status === 'accepted') throw deny(invitation.id, 'already_accepted');
     if (invitation.status === 'canceled') throw deny(invitation.id, 'cancelled');

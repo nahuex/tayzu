@@ -29,14 +29,14 @@
 // Load-bearing import order (design D1): the telemetry harness registers
 // before anything that loads `@tayzu/auth` creates its logger.
 import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { authSchema, createAuth, createStepUpGuard, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 
 import {
@@ -65,6 +65,12 @@ import { createAcceptFlow } from './accept-flow.js';
 import { createAuthRepository, type AuthRepository } from './auth-repository.js';
 import { runWithIdentityContext } from './identity-context.js';
 import { createUserSyncAdapter } from './user-sync-adapter.js';
+
+/** Wraps (never replaces) the constant-time comparison so that task 8.8 can count its calls. */
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return { ...actual, timingSafeEqual: vi.fn(actual.timingSafeEqual) };
+});
 
 /** The Cerbos client the flow asks about the inviter (8.5f); the real one, lazily connected. */
 const sharedCerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
@@ -3168,4 +3174,85 @@ describe('Acceptance errors do not reveal which failure occurred (task 8.7, desi
     const bodies = new Set(Object.values(answers).map((answer) => answer?.body));
     expect([...bodies], 'one body for every failure').toHaveLength(1);
   }, 180_000);
+});
+
+describe('A nonexistent invitation costs the same digest comparison as a wrong token (task 8.8, design D4 step 5)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  /** Runs one acceptance and returns how many times the comparison ran during it. */
+  async function comparisonsDuring(attempt: () => Promise<unknown>): Promise<number> {
+    const spy = vi.mocked(timingSafeEqual);
+    spy.mockClear();
+    await attempt().catch(() => undefined);
+    return spy.mock.calls.length;
+  }
+
+  it('A nonexistent invitation performs the same digest comparison as a wrong token: one comparison in both cases', async () => {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Compare Admin',
+      email: `compare-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Compare Org',
+      organizationSlug: `compare-${id}`,
+      ip: randomIp(),
+    });
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: t.userId }, () =>
+      api.createInvitation({
+        body: {
+          email: `compare-${id}@example.test`,
+          role: 'member',
+          organizationId: t.organizationId,
+        },
+        headers: new Headers({ cookie: t.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(generateInvitationToken()),
+        new Date(invitation.expiresAt),
+      ],
+    );
+
+    const wrongToken = await comparisonsDuring(() =>
+      flow().accept({ invitationId: invitation.id, token: generateInvitationToken() }),
+    );
+    const nonexistent = await comparisonsDuring(() =>
+      flow().accept({ invitationId: randomUUID(), token: generateInvitationToken() }),
+    );
+
+    expect(wrongToken, 'a wrong token').toBe(1);
+    expect(nonexistent, 'a nonexistent invitation').toBe(1);
+  }, 60_000);
 });

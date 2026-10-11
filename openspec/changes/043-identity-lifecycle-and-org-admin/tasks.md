@@ -2177,7 +2177,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `catalog.security.invitation_acceptance_denied` records the specific
       `denial_reason`. Verify: `invitation-accept.int.test.ts` covers "Acceptance
       errors do not reveal which failure occurred" over the full matrix.
-- [ ] 8.8 A nonexistent invitation performs the same digest comparison as a wrong
+- [x] 8.8 A nonexistent invitation performs the same digest comparison as a wrong
       token. Verify: `invitation-accept.int.test.ts` spies on the comparison and
       asserts one comparison in both cases.
 - [ ] 8.9 Accepting an expired invitation fails, the invitation reads as
