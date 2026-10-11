@@ -856,4 +856,302 @@ describe('The session paths that the shed still missed are closed (task 8.5k)', 
     expect(serialized, 'no email in the event').not.toContain(person.email);
     expect(serialized, 'no token in the event').not.toContain(invitation.token);
   }, 90_000);
+
+  // ==== Task 8.5m: a retried acceptance revokes the session an earlier attempt's shed kept ====
+  //
+  // Scenarios: "A retried acceptance revokes the session an earlier attempt's shed kept" and
+  // "An attempt that fails after its _user step has already revoked the sessions".
+  //
+  // Seams (all outside production code): the acceptance's `onStep` throws at a chosen step
+  // (a failure at the `_user` step or at the `emailVerified` write, or a resend replacing the
+  // token digest right before the consumption); a pool that fails `DELETE FROM auth.session`
+  // once the `_user` step begins.
+  //
+  // Production symbols expected:
+  // - `apps/api/src/identity/sso-link-shed.ts`: `shed()` on an acceptance-path removal writes,
+  //   in the `withUserLock` transaction, one `auth.verification` row with the identifier
+  //   `invitation-shed:<invitationId>`, the kept session row id as its value and the
+  //   invitation's expiry (it needs the invitation id in `ShedInput`, here as
+  //   `invitationId`), after deleting every row with that identifier; `revokeSession` stays.
+  // - `apps/api/src/identity/accept-flow.ts`: right after the `_user` step, whenever its own
+  //   shed removed a link or the record exists, revokes its own session and the recorded one
+  //   through the shed core and deletes the record after a successful revocation; a failed
+  //   revocation emits `catalog.security.accepting_session_revocation_failed` and keeps the
+  //   record.
+
+  const SHED_RECORD_PREFIX = 'invitation-shed:';
+
+  const failAt =
+    (target: string): StepSeam =>
+    (step) => {
+      if (step === target) throw new Error(`injected failure at ${target}`);
+    };
+
+  async function shedRecords(
+    invitationId: string,
+  ): Promise<readonly { value: string; expires_at: Date }[]> {
+    const result = await authPool.query<{ value: string; expires_at: Date }>(
+      'select value, expires_at from auth.verification where identifier = $1',
+      [`${SHED_RECORD_PREFIX}${invitationId}`],
+    );
+    return result.rows;
+  }
+
+  async function tokenExpiry(invitationId: string): Promise<Date | undefined> {
+    const result = await authPool.query<{ expires_at: Date }>(
+      'select expires_at from auth.verification where identifier = $1',
+      [`invitation-accept:${invitationId}`],
+    );
+    return result.rows[0]?.expires_at;
+  }
+
+  async function seedAdminLink(userId: string): Promise<void> {
+    await seedUnmarkedLink(userId, `shed-sub-${randomUUID()}`);
+  }
+
+  /**
+   * A user of `t1` with an unmarked link, an invitation of `t2`, a password session A,
+   * and a first attempt with A that sheds the link and fails at the `_user` step.
+   */
+  async function afterFailedFirstAttempt() {
+    const t1 = await freshTenant();
+    const t2 = await freshTenant();
+    const person = await singleTenantMember(t1);
+    await adminLink(t1, person, `shed-sub-${randomUUID()}`);
+    const invitation = await invite(t2, person.email);
+    const cookieA = await passwordSession(person);
+    const sessionA = (await sessionAlive(cookieA)).id ?? '';
+    expect(sessionA, 'precondition: a session A').not.toBe('');
+    await expect(
+      flowWith(failAt('user_step')).accept({
+        ...invitation,
+        session: { userId: person.userId, sessionId: sessionA },
+      }),
+    ).rejects.toThrow();
+    expect(
+      await accountsOf(person.userId),
+      'precondition: the first attempt shed the link',
+    ).toEqual([]);
+    return { t2, person, invitation, cookieA, sessionA };
+  }
+
+  async function sessionOf(person: Person): Promise<{ cookie: string; id: string }> {
+    const cookie = await passwordSession(person);
+    return { cookie, id: (await sessionAlive(cookie)).id ?? '' };
+  }
+
+  it("A retried acceptance revokes the session an earlier attempt's shed kept: the first attempt leaves the record naming its kept session, and the retry with the same session revokes it, emits the event and deletes the record", async () => {
+    const { t2, person, invitation, cookieA, sessionA } = await afterFailedFirstAttempt();
+    const records = await shedRecords(invitation.invitationId);
+    expect(records, 'one record after the failed first attempt').toHaveLength(1);
+    expect(records[0]?.value, 'it names the kept session row id').toBe(sessionA);
+    expect(records[0]?.value, 'and never the session token').not.toContain('.');
+    expect(records[0]?.expires_at.getTime(), 'it expires with the invitation (its token row)').toBe(
+      (await tokenExpiry(invitation.invitationId))?.getTime(),
+    );
+    expect((await sessionAlive(cookieA)).alive, 'the kept session still works').toBe(true);
+    await harness.reset();
+
+    const result = await flowWith().accept({
+      ...invitation,
+      session: { userId: person.userId, sessionId: sessionA },
+    });
+
+    expect(result.userId).toBe(person.userId);
+    expect(await userStatus(t2.tenantId, person.email)).toBe('Active');
+    expect((await sessionAlive(cookieA)).alive, 'the session fails get-session').toBe(false);
+    expect(await v1Status(cookieA), 'and a /v1 call').toBeGreaterThanOrEqual(400);
+    expect(await revokedEvents(person.userId), 'the event is emitted').toHaveLength(1);
+    expect(await shedRecords(invitation.invitationId), 'the record is gone').toHaveLength(0);
+  }, 90_000);
+
+  it("A retried acceptance revokes the session an earlier attempt's shed kept: the retry made with a new session signed in after the first attempt revokes both that session and the first attempt's", async () => {
+    const { t2, person, invitation, cookieA, sessionA } = await afterFailedFirstAttempt();
+    const b = await sessionOf(person);
+    expect(b.id, 'precondition: a new session B').not.toBe(sessionA);
+    await harness.reset();
+
+    const result = await flowWith().accept({
+      ...invitation,
+      session: { userId: person.userId, sessionId: b.id },
+    });
+
+    expect(result.userId).toBe(person.userId);
+    expect(await userStatus(t2.tenantId, person.email)).toBe('Active');
+    expect((await sessionAlive(cookieA)).alive, "the first attempt's session is revoked").toBe(
+      false,
+    );
+    expect((await sessionAlive(b.cookie)).alive, "and so is the retry's").toBe(false);
+    expect(await v1Status(b.cookie)).toBeGreaterThanOrEqual(400);
+    expect(await revokedEvents(person.userId), 'one event for each').toHaveLength(2);
+    expect(await shedRecords(invitation.invitationId)).toHaveLength(0);
+  }, 90_000);
+
+  it("A retried acceptance revokes the session an earlier attempt's shed kept: a second attempt whose shed removes a link recorded again, and that also fails at the _user step, leaves exactly one record naming the second attempt's session", async () => {
+    const { person, invitation, sessionA } = await afterFailedFirstAttempt();
+    await seedAdminLink(person.userId);
+    const b = await sessionOf(person);
+
+    await expect(
+      flowWith(failAt('user_step')).accept({
+        ...invitation,
+        session: { userId: person.userId, sessionId: b.id },
+      }),
+    ).rejects.toThrow();
+
+    const records = await shedRecords(invitation.invitationId);
+    expect(records, 'exactly one record').toHaveLength(1);
+    expect(records[0]?.value, "it names the second attempt's session").toBe(b.id);
+    expect(records[0]?.value).not.toBe(sessionA);
+  }, 90_000);
+
+  it("A retried acceptance revokes the session an earlier attempt's shed kept: an acceptance whose attempts never removed a link writes no record and keeps its session", async () => {
+    const t1 = await freshTenant();
+    const t2 = await freshTenant();
+    const person = await singleTenantMember(t1);
+    const cookie = await passwordSession(person);
+    await selfLink(cookie, person, `shed-sub-${randomUUID()}`);
+    expect(await accountsOf(person.userId), 'precondition: a link the user made').toHaveLength(1);
+    const invitation = await invite(t2, person.email);
+    const accepting = (await sessionAlive(cookie)).id ?? '';
+    await expect(
+      flowWith(failAt('user_step')).accept({
+        ...invitation,
+        session: { userId: person.userId, sessionId: accepting },
+      }),
+    ).rejects.toThrow();
+    expect(await shedRecords(invitation.invitationId), 'no record after a failed attempt').toEqual(
+      [],
+    );
+    await harness.reset();
+
+    await flowWith().accept({
+      ...invitation,
+      session: { userId: person.userId, sessionId: accepting },
+    });
+
+    expect(await shedRecords(invitation.invitationId), 'no record after the retry').toEqual([]);
+    expect((await sessionAlive(cookie)).alive, 'the session is kept').toBe(true);
+    expect(await v1Status(cookie)).toBe(200);
+    expect(await revokedEvents(person.userId)).toHaveLength(0);
+  }, 90_000);
+
+  it("A retried acceptance revokes the session an earlier attempt's shed kept: a revocation that fails leaves the record in place and emits the failure event", async () => {
+    const { t2, person, invitation, cookieA, sessionA } = await afterFailedFirstAttempt();
+    let failSessionDeletes = false;
+    const failing = poolFailing(
+      authPool,
+      (text) => failSessionDeletes && SESSION_DELETE.test(text),
+    );
+    await harness.reset();
+
+    const result = await createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(failing),
+      authPool: failing,
+      userSync: adapter,
+      ssoLinkShed: createSsoLinkShed({ authPool: failing }),
+      onStep: (step) => {
+        if (step === 'user_step') failSessionDeletes = true;
+      },
+    }).accept({
+      ...invitation,
+      session: { userId: person.userId, sessionId: sessionA },
+    });
+
+    expect(result.userId, 'the acceptance still completes').toBe(person.userId);
+    expect(await userStatus(t2.tenantId, person.email)).toBe('Active');
+    expect(await shedRecords(invitation.invitationId), 'the record stays').toHaveLength(1);
+    expect((await sessionAlive(cookieA)).alive, 'the session was not revoked').toBe(true);
+    const events = await linkLogEvents(harness, REVOCATION_FAILED_EVENT);
+    expect(events.length, 'the failure is logged').toBeGreaterThanOrEqual(1);
+    expect(events[0]?.attributes['tayzu.identity.invitation.id']).toBe(invitation.invitationId);
+    expect(events[0]?.attributes['tayzu.identity.user.id']).toBe(person.userId);
+  }, 90_000);
+
+  it('An attempt that fails after its _user step has already revoked the sessions: an attempt that sheds and fails at the emailVerified write has revoked its own session and the recorded one, the events are emitted and the record is gone, and a retry with a new session revokes nothing more and completes', async () => {
+    const { t2, person, invitation, cookieA } = await afterFailedFirstAttempt();
+    await seedAdminLink(person.userId);
+    const b = await sessionOf(person);
+    await harness.reset();
+
+    await expect(
+      flowWith(failAt('email_verified')).accept({
+        ...invitation,
+        session: { userId: person.userId, sessionId: b.id },
+      }),
+    ).rejects.toThrow();
+
+    expect((await sessionAlive(b.cookie)).alive, 'its own session is already revoked').toBe(false);
+    expect((await sessionAlive(cookieA)).alive, "and the earlier attempt's").toBe(false);
+    expect(await revokedEvents(person.userId), 'one event for each').toHaveLength(2);
+    expect(await shedRecords(invitation.invitationId), 'the record is gone').toHaveLength(0);
+    expect(await userStatus(t2.tenantId, person.email), 'the join is not undone').toBe('Active');
+    expect(await tokenStillVerifies(invitation), 'the token is not consumed').toBe(true);
+
+    const c = await sessionOf(person);
+    await harness.reset();
+    const result = await flowWith().accept({
+      ...invitation,
+      session: { userId: person.userId, sessionId: c.id },
+    });
+
+    expect(result.userId, 'the retry completes').toBe(person.userId);
+    expect(await revokedEvents(person.userId), 'and revokes nothing more').toHaveLength(0);
+    expect((await sessionAlive(c.cookie)).alive, 'its session is kept').toBe(true);
+    expect(await tokenStillVerifies(invitation), 'the token is consumed').toBe(false);
+  }, 90_000);
+
+  it('An attempt that fails after its _user step has already revoked the sessions: an attempt whose own shed removes nothing but finds the record has revoked its own session and the recorded one before failing at the emailVerified write', async () => {
+    const { person, invitation, cookieA } = await afterFailedFirstAttempt();
+    const b = await sessionOf(person);
+    await harness.reset();
+
+    await expect(
+      flowWith(failAt('email_verified')).accept({
+        ...invitation,
+        session: { userId: person.userId, sessionId: b.id },
+      }),
+    ).rejects.toThrow();
+
+    expect((await sessionAlive(b.cookie)).alive, 'its own session is already revoked').toBe(false);
+    expect((await sessionAlive(cookieA)).alive, 'and the recorded one').toBe(false);
+    expect(await revokedEvents(person.userId), 'one event for each').toHaveLength(2);
+    expect(await shedRecords(invitation.invitationId), 'the record is gone').toHaveLength(0);
+    expect(await tokenStillVerifies(invitation), 'the token is not consumed').toBe(true);
+  }, 90_000);
+
+  it('An attempt that fails after its _user step has already revoked the sessions: a consumption that deletes zero rows because a resend replaced the digest fails as a lost race with the sessions revoked and the record gone', async () => {
+    const { person, invitation, cookieA } = await afterFailedFirstAttempt();
+    const b = await sessionOf(person);
+    await harness.reset();
+
+    await expect(
+      flowWith(async (step) => {
+        if (step === 'consume') {
+          await authPool.query('update auth.verification set value = $2 where identifier = $1', [
+            `invitation-accept:${invitation.invitationId}`,
+            digestInvitationToken(generateInvitationToken()),
+          ]);
+        }
+      }).accept({
+        ...invitation,
+        session: { userId: person.userId, sessionId: b.id },
+      }),
+    ).rejects.toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+
+    const denied = (
+      await linkLogEvents(harness, 'catalog.security.invitation_acceptance_denied')
+    ).filter(
+      (record) => record.attributes['tayzu.identity.invitation.id'] === invitation.invitationId,
+    );
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.attributes['tayzu.identity.invitation.denial_reason']).toBe(
+      'consume_conflict',
+    );
+    expect((await sessionAlive(b.cookie)).alive, 'its own session is revoked').toBe(false);
+    expect((await sessionAlive(cookieA)).alive, 'and the recorded one').toBe(false);
+    expect(await shedRecords(invitation.invitationId), 'the record is gone').toHaveLength(0);
+  }, 90_000);
 });

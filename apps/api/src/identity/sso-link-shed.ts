@@ -9,6 +9,8 @@
  * Auth hook runs for its deletes: the markers are deleted here and no
  * `account_unlinked` event is emitted.
  */
+import { randomUUID } from 'node:crypto';
+
 import { emitIdentityEvent, emitSessionRevoked, type SsoLinkShedPort } from '@tayzu/auth';
 import type { Pool, PoolClient } from 'pg';
 
@@ -17,6 +19,12 @@ import { createWithUserLock, type WithUserLock } from './user-lock.js';
 
 /** Identifier prefix of the marker of a link the user made (`auth.ts`, Q87). */
 const MARKER_PREFIX = 'sso-link:';
+
+/** Identifier prefix of the record of the session an acceptance's shed kept (8.5m). */
+const SHED_RECORD_PREFIX = 'invitation-shed:';
+
+/** Identifier prefix of the invitation's token row, whose expiry the record shares. */
+const TOKEN_PREFIX = 'invitation-accept:';
 
 export type SsoLinkShedPath = 'acceptance' | 'membership_hook' | 'reconcile';
 
@@ -27,6 +35,8 @@ export interface ShedInput {
   readonly path: SsoLinkShedPath;
   /** The session that carries an acceptance, kept by this shed. */
   readonly keepSessionId?: string;
+  /** The invitation of an acceptance-path shed, whose kept session is recorded (8.5m). */
+  readonly invitationId?: string;
 }
 
 export interface RevokeSessionInput {
@@ -44,6 +54,10 @@ export interface SsoLinkShed {
   shed(input: ShedInput): Promise<ShedResult>;
   /** Deletes one session row of the user and emits one `session_revoked` per row deleted (8.5k). */
   revokeSession(input: RevokeSessionInput): Promise<void>;
+  /** The session row id that an earlier attempt's shed kept for the invitation, if recorded (8.5m). */
+  recordedSession(invitationId: string): Promise<string | undefined>;
+  /** Deletes the record of the invitation (8.5m). */
+  clearRecord(invitationId: string): Promise<void>;
   /** The port `createAuth` takes as `ssoLinkShed`. */
   readonly port: SsoLinkShedPort;
 }
@@ -70,7 +84,7 @@ export function createSsoLinkShed(options: SsoLinkShedOptions): SsoLinkShed {
   }
 
   async function shed(input: ShedInput): Promise<ShedResult> {
-    const { tenantId, userId, keepSessionId } = input;
+    const { tenantId, userId, keepSessionId, invitationId } = input;
     const inLock = await withUserLock(userId, async (tx) => {
       const others = await tx.query(
         'select 1 from auth.member where user_id = $1 and organization_id <> $2 limit 1',
@@ -90,6 +104,20 @@ export function createSsoLinkShed(options: SsoLinkShedOptions): SsoLinkShed {
         ids.map((id) => `${MARKER_PREFIX}${id}`),
       ]);
       await tx.query('delete from auth.account where id = any($1::text[])', [ids]);
+      if (
+        input.path === 'acceptance' &&
+        invitationId !== undefined &&
+        keepSessionId !== undefined
+      ) {
+        // Committed with the deletion; replaces any record of an earlier attempt (8.5m).
+        const identifier = `${SHED_RECORD_PREFIX}${invitationId}`;
+        await tx.query('delete from auth.verification where identifier = $1', [identifier]);
+        await tx.query(
+          `insert into auth.verification (id, identifier, value, expires_at)
+           select $1, $2, $3, t.expires_at from auth.verification t where t.identifier = $4`,
+          [randomUUID(), identifier, keepSessionId, `${TOKEN_PREFIX}${invitationId}`],
+        );
+      }
       return { removed: ids.length, sessions: await deleteSessions(tx, userId, keepSessionId) };
     });
     if (inLock.removed === 0) return { removedLinks: 0, revokedSessions: 0 };
@@ -126,6 +154,20 @@ export function createSsoLinkShed(options: SsoLinkShedOptions): SsoLinkShed {
     }
   }
 
+  async function recordedSession(invitationId: string): Promise<string | undefined> {
+    const found = await options.authPool.query<{ value: string }>(
+      'select value from auth.verification where identifier = $1',
+      [`${SHED_RECORD_PREFIX}${invitationId}`],
+    );
+    return found.rows[0]?.value;
+  }
+
+  async function clearRecord(invitationId: string): Promise<void> {
+    await options.authPool.query('delete from auth.verification where identifier = $1', [
+      `${SHED_RECORD_PREFIX}${invitationId}`,
+    ]);
+  }
+
   const port: SsoLinkShedPort = {
     async shed({ tenantId, userId }) {
       const acceptance = currentAcceptanceContext();
@@ -135,5 +177,5 @@ export function createSsoLinkShed(options: SsoLinkShedOptions): SsoLinkShed {
     },
   };
 
-  return { shed, revokeSession, port };
+  return { shed, revokeSession, recordedSession, clearRecord, port };
 }

@@ -4,8 +4,7 @@
  * Q116, Q118, Q120, Q122 and Q127). The token is verified without consuming
  * it and consumed last; an attempt compensates only what it created.
  *
- * The revocation of the session an earlier attempt kept (8.5m) and the admin
- * notice (8.15) are later tasks': this flow only reserves their slots.
+ * The admin notice (8.15) is a later task's: this flow only reserves its slot.
  */
 import { ORPCError } from '@orpc/server';
 import type { Pool } from 'pg';
@@ -348,19 +347,28 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     };
 
     /**
-     * Revokes the session that carried the acceptance once the `_user` step has run
-     * and the shed removed a link (Q106, Q122). The join is final (Q118), so a failure
-     * is logged with opaque ids and does not stop the acceptance (Q115, G9-5).
+     * Once the `_user` step has run, revokes the accepting session and the session an
+     * earlier attempt's shed recorded, when this attempt's shed removed a link or the
+     * record exists (Q106, Q122, 8.5m), then deletes the record. The join is final (Q118),
+     * so a failure is logged with opaque ids, keeps the record and does not stop the
+     * acceptance (Q115, G9-5).
      */
-    const revokeAcceptingSession = async (
+    const revokeKeptSessions = async (
       userId: string,
       shedResult: ShedResult | undefined,
     ): Promise<void> => {
-      const sessionId = input.session?.sessionId;
-      if (options.ssoLinkShed === undefined || sessionId === undefined) return;
-      if ((shedResult?.removedLinks ?? 0) === 0) return;
+      const shed = options.ssoLinkShed;
+      if (shed === undefined) return;
       try {
-        await options.ssoLinkShed.revokeSession({ tenantId, userId, sessionId });
+        const recorded = await shed.recordedSession(invitation.id);
+        if ((shedResult?.removedLinks ?? 0) === 0 && recorded === undefined) return;
+        const sessionIds = new Set<string>();
+        if (input.session !== undefined) sessionIds.add(input.session.sessionId);
+        if (recorded !== undefined) sessionIds.add(recorded);
+        for (const sessionId of sessionIds) {
+          await shed.revokeSession({ tenantId, userId, sessionId });
+        }
+        await shed.clearRecord(invitation.id);
       } catch {
         emitIdentityEvent({
           name: 'catalog.security.accepting_session_revocation_failed',
@@ -389,6 +397,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
           tenantId,
           userId,
           path: 'acceptance',
+          invitationId: invitation.id,
           ...(input.session !== undefined && { keepSessionId: input.session.sessionId }),
         });
       }
@@ -404,7 +413,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         onBehalfOf: { type: 'user', id: userId },
       });
       progress.userStepRan = true;
-      await revokeAcceptingSession(userId, shedResult);
+      await revokeKeptSessions(userId, shedResult);
       if (existing !== undefined) {
         await step('join_owed');
         await step('email_verified');

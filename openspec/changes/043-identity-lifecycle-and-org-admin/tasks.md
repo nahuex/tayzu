@@ -2112,7 +2112,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       link being left alone; a marked link being kept; a failing shed leaving the row
       uncreated; and the script doing all of it with no `BETTER_AUTH_SECRET` in its
       environment and without building Better Auth (a spy on `createAuth` never called).
-- [ ] 8.5m A retried acceptance revokes the session that an earlier attempt's shed kept
+- [x] 8.5m A retried acceptance revokes the session that an earlier attempt's shed kept
       (design D4 step 7; a consistency fix within Resolved decision Q106, no new
       decision; its timing is Resolved decision Q122). An attempt whose shed removed a
       link can fail before its `_user` step (8.1e compensates such a failure), and the
