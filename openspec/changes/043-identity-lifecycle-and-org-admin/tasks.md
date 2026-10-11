@@ -2224,7 +2224,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       password whose SHA-1 suffix is in the stubbed range of 8.1b, with a valid token,
       is refused on acceptance naming the breached-password rule, with nothing created
       and the token not consumed (spec "A breached password is refused").
-- [ ] 8.13 The public accept route has its own limiter, a Fastify `preHandler`
+- [x] 8.13 The public accept route has its own limiter, a Fastify `preHandler`
       that consumes a bucket of the DB-backed store through the helper of 6.10 (scope
       `invitation_accept`, keyed by the hash of `request.ip` as Fastify resolves it under the app's trust
       setting, a first-deployment gate: `server.ts` trusts every private range today), so
