@@ -127,6 +127,25 @@ function isCompromised(error: unknown): boolean {
   return (error as { body?: { code?: unknown } } | null)?.body?.code === 'PASSWORD_COMPROMISED';
 }
 
+/**
+ * `createUser` failed on the unique email: the account already exists, made by a
+ * concurrent acceptance. Either Better Auth's own check or the database's `23505`.
+ */
+function isEmailTaken(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; current != null && depth < 5; depth += 1) {
+    const candidate = current as { body?: { code?: unknown }; code?: unknown; cause?: unknown };
+    if (
+      candidate.code === '23505' ||
+      (typeof candidate.body?.code === 'string' &&
+        candidate.body.code.startsWith('USER_ALREADY_EXISTS'))
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
 /** `addMember` refused the join: the organization is at its membership limit. */
 class MemberLimitError extends Error {}
 
@@ -480,6 +499,10 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       }
       // Refused before anything was written, so nothing to compensate.
       if (existing === undefined && isCompromised(error)) throw new PasswordPolicyError('breached');
+      // The concurrent winner created the account: this attempt created nothing.
+      if (existing === undefined && createdUserId === undefined && isEmailTaken(error)) {
+        throw deny(invitation.id, 'account_conflict');
+      }
       if (error instanceof ConsumeConflictError) {
         deny(invitation.id, 'consume_conflict');
         if (existing === undefined && role === 'admin') await step('admin_notice');

@@ -4009,3 +4009,219 @@ describe('A password that fails the policy is reported only after the token veri
     expect(await statusOf(s.invitation.invitationId)).toBe('accepted');
   }, 60_000);
 });
+
+/**
+ * Task 8.14 (spec "Invitation acceptance", scenario "A concurrent account creation
+ * yields one user"; design D4 step 5, the uniform rejection).
+ *
+ * - GIVEN two pending invitations to the same new email from two tenants, WHEN both are
+ *   accepted at the same time (both held at `create_user` until both arrived), THEN
+ *   exactly one user is created, and the other attempt gets the uniform rejection
+ *   (`CATALOG_NOT_FOUND`) with the reason `account_conflict`, its `createUser` having
+ *   failed on the unique email; it created nothing and so compensates nothing (no member
+ *   deleted, no user deleted, no compensation-failed event) and its token is not consumed.
+ *
+ * ## Production symbols expected
+ *
+ * `apps/api/src/identity/accept-flow.ts` (existing): when `createUser` of the new-account
+ * path fails because the email is already taken (the concurrent winner created it), the
+ * flow logs `catalog.security.invitation_acceptance_denied` with
+ * `tayzu.identity.invitation.denial_reason` `account_conflict`, compensates nothing and
+ * throws the uniform rejection (`CATALOG_NOT_FOUND`) instead of the generic failure.
+ */
+describe('A concurrent account creation yields one user (task 8.14, design D4 step 5)', () => {
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const COMPENSATION_FAILED = 'catalog.security.invitation_accept_compensation_failed';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+  let deleteMember: ReturnType<typeof vi.fn>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    const base = createAuthRepository(authPool);
+    deleteMember = vi.fn((tenantId: string, memberId: string) =>
+      base.deleteMember(tenantId, memberId),
+    );
+    repository = { ...base, deleteMember } as AuthRepository;
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Race Admin',
+      email: `race-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Race Org',
+      organizationSlug: `race-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function count(query: string, params: readonly unknown[]): Promise<number> {
+    return (await authPool.query(query, [...params])).rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function compensationFailures(invitationId: string): Promise<number> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === COMPENSATION_FAILED &&
+        record.attributes['tayzu.identity.invitation.id'] === invitationId,
+    ).length;
+  }
+
+  it('A concurrent account creation yields one user: exactly one user, and the loser answers the uniform rejection (account_conflict) with nothing created, nothing compensated and its token unconsumed', async () => {
+    const tenantA = await freshTenant();
+    const tenantB = await freshTenant();
+    const email = `dave-${randomUUID()}@example.test`;
+    const invitationA = await invite(tenantA, email);
+    const invitationB = await invite(tenantB, email);
+    expect(await count(`select 1 from auth."user" where email = $1`, [email])).toBe(0);
+    const deletesBefore = deleteMember.mock.calls.length;
+
+    // GIVEN both attempts are held at `create_user` until both arrived.
+    let arrived = 0;
+    let open: () => void = () => undefined;
+    const bothArrived = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+      onStep: async (step) => {
+        if (step !== 'create_user') return;
+        arrived += 1;
+        if (arrived === 2) open();
+        await bothArrived;
+      },
+    });
+
+    // WHEN both are accepted at the same time.
+    const [resultA, resultB] = await Promise.allSettled([
+      flow.accept({ ...invitationA, password: PASSWORD_NFC }),
+      flow.accept({ ...invitationB, password: PASSWORD_NFC }),
+    ]);
+
+    // THEN exactly one user exists and exactly one attempt succeeded.
+    expect(await count(`select 1 from auth."user" where email = $1`, [email])).toBe(1);
+    const fulfilled = [resultA, resultB].filter((r) => r.status === 'fulfilled');
+    expect(fulfilled, 'exactly one attempt succeeds').toHaveLength(1);
+    const aWon = resultA.status === 'fulfilled';
+    const winner = {
+      tenant: aWon ? tenantA : tenantB,
+      invitation: aWon ? invitationA : invitationB,
+    };
+    const loser = {
+      tenant: aWon ? tenantB : tenantA,
+      invitation: aWon ? invitationB : invitationA,
+    };
+    const lost = aWon ? resultB : resultA;
+    if (lost.status !== 'rejected') throw new Error('the loser was expected to fail');
+
+    // AND the loser answers the uniform rejection, recorded as `account_conflict`.
+    expect(toOrpcError(lost.reason).code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(loser.invitation.invitationId)).toEqual(['account_conflict']);
+
+    // AND it created nothing and so compensated nothing.
+    const user = await authPool.query<{ id: string }>(
+      `select id from auth."user" where email = $1`,
+      [email],
+    );
+    const userId = user.rows[0]?.id ?? '';
+    expect(userId, 'the winner’s user survives').not.toBe('');
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        loser.tenant.tenantId,
+        userId,
+      ]),
+      'the loser added no member',
+    ).toBe(0);
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1`, [loser.tenant.tenantId]),
+      'only the loser’s admin is a member',
+    ).toBe(1);
+    expect(deleteMember.mock.calls.length, 'no membership was deleted').toBe(deletesBefore);
+    expect(await compensationFailures(loser.invitation.invitationId)).toBe(0);
+    expect(await adapter.readStatus({ tenantId: loser.tenant.tenantId, email })).toBe('Invited');
+
+    // AND its token is not consumed and its invitation stays pending.
+    const rows = await authPool.query<{ value: string }>(
+      `select value from auth.verification where identifier = $1`,
+      [`invitation-accept:${loser.invitation.invitationId}`],
+    );
+    expect(rows.rows, 'the loser’s token row stays').toHaveLength(1);
+    expect(verifyInvitationToken(loser.invitation.token, rows.rows[0]?.value ?? null)).toBe(true);
+    const status = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [loser.invitation.invitationId],
+    );
+    expect(status.rows[0]?.status).toBe('pending');
+
+    // AND the winner joined its own tenant.
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        winner.tenant.tenantId,
+        userId,
+      ]),
+    ).toBe(1);
+    expect(await adapter.readStatus({ tenantId: winner.tenant.tenantId, email })).toBe('Active');
+  }, 60_000);
+});

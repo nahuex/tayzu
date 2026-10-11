@@ -2235,7 +2235,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       preHandler alone with an in-memory store, asserting the limit fires before any
       invitation lookup (the route is not mounted here), and
       `invitation-rate-limit-store.int.test.ts` (6.10) the shared count.
-- [ ] 8.14 Two invitations of two tenants for the same new email accepted
+- [x] 8.14 Two invitations of two tenants for the same new email accepted
       concurrently create exactly one user. Verify: `invitation-accept.int.test.ts`
       covers "A concurrent account creation yields one user": the
       loser answers the uniform rejection (`denial_reason` `account_conflict`), its
