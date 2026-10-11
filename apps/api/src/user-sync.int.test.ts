@@ -50,6 +50,7 @@ import type { Pool } from 'pg';
 
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import {
@@ -261,6 +262,7 @@ describe('Creating a user creates a matching `_user` entity, written only by the
         auth,
         authz: cerbos,
         authRepository: createAuthRepository(pools.authPool),
+        withUserLock: createWithUserLock(pools.authPool),
       }),
       {
         context: (raw: Record<string, unknown>) => raw,

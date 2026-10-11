@@ -28,6 +28,7 @@ import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import type { WithUserLock } from './identity/user-lock.js';
 import { canonicalEmail, isValidIdentityEmail } from './identity/email-canonical.js';
 import { buildInvitationLink } from './identity/invitation-link.js';
 import { createDefineIdentityOperation } from './identity/define-operation.js';
@@ -103,6 +104,8 @@ export interface CreateIdentityRouterOptions {
   readonly authz: CerbosClient;
   /** The only reader of the `auth` schema (design D14). */
   readonly authRepository: AuthRepository;
+  /** The per-user advisory lock `linkSsoAccount` runs its check and link inside (task 8.5i). */
+  readonly withUserLock: WithUserLock;
   /** The one gate that sends invitation emails (task 6.5c). */
   readonly emailGate?: EmailTenantGate;
   /** The trusted `INVITATION_LINK_BASE_URL`; the link's origin comes only from it. */
@@ -507,22 +510,27 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           handler: async ({ context, input: rawInput, target }): Promise<void> => {
             const input = parseLinkInput(rawInput);
             const adapter = (await authContext()).internalAdapter;
-            const existing = await options.authRepository.globalAccountByKey(
-              SSO_PROVIDER_ID,
-              input.subject,
-            );
-            if (existing !== undefined) throw new IdentityLinkRejectedError();
-            try {
-              await adapter.linkAccount({
-                userId: (target as ResolvedIdentityTarget).id,
-                providerId: SSO_PROVIDER_ID,
-                accountId: input.subject,
-              });
-            } catch (error) {
-              // A concurrent link of the same `sub` (Q29): same generic rejection.
-              if (isAccountUniqueViolation(error)) throw new IdentityLinkRejectedError();
-              throw error;
-            }
+            const userId = (target as ResolvedIdentityTarget).id;
+            await options.withUserLock(userId, async () => {
+              // The check runs inside the lock (task 8.5i); its refusal is task 13.2b's.
+              await options.authRepository.globalMembershipTenantsOf(userId);
+              const existing = await options.authRepository.globalAccountByKey(
+                SSO_PROVIDER_ID,
+                input.subject,
+              );
+              if (existing !== undefined) throw new IdentityLinkRejectedError();
+              try {
+                await adapter.linkAccount({
+                  userId,
+                  providerId: SSO_PROVIDER_ID,
+                  accountId: input.subject,
+                });
+              } catch (error) {
+                // A concurrent link of the same `sub` (Q29): same generic rejection.
+                if (isAccountUniqueViolation(error)) throw new IdentityLinkRejectedError();
+                throw error;
+              }
+            });
             emitAdminLinkEvent('linked', context);
           },
         }),

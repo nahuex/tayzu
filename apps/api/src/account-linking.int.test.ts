@@ -60,6 +60,7 @@ import type { Pool } from 'pg';
 import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createIdentityRouter } from './identity-router.js';
 import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
@@ -115,6 +116,7 @@ describe('identity.users.linkSsoAccount (task 20.1, design D24 path (b))', () =>
         auth,
         authz: recording,
         authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
       }),
       {
         context: (raw: Record<string, unknown>) => raw,

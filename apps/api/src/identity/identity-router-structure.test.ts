@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import { os } from '@orpc/server';
 import type { CerbosClient } from '@tayzu/authz';
+import type { PoolClient } from 'pg';
 import { describe, expect, it } from 'vitest';
 
 import { createIdentityRouter } from '../identity-router.js';
@@ -41,6 +42,7 @@ function realRouter() {
     auth: { api: {}, $context: Promise.resolve({}) },
     authz: {} as unknown as CerbosClient,
     authRepository: {} as unknown as AuthRepository,
+    withUserLock: (_userId, fn) => fn({} as PoolClient),
   });
 }
 

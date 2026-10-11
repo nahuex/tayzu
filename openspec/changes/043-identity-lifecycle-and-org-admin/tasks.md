@@ -1813,7 +1813,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       invitation's tenant as the principal's and the resource's tenant, and a Cerbos
       client that denies, or that throws, for an otherwise active admin inviter
       answering the same uniform rejection with the token still valid.
-- [ ] 8.5i One Postgres advisory lock per user id closes the race between linking and
+- [x] 8.5i One Postgres advisory lock per user id closes the race between linking and
       joining (Resolved decision Q87). `apps/api/src/identity/user-lock.ts` exposes
       `withUserLock(userId, fn)` (in `apps/api`, used by `linkSsoAccount` and by the shed
       of 8.5h, both in `apps/api`; the hooks of `auth.ts` reach it only through the shed

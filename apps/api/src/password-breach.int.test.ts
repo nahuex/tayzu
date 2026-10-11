@@ -39,6 +39,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { harnessPools } from './__fixtures__/pools.js';
 import { toOrpcError } from './error-mapping.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { bootstrapAdmin } from '../../../packages/auth/src/bootstrap-admin.js';
@@ -134,7 +135,12 @@ describe('The breached-password check (task 8.1b, design Q23)', () => {
     auth = createAuth({ db: drizzle(authPool, { schema: authSchema }), secret: TEST_SECRET });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
     client = createRouterClient(
-      createIdentityRouter({ auth, authz: cerbos, authRepository: createAuthRepository(authPool) }),
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
       { context: (raw: Record<string, unknown>) => raw },
     );
   }, 60_000);

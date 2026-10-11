@@ -50,6 +50,7 @@ import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/adm
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createEmailTenantGate, type EmailCapStore } from './identity/email-tenant-gate.js';
 import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -108,6 +109,7 @@ describe('email boundary (task 7.11, Resolved decision Q33)', () => {
         auth,
         authz: cerbos,
         authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
           capStore,

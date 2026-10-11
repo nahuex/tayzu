@@ -81,6 +81,7 @@ import { verifyInvitationToken } from '../../../packages/auth/src/identity/invit
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createEmailTenantGate } from './identity/email-tenant-gate.js';
 import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -143,6 +144,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
         auth,
         authz: cerbos,
         authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
         emailGate: createEmailTenantGate({ disabledTenantIds: [], capStore, sender }),
         invitationLinkBaseUrl: LINK_BASE_URL,
       }),

@@ -62,6 +62,7 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 // The module under test (task 18.3): does not exist yet.
 import { createIdentityRouter } from './identity-router.js';
 import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -96,7 +97,12 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
     client = createRouterClient(
-      createIdentityRouter({ auth, authz: cerbos, authRepository: createAuthRepository(authPool) }),
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
       {
         context: (raw: Record<string, unknown>) => raw,
       },

@@ -58,6 +58,7 @@ import type { Pool } from 'pg';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -106,7 +107,12 @@ describe('identity.users.create writes the _user through the membership hook onl
       userSync: createUserSyncAdapter({ userSync }),
     });
     client = createRouterClient(
-      createIdentityRouter({ auth, authz: cerbos, authRepository: createAuthRepository(authPool) }),
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
       {
         context: (raw: Record<string, unknown>) => raw,
       },
@@ -199,6 +205,7 @@ describe('identity.users.create writes the _user through the membership hook onl
       // @ts-expect-error -- task 4.3 (Q76): the `userSync` option is removed.
       userSync: stub,
       authRepository: createAuthRepository(authPool),
+      withUserLock: createWithUserLock(authPool),
     });
     const stubbed = createRouterClient(router, {
       context: (raw: Record<string, unknown>) => raw,
@@ -262,7 +269,12 @@ describe('identity router authorization telemetry (task 5.3)', () => {
       userSync: createUserSyncAdapter({ userSync }),
     });
     client = createRouterClient(
-      createIdentityRouter({ auth, authz: cerbos, authRepository: createAuthRepository(authPool) }),
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
       { context: (raw: Record<string, unknown>) => raw },
     );
   }, 60_000);
