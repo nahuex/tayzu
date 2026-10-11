@@ -2169,7 +2169,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 8.6 Acceptance never links an account by an email claim. Verify:
       `invitation-accept.int.test.ts` covers "Acceptance does not link an SSO
       account by email" (no `account` row for the SSO provider exists afterward).
-- [ ] 8.7 Every rejected acceptance (nonexistent, expired, cancelled, rejected,
+- [x] 8.7 Every rejected acceptance (nonexistent, expired, cancelled, rejected,
       already accepted, wrong token, `Disabled` user, an inviter who is no longer an active admin, a tenant at its 100-member
       limit, no or mismatched session for an existing account, a lost race to consume the
       token, whose case is 8.3's) returns the same status, error

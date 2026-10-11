@@ -2839,3 +2839,333 @@ describe('Acceptance does not link an SSO account by email (task 8.6, Resolved d
     expect(after).not.toContain(SSO_PROVIDER);
   }, 60_000);
 });
+
+describe('Acceptance errors do not reveal which failure occurred (task 8.7, design D4 step 5)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    catalogSync = createUserSync({ pool: pools.appPool, authz: sharedCerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  interface InviterTenant extends Tenant {
+    readonly adminEmail: string;
+  }
+
+  async function freshTenant(): Promise<InviterTenant> {
+    const id = randomUUID();
+    const adminEmail = `matrix-admin-${id}@example.test`;
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Matrix Admin',
+      email: adminEmail,
+      password: TEST_PASSWORD,
+      organizationName: 'Matrix Org',
+      organizationSlug: `matrix-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie, adminEmail };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** What the caller of the route would see: status, code, message and body. */
+  interface Answer {
+    readonly status: number;
+    readonly code: string;
+    readonly body: string;
+  }
+
+  async function answerOf(attempt: Promise<unknown>): Promise<Answer | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return {
+        status: mapped.status,
+        code: mapped.code,
+        body: JSON.stringify(mapped.toJSON()),
+      };
+    }
+  }
+
+  async function deniedCount(): Promise<number> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === DENIED,
+    ).length;
+  }
+
+  /** The reasons of the denial events emitted after the first `before` ones. */
+  async function reasonsSince(before: number): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter((record) => record.eventName === DENIED)
+      .slice(before)
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function sessionOf(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      `select id from auth.session where token = $1`,
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    return { userId: created.userId, sessionId };
+  }
+
+  interface Case {
+    readonly label: string;
+    readonly reason: string;
+    /** Sets the case up and returns the attempt. */
+    readonly run: () => Promise<Answer | undefined>;
+  }
+
+  const newEmail = (): string => `matrix-${randomUUID()}@example.test`;
+
+  const cases: readonly Case[] = [
+    {
+      label: 'a nonexistent invitation',
+      reason: 'not_found',
+      run: () =>
+        answerOf(
+          flow().accept({
+            invitationId: randomUUID(),
+            token: generateInvitationToken(),
+            password: PASSWORD_NFC,
+          }),
+        ),
+    },
+    {
+      label: 'an expired invitation',
+      reason: 'expired',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await authPool.query(
+          `update auth.invitation set expires_at = now() - interval '1 hour' where id = $1`,
+          [invitation.invitationId],
+        );
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a cancelled invitation',
+      reason: 'cancelled',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await authPool.query(`update auth.invitation set status = 'canceled' where id = $1`, [
+          invitation.invitationId,
+        ]);
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a rejected invitation',
+      reason: 'rejected',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await authPool.query(`update auth.invitation set status = 'rejected' where id = $1`, [
+          invitation.invitationId,
+        ]);
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'an already accepted invitation',
+      reason: 'already_accepted',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await flow().accept({ ...invitation, password: PASSWORD_NFC });
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a wrong token',
+      reason: 'token_mismatch',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        return answerOf(
+          flow().accept({
+            invitationId: invitation.invitationId,
+            token: generateInvitationToken(),
+            password: PASSWORD_NFC,
+          }),
+        );
+      },
+    },
+    {
+      label: 'a Disabled user',
+      reason: 'disabled_user',
+      run: async () => {
+        const tenant = await freshTenant();
+        const email = newEmail();
+        const invitation = await invite(tenant, email);
+        await catalogSync.upsertUser({
+          tenantId: tenant.tenantId,
+          email,
+          name: email,
+          status: 'Disabled',
+        });
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'an inviter who is no longer an active admin',
+      reason: 'inviter_not_active_admin',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await catalogSync.upsertUser({
+          tenantId: tenant.tenantId,
+          email: tenant.adminEmail,
+          name: 'Matrix Admin',
+          status: 'Disabled',
+        });
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a tenant at its 100-member limit',
+      reason: 'member_limit',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        // The creator is the first member; 99 more reach the plugin's default limit of 100.
+        const filler = randomUUID();
+        await authPool.query(
+          `insert into auth."user" (id, name, email)
+           select $1 || '-' || n, 'Filler', $1 || '-' || n || '@example.test'
+           from generate_series(1, 99) as n`,
+          [filler],
+        );
+        await authPool.query(
+          `insert into auth.member (id, organization_id, user_id, role, created_at)
+           select $1 || '-m-' || n, $2, $1 || '-' || n, 'member', now()
+           from generate_series(1, 99) as n`,
+          [filler, tenant.tenantId],
+        );
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'no session for an existing account',
+      reason: 'session_required',
+      run: async () => {
+        const tenant = await freshTenant();
+        const email = newEmail();
+        await createAdminUser(auth, { name: 'Existing', email, password: TEST_PASSWORD });
+        const invitation = await invite(tenant, email);
+        return answerOf(flow().accept({ ...invitation }));
+      },
+    },
+    {
+      label: 'a session of another account for an existing account',
+      reason: 'email_mismatch',
+      run: async () => {
+        const tenant = await freshTenant();
+        const email = newEmail();
+        await createAdminUser(auth, { name: 'Existing', email, password: TEST_PASSWORD });
+        const other = await sessionOf(newEmail());
+        const invitation = await invite(tenant, email);
+        return answerOf(flow().accept({ ...invitation, session: other }));
+      },
+    },
+  ];
+
+  it('Acceptance errors do not reveal which failure occurred: every rejection records its own denial_reason', async () => {
+    const recorded: Record<string, unknown[]> = {};
+    const expected: Record<string, unknown[]> = {};
+    for (const testCase of cases) {
+      const before = await deniedCount();
+      await testCase.run();
+      recorded[testCase.label] = await reasonsSince(before);
+      expected[testCase.label] = [testCase.reason];
+    }
+    expect(recorded).toEqual(expected);
+  }, 180_000);
+
+  it('Acceptance errors do not reveal which failure occurred: all fail with the same status, error code and body shape', async () => {
+    const answers: Record<string, Answer | undefined> = {};
+    for (const testCase of cases) {
+      answers[testCase.label] = await testCase.run();
+    }
+    const seen: Record<string, string> = {};
+    for (const [label, answer] of Object.entries(answers)) {
+      seen[label] = answer === undefined ? 'accepted' : answer.code;
+    }
+    expect(seen).toEqual(
+      Object.fromEntries(cases.map((testCase) => [testCase.label, 'CATALOG_NOT_FOUND'])),
+    );
+    const statuses = new Set(Object.values(answers).map((answer) => answer?.status));
+    expect([...statuses], 'one status for every failure').toEqual([404]);
+    const bodies = new Set(Object.values(answers).map((answer) => answer?.body));
+    expect([...bodies], 'one body for every failure').toHaveLength(1);
+  }, 180_000);
+});

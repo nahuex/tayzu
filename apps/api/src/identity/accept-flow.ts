@@ -109,6 +109,9 @@ function acceptanceFailed(): Error {
   return new Error('The invitation could not be accepted');
 }
 
+/** `addMember` refused the join: the organization is at its membership limit. */
+class MemberLimitError extends Error {}
+
 /** The consumption changed no row: a lost race, which compensates nothing. */
 class ConsumeConflictError extends Error {}
 
@@ -224,41 +227,43 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     }
   }
 
+  /** Logs the specific reason and returns the uniform rejection (design D4 step 5). */
+  function deny(invitationId: string, reason: string): AcceptanceNotFoundError {
+    emitIdentityEvent({
+      name: 'catalog.security.invitation_acceptance_denied',
+      severity: 'WARN',
+      attributes: {
+        'tayzu.identity.invitation.id': invitationId,
+        'tayzu.identity.invitation.denial_reason': reason,
+      },
+    });
+    return notFound();
+  }
+
   async function accept(rawInput: AcceptInput): Promise<{ userId: string }> {
     const input: AcceptInput =
       rawInput.session === undefined && rawInput.headers !== undefined
         ? { ...rawInput, session: await readSession(rawInput.headers) }
         : rawInput;
     const invitation = await repository.globalInvitationById(input.invitationId);
-    if (invitation === undefined) throw notFound();
-    if (invitation.status === 'accepted') {
-      emitIdentityEvent({
-        name: 'catalog.security.invitation_acceptance_denied',
-        severity: 'WARN',
-        attributes: {
-          'tayzu.identity.invitation.id': invitation.id,
-          'tayzu.identity.invitation.denial_reason': 'already_accepted',
-        },
-      });
-      throw notFound();
-    }
+    if (invitation === undefined) throw deny(input.invitationId, 'not_found');
+    // The state is derived at the boundary: `canceled` reads as cancelled, `expired` from `expiresAt`.
+    if (invitation.status === 'accepted') throw deny(invitation.id, 'already_accepted');
+    if (invitation.status === 'canceled') throw deny(invitation.id, 'cancelled');
+    if (invitation.status === 'rejected') throw deny(invitation.id, 'rejected');
+    if (invitation.expiresAt.getTime() <= Date.now()) throw deny(invitation.id, 'expired');
     const stored = await authPool.query<{ value: string }>(
       'select value from auth.verification where identifier = $1',
       [tokenIdentifier(invitation.id)],
     );
     const digest = stored.rows[0]?.value ?? null;
-    if (!verifyInvitationToken(input.token, digest)) throw notFound();
+    if (!verifyInvitationToken(input.token, digest)) throw deny(invitation.id, 'token_mismatch');
     const { organizationId: tenantId, email } = invitation;
+    if ((await userSync.readStatus({ tenantId, email })) === 'Disabled') {
+      throw deny(invitation.id, 'disabled_user');
+    }
     if (!(await inviterMayStillInvite(invitation))) {
-      emitIdentityEvent({
-        name: 'catalog.security.invitation_acceptance_denied',
-        severity: 'WARN',
-        attributes: {
-          'tayzu.identity.invitation.id': invitation.id,
-          'tayzu.identity.invitation.denial_reason': 'inviter_not_active_admin',
-        },
-      });
-      throw notFound();
+      throw deny(invitation.id, 'inviter_not_active_admin');
     }
     const role = invitation.role === 'admin' ? 'admin' : 'member';
 
@@ -266,16 +271,10 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     if (existing !== undefined && input.session?.userId !== existing.id) {
       // The match is on the account of the invitation email only, with no
       // verified-email condition (Q38).
-      emitIdentityEvent({
-        name: 'catalog.security.invitation_acceptance_denied',
-        severity: 'WARN',
-        attributes: {
-          'tayzu.identity.invitation.id': invitation.id,
-          'tayzu.identity.invitation.denial_reason':
-            input.session === undefined ? 'session_required' : 'email_mismatch',
-        },
-      });
-      throw notFound();
+      throw deny(
+        invitation.id,
+        input.session === undefined ? 'session_required' : 'email_mismatch',
+      );
     }
     if (existing === undefined && input.password === undefined) throw notFound();
     // Only after the session, the email and the token have passed (8.5d).
@@ -387,7 +386,15 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       await step('add_member');
       const before = await repository.memberOf(tenantId, userId);
       if (before === undefined) {
-        await api.addMember({ body: { userId, role, organizationId: tenantId } });
+        try {
+          await api.addMember({ body: { userId, role, organizationId: tenantId } });
+        } catch (error) {
+          // Better Auth answers FORBIDDEN past the membership limit.
+          if ((error as { status?: unknown } | null)?.status === 'FORBIDDEN') {
+            throw new MemberLimitError();
+          }
+          throw error;
+        }
         createdMemberId = (await repository.memberOf(tenantId, userId))?.id;
       }
       if (existing !== undefined) {
@@ -438,15 +445,12 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         await runWithAcceptanceContext({ tenantId, userId }, () => joinSteps(userId));
       }
     } catch (error) {
+      if (error instanceof MemberLimitError) {
+        await compensate();
+        throw deny(invitation.id, 'member_limit');
+      }
       if (error instanceof ConsumeConflictError) {
-        emitIdentityEvent({
-          name: 'catalog.security.invitation_acceptance_denied',
-          severity: 'WARN',
-          attributes: {
-            'tayzu.identity.invitation.id': invitation.id,
-            'tayzu.identity.invitation.denial_reason': 'consume_conflict',
-          },
-        });
+        deny(invitation.id, 'consume_conflict');
         if (existing === undefined && role === 'admin') await step('admin_notice');
         throw notFound();
       }
