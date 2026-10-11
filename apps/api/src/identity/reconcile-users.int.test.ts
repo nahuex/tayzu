@@ -54,7 +54,11 @@
  */
 // Load-bearing import order (design D1): the telemetry harness registers before
 // anything that loads `@tayzu/auth` creates its logger.
-import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
+import {
+  linkLogEvents,
+  registration,
+  type TelemetryTestHarness,
+} from '../__fixtures__/link-telemetry.js';
 import { randomUUID } from 'node:crypto';
 
 import { createAuth, authSchema, createContextResolver, type AuthInstance } from '@tayzu/auth';
@@ -68,9 +72,10 @@ import {
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool, type QueryResultRow } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { main } from '../../scripts/reconcile-users.js';
+import { MARKER_PREFIX } from '../__fixtures__/sso-shed.js';
 import {
   createAdminUser,
   signInAdminUser,
@@ -80,7 +85,17 @@ import {
   TEST_PASSWORD,
 } from '../../../../packages/auth/src/__fixtures__/test-secret.js';
 
+// Task 8.5l: a spy on `createAuth` that still builds the real thing, so this file's
+// own seeding keeps working. The shed test asserts it is never called by the script.
+vi.mock('@tayzu/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tayzu/auth')>();
+  return { ...actual, createAuth: vi.fn(actual.createAuth) };
+});
+
 const CERBOS_ADDRESS = 'localhost:3593';
+const SHED_EVENT = 'catalog.security.sso_link_shed';
+const REVOKED_EVENT = 'auth.security.session_revoked';
+const SSO_PROVIDER_ID = 'visma-connect';
 /** Nothing listens here: a loopback address, so the client is built without TLS. */
 const UNREACHABLE_CERBOS_ADDRESS = 'localhost:1';
 const OPERATOR_ID = 'gh:424242';
@@ -621,5 +636,235 @@ describe('reconcile-users (task 4.2b)', () => {
     expect(await userEventCount(tenantId), 'no orphan removed').toBe(before);
     expect(await exists(tenantId, emails.orphanOld)).toBe(true);
     expect(await exists(tenantId, emails.orphanRelated)).toBe(true);
+  }, 120_000);
+
+  // ---- task 8.5l: "The reconcile sheds before it creates a `_user`" ----------------------
+
+  /** A user who is a member of every tenant given, with no `_user` row anywhere. */
+  async function memberOf(...tenantIds: string[]): Promise<TestUser> {
+    const user = await newUser('shed');
+    for (const tenantId of tenantIds) {
+      await api.addMember({
+        body: { userId: user.userId, organizationId: tenantId, role: 'member' },
+      });
+    }
+    return user;
+  }
+
+  async function seedLink(userId: string, marked: boolean): Promise<string> {
+    const id = randomUUID();
+    await ownerScratchPool.query(
+      `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+       values ($1, $2, $3, $4, now(), now())`,
+      [id, `sub-${randomUUID()}`, SSO_PROVIDER_ID, userId],
+    );
+    if (marked) {
+      await ownerScratchPool.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, 'self', '9999-12-31T23:59:59Z')`,
+        [randomUUID(), `${MARKER_PREFIX}${id}`],
+      );
+    }
+    return id;
+  }
+
+  async function seedSessions(user: TestUser, count: number): Promise<void> {
+    for (let index = 0; index < count; index += 1) {
+      await signInAdminUser(auth, { email: user.email, password: TEST_PASSWORD, ip: randomIp() });
+    }
+  }
+
+  async function count(text: string, params: readonly unknown[]): Promise<number> {
+    const result = await ownerScratchPool.query<{ n: string }>(text, [...params]);
+    return Number(result.rows[0]?.n);
+  }
+
+  const accountCount = async (id: string) =>
+    await count('select count(*)::text as n from auth.account where id = $1', [id]);
+  const markerCount = async (id: string) =>
+    await count('select count(*)::text as n from auth.verification where identifier = $1', [
+      `${MARKER_PREFIX}${id}`,
+    ]);
+  const sessionCount = async (userId: string) =>
+    await count('select count(*)::text as n from auth.session where user_id = $1', [userId]);
+
+  async function shedEventsOf(userId: string) {
+    return (await linkLogEvents(harness, SHED_EVENT)).filter(
+      (record) => record.attributes['tayzu.identity.user.id'] === userId,
+    );
+  }
+
+  async function revocationsOf(userId: string) {
+    return (await linkLogEvents(harness, REVOKED_EVENT)).filter(
+      (record) =>
+        record.attributes['tayzu.actor.id'] === userId &&
+        record.attributes['tayzu.auth.revocation.reason'] === 'sso_link_shed',
+    );
+  }
+
+  /**
+   * One run over an auth pool that, at the moment the shed deletes `account` or
+   * `session` rows, records how many `_user` rows of the watched email already
+   * exist (in `tenantIds`). With `failLinkDeletion` the `account` deletion fails.
+   */
+  async function tracedRun(
+    watched: { readonly email: string; readonly tenantIds: readonly string[] },
+    failLinkDeletion = false,
+  ): Promise<{
+    linkDeletions: number[];
+    sessionDeletions: number[];
+    outcome: 'resolved' | 'rejected';
+  }> {
+    const linkDeletions: number[] = [];
+    const sessionDeletions: number[] = [];
+    const rowsNow = async (): Promise<number> => {
+      let total = 0;
+      for (const tenantId of watched.tenantIds) {
+        total += (await exists(tenantId, watched.email)) ? 1 : 0;
+      }
+      return total;
+    };
+    const before = async (text: string): Promise<void> => {
+      if (/delete\s+from\s+"?auth"?\."?account"?(\s|$)/i.test(text)) {
+        linkDeletions.push(await rowsNow());
+        if (failLinkDeletion) throw new Error('injected statement failure');
+      } else if (/delete\s+from\s+"?auth"?\."?session"?(\s|$)/i.test(text)) {
+        sessionDeletions.push(await rowsNow());
+      }
+    };
+    const textOf = (args: readonly unknown[]): string => {
+      const first = args[0];
+      if (typeof first === 'string') return first;
+      const config = first as { text?: unknown } | null;
+      return typeof config?.text === 'string' ? config.text : '';
+    };
+    const guard = <T extends object>(target: T): T =>
+      new Proxy(target, {
+        get(object, property) {
+          const value: unknown = Reflect.get(object, property, object);
+          if (property === 'query') {
+            return async (...args: unknown[]): Promise<unknown> => {
+              await before(textOf(args));
+              return await (value as (...a: unknown[]) => Promise<unknown>).apply(object, args);
+            };
+          }
+          if (property === 'connect') {
+            return async (...args: unknown[]): Promise<unknown> =>
+              guard(await (value as (...a: unknown[]) => Promise<object>).apply(object, args));
+          }
+          return typeof value === 'function'
+            ? (value as (...a: unknown[]) => unknown).bind(object)
+            : value;
+        },
+      });
+    const outcome = await main({
+      env: env(CERBOS_ADDRESS),
+      appPool,
+      authPool: guard(authPool),
+    }).then(
+      () => 'resolved' as const,
+      () => 'rejected' as const,
+    );
+    return { linkDeletions, sessionDeletions, outcome };
+  }
+
+  it('The reconcile sheds before it creates a `_user`: the unmarked link is shed, the sessions revoked and the event logged, and only then are the rows created, with no secret and no Better Auth instance', async () => {
+    const t1 = await seedTenant();
+    const t2 = await seedTenant();
+    const user = await memberOf(t1.tenantId, t2.tenantId);
+    const linkId = await seedLink(user.userId, false);
+    await seedSessions(user, 2);
+    expect(await sessionCount(user.userId), 'precondition').toBe(2);
+    expect(await exists(t2.tenantId, user.email), 'precondition').toBe(false);
+
+    const env0 = env(CERBOS_ADDRESS);
+    expect(env0).not.toHaveProperty('BETTER_AUTH_SECRET');
+    vi.mocked(createAuth).mockClear();
+
+    const { linkDeletions, sessionDeletions, outcome } = await tracedRun({
+      email: user.email,
+      tenantIds: [t1.tenantId, t2.tenantId],
+    });
+
+    expect(outcome).toBe('resolved');
+    expect(
+      vi.mocked(createAuth),
+      'the script builds no Better Auth instance',
+    ).not.toHaveBeenCalled();
+    expect(await accountCount(linkId), 'the link is shed').toBe(0);
+    expect(await markerCount(linkId)).toBe(0);
+    expect(await sessionCount(user.userId), 'the sessions are revoked').toBe(0);
+
+    const shed = await shedEventsOf(user.userId);
+    expect(shed).toHaveLength(1);
+    expect(shed[0]?.attributes['tayzu.identity.sso_link.path']).toBe('reconcile');
+    expect([t1.tenantId, t2.tenantId]).toContain(shed[0]?.attributes['tayzu.tenant.id']);
+    expect(JSON.stringify(shed[0]?.attributes)).not.toContain(user.email);
+    expect(await revocationsOf(user.userId)).toHaveLength(2);
+
+    for (const tenant of [t1, t2]) {
+      expect(
+        (await userSync.getUser({ tenantId: tenant.tenantId, email: user.email }))?.status,
+      ).toBe('Active');
+    }
+    // At every deletion the shed made, no `_user` row of the member existed yet.
+    expect(linkDeletions.length).toBeGreaterThan(0);
+    expect(sessionDeletions.length).toBeGreaterThan(0);
+    expect(linkDeletions.every((rows) => rows === 0)).toBe(true);
+    expect(sessionDeletions.every((rows) => rows === 0)).toBe(true);
+  }, 120_000);
+
+  it("The reconcile sheds before it creates a `_user`: a single-tenant member's unmarked link and sessions are left alone", async () => {
+    const tenant = await seedTenant();
+    const member = await memberOf(tenant.tenantId);
+    const linkId = await seedLink(member.userId, false);
+    await seedSessions(member, 1);
+
+    await run();
+
+    expect(await exists(tenant.tenantId, member.email), 'the row is created').toBe(true);
+    expect(await accountCount(linkId)).toBe(1);
+    expect(await sessionCount(member.userId)).toBe(1);
+    expect(await shedEventsOf(member.userId)).toHaveLength(0);
+    expect(await revocationsOf(member.userId)).toHaveLength(0);
+  }, 120_000);
+
+  it('The reconcile sheds before it creates a `_user`: a marked link is kept, with its marker and the sessions', async () => {
+    const t1 = await seedTenant();
+    const t2 = await seedTenant();
+    const user = await memberOf(t1.tenantId, t2.tenantId);
+    const linkId = await seedLink(user.userId, true);
+    await seedSessions(user, 1);
+
+    await run();
+
+    for (const tenant of [t1, t2]) {
+      expect(await exists(tenant.tenantId, user.email), 'the row is created').toBe(true);
+    }
+    expect(await accountCount(linkId)).toBe(1);
+    expect(await markerCount(linkId)).toBe(1);
+    expect(await sessionCount(user.userId)).toBe(1);
+    expect(await shedEventsOf(user.userId)).toHaveLength(0);
+    expect(await revocationsOf(user.userId)).toHaveLength(0);
+  }, 120_000);
+
+  it("The reconcile sheds before it creates a `_user`: a failing shed leaves the member's rows uncreated", async () => {
+    const t1 = await seedTenant();
+    const t2 = await seedTenant();
+    const user = await memberOf(t1.tenantId, t2.tenantId);
+    const linkId = await seedLink(user.userId, false);
+
+    const { linkDeletions } = await tracedRun(
+      { email: user.email, tenantIds: [t1.tenantId, t2.tenantId] },
+      true,
+    );
+
+    expect(linkDeletions.length, 'the shed was attempted before any row').toBeGreaterThan(0);
+    expect(await accountCount(linkId), 'nothing was shed').toBe(1);
+    for (const tenant of [t1, t2]) {
+      expect(await exists(tenant.tenantId, user.email), 'the member stays without a row').toBe(
+        false,
+      );
+    }
   }, 120_000);
 });

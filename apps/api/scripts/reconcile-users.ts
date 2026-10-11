@@ -19,6 +19,7 @@ import { createEntityService, createUserSync } from '@tayzu/catalog';
 import { createPool } from '@tayzu/db';
 import type { Pool } from 'pg';
 
+import { createSsoLinkShed } from '../src/identity/sso-link-shed.js';
 import { createUserSyncAdapter } from '../src/identity/user-sync-adapter.js';
 import { runScript } from './run-script.js';
 import { loadScriptConfig } from './script-config.js';
@@ -69,6 +70,8 @@ export async function main(options: ReconcileOptions = {}): Promise<void> {
         });
         const userSync = createUserSync({ pool: appPool, authz });
         const adapter = createUserSyncAdapter({ userSync });
+        // The shed core on the `tayzu_auth` pool: no Better Auth instance (Q114).
+        const ssoLinkShed = createSsoLinkShed({ authPool: auth });
         const entities = createEntityService({ pool: appPool, authz });
         const onBehalfOf = { type: 'user', id: operatorId } as const;
 
@@ -92,6 +95,8 @@ export async function main(options: ReconcileOptions = {}): Promise<void> {
               let created = 0;
               for (const member of members.rows) {
                 if ((await userSync.getUser({ tenantId, email: member.email })) !== null) continue;
+                // An unmarked link must not reach this tenant through the new row (Q105).
+                await ssoLinkShed.shed({ tenantId, userId: member.id, path: 'reconcile' });
                 await adapter.writeUserChange({
                   tenantId,
                   email: member.email,

@@ -2094,7 +2094,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the acceptance completes and
       `catalog.security.accepting_session_revocation_failed` is emitted with opaque ids
       only).
-- [ ] 8.5l The reconcile of 4.2b runs the shed of 8.5h, with its session revocation and
+- [x] 8.5l The reconcile of 4.2b runs the shed of 8.5h, with its session revocation and
       under the lock of 8.5i, **before** it creates the `_user` of a member whose user holds
       two or more memberships (Resolved decision Q105, part 4; design D1): the new row
       makes the member admissible (11.8), and an unmarked link would otherwise reach the
