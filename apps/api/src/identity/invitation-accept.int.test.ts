@@ -29,7 +29,7 @@
 // Load-bearing import order (design D1): the telemetry harness registers
 // before anything that loads `@tayzu/auth` creates its logger.
 import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
-import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { authSchema, createAuth, createStepUpGuard, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
@@ -3752,5 +3752,260 @@ describe('A disabled user is not revived by a pending invitation (task 8.11, des
       t.organizationId,
     ]);
     expect(after.rowCount, 'no member').toBe(members.rowCount);
+  }, 60_000);
+});
+
+/**
+ * Task 8.12 (design D4 step 5, spec "Password policy", scenarios "A short password is
+ * refused" and "A breached password is refused").
+ *
+ * ## Production symbols expected
+ *
+ * - `createAcceptFlow(...).accept` (`./accept-flow.js`, existing) checks the password
+ *   policy only after the token has verified (and the other uniform-rejection checks have
+ *   passed): a wrong token with a bad password answers the uniform rejection
+ *   (`CATALOG_NOT_FOUND`, reason `token_mismatch`) and never a policy error.
+ * - A policy failure with a valid token (the policy module of 8.1c, or the breach plugin's
+ *   `PASSWORD_COMPROMISED` through `auth.api.createUser`) is thrown as a `CatalogError`
+ *   with code `CATALOG_VALIDATION_FAILED` (HTTP 400 through `toOrpcError`) whose message
+ *   or issues name only the failed rule (`length`, `breached`), never the password. It
+ *   creates no user, member or `_user` change, and does not consume the token or touch the
+ *   invitation (still `pending`), so a retry with a compliant password succeeds.
+ */
+describe('A password that fails the policy is reported only after the token verified (task 8.12, design D4 step 5)', () => {
+  const SHORT_PASSWORD = 'Abcdefghijklmnop-1!';
+  const BREACHED_PASSWORD = 'Correct-Horse-Battery-Staple-2026!';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  /** Over the shared stub of 8.1a, only inside a test: the given password is "breached". */
+  function stubBreached(password: string): { prefixes: string[] } {
+    const seen: { prefixes: string[] } = { prefixes: [] };
+    const hash = createHash('sha1').update(password).digest('hex').toUpperCase();
+    vi.stubGlobal('fetch', (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const prefix = new URL(url).pathname.split('/').pop() ?? '';
+      seen.prefixes.push(prefix);
+      const lines = ['0000000000000000000000000000000000A:3'];
+      if (hash.startsWith(prefix)) lines.push(`${hash.slice(5)}:42`);
+      return Promise.resolve(new Response(lines.join('\r\n'), { status: 200 }));
+    });
+    return seen;
+  }
+
+  async function setup(): Promise<{ tenant: Tenant; email: string; invitation: Invitation }> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Policy Admin',
+      email: `policy-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Policy Org',
+      organizationSlug: `policy-${id}`,
+      ip: randomIp(),
+    });
+    const tenant: Tenant = { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+    const email = `policy-${id}@example.test`;
+    const created = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      (auth.api as InviteApiSurface).createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${created.id}`,
+        digestInvitationToken(token),
+        new Date(created.expiresAt),
+      ],
+    );
+    return { tenant, email, invitation: { invitationId: created.id, token } };
+  }
+
+  async function statusOf(invitationId: string): Promise<string | undefined> {
+    const result = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitationId],
+    );
+    return result.rows[0]?.status;
+  }
+
+  async function tokenRows(invitationId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ value: string }>(
+      `select value from auth.verification where identifier = $1`,
+      [`invitation-accept:${invitationId}`],
+    );
+    return result.rows.map((row) => row.value);
+  }
+
+  async function count(query: string, param: string): Promise<number> {
+    return (await authPool.query(query, [param])).rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function failureOf(
+    attempt: Promise<unknown>,
+  ): Promise<{ code: string; status: number; text: string }> {
+    try {
+      await attempt;
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return {
+        code: mapped.code,
+        status: mapped.status,
+        text: `${mapped.message} ${JSON.stringify(mapped.data)}`,
+      };
+    }
+    throw new Error('the acceptance was expected to fail');
+  }
+
+  async function expectNothingCreated(
+    s: { tenant: Tenant; email: string; invitation: Invitation },
+    membersBefore: number,
+    tokenBefore: readonly string[],
+  ): Promise<void> {
+    expect(
+      await count(`select 1 from auth."user" where lower(email) = $1`, s.email),
+      'no user',
+    ).toBe(0);
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1`, s.tenant.tenantId),
+      'no member',
+    ).toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: s.tenant.tenantId, email: s.email })).toBe(
+      'Invited',
+    );
+    expect(await statusOf(s.invitation.invitationId), 'invitation still pending').toBe('pending');
+    expect(await tokenRows(s.invitation.invitationId), 'token not consumed').toEqual(tokenBefore);
+  }
+
+  it('A password that fails the policy is reported only after the token verified: a bad password with a wrong token answers the generic rejection', async () => {
+    const s = await setup();
+    const tokenBefore = await tokenRows(s.invitation.invitationId);
+    const membersBefore = await count(
+      `select 1 from auth.member where organization_id = $1`,
+      s.tenant.tenantId,
+    );
+
+    const failure = await failureOf(
+      flow().accept({
+        invitationId: s.invitation.invitationId,
+        token: generateInvitationToken(),
+        password: SHORT_PASSWORD,
+      }),
+    );
+
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(failure.text).not.toContain(SHORT_PASSWORD);
+    expect(await deniedReasons(s.invitation.invitationId)).toEqual(['token_mismatch']);
+    await expectNothingCreated(s, membersBefore, tokenBefore);
+  }, 60_000);
+
+  it('A password that fails the policy is reported only after the token verified: a bad password with a valid token answers CATALOG_VALIDATION_FAILED without consuming the token, and a compliant retry with the same token succeeds', async () => {
+    const s = await setup();
+    const tokenBefore = await tokenRows(s.invitation.invitationId);
+    expect(tokenBefore).toHaveLength(1);
+    const membersBefore = await count(
+      `select 1 from auth.member where organization_id = $1`,
+      s.tenant.tenantId,
+    );
+
+    const failure = await failureOf(flow().accept({ ...s.invitation, password: SHORT_PASSWORD }));
+
+    expect(failure.code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(failure.status).toBe(400);
+    expect(failure.text).toMatch(/length/i);
+    expect(failure.text).not.toContain(SHORT_PASSWORD);
+    await expectNothingCreated(s, membersBefore, tokenBefore);
+
+    // A second attempt with a compliant password and the same token succeeds.
+    const { userId } = await flow().accept({ ...s.invitation, password: PASSWORD_NFC });
+    expect(userId).toEqual(expect.any(String));
+    expect(await statusOf(s.invitation.invitationId)).toBe('accepted');
+    expect(await tokenRows(s.invitation.invitationId)).toEqual([]);
+    expect(await count(`select 1 from auth."user" where lower(email) = $1`, s.email)).toBe(1);
+  }, 60_000);
+
+  it('A breached password is refused: with a valid token the acceptance names the breached-password rule, creates nothing and leaves the token unconsumed', async () => {
+    const s = await setup();
+    const tokenBefore = await tokenRows(s.invitation.invitationId);
+    const membersBefore = await count(
+      `select 1 from auth.member where organization_id = $1`,
+      s.tenant.tenantId,
+    );
+    // Installed after the tenant setup, so that the setup passwords never meet it.
+    const seen = stubBreached(BREACHED_PASSWORD);
+
+    const failure = await failureOf(
+      flow().accept({ ...s.invitation, password: BREACHED_PASSWORD }),
+    );
+
+    expect(seen.prefixes.length, 'the range service was asked').toBeGreaterThan(0);
+    for (const prefix of seen.prefixes) expect(prefix).toHaveLength(5);
+    expect(failure.code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(failure.status).toBe(400);
+    expect(failure.text).toMatch(/breach/i);
+    expect(failure.text).not.toContain(BREACHED_PASSWORD);
+    await expectNothingCreated(s, membersBefore, tokenBefore);
+
+    // The token was not consumed: a clean password with it still succeeds.
+    vi.unstubAllGlobals();
+    await flow().accept({ ...s.invitation, password: PASSWORD_NFC });
+    expect(await statusOf(s.invitation.invitationId)).toBe('accepted');
   }, 60_000);
 });

@@ -16,6 +16,7 @@ import {
   emitIdentityEvent,
   isIdle,
   toCerbosRole,
+  validatePassword,
   verifyInvitationToken,
   withIdentitySpan,
   type AuthInstance,
@@ -107,6 +108,23 @@ function notFound(): AcceptanceNotFoundError {
 /** Fixed text, so that no cause reaches the response. */
 function acceptanceFailed(): Error {
   return new Error('The invitation could not be accepted');
+}
+
+/** The password failed the policy; names only the failed rule, never the password. */
+class PasswordPolicyError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED' as const;
+  readonly issues: readonly { path: string; message: string }[];
+
+  constructor(rule: string) {
+    super(`The password does not meet the policy: ${rule}`);
+    this.name = 'PasswordPolicyError';
+    this.issues = [{ path: '/password', message: rule }];
+  }
+}
+
+/** Better Auth's `APIError` from the breach plugin's check on `createUser`. */
+function isCompromised(error: unknown): boolean {
+  return (error as { body?: { code?: unknown } } | null)?.body?.code === 'PASSWORD_COMPROMISED';
 }
 
 /** `addMember` refused the join: the organization is at its membership limit. */
@@ -281,6 +299,13 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       );
     }
     if (existing === undefined && input.password === undefined) throw notFound();
+    // Only now that the token has verified is the policy reported (design D4 step 5).
+    let password = '';
+    if (existing === undefined) {
+      const checked = validatePassword(input.password ?? '');
+      if (!checked.ok) throw new PasswordPolicyError(checked.rule);
+      password = checked.password;
+    }
     // Only after the session, the email and the token have passed (8.5d).
     if (existing !== undefined && role === 'admin')
       await requireStepUp(tenantId, existing.id, input.session?.headers);
@@ -441,7 +466,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       } else {
         await step('create_user');
         const created = await api.createUser({
-          body: { name: email, email, password: input.password ?? '', role: 'user' },
+          body: { name: email, email, password, role: 'user' },
         });
         userId = created.user.id;
         createdUserId = userId;
@@ -453,6 +478,8 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         await compensate();
         throw deny(invitation.id, 'member_limit');
       }
+      // Refused before anything was written, so nothing to compensate.
+      if (existing === undefined && isCompromised(error)) throw new PasswordPolicyError('breached');
       if (error instanceof ConsumeConflictError) {
         deny(invitation.id, 'consume_conflict');
         if (existing === undefined && role === 'admin') await step('admin_notice');

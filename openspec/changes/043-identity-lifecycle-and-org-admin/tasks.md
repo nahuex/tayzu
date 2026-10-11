@@ -2216,7 +2216,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 8.11 A pending invitation of a user who was disabled afterward does not
       revive them. Verify: `invitation-accept.int.test.ts` covers "A disabled user
       is not revived by a pending invitation".
-- [ ] 8.12 A password that fails the policy is reported only after the token
+- [x] 8.12 A password that fails the policy is reported only after the token
       has verified. Verify: `invitation-accept.int.test.ts` asserts a bad password
       with a wrong token returns the generic rejection, and with a valid token
       returns `CATALOG_VALIDATION_FAILED` without consuming the token (a second
