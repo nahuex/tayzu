@@ -4,8 +4,8 @@
  * Q116, Q118, Q120, Q122 and Q127). The token is verified without consuming
  * it and consumed last; an attempt compensates only what it created.
  *
- * The shed, the session revocation and the admin notice are
- * later tasks' (8.5h, 8.5m, 8.15): this flow only reserves their slots.
+ * The accepting session's revocation and the admin notice are later tasks'
+ * (8.5m, 8.15): this flow only reserves their slots.
  */
 import { ORPCError } from '@orpc/server';
 import type { Pool } from 'pg';
@@ -27,6 +27,7 @@ import type { Reauthorization } from '../reauthorization.js';
 import type { AuthRepository, InvitationRead } from './auth-repository.js';
 import { runWithAcceptanceContext } from './identity-context.js';
 import { parseIdentityInput, type InputSchema } from './parse-input.js';
+import type { SsoLinkShed } from './sso-link-shed.js';
 import type { UserSyncAdapter } from './user-sync-adapter.js';
 
 type Step =
@@ -48,6 +49,8 @@ export interface AcceptFlowOptions {
   /** The `tayzu_auth` pool: the token row of `auth.verification`. */
   readonly authPool: Pool;
   readonly userSync: UserSyncAdapter;
+  /** The shed core run as the `shed` step of an existing-account attempt (8.5h). */
+  readonly ssoLinkShed?: SsoLinkShed;
   /** The step-up guard of an `admin` acceptance by an existing account (8.5d). */
   readonly stepUp?: StepUpGuard;
   /** The identity provider's re-authorization, for sessions that carry an `ssoSid`. */
@@ -351,7 +354,16 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         await api.addMember({ body: { userId, role, organizationId: tenantId } });
         createdMemberId = (await repository.memberOf(tenantId, userId))?.id;
       }
-      if (existing !== undefined) await step('shed');
+      if (existing !== undefined) {
+        await step('shed');
+        // Every attempt sheds once the membership exists, before the token is consumed (Q105).
+        await options.ssoLinkShed?.shed({
+          tenantId,
+          userId,
+          path: 'acceptance',
+          ...(input.session !== undefined && { keepSessionId: input.session.sessionId }),
+        });
+      }
       await step('user_step');
       await userSync.writeUserChange({
         tenantId,

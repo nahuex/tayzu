@@ -3,12 +3,15 @@
  */
 export {
   createAuth,
+  emitSessionRevoked,
+  type SessionRevocationReason,
   type AuthInstance,
   type CreateAuthOptions,
   type MembershipAddedIntent,
   type UserSyncChange,
   type UserSyncPort,
 } from './auth.js';
+export type { SsoLinkShedPort } from './identity/ports.js';
 export { createNonSendingEmailSender } from './identity/email/non-sending-sender.js';
 export {
   createRecordingEmailSender,

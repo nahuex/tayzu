@@ -1906,7 +1906,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       four settings on the options `createAuth` builds, failing if
       `disableImplicitLinking` is not `true`, if `trustedProviders` is set or non-empty,
       if `allowDifferentEmails` is set, or if `updateAccountOnSignIn` is `false`.
-- [ ] 8.5h An SSO link that its user did not make does not survive into a second
+- [x] 8.5h An SSO link that its user did not make does not survive into a second
       tenant, and the sessions issued through it do not either (Resolved decisions Q73,
       Q86, Q87, Q105, Q112 and Q114). Whenever the user holds a membership in another
       tenant, the shed deletes every non-`credential` account of the user without a

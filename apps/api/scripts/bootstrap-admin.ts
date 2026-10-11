@@ -18,6 +18,7 @@ import { createPool } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 
+import { createSsoLinkShed } from '../src/identity/sso-link-shed.js';
 import { createUserSyncAdapter } from '../src/identity/user-sync-adapter.js';
 import { runScript } from './run-script.js';
 import { loadScriptConfig } from './script-config.js';
@@ -84,6 +85,7 @@ export async function main(options: BootstrapAdminCliOptions = {}): Promise<void
           secret: config.BETTER_AUTH_SECRET,
           trustedOrigins: allowedOrigins,
           userSync,
+          ssoLinkShed: createSsoLinkShed({ authPool: auth }).port,
         });
         const result = await bootstrapAdmin(betterAuth, params, { operatorId });
         if (result.created) {

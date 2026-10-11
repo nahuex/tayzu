@@ -181,4 +181,31 @@ describe('createApp wires the _user status adapter into Better Auth (task 4.1b)'
     expect(row?.status).toBe('Disabled');
     expect(await statusEvents(tenantId, member.userId)).toEqual([]);
   }, 60_000);
+
+  // Task 8.5h: `createApp` passes the shed port (`ssoLinkShed`) to `createAuth`.
+  it('A membership added through Better Auth to a user of another tenant sheds the unmarked SSO link of the user (task 8.5h)', async () => {
+    const { authPool } = await harnessPools();
+    const first = await createOrg();
+    const second = await createOrg();
+    const member = await createMember();
+    await api.addMember({
+      body: { userId: member.userId, organizationId: first, role: 'member' },
+    });
+    const accountId = randomUUID();
+    await authPool.query(
+      `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+       values ($1, $2, 'visma-connect', $3, now(), now())`,
+      [accountId, `wiring-sub-${randomUUID()}`, member.userId],
+    );
+
+    await api.addMember({
+      body: { userId: member.userId, organizationId: second, role: 'member' },
+    });
+
+    const remaining = await authPool.query(
+      `select id from auth.account where user_id = $1 and provider_id <> 'credential'`,
+      [member.userId],
+    );
+    expect(remaining.rowCount, 'the unmarked link is shed by the wired hook').toBe(0);
+  }, 60_000);
 });

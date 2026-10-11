@@ -45,6 +45,7 @@ import {
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
+import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
@@ -196,6 +197,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const auth = createAuth({
     db: authDb,
     userSync,
+    ssoLinkShed: createSsoLinkShed({ authPool: options.authPool }).port,
     secret: options.authSecret,
     ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
     trustedOrigins: options.allowedOrigins,

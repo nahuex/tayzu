@@ -92,6 +92,7 @@ import {
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import type { SsoLinkShedPort } from './identity/ports.js';
 import { validatePassword } from './identity/password-policy.js';
 import type { StatusEvent } from './identity/user-status.js';
 import { isIdle } from './session-idle.js';
@@ -345,18 +346,22 @@ function emitLoginFailed(reason: 'bad_credentials' | 'mfa_failed' = 'bad_credent
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'login_failed' });
 }
 
+/** The reasons of `auth.security.session_revoked` (043 Resolved decision Q86). */
+export type SessionRevocationReason = 'password_change' | 'admin_action' | 'sso_link_shed';
+
 /**
- * design.md, Log events table: `auth.security.session_revoked`. Task 3.3
- * only reaches this for the `password_change` reason; `admin_action` is a
- * later task's own hook.
+ * design.md, Log events table: `auth.security.session_revoked`. Exported so
+ * that the SSO link shed, the admin unlink and the admin revocation emit the
+ * same event as the `password_change` revocation of this file.
  */
-function emitSessionRevoked(params: {
+export function emitSessionRevoked(params: {
   readonly actorId: string;
   readonly tenantId?: string;
+  readonly reason: SessionRevocationReason;
 }): void {
   const attributes: Record<string, string> = {
     [sharedAttributeKeys.actorId]: params.actorId,
-    [REVOCATION_REASON_ATTRIBUTE]: PASSWORD_CHANGE_REVOCATION_REASON,
+    [REVOCATION_REASON_ATTRIBUTE]: params.reason,
   };
   if (params.tenantId !== undefined) {
     attributes[sharedAttributeKeys.tenantId] = params.tenantId;
@@ -655,6 +660,12 @@ export interface CreateAuthOptions {
    */
   readonly userSync?: UserSyncPort;
   /**
+   * Task 8.5h (043 design D4 step 7, Q114): sheds the SSO links a user did not
+   * make when they join a second tenant. `afterAddMember` calls it before its
+   * `_user` write. Typed structurally; the host passes its shed core's port.
+   */
+  readonly ssoLinkShed?: SsoLinkShedPort;
+  /**
    * Task 19.2 (design D23, Q17): Visma Connect SSO. When set, registers the
    * `genericOAuth` provider; otherwise no SSO plugin exists.
    */
@@ -862,6 +873,11 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             });
           },
           afterAddMember: async ({ member, user }) => {
+            // Q112: shed first, so a shed that fails leaves the new row unwritten.
+            await options.ssoLinkShed?.shed({
+              tenantId: member.organizationId,
+              userId: user.id,
+            });
             await options.userSync?.upsertUser({
               tenantId: member.organizationId,
               email: user.email,
@@ -1196,6 +1212,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           emitSessionRevoked({
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
+            reason: PASSWORD_CHANGE_REVOCATION_REASON,
           });
           return;
         }
