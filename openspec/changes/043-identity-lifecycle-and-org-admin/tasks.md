@@ -2241,7 +2241,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       loser answers the uniform rejection (`denial_reason` `account_conflict`), its
       `createUser` fails on the unique email, it created nothing and so compensates
       nothing, and its token is not consumed.
-- [ ] 8.15 When an invitation whose role is `admin` is accepted, on either path,
+- [x] 8.15 When an invitation whose role is `admin` is accepted, on either path,
       the fixed `AdminAcceptedNotice` (6.11) is sent through the dispatcher of 6.12 to the
       other administrators of the organization (`Disabled` ones included, at most 20), one email per recipient,
       resolved on the server (Resolved decisions Q39 and Q53); a send failure never

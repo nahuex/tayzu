@@ -4,7 +4,7 @@
  * Q116, Q118, Q120, Q122 and Q127). The token is verified without consuming
  * it and consumed last; an attempt compensates only what it created.
  *
- * The admin notice (8.15) is a later task's: this flow only reserves its slot.
+ * The admin notice (8.15, D4 step 6, Q122, Q127) is sent in the slot each path owes it.
  */
 import { ORPCError } from '@orpc/server';
 import type { Pool } from 'pg';
@@ -25,6 +25,7 @@ import {
 
 import type { Reauthorization } from '../reauthorization.js';
 import type { AuthRepository, InvitationRead } from './auth-repository.js';
+import type { NoticeDispatcher } from './notices.js';
 import { runWithAcceptanceContext } from './identity-context.js';
 import { parseIdentityInput, type InputSchema } from './parse-input.js';
 import type { ShedResult, SsoLinkShed } from './sso-link-shed.js';
@@ -55,6 +56,8 @@ export interface AcceptFlowOptions {
   readonly stepUp?: StepUpGuard;
   /** The identity provider's re-authorization, for sessions that carry an `ssoSid`. */
   readonly reauthorization?: Reauthorization;
+  /** Sends the admin-accepted notice (8.15); without it the flow sends nothing. */
+  readonly notices?: NoticeDispatcher;
   /** Test seam, awaited immediately before each step; a throw fails that step. */
   readonly onStep?: (step: Step) => void | Promise<void>;
 }
@@ -429,6 +432,25 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       }
     };
 
+    /**
+     * Sends the admin-accepted notice to the other owners and admins, `Disabled` ones
+     * included. A failure never blocks the acceptance (D4 step 6).
+     */
+    const notifyAdmins = async (inviteeId: string): Promise<void> => {
+      const { notices } = options;
+      if (notices === undefined || role !== 'admin') return;
+      try {
+        const recipients = await repository.adminRecipients(tenantId, inviteeId);
+        await notices.send({ tenantId, template: { kind: 'AdminAcceptedNotice' }, recipients });
+      } catch {
+        emitIdentityEvent({
+          name: 'catalog.security.admin_notice_failed',
+          severity: 'WARN',
+          attributes: { 'tayzu.tenant.id': tenantId },
+        });
+      }
+    };
+
     const joinSteps = async (userId: string): Promise<void> => {
       let shedResult: ShedResult | undefined;
       await step('add_member');
@@ -457,7 +479,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         });
       }
       await step('user_step');
-      await userSync.writeUserChange({
+      const statusEvent = await userSync.writeUserChange({
         tenantId,
         email,
         name: email,
@@ -471,6 +493,8 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       await revokeKeptSessions(userId, shedResult);
       if (existing !== undefined) {
         await step('join_owed');
+        // Only the attempt whose `_user` step activated the row owes the notice (Q122).
+        if (statusEvent !== undefined) await notifyAdmins(userId);
         await step('email_verified');
         await markEmailVerified(userId);
       }
@@ -505,7 +529,10 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       }
       if (error instanceof ConsumeConflictError) {
         deny(invitation.id, 'consume_conflict');
-        if (existing === undefined && role === 'admin') await step('admin_notice');
+        if (existing === undefined && role === 'admin') {
+          await step('admin_notice');
+          await notifyAdmins(createdUserId ?? '');
+        }
         throw notFound();
       }
       // Existing account: nothing is deleted once the `_user` step has run (Q118).
@@ -524,7 +551,10 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         'tayzu.identity.user.id': userId,
       },
     });
-    if (existing === undefined && role === 'admin') await step('admin_notice');
+    if (existing === undefined && role === 'admin') {
+      await step('admin_notice');
+      await notifyAdmins(userId);
+    }
     return { userId };
   }
 

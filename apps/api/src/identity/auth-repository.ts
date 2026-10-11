@@ -51,6 +51,12 @@ export interface AccountRead {
   readonly userId: string;
 }
 
+/** An owner or admin of a tenant, as the admin notice needs them. */
+export interface AdminRecipientRead {
+  readonly email: string;
+  readonly memberSince: Date;
+}
+
 export interface AuthRepository {
   listApiKeys: (
     tenantId: string,
@@ -61,6 +67,8 @@ export interface AuthRepository {
   /** The `pending` invitations of the tenant to the (canonical) email. */
   pendingInvitationsByEmail: (tenantId: string, email: string) => Promise<InvitationRead[]>;
   listMembers: (tenantId: string) => Promise<MemberRead[]>;
+  /** The owners and admins of the tenant other than `excludeUserId`, with their membership dates. */
+  adminRecipients: (tenantId: string, excludeUserId: string) => Promise<AdminRecipientRead[]>;
   memberOf: (tenantId: string, userId: string) => Promise<MemberRead | undefined>;
   userInTenant: (tenantId: string, userId: string) => Promise<UserRead | undefined>;
   sessionsOf: (tenantId: string, userId: string) => Promise<SessionRead[]>;
@@ -220,6 +228,18 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [tenantId],
       );
       return result.rows.map(toMember);
+    },
+
+    async adminRecipients(tenantId, excludeUserId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<{ email: string; created_at: Date }>(
+        `select u.email, m.created_at from auth.member m
+         join auth."user" u on u.id = m.user_id
+         where m.organization_id = $1 and m.user_id <> $2 and m.role in ('owner', 'admin')
+         order by m.created_at, m.id`,
+        [tenantId, excludeUserId],
+      );
+      return result.rows.map((r) => ({ email: r.email, memberSince: r.created_at }));
     },
 
     async memberOf(tenantId, userId) {
