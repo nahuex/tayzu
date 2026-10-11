@@ -2021,7 +2021,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the exported `emitSessionRevoked` emitting the reason it is given, each of the three,
       and the `password_change` revocation of `/change-password` still emitting
       `password_change`.
-- [ ] 8.5j An admin `unlinkSsoAccount` revokes every session of the target user
+- [x] 8.5j An admin `unlinkSsoAccount` revokes every session of the target user
       (Resolved decision Q86), through the internal adapter (`listSessions` and
       `deleteUserSessions`, one of the per-user exceptions that 5.1b names), because a
       session already issued through the link would otherwise outlive the unlink; each

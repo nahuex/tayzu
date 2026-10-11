@@ -17,6 +17,7 @@ import {
   digestInvitationToken,
   emitAccountLinkEvent,
   emitIdentityEvent,
+  emitSessionRevoked,
   generateInvitationToken,
   generateTemporaryPassword,
   validatePassword,
@@ -244,6 +245,8 @@ interface AccountAdapterSurface {
       accountId: string;
     }): Promise<unknown>;
     deleteAccount(id: string): Promise<void>;
+    listSessions(userId: string): Promise<readonly unknown[]>;
+    deleteUserSessions(userId: string): Promise<unknown>;
   };
 }
 
@@ -551,7 +554,18 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               throw new IdentityLinkRejectedError();
             }
             for (const account of sso) await adapter.deleteAccount(account.id);
-            if (sso.length > 0) emitAdminLinkEvent('unlinked', context);
+            if (sso.length === 0) return;
+            // Q86: a session issued through the link must not outlive it.
+            const sessions = await adapter.listSessions(userId);
+            await adapter.deleteUserSessions(userId);
+            for (let index = 0; index < sessions.length; index += 1) {
+              emitSessionRevoked({
+                actorId: userId,
+                tenantId: rawTenantId(context),
+                reason: 'sso_link_shed',
+              });
+            }
+            emitAdminLinkEvent('unlinked', context);
           },
         }),
       },
