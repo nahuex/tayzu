@@ -13,6 +13,7 @@ import type { Pool } from 'pg';
 import {
   AuthStepUpError,
   emitIdentityEvent,
+  isIdle,
   verifyInvitationToken,
   withIdentitySpan,
   type AuthInstance,
@@ -62,9 +63,18 @@ export interface AcceptInput {
     /** The request's headers, handed to the step-up guard. */
     readonly headers?: Headers;
   };
+  /**
+   * The request's headers. When given without `session`, the flow reads the
+   * session itself, applying the idle and banned checks (8.5e).
+   */
+  readonly headers?: Headers;
 }
 
 interface AuthApiSurface {
+  getSession(args: { headers: Headers; query: { disableRefresh: true } }): Promise<{
+    session: { id: string; updatedAt: Date };
+    user: { id: string; banned?: boolean | null };
+  } | null>;
   createUser(args: {
     body: { name: string; email: string; password: string; role: 'user' };
   }): Promise<{ user: { id: string } }>;
@@ -116,6 +126,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
   acceptRequest(request: {
     body: unknown;
     session?: AcceptInput['session'];
+    headers?: Headers;
   }): Promise<{ userId: string }>;
 } {
   const { authRepository: repository, authPool, userSync } = options;
@@ -158,7 +169,28 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     }
   }
 
-  async function accept(input: AcceptInput): Promise<{ userId: string }> {
+  /**
+   * Reads the caller's session like `resolveContext` does (`disableRefresh`, so
+   * the read cannot extend a session about to idle out); an idle or banned
+   * session counts as none. `resolveContext` has no banned check until 13.4.
+   */
+  async function readSession(headers: Headers): Promise<AcceptInput['session']> {
+    // The `/get-session` before hook refuses an idle session with an error;
+    // that refusal means no session, as in `resolveContext`.
+    const found = await api
+      .getSession({ headers, query: { disableRefresh: true } })
+      .catch(() => null);
+    if (found === null || isIdle(found.session.updatedAt) || found.user.banned === true) {
+      return undefined;
+    }
+    return { userId: found.user.id, sessionId: found.session.id, headers };
+  }
+
+  async function accept(rawInput: AcceptInput): Promise<{ userId: string }> {
+    const input: AcceptInput =
+      rawInput.session === undefined && rawInput.headers !== undefined
+        ? { ...rawInput, session: await readSession(rawInput.headers) }
+        : rawInput;
     const invitation = await repository.globalInvitationById(input.invitationId);
     if (invitation === undefined) throw notFound();
     if (invitation.status === 'accepted') {
@@ -345,6 +377,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
   async function acceptRequest(request: {
     body: unknown;
     session?: AcceptInput['session'];
+    headers?: Headers;
   }): Promise<{ userId: string }> {
     let parsed: Record<string, unknown>;
     try {
@@ -376,6 +409,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
           token: parsed['token'] as string,
           ...(parsed['password'] !== undefined && { password: parsed['password'] as string }),
           ...(request.session !== undefined && { session: request.session }),
+          ...(request.headers !== undefined && { headers: request.headers }),
         }),
     );
   }

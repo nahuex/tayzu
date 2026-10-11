@@ -2078,3 +2078,246 @@ describe('An admin invitation to an existing account needs step-up (task 8.5d, d
     expect(member.rows.map((row) => row.role)).toEqual(['admin']);
   }, 60_000);
 });
+
+/**
+ * Task 8.5e (spec "Invitation acceptance", scenario "A banned, idle or
+ * temporary-password session cannot accept" (banned and idle parts only; the
+ * temporary-password marker is 13.5c); design D4 step 4 (a)).
+ *
+ * - GIVEN a pending invitation to `carol`, WHEN it is accepted with the valid token
+ *   and a session of `carol` that is banned or past its idle timeout, THEN the answer
+ *   is the uniform rejection, `denial_reason` `session_required`, and nothing is
+ *   created.
+ * - The session is read with `disableRefresh: true`: a successful acceptance of a
+ *   `member` invitation leaves the session's `updatedAt` unchanged.
+ *
+ * ## Production symbols expected
+ *
+ * - `packages/auth/src/index.ts` exports `isIdle` (already defined in
+ *   `session-idle.ts`).
+ * - `apps/api/src/identity/accept-flow.ts`: `AcceptInput.headers?: Headers` (also
+ *   accepted by `acceptRequest`). When `headers` is given and `session` is not, the
+ *   flow reads the session itself with `auth.api.getSession({ headers, query: {
+ *   disableRefresh: true } })`, treats a missing, idle (`isIdle(session.updatedAt)`)
+ *   or banned (`user.banned`) session as no session (reason `session_required`), and
+ *   otherwise continues as with a validated `session` of that user, handing `headers`
+ *   on to the step-up guard.
+ */
+describe('The session of the accept route is checked for idle and banned (task 8.5e, design D4 (a))', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flowOf() {
+    return createAcceptFlow({
+      auth,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** An account with a real session; its email is never verified. */
+  async function accountWithSession(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    return {
+      userId: created.userId,
+      token: signedIn.token,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function rows(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function expectNothingCreated(
+    tenant: Tenant,
+    invitation: Invitation,
+    email: string,
+    carolId: string,
+  ) {
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carolId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+  }
+
+  it('A banned session cannot accept: the uniform rejection with session_required and nothing created', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    await authPool.query(`update auth."user" set banned = true where id = $1`, [carol.userId]);
+
+    const failure = await failureOf(flowOf().accept({ ...invitation, headers: carol.headers }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingCreated(tenant, invitation, email, carol.userId);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['session_required']);
+  }, 60_000);
+
+  it('An idle-expired session cannot accept: the uniform rejection with session_required and nothing created', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    await authPool.query(
+      `update auth.session set updated_at = now() - interval '13 hours' where token = $1`,
+      [carol.token],
+    );
+
+    const failure = await failureOf(
+      flowOf().acceptRequest({ body: { ...invitation }, headers: carol.headers }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingCreated(tenant, invitation, email, carol.userId);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['session_required']);
+  }, 60_000);
+
+  it('A successful acceptance of a member invitation leaves the session’s updatedAt unchanged', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    // Used an hour ago, and old enough in its rolling expiry that a plain
+    // `getSession` would refresh `updatedAt` (updateAge is one day).
+    await authPool.query(
+      `update auth.session
+          set updated_at = now() - interval '1 hour',
+              expires_at = now() + interval '5 days'
+        where token = $1`,
+      [carol.token],
+    );
+    const before = await authPool.query<{ updated_at: Date }>(
+      `select updated_at from auth.session where token = $1`,
+      [carol.token],
+    );
+
+    const result = await flowOf().accept({ ...invitation, headers: carol.headers });
+
+    expect(result.userId).toBe(carol.userId);
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+      'the acceptance succeeded',
+    ).toBe(1);
+    const after = await authPool.query<{ updated_at: Date }>(
+      `select updated_at from auth.session where token = $1`,
+      [carol.token],
+    );
+    expect(after.rows[0]?.updated_at.getTime()).toBe(before.rows[0]?.updated_at.getTime());
+    expect(await deniedReasons(invitation.invitationId)).toEqual([]);
+  }, 60_000);
+});

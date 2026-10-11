@@ -1770,7 +1770,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       fresh marker, an SSO session being sent to the re-authorization and completing
       after it, and a wrong token with no marker answering the uniform rejection, not
       `AUTH_STEP_UP_REQUIRED`.
-- [ ] 8.5e The session read by the accept route is subject to the idle-timeout check
+- [x] 8.5e The session read by the accept route is subject to the idle-timeout check
       of `resolveContext` (`isIdle`, exported by `session-idle.ts` and added to the package index for the
       route), is read with `disableRefresh: true` as the resolver reads it (a plain
       `getSession` can refresh `updatedAt` and so extend a session about to idle out), and to a banned check that the route makes itself by reading
