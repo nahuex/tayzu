@@ -19,6 +19,7 @@ export interface InvitationRead {
   readonly id: string;
   readonly organizationId: string;
   readonly email: string;
+  readonly inviterId: string;
   readonly status: string;
   readonly expiresAt: Date;
   /** The invited role as stored (`member` or `admin`); null when none was set. */
@@ -78,6 +79,8 @@ export interface AuthRepository {
   ) => Promise<boolean>;
   globalUserByEmail: (email: string) => Promise<UserRead | undefined>;
   globalUserById: (userId: string) => Promise<UserRead | undefined>;
+  /** Whether a member of the tenant is banned; `undefined` when the user is not a member. */
+  memberBanned: (tenantId: string, userId: string) => Promise<boolean | undefined>;
   globalAccountByKey: (providerId: string, accountId: string) => Promise<AccountRead | undefined>;
   globalAccountsOf: (userId: string) => Promise<AccountRead[]>;
   globalInvitationById: (invitationId: string) => Promise<InvitationRead | undefined>;
@@ -94,6 +97,7 @@ interface InvitationRow {
   id: string;
   organization_id: string;
   email: string;
+  inviter_id: string;
   status: string;
   expires_at: Date;
   role: string | null;
@@ -125,6 +129,7 @@ const toInvitation = (r: InvitationRow): InvitationRead => ({
   id: r.id,
   organizationId: r.organization_id,
   email: r.email,
+  inviterId: r.inviter_id,
   status: r.status,
   expiresAt: r.expires_at,
   role: r.role,
@@ -156,7 +161,7 @@ function requireTenant(tenantId: unknown): asserts tenantId is string {
 
 export function createAuthRepository(authPool: Pool): AuthRepository {
   const MEMBER_COLUMNS = 'id, organization_id, user_id, role';
-  const INVITATION_COLUMNS = 'id, organization_id, email, status, expires_at, role';
+  const INVITATION_COLUMNS = 'id, organization_id, email, inviter_id, status, expires_at, role';
 
   return {
     async listApiKeys(tenantId, page) {
@@ -290,6 +295,18 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [userId],
       );
       return result.rows[0];
+    },
+
+    async memberBanned(tenantId, userId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<{ banned: boolean | null }>(
+        `select u.banned from auth."user" u
+         where u.id = $2
+           and exists (select 1 from auth.member m where m.organization_id = $1 and m.user_id = u.id)`,
+        [tenantId, userId],
+      );
+      const row = result.rows[0];
+      return row === undefined ? undefined : row.banned === true;
     },
 
     async globalAccountByKey(providerId, accountId) {

@@ -4,16 +4,19 @@
  * Q116, Q118, Q120, Q122 and Q127). The token is verified without consuming
  * it and consumed last; an attempt compensates only what it created.
  *
- * The inviter check, the shed, the session revocation and the admin notice are
- * later tasks' (8.5f, 8.5h, 8.5m, 8.15): this flow only reserves their slots.
+ * The shed, the session revocation and the admin notice are
+ * later tasks' (8.5h, 8.5m, 8.15): this flow only reserves their slots.
  */
 import { ORPCError } from '@orpc/server';
 import type { Pool } from 'pg';
+
+import type { CerbosClient } from '@tayzu/authz';
 
 import {
   AuthStepUpError,
   emitIdentityEvent,
   isIdle,
+  toCerbosRole,
   verifyInvitationToken,
   withIdentitySpan,
   type AuthInstance,
@@ -21,7 +24,7 @@ import {
 } from '@tayzu/auth';
 
 import type { Reauthorization } from '../reauthorization.js';
-import type { AuthRepository } from './auth-repository.js';
+import type { AuthRepository, InvitationRead } from './auth-repository.js';
 import { runWithAcceptanceContext } from './identity-context.js';
 import { parseIdentityInput, type InputSchema } from './parse-input.js';
 import type { UserSyncAdapter } from './user-sync-adapter.js';
@@ -39,6 +42,8 @@ type Step =
 
 export interface AcceptFlowOptions {
   readonly auth: AuthInstance;
+  /** Cerbos, asked whether the inviter may still invite (8.5f); the flow fails closed on it. */
+  readonly authz: CerbosClient;
   readonly authRepository: AuthRepository;
   /** The `tayzu_auth` pool: the token row of `auth.verification`. */
   readonly authPool: Pool;
@@ -186,6 +191,37 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     return { userId: found.user.id, sessionId: found.session.id, headers };
   }
 
+  /**
+   * The inviter must still be an unbanned, `Active` member of the organization
+   * whom Cerbos lets `invite` a `user` (Q63, Q108). Any failure to know is a no.
+   */
+  async function inviterMayStillInvite(invitation: InvitationRead): Promise<boolean> {
+    try {
+      const { organizationId: tenantId, inviterId } = invitation;
+      const member = await repository.memberOf(tenantId, inviterId);
+      if (member === undefined) return false;
+      if ((await repository.memberBanned(tenantId, inviterId)) !== false) return false;
+      const inviter = await repository.globalUserById(inviterId);
+      if (inviter === undefined) return false;
+      if ((await userSync.readStatus({ tenantId, email: inviter.email })) !== 'Active') {
+        return false;
+      }
+      const result = await options.authz.checkResources({
+        principal: {
+          id: inviterId,
+          roles: [toCerbosRole(member.role)],
+          attr: { tenantId },
+        },
+        resources: [
+          { resource: { kind: 'user', id: 'new', attr: { tenantId } }, actions: ['invite'] },
+        ],
+      });
+      return result.results[0]?.isAllowed('invite') === true;
+    } catch {
+      return false;
+    }
+  }
+
   async function accept(rawInput: AcceptInput): Promise<{ userId: string }> {
     const input: AcceptInput =
       rawInput.session === undefined && rawInput.headers !== undefined
@@ -211,6 +247,17 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     const digest = stored.rows[0]?.value ?? null;
     if (!verifyInvitationToken(input.token, digest)) throw notFound();
     const { organizationId: tenantId, email } = invitation;
+    if (!(await inviterMayStillInvite(invitation))) {
+      emitIdentityEvent({
+        name: 'catalog.security.invitation_acceptance_denied',
+        severity: 'WARN',
+        attributes: {
+          'tayzu.identity.invitation.id': invitation.id,
+          'tayzu.identity.invitation.denial_reason': 'inviter_not_active_admin',
+        },
+      });
+      throw notFound();
+    }
     const role = invitation.role === 'admin' ? 'admin' : 'member';
 
     const existing = await repository.globalUserByEmail(email);

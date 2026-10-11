@@ -22,6 +22,11 @@ const MAX_RETRIES = 3;
 type UpsertInput = Parameters<UserSyncPort['upsertUser']>[0];
 
 export interface UserSyncAdapter extends UserSyncPort {
+  /** The current `_user` status of the email in the tenant; `null` when there is no row. */
+  readonly readStatus: (input: {
+    readonly tenantId: string;
+    readonly email: string;
+  }) => Promise<UserStatus | null>;
   /**
    * The acceptance's entry point: same input as `upsertUser`, and it returns
    * the status event it wrote, or `undefined` when it wrote nothing. `userId`
@@ -189,5 +194,8 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
       await writeUserChange(input);
     },
     writeUserChange,
+    async readStatus(input) {
+      return (await userSync.getUser(input))?.status ?? null;
+    },
   };
 }

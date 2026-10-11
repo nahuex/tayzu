@@ -262,7 +262,7 @@ interface MembershipCacheEntry {
  * Better Auth `owner`/`admin` -> Cerbos `admin`; every other role -> `member`
  * (design D11, Q26). Better Auth may store several roles comma-separated.
  */
-function toCerbosRole(memberRole: string): 'admin' | 'member' {
+export function toCerbosRole(memberRole: string): 'admin' | 'member' {
   const roles = memberRole.split(',').map((role) => role.trim());
   return roles.includes('owner') || roles.includes('admin') ? 'admin' : 'member';
 }

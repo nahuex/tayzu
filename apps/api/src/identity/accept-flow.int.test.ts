@@ -96,6 +96,9 @@ import { createAuthRepository, type AuthRepository } from './auth-repository.js'
 import { runWithIdentityContext } from './identity-context.js';
 import { createUserSyncAdapter } from './user-sync-adapter.js';
 
+/** The Cerbos client the flow asks about the inviter (8.5f); the real one, lazily connected. */
+const sharedCerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+
 const STATUS_EVENT = 'catalog.audit.user_status_changed';
 const DENIED_EVENT = 'catalog.security.invitation_acceptance_denied';
 const COMPENSATION_EVENT = 'catalog.security.invitation_accept_compensation_failed';
@@ -183,6 +186,7 @@ describe('the acceptance as idempotent steps (task 8.1e, design D4, Resolved dec
   function flowWith(onStep?: StepSeam) {
     return createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: repository,
       authPool,
       userSync: adapter,
@@ -625,6 +629,7 @@ describe('the acceptance as idempotent steps (task 8.1e, design D4, Resolved dec
     const stepUpFlow = (onStep?: StepSeam) =>
       createAcceptFlow({
         auth,
+        authz: sharedCerbos,
         authRepository: repository,
         authPool,
         userSync: adapter,

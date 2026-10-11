@@ -1783,7 +1783,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       invitation the step-up guard of 8.5d reads the session again with a plain
       `getSession`, `step-up.ts`, which may refresh it, so the assertion covers `member`
       invitations only).
-- [ ] 8.5f At acceptance, on both paths, after the token has verified and before it
+- [x] 8.5f At acceptance, on both paths, after the token has verified and before it
       is consumed, the invitation's inviter must still be a member of the
       invitation's organization, whose Better Auth user is not `banned` and whose
       `_user` status in the tenant is `Active`, and **Cerbos must still allow the

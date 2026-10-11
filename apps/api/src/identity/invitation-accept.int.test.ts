@@ -32,7 +32,7 @@ import { registration, type TelemetryTestHarness } from '../__fixtures__/link-te
 import { randomInt, randomUUID } from 'node:crypto';
 
 import { authSchema, createAuth, createStepUpGuard, type AuthInstance } from '@tayzu/auth';
-import { createCerbosClient } from '@tayzu/authz';
+import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -65,6 +65,9 @@ import { createAcceptFlow } from './accept-flow.js';
 import { createAuthRepository, type AuthRepository } from './auth-repository.js';
 import { runWithIdentityContext } from './identity-context.js';
 import { createUserSyncAdapter } from './user-sync-adapter.js';
+
+/** The Cerbos client the flow asks about the inviter (8.5f); the real one, lazily connected. */
+const sharedCerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
 
 const ACCEPTED_EVENT = 'catalog.audit.invitation_accepted';
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
@@ -131,6 +134,7 @@ describe('A new person accepts an invitation (task 8.2, design D4, Resolved deci
     });
     acceptFlow = createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -407,6 +411,7 @@ describe('single-use token and the accepted status (task 8.3, Resolved decision 
   function flowWith(onStep?: StepSeam) {
     return createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: repository,
       authPool,
       userSync: adapter,
@@ -739,6 +744,7 @@ describe('the accept body is an allowlist and the tenant comes from the invitati
     });
     flow = createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -1024,6 +1030,7 @@ describe('Acceptance does not touch an existing account (task 8.5, Resolved deci
     });
     flow = createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -1372,6 +1379,7 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
     );
     const flow = createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -1403,6 +1411,7 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
     const home = await freshTenant();
     const flow = createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -1435,6 +1444,7 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
     const prefix = `write:${target.tenantId}:${email}:`;
     const flow = createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -1459,6 +1469,7 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
     const invitation = await invite(target, email);
     const flow = createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -1526,6 +1537,7 @@ describe('A session of another account cannot accept (task 8.5c, Resolved decisi
   function flowOf() {
     return createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -1799,6 +1811,7 @@ describe('An admin invitation to an existing account needs step-up (task 8.5d, d
   function flow() {
     return createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -2136,6 +2149,7 @@ describe('The session of the accept route is checked for idle and banned (task 8
   function flowOf() {
     return createAcceptFlow({
       auth,
+      authz: sharedCerbos,
       authRepository: createAuthRepository(authPool),
       authPool,
       userSync: adapter,
@@ -2320,4 +2334,396 @@ describe('The session of the accept route is checked for idle and banned (task 8
     expect(after.rows[0]?.updated_at.getTime()).toBe(before.rows[0]?.updated_at.getTime());
     expect(await deniedReasons(invitation.invitationId)).toEqual([]);
   }, 60_000);
+});
+
+/**
+ * Task 8.5f (spec "Invitation acceptance", scenarios "An invitation does not
+ * outlive its inviter's authority" and "The inviter re-check is a Cerbos
+ * decision"; design D4 step 2; Resolved decisions Q63 and Q108).
+ *
+ * ## Production symbols expected
+ *
+ * - `apps/api/src/identity/accept-flow.ts`: `AcceptFlowOptions.authz: CerbosClient`
+ *   (new, required: the flow fails closed, so a missing client cannot be optional).
+ *   After the token has verified and before the consumption, on both paths, the
+ *   flow reads the inviter's member row (`tayzu_auth`), the inviter's Better Auth
+ *   `banned` flag and the inviter's `_user` status (`tayzu_app`, through the
+ *   `userSync` port it already has), and calls `authz.checkResources` once with
+ *   the principal `{ id: inviterUserId, roles: [toCerbosRole(memberRole)], attr:
+ *   { tenantId: organizationId } }` and one resource `{ kind: 'user', id: 'new',
+ *   attr: { tenantId: organizationId } }` for the action `invite`. A missing member
+ *   row, a banned or non-`Active` inviter, a deny and a thrown error each emit
+ *   `catalog.security.invitation_acceptance_denied` with the reason
+ *   `inviter_not_active_admin`, throw the uniform rejection and leave the token.
+ * - `packages/auth/src/context-resolver.ts` exports `toCerbosRole`, and
+ *   `packages/auth/src/index.ts` re-exports it (the flow uses it; not asserted
+ *   directly here beyond the roles of the recorded principal).
+ */
+describe('An invitation does not outlive its inviter’s authority (task 8.5f, Resolved decisions Q63 and Q108)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  type CheckRequest = Parameters<CerbosClient['checkResources']>[0];
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    catalogSync = createUserSync({ pool: pools.appPool, authz: sharedCerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function flowFor(authz: CerbosClient = sharedCerbos) {
+    return createAcceptFlow({
+      auth,
+      authz,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  /** Records every Cerbos request, then answers like `behavior`. */
+  function recordingCerbos(behavior: 'real' | 'deny' | 'throw' = 'real'): {
+    client: CerbosClient;
+    requests: CheckRequest[];
+  } {
+    const requests: CheckRequest[] = [];
+    const client = Object.create(sharedCerbos) as CerbosClient;
+    client.checkResources = (request: CheckRequest) => {
+      requests.push(request);
+      if (behavior === 'throw') return Promise.reject(new Error('cerbos unavailable'));
+      if (behavior === 'deny') {
+        return Promise.resolve({
+          results: [{ isAllowed: () => false }],
+        } as unknown as Awaited<ReturnType<CerbosClient['checkResources']>>);
+      }
+      return sharedCerbos.checkResources(request);
+    };
+    return { client, requests };
+  }
+
+  interface InviterTenant extends Tenant {
+    readonly adminEmail: string;
+  }
+
+  /** A tenant whose creator is its `owner` and, through the hooks, an `Active` `_user`. */
+  async function freshTenant(): Promise<InviterTenant> {
+    const id = randomUUID();
+    const adminEmail = `inviter-${id}@example.test`;
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Inviter',
+      email: adminEmail,
+      password: TEST_PASSWORD,
+      organizationName: 'Inviter Org',
+      organizationSlug: `inviter-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie, adminEmail };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function rows(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  const inviterChanges: readonly (readonly [string, (tenant: InviterTenant) => Promise<void>])[] = [
+    [
+      'disabled',
+      async (tenant) => {
+        await catalogSync.upsertUser({
+          tenantId: tenant.tenantId,
+          email: tenant.adminEmail,
+          name: 'Inviter',
+          status: 'Disabled',
+        });
+      },
+    ],
+    [
+      'banned',
+      async (tenant) => {
+        await authPool.query(`update auth."user" set banned = true where id = $1`, [
+          tenant.adminId,
+        ]);
+      },
+    ],
+    [
+      'demoted to member',
+      async (tenant) => {
+        await authPool.query(
+          `update auth.member set role = 'member' where organization_id = $1 and user_id = $2`,
+          [tenant.tenantId, tenant.adminId],
+        );
+      },
+    ],
+    [
+      'no longer a member (a direct write)',
+      async (tenant) => {
+        await authPool.query(
+          `delete from auth.member where organization_id = $1 and user_id = $2`,
+          [tenant.tenantId, tenant.adminId],
+        );
+      },
+    ],
+  ];
+
+  type Path = 'new account' | 'existing account';
+
+  /** The invitation, and the attempt on the given path with the valid token. */
+  async function prepare(path: Path, tenant: Tenant, wrongToken = false) {
+    const email = `invitee-${randomUUID()}@example.test`;
+    const existing =
+      path === 'existing account'
+        ? await createAdminUser(auth, { name: 'Existing', email, password: TEST_PASSWORD })
+        : undefined;
+    const invitation = await invite(tenant, email);
+    const token = wrongToken ? generateInvitationToken() : invitation.token;
+    const attempt = (flow: ReturnType<typeof flowFor>) =>
+      existing === undefined
+        ? flow.accept({ invitationId: invitation.invitationId, token, password: PASSWORD_NFC })
+        : flow.accept({
+            invitationId: invitation.invitationId,
+            token,
+            session: { userId: existing.userId, sessionId: randomUUID() },
+          });
+    return { email, invitation, existingUserId: existing?.userId, attempt };
+  }
+
+  async function expectNothingAccepted(
+    tenant: Tenant,
+    prepared: Awaited<ReturnType<typeof prepare>>,
+  ) {
+    const { email, invitation, existingUserId } = prepared;
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays, so the token is still valid',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    if (existingUserId === undefined) {
+      expect(await rows(`select 1 from auth."user" where email = $1`, [email]), 'no user').toBe(0);
+    } else {
+      expect(
+        await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+          tenant.tenantId,
+          existingUserId,
+        ]),
+        'no membership',
+      ).toBe(0);
+    }
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+  }
+
+  const paths: readonly Path[] = ['new account', 'existing account'];
+
+  describe.each(inviterChanges)('the inviter is %s', (_label, change) => {
+    it.each(paths)(
+      'An invitation does not outlive its inviter’s authority: accepted on the %s path, the uniform rejection with inviter_not_active_admin and the token still valid',
+      async (path) => {
+        const tenant = await freshTenant();
+        const prepared = await prepare(path, tenant);
+        await change(tenant);
+
+        const failure = await failureOf(prepared.attempt(flowFor()));
+
+        expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+        expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([
+          'inviter_not_active_admin',
+        ]);
+        await expectNothingAccepted(tenant, prepared);
+      },
+      60_000,
+    );
+  });
+
+  it.each(paths)(
+    'An invitation does not outlive its inviter’s authority: an invitation whose inviter is still an active owner is accepted on the %s path',
+    async (path) => {
+      const tenant = await freshTenant();
+      expect(
+        (await catalogSync.getUser({ tenantId: tenant.tenantId, email: tenant.adminEmail }))
+          ?.status,
+      ).toBe('Active');
+      const prepared = await prepare(path, tenant);
+
+      const result = await prepared.attempt(flowFor());
+
+      expect(
+        await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+          tenant.tenantId,
+          result.userId,
+        ]),
+      ).toBe(1);
+      expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([]);
+      expect(
+        await rows(`select 1 from auth.invitation where id = $1 and status = 'accepted'`, [
+          prepared.invitation.invitationId,
+        ]),
+      ).toBe(1);
+    },
+    60_000,
+  );
+
+  it.each(paths)(
+    'An invitation does not outlive its inviter’s authority: an invitation whose inviter is an active admin (not owner) is accepted on the %s path',
+    async (path) => {
+      const tenant = await freshTenant();
+      await authPool.query(
+        `update auth.member set role = 'admin' where organization_id = $1 and user_id = $2`,
+        [tenant.tenantId, tenant.adminId],
+      );
+      const prepared = await prepare(path, tenant);
+
+      const result = await prepared.attempt(flowFor());
+
+      expect(
+        await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+          tenant.tenantId,
+          result.userId,
+        ]),
+      ).toBe(1);
+      expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([]);
+    },
+    60_000,
+  );
+
+  it.each(paths)(
+    'An invitation does not outlive its inviter’s authority: a wrong token with a disabled inviter answers the same uniform rejection on the %s path, and the inviter is not what is recorded',
+    async (path) => {
+      const tenant = await freshTenant();
+      const prepared = await prepare(path, tenant, true);
+      await catalogSync.upsertUser({
+        tenantId: tenant.tenantId,
+        email: tenant.adminEmail,
+        name: 'Inviter',
+        status: 'Disabled',
+      });
+
+      const failure = await failureOf(prepared.attempt(flowFor()));
+
+      expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+      expect(await deniedReasons(prepared.invitation.invitationId)).not.toContain(
+        'inviter_not_active_admin',
+      );
+      await expectNothingAccepted(tenant, prepared);
+    },
+    60_000,
+  );
+
+  it.each(paths)(
+    'The inviter re-check is a Cerbos decision: one user/invite check with the inviter as the principal and the invitation’s tenant as the principal’s and the resource’s tenant, on the %s path',
+    async (path) => {
+      const tenant = await freshTenant();
+      const prepared = await prepare(path, tenant);
+      const { client, requests } = recordingCerbos();
+
+      await prepared.attempt(flowFor(client));
+
+      const checks = requests.filter((request) => request.principal.id === tenant.adminId);
+      expect(checks, 'one check for the inviter').toHaveLength(1);
+      const [check] = checks;
+      expect(check?.principal.roles).toEqual(['admin']);
+      expect(check?.principal.attr?.['tenantId']).toBe(tenant.tenantId);
+      expect(check?.resources).toHaveLength(1);
+      const target = check?.resources[0];
+      expect(target?.resource.kind).toBe('user');
+      expect(target?.resource.id).toBe('new');
+      expect(target?.resource.attr?.['tenantId']).toBe(tenant.tenantId);
+      expect(target?.actions).toEqual(['invite']);
+    },
+    60_000,
+  );
+
+  describe.each([['denies'], ['throws']] as const)('Cerbos %s', (behavior) => {
+    it.each(paths)(
+      'The inviter re-check is a Cerbos decision: for an otherwise active admin inviter the uniform rejection, inviter_not_active_admin and the token still valid on the %s path',
+      async (path) => {
+        const tenant = await freshTenant();
+        const prepared = await prepare(path, tenant);
+        const { client, requests } = recordingCerbos(behavior === 'denies' ? 'deny' : 'throw');
+
+        const failure = await failureOf(prepared.attempt(flowFor(client)));
+
+        expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+        expect(
+          requests.filter((request) => request.principal.id === tenant.adminId),
+          'the check was made with the inviter as the principal',
+        ).toHaveLength(1);
+        expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([
+          'inviter_not_active_admin',
+        ]);
+        await expectNothingAccepted(tenant, prepared);
+      },
+      60_000,
+    );
+  });
 });
