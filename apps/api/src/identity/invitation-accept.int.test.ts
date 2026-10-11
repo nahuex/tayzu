@@ -3382,3 +3382,257 @@ describe('Accepting an expired invitation fails (task 8.9, design D4 step 5)', (
     expect(await adapter.readStatus({ tenantId: t.organizationId, email })).toBe(statusBefore);
   }, 60_000);
 });
+
+describe('Accepting a cancelled or already-accepted invitation fails, and a wrong token fails (task 8.10, design D4 steps 1 and 5, Resolved decision Q123)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Terminal Admin',
+      email: `terminal-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Terminal Org',
+      organizationSlug: `terminal-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  /** What `identity.users.invite` leaves: the invitation (its hook writes the `Invited` `_user`) and the token digest. */
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  interface CancelApiSurface {
+    cancelInvitation(args: { body: { invitationId: string }; headers: Headers }): Promise<unknown>;
+  }
+
+  async function explicitCancel(tenant: Tenant, invitationId: string): Promise<void> {
+    await (auth.api as CancelApiSurface).cancelInvitation({
+      body: { invitationId },
+      headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+    });
+  }
+
+  async function statusOf(invitationId: string): Promise<string | undefined> {
+    const result = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitationId],
+    );
+    return result.rows[0]?.status;
+  }
+
+  async function tokenRows(invitationId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ value: string }>(
+      `select value from auth.verification where identifier = $1`,
+      [`invitation-accept:${invitationId}`],
+    );
+    return result.rows.map((row) => row.value);
+  }
+
+  async function userCount(email: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth."user" where lower(email) = $1`, [
+      email,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function memberCount(tenantId: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      tenantId,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string; status: number }> {
+    try {
+      await attempt;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+    throw new Error('the acceptance was expected to fail');
+  }
+
+  it('Accepting a cancelled or already-accepted invitation fails: an invitation cancelled by re-invite answers the uniform rejection (reason cancelled) and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `reinvite-${randomUUID()}@example.test`;
+    // GIVEN an invitation cancelled by re-invite.
+    const first = await invite(tenant, email);
+    const second = await invite(tenant, email);
+    expect(await statusOf(first.invitationId)).toBe('canceled');
+    expect(await statusOf(second.invitationId)).toBe('pending');
+    const tokenBefore = await tokenRows(first.invitationId);
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    const membersBefore = await memberCount(tenant.tenantId);
+
+    // WHEN it is accepted with its token.
+    const failure = await failureOf(flow().accept({ ...first, password: PASSWORD_NFC }));
+
+    // THEN it fails with the uniform rejection and no status change occurs.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(first.invitationId)).toEqual(['cancelled']);
+    expect(await statusOf(first.invitationId)).toBe('canceled');
+    expect(await statusOf(second.invitationId)).toBe('pending');
+    expect(await tokenRows(first.invitationId)).toEqual(tokenBefore);
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'no member').toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+  }, 60_000);
+
+  it('Accepting a cancelled or already-accepted invitation fails: an invitation cancelled by an explicit cancel answers the uniform rejection (reason cancelled) and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `cancelled-${randomUUID()}@example.test`;
+    // GIVEN an invitation cancelled by an explicit cancel.
+    const invitation = await invite(tenant, email);
+    await explicitCancel(tenant, invitation.invitationId);
+    expect(await statusOf(invitation.invitationId)).toBe('canceled');
+    const tokenBefore = await tokenRows(invitation.invitationId);
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    const membersBefore = await memberCount(tenant.tenantId);
+
+    // WHEN it is accepted with its token.
+    const failure = await failureOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+
+    // THEN it fails with the uniform rejection and no status change occurs.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['cancelled']);
+    expect(await statusOf(invitation.invitationId)).toBe('canceled');
+    expect(await tokenRows(invitation.invitationId)).toEqual(tokenBefore);
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'no member').toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+  }, 60_000);
+
+  it('Accepting a cancelled or already-accepted invitation fails: an already-accepted invitation answers the uniform rejection with the reason already_accepted and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `accepted-${randomUUID()}@example.test`;
+    // GIVEN an invitation that was accepted.
+    const invitation = await invite(tenant, email);
+    await flow().accept({ ...invitation, password: PASSWORD_NFC });
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    const tokenBefore = await tokenRows(invitation.invitationId);
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    const membersBefore = await memberCount(tenant.tenantId);
+    const usersBefore = await userCount(email);
+    expect(usersBefore).toBe(1);
+
+    // WHEN it is accepted again with its token.
+    const failure = await failureOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+
+    // THEN it fails with the uniform rejection, denied as already_accepted, and no status change occurs.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['already_accepted']);
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await tokenRows(invitation.invitationId)).toEqual(tokenBefore);
+    expect(await userCount(email)).toBe(usersBefore);
+    expect(await memberCount(tenant.tenantId)).toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+  }, 60_000);
+
+  it('A wrong token fails: the uniform rejection (reason token_mismatch), the invitation stays pending, the issued token still verifies and nothing is created', async () => {
+    const tenant = await freshTenant();
+    const email = `wrongtoken-${randomUUID()}@example.test`;
+    // GIVEN a pending invitation to `bob@example.com`.
+    const invitation = await invite(tenant, email);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    expect(statusBefore).toBe('Invited');
+    const membersBefore = await memberCount(tenant.tenantId);
+
+    // WHEN it is accepted with a token that is not the issued one.
+    const failure = await failureOf(
+      flow().accept({
+        invitationId: invitation.invitationId,
+        token: generateInvitationToken(),
+        password: PASSWORD_NFC,
+      }),
+    );
+
+    // THEN the acceptance fails and the invitation stays pending.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['token_mismatch']);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+    const stored = await tokenRows(invitation.invitationId);
+    expect(stored, 'the issued token row stays').toHaveLength(1);
+    expect(verifyInvitationToken(invitation.token, stored[0] ?? null)).toBe(true);
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'no member').toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+
+    // ...and the issued token still works.
+    await flow().accept({ ...invitation, password: PASSWORD_NFC });
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+  }, 60_000);
+});

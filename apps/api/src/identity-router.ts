@@ -456,6 +456,12 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           handler: async ({ context, target }): Promise<void> => {
             const headers = context[REQUEST_HEADERS];
             if (!(headers instanceof Headers)) throw new IdentityInputError();
+            // Better Auth's cancel ignores the status, so only a `pending` invitation is cancelled (Q123, Q129).
+            const invitation = await options.authRepository.invitationById(
+              rawTenantId(context),
+              (target as ResolvedIdentityTarget).id,
+            );
+            if (invitation?.status !== 'pending') throw new IdentityInputError();
             await cancelApi.cancelInvitation({
               body: { invitationId: (target as ResolvedIdentityTarget).id },
               headers,
@@ -479,7 +485,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               tenantId,
               (target as ResolvedIdentityTarget).id,
             );
-            if (invitation === undefined) throw new IdentityInputError();
+            // Only a `pending` invitation is resent (Q123).
+            if (invitation?.status !== 'pending') throw new IdentityInputError();
             const token = generateInvitationToken();
             await (
               await verificationContext()

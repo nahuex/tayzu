@@ -2184,7 +2184,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `expired` and the user's status is unchanged. Verify:
       `invitation-accept.int.test.ts` covers "Accepting an expired invitation
       fails", using a clock seam to advance past 48 hours.
-- [ ] 8.10 A cancelled or already-accepted invitation fails, and a wrong token
+- [x] 8.10 A cancelled or already-accepted invitation fails, and a wrong token
       leaves the invitation `pending`. An accepted invitation, which 8.3 marks
       `accepted`, and a cancelled or rejected one are skipped by resend (7.7) and cancel
       (7.6), which read its status

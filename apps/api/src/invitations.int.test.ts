@@ -80,6 +80,7 @@ import { renderInvitationEmail } from '../../../packages/auth/src/identity/email
 import { verifyInvitationToken } from '../../../packages/auth/src/identity/invitation-token.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAcceptFlow } from './identity/accept-flow.js';
 import { createAuthRepository } from './identity/auth-repository.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { createEmailTenantGate } from './identity/email-tenant-gate.js';
@@ -987,5 +988,209 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     const rows = await invitationsOf(t1.tenantId, email);
     expect(rows.find((row) => row.id === pending.invitationId)?.status).toBe('pending');
     expect(await userCreatedCancellations(t1.tenantId)).toEqual([]);
+  }, 60_000);
+
+  // Task 8.10 (spec "Invitation lifecycle", scenario "An accepted invitation is
+  // not resent or cancelled"; design D4 "Resend"; Resolved decisions Q123, Q128
+  // and Q129). Resend and cancel act only on a `pending` invitation: for an
+  // accepted, cancelled or rejected one each is refused with
+  // `CATALOG_VALIDATION_FAILED` and one fixed message (no provider text),
+  // changes nothing and logs nothing; a missing or foreign invitation still
+  // answers `CATALOG_NOT_FOUND`; an accepted invitation does not count toward
+  // the 100 pending invitations. Stored `cancelled` is Better Auth's `canceled`.
+  const ACCEPT_PASSWORD = 'Café-Mañana-Passäphrase-2026!';
+  const RESENT_EVENT = 'catalog.audit.invitation_resent';
+
+  function acceptFlow() {
+    return createAcceptFlow({
+      auth,
+      authz: cerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+  }
+
+  async function statusOfInvitation(id: string): Promise<string | undefined> {
+    const result = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [id],
+    );
+    return result.rows[0]?.status;
+  }
+
+  /** The event names logged for the tenant or the invitation, in order. */
+  async function eventsAbout(tenantId: string, invitationId: string): Promise<readonly string[]> {
+    return (await logRecords())
+      .filter(
+        (record) =>
+          record.attributes['tayzu.tenant.id'] === tenantId ||
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.eventName ?? '');
+  }
+
+  /**
+   * Resends and cancels `invitationId` and asserts both refusals: the generic
+   * code with one fixed message, and no change to the status, the token rows,
+   * the emails or the log.
+   */
+  async function expectRefusedAndUntouched(
+    tenant: { tenantId: string; adminId: string; cookie: string },
+    email: string,
+    invitationId: string,
+    expectedStatus: string,
+  ): Promise<void> {
+    const tokensBefore = await verificationOf(invitationId);
+    const emailsBefore = emailsTo(email).length;
+    const eventsBefore = await eventsAbout(tenant.tenantId, invitationId);
+
+    const resend = await rejection(
+      client.identity.users.resendInvitation(
+        { invitation: invitationId },
+        { context: sessionContext(tenant) },
+      ),
+    );
+    const cancel = await rejection(
+      client.identity.users.cancelInvitation(
+        { invitation: invitationId },
+        { context: sessionContext(tenant) },
+      ),
+    );
+
+    expectGenericRejection(resend);
+    expectGenericRejection(cancel);
+    const resendMessage = (resend as { message?: unknown }).message;
+    expect(typeof resendMessage).toBe('string');
+    expect((cancel as { message?: unknown }).message, 'the same fixed message').toBe(resendMessage);
+
+    expect(await statusOfInvitation(invitationId), 'the status does not change').toBe(
+      expectedStatus,
+    );
+    expect(await verificationOf(invitationId), 'no new token row').toEqual(tokensBefore);
+    expect(emailsTo(email).length, 'no email').toBe(emailsBefore);
+    const eventsAfter = await eventsAbout(tenant.tenantId, invitationId);
+    expect(eventsAfter, 'nothing logged').toEqual(eventsBefore);
+    expect(eventsAfter).not.toContain(RESENT_EVENT);
+  }
+
+  it('An accepted invitation is not resent or cancelled: both are refused with CATALOG_VALIDATION_FAILED and one fixed message, and the invitation stays accepted with no token, email or log', async () => {
+    const tenant = await freshTenant();
+    const email = `accepted-${randomUUID()}@example.test`;
+    // GIVEN an invitation to `bob@example.com` that `bob` has accepted.
+    const created = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+    const template = emailsTo(email)[0]?.template;
+    if (template?.kind !== 'InvitationEmail') throw new Error('the invitation email was not sent');
+    const token = new URLSearchParams(new URL(template.link).hash.slice(1)).get('token') ?? '';
+    await acceptFlow().accept({
+      invitationId: created.invitationId,
+      token,
+      password: ACCEPT_PASSWORD,
+    });
+    expect(await statusOfInvitation(created.invitationId)).toBe('accepted');
+
+    // WHEN the admin resends it, and then cancels it.
+    // THEN each is refused, nothing changes and nothing is logged.
+    await expectRefusedAndUntouched(tenant, email, created.invitationId, 'accepted');
+    const events = await eventsAbout(tenant.tenantId, created.invitationId);
+    expect(events).not.toContain(CANCELLED_EVENT);
+  }, 60_000);
+
+  it('An accepted invitation is not resent or cancelled: an invitation already cancelled by an earlier cancel is refused the same way', async () => {
+    const tenant = await freshTenant();
+    const email = `cancelled-${randomUUID()}@example.test`;
+    const created = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+    await client.identity.users.cancelInvitation(
+      { invitation: created.invitationId },
+      { context: sessionContext(tenant) },
+    );
+    expect(await statusOfInvitation(created.invitationId)).toBe('canceled');
+
+    await expectRefusedAndUntouched(tenant, email, created.invitationId, 'canceled');
+  }, 60_000);
+
+  it('An accepted invitation is not resent or cancelled: an invitation seeded directly as rejected is refused the same way', async () => {
+    const tenant = await freshTenant();
+    const email = `rejected-${randomUUID()}@example.test`;
+    const rejectedId = `seed-rejected-${randomUUID()}`;
+    await authPool.query(
+      `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+       values ($1, $2, $3, 'member', 'rejected', now() + interval '48 hours', now(), $4)`,
+      [rejectedId, tenant.tenantId, email, tenant.adminId],
+    );
+
+    await expectRefusedAndUntouched(tenant, email, rejectedId, 'rejected');
+  }, 60_000);
+
+  it('An accepted invitation is not resent or cancelled: a cancel of a missing or foreign invitation still answers CATALOG_NOT_FOUND', async () => {
+    const t1 = await freshTenant();
+    const t2 = await freshTenant();
+    const foreign = await client.identity.users.invite(
+      { email: `foreign-${randomUUID()}@example.test`, role: 'member' },
+      { context: sessionContext(t2) },
+    );
+
+    const missing = await rejection(
+      client.identity.users.cancelInvitation(
+        { invitation: randomUUID() },
+        { context: sessionContext(t1) },
+      ),
+    );
+    const crossTenant = await rejection(
+      client.identity.users.cancelInvitation(
+        { invitation: foreign.invitationId },
+        { context: sessionContext(t1) },
+      ),
+    );
+
+    expect((missing as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+    expect((crossTenant as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+    expect(await statusOfInvitation(foreign.invitationId), 'the foreign one is untouched').toBe(
+      'pending',
+    );
+  }, 60_000);
+
+  it('An accepted invitation is not resent or cancelled: an organization with 99 pending invitations and an accepted one still allows its 100th pending invitation', async () => {
+    const tenant = await freshTenant();
+    // GIVEN 99 pending invitations and an accepted one (seeded directly).
+    await authPool.query(
+      `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+       select 'seed-inv-' || $1 || '-' || n, $1, 'pending-' || n || '-' || $1 || '@example.test',
+              'member', 'pending', now() + interval '48 hours', now(), $2
+       from generate_series(1, $3::int) as n`,
+      [tenant.tenantId, tenant.adminId, PLATFORM_LIMIT - 1],
+    );
+    await authPool.query(
+      `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+       values ($1, $2, $3, 'member', 'accepted', now() + interval '48 hours', now(), $4)`,
+      [
+        `seed-accepted-${randomUUID()}`,
+        tenant.tenantId,
+        `done-${randomUUID()}@example.test`,
+        tenant.adminId,
+      ],
+    );
+
+    // WHEN an admin invites one more address.
+    const email = `hundredth-${randomUUID()}@example.test`;
+    const created = await client.identity.users.invite(
+      { email, role: 'member' },
+      { context: sessionContext(tenant) },
+    );
+
+    // THEN it is created as the 100th pending invitation.
+    expect(await statusOfInvitation(created.invitationId)).toBe('pending');
+    const pending = await authPool.query<{ n: string }>(
+      `select count(*) as n from auth.invitation where organization_id = $1 and status = 'pending'`,
+      [tenant.tenantId],
+    );
+    expect(Number(pending.rows[0]?.n)).toBe(PLATFORM_LIMIT);
+    expect(emailsTo(email)).toHaveLength(1);
   }, 60_000);
 });
