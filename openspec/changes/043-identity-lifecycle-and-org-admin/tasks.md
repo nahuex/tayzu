@@ -1834,7 +1834,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the transaction that holds the lock, and `linkSsoAccount` running its membership
       check and its link inside the lock (a spy on `withUserLock`); the interleavings of
       a link and a join need the shed and are 8.5h's `sso-link-race.int.test.ts`.
-- [ ] 8.5g **Positive provenance of SSO links** (Resolved decision Q87, which
+- [x] 8.5g **Positive provenance of SSO links** (Resolved decision Q87, which
       supersedes Q73's admin-side marker). `databaseHooks.account.create.after` writes a
       marker row in `auth.verification` (no migration) for an account that is not the
       `credential` account, only when the hook fires with an endpoint context whose route

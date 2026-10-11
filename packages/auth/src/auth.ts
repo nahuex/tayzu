@@ -86,6 +86,7 @@ import {
   SSO_CALLBACK_PATH,
 } from './sso/callback-rejection.js';
 import { emitAccountLinkEvent } from './account-link-telemetry.js';
+import { emitIdentityEvent } from './telemetry/identity-telemetry.js';
 import {
   VISMA_CONNECT_PROVIDER_ID,
   vismaConnect,
@@ -371,13 +372,92 @@ function emitSessionRevoked(params: {
 /** The `providerId` of the Visma Connect SSO account (design D23). */
 const SELF_LINK_PROVIDER_ID = VISMA_CONNECT_PROVIDER_ID;
 
+/** Better Auth's route of the user's own unlink. */
+const UNLINK_ACCOUNT_ROUTE = '/unlink-account';
+
+/** Identifier prefix of the provenance marker of a link the user made (Resolved decision Q87). */
+const SSO_LINK_MARKER_PREFIX = 'sso-link:';
+
+/** Far-future sentinel: Better Auth's cleanup of expired verification rows never reaches the marker. */
+const SSO_LINK_MARKER_EXPIRES_AT = new Date('9999-12-31T23:59:59.000Z');
+
+/** The adapter surface the marker hooks need, from an endpoint context or from `auth.$context`. */
+interface MarkerAdapter {
+  create(args: { model: string; data: Record<string, unknown> }): Promise<unknown>;
+  delete(args: { model: string; where: { field: string; value: string }[] }): Promise<unknown>;
+  deleteMany(args: { model: string; where: { field: string; value: string }[] }): Promise<unknown>;
+}
+
+/**
+ * Task 8.5g (Resolved decision Q87): marks a link made through the callback
+ * route (every `/link-social` or SSO link the user makes) with a verification
+ * row keyed by the `account` row's own id. A failed write deletes the account
+ * row, logs and throws, so the link fails closed.
+ */
+async function writeSsoLinkMarker(
+  account: { readonly id?: unknown; readonly providerId?: unknown; readonly userId?: unknown },
+  context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
+): Promise<void> {
+  if (
+    !context ||
+    context.path !== GENERIC_OAUTH_CALLBACK_ROUTE ||
+    account.providerId === 'credential' ||
+    typeof account.id !== 'string'
+  ) {
+    return;
+  }
+  const adapter = context.context.adapter as unknown as MarkerAdapter;
+  try {
+    await adapter.create({
+      model: 'verification',
+      data: {
+        identifier: `${SSO_LINK_MARKER_PREFIX}${account.id}`,
+        value: 'self',
+        expiresAt: SSO_LINK_MARKER_EXPIRES_AT,
+      },
+    });
+  } catch {
+    await adapter
+      .delete({ model: 'account', where: [{ field: 'id', value: account.id }] })
+      .catch(() => undefined);
+    emitIdentityEvent({
+      name: 'catalog.security.sso_link_marker_failed',
+      severity: 'WARN',
+      attributes:
+        typeof account.userId === 'string' ? { 'tayzu.identity.user.id': account.userId } : {},
+    });
+    throw new Error('sso link marker write failed');
+  }
+}
+
+/** Deletes the marker of a deleted account row, on every deletion path that goes through Better Auth. */
+async function deleteSsoLinkMarker(
+  account: { readonly id?: unknown },
+  context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
+  fallback: () => Promise<MarkerAdapter>,
+): Promise<void> {
+  if (typeof account.id !== 'string') {
+    return;
+  }
+  const adapter =
+    (context?.context.adapter as unknown as MarkerAdapter | undefined) ?? (await fallback());
+  await adapter.deleteMany({
+    model: 'verification',
+    where: [{ field: 'identifier', value: `${SSO_LINK_MARKER_PREFIX}${account.id}` }],
+  });
+}
+
 /** Emits the D24 audit signals for a self-service link/unlink; skips non-SSO accounts and direct adapter calls. */
 async function emitSelfLink(
   event: 'linked' | 'unlinked',
   account: { readonly providerId?: unknown; readonly userId?: unknown },
   context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
 ): Promise<void> {
-  if (!context || account.providerId !== SELF_LINK_PROVIDER_ID) {
+  // The context is ambient: an account written inside another endpoint handler
+  // (for example `addMember`) inherits that handler's context, so only the
+  // route of the link or unlink itself counts (Resolved decision Q87).
+  const route = event === 'linked' ? GENERIC_OAUTH_CALLBACK_ROUTE : UNLINK_ACCOUNT_ROUTE;
+  if (!context || context.path !== route || account.providerId !== SELF_LINK_PROVIDER_ID) {
     return;
   }
   if (typeof account.userId !== 'string') {
@@ -836,11 +916,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         create: {
           before: (account, context) => encryptIdToken(account, context),
           after: async (account, context) => {
+            await writeSsoLinkMarker(account, context);
             await emitSelfLink('linked', account, context);
           },
         },
         delete: {
           after: async (account, context) => {
+            await deleteSsoLinkMarker(account, context, async () => (await auth.$context).adapter);
             await emitSelfLink('unlinked', account, context);
           },
         },
