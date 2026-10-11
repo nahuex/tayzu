@@ -189,7 +189,7 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
   });
 
   /** A local-password member, linked to a fresh Visma Connect `sub`, with no `_user` row. */
-  async function memberWithoutRow(): Promise<{
+  async function memberWithoutRow(options: { selfMadeLink?: boolean } = {}): Promise<{
     localEmail: string;
     organizationId: string;
     sub: string;
@@ -205,11 +205,22 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
       ip: randomIp(),
     });
     const sub = `display-sub-${randomUUID()}`;
+    const accountRowId = randomUUID();
     await authPool.query(
       `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
        values ($1, $2, $3, $4, now(), now())`,
-      [randomUUID(), sub, PROVIDER_ID, tenant.userId],
+      [accountRowId, sub, PROVIDER_ID, tenant.userId],
     );
+    if (options.selfMadeLink === true) {
+      // The positive-provenance marker (8.5g, Q87) that production writes for a link the
+      // user made: keyed by the `account` row's own id, value `self`, far-future expiry.
+      // Without it, a user in two or more tenants is refused at the callback (8.5k, Q133).
+      await authPool.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, 'self', $3)`,
+        [randomUUID(), `sso-link:${accountRowId}`, new Date('9999-12-31T23:59:59.000Z')],
+      );
+    }
     return { localEmail, organizationId: tenant.organizationId, sub, userId: tenant.userId };
   }
 
@@ -248,7 +259,7 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
   }, 60_000);
 
   it('A member with a _user row has only its display fields updated, the status unchanged', async () => {
-    const member = await memberWithoutRow();
+    const member = await memberWithoutRow({ selfMadeLink: true });
     // A second membership, in a second organization, keeps the first-sign-in hook from
     // writing anything (Q111, Q133), so only the display refresh can touch the row.
     const secondOrg = await bootstrapTestTenant(bootstrapAuth, {

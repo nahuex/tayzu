@@ -4,8 +4,8 @@
  * Q116, Q118, Q120, Q122 and Q127). The token is verified without consuming
  * it and consumed last; an attempt compensates only what it created.
  *
- * The accepting session's revocation and the admin notice are later tasks'
- * (8.5m, 8.15): this flow only reserves their slots.
+ * The revocation of the session an earlier attempt kept (8.5m) and the admin
+ * notice (8.15) are later tasks': this flow only reserves their slots.
  */
 import { ORPCError } from '@orpc/server';
 import type { Pool } from 'pg';
@@ -27,7 +27,7 @@ import type { Reauthorization } from '../reauthorization.js';
 import type { AuthRepository, InvitationRead } from './auth-repository.js';
 import { runWithAcceptanceContext } from './identity-context.js';
 import { parseIdentityInput, type InputSchema } from './parse-input.js';
-import type { SsoLinkShed } from './sso-link-shed.js';
+import type { ShedResult, SsoLinkShed } from './sso-link-shed.js';
 import type { UserSyncAdapter } from './user-sync-adapter.js';
 
 type Step =
@@ -347,7 +347,35 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       }
     };
 
+    /**
+     * Revokes the session that carried the acceptance once the `_user` step has run
+     * and the shed removed a link (Q106, Q122). The join is final (Q118), so a failure
+     * is logged with opaque ids and does not stop the acceptance (Q115, G9-5).
+     */
+    const revokeAcceptingSession = async (
+      userId: string,
+      shedResult: ShedResult | undefined,
+    ): Promise<void> => {
+      const sessionId = input.session?.sessionId;
+      if (options.ssoLinkShed === undefined || sessionId === undefined) return;
+      if ((shedResult?.removedLinks ?? 0) === 0) return;
+      try {
+        await options.ssoLinkShed.revokeSession({ tenantId, userId, sessionId });
+      } catch {
+        emitIdentityEvent({
+          name: 'catalog.security.accepting_session_revocation_failed',
+          severity: 'WARN',
+          attributes: {
+            'tayzu.tenant.id': tenantId,
+            'tayzu.identity.invitation.id': invitation.id,
+            'tayzu.identity.user.id': userId,
+          },
+        });
+      }
+    };
+
     const joinSteps = async (userId: string): Promise<void> => {
+      let shedResult: ShedResult | undefined;
       await step('add_member');
       const before = await repository.memberOf(tenantId, userId);
       if (before === undefined) {
@@ -357,7 +385,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       if (existing !== undefined) {
         await step('shed');
         // Every attempt sheds once the membership exists, before the token is consumed (Q105).
-        await options.ssoLinkShed?.shed({
+        shedResult = await options.ssoLinkShed?.shed({
           tenantId,
           userId,
           path: 'acceptance',
@@ -376,6 +404,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         onBehalfOf: { type: 'user', id: userId },
       });
       progress.userStepRan = true;
+      await revokeAcceptingSession(userId, shedResult);
       if (existing !== undefined) {
         await step('join_owed');
         await step('email_verified');

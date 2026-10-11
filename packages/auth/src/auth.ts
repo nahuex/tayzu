@@ -452,6 +452,48 @@ async function deleteSsoLinkMarker(
   });
 }
 
+/**
+ * Task 8.5k (Resolved decisions Q106, Q115): the `account` row id that the callback of a
+ * request signed in through, stashed by `account.update.after` (Better Auth refreshes the
+ * linked account before it creates the session). Keyed by the per-request `ctx.context`.
+ */
+const callbackAccountIds = new WeakMap<object, string>();
+
+/**
+ * Whether a callback may create its session through the account it signed in through:
+ * the account must still exist and, for a user of two or more tenants, carry a marker.
+ * Fails closed when no account id was stashed for the request.
+ */
+async function callbackAccountMayCreateSession(
+  context: Parameters<typeof getSessionFromCtx>[0],
+): Promise<boolean> {
+  const accountId = callbackAccountIds.get(context.context);
+  if (accountId === undefined) {
+    return false;
+  }
+  const { adapter } = context.context;
+  const account = await adapter.findOne<{ userId: string }>({
+    model: 'account',
+    where: [{ field: 'id', value: accountId }],
+  });
+  if (account === null) {
+    return false;
+  }
+  const memberships = await adapter.findMany<MembershipRow>({
+    model: 'member',
+    where: [{ field: 'userId', value: account.userId }],
+    limit: 2,
+  });
+  if (memberships.length < 2) {
+    return true;
+  }
+  const marker = await adapter.findOne({
+    model: 'verification',
+    where: [{ field: 'identifier', value: `${SSO_LINK_MARKER_PREFIX}${accountId}` }],
+  });
+  return marker !== null;
+}
+
 /** Emits the D24 audit signals for a self-service link/unlink; skips non-SSO accounts and direct adapter calls. */
 async function emitSelfLink(
   event: 'linked' | 'unlinked',
@@ -948,6 +990,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         update: {
           before: (account, context) => encryptIdToken(account, context),
           after: async (account, context) => {
+            const { id } = account as { id?: unknown };
+            if (context?.path === GENERIC_OAUTH_CALLBACK_ROUTE && typeof id === 'string') {
+              callbackAccountIds.set(context.context, id);
+            }
             await refreshDisplayData(options, account, context);
           },
         },
@@ -986,6 +1032,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           before: async (session, context) => {
             if (!context) {
               return;
+            }
+            // Q106, Q115: a callback never creates a session through a shed or unmarked link.
+            if (
+              context.path === GENERIC_OAUTH_CALLBACK_ROUTE &&
+              !(await callbackAccountMayCreateSession(context))
+            ) {
+              return false;
             }
             const ssoSid = await ssoSidForSignIn(session.userId, context);
             const rows = await context.context.adapter.findMany<MembershipRow>({

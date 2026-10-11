@@ -2033,7 +2033,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `/api/auth/get-session` and a `/v1` call), the user's session on a second device
       being gone too, the event emitted with the reason, and the unlink of a link that
       does not exist revoking nothing.
-- [ ] 8.5k The session paths that the shed still missed are closed, before the mount
+- [x] 8.5k The session paths that the shed still missed are closed, before the mount
       switch (Resolved decision Q106; design D4 step 7). (1) The SSO callback refuses to
       create a session through an account that no longer exists, or that has no marker
       (8.5g) while its user belongs to two or more tenants: a callback that read the

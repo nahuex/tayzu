@@ -29,6 +29,12 @@ export interface ShedInput {
   readonly keepSessionId?: string;
 }
 
+export interface RevokeSessionInput {
+  readonly tenantId: string;
+  readonly userId: string;
+  readonly sessionId: string;
+}
+
 export interface ShedResult {
   readonly removedLinks: number;
   readonly revokedSessions: number;
@@ -36,6 +42,8 @@ export interface ShedResult {
 
 export interface SsoLinkShed {
   shed(input: ShedInput): Promise<ShedResult>;
+  /** Deletes one session row of the user and emits one `session_revoked` per row deleted (8.5k). */
+  revokeSession(input: RevokeSessionInput): Promise<void>;
   /** The port `createAuth` takes as `ssoLinkShed`. */
   readonly port: SsoLinkShedPort;
 }
@@ -104,6 +112,20 @@ export function createSsoLinkShed(options: SsoLinkShedOptions): SsoLinkShed {
     return { removedLinks: inLock.removed, revokedSessions: revoked.length };
   }
 
+  async function revokeSession(input: RevokeSessionInput): Promise<void> {
+    const deleted = await options.authPool.query(
+      'delete from auth.session where id = $1 and user_id = $2',
+      [input.sessionId, input.userId],
+    );
+    for (let index = 0; index < (deleted.rowCount ?? 0); index += 1) {
+      emitSessionRevoked({
+        actorId: input.userId,
+        tenantId: input.tenantId,
+        reason: 'sso_link_shed',
+      });
+    }
+  }
+
   const port: SsoLinkShedPort = {
     async shed({ tenantId, userId }) {
       const acceptance = currentAcceptanceContext();
@@ -113,5 +135,5 @@ export function createSsoLinkShed(options: SsoLinkShedOptions): SsoLinkShed {
     },
   };
 
-  return { shed, port };
+  return { shed, revokeSession, port };
 }
