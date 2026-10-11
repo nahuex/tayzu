@@ -2180,7 +2180,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 8.8 A nonexistent invitation performs the same digest comparison as a wrong
       token. Verify: `invitation-accept.int.test.ts` spies on the comparison and
       asserts one comparison in both cases.
-- [ ] 8.9 Accepting an expired invitation fails, the invitation reads as
+- [x] 8.9 Accepting an expired invitation fails, the invitation reads as
       `expired` and the user's status is unchanged. Verify:
       `invitation-accept.int.test.ts` covers "Accepting an expired invitation
       fails", using a clock seam to advance past 48 hours.

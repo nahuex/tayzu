@@ -36,7 +36,7 @@ import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 
 import {
@@ -3254,5 +3254,131 @@ describe('A nonexistent invitation costs the same digest comparison as a wrong t
 
     expect(wrongToken, 'a wrong token').toBe(1);
     expect(nonexistent, 'a nonexistent invitation').toBe(1);
+  }, 60_000);
+});
+
+describe('Accepting an expired invitation fails (task 8.9, design D4 step 5)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const HOUR_MS = 60 * 60 * 1000;
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  it('Accepting an expired invitation fails: the acceptance fails, the invitation reads as expired, and the user status is unchanged', async () => {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Expiry Admin',
+      email: `expiry-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Expiry Org',
+      organizationSlug: `expiry-${id}`,
+      ip: randomIp(),
+    });
+    const email = `bob-${id}@example.test`;
+    const api = auth.api as InviteApiSurface;
+    const created = await runWithIdentityContext({ adminId: t.userId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: t.organizationId },
+        headers: new Headers({ cookie: t.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${created.id}`,
+        digestInvitationToken(token),
+        new Date(created.expiresAt),
+      ],
+    );
+    const statusBefore = await adapter.readStatus({ tenantId: t.organizationId, email });
+    expect(statusBefore, 'GIVEN the invited person starts as Invited').toBe('Invited');
+
+    // GIVEN the invitation is past its 48-hour expiry (a clock seam: only `Date` is faked).
+    const issuedAt = new Date(created.expiresAt).getTime() - 48 * HOUR_MS;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(issuedAt + 48 * HOUR_MS + HOUR_MS);
+
+    // WHEN it is accepted with its token...
+    let failure: { code: string; status: number } | undefined;
+    try {
+      await flow().accept({ invitationId: created.id, token, password: PASSWORD_NFC });
+    } catch (error) {
+      failure = toOrpcError(error);
+    }
+
+    // THEN the acceptance fails with the uniform rejection, for the reason `expired`...
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(created.id)).toEqual(['expired']);
+
+    // ...the invitation reads as expired (derived from `expiresAt`, never stored as accepted)...
+    const read = await repository.invitationById(t.organizationId, created.id);
+    expect(read?.status, 'an expired invitation is never marked accepted').toBe('pending');
+    expect(read?.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    // ...nothing was created and the token was not consumed...
+    const users = await authPool.query(`select 1 from auth."user" where lower(email) = $1`, [
+      email,
+    ]);
+    expect(users.rowCount, 'no user').toBe(0);
+    const tokens = await authPool.query(`select 1 from auth.verification where identifier = $1`, [
+      `invitation-accept:${created.id}`,
+    ]);
+    expect(tokens.rowCount, 'the token row stays').toBe(1);
+
+    // AND the user's status is unchanged.
+    expect(await adapter.readStatus({ tenantId: t.organizationId, email })).toBe(statusBefore);
   }, 60_000);
 });
