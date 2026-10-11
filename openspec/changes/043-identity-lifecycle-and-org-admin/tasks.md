@@ -2213,7 +2213,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `CATALOG_NOT_FOUND`, and an organization holding 99
       pending invitations and that accepted one (seeded directly) still allowing a new
       invitation, its 100th pending one.
-- [ ] 8.11 A pending invitation of a user who was disabled afterward does not
+- [x] 8.11 A pending invitation of a user who was disabled afterward does not
       revive them. Verify: `invitation-accept.int.test.ts` covers "A disabled user
       is not revived by a pending invitation".
 - [ ] 8.12 A password that fails the policy is reported only after the token

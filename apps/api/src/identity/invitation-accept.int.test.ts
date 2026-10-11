@@ -3636,3 +3636,121 @@ describe('Accepting a cancelled or already-accepted invitation fails, and a wron
     expect(await statusOf(invitation.invitationId)).toBe('accepted');
   }, 60_000);
 });
+
+describe('A disabled user is not revived by a pending invitation (task 8.11, design D4 step 5, spec "Invitation acceptance")', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  it('A disabled user is not revived by a pending invitation: the acceptance fails with the uniform rejection and bob stays Disabled', async () => {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      name: 'Revive Admin',
+      email: `revive-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Revive Org',
+      organizationSlug: `revive-${id}`,
+      ip: randomIp(),
+    });
+    // GIVEN a pending invitation to bob...
+    const email = `bob-${id}@example.test`;
+    const created = await runWithIdentityContext({ adminId: t.userId }, () =>
+      (auth.api as InviteApiSurface).createInvitation({
+        body: { email, role: 'member', organizationId: t.organizationId },
+        headers: new Headers({ cookie: t.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${created.id}`,
+        digestInvitationToken(token),
+        new Date(created.expiresAt),
+      ],
+    );
+    // ...and bob is then disabled (the status event an admin's disable writes).
+    await adapter.writeUserChange({
+      tenantId: t.organizationId,
+      email,
+      name: 'Bob',
+      change: 'admin_disable',
+    });
+    expect(await adapter.readStatus({ tenantId: t.organizationId, email })).toBe('Disabled');
+    const members = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      t.organizationId,
+    ]);
+
+    // WHEN the invitation is accepted with its valid token.
+    let failure: { code: string; status: number } | undefined;
+    try {
+      await flow().accept({ invitationId: created.id, token, password: PASSWORD_NFC });
+    } catch (error) {
+      failure = toOrpcError(error);
+    }
+
+    // THEN the acceptance fails like any other rejected acceptance...
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure?.status).toBe(404);
+    expect(await deniedReasons(created.id)).toEqual(['disabled_user']);
+    // ...and bob stays Disabled, with no account or membership created.
+    expect(await adapter.readStatus({ tenantId: t.organizationId, email })).toBe('Disabled');
+    const users = await authPool.query(`select 1 from auth."user" where lower(email) = $1`, [
+      email,
+    ]);
+    expect(users.rowCount, 'no user').toBe(0);
+    const after = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      t.organizationId,
+    ]);
+    expect(after.rowCount, 'no member').toBe(members.rowCount);
+  }, 60_000);
+});
