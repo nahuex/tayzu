@@ -4,7 +4,7 @@
  * with task group 9.
  */
 import type { AuthInstance } from '@tayzu/auth';
-import { createMachineCredential } from '@tayzu/auth/machine-credentials';
+import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { withTenantTransaction } from '@tayzu/db';
 import type { Pool } from 'pg';
 
@@ -305,6 +305,47 @@ async function insertCredential(args: {
       createdBy: args.adminId,
       ...(args.userId === undefined ? {} : { userId: args.userId }),
     },
+  });
+  return { id: created.id, secret: created.secret };
+}
+
+/**
+ * Rotates a credential (design D8): creates the new key with the old key's `actorKind` and
+ * `userId`, the rotating admin as `createdBy` and the time as `rotatedAt`, then retires the old
+ * one through the revocation list. The new secret is returned once.
+ */
+export async function rotateCredential(args: {
+  readonly auth: AuthInstance;
+  readonly authRepository: AuthRepository;
+  readonly appPool: Pool;
+  readonly tenantId: string;
+  readonly adminId: string;
+  /** The id of the credential to rotate, already resolved inside the tenant. */
+  readonly credentialId: string;
+}): Promise<{ readonly id: string; readonly secret: string }> {
+  const old = await args.authRepository.apiKeyById(args.tenantId, args.credentialId);
+  if (old === undefined) throw new CredentialTargetNotFoundError();
+  const metadata = readApiKeyMetadata(old.metadata);
+  if (metadata.actorKind !== 'integration' && metadata.actorKind !== 'agent') {
+    throw new CredentialConflictError();
+  }
+  const created = await createMachineCredential(args.auth, {
+    userId: args.adminId,
+    organizationId: args.tenantId,
+    name: old.name ?? '',
+    actorKind: metadata.actorKind,
+    role: 'member',
+    metadata: {
+      createdBy: args.adminId,
+      rotatedAt: new Date().toISOString(),
+      ...(metadata.userId === undefined ? {} : { userId: metadata.userId }),
+    },
+  });
+  await revokeMachineCredential(args.auth, {
+    userId: args.adminId,
+    id: old.id,
+    pool: args.appPool,
+    tenantId: args.tenantId,
   });
   return { id: created.id, secret: created.secret };
 }

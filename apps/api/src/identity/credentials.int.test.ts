@@ -47,7 +47,13 @@
 import { randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
-import { authSchema, createAuth, type AuthInstance } from '@tayzu/auth';
+import {
+  authSchema,
+  createAuth,
+  createContextResolver,
+  exchangeMachineToken,
+  type AuthInstance,
+} from '@tayzu/auth';
 import {
   createMachineCredential,
   revokeMachineCredential,
@@ -55,7 +61,7 @@ import {
 } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createEntityService, createUserSync } from '@tayzu/catalog';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
@@ -63,7 +69,11 @@ import type { Pool } from 'pg';
 import { harnessPools } from '../__fixtures__/pools.js';
 import { createIdentityRouter } from '../identity-router.js';
 import { createAuthRepository, type AuthRepository } from './auth-repository.js';
-import { readAllApiKeys, readApiKeyMetadata } from './credentials.js';
+import {
+  DEFAULT_ROTATION_INTERVAL_DAYS,
+  readAllApiKeys,
+  readApiKeyMetadata,
+} from './credentials.js';
 import { createWithUserLock } from './user-lock.js';
 import { createUserSyncAdapter } from './user-sync-adapter.js';
 import { createAdminUser } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
@@ -1235,4 +1245,295 @@ describe('the credential cap holds (task 9.5d, Q56)', () => {
     expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     expect(await keyCount(org)).toBe(200);
   }, 300_000);
+});
+
+/**
+ * Task 9.6 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (`identity.credentials.rotate`; design D8; Resolved decisions Q40, Q90).
+ *
+ * Scenario (verbatim from the spec): "Rotating replaces the usable credential": GIVEN service
+ * account `svc-ci-github` with credential `c1`, enabled, and an access token issued from it,
+ * WHEN an admin rotates its credential, THEN a new credential `c2` is returned once with its
+ * secret, `c1` is revoked, and `c1`'s issued token and any new exchange with `c1` are rejected
+ * within seconds, AND the listing shows `c2` created by the rotating admin, with its
+ * rotation-due threshold counted from the rotation.
+ *
+ * ## Production symbols expected
+ *
+ * - `createIdentityRouter` (`../identity-router.js`): `identity.credentials.rotate`, a
+ *   `defineIdentityOperation` on `RESOURCE_KINDS.credential` / `rotate`, input
+ *   `{ credential: string }` (the `id` that `identity.credentials.list` returns), output
+ *   containing `{ id: string; secret: string }` (the new key's id and its secret, once).
+ * - It creates the new key (metadata: the old key's `actorKind`, `role` and `userId`, `createdBy`
+ *   the rotating admin, `rotatedAt` an ISO timestamp of the rotation), then retires the old key
+ *   through `revokeMachineCredential` (the revocation list).
+ */
+describe('identity.credentials.rotate (task 9.6)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface RotateOutput {
+    readonly id: string;
+    readonly secret: string;
+  }
+
+  interface RotateClient {
+    identity: {
+      credentials: {
+        list(
+          input: Record<string, never>,
+          options: { context: Record<string, unknown> },
+        ): Promise<ListOutput>;
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<RotateOutput>;
+      };
+    };
+  }
+
+  function client(): RotateClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly ownerId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Rotate Owner',
+      email: `rotate-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Rotate Org', slug: `rotate-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Rotate Admin',
+      email: `rotate-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, ownerId: owner.userId, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org, actorId: string): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: actorId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function seedServiceAccount(org: Org, identifier: string): Promise<void> {
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId: org.tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      {
+        blueprint: '_user',
+        identifier,
+        title: 'Service account',
+        spec: { properties: { accountKind: 'service', status: 'Active' } },
+      },
+    );
+  }
+
+  async function metadataOfKey(id: string): Promise<ReturnType<typeof readApiKeyMetadata>> {
+    const row = await authPool.query<{ metadata: unknown }>(
+      'select metadata from auth.apikey where id = $1',
+      [id],
+    );
+    return readApiKeyMetadata(row.rows[0]?.metadata);
+  }
+
+  async function revocationRows(org: Org, id: string): Promise<number> {
+    const rows = await authPool.query('select 1 from auth.apikey where id = $1', [id]);
+    expect(rows.rows).toHaveLength(1);
+    const revoked = await withTenantTransaction(appPool, { tenantId: org.tenantId }, (client) =>
+      client.query<{ n: string }>(
+        `select count(*)::text as n from machine_credential_revocation
+            where credential_id = $1 and tenant_id = $2`,
+        [id, org.tenantId],
+      ),
+    );
+    return Number(revoked.rows[0]?.n);
+  }
+
+  const REJECTION_WINDOW_MS = 8_000;
+
+  /** Polls the resolver until it rejects the token, or the window (cache TTL 5 s plus slack) passes. */
+  async function rejectedWithinWindow(
+    resolveContext: (headers: Headers) => Promise<unknown>,
+    token: string,
+  ): Promise<boolean> {
+    const deadline = Date.now() + REJECTION_WINDOW_MS;
+    while (Date.now() < deadline) {
+      try {
+        await resolveContext(new Headers({ authorization: `Bearer ${token}` }));
+      } catch {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+  }
+
+  it("Rotating replaces the usable credential: a service account's c1 is revoked, its issued token and new exchanges are rejected within seconds, and c2 carries c1's metadata, the rotating admin and rotatedAt", async () => {
+    const org = await freshOrg();
+    const identifier = `svc-ci-github-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+    // c1 was created by the admin; the owner rotates it, so createdBy must change.
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'CI GitHub',
+      actorKind: 'integration',
+      metadata: { userId: identifier, createdBy: org.adminId },
+    });
+    const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+    const issued = await exchangeMachineToken(auth, {
+      clientId: c1.id,
+      clientSecret: c1.secret,
+    });
+    // The token is usable before the rotation (this also warms the revocation cache).
+    await expect(
+      resolveContext(new Headers({ authorization: `Bearer ${issued.accessToken}` })),
+    ).resolves.toMatchObject({ tenantId: org.tenantId, actor: { type: 'integration', id: c1.id } });
+
+    const listed = await client().identity.credentials.list(
+      {},
+      { context: contextOf(org, org.ownerId) },
+    );
+    const c1Id = listed.credentials.find((c) => c.id === c1.id)?.id;
+    expect(c1Id).toBe(c1.id);
+
+    const before = Date.now();
+    const rotated = await client().identity.credentials.rotate(
+      { credential: c1Id ?? '' },
+      { context: contextOf(org, org.ownerId) },
+    );
+    const after = Date.now();
+
+    // THEN a new credential c2 is returned once with its secret.
+    expect(rotated.id).not.toBe(c1.id);
+    expect(rotated.secret).toMatch(/^tayzu_mc_/);
+    expect(rotated.secret).not.toBe(c1.secret);
+
+    // AND c1 is revoked: on the revocation list and disabled.
+    expect(await revocationRows(org, c1.id)).toBe(1);
+    expect(await revocationRows(org, rotated.id)).toBe(0);
+
+    // AND c1's issued token is rejected within the cache window.
+    expect(await rejectedWithinWindow(resolveContext, issued.accessToken)).toBe(true);
+    // AND any new exchange with c1 is rejected.
+    await expect(
+      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+    ).rejects.toThrow();
+
+    // AND c2 is the usable credential.
+    const fresh = await exchangeMachineToken(auth, {
+      clientId: rotated.id,
+      clientSecret: rotated.secret,
+    });
+    await expect(
+      resolveContext(new Headers({ authorization: `Bearer ${fresh.accessToken}` })),
+    ).resolves.toMatchObject({ tenantId: org.tenantId, actor: { id: rotated.id } });
+
+    // AND c2's metadata copies c1's actorKind, role and userId, with the rotating admin and rotatedAt.
+    const metadata = await metadataOfKey(rotated.id);
+    expect(metadata).toMatchObject({
+      actorKind: 'integration',
+      role: 'member',
+      userId: identifier,
+      createdBy: org.ownerId,
+    });
+    const rotatedAt = new Date(metadata.rotatedAt ?? 'invalid');
+    expect(Number.isNaN(rotatedAt.getTime())).toBe(false);
+    expect(rotatedAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(rotatedAt.getTime()).toBeLessThanOrEqual(after + 1000);
+
+    // AND the listing shows c2 created by the rotating admin, its due date counted from rotatedAt.
+    const after2 = await client().identity.credentials.list(
+      {},
+      { context: contextOf(org, org.ownerId) },
+    );
+    const byId = new Map(after2.credentials.map((c) => [c.id, c]));
+    const c2View = byId.get(rotated.id);
+    expect(c2View?.createdBy).toBe(org.ownerId);
+    expect(c2View?.enabled).toBe(true);
+    expect(c2View?.kind).toBe('service_account');
+    expect(c2View?.rotationDueAt).toEqual(
+      new Date(rotatedAt.getTime() + DEFAULT_ROTATION_INTERVAL_DAYS * 24 * 60 * 60 * 1000),
+    );
+    expect(byId.get(c1.id)?.enabled).toBe(false);
+  }, 180_000);
+
+  it('Rotating an unbound agent credential copies its actorKind and role and adds no userId', async () => {
+    const org = await freshOrg();
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Planner agent',
+      actorKind: 'agent',
+      metadata: { createdBy: org.adminId },
+    });
+
+    const rotated = await client().identity.credentials.rotate(
+      { credential: c1.id },
+      { context: contextOf(org, org.ownerId) },
+    );
+
+    const metadata = await metadataOfKey(rotated.id);
+    expect(metadata).toMatchObject({
+      actorKind: 'agent',
+      role: 'member',
+      createdBy: org.ownerId,
+    });
+    expect(metadata.userId).toBeUndefined();
+    expect(typeof metadata.rotatedAt).toBe('string');
+    expect(await revocationRows(org, c1.id)).toBe(1);
+    await expect(
+      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+    ).rejects.toThrow();
+    const token = await exchangeMachineToken(auth, {
+      clientId: rotated.id,
+      clientSecret: rotated.secret,
+    });
+    expect(token.accessToken.length).toBeGreaterThan(0);
+  }, 180_000);
 });

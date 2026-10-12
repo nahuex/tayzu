@@ -2445,7 +2445,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (200 seeded keys, the 201st refused, two concurrent creates at 199 yielding
       one success, a revoked key not counting) and `config.test.ts` a zero or
       disabled cap failing startup.
-- [ ] 9.6 `identity.credentials.rotate`: creates the new credential, whose metadata
+- [x] 9.6 `identity.credentials.rotate`: creates the new credential, whose metadata
       copies the old key's `actorKind`, `role` and `userId`, records the rotating admin
       as `createdBy` and the rotation time as `rotatedAt` (design D8), revokes the
       old one through `revokeMachineCredential` (the revocation list), and returns

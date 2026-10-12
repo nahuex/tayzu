@@ -55,8 +55,12 @@ export interface CreateMachineCredentialParams {
   readonly actorKind: MachineCredentialActorKind;
   /** Q28: every machine credential is `member`; any other value is rejected. */
   readonly role?: 'member';
-  /** Supplied by the caller: the bound service account's `svc-…` id and the acting admin's opaque id. */
-  readonly metadata?: { readonly userId?: string; readonly createdBy?: string };
+  /** Supplied by the caller: the bound service account's `svc-…` id, the acting admin's opaque id and, for a rotation, its ISO time. */
+  readonly metadata?: {
+    readonly userId?: string;
+    readonly createdBy?: string;
+    readonly rotatedAt?: string;
+  };
 }
 
 export interface CreatedMachineCredential {
@@ -189,6 +193,9 @@ export async function createMachineCredential(
         ...(params.metadata?.createdBy === undefined
           ? {}
           : { createdBy: params.metadata.createdBy }),
+        ...(params.metadata?.rotatedAt === undefined
+          ? {}
+          : { rotatedAt: params.metadata.rotatedAt }),
         [ACTOR_KIND_METADATA_KEY]: params.actorKind,
         [ROLE_METADATA_KEY]: MACHINE_CREDENTIAL_ROLE,
       },

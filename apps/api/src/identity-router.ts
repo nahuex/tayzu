@@ -45,6 +45,7 @@ import {
   DEFAULT_CREDENTIAL_CAP,
   createCredential,
   listCredentials,
+  rotateCredential,
 } from './identity/credentials.js';
 
 /** Generic on purpose: never says which user, if any, already holds the subject. */
@@ -247,6 +248,15 @@ function invitationTargetOf(raw: unknown): { kind: 'invitation'; id: string } {
   return { kind: 'invitation', id: invitation as string };
 }
 
+/** The `{credential}` identifier of a rotate as a credential target; malformed input yields an id the resolver rejects. */
+function credentialTargetOf(raw: unknown): { kind: 'credential'; id: string } {
+  const credential =
+    typeof raw === 'object' && raw !== null
+      ? (raw as Record<string, unknown>)['credential']
+      : undefined;
+  return { kind: 'credential', id: credential as string };
+}
+
 /** The Visma Connect provider id of the `account` row (design D23/D24). */
 const SSO_PROVIDER_ID = 'visma-connect';
 
@@ -364,6 +374,29 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               adminId: (context['actor'] as { id: string }).id,
               name,
               kind,
+            });
+          },
+        }),
+        // Step-up applies (D4); the old key is resolved inside the tenant by the target resolver.
+        rotate: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'rotate',
+            resolveTarget: credentialTargetOf,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: ({ context, target }) => {
+            // Fail closed when the host did not wire the revocation-list pool.
+            if (options.appPool === undefined || target === undefined) {
+              throw new IdentityInputError();
+            }
+            return rotateCredential({
+              auth: options.auth,
+              authRepository: options.authRepository,
+              appPool: options.appPool,
+              tenantId: rawTenantId(context),
+              adminId: (context['actor'] as { id: string }).id,
+              credentialId: target.id,
             });
           },
         }),
