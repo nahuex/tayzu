@@ -115,11 +115,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // (erased at compile time, `verbatimModuleSyntax`), so it carries no runtime
 // ordering weight -- same reasoning as every other int test file in this
 // package.
-import {
-  bootstrapTestTenant,
-  createAdminUser,
-  signInAdminUser,
-} from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 5.1): does not exist yet (module doc comment,
@@ -269,7 +265,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
 
     // WHEN "a machine credential is created".
     const created: CreatedMachineCredential = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'CI pipeline credential',
       actorKind: 'integration',
@@ -395,9 +391,8 @@ describe('Machine credentials (task 5.1, design D5)', () => {
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    const headers = new Headers({ cookie: admin.cookie });
     const created: CreatedMachineCredential = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'CI pipeline credential',
       actorKind: 'integration',
@@ -417,7 +412,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
 
     // WHEN "an admin revokes the credential" (task 5.2's own Verify clause).
     await revokeMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       id: created.id,
       pool: appPool,
       tenantId: admin.organizationId,
@@ -511,7 +506,7 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
   }
 
   async function newCredential(): Promise<{
-    headers: Headers;
+    adminUserId: string;
     tenantId: string;
     created: CreatedMachineCredential;
   }> {
@@ -523,25 +518,29 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    const headers = new Headers({ cookie: admin.cookie });
     const created = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'CI pipeline credential',
       actorKind: 'integration',
     });
-    return { headers, tenantId: admin.organizationId, created };
+    return { adminUserId: admin.userId, tenantId: admin.organizationId, created };
   }
 
   it('Revocation is recorded in the revocation list, not only disabled at the apiKey layer', async () => {
-    const { headers, tenantId, created } = await newCredential();
+    const { adminUserId, tenantId, created } = await newCredential();
     expect(
       await revocationRows(tenantId, created.id),
       'no revocation row exists before the credential is revoked',
     ).toHaveLength(0);
 
     // WHEN the admin revokes the credential.
-    await revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId });
+    await revokeMachineCredential(auth, {
+      userId: adminUserId,
+      id: created.id,
+      pool: appPool,
+      tenantId,
+    });
 
     // THEN the apiKey layer no longer verifies it ...
     const verified = await api.verifyApiKey({
@@ -561,22 +560,37 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
   });
 
   it('A repeated revoke does not fail and leaves a single revocation row', async () => {
-    const { headers, tenantId, created } = await newCredential();
-    await revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId });
+    const { adminUserId, tenantId, created } = await newCredential();
+    await revokeMachineCredential(auth, {
+      userId: adminUserId,
+      id: created.id,
+      pool: appPool,
+      tenantId,
+    });
     await expect(
-      revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId }),
+      revokeMachineCredential(auth, {
+        userId: adminUserId,
+        id: created.id,
+        pool: appPool,
+        tenantId,
+      }),
     ).resolves.toBeUndefined();
     expect(await revocationRows(tenantId, created.id)).toHaveLength(1);
   });
 
   it('Revocation fails closed: a failed revocation write never leaves the apiKey disabled without a row', async () => {
-    const { headers, tenantId, created } = await newCredential();
+    const { adminUserId, tenantId, created } = await newCredential();
     // A pool that can no longer run queries: the revocation insert must fail.
     const brokenPool = connect(databaseUrl()).$client;
     await endQuietly(brokenPool);
 
     await expect(
-      revokeMachineCredential(auth, { headers, id: created.id, pool: brokenPool, tenantId }),
+      revokeMachineCredential(auth, {
+        userId: adminUserId,
+        id: created.id,
+        pool: brokenPool,
+        tenantId,
+      }),
       'the operation rejects when the revocation row cannot be written',
     ).rejects.toThrow();
 
@@ -612,18 +626,12 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
     await (auth.api as AddMemberApiSurface).addMember({
       body: { userId: member.userId, organizationId: tenantId, role: 'member' },
     });
-    const signedIn = await signInAdminUser(auth, {
-      email: memberEmail,
-      password: TEST_PASSWORD,
-      ip: randomIp(),
-    });
-    const memberHeaders = new Headers({ cookie: signedIn.cookie });
 
     // WHEN the member (no apiKey "update" permission) revokes ...
     // THEN it is rejected with Better Auth's own permission error, unchanged.
     await expect(
       revokeMachineCredential(auth, {
-        headers: memberHeaders,
+        userId: member.userId,
         id: created.id,
         pool: appPool,
         tenantId,

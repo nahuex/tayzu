@@ -342,7 +342,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     admin: Awaited<ReturnType<typeof bootstrapTestTenant>>,
   ): Promise<CreatedMachineCredential> {
     return createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Token exchange test credential',
       actorKind: 'integration',
@@ -595,7 +595,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     const admin = await bootstrapAdmin();
     const created = await createIntegrationCredential(admin);
     await revokeMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       id: created.id,
       pool: appPool,
       tenantId: admin.organizationId,

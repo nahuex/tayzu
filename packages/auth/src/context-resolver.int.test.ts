@@ -702,7 +702,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // own doc comment for why this is built this way rather than waiting a
     // real hour or faking the system clock).
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Expired token test credential',
       actorKind: 'integration',
@@ -784,7 +784,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // GIVEN "an active `agent`-kind machine credential" (see this test's own
     // doc comment for why `agent`, not `integration`).
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Fresh token test credential',
       actorKind: 'agent',
@@ -896,7 +896,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
   });
 
   async function issueToken(): Promise<{
-    headers: Headers;
+    adminUserId: string;
     tenantId: string;
     credential: CreatedMachineCredential;
     accessToken: string;
@@ -909,9 +909,8 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    const headers = new Headers({ cookie: admin.cookie });
     const credential = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Revocation test credential',
       actorKind: 'integration',
@@ -921,7 +920,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
       clientSecret: credential.secret,
     });
     return {
-      headers,
+      adminUserId: admin.userId,
       tenantId: admin.organizationId,
       credential,
       accessToken: exchanged.accessToken,
@@ -929,7 +928,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
   }
 
   it('A token issued before revocation is rejected within the revocation TTL', async () => {
-    const { headers, tenantId, credential, accessToken } = await issueToken();
+    const { adminUserId, tenantId, credential, accessToken } = await issueToken();
     const resolveContext = resolverWith(appPool);
     const bearer = new Headers({ authorization: `Bearer ${accessToken}` });
 
@@ -943,7 +942,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
 
     // WHEN an admin revokes the credential ...
     await revokeMachineCredential(auth, {
-      headers,
+      userId: adminUserId,
       id: credential.id,
       pool: appPool,
       tenantId,
@@ -1065,9 +1064,9 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
 
   it('A revoked token rejection increments the revocation-check counter and logs revoked_token_rejected', async () => {
     const harness = registeredHarness();
-    const { headers, tenantId, credential, accessToken } = await issueToken();
+    const { adminUserId, tenantId, credential, accessToken } = await issueToken();
     await revokeMachineCredential(auth, {
-      headers,
+      userId: adminUserId,
       id: credential.id,
       pool: appPool,
       tenantId,
@@ -1399,7 +1398,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
     await endQuietly(db.$client);
   });
 
-  async function newAdmin(): Promise<{ cookie: string; organizationId: string }> {
+  async function newAdmin(): Promise<{ cookie: string; organizationId: string; userId: string }> {
     const tenant = await bootstrapTestTenant(auth, {
       name: TEST_USER_NAME,
       email: randomEmail(),
@@ -1408,7 +1407,11 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    return { cookie: tenant.cookie, organizationId: tenant.organizationId };
+    return {
+      cookie: tenant.cookie,
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+    };
   }
 
   /** A validly signed token (the instance's own jwt key) with caller-chosen claims. */
@@ -1448,7 +1451,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
       // GIVEN an active machine credential of each kind, created without any
       // role choice, and its exchanged access token
       const credential = await createMachineCredential(auth, {
-        headers: new Headers({ cookie: admin.cookie }),
+        userId: admin.userId,
         organizationId: admin.organizationId,
         name: `Principal ${actorKind} credential`,
         actorKind,
@@ -1475,7 +1478,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
   it('The role is stored on the credential metadata next to actorKind', async () => {
     const admin = await newAdmin();
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Metadata role credential',
       actorKind: 'integration',
@@ -1493,7 +1496,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
   it('A token claim cannot be escalated to admin', async () => {
     const admin = await newAdmin();
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Escalation credential',
       actorKind: 'integration',
@@ -1542,7 +1545,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
     type CreateWithRole = (
       auth: AuthInstance,
       params: {
-        readonly headers: Headers;
+        readonly userId: string;
         readonly organizationId: string;
         readonly name: string;
         readonly actorKind: 'integration' | 'agent';
@@ -1553,7 +1556,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
     // WHEN an org admin asks for a credential with the admin role
     await expect(
       (createMachineCredential as unknown as CreateWithRole)(auth, {
-        headers: new Headers({ cookie: admin.cookie }),
+        userId: admin.userId,
         organizationId: admin.organizationId,
         name: 'Admin role credential',
         actorKind: 'integration',

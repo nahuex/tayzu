@@ -369,7 +369,7 @@ describe('production app wiring: machine token exchange (task 11.16, D5)', () =>
       ip: randomIp(),
     });
     const created = await createMachineCredential(app.auth, {
-      headers: new Headers({ cookie: tenant.cookie }),
+      userId: tenant.userId,
       organizationId: tenant.organizationId,
       name: 'Token wiring credential',
       actorKind: 'integration',

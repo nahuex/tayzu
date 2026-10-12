@@ -95,6 +95,7 @@ import {
 import type { SsoLinkShedPort } from './identity/ports.js';
 import { validatePassword } from './identity/password-policy.js';
 import type { StatusEvent } from './identity/user-status.js';
+import { organizationAccess } from './org-access.js';
 import { isIdle } from './session-idle.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
 import {
@@ -898,6 +899,8 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // organization adapter writes members below `databaseHooks`, so the
       // plugin's own `organizationHooks` is the hook point.
       organization({
+        // Task 9.1b (Q29): all three roles, with the `apiKey` grant on `admin`/`owner`.
+        ...organizationAccess,
         // Task 7.2 (design D4): 48-hour invitations; a re-invite cancels the
         // previous pending one.
         invitationExpiresIn: 48 * 60 * 60,

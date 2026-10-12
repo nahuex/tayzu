@@ -566,10 +566,9 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
   }, 60_000);
 
   it('machine credentials: exchange succeeds for both kinds, a wrong secret and a revoked credential fail, revocation checks allow, reject and fail closed', async () => {
-    const headers = new Headers({ cookie: admin.cookie });
     const create = (actorKind: 'integration' | 'agent') =>
       createMachineCredential(app.auth, {
-        headers,
+        userId: admin.userId,
         organizationId: admin.organizationId,
         name: `smoke ${actorKind}`,
         actorKind,
@@ -603,7 +602,7 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
       clientSecret: revoked.secret,
     });
     await revokeMachineCredential(app.auth, {
-      headers,
+      userId: admin.userId,
       id: revoked.id,
       pool: appPool,
       tenantId: admin.organizationId,
@@ -1304,9 +1303,8 @@ describe('otel-smoke-check, 002: forbidden values never reach a signal (task 13.
 
   it('a forced token-exchange failure leaks no client secret or access token', async () => {
     const tenant = await newTenant('Leak Token Exchange');
-    const headers = new Headers({ cookie: tenant.cookie });
     const credential = await createMachineCredential(app.auth, {
-      headers,
+      userId: tenant.userId,
       organizationId: tenant.organizationId,
       name: 'leak marker credential',
       actorKind: 'integration',

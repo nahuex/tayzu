@@ -2291,7 +2291,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       cross-tenant deny and the admin being allowed, and extends `same_tenant_test.yaml`
       (the existing "denied on every kind" suite) with kind `credential`. ⛔ **Stop for
       Checkpoint 3 approval of the policy diff before continuing.**
-- [ ] 9.1b The `organization` plugin defines all three roles (`owner`, `admin`,
+- [x] 9.1b The `organization` plugin defines all three roles (`owner`, `admin`,
       `member`) with their default statements, because custom roles replace the
       defaults and `organization()` has no `ac` or `roles` today, and adds `apiKey`
       create, read, update and delete to `admin` only. `createMachineCredential` and
