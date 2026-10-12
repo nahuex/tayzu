@@ -28,7 +28,7 @@ import {
 } from '@tayzu/auth';
 import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
-import { createServiceAccount } from './identity/service-accounts.js';
+import { createServiceAccount, deleteServiceAccount } from './identity/service-accounts.js';
 import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
@@ -483,6 +483,33 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               tenantId: rawTenantId(context),
               adminId: (context['actor'] as { id: string }).id,
               identifier,
+            });
+          },
+        }),
+        // Step-up applies (D4); the target is resolved as a service account by the handler (10.7b).
+        delete: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.serviceAccount,
+            action: 'delete',
+            resolveTarget: () => undefined,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: async ({ context, input: rawInput }): Promise<void> => {
+            // Fail closed when the host did not wire the lookups.
+            if (options.appPool === undefined) throw new IdentityInputError();
+            const user =
+              typeof rawInput === 'object' && rawInput !== null
+                ? (rawInput as Record<string, unknown>)['user']
+                : undefined;
+            if (typeof user !== 'string') throw new IdentityInputError();
+            await deleteServiceAccount({
+              auth: options.auth,
+              authz: options.authz,
+              appPool: options.appPool,
+              authRepository: options.authRepository,
+              tenantId: rawTenantId(context),
+              adminId: (context['actor'] as { id: string }).id,
+              identifier: user,
             });
           },
         }),

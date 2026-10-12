@@ -212,7 +212,7 @@ export class CredentialConflictError extends Error {
 }
 
 /** Whether the tenant has a `_user` that is a service account (`accountKind == "service"`) with this identifier. */
-async function serviceAccountExists(
+export async function serviceAccountExists(
   appPool: Pool,
   tenantId: string,
   identifier: string,
@@ -338,6 +338,13 @@ export async function rotateCredential(args: {
       : `service-account:${args.tenantId}:${metadata.userId}`;
   return withTenantTransaction(args.appPool, { tenantId: args.tenantId }, async (lockClient) => {
     await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [lockKey]);
+    // A deletion that held the lock first removed the account: nothing may be bound to it again.
+    if (
+      metadata.userId !== undefined &&
+      !(await serviceAccountExists(args.appPool, args.tenantId, metadata.userId))
+    ) {
+      throw new CredentialTargetNotFoundError();
+    }
     // The revocation state is read under the lock, so a concurrent rotation is seen.
     const revoked = await readRevokedIds(args.appPool, args.tenantId);
     if (revoked.has(old.id)) {

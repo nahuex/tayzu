@@ -58,10 +58,17 @@ import { registration, type TelemetryTestHarness } from '../__fixtures__/link-te
 import { randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
-import { authSchema, createAuth, createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
+import {
+  authSchema,
+  createAuth,
+  createContextResolver,
+  createRecordingEmailSender,
+  exchangeMachineToken,
+  type AuthInstance,
+} from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
-import { createUserSync } from '@tayzu/catalog';
+import { createBlueprintService, createEntityService, createUserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -75,7 +82,7 @@ import {
 import { harnessPools } from '../__fixtures__/pools.js';
 import { createIdentityRouter } from '../identity-router.js';
 import { createAuthRepository } from './auth-repository.js';
-import { readApiKeyMetadata } from './credentials.js';
+import { readAllApiKeys, readApiKeyMetadata, readRevokedIds } from './credentials.js';
 import { createInMemoryEmailCapStore } from './invitation-caps.js';
 import { createEmailTenantGate } from './email-tenant-gate.js';
 import { createWithUserLock } from './user-lock.js';
@@ -86,7 +93,15 @@ import { createUserSyncAdapter } from './user-sync-adapter.js';
  * the tenants listed here, for which it throws before issuing anything. Empty by default, so every
  * other test of this file sees the real behavior.
  */
-const keySeam = vi.hoisted(() => ({ failTenants: new Set<string>() }));
+const keySeam = vi.hoisted(() => ({
+  failTenants: new Set<string>(),
+  /**
+   * Task 10.7 seam: the first `revokeMachineCredential` of a listed tenant completes for real and
+   * then signals `entered` and waits for `wait`, so the deletion that called it is paused while it
+   * still holds the per-service-account lock. One-shot: the entry is removed when it fires.
+   */
+  pauseAfterRevoke: new Map<string, { entered: () => void; wait: Promise<void> }>(),
+}));
 
 vi.mock('@tayzu/auth/machine-credentials', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tayzu/auth/machine-credentials')>();
@@ -99,6 +114,17 @@ vi.mock('@tayzu/auth/machine-credentials', async (importOriginal) => {
         throw new Error('injected key creation failure');
       }
       return await actual.createMachineCredential(...args);
+    },
+    revokeMachineCredential: async (
+      ...args: Parameters<typeof actual.revokeMachineCredential>
+    ): Promise<void> => {
+      await actual.revokeMachineCredential(...args);
+      const pause = keySeam.pauseAfterRevoke.get(args[1].tenantId);
+      if (pause !== undefined) {
+        keySeam.pauseAfterRevoke.delete(args[1].tenantId);
+        pause.entered();
+        await pause.wait;
+      }
     },
   };
 });
@@ -544,5 +570,259 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(await keyRows(tenant.tenantId)).toEqual([]);
     expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(0);
     expect((await logRecords(STATUS_EVENT, tenant.tenantId)).length).toBe(statusEventsBefore);
+  }, 120_000);
+
+  // Task 10.7: `identity.serviceAccounts.delete` (design D6, Resolved decisions Q40, Q90).
+  interface DeleteClient {
+    identity: {
+      serviceAccounts: {
+        delete(
+          input: { user: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+      credentials: {
+        create(
+          input: { name: string; kind: string; userId?: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+  const deleter = (): DeleteClient => client;
+
+  const REJECTION_WINDOW_MS = 8_000;
+
+  /** Polls the resolver until it rejects the token, or the window (cache TTL 5 s plus slack) passes. */
+  async function rejectedWithinWindow(token: string): Promise<boolean> {
+    const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+    const deadline = Date.now() + REJECTION_WINDOW_MS;
+    while (Date.now() < deadline) {
+      try {
+        await resolveContext(new Headers({ authorization: `Bearer ${token}` }));
+      } catch {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+  }
+
+  /** The ids of the tenant's keys bound to the identifier that are not on the revocation list. */
+  async function nonRevokedBound(tenantId: string, identifier: string): Promise<string[]> {
+    const [keys, revoked] = await Promise.all([
+      readAllApiKeys(createAuthRepository(authPool), tenantId),
+      readRevokedIds(appPool, tenantId),
+    ]);
+    return keys
+      .filter((k) => !revoked.has(k.id) && readApiKeyMetadata(k.metadata).userId === identifier)
+      .map((k) => k.id);
+  }
+
+  async function revocationCount(tenantId: string, id: string): Promise<number> {
+    const result = await withTenantTransaction(appPool, { tenantId }, (db) =>
+      db.query<{ n: string }>(
+        `select count(*)::text as n from machine_credential_revocation
+          where credential_id = $1 and tenant_id = $2`,
+        [id, tenantId],
+      ),
+    );
+    return Number(result.rows[0]?.n);
+  }
+
+  async function createAccount(tenant: Tenant, identifier: string): Promise<CreatedServiceAccount> {
+    return await creator().identity.serviceAccounts.create(
+      { identifier },
+      { context: context(tenant) },
+    );
+  }
+
+  it('Deleting a service account revokes its credential: the key is on the revocation list, its issued token and a new exchange are rejected, and the _user entity is gone, removed as system on behalf of the admin', async () => {
+    const tenant = await freshTenant();
+    const identifier = `svc-del-${randomUUID().slice(0, 8)}`;
+    const created = await createAccount(tenant, identifier);
+    const issued = await exchangeMachineToken(auth, {
+      clientId: created.clientId,
+      clientSecret: created.clientSecret,
+    });
+
+    await deleter().identity.serviceAccounts.delete(
+      { user: identifier },
+      { context: context(tenant) },
+    );
+
+    // THEN the `_user` entity is gone, removed as `system` on behalf of the admin.
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    const events = await changeEvents(tenant.tenantId, identifier);
+    expect(events.at(-1)).toMatchObject({
+      action: 'deleted',
+      actor_type: 'system',
+      on_behalf_of_type: 'user',
+      on_behalf_of_id: tenant.adminId,
+    });
+    // AND the credential is revoked (permanently, on the revocation list) and cannot be restored.
+    expect(await revocationCount(tenant.tenantId, created.clientId)).toBe(1);
+    expect(await nonRevokedBound(tenant.tenantId, identifier)).toEqual([]);
+    await expect(
+      exchangeMachineToken(auth, {
+        clientId: created.clientId,
+        clientSecret: created.clientSecret,
+      }),
+    ).rejects.toThrow();
+    expect(await rejectedWithinWindow(issued.accessToken)).toBe(true);
+  }, 120_000);
+
+  it('Deleting a service account revokes every bound credential: two non-revoked keys seeded directly are both revoked and both tokens are rejected within the cache window', async () => {
+    const tenant = await freshTenant();
+    const identifier = `svc-two-${randomUUID().slice(0, 8)}`;
+    const first = await createAccount(tenant, identifier);
+    // A second key, seeded as before the one-credential rule.
+    const second = await createMachineCredential(auth, {
+      userId: tenant.adminId,
+      organizationId: tenant.tenantId,
+      name: 'Second key',
+      actorKind: 'integration',
+      metadata: { createdBy: tenant.adminId, userId: identifier },
+    });
+    const tokens = await Promise.all(
+      [
+        { clientId: first.clientId, clientSecret: first.clientSecret },
+        { clientId: second.id, clientSecret: second.secret },
+      ].map((credentials) => exchangeMachineToken(auth, credentials)),
+    );
+    expect(await nonRevokedBound(tenant.tenantId, identifier)).toHaveLength(2);
+
+    await deleter().identity.serviceAccounts.delete(
+      { user: identifier },
+      { context: context(tenant) },
+    );
+
+    expect(await nonRevokedBound(tenant.tenantId, identifier)).toEqual([]);
+    expect(await revocationCount(tenant.tenantId, first.clientId)).toBe(1);
+    expect(await revocationCount(tenant.tenantId, second.id)).toBe(1);
+    for (const token of tokens) {
+      expect(await rejectedWithinWindow(token.accessToken)).toBe(true);
+    }
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+  }, 120_000);
+
+  it('Deleting a service account revokes every bound credential: a service account that a relation targets is deleted all the same', async () => {
+    const tenant = await freshTenant();
+    const identifier = `svc-rel-${randomUUID().slice(0, 8)}`;
+    const created = await createAccount(tenant, identifier);
+    const seeder = {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: 'relation-seeder' },
+      principal: { roles: ['admin'] },
+    } as const;
+    await createBlueprintService({ pool: appPool, authz: cerbos }).create(seeder, {
+      identifier: 'asset',
+      title: { en: 'Asset' },
+      schema: { properties: {} },
+      relations: { owner: { title: { en: 'Owner' }, target: '_user' } },
+    });
+    await createEntityService({ pool: appPool, authz: cerbos }).create(seeder, {
+      blueprint: 'asset',
+      identifier: 'asset-1',
+      title: 'Asset 1',
+      spec: { properties: {}, relations: { owner: identifier } },
+    });
+
+    await deleter().identity.serviceAccounts.delete(
+      { user: identifier },
+      { context: context(tenant) },
+    );
+
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await revocationCount(tenant.tenantId, created.clientId)).toBe(1);
+    expect(await nonRevokedBound(tenant.tenantId, identifier)).toEqual([]);
+  }, 120_000);
+
+  /**
+   * Starts a deletion that pauses (still holding the per-service-account lock) right after its
+   * first revocation, runs `concurrent` while it is paused, and returns once both complete.
+   */
+  async function deleteWhile(
+    tenant: Tenant,
+    identifier: string,
+    concurrent: () => Promise<unknown>,
+  ): Promise<{ concurrentSettledWhilePaused: boolean }> {
+    let signalEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      signalEntered = resolve;
+    });
+    let release: () => void = () => undefined;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    keySeam.pauseAfterRevoke.set(tenant.tenantId, { entered: signalEntered, wait });
+    const deletion = deleter().identity.serviceAccounts.delete(
+      { user: identifier },
+      { context: context(tenant) },
+    );
+    try {
+      await Promise.race([
+        entered,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => {
+            reject(new Error('the deletion never reached its first revocation'));
+          }, 30_000),
+        ),
+      ]);
+      let settled = false;
+      const other = Promise.allSettled([concurrent()]).then(() => {
+        settled = true;
+      });
+      // Give the concurrent call time to run: with the lock held it must still be waiting.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const concurrentSettledWhilePaused = settled;
+      release();
+      await Promise.allSettled([deletion, other]);
+      await deletion;
+      return { concurrentSettledWhilePaused };
+    } finally {
+      keySeam.pauseAfterRevoke.delete(tenant.tenantId);
+      release();
+    }
+  }
+
+  it('A credential created during a deletion does not survive it: a credentials.create bound to the account, started while the deletion holds the lock, ends with no non-revoked key bound to the identifier', async () => {
+    const tenant = await freshTenant();
+    const identifier = `svc-race-c-${randomUUID().slice(0, 8)}`;
+    await createAccount(tenant, identifier);
+
+    const { concurrentSettledWhilePaused } = await deleteWhile(tenant, identifier, () =>
+      deleter().identity.credentials.create(
+        { name: 'During deletion', kind: 'integration', userId: identifier },
+        { context: context(tenant) },
+      ),
+    );
+
+    // The create waited for the lock the deletion held.
+    expect(concurrentSettledWhilePaused).toBe(false);
+    // THEN no non-revoked credential is bound to the deleted identifier.
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await nonRevokedBound(tenant.tenantId, identifier)).toEqual([]);
+  }, 120_000);
+
+  it('A credential created during a deletion does not survive it: a rotation of its credential, started while the deletion holds the lock, ends with no non-revoked key bound to the identifier', async () => {
+    const tenant = await freshTenant();
+    const identifier = `svc-race-r-${randomUUID().slice(0, 8)}`;
+    const created = await createAccount(tenant, identifier);
+
+    const { concurrentSettledWhilePaused } = await deleteWhile(tenant, identifier, () =>
+      deleter().identity.credentials.rotate(
+        { credential: created.clientId },
+        { context: context(tenant) },
+      ),
+    );
+
+    expect(concurrentSettledWhilePaused).toBe(false);
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await nonRevokedBound(tenant.tenantId, identifier)).toEqual([]);
   }, 120_000);
 });

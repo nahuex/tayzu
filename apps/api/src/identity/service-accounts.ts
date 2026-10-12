@@ -5,7 +5,7 @@
  * task group 10.
  */
 import { emitIdentityEvent, withIdentitySpan, type AuthInstance } from '@tayzu/auth';
-import { createMachineCredential } from '@tayzu/auth/machine-credentials';
+import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import type { CerbosClient } from '@tayzu/authz';
 import { createEntityService, type EntityService } from '@tayzu/catalog';
 import { withTenantTransaction } from '@tayzu/db';
@@ -14,9 +14,11 @@ import type { Pool } from 'pg';
 import type { AuthRepository } from './auth-repository.js';
 import {
   CredentialConflictError,
+  CredentialTargetNotFoundError,
   readAllApiKeys,
   readApiKeyMetadata,
   readRevokedIds,
+  serviceAccountExists,
 } from './credentials.js';
 import type { UserSyncAdapter } from './user-sync-adapter.js';
 
@@ -121,6 +123,69 @@ export async function createServiceAccount(args: {
           },
         });
         return { user, clientId: key.id, clientSecret: key.secret };
+      }),
+  );
+}
+
+/**
+ * Deletes a service account (design D6, Resolved decisions Q40, Q90): under the per-service-account
+ * lock, revokes every non-revoked key bound to the identifier, then removes the `_user` entity as
+ * `system` on behalf of the admin, detaching the relations that target it.
+ */
+export async function deleteServiceAccount(args: {
+  readonly auth: AuthInstance;
+  readonly authz: CerbosClient;
+  readonly appPool: Pool;
+  readonly authRepository: AuthRepository;
+  readonly tenantId: string;
+  readonly adminId: string;
+  readonly identifier: string;
+}): Promise<void> {
+  const { tenantId, adminId, identifier } = args;
+  // A human, an unknown id and another tenant's account look alike (Q62).
+  if (!(await serviceAccountExists(args.appPool, tenantId, identifier))) {
+    throw new CredentialTargetNotFoundError();
+  }
+  await withIdentitySpan(
+    'identity.service_account.delete',
+    { 'tayzu.identity.service_account.id': identifier },
+    () =>
+      withTenantTransaction(args.appPool, { tenantId }, async (lockClient) => {
+        await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+          `service-account:${tenantId}:${identifier}`,
+        ]);
+        const [keys, revoked] = await Promise.all([
+          readAllApiKeys(args.authRepository, tenantId),
+          readRevokedIds(args.appPool, tenantId),
+        ]);
+        for (const key of keys) {
+          if (revoked.has(key.id) || readApiKeyMetadata(key.metadata).userId !== identifier) {
+            continue;
+          }
+          await revokeMachineCredential(args.auth, {
+            userId: adminId,
+            id: key.id,
+            pool: args.appPool,
+            tenantId,
+          });
+        }
+        await createEntityService({ pool: args.appPool, authz: args.authz }).delete(
+          {
+            tenantId,
+            actor: { ...SYSTEM_READER, onBehalfOf: { type: 'user', id: adminId } },
+            principal: { roles: ['admin'] },
+          },
+          { blueprint: '_user', identifier, detachReferences: true },
+        );
+        emitIdentityEvent({
+          name: 'catalog.audit.service_account_deleted',
+          severity: 'INFO',
+          attributes: {
+            'tayzu.tenant.id': tenantId,
+            'tayzu.actor.id': adminId,
+            'tayzu.identity.service_account.id': identifier,
+          },
+        });
       }),
   );
 }

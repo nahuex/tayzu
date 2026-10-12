@@ -2570,7 +2570,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the principal stays `{ roles: ['member'], teams: [], moderatedBlueprints: [] }`
       from the signed claim. Verify: `token-exchange.int.test.ts` covers "A tampered
       `_user` row does not raise the principal".
-- [ ] 10.7 `identity.serviceAccounts.delete`: revokes **every** non-revoked
+- [x] 10.7 `identity.serviceAccounts.delete`: revokes **every** non-revoked
       `apikey` with `referenceId = ctx.tenantId` and `metadata.userId` equal to the
       service account's `svc-…` identifier (Q90) through the revocation list (found by the paged adapter-level lookup of 9.11, never limited like the viewer, not only "the" credential), after the target has been resolved through the service-account resolver of 10.7b once that exists (a lookup of the same shape through the target helper of 5.2 until then; the refusal of a human target is 10.7b's case), then removes the
       `_user` entity as `system` with `onBehalfOf` the admin (Resolved decision Q40), with
