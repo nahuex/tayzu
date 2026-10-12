@@ -2495,7 +2495,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 
 ## 10. Service accounts
 
-- [ ] 10.1 Service-account identifier pattern `^svc-[A-Za-z][A-Za-z0-9_-]{0,58}$`,
+- [x] 10.1 Service-account identifier pattern `^svc-[A-Za-z][A-Za-z0-9_-]{0,58}$`,
       validated at creation. Verify: `service-accounts.test.ts` covers acceptance
       of `svc-ci-github` and rejection of `ci-github` (missing prefix) and an
       over-length identifier.
