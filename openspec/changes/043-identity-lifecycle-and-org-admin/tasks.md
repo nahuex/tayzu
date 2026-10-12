@@ -2412,7 +2412,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       through the operation with the headerless call of 9.1b, and
       `config.test.ts` a zero or disabled limit failing startup (the step-up part is
       asserted over HTTP in 14.4).
-- [ ] 9.5b The optional `userId` of `identity.credentials.create` is resolved
+- [x] 9.5b The optional `userId` of `identity.credentials.create` is resolved
       server-side within the caller's tenant to a service-account `_user`, through
       the service-account resolver of 10.7b once that exists (a lookup of the same
       shape until then); a human, an unknown id or another tenant's service account

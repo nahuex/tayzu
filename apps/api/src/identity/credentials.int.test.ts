@@ -807,3 +807,209 @@ describe('identity.credentials.create (task 9.5)', () => {
     expect(await keyRows(org)).toHaveLength(0);
   }, 120_000);
 });
+
+/**
+ * Task 9.5b of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (the optional `userId` of `identity.credentials.create`; design D6, D14; Resolved decisions
+ * Q40, Q62, Q90).
+ *
+ * Scenarios (verbatim from the spec):
+ * - "A credential cannot be bound to a user outside the tenant or to a human": WHEN an admin
+ *   creates a credential with a `userId` that is a human, unknown, or a service account of
+ *   another tenant, THEN the operation fails with `CATALOG_NOT_FOUND` and nothing is created.
+ * - "A service account holds one active credential": GIVEN a service account with an active
+ *   credential, WHEN an admin creates another credential bound to it, THEN the operation fails
+ *   with `CATALOG_VALIDATION_FAILED`, and after the first is revoked a new one can be created.
+ *
+ * ## Production symbols expected
+ *
+ * - `identity.credentials.create` accepts the optional input `userId: string` (the `svc-…`
+ *   identifier of a service account), resolved server-side within the caller's tenant (the
+ *   resolver of 10.7b, or a lookup of the same shape): the `_user` must have
+ *   `accountKind == "service"` and an `svc-` identifier, else `CATALOG_NOT_FOUND`. The created
+ *   key's metadata then carries `userId` (the `svc-…` identifier). A service account that
+ *   already has a non-revoked credential is refused with `CATALOG_VALIDATION_FAILED`.
+ */
+describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface BoundClient {
+    identity: {
+      credentials: {
+        create(
+          input: { name: string; kind: string; userId?: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): BoundClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Bound Owner',
+      email: `bound-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Bound Org', slug: `bound-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Bound Admin',
+      email: `bound-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: org.adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function seedUser(
+    org: Org,
+    identifier: string,
+    properties: Record<string, unknown>,
+  ): Promise<void> {
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId: org.tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      { blueprint: '_user', identifier, title: 'Seeded user', spec: { properties } },
+    );
+  }
+
+  const seedServiceAccount = (org: Org, identifier: string): Promise<void> =>
+    seedUser(org, identifier, { accountKind: 'service', status: 'Active' });
+
+  async function keyIds(org: Org): Promise<string[]> {
+    const rows = await authPool.query<{ id: string }>(
+      'select id from auth.apikey where reference_id = $1',
+      [org.tenantId],
+    );
+    return rows.rows.map((r) => r.id);
+  }
+
+  it('A credential cannot be bound to a user outside the tenant or to a human: CATALOG_NOT_FOUND and nothing is created', async () => {
+    const org = await freshOrg();
+    const other = await freshOrg();
+    const suffix = randomUUID().slice(0, 8);
+    const foreign = `svc-foreign-${suffix}`;
+    const humanLookalike = `svc-human-${suffix}`;
+    await seedServiceAccount(other, foreign);
+    // A standard `_user` is not a service account even with an `svc-` identifier.
+    await seedUser(org, humanLookalike, { accountKind: 'standard', status: 'Active' });
+
+    const targets = [
+      org.adminId, // a human (the acting admin's own `_user`)
+      humanLookalike,
+      `svc-unknown-${suffix}`,
+      foreign, // a service account of another tenant
+    ];
+    for (const userId of targets) {
+      await expect(
+        client().identity.credentials.create(
+          { name: 'Bound', kind: 'integration', userId },
+          { context: contextOf(org) },
+        ),
+      ).rejects.toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+    }
+    expect(await keyIds(org)).toHaveLength(0);
+    expect(await keyIds(other)).toHaveLength(0);
+  }, 120_000);
+
+  it('A credential bound to a service account of the tenant is created with its svc- identifier in the metadata', async () => {
+    const org = await freshOrg();
+    const identifier = `svc-ok-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+
+    const created = await client().identity.credentials.create(
+      { name: 'Bound', kind: 'integration', userId: identifier },
+      { context: contextOf(org) },
+    );
+
+    expect(await keyIds(org)).toEqual([created.id]);
+    const keys = await readAllApiKeys(authRepository, org.tenantId);
+    expect(keys.map((k) => k.id)).toEqual([created.id]);
+    const row = await authPool.query<{ metadata: unknown }>(
+      'select metadata from auth.apikey where id = $1',
+      [created.id],
+    );
+    expect(readApiKeyMetadata(row.rows[0]?.metadata)).toMatchObject({
+      userId: identifier,
+      createdBy: org.adminId,
+    });
+  }, 120_000);
+
+  it('A service account holds one active credential: a second create is refused with CATALOG_VALIDATION_FAILED, and after the first is revoked a new one can be created', async () => {
+    const org = await freshOrg();
+    const identifier = `svc-one-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+    const input = { name: 'Bound', kind: 'integration', userId: identifier };
+
+    const first = await client().identity.credentials.create(input, { context: contextOf(org) });
+
+    await expect(
+      client().identity.credentials.create(input, { context: contextOf(org) }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await keyIds(org)).toEqual([first.id]);
+
+    await revokeMachineCredential(auth, {
+      userId: org.adminId,
+      id: first.id,
+      pool: appPool,
+      tenantId: org.tenantId,
+    });
+
+    const second = await client().identity.credentials.create(input, {
+      context: contextOf(org),
+    });
+    expect(second.id).not.toBe(first.id);
+    expect((await keyIds(org)).sort()).toEqual([first.id, second.id].sort());
+  }, 120_000);
+});

@@ -188,6 +188,49 @@ export async function listCredentials(args: {
   return { credentials, truncated: ordered.length > args.cap };
 }
 
+/** The identifier prefix every service account carries (Resolved decision Q90). */
+const SERVICE_ACCOUNT_PREFIX = 'svc-';
+
+/** Same code as the catalog's not-found: a human, an unknown id and another tenant's account look alike. */
+export class CredentialTargetNotFoundError extends Error {
+  readonly code = 'CATALOG_NOT_FOUND' as const;
+
+  constructor() {
+    super('The requested resource was not found');
+    this.name = 'CredentialTargetNotFoundError';
+  }
+}
+
+/** Generic on purpose: never names the service account. */
+export class CredentialConflictError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED' as const;
+
+  constructor() {
+    super('The request input is invalid');
+    this.name = 'CredentialConflictError';
+  }
+}
+
+/** Whether the tenant has a `_user` that is a service account (`accountKind == "service"`) with this identifier. */
+async function serviceAccountExists(
+  appPool: Pool,
+  tenantId: string,
+  identifier: string,
+): Promise<boolean> {
+  if (!identifier.startsWith(SERVICE_ACCOUNT_PREFIX)) return false;
+  const rows = await withTenantTransaction(appPool, { tenantId }, async (client) => {
+    const result = await client.query<{ one: number }>(
+      `select 1 as one from catalog_entity e
+         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+        where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2
+          and e.spec_properties ->> 'accountKind' = 'service'`,
+      [tenantId, identifier],
+    );
+    return result.rows;
+  });
+  return rows.length > 0;
+}
+
 /** The key `name`: 1 to 32 characters of `[A-Za-z0-9 _.-]` (the plugin allows 32). */
 export const CREDENTIAL_NAME_PATTERN = /^[A-Za-z0-9 _.-]{1,32}$/;
 
@@ -201,13 +244,38 @@ export async function createCredential(args: {
   readonly adminId: string;
   readonly name: string;
   readonly kind: 'integration' | 'agent';
+  /** The `svc-…` identifier of the service account to bind; needs `authRepository` and `appPool`. */
+  readonly userId?: string;
+  readonly authRepository?: AuthRepository;
+  readonly appPool?: Pool;
 }): Promise<{ readonly id: string; readonly secret: string }> {
+  if (args.userId !== undefined) {
+    // Fail closed when the host did not wire the lookups.
+    if (args.appPool === undefined || args.authRepository === undefined) {
+      throw new CredentialConflictError();
+    }
+    if (!(await serviceAccountExists(args.appPool, args.tenantId, args.userId))) {
+      throw new CredentialTargetNotFoundError();
+    }
+    // Resolved decision Q40: one active credential per service account.
+    const [keys, revoked] = await Promise.all([
+      readAllApiKeys(args.authRepository, args.tenantId),
+      readRevokedIds(args.appPool, args.tenantId),
+    ]);
+    const hasActive = keys.some(
+      (key) => !revoked.has(key.id) && readApiKeyMetadata(key.metadata).userId === args.userId,
+    );
+    if (hasActive) throw new CredentialConflictError();
+  }
   const created = await createMachineCredential(args.auth, {
     userId: args.adminId,
     organizationId: args.tenantId,
     name: args.name,
     actorKind: args.kind,
-    metadata: { createdBy: args.adminId },
+    metadata: {
+      createdBy: args.adminId,
+      ...(args.userId === undefined ? {} : { userId: args.userId }),
+    },
   });
   return { id: created.id, secret: created.secret };
 }

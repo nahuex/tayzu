@@ -213,14 +213,20 @@ function parseInput(raw: unknown): CreateUserInput {
   return { email: holdableEmail(email), name, role: role as AssignableOrgRole };
 }
 
-function parseCredentialInput(raw: unknown): { name: string; kind: 'integration' | 'agent' } {
+function parseCredentialInput(raw: unknown): {
+  name: string;
+  kind: 'integration' | 'agent';
+  userId?: string;
+} {
   if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { name, kind } = raw as Record<string, unknown>;
+  const { name, kind, userId } = raw as Record<string, unknown>;
   if (typeof name !== 'string' || !CREDENTIAL_NAME_PATTERN.test(name)) {
     throw new IdentityInputError();
   }
   if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
-  return { name, kind };
+  if (userId === undefined) return { name, kind };
+  if (typeof userId !== 'string') throw new IdentityInputError();
+  return { name, kind, userId };
 }
 
 function parseInviteInput(raw: unknown): InviteUserInput {
@@ -347,8 +353,11 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           },
           route: HIGH_RISK_ROUTE,
           handler: async ({ context, input: rawInput }) => {
-            const { name, kind } = parseCredentialInput(rawInput);
+            const { name, kind, userId } = parseCredentialInput(rawInput);
             return createCredential({
+              authRepository: options.authRepository,
+              ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
+              ...(userId === undefined ? {} : { userId }),
               auth: options.auth,
               tenantId: rawTenantId(context),
               adminId: (context['actor'] as { id: string }).id,
