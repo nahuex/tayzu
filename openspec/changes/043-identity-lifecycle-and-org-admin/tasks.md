@@ -2468,7 +2468,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 9.7 If revoking the old credential fails, the new one is revoked and the
       operation fails. Verify: `credentials.int.test.ts` covers "A failed rotation
       leaves no second usable credential" with a failure seam on the revoke.
-- [ ] 9.8 If compensation also fails,
+- [x] 9.8 If compensation also fails,
       `catalog.security.credential_rotation_incomplete` is logged with both opaque
       identifiers. Verify: `credentials.int.test.ts` covers "A rotation that cannot
       compensate is signalled".

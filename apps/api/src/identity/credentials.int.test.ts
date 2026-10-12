@@ -44,6 +44,9 @@
  * `identity.credentials` does not exist on the router (a TypeError on the call) and
  * `./credentials.js` exports none of the symbols above.
  */
+// Load-bearing import order (design D1): the telemetry harness registers
+// before anything that loads `@tayzu/auth` creates its logger (task 9.8).
+import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
 import { randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
@@ -88,7 +91,11 @@ import {
  * the credential ids listed here, for which it throws before writing anything. Empty by default,
  * so every other test of this file sees the real behavior.
  */
-const revokeSeam = vi.hoisted(() => ({ failFor: new Set<string>() }));
+const revokeSeam = vi.hoisted(() => ({
+  failFor: new Set<string>(),
+  /** Task 9.8: every revoke inside these tenants fails (the new key's id is not known upfront). */
+  failTenants: new Set<string>(),
+}));
 
 vi.mock('@tayzu/auth/machine-credentials', async (importOriginal) => {
   const actual = await importOriginal<typeof MachineCredentialsModule>();
@@ -97,7 +104,9 @@ vi.mock('@tayzu/auth/machine-credentials', async (importOriginal) => {
     revokeMachineCredential: async (
       ...args: Parameters<typeof actual.revokeMachineCredential>
     ): Promise<void> => {
-      if (revokeSeam.failFor.has(args[1].id)) throw new Error('injected revoke failure');
+      if (revokeSeam.failFor.has(args[1].id) || revokeSeam.failTenants.has(args[1].tenantId)) {
+        throw new Error('injected revoke failure');
+      }
       await actual.revokeMachineCredential(...args);
     },
   };
@@ -1965,5 +1974,148 @@ describe('identity.credentials.rotate compensates a failed revoke (task 9.7)', (
 
     // No second usable credential: the only usable one is the old one, whose retirement failed.
     expect(await usableIds(org.tenantId)).toEqual([c1.id]);
+  }, 120_000);
+});
+
+/**
+ * Task 9.8 (design D8, "Rotate"; log event table): "A rotation that cannot compensate is
+ * signalled". GIVEN retiring the old credential and revoking the new one both fail, WHEN an
+ * admin rotates, THEN `catalog.security.credential_rotation_incomplete` is logged with both
+ * opaque identifiers (`tayzu.identity.credential.old_id` / `.new_id`, plus `tayzu.tenant.id`
+ * and `tayzu.actor.id`), and never a secret.
+ *
+ * Production symbols expected: the rotate procedure emits that WARN log event with those
+ * attributes when the compensation revoke throws.
+ */
+describe('identity.credentials.rotate signals an incomplete compensation (task 9.8)', () => {
+  const EVENT = 'catalog.security.credential_rotation_incomplete';
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface RotateClient {
+    identity: {
+      credentials: {
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): RotateClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  async function freshOrg(): Promise<{ tenantId: string; adminId: string }> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Incomplete Owner',
+      email: `inc-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Incomplete Org', slug: `inc-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Incomplete Admin',
+      email: `inc-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  async function incompleteEvents(tenantId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === EVENT && record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+  }
+
+  it('A rotation that cannot compensate is signalled: when retiring the old credential and revoking the new one both fail, the operation fails and catalog.security.credential_rotation_incomplete is logged with both opaque identifiers', async () => {
+    const org = await freshOrg();
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Uncompensated rotation',
+      actorKind: 'integration',
+      metadata: { createdBy: org.adminId },
+    });
+    expect(await incompleteEvents(org.tenantId)).toHaveLength(0);
+    revokeSeam.failTenants.add(org.tenantId);
+
+    try {
+      await expect(
+        client().identity.credentials.rotate(
+          { credential: c1.id },
+          {
+            context: {
+              tenantId: org.tenantId,
+              actor: { type: 'user', id: org.adminId },
+              principal: { roles: ['admin'] },
+            },
+          },
+        ),
+      ).rejects.toBeDefined();
+    } finally {
+      revokeSeam.failTenants.delete(org.tenantId);
+    }
+
+    const rows = await authPool.query<{ id: string }>(
+      'select id from auth.apikey where reference_id = $1',
+      [org.tenantId],
+    );
+    const newIds = rows.rows.map((r) => r.id).filter((id) => id !== c1.id);
+    expect(newIds).toHaveLength(1);
+    const newId = newIds[0] ?? '';
+
+    const events = await incompleteEvents(org.tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes).toMatchObject({
+      'tayzu.tenant.id': org.tenantId,
+      'tayzu.actor.id': org.adminId,
+      'tayzu.identity.credential.old_id': c1.id,
+      'tayzu.identity.credential.new_id': newId,
+    });
+    expect(events[0]?.severityText).toBe('WARN');
+    // Opaque identifiers only: no secret or key material in the record.
+    expect(JSON.stringify(events[0]?.attributes)).not.toContain(c1.secret);
+    expect(JSON.stringify(events[0]?.body ?? '')).not.toContain(c1.secret);
   }, 120_000);
 });

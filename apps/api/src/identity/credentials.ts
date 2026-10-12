@@ -3,7 +3,7 @@
  * (`043` design D7 and D8). The viewer (task 9.2) lives here; the rest arrives
  * with task group 9.
  */
-import type { AuthInstance } from '@tayzu/auth';
+import { emitIdentityEvent, type AuthInstance } from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { withTenantTransaction } from '@tayzu/db';
 import type { Pool } from 'pg';
@@ -372,12 +372,26 @@ export async function rotateCredential(args: {
       });
     } catch (error) {
       // Compensation: no second usable credential may survive a failed retirement.
-      await revokeMachineCredential(args.auth, {
-        userId: args.adminId,
-        id: created.id,
-        pool: args.appPool,
-        tenantId: args.tenantId,
-      });
+      try {
+        await revokeMachineCredential(args.auth, {
+          userId: args.adminId,
+          id: created.id,
+          pool: args.appPool,
+          tenantId: args.tenantId,
+        });
+      } catch {
+        // Two usable credentials may remain: signal it with opaque identifiers only.
+        emitIdentityEvent({
+          name: 'catalog.security.credential_rotation_incomplete',
+          severity: 'WARN',
+          attributes: {
+            'tayzu.tenant.id': args.tenantId,
+            'tayzu.actor.id': args.adminId,
+            'tayzu.identity.credential.old_id': old.id,
+            'tayzu.identity.credential.new_id': created.id,
+          },
+        });
+      }
       throw error;
     }
     return { id: created.id, secret: created.secret };
