@@ -2516,7 +2516,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       for `create` and `delete` (the first check carries `accountKind: service`) and a
       member is denied at the first. ⛔ **Stop for Checkpoint 3 approval of the
       policy diff before continuing.**
-- [ ] 10.3 `identity.serviceAccounts.create` (in `apps/api`): writes the `_user` entity
+- [x] 10.3 `identity.serviceAccounts.create` (in `apps/api`): writes the `_user` entity
       (`status: Active`, written through `created_active` by the Q30 adapter,
       `accountKind: "service"`, role `member`, empty
       `moderatedBlueprints`) as `system` with `onBehalfOf` the admin, and issues an

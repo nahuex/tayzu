@@ -1,0 +1,401 @@
+/**
+ * Task 10.3 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (`identity.serviceAccounts.create`; design D6, Resolved decisions Q30, Q40, Q90, Q117;
+ * spec "Service accounts are non-human users created API-only").
+ *
+ * Scenarios (verbatim from the spec):
+ * - "Service account is active immediately, no email": WHEN an admin with a fresh step-up
+ *   verification creates service account `svc-ci-github` for tenant `t1`, THEN the returned
+ *   `_user` entity has status `Active` and `accountKind: "service"`, AND no invitation email
+ *   is sent, AND the response includes a `clientId` and a `clientSecret` that never appear in
+ *   any later read of the account. (The step-up part is asserted over HTTP in 14.4; this is
+ *   the service-level part.) Task 10.3 adds: the key's metadata records the creating admin as
+ *   `createdBy`, one `catalog.audit.user_status_changed` names the admin and the `svc-…`
+ *   identifier, and one `catalog.audit.service_account_created` carries the admin as
+ *   `tayzu.actor.id` and the `svc-…` identifier.
+ * - "A new service account does not inherit a surviving credential": GIVEN a non-revoked
+ *   credential still bound to `svc-ci-github`, whose service account no longer exists, WHEN
+ *   an admin creates the service account `svc-ci-github` again, THEN the creation fails with
+ *   `CATALOG_VALIDATION_FAILED`, nothing is created and the old credential still does not
+ *   resolve (the last part is 11.6's and 11.7's case). The creation succeeds once that key
+ *   is revoked.
+ *
+ * ## Harness
+ *
+ * Real `auth` with the real Q30 adapter as `userSync`, a real Cerbos at `localhost:3593`, the
+ * shared pools, the recording `EmailSender` behind the real `createEmailTenantGate`, and one
+ * fresh organization (the tenant, random id) per test with an `admin` member who is not the
+ * owner. Log events are read from the registered in-memory exporter, filtered by tenant.
+ *
+ * ## Production symbols expected
+ *
+ * - `createIdentityRouter` (`../identity-router.js`) gains the option
+ *   `userSync: UserSyncAdapter` (`./user-sync-adapter.js`, the Q30 adapter the `_user` is
+ *   written through) and the procedure `identity.serviceAccounts.create`: a
+ *   `defineIdentityOperation` on `RESOURCE_KINDS.serviceAccount` / `create`, high-risk route,
+ *   input `{ identifier: string }` (an `svc-…` identifier; 10.4 adds `role` and
+ *   `moderatedBlueprints`), output `{ user: EntityOutput; clientId: string; clientSecret: string }`
+ *   where `clientId` is the key's `id` and `clientSecret` its secret.
+ * - It writes `userSync.writeUserChange({ tenantId, email: identifier, name, portRole: 'member',
+ *   change: 'created_active', userId: identifier, accountKind: 'service', principal: { kind:
+ *   'admin', id: <admin> }, onBehalfOf: { type: 'user', id: <admin> } })`, so
+ *   `UserSyncInput` of `@tayzu/catalog` must carry `accountKind` into the stored
+ *   `spec.properties.accountKind` (`service`) and the adapter must forward it.
+ * - It issues the key through `createMachineCredential` with `userId` the admin and metadata
+ *   `{ createdBy: <admin>, userId: <identifier> }`, a fixed `name` of at most 32 characters,
+ *   under the per-service-account lock, refusing with `CredentialConflictError`
+ *   (`CATALOG_VALIDATION_FAILED`) when a non-revoked key of the tenant is bound to the identifier.
+ * - It emits `catalog.audit.service_account_created` (INFO) with exactly
+ *   `tayzu.tenant.id`, `tayzu.actor.id` and `tayzu.identity.service_account.id`.
+ *
+ * ## Why this fails right now
+ *
+ * `identity.serviceAccounts` does not exist on the router (a TypeError on the call).
+ */
+// Load-bearing import order (design D1): the telemetry harness registers
+// before anything that loads `@tayzu/auth` creates its logger.
+import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
+import { randomUUID } from 'node:crypto';
+
+import { createRouterClient } from '@orpc/server';
+import { authSchema, createAuth, createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
+import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
+import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
+import { createUserSync } from '@tayzu/catalog';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { beforeAll, describe, expect, it } from 'vitest';
+import type { Pool } from 'pg';
+
+import { createAdminUser } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  TEST_PASSWORD,
+  TEST_SECRET,
+} from '../../../../packages/auth/src/__fixtures__/test-secret.js';
+import { harnessPools } from '../__fixtures__/pools.js';
+import { createIdentityRouter } from '../identity-router.js';
+import { createAuthRepository } from './auth-repository.js';
+import { readApiKeyMetadata } from './credentials.js';
+import { createInMemoryEmailCapStore } from './invitation-caps.js';
+import { createEmailTenantGate } from './email-tenant-gate.js';
+import { createWithUserLock } from './user-lock.js';
+import { createUserSyncAdapter } from './user-sync-adapter.js';
+
+const STATUS_EVENT = 'catalog.audit.user_status_changed';
+const CREATED_EVENT = 'catalog.audit.service_account_created';
+const IDENTIFIER = 'svc-ci-github';
+
+interface OrganizationSurface {
+  createOrganization(args: {
+    body: { name: string; slug: string; userId: string };
+  }): Promise<{ id: string }>;
+  addMember(args: {
+    body: { userId: string; organizationId: string; role: string };
+  }): Promise<unknown>;
+}
+
+interface CreatedServiceAccount {
+  readonly user: {
+    readonly identifier: string;
+    readonly spec: { readonly properties: Record<string, unknown> };
+  };
+  readonly clientId: string;
+  readonly clientSecret: string;
+}
+
+interface Tenant {
+  readonly tenantId: string;
+  readonly adminId: string;
+}
+
+interface UserRow {
+  readonly status: string | null;
+  readonly account_kind: string | null;
+  readonly port_role: string | null;
+  readonly moderated: unknown;
+}
+
+describe('identity.serviceAccounts.create (task 10.3)', () => {
+  let harness: TelemetryTestHarness;
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let sender: ReturnType<typeof createRecordingEmailSender>;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface CreatingClient {
+    identity: {
+      serviceAccounts: {
+        create(
+          input: { identifier: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<CreatedServiceAccount>;
+      };
+      credentials: {
+        list(
+          input: Record<string, never>,
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSyncAdapter({
+      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync,
+    });
+    sender = createRecordingEmailSender();
+    const capStore = createInMemoryEmailCapStore({
+      tenant: { max: 1000, windowSeconds: 3600 },
+      recipient: { max: 1000, windowSeconds: 86_400 },
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        emailGate: createEmailTenantGate({ disabledTenantIds: [], capStore, sender }),
+        appPool,
+        userSync,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  const creator = (): CreatingClient => client;
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Service Owner',
+      email: `sa-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Service Org', slug: `service-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Service Admin',
+      email: `sa-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  function context(tenant: Tenant): Record<string, unknown> {
+    return {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: tenant.adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function userRows(tenantId: string, identifier: string): Promise<UserRow[]> {
+    return await withTenantTransaction(appPool, { tenantId }, async (db) => {
+      const result = await db.query<UserRow>(
+        `select e.spec_properties ->> 'status' as status,
+                e.spec_properties ->> 'accountKind' as account_kind,
+                e.spec_properties ->> 'portRole' as port_role,
+                e.spec_properties -> 'moderatedBlueprints' as moderated
+           from catalog_entity e
+           join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+          where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+        [tenantId, identifier],
+      );
+      return result.rows;
+    });
+  }
+
+  async function changeEvents(tenantId: string, identifier: string) {
+    return await withTenantTransaction(appPool, { tenantId }, async (db) => {
+      const result = await db.query<{
+        action: string;
+        actor_type: string;
+        on_behalf_of_type: string | null;
+        on_behalf_of_id: string | null;
+      }>(
+        `select action, actor_type, on_behalf_of_type, on_behalf_of_id
+           from catalog_change_event
+          where tenant_id = $1 and blueprint_identifier = '_user' and resource_identifier = $2
+          order by seq`,
+        [tenantId, identifier],
+      );
+      return result.rows;
+    });
+  }
+
+  interface KeyRow {
+    readonly id: string;
+    readonly name: string | null;
+    readonly metadata: unknown;
+  }
+
+  async function keyRows(tenantId: string): Promise<KeyRow[]> {
+    const rows = await authPool.query<KeyRow>(
+      'select id, name, metadata from auth.apikey where reference_id = $1 order by created_at',
+      [tenantId],
+    );
+    return rows.rows;
+  }
+
+  async function logRecords(eventName: string, tenantId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === eventName && record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+  }
+
+  it('Service account is active immediately, no email: the entity is Active and service as system on behalf of the admin, one key bound to the identifier with createdBy, the secret returned once, and one status event and one created event naming the admin and the identifier', async () => {
+    const tenant = await freshTenant();
+    const sentBefore = sender.sent.length;
+
+    const created = await creator().identity.serviceAccounts.create(
+      { identifier: IDENTIFIER },
+      { context: context(tenant) },
+    );
+
+    // THEN the returned `_user` entity has status `Active` and `accountKind: "service"`.
+    expect(created.user.identifier).toBe(IDENTIFIER);
+    expect(created.user.spec.properties['status']).toBe('Active');
+    expect(created.user.spec.properties['accountKind']).toBe('service');
+    const rows = await userRows(tenant.tenantId, IDENTIFIER);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: 'Active',
+      account_kind: 'service',
+      port_role: 'member',
+    });
+    expect(rows[0]?.moderated ?? []).toEqual([]);
+
+    // Written as `system` with `onBehalfOf` the admin.
+    const events = await changeEvents(tenant.tenantId, IDENTIFIER);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: 'created',
+      actor_type: 'system',
+      on_behalf_of_type: 'user',
+      on_behalf_of_id: tenant.adminId,
+    });
+
+    // AND no invitation email is sent (the `EmailSender` fake recorded zero calls).
+    expect(sender.sent).toHaveLength(sentBefore);
+
+    // AND the response carries a `clientId` and a `clientSecret`; the key is the tenant's only
+    // one, organization-owned, bound to the identifier, with the admin recorded as `createdBy`.
+    expect(created.clientSecret).toMatch(/^tayzu_mc_/);
+    const keys = await keyRows(tenant.tenantId);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]?.id).toBe(created.clientId);
+    expect(readApiKeyMetadata(keys[0]?.metadata)).toEqual({
+      actorKind: 'integration',
+      role: 'member',
+      userId: IDENTIFIER,
+      createdBy: tenant.adminId,
+    });
+    // The label is fixed because the plugin limits the name to 32 characters.
+    const name = keys[0]?.name ?? '';
+    expect(name.length).toBeGreaterThan(0);
+    expect(name.length).toBeLessThanOrEqual(32);
+
+    // AND neither value appears in any later read of the account or its credentials.
+    const listed = await creator().identity.credentials.list({}, { context: context(tenant) });
+    const laterReads = JSON.stringify([listed, rows, keys]);
+    expect(laterReads).not.toContain(created.clientSecret);
+    expect(JSON.stringify(rows)).not.toContain(created.clientId);
+
+    // One `catalog.audit.user_status_changed` names the admin and the `svc-…` identifier.
+    const statusChanges = await logRecords(STATUS_EVENT, tenant.tenantId);
+    const ofAccount = statusChanges.filter(
+      (record) => record.attributes['tayzu.identity.service_account.id'] === IDENTIFIER,
+    );
+    expect(ofAccount).toHaveLength(1);
+    expect(ofAccount[0]?.attributes).toMatchObject({
+      'tayzu.actor.id': tenant.adminId,
+      'tayzu.identity.service_account.id': IDENTIFIER,
+      'tayzu.identity.user.status.event': 'created_active',
+      'tayzu.identity.user.status.to': 'Active',
+    });
+    expect(ofAccount[0]?.attributes).not.toHaveProperty('tayzu.identity.user.status.from');
+
+    // One `catalog.audit.service_account_created` carries the admin and the identifier.
+    const createdEvents = await logRecords(CREATED_EVENT, tenant.tenantId);
+    expect(createdEvents).toHaveLength(1);
+    expect(createdEvents[0]?.attributes).toMatchObject({
+      'tayzu.actor.id': tenant.adminId,
+      'tayzu.identity.service_account.id': IDENTIFIER,
+    });
+    // No secret in any record of the tenant's two events.
+    expect(JSON.stringify([...ofAccount, ...createdEvents].map((r) => r.attributes))).not.toContain(
+      created.clientSecret,
+    );
+  }, 120_000);
+
+  it('A new service account does not inherit a surviving credential: with a non-revoked key bound to the identifier and no such _user the creation is refused with CATALOG_VALIDATION_FAILED and nothing is created, and it succeeds once that key is revoked', async () => {
+    const tenant = await freshTenant();
+    // GIVEN a non-revoked key bound to `svc-ci-github`, seeded directly, and no such `_user`.
+    const surviving = await createMachineCredential(auth, {
+      userId: tenant.adminId,
+      organizationId: tenant.tenantId,
+      name: 'Surviving key',
+      actorKind: 'integration',
+      metadata: { createdBy: tenant.adminId, userId: IDENTIFIER },
+    });
+    expect(await userRows(tenant.tenantId, IDENTIFIER)).toHaveLength(0);
+    const statusEventsBefore = (await logRecords(STATUS_EVENT, tenant.tenantId)).length;
+
+    // WHEN an admin creates the service account again, THEN it fails and nothing is created.
+    await expect(
+      creator().identity.serviceAccounts.create(
+        { identifier: IDENTIFIER },
+        { context: context(tenant) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect(await userRows(tenant.tenantId, IDENTIFIER)).toHaveLength(0);
+    expect(await changeEvents(tenant.tenantId, IDENTIFIER)).toHaveLength(0);
+    expect((await keyRows(tenant.tenantId)).map((key) => key.id)).toEqual([surviving.id]);
+    expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(0);
+    expect((await logRecords(STATUS_EVENT, tenant.tenantId)).length).toBe(statusEventsBefore);
+
+    // It succeeds once that key is revoked.
+    await revokeMachineCredential(auth, {
+      userId: tenant.adminId,
+      id: surviving.id,
+      pool: appPool,
+      tenantId: tenant.tenantId,
+    });
+    const created = await creator().identity.serviceAccounts.create(
+      { identifier: IDENTIFIER },
+      { context: context(tenant) },
+    );
+
+    expect(created.user.identifier).toBe(IDENTIFIER);
+    const rows = await userRows(tenant.tenantId, IDENTIFIER);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('Active');
+    expect(created.clientId).not.toBe(surviving.id);
+  }, 120_000);
+});

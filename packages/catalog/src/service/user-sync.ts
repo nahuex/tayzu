@@ -23,6 +23,8 @@ export interface UserSyncInput {
   /** Omitted fields keep their stored value (merge upsert). */
   readonly portRole?: 'admin' | 'member';
   readonly status?: 'Staged' | 'Invited' | 'Active' | 'Disabled';
+  /** `service` marks a service account; omitted keeps the stored value (merge upsert). */
+  readonly accountKind?: 'standard' | 'service';
   /** The principal an admin-initiated write is attributed to (design D2, Q10). */
   readonly onBehalfOf?: Principal;
   /** For an existing row: the version the caller read; a stale one is a version conflict. */
@@ -66,6 +68,7 @@ export function createUserSync(options: CreateUserSyncOptions): UserSync {
       const properties: Record<string, unknown> = {};
       if (input.status !== undefined) properties['status'] = input.status;
       if (input.portRole !== undefined) properties['portRole'] = input.portRole;
+      if (input.accountKind !== undefined) properties['accountKind'] = input.accountKind;
       if (input.contactEmail !== undefined) properties['contactEmail'] = input.contactEmail;
       const context = {
         tenantId: input.tenantId,

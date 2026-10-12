@@ -102,7 +102,7 @@ export async function readAllApiKeys(
   return keys;
 }
 
-async function readRevokedIds(appPool: Pool, tenantId: string): Promise<Set<string>> {
+export async function readRevokedIds(appPool: Pool, tenantId: string): Promise<Set<string>> {
   const rows = await withTenantTransaction(appPool, { tenantId }, async (client) => {
     const result = await client.query<{ credential_id: string }>(
       'select credential_id from machine_credential_revocation where tenant_id = $1',

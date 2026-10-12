@@ -127,6 +127,7 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
           ...(input.contactEmail === undefined ? {} : { contactEmail: input.contactEmail }),
           ...(input.portRole === undefined ? {} : { portRole: input.portRole }),
           status,
+          ...(input.accountKind === undefined ? {} : { accountKind: input.accountKind }),
           ...(input.onBehalfOf === undefined ? {} : { onBehalfOf: input.onBehalfOf }),
           ...(current === null ? { createOnly: true } : { expectedVersion: current.version }),
         });

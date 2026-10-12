@@ -28,6 +28,8 @@ import {
 } from '@tayzu/auth';
 import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
+import { createServiceAccount } from './identity/service-accounts.js';
+import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
 import type { WithUserLock } from './identity/user-lock.js';
@@ -124,6 +126,8 @@ export interface CreateIdentityRouterOptions {
   readonly appPool?: Pool;
   /** The credential cap of task 9.5d; the viewer's page size. Default 200. */
   readonly credentialCap?: number;
+  /** The Q30 adapter every `_user` write goes through (service accounts, task 10.3). */
+  readonly userSync?: UserSyncAdapter;
 }
 
 export interface CreateUserInput {
@@ -437,6 +441,38 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               appPool: options.appPool,
               tenantId: rawTenantId(context),
               cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+            });
+          },
+        }),
+      },
+      serviceAccounts: {
+        // Step-up applies (D4); the secret is returned once.
+        create: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.serviceAccount,
+            action: 'create',
+            resolveTarget: () => undefined,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: async ({ context, input: rawInput }) => {
+            // Fail closed when the host did not wire the lookups and the writer.
+            if (options.appPool === undefined || options.userSync === undefined) {
+              throw new IdentityInputError();
+            }
+            const identifier =
+              typeof rawInput === 'object' && rawInput !== null
+                ? (rawInput as Record<string, unknown>)['identifier']
+                : undefined;
+            if (typeof identifier !== 'string') throw new IdentityInputError();
+            return await createServiceAccount({
+              auth: options.auth,
+              authz: options.authz,
+              appPool: options.appPool,
+              authRepository: options.authRepository,
+              userSync: options.userSync,
+              tenantId: rawTenantId(context),
+              adminId: (context['actor'] as { id: string }).id,
+              identifier,
             });
           },
         }),
