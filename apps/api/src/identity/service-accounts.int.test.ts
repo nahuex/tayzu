@@ -516,4 +516,33 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(rows[0]?.moderated ?? []).toEqual([]);
     expect(await keyRows(tenant.tenantId)).toHaveLength(1);
   }, 120_000);
+
+  // Task 10.5: authorization of `identity.serviceAccounts.create` against the real Cerbos.
+  it('A non-admin cannot create a service account: a member is denied with AUTH_FORBIDDEN and no _user, change event, key or created event exists', async () => {
+    const tenant = await freshTenant();
+    const memberId = `member-${randomUUID()}`;
+    const identifier = `svc-denied-${randomUUID().slice(0, 8)}`;
+    const statusEventsBefore = (await logRecords(STATUS_EVENT, tenant.tenantId)).length;
+
+    // WHEN an actor without the grant attempts to create a service account.
+    await expect(
+      creator().identity.serviceAccounts.create(
+        { identifier },
+        {
+          context: {
+            tenantId: tenant.tenantId,
+            actor: { type: 'user', id: memberId },
+            principal: { roles: ['member'] },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
+
+    // THEN no `_user` entity or credential is created.
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await changeEvents(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await keyRows(tenant.tenantId)).toEqual([]);
+    expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(0);
+    expect((await logRecords(STATUS_EVENT, tenant.tenantId)).length).toBe(statusEventsBefore);
+  }, 120_000);
 });

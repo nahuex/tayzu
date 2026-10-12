@@ -2560,7 +2560,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `member` and an empty list are accepted, before the `_user` or the credential
       exists. Verify: `service-accounts.int.test.ts` covers "Creating a service
       account with an elevated role is rejected", asserting nothing is created.
-- [ ] 10.5 A non-admin attempting `identity.serviceAccounts.create` is denied.
+- [x] 10.5 A non-admin attempting `identity.serviceAccounts.create` is denied.
       Verify: `service-accounts.int.test.ts` covers "A non-admin cannot create a
       service account" against the real Cerbos container.
 - [ ] 10.6 Token exchange adds `userId` as an attribution claim only, at the
