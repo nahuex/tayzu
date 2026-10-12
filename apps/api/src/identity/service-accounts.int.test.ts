@@ -454,4 +454,66 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     // SpanStatusCode.ERROR
     expect(spans[0]?.status.code).toBe(2);
   }, 120_000);
+
+  // Task 10.4: creation validates the requested role and `moderatedBlueprints` (design D6 "Ceiling").
+  interface CeilingClient {
+    identity: {
+      serviceAccounts: {
+        create(
+          input: { identifier: string; role?: string; moderatedBlueprints?: string[] },
+          options: { context: Record<string, unknown> },
+        ): Promise<CreatedServiceAccount>;
+      };
+    };
+  }
+  const ceilingClient = (): CeilingClient => client;
+
+  it('Creating a service account with an elevated role is rejected: role admin, or a non-empty moderatedBlueprints, fails with CATALOG_VALIDATION_FAILED and no _user, change event, key or created event exists', async () => {
+    const tenant = await freshTenant();
+    const statusEventsBefore = (await logRecords(STATUS_EVENT, tenant.tenantId)).length;
+    const attempts: {
+      identifier: string;
+      role?: string;
+      moderatedBlueprints?: string[];
+    }[] = [
+      { identifier: 'svc-elevated-admin', role: 'admin' },
+      { identifier: 'svc-elevated-moderator', moderatedBlueprints: ['service'] },
+      { identifier: 'svc-elevated-both', role: 'admin', moderatedBlueprints: ['service'] },
+      { identifier: 'svc-elevated-owner', role: 'owner' },
+    ];
+
+    for (const attempt of attempts) {
+      // WHEN an admin attempts to create a service account with that role or grant.
+      await expect(
+        ceilingClient().identity.serviceAccounts.create(attempt, { context: context(tenant) }),
+      ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+      // THEN no `_user` entity is created.
+      expect(await userRows(tenant.tenantId, attempt.identifier)).toHaveLength(0);
+      expect(await changeEvents(tenant.tenantId, attempt.identifier)).toHaveLength(0);
+    }
+
+    // AND no credential is created.
+    expect(await keyRows(tenant.tenantId)).toEqual([]);
+    // AND no event of a creation is emitted.
+    expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(0);
+    expect((await logRecords(STATUS_EVENT, tenant.tenantId)).length).toBe(statusEventsBefore);
+  }, 120_000);
+
+  it('Creating a service account with an elevated role is rejected: the accepted values (role member, an empty moderatedBlueprints) still create it as member with no grant', async () => {
+    const tenant = await freshTenant();
+    const identifier = `svc-member-${randomUUID().slice(0, 8)}`;
+
+    const created = await ceilingClient().identity.serviceAccounts.create(
+      { identifier, role: 'member', moderatedBlueprints: [] },
+      { context: context(tenant) },
+    );
+
+    expect(created.user.identifier).toBe(identifier);
+    const rows = await userRows(tenant.tenantId, identifier);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'Active', port_role: 'member' });
+    expect(rows[0]?.moderated ?? []).toEqual([]);
+    expect(await keyRows(tenant.tenantId)).toHaveLength(1);
+  }, 120_000);
 });

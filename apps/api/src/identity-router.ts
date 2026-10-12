@@ -459,11 +459,21 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             if (options.appPool === undefined || options.userSync === undefined) {
               throw new IdentityInputError();
             }
-            const identifier =
+            const fields =
               typeof rawInput === 'object' && rawInput !== null
-                ? (rawInput as Record<string, unknown>)['identifier']
+                ? (rawInput as Record<string, unknown>)
                 : undefined;
+            const identifier = fields?.['identifier'];
             if (typeof identifier !== 'string') throw new IdentityInputError();
+            // Ceiling (D6): only `member` and no moderated blueprints, before anything is written.
+            const { role, moderatedBlueprints } = fields ?? {};
+            if (role !== undefined && role !== 'member') throw new IdentityInputError();
+            if (
+              moderatedBlueprints !== undefined &&
+              !(Array.isArray(moderatedBlueprints) && moderatedBlueprints.length === 0)
+            ) {
+              throw new IdentityInputError();
+            }
             return await createServiceAccount({
               auth: options.auth,
               authz: options.authz,

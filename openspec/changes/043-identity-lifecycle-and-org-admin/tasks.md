@@ -2556,7 +2556,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       covers "A failed credential issue leaves no orphan service account" with a
       failure seam on the key creation: the operation fails, no `_user` of that
       identifier remains and no key exists.
-- [ ] 10.4 Creation validates the requested role and `moderatedBlueprints`: only
+- [x] 10.4 Creation validates the requested role and `moderatedBlueprints`: only
       `member` and an empty list are accepted, before the `_user` or the credential
       exists. Verify: `service-accounts.int.test.ts` covers "Creating a service
       account with an elevated role is rejected", asserting nothing is created.
