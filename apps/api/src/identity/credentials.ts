@@ -326,26 +326,49 @@ export async function rotateCredential(args: {
   const old = await args.authRepository.apiKeyById(args.tenantId, args.credentialId);
   if (old === undefined) throw new CredentialTargetNotFoundError();
   const metadata = readApiKeyMetadata(old.metadata);
-  if (metadata.actorKind !== 'integration' && metadata.actorKind !== 'agent') {
+  const actorKind = metadata.actorKind;
+  if (actorKind !== 'integration' && actorKind !== 'agent') {
     throw new CredentialConflictError();
   }
-  const created = await createMachineCredential(args.auth, {
-    userId: args.adminId,
-    organizationId: args.tenantId,
-    name: old.name ?? '',
-    actorKind: metadata.actorKind,
-    role: 'member',
-    metadata: {
-      createdBy: args.adminId,
-      rotatedAt: new Date().toISOString(),
-      ...(metadata.userId === undefined ? {} : { userId: metadata.userId }),
-    },
+  // Serialized per service account, or per credential when unbound (D8, Q40): creation and
+  // deletion take the same service-account lock.
+  const lockKey =
+    metadata.userId === undefined
+      ? `credential:${args.tenantId}:${old.id}`
+      : `service-account:${args.tenantId}:${metadata.userId}`;
+  return withTenantTransaction(args.appPool, { tenantId: args.tenantId }, async (lockClient) => {
+    await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [lockKey]);
+    // The revocation state is read under the lock, so a concurrent rotation is seen.
+    const revoked = await readRevokedIds(args.appPool, args.tenantId);
+    if (revoked.has(old.id)) {
+      // A revoked credential is rotatable only when its service account has no active one.
+      if (metadata.userId === undefined) throw new CredentialConflictError();
+      const keys = await readAllApiKeys(args.authRepository, args.tenantId);
+      const accountId = metadata.userId;
+      if (
+        keys.some((k) => !revoked.has(k.id) && readApiKeyMetadata(k.metadata).userId === accountId)
+      ) {
+        throw new CredentialConflictError();
+      }
+    }
+    const created = await createMachineCredential(args.auth, {
+      userId: args.adminId,
+      organizationId: args.tenantId,
+      name: old.name ?? '',
+      actorKind,
+      role: 'member',
+      metadata: {
+        createdBy: args.adminId,
+        rotatedAt: new Date().toISOString(),
+        ...(metadata.userId === undefined ? {} : { userId: metadata.userId }),
+      },
+    });
+    await revokeMachineCredential(args.auth, {
+      userId: args.adminId,
+      id: old.id,
+      pool: args.appPool,
+      tenantId: args.tenantId,
+    });
+    return { id: created.id, secret: created.secret };
   });
-  await revokeMachineCredential(args.auth, {
-    userId: args.adminId,
-    id: old.id,
-    pool: args.appPool,
-    tenantId: args.tenantId,
-  });
-  return { id: created.id, secret: created.secret };
 }

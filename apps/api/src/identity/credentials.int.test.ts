@@ -1537,3 +1537,278 @@ describe('identity.credentials.rotate (task 9.6)', () => {
     expect(token.accessToken.length).toBeGreaterThan(0);
   }, 180_000);
 });
+
+/**
+ * Task 9.6b of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (rotation serialized per service account; design D8; Resolved decision Q40).
+ *
+ * Scenario (verbatim from the spec): "Concurrent rotation leaves exactly one active
+ * credential": GIVEN a service account with one active credential, WHEN two admins rotate it at
+ * the same time, THEN exactly one rotation succeeds, the other fails, and exactly one credential
+ * is usable afterward. Also: a revoked credential MUST be rotatable only when its service
+ * account has no active credential.
+ *
+ * ## Production behavior expected
+ *
+ * `rotateCredential` (`./credentials.js`) and so `identity.credentials.rotate` hold the
+ * per-service-account advisory lock of 9.5c (the same key as `createCredential`) for the whole
+ * rotation (per credential for an unbound one), and read the old credential's revocation state
+ * under it: a revoked old credential is rotatable only when its service account has no active
+ * credential; otherwise `CATALOG_VALIDATION_FAILED`, with nothing created.
+ */
+describe('identity.credentials.rotate is serialized (task 9.6b, Q40)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface SerialClient {
+    identity: {
+      credentials: {
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): SerialClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly ownerId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Serial Owner',
+      email: `serial-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Serial Org', slug: `serial-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Serial Admin',
+      email: `serial-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, ownerId: owner.userId, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org, actorId: string): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: actorId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function seedServiceAccount(org: Org, identifier: string): Promise<void> {
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId: org.tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      {
+        blueprint: '_user',
+        identifier,
+        title: 'Service account',
+        spec: { properties: { accountKind: 'service', status: 'Active' } },
+      },
+    );
+  }
+
+  async function revokedIds(org: Org): Promise<Set<string>> {
+    const result = await withTenantTransaction(appPool, { tenantId: org.tenantId }, (c) =>
+      c.query<{ credential_id: string }>(
+        'select credential_id from machine_credential_revocation where tenant_id = $1',
+        [org.tenantId],
+      ),
+    );
+    return new Set(result.rows.map((r) => r.credential_id));
+  }
+
+  /** Ids of the tenant's keys that are enabled and not on the revocation list. */
+  async function usableIds(org: Org): Promise<string[]> {
+    const [keys, revoked] = await Promise.all([
+      readAllApiKeys(authRepository, org.tenantId),
+      revokedIds(org),
+    ]);
+    return keys.filter((k) => k.enabled && !revoked.has(k.id)).map((k) => k.id);
+  }
+
+  async function allKeyIds(org: Org): Promise<string[]> {
+    const rows = await authPool.query<{ id: string }>(
+      'select id from auth.apikey where reference_id = $1',
+      [org.tenantId],
+    );
+    return rows.rows.map((r) => r.id);
+  }
+
+  it('Concurrent rotation leaves exactly one active credential: two admins rotate a service account credential at once, one succeeds, the other fails with CATALOG_VALIDATION_FAILED, one credential is usable', async () => {
+    const org = await freshOrg();
+    const identifier = `svc-rot-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Rot race',
+      actorKind: 'integration',
+      metadata: { userId: identifier, createdBy: org.adminId },
+    });
+
+    const results = await Promise.allSettled([
+      client().identity.credentials.rotate(
+        { credential: c1.id },
+        { context: contextOf(org, org.ownerId) },
+      ),
+      client().identity.credentials.rotate(
+        { credential: c1.id },
+        { context: contextOf(org, org.adminId) },
+      ),
+    ]);
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<{ id: string; secret: string }> => r.status === 'fulfilled',
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    const winner = fulfilled[0]?.value.id;
+    expect(await usableIds(org)).toEqual([winner]);
+    // The loser created nothing: c1 and the winner's key are the only keys.
+    expect((await allKeyIds(org)).sort()).toEqual([c1.id, winner].sort());
+    expect((await revokedIds(org)).has(c1.id)).toBe(true);
+  }, 120_000);
+
+  it('Concurrent rotation of an unbound credential (per credential lock) leaves exactly one usable credential', async () => {
+    const org = await freshOrg();
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Agent race',
+      actorKind: 'agent',
+      metadata: { createdBy: org.adminId },
+    });
+
+    const results = await Promise.allSettled([
+      client().identity.credentials.rotate(
+        { credential: c1.id },
+        { context: contextOf(org, org.ownerId) },
+      ),
+      client().identity.credentials.rotate(
+        { credential: c1.id },
+        { context: contextOf(org, org.adminId) },
+      ),
+    ]);
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<{ id: string; secret: string }> => r.status === 'fulfilled',
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await usableIds(org)).toEqual([fulfilled[0]?.value.id]);
+  }, 120_000);
+
+  it('Rotating a revoked credential is refused while the service account has another active credential: CATALOG_VALIDATION_FAILED, nothing is created, the active one stays the only usable', async () => {
+    const org = await freshOrg();
+    const identifier = `svc-rev-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Revoked one',
+      actorKind: 'integration',
+      metadata: { userId: identifier, createdBy: org.adminId },
+    });
+    await revokeMachineCredential(auth, {
+      userId: org.adminId,
+      id: c1.id,
+      pool: appPool,
+      tenantId: org.tenantId,
+    });
+    // A new active credential for the same service account (the revoked one does not block it).
+    const c2 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Active one',
+      actorKind: 'integration',
+      metadata: { userId: identifier, createdBy: org.adminId },
+    });
+
+    await expect(
+      client().identity.credentials.rotate(
+        { credential: c1.id },
+        { context: contextOf(org, org.ownerId) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect((await allKeyIds(org)).sort()).toEqual([c1.id, c2.id].sort());
+    expect(await usableIds(org)).toEqual([c2.id]);
+  }, 120_000);
+
+  it('Rotating a revoked credential succeeds when its service account has no active credential, and leaves exactly one usable', async () => {
+    const org = await freshOrg();
+    const identifier = `svc-none-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Revoked only',
+      actorKind: 'integration',
+      metadata: { userId: identifier, createdBy: org.adminId },
+    });
+    await revokeMachineCredential(auth, {
+      userId: org.adminId,
+      id: c1.id,
+      pool: appPool,
+      tenantId: org.tenantId,
+    });
+
+    const rotated = await client().identity.credentials.rotate(
+      { credential: c1.id },
+      { context: contextOf(org, org.ownerId) },
+    );
+
+    expect(rotated.id).not.toBe(c1.id);
+    expect(await usableIds(org)).toEqual([rotated.id]);
+  }, 120_000);
+});

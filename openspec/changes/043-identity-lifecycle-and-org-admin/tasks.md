@@ -2456,7 +2456,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       metadata carrying the old key's `actorKind`, `role` and `userId`, `rotatedAt` and
       the rotating admin's opaque id as `createdBy`, and its `rotationDueAt` (9.4)
       computed from that `rotatedAt`.
-- [ ] 9.6b Rotation is serialized per service account: it takes the
+- [x] 9.6b Rotation is serialized per service account: it takes the
       per-service-account lock of 9.5c for the whole rotation (per credential for an
       unbound integration or agent credential), and a revoked credential may be rotated only when its
       service account has no active credential (Resolved decision Q40). Verify:
