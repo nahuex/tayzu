@@ -53,7 +53,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
-import { createMachineCredential } from '../../../packages/auth/src/machine-credentials.js';
+import { createMachineCredential } from '@tayzu/auth/machine-credentials';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';

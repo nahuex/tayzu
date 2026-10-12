@@ -44,6 +44,35 @@ export const identityImportRestrictions = {
   ],
 };
 
+const MACHINE_CREDENTIAL_MESSAGE =
+  'The machine-credential functions are importable only from apps/api/src/identity/** (043 Q78).';
+
+/** `no-restricted-imports` entry for the machine-credential subpath and a relative path to its file. */
+const machineCredentialPattern = {
+  group: [
+    '@tayzu/auth/machine-credentials',
+    '**/packages/auth/src/machine-credentials',
+    '**/packages/auth/src/machine-credentials.js',
+  ],
+  message: MACHINE_CREDENTIAL_MESSAGE,
+};
+
+/** Q78: every `apps/api` file outside the identity folder (test files are exempt). */
+export const machineCredentialImportRestrictions = { patterns: [machineCredentialPattern] };
+export const MACHINE_CREDENTIAL_FILES = ['apps/api/**/*.ts'];
+export const MACHINE_CREDENTIAL_EXEMPT_FILES = [
+  'apps/api/src/identity/**',
+  '**/*.test.ts',
+  '**/__fixtures__/**',
+];
+
+/** `identity-router.ts` matches both rule sets, so its option merges them. */
+export const identityRouterImportRestrictions = {
+  paths: identityImportRestrictions.paths,
+  patterns: [machineCredentialPattern],
+};
+export const IDENTITY_ROUTER_FILES = ['apps/api/src/identity-router.ts'];
+
 /** Scoped files, and the one file that may touch the adapter. */
 export const IDENTITY_FILES = ['apps/api/src/identity/**/*.ts', 'apps/api/src/identity-router.ts'];
 export const IDENTITY_REPOSITORY_FILES = ['apps/api/src/identity/auth-repository.ts'];

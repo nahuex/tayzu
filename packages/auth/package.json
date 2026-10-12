@@ -5,7 +5,8 @@
   "description": "Better Auth instance, schema and context resolver for Tayzu (authentication, sessions, MFA, machine credentials).",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./machine-credentials": "./src/machine-credentials.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

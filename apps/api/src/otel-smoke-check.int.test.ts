@@ -88,10 +88,7 @@ import {
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
-import {
-  createMachineCredential,
-  revokeMachineCredential,
-} from '../../../packages/auth/src/machine-credentials.js';
+import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { exchangeMachineToken } from '../../../packages/auth/src/token-exchange.js';
 import { LOG_EVENTS, METRICS, SPANS } from '../../../packages/authz/src/telemetry/contract.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';

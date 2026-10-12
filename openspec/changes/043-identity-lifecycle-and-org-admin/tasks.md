@@ -2326,7 +2326,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       helpers with session headers (`bootstrap-wiring`, `otel-smoke-check`,
       `machine-credentials`, `token-exchange` and `context-resolver`, all
       `*.int.test.ts`) are migrated to the headerless call with `body.userId`, and pass.
-- [ ] 9.1c The machine-credential functions are exported only on a subpath,
+- [x] 9.1c The machine-credential functions are exported only on a subpath,
       `@tayzu/auth/machine-credentials` (a new entry in the `exports` of
       `packages/auth/package.json` pointing at `./src/machine-credentials.ts`, like
       the other just-in-time exports), and not from the package index, and a lint
