@@ -84,15 +84,30 @@ export async function createServiceAccount(args: {
           principal: { kind: 'admin', id: adminId },
           onBehalfOf: { type: 'user', id: adminId },
         });
-        const key = await createMachineCredential(args.auth, {
-          userId: adminId,
-          organizationId: tenantId,
-          name: SERVICE_ACCOUNT_KEY_NAME,
-          actorKind: 'integration',
-          role: 'member',
-          metadata: { createdBy: adminId, userId: identifier },
-        });
-        const user = await createEntityService({ pool: args.appPool, authz: args.authz }).get(
+        const entities = createEntityService({ pool: args.appPool, authz: args.authz });
+        let key: Awaited<ReturnType<typeof createMachineCredential>>;
+        try {
+          key = await createMachineCredential(args.auth, {
+            userId: adminId,
+            organizationId: tenantId,
+            name: SERVICE_ACCOUNT_KEY_NAME,
+            actorKind: 'integration',
+            role: 'member',
+            metadata: { createdBy: adminId, userId: identifier },
+          });
+        } catch (error) {
+          // Compensation: no service account without a credential is left behind.
+          await entities.delete(
+            {
+              tenantId,
+              actor: { ...SYSTEM_READER, onBehalfOf: { type: 'user', id: adminId } },
+              principal: { roles: ['admin'] },
+            },
+            { blueprint: '_user', identifier, detachReferences: true },
+          );
+          throw error;
+        }
+        const user = await entities.get(
           { tenantId, actor: SYSTEM_READER, principal: { roles: ['admin'] } },
           { blueprint: '_user', identifier },
         );

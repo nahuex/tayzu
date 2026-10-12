@@ -2549,7 +2549,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       bound to `svc-ci-github` seeded directly and no such `_user`, the creation of
       `svc-ci-github` is refused with nothing created, and it succeeds once that key is
       revoked (that the surviving key does not resolve is 11.6's and 11.7's case).
-- [ ] 10.3b If issuing the key fails after the `_user` was written, the `_user`
+- [x] 10.3b If issuing the key fails after the `_user` was written, the `_user`
       entity is removed again (compensation) and the failure is recorded as the error
       of the `identity.service_account.create` span (no new event; design D6), so no
       service account without a credential is left behind. Verify: `service-accounts.int.test.ts`

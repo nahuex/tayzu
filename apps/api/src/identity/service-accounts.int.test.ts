@@ -64,7 +64,7 @@ import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 
 import { createAdminUser } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
@@ -80,6 +80,28 @@ import { createInMemoryEmailCapStore } from './invitation-caps.js';
 import { createEmailTenantGate } from './email-tenant-gate.js';
 import { createWithUserLock } from './user-lock.js';
 import { createUserSyncAdapter } from './user-sync-adapter.js';
+
+/**
+ * Failure seam of task 10.3b: `createMachineCredential` delegates to the real function except for
+ * the tenants listed here, for which it throws before issuing anything. Empty by default, so every
+ * other test of this file sees the real behavior.
+ */
+const keySeam = vi.hoisted(() => ({ failTenants: new Set<string>() }));
+
+vi.mock('@tayzu/auth/machine-credentials', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tayzu/auth/machine-credentials')>();
+  return {
+    ...actual,
+    createMachineCredential: async (
+      ...args: Parameters<typeof actual.createMachineCredential>
+    ): Promise<Awaited<ReturnType<typeof actual.createMachineCredential>>> => {
+      if (keySeam.failTenants.has(args[1].organizationId)) {
+        throw new Error('injected key creation failure');
+      }
+      return await actual.createMachineCredential(...args);
+    },
+  };
+});
 
 const STATUS_EVENT = 'catalog.audit.user_status_changed';
 const CREATED_EVENT = 'catalog.audit.service_account_created';
@@ -397,5 +419,39 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe('Active');
     expect(created.clientId).not.toBe(surviving.id);
+  }, 120_000);
+
+  it('A failed credential issue leaves no orphan service account: when the key creation fails after the _user was written, the operation fails, no _user of that identifier remains, no key exists and the failure is the error of the identity.service_account.create span', async () => {
+    const tenant = await freshTenant();
+    const identifier = `svc-orphan-${randomUUID().slice(0, 8)}`;
+    // GIVEN the key creation fails after the `_user` entity was written.
+    keySeam.failTenants.add(tenant.tenantId);
+
+    // WHEN an admin creates a service account, THEN the operation fails.
+    try {
+      await expect(
+        creator().identity.serviceAccounts.create({ identifier }, { context: context(tenant) }),
+      ).rejects.toThrow();
+    } finally {
+      keySeam.failTenants.delete(tenant.tenantId);
+    }
+
+    // AND no `_user` entity of that service account remains, and no key exists.
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await keyRows(tenant.tenantId)).toEqual([]);
+    expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(0);
+
+    // The failure is recorded as the error of the `identity.service_account.create` span.
+    await harness.forceFlush();
+    const spans = harness.spanExporter
+      .getFinishedSpans()
+      .filter(
+        (span) =>
+          span.name === 'identity.service_account.create' &&
+          span.attributes['tayzu.identity.service_account.id'] === identifier,
+      );
+    expect(spans).toHaveLength(1);
+    // SpanStatusCode.ERROR
+    expect(spans[0]?.status.code).toBe(2);
   }, 120_000);
 });
