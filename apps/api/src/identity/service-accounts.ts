@@ -33,6 +33,9 @@ export function isValidServiceAccountIdentifier(identifier: string): boolean {
   return SERVICE_ACCOUNT_IDENTIFIER_PATTERN.test(identifier);
 }
 
+/** The most service accounts a tenant holds by default (Resolved decision Q56). */
+export const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
+
 /** The fixed key label: the plugin limits a key name to 32 characters and the identifier can run to 63. */
 const SERVICE_ACCOUNT_KEY_NAME = 'Service account key';
 
@@ -52,6 +55,8 @@ export async function createServiceAccount(args: {
   readonly tenantId: string;
   readonly adminId: string;
   readonly identifier: string;
+  /** The most service accounts the tenant may hold (Q56). */
+  readonly cap?: number;
 }): Promise<{ user: EntityOutput; clientId: string; clientSecret: string }> {
   const { tenantId, adminId, identifier } = args;
   if (!isValidServiceAccountIdentifier(identifier)) throw new CredentialConflictError();
@@ -63,6 +68,21 @@ export async function createServiceAccount(args: {
         await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
           `service-account:${tenantId}:${identifier}`,
         ]);
+        // Per-tenant lock (Q56): concurrent creates cannot overshoot the cap.
+        await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+          `service-account-cap:${tenantId}`,
+        ]);
+        const count = await lockClient.query<{ n: string }>(
+          `select count(*)::text as n
+             from catalog_entity e
+             join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+            where e.tenant_id = $1 and b.identifier = '_user'
+              and e.spec_properties ->> 'accountKind' = 'service'`,
+          [tenantId],
+        );
+        if (Number(count.rows[0]?.n) >= (args.cap ?? DEFAULT_SERVICE_ACCOUNT_CAP)) {
+          throw new CredentialConflictError();
+        }
         const [keys, revoked] = await Promise.all([
           readAllApiKeys(args.authRepository, tenantId),
           readRevokedIds(args.appPool, tenantId),

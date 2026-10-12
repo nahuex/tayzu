@@ -858,3 +858,32 @@ describe('a zero or disabled credential cap fails startup (043 task 9.5d, Q56, 0
     },
   );
 });
+
+/**
+ * `043` task 10.8 (Resolved decision Q56): a tenant holds at most 50 service accounts, a single
+ * cap parsed with `optionalPositiveInt`, its default in code; a zero or disabled value fails
+ * startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `serviceAccountCap: number` (50 by default), from `SERVICE_ACCOUNT_CAP`.
+ */
+describe('a zero or disabled service-account cap fails startup (043 task 10.8, Q56, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['serviceAccountCap'];
+
+  it('serviceAccountCap is 50 by default in code', () => {
+    expect(read(loadConfig(env()))).toBe(50);
+  });
+
+  it('serviceAccountCap is only tuned by the environment', () => {
+    expect(read(loadConfig(env({ SERVICE_ACCOUNT_CAP: '7' })))).toBe(7);
+  });
+
+  it.each(['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'])(
+    'SERVICE_ACCOUNT_CAP=%j (disabled or zero) fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ SERVICE_ACCOUNT_CAP: value })));
+      expect(error.message).toContain('SERVICE_ACCOUNT_CAP');
+    },
+  );
+});

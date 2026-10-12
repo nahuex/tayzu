@@ -978,4 +978,96 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
       (await logRecords('catalog.audit.service_account_deleted', tenant.tenantId)).length,
     ).toBe(deletedBefore);
   }, 120_000);
+
+  // Task 10.8: the per-tenant cap of 50 service accounts (Resolved decision Q56; design D6).
+  // Production symbol expected: `createIdentityRouter` counts the tenant's `_user` entities with
+  // `accountKind: "service"` under a per-tenant advisory lock and refuses beyond the cap (default
+  // 50, option `serviceAccountCap?: number` fed from `Config.serviceAccountCap`) with
+  // `CATALOG_VALIDATION_FAILED`.
+  async function serviceAccountCount(tenantId: string): Promise<number> {
+    return await withTenantTransaction(appPool, { tenantId }, async (db) => {
+      const result = await db.query<{ n: string }>(
+        `select count(*)::text as n
+           from catalog_entity e
+           join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+          where e.tenant_id = $1 and b.identifier = '_user'
+            and e.spec_properties ->> 'accountKind' = 'service'`,
+        [tenantId],
+      );
+      return Number(result.rows[0]?.n);
+    });
+  }
+
+  /** Seeds service accounts (and one human, never counted) directly, with no credential. */
+  async function seedServiceAccounts(tenant: Tenant, count: number): Promise<void> {
+    const seeder = createUserSyncAdapter({
+      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+    });
+    const write = async (identifier: string, service: boolean): Promise<void> => {
+      await seeder.writeUserChange({
+        tenantId: tenant.tenantId,
+        email: identifier,
+        name: identifier,
+        portRole: 'member',
+        change: 'created_active',
+        userId: identifier,
+        ...(service ? { accountKind: 'service' as const } : {}),
+        principal: { kind: 'admin', id: tenant.adminId },
+        onBehalfOf: { type: 'user', id: tenant.adminId },
+      });
+    };
+    // The first write creates the tenant's `_user` blueprint, so it runs alone.
+    await write('seed-human@example.test', false);
+    for (let start = 0; start < count; start += 10) {
+      await Promise.all(
+        Array.from({ length: Math.min(10, count - start) }, (_, offset) =>
+          write(`svc-seed-${String(start + offset)}`, true),
+        ),
+      );
+    }
+  }
+
+  it('The per-tenant service-account cap holds: with 50 seeded the 51st is refused with CATALOG_VALIDATION_FAILED, nothing is created and the count stays 50', async () => {
+    const tenant = await freshTenant();
+    await seedServiceAccounts(tenant, 50);
+    expect(await serviceAccountCount(tenant.tenantId)).toBe(50);
+    const identifier = `svc-over-${randomUUID().slice(0, 8)}`;
+    const statusEventsBefore = (await logRecords(STATUS_EVENT, tenant.tenantId)).length;
+
+    await expect(
+      creator().identity.serviceAccounts.create({ identifier }, { context: context(tenant) }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await changeEvents(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await keyRows(tenant.tenantId)).toEqual([]);
+    expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(0);
+    expect((await logRecords(STATUS_EVENT, tenant.tenantId)).length).toBe(statusEventsBefore);
+    expect(await serviceAccountCount(tenant.tenantId)).toBe(50);
+  }, 180_000);
+
+  it('The per-tenant service-account cap holds: two concurrent creates at 49 yield exactly one success and the tenant holds 50', async () => {
+    const tenant = await freshTenant();
+    await seedServiceAccounts(tenant, 49);
+    expect(await serviceAccountCount(tenant.tenantId)).toBe(49);
+    const identifiers = [
+      `svc-race-a-${randomUUID().slice(0, 8)}`,
+      `svc-race-b-${randomUUID().slice(0, 8)}`,
+    ];
+
+    const outcomes = await Promise.allSettled(
+      identifiers.map((identifier) =>
+        creator().identity.serviceAccounts.create({ identifier }, { context: context(tenant) }),
+      ),
+    );
+
+    const fulfilled = outcomes.filter((outcome) => outcome.status === 'fulfilled');
+    const rejected = outcomes.filter((outcome) => outcome.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await serviceAccountCount(tenant.tenantId)).toBe(50);
+    expect(await keyRows(tenant.tenantId)).toHaveLength(1);
+    expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(1);
+  }, 180_000);
 });

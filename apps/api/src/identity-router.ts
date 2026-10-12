@@ -126,6 +126,8 @@ export interface CreateIdentityRouterOptions {
   readonly appPool?: Pool;
   /** The credential cap of task 9.5d; the viewer's page size. Default 200. */
   readonly credentialCap?: number;
+  /** The most service accounts a tenant holds (task 10.8, Q56). Default 50. */
+  readonly serviceAccountCap?: number;
   /** The Q30 adapter every `_user` write goes through (service accounts, task 10.3). */
   readonly userSync?: UserSyncAdapter;
 }
@@ -483,6 +485,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               tenantId: rawTenantId(context),
               adminId: (context['actor'] as { id: string }).id,
               identifier,
+              ...(options.serviceAccountCap === undefined
+                ? {}
+                : { cap: options.serviceAccountCap }),
             });
           },
         }),

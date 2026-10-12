@@ -56,6 +56,8 @@ export interface Config {
   readonly bodyLimit: number;
   /** The most non-revoked credentials a tenant holds (043 Q56). */
   readonly credentialCap: number;
+  /** The most service accounts a tenant holds (043 Q56). */
+  readonly serviceAccountCap: number;
   /** Back-channel logout budget per source IP per minute (D26, Q32). */
   readonly backchannelLogoutRateLimitPerMinute: number;
   /** Explicit opt-out of telemetry (Q41); only the exact `true` enables it. */
@@ -80,6 +82,7 @@ const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
 const DEFAULT_MACHINE_CREDENTIAL_LIMIT = { max: 60, windowSeconds: 3600 };
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 const DEFAULT_CREDENTIAL_CAP = 200;
+const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
 
 const MIN_SECRET_LENGTH = 32;
 
@@ -377,6 +380,8 @@ export function loadConfig(env: Env): Config {
   );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const credentialCap = optionalPositiveInt(env, 'CREDENTIAL_CAP') ?? DEFAULT_CREDENTIAL_CAP;
+  const serviceAccountCap =
+    optionalPositiveInt(env, 'SERVICE_ACCOUNT_CAP') ?? DEFAULT_SERVICE_ACCOUNT_CAP;
   const backchannelLogoutRateLimitPerMinute =
     optionalPositiveInt(env, 'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE') ??
     DEFAULT_BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE;
@@ -404,6 +409,7 @@ export function loadConfig(env: Env): Config {
     invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     credentialCap,
+    serviceAccountCap,
     telemetryDisabled: loadTelemetryDisabled(env),
   };
 }

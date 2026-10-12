@@ -2610,7 +2610,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `credentials.int.test.ts` covers a `credentials.create` bound to such a
       `_user` and to a human being refused with the same answer.
 
-- [ ] 10.8 A tenant holds at most 50 service accounts (Resolved decision Q56),
+- [x] 10.8 A tenant holds at most 50 service accounts (Resolved decision Q56),
       configurable in `apps/api/src/config.ts` as a single cap with the
       `optionalPositiveInt` parser (a cap is not a maximum and window pair), its
       default in code and a disabled or zero value failing startup.
