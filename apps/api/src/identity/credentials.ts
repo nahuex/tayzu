@@ -16,6 +16,11 @@ const CREDENTIAL_PREFIX = 'tayzu_mc_';
 
 const DEFAULT_PAGE_SIZE = 100;
 
+/** Policy default: a credential is due for rotation this many days after its last rotation. */
+export const DEFAULT_ROTATION_INTERVAL_DAYS = 90;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export const DEFAULT_CREDENTIAL_CAP = 200;
 
 export type CredentialKind = 'service_account' | 'integration' | 'agent';
@@ -28,8 +33,7 @@ export interface CredentialView {
   readonly createdAt: Date;
   readonly lastRequest: Date | null;
   readonly enabled: boolean;
-  /** Computed by task 9.4. */
-  readonly rotationDueAt: Date | null;
+  readonly rotationDueAt: Date;
   readonly createdBy?: string;
 }
 
@@ -58,6 +62,20 @@ export function readApiKeyMetadata(value: unknown): ApiKeyMetadata {
     if (typeof entry === 'string') result[field] = entry;
   }
   return result;
+}
+
+/**
+ * When the credential is due for rotation: `metadata.rotatedAt` (or `createdAt` for a credential
+ * never rotated, or whose `rotatedAt` is unparseable) plus the interval.
+ */
+export function computeRotationDueAt(args: {
+  rotatedAt?: string;
+  createdAt: Date;
+  intervalDays?: number;
+}): Date {
+  const rotated = args.rotatedAt === undefined ? undefined : new Date(args.rotatedAt);
+  const base = rotated !== undefined && !Number.isNaN(rotated.getTime()) ? rotated : args.createdAt;
+  return new Date(base.getTime() + (args.intervalDays ?? DEFAULT_ROTATION_INTERVAL_DAYS) * DAY_MS);
 }
 
 /** Pages through every `machine-credential` key of the tenant to the end. */
@@ -157,7 +175,10 @@ export async function listCredentials(args: {
         key.enabled &&
         !revoked.has(key.id) &&
         !(metadata.userId !== undefined && disabledAccounts.has(metadata.userId)),
-      rotationDueAt: null,
+      rotationDueAt: computeRotationDueAt({
+        createdAt: key.createdAt,
+        ...(metadata.rotatedAt === undefined ? {} : { rotatedAt: metadata.rotatedAt }),
+      }),
       ...(metadata.createdBy === undefined ? {} : { createdBy: metadata.createdBy }),
     };
   });

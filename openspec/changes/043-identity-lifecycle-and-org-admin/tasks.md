@@ -2385,7 +2385,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 9.3 A credential is shown disabled when its key is disabled, it is
       revoked, or its bound service account is `Disabled`. Verify:
       `credentials.int.test.ts` covers each of the three cases.
-- [ ] 9.4 `rotationDueAt` is computed from the credential's `metadata.rotatedAt`, or
+- [x] 9.4 `rotationDueAt` is computed from the credential's `metadata.rotatedAt`, or
       from its `createdAt` for a credential never rotated, plus the configured interval
       (default 90 days). Verify: `credentials.test.ts` (pure) covers a credential
       rotated 91 days ago flagged due and one rotated yesterday not, and a credential
