@@ -2563,7 +2563,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 - [x] 10.5 A non-admin attempting `identity.serviceAccounts.create` is denied.
       Verify: `service-accounts.int.test.ts` covers "A non-admin cannot create a
       service account" against the real Cerbos container.
-- [ ] 10.6 Token exchange adds `userId` as an attribution claim only, at the
+- [x] 10.6 Token exchange adds `userId` as an attribution claim only, at the
       place `token-exchange.ts` builds the signed payload (the payload parser of
       `context-resolver.ts` ignores extra claims), and `exchangeMachineToken` gains
       the port for the `_user` lookup that 11.7 needs (`045` adds the deletion-marker lookup);

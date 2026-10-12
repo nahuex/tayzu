@@ -100,6 +100,9 @@ const ACTOR_KIND_METADATA_KEY = 'actorKind';
 /** Q28: the credential's fixed role, stored next to `actorKind`. */
 const ROLE_METADATA_KEY = 'role';
 
+/** Task 10.6: the service account's `svc-…` identifier, stored in the credential's metadata. */
+const USER_ID_METADATA_KEY = 'userId';
+
 /** design D5: "a 1-hour access token." */
 const ONE_HOUR_SECONDS = 60 * 60;
 
@@ -119,6 +122,28 @@ export interface ExchangeMachineTokenParams {
   readonly clientId: string;
   /** The credential's client secret (`CreatedMachineCredential['secret']`). */
   readonly clientSecret: string;
+}
+
+/** The service account whose `_user` row the exchange looks up (task 10.6). */
+export interface ServiceAccountLookupTarget {
+  readonly tenantId: string;
+  readonly userId: string;
+}
+
+/** The slice of the `_user` row the lookup port resolves to; `045` adds the deletion marker. */
+export interface ServiceAccountUserRow {
+  readonly status: string;
+  readonly properties: Record<string, unknown>;
+}
+
+/**
+ * Ports the exchange depends on (task 10.6). The row is looked up for 11.7;
+ * nothing is ever copied from it into the signed payload (Resolved decision Q12).
+ */
+export interface ExchangeMachineTokenPorts {
+  readonly serviceAccountLookup?: (
+    target: ServiceAccountLookupTarget,
+  ) => Promise<ServiceAccountUserRow | null>;
 }
 
 /** design D5, requirement text: "MUST return an access token." */
@@ -259,6 +284,7 @@ function recordFailedExchange(actorKind: MachineCredentialActorKind | undefined)
 export async function exchangeMachineToken(
   auth: AuthInstance,
   params: ExchangeMachineTokenParams,
+  ports: ExchangeMachineTokenPorts = {},
 ): Promise<ExchangedMachineToken> {
   const api = apiOf(auth);
 
@@ -292,6 +318,13 @@ export async function exchangeMachineToken(
     throw new AuthInvalidCredentialsError();
   }
 
+  // Task 10.6: `userId` is an attribution claim only, never an authority.
+  const boundUserId = key.metadata?.[USER_ID_METADATA_KEY];
+  const userId = typeof boundUserId === 'string' ? boundUserId : undefined;
+  if (userId !== undefined && ports.serviceAccountLookup !== undefined) {
+    await ports.serviceAccountLookup({ tenantId: key.referenceId, userId });
+  }
+
   const nowSeconds = Math.floor(Date.now() / 1000);
   const signed = await api.signJWT({
     body: {
@@ -299,6 +332,7 @@ export async function exchangeMachineToken(
         tenantId: key.referenceId,
         actor: { type: actorKind, id: key.id },
         role,
+        ...(userId === undefined ? {} : { userId }),
         sub: key.id,
         iat: nowSeconds,
         exp: nowSeconds + ONE_HOUR_SECONDS,

@@ -205,6 +205,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
+import { createContextResolver } from './context-resolver.js';
 import { createMachineCredential, revokeMachineCredential } from './machine-credentials.js';
 import type { CreatedMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
@@ -646,5 +647,95 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
 
     // Never the credential's client id or its client secret.
     expectNoSecretsInTelemetry(harness, [created.id, created.secret]);
+  });
+
+  /**
+   * Task 10.6 (design D6, Resolved decision Q12), quoted from the 043 spec:
+   *
+   * #### Scenario: A tampered `_user` row does not raise the principal
+   * - GIVEN a service account whose `_user` entity has been given the `admin`
+   *   role by a direct write
+   * - WHEN it exchanges its credential and calls an operation
+   * - THEN its principal is `member` with no teams and no moderated blueprints
+   *
+   * Production symbols expected (module `./token-exchange.ts`):
+   * `exchangeMachineToken(auth, params, ports?)` gains a third argument,
+   * `ports.serviceAccountLookup(target)`, called with `{ tenantId, userId }`
+   * (the credential's `referenceId` and its `metadata.userId`) and resolving to
+   * the service account's `_user` row as `{ status: string; properties:
+   * Record<string, unknown> } | null` (`045` adds the deletion-marker lookup).
+   * The signed payload gains a `userId` attribution claim and nothing else:
+   * the role stays the credential's fixed `member` claim, and no role, team or
+   * moderated-blueprint claim is ever copied from the row.
+   *
+   * The "direct write" is modelled by a lookup port that returns the tampered
+   * row, so the test needs no catalog schema; the port is the only way the row
+   * could reach the exchange.
+   */
+  it('A tampered `_user` row does not raise the principal', async () => {
+    const admin = await bootstrapAdmin();
+    const serviceAccountId = 'svc-tampered-ci';
+    const created = await createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'Service account credential',
+      actorKind: 'integration',
+      metadata: { userId: serviceAccountId, createdBy: admin.userId },
+    });
+
+    // GIVEN the service account's `_user` entity was given the `admin` role by
+    // a direct write (plus elevated grants).
+    const lookups: { tenantId: string; userId: string }[] = [];
+    const tamperedRow = {
+      status: 'Active',
+      properties: {
+        accountKind: 'service',
+        portRole: 'admin',
+        role: 'admin',
+        roles: ['admin'],
+        teams: ['platform'],
+        moderatedBlueprints: ['service'],
+      },
+    };
+
+    // WHEN it exchanges its credential ...
+    const exchanged = await exchangeMachineToken(
+      auth,
+      { clientId: created.id, clientSecret: created.secret },
+      {
+        serviceAccountLookup: (target: { tenantId: string; userId: string }) => {
+          lookups.push(target);
+          return Promise.resolve(tamperedRow);
+        },
+      },
+    );
+
+    // The port is the `_user` lookup, called for this tenant and identifier.
+    expect(lookups, 'the exchange looked up the bound _user through the port').toEqual([
+      { tenantId: admin.organizationId, userId: serviceAccountId },
+    ]);
+
+    // `userId` is an attribution claim; no authority is copied from the row.
+    const claims = JSON.parse(
+      Buffer.from(exchanged.accessToken.split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(claims['userId'], 'userId is added as an attribution claim').toBe(serviceAccountId);
+    expect(claims['role']).toBe('member');
+    expect(claims).not.toHaveProperty('teams');
+    expect(claims).not.toHaveProperty('moderatedBlueprints');
+    expect(claims).not.toHaveProperty('roles');
+
+    // ... and calls an operation (the resolver is the context of every call).
+    const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+    const resolved = await resolveContext(
+      new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    );
+
+    // THEN "its principal is `member` with no teams and no moderated blueprints".
+    expect(resolved).toEqual({
+      tenantId: admin.organizationId,
+      actor: { type: 'integration', id: created.id },
+      principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
+    });
   });
 });
