@@ -63,8 +63,9 @@ import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createEntityService, createUserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
+import type * as MachineCredentialsModule from '@tayzu/auth/machine-credentials';
 
 import { harnessPools } from '../__fixtures__/pools.js';
 import { createIdentityRouter } from '../identity-router.js';
@@ -81,6 +82,26 @@ import {
   TEST_PASSWORD,
   TEST_SECRET,
 } from '../../../../packages/auth/src/__fixtures__/test-secret.js';
+
+/**
+ * Failure seam of task 9.7: `revokeMachineCredential` delegates to the real function except for
+ * the credential ids listed here, for which it throws before writing anything. Empty by default,
+ * so every other test of this file sees the real behavior.
+ */
+const revokeSeam = vi.hoisted(() => ({ failFor: new Set<string>() }));
+
+vi.mock('@tayzu/auth/machine-credentials', async (importOriginal) => {
+  const actual = await importOriginal<typeof MachineCredentialsModule>();
+  return {
+    ...actual,
+    revokeMachineCredential: async (
+      ...args: Parameters<typeof actual.revokeMachineCredential>
+    ): Promise<void> => {
+      if (revokeSeam.failFor.has(args[1].id)) throw new Error('injected revoke failure');
+      await actual.revokeMachineCredential(...args);
+    },
+  };
+});
 
 interface OrganizationSurface {
   createOrganization(args: {
@@ -1810,5 +1831,139 @@ describe('identity.credentials.rotate is serialized (task 9.6b, Q40)', () => {
 
     expect(rotated.id).not.toBe(c1.id);
     expect(await usableIds(org)).toEqual([rotated.id]);
+  }, 120_000);
+});
+
+describe('identity.credentials.rotate compensates a failed revoke (task 9.7)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface CompensationClient {
+    identity: {
+      credentials: {
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): CompensationClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  async function freshOrg(): Promise<{ tenantId: string; adminId: string }> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Compensation Owner',
+      email: `comp-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Compensation Org', slug: `comp-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Compensation Admin',
+      email: `comp-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  async function revokedIds(tenantId: string): Promise<Set<string>> {
+    const result = await withTenantTransaction(appPool, { tenantId }, (c) =>
+      c.query<{ credential_id: string }>(
+        'select credential_id from machine_credential_revocation where tenant_id = $1',
+        [tenantId],
+      ),
+    );
+    return new Set(result.rows.map((r) => r.credential_id));
+  }
+
+  /** Ids of the tenant's keys that are enabled and not on the revocation list. */
+  async function usableIds(tenantId: string): Promise<string[]> {
+    const [keys, revoked] = await Promise.all([
+      readAllApiKeys(authRepository, tenantId),
+      revokedIds(tenantId),
+    ]);
+    return keys.filter((k) => k.enabled && !revoked.has(k.id)).map((k) => k.id);
+  }
+
+  async function allKeyIds(tenantId: string): Promise<string[]> {
+    const rows = await authPool.query<{ id: string }>(
+      'select id from auth.apikey where reference_id = $1',
+      [tenantId],
+    );
+    return rows.rows.map((r) => r.id);
+  }
+
+  it('A failed rotation leaves no second usable credential: when retiring the old credential fails, the new one is revoked and disabled, the operation fails, and at most the old one is usable', async () => {
+    const org = await freshOrg();
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Failing rotation',
+      actorKind: 'integration',
+      metadata: { createdBy: org.adminId },
+    });
+    revokeSeam.failFor.add(c1.id);
+
+    try {
+      await expect(
+        client().identity.credentials.rotate(
+          { credential: c1.id },
+          {
+            context: {
+              tenantId: org.tenantId,
+              actor: { type: 'user', id: org.adminId },
+              principal: { roles: ['admin'] },
+            },
+          },
+        ),
+      ).rejects.toBeDefined();
+    } finally {
+      revokeSeam.failFor.delete(c1.id);
+    }
+
+    // A new key was created and then retired as compensation.
+    const newIds = (await allKeyIds(org.tenantId)).filter((id) => id !== c1.id);
+    expect(newIds).toHaveLength(1);
+    const revoked = await revokedIds(org.tenantId);
+    expect(revoked.has(newIds[0] ?? '')).toBe(true);
+    const keys = await readAllApiKeys(authRepository, org.tenantId);
+    expect(keys.find((k) => k.id === newIds[0])?.enabled).toBe(false);
+
+    // No second usable credential: the only usable one is the old one, whose retirement failed.
+    expect(await usableIds(org.tenantId)).toEqual([c1.id]);
   }, 120_000);
 });

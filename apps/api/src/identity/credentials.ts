@@ -363,12 +363,23 @@ export async function rotateCredential(args: {
         ...(metadata.userId === undefined ? {} : { userId: metadata.userId }),
       },
     });
-    await revokeMachineCredential(args.auth, {
-      userId: args.adminId,
-      id: old.id,
-      pool: args.appPool,
-      tenantId: args.tenantId,
-    });
+    try {
+      await revokeMachineCredential(args.auth, {
+        userId: args.adminId,
+        id: old.id,
+        pool: args.appPool,
+        tenantId: args.tenantId,
+      });
+    } catch (error) {
+      // Compensation: no second usable credential may survive a failed retirement.
+      await revokeMachineCredential(args.auth, {
+        userId: args.adminId,
+        id: created.id,
+        pool: args.appPool,
+        tenantId: args.tenantId,
+      });
+      throw error;
+    }
     return { id: created.id, secret: created.secret };
   });
 }

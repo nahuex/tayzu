@@ -2465,7 +2465,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       the other fails with `CATALOG_VALIDATION_FAILED`, and exactly one credential is
       usable afterward) and rotating a revoked credential being refused while another
       is active.
-- [ ] 9.7 If revoking the old credential fails, the new one is revoked and the
+- [x] 9.7 If revoking the old credential fails, the new one is revoked and the
       operation fails. Verify: `credentials.int.test.ts` covers "A failed rotation
       leaves no second usable credential" with a failure seam on the revoke.
 - [ ] 9.8 If compensation also fails,
