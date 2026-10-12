@@ -144,6 +144,33 @@ resources:
     attr:
       tenantId: t1
       accountKind: service
+  # Task 10.2: `create` has no target yet and sends the literal `new` with
+  # `accountKind: service` (the account being created).
+  service_account_new_t1:
+    kind: service_account
+    id: new
+    attr:
+      tenantId: t1
+      accountKind: service
+  # A resolved target that is a human `_user` (explicit `standard`), and one with
+  # no `accountKind` key at all (absent means standard, Q62).
+  service_account_standard_t1:
+    kind: service_account
+    id: human-1
+    attr:
+      tenantId: t1
+      accountKind: standard
+  service_account_no_kind_t1:
+    kind: service_account
+    id: legacy-1
+    attr:
+      tenantId: t1
+  service_account_t2:
+    kind: service_account
+    id: svc-other
+    attr:
+      tenantId: t2
+      accountKind: service
   credential_t1:
     kind: credential
     id: apikey-1

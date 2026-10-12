@@ -2499,7 +2499,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       validated at creation. Verify: `service-accounts.test.ts` covers acceptance
       of `svc-ci-github` and rejection of `ci-github` (missing prefix) and an
       over-length identifier.
-- [ ] 10.2 (Checkpoint 3) Cerbos policy: `service_account.create` and `delete`
+- [x] 10.2 (Checkpoint 3) Cerbos policy: `service_account.create` and `delete`
       on resource kind `service_account`, importing `002`'s `same_tenant` derived
       role and carrying the explicit cross-tenant `EFFECT_DENY` of `002` D8,
       `admin`-only, plus an `EFFECT_DENY` for every action unless

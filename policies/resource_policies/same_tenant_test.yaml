@@ -16,6 +16,8 @@ tests:
         - user_t1
         - credential_t1
         - credential_list_t1
+        - service_account_t1
+        - service_account_new_t1
       actions: [view, list, create, update, delete, rotate, revoke]
     expected:
       - principal: admin_t2
@@ -45,6 +47,12 @@ tests:
         actions: *all_denied
       - principal: admin_t2
         resource: credential_list_t1
+        actions: *all_denied
+      - principal: admin_t2
+        resource: service_account_t1
+        actions: *all_denied
+      - principal: admin_t2
+        resource: service_account_new_t1
         actions: *all_denied
 
   - name: Member of the owning team's name in another tenant is denied
