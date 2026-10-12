@@ -154,6 +154,23 @@ resources:
     id: list
     attr:
       tenantId: t1
+  # Task 9.1: `create` has no resource yet and sends the literal `new`; a
+  # credential of another tenant, addressed by its opaque `apikey` id.
+  credential_new_t1:
+    kind: credential
+    id: new
+    attr:
+      tenantId: t1
+  credential_t2:
+    kind: credential
+    id: apikey-2
+    attr:
+      tenantId: t2
+  credential_list_t2:
+    kind: credential
+    id: list
+    attr:
+      tenantId: t2
   # No ownership configured.
   entity_service_unowned_t1:
     kind: catalog_entity

@@ -2283,7 +2283,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 
 ## 9. Org API credentials: viewer, create, rotate and revoke
 
-- [ ] 9.1 (Checkpoint 3) Cerbos policy: `credential.list`, `create`, `rotate` and
+- [x] 9.1 (Checkpoint 3) Cerbos policy: `credential.list`, `create`, `rotate` and
       `revoke` on resource kind `credential`, importing `002`'s `same_tenant`
       derived role and carrying the explicit cross-tenant `EFFECT_DENY` of `002` D8,
       `admin`-only. Verify: `cerbos compile` runs `policies/resource_policies/credential_test.yaml` (with its resources in the shared `testdata/resources.yaml`) covering
