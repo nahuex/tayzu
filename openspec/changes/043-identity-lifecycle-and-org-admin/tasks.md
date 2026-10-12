@@ -2433,7 +2433,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       concurrent creates bound to one service account with no active credential,
       exactly one succeeding, the other refused with `CATALOG_VALIDATION_FAILED`, and
       exactly one active credential afterward.
-- [ ] 9.5d A tenant holds at most 200 non-revoked credentials (Resolved decision
+- [x] 9.5d A tenant holds at most 200 non-revoked credentials (Resolved decision
       Q56), configurable in `apps/api/src/config.ts` as a single cap with the
       `optionalPositiveInt` parser (`limitWithDefaults` takes a maximum and a window
       pair, which a cap is not), its default in code and a disabled or zero value

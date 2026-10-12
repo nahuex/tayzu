@@ -829,3 +829,32 @@ describe('a zero machine-credential rate limit fails startup (043 task 9.5, Q44,
     expect(error.message).toContain(name);
   });
 });
+
+/**
+ * `043` task 9.5d (Resolved decision Q56): a tenant holds at most 200 non-revoked credentials,
+ * a single cap parsed with `optionalPositiveInt`, its default in code; a zero or disabled value
+ * fails startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `credentialCap: number` (200 by default), from `CREDENTIAL_CAP`.
+ */
+describe('a zero or disabled credential cap fails startup (043 task 9.5d, Q56, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['credentialCap'];
+
+  it('credentialCap is 200 by default in code', () => {
+    expect(read(loadConfig(env()))).toBe(200);
+  });
+
+  it('credentialCap is only tuned by the environment', () => {
+    expect(read(loadConfig(env({ CREDENTIAL_CAP: '25' })))).toBe(25);
+  });
+
+  it.each(['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'])(
+    'CREDENTIAL_CAP=%j (disabled or zero) fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ CREDENTIAL_CAP: value })));
+      expect(error.message).toContain('CREDENTIAL_CAP');
+    },
+  );
+});

@@ -1048,3 +1048,191 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     expect(await keyIds(org)).toHaveLength(1);
   }, 120_000);
 });
+
+/**
+ * Task 9.5d of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (the per-tenant credential cap; design D8; Resolved decision Q56).
+ *
+ * Scenario (verbatim from the spec): "The credential cap and the name limit hold": GIVEN a
+ * tenant with 200 non-revoked credentials, WHEN an admin creates another, or creates one with a
+ * name of 33 characters, THEN the creation fails with `CATALOG_VALIDATION_FAILED` and nothing
+ * is created. Also: a tenant MUST NOT hold more than 200 non-revoked credentials; a revoked one
+ * does not count; concurrent creates under the per-tenant advisory lock cannot overshoot.
+ *
+ * ## Production symbols expected
+ *
+ * - `createIdentityRouter` (`../identity-router.js`): `options.credentialCap` (already the page
+ *   size of the viewer, default 200) is also the cap that `identity.credentials.create` enforces
+ *   by counting the tenant's non-revoked keys through `readAllApiKeys` and the revocation list,
+ *   under a per-tenant Postgres advisory lock. Beyond it: `CATALOG_VALIDATION_FAILED`.
+ * - The key issued by `identity.serviceAccounts.create` counts and is bound by the same cap
+ *   (its router procedure does not exist yet, so it is covered where that operation is tested).
+ */
+describe('the credential cap holds (task 9.5d, Q56)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface CapClient {
+    identity: {
+      credentials: {
+        create(
+          input: { name: string; kind: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): CapClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Cap Owner',
+      email: `cap-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Cap Org', slug: `cap-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Cap Admin',
+      email: `cap-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: org.adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function seedMany(org: Org, count: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let start = 0; start < count; start += 20) {
+      const batch = Array.from({ length: Math.min(20, count - start) }, (_, i) =>
+        createMachineCredential(auth, {
+          userId: org.adminId,
+          organizationId: org.tenantId,
+          name: `seed-${String(start + i)}`,
+          actorKind: 'integration',
+          metadata: { createdBy: org.adminId },
+        }),
+      );
+      ids.push(...(await Promise.all(batch)).map((c) => c.id));
+    }
+    return ids;
+  }
+
+  async function keyCount(org: Org): Promise<number> {
+    const rows = await authPool.query<{ n: string }>(
+      'select count(*)::text as n from auth.apikey where reference_id = $1',
+      [org.tenantId],
+    );
+    return Number(rows.rows[0]?.n);
+  }
+
+  const input = (name: string) => ({ name, kind: 'integration' });
+
+  it('The credential cap and the name limit hold: with 200 non-revoked credentials the 201st is refused with CATALOG_VALIDATION_FAILED, a 33-character name is refused, and nothing is created', async () => {
+    const org = await freshOrg();
+    const ids = await seedMany(org, 200);
+    expect(await keyCount(org)).toBe(200);
+
+    await expect(
+      client().identity.credentials.create(input('One too many'), { context: contextOf(org) }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    await expect(
+      client().identity.credentials.create(input('a'.repeat(33)), { context: contextOf(org) }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await keyCount(org)).toBe(200);
+
+    // A revoked credential does not count: revoking one frees exactly one place.
+    await revokeMachineCredential(auth, {
+      userId: org.adminId,
+      id: ids[0] ?? '',
+      pool: appPool,
+      tenantId: org.tenantId,
+    });
+    const created = await client().identity.credentials.create(input('After revoke'), {
+      context: contextOf(org),
+    });
+    expect(created.secret).toMatch(/^tayzu_mc_/);
+    expect(await keyCount(org)).toBe(201);
+    await expect(
+      client().identity.credentials.create(input('Over again'), { context: contextOf(org) }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await keyCount(org)).toBe(201);
+  }, 300_000);
+
+  it('The cap is per tenant: a full tenant does not block another one', async () => {
+    const full = await freshOrg();
+    await seedMany(full, 200);
+    const other = await freshOrg();
+
+    await expect(
+      client().identity.credentials.create(input('Blocked'), { context: contextOf(full) }),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    const created = await client().identity.credentials.create(input('Free'), {
+      context: contextOf(other),
+    });
+    expect(created.id).toEqual(expect.any(String));
+  }, 300_000);
+
+  it('Concurrent creates at 199 yield one success: the other is refused with CATALOG_VALIDATION_FAILED and the tenant ends at 200', async () => {
+    const org = await freshOrg();
+    await seedMany(org, 199);
+
+    const results = await Promise.allSettled([
+      client().identity.credentials.create(input('Racer one'), { context: contextOf(org) }),
+      client().identity.credentials.create(input('Racer two'), { context: contextOf(org) }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await keyCount(org)).toBe(200);
+  }, 300_000);
+});

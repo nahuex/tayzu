@@ -248,30 +248,42 @@ export async function createCredential(args: {
   readonly userId?: string;
   readonly authRepository?: AuthRepository;
   readonly appPool?: Pool;
+  /** The most non-revoked credentials the tenant may hold (Q56). */
+  readonly cap?: number;
 }): Promise<{ readonly id: string; readonly secret: string }> {
   const { userId, appPool, authRepository } = args;
-  if (userId === undefined) return insertCredential(args);
-  // Fail closed when the host did not wire the lookups.
+  const cap = args.cap ?? DEFAULT_CREDENTIAL_CAP;
+  // Fail closed when the host did not wire the lookups the cap and the binding need.
   if (appPool === undefined || authRepository === undefined) {
     throw new CredentialConflictError();
   }
-  // Serialized per service account (D8): rotation and deletion take the same lock.
   return withTenantTransaction(appPool, { tenantId: args.tenantId }, async (lockClient) => {
-    await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
-      `service-account:${args.tenantId}:${userId}`,
-    ]);
-    if (!(await serviceAccountExists(appPool, args.tenantId, userId))) {
-      throw new CredentialTargetNotFoundError();
+    if (userId !== undefined) {
+      // Serialized per service account (D8): rotation and deletion take the same lock.
+      await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `service-account:${args.tenantId}:${userId}`,
+      ]);
+      if (!(await serviceAccountExists(appPool, args.tenantId, userId))) {
+        throw new CredentialTargetNotFoundError();
+      }
     }
-    // Resolved decision Q40: one active credential per service account.
+    // Per-tenant lock (Q56): concurrent creates cannot overshoot the cap.
+    await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+      `credential-cap:${args.tenantId}`,
+    ]);
     const [keys, revoked] = await Promise.all([
       readAllApiKeys(authRepository, args.tenantId),
       readRevokedIds(appPool, args.tenantId),
     ]);
-    const hasActive = keys.some(
-      (key) => !revoked.has(key.id) && readApiKeyMetadata(key.metadata).userId === userId,
-    );
-    if (hasActive) throw new CredentialConflictError();
+    const active = keys.filter((key) => !revoked.has(key.id));
+    if (active.length >= cap) throw new CredentialConflictError();
+    // Resolved decision Q40: one active credential per service account.
+    if (
+      userId !== undefined &&
+      active.some((k) => readApiKeyMetadata(k.metadata).userId === userId)
+    ) {
+      throw new CredentialConflictError();
+    }
     return insertCredential(args);
   });
 }

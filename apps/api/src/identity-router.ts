@@ -358,6 +358,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               authRepository: options.authRepository,
               ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
               ...(userId === undefined ? {} : { userId }),
+              cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
               auth: options.auth,
               tenantId: rawTenantId(context),
               adminId: (context['actor'] as { id: string }).id,
