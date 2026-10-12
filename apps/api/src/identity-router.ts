@@ -45,6 +45,7 @@ import {
   DEFAULT_CREDENTIAL_CAP,
   createCredential,
   listCredentials,
+  revokeCredential,
   rotateCredential,
 } from './identity/credentials.js';
 
@@ -393,6 +394,28 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             return rotateCredential({
               auth: options.auth,
               authRepository: options.authRepository,
+              appPool: options.appPool,
+              tenantId: rawTenantId(context),
+              adminId: (context['actor'] as { id: string }).id,
+              credentialId: target.id,
+            });
+          },
+        }),
+        // Step-up applies (D4); permanent, and a repeat is a no-op.
+        revoke: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'revoke',
+            resolveTarget: credentialTargetOf,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: async ({ context, target }) => {
+            // Fail closed when the host did not wire the revocation-list pool.
+            if (options.appPool === undefined || target === undefined) {
+              throw new IdentityInputError();
+            }
+            await revokeCredential({
+              auth: options.auth,
               appPool: options.appPool,
               tenantId: rawTenantId(context),
               adminId: (context['actor'] as { id: string }).id,

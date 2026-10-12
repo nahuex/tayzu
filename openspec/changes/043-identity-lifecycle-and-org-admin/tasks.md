@@ -2472,7 +2472,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `catalog.security.credential_rotation_incomplete` is logged with both opaque
       identifiers. Verify: `credentials.int.test.ts` covers "A rotation that cannot
       compensate is signalled".
-- [ ] 9.9 `identity.credentials.revoke`: permanent; the credential can never be
+- [x] 9.9 `identity.credentials.revoke`: permanent; the credential can never be
       restored, and revoking an already revoked credential is a no-op. Verify:
       `credentials.int.test.ts` covers "Revoking a credential is permanent", and a Better
       Auth `admin` member who is not the owner and an `owner` each revoking a key through

@@ -2119,3 +2119,256 @@ describe('identity.credentials.rotate signals an incomplete compensation (task 9
     expect(JSON.stringify(events[0]?.body ?? '')).not.toContain(c1.secret);
   }, 120_000);
 });
+
+/**
+ * Task 9.9 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (`identity.credentials.revoke`; design D8; Resolved decisions Q40, Q90).
+ *
+ * Scenario (verbatim from the spec): "Revoking a credential is permanent": GIVEN an enabled
+ * credential `c1`, WHEN an admin revokes it, THEN `c1` can never be restored, and only a new
+ * rotation or a new credential creation can restore access. Also (task text): revoking an
+ * already revoked credential is a no-op, and a Better Auth `admin` member who is not the owner
+ * and an `owner` each revoke a key through the operation with the headerless call of 9.1b.
+ *
+ * ## Production symbols expected
+ *
+ * - `createIdentityRouter` (`../identity-router.js`): `identity.credentials.revoke`, a
+ *   `defineIdentityOperation` on `RESOURCE_KINDS.credential` / `revoke`, input
+ *   `{ credential: string }` (the `id` that `identity.credentials.list` returns, resolved inside
+ *   the tenant like `rotate`), resolving on success (its output is not asserted). It calls the
+ *   headerless `revokeMachineCredential` with the acting user as `userId`, and the second call
+ *   for an already revoked credential resolves without error and without a second revocation row.
+ */
+describe('identity.credentials.revoke (task 9.9)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface RevokeClient {
+    identity: {
+      credentials: {
+        list(
+          input: Record<string, never>,
+          options: { context: Record<string, unknown> },
+        ): Promise<ListOutput>;
+        revoke(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): RevokeClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly ownerId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Revoke Owner',
+      email: `revoke-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Revoke Org', slug: `revoke-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Revoke Admin',
+      email: `revoke-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, ownerId: owner.userId, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org, actorId: string): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: actorId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  function seed(org: Org, name: string, metadata: Record<string, string> = {}) {
+    return createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name,
+      actorKind: 'integration',
+      metadata: { createdBy: org.adminId, ...metadata },
+    });
+  }
+
+  async function revocationCount(org: Org, id: string): Promise<number> {
+    const result = await withTenantTransaction(appPool, { tenantId: org.tenantId }, (c) =>
+      c.query<{ n: string }>(
+        `select count(*)::text as n from machine_credential_revocation
+          where credential_id = $1 and tenant_id = $2`,
+        [id, org.tenantId],
+      ),
+    );
+    return Number(result.rows[0]?.n);
+  }
+
+  async function keyEnabled(id: string): Promise<boolean | undefined> {
+    const row = await authPool.query<{ enabled: boolean }>(
+      'select enabled from auth.apikey where id = $1',
+      [id],
+    );
+    return row.rows[0]?.enabled;
+  }
+
+  async function seedServiceAccount(org: Org, identifier: string): Promise<void> {
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId: org.tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      {
+        blueprint: '_user',
+        identifier,
+        title: 'Service account',
+        spec: { properties: { accountKind: 'service', status: 'Active' } },
+      },
+    );
+  }
+
+  it('Revoking a credential is permanent: the credential is revoked and disabled, a new exchange is rejected, and a second revoke is a no-op that restores nothing', async () => {
+    const org = await freshOrg();
+    const c1 = await seed(org, 'To revoke');
+    const untouched = await seed(org, 'Untouched');
+    const issued = await exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret });
+    expect(issued.accessToken.length).toBeGreaterThan(0);
+    expect(await revocationCount(org, c1.id)).toBe(0);
+
+    await client().identity.credentials.revoke(
+      { credential: c1.id },
+      { context: contextOf(org, org.adminId) },
+    );
+
+    expect(await revocationCount(org, c1.id)).toBe(1);
+    expect(await keyEnabled(c1.id)).toBe(false);
+    await expect(
+      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+    ).rejects.toThrow();
+    // Only the revoked credential is affected.
+    expect(await revocationCount(org, untouched.id)).toBe(0);
+    expect(await keyEnabled(untouched.id)).toBe(true);
+
+    // Revoking it again is a no-op: it resolves, adds no row and restores nothing.
+    await expect(
+      client().identity.credentials.revoke(
+        { credential: c1.id },
+        { context: contextOf(org, org.ownerId) },
+      ),
+    ).resolves.not.toThrow();
+    expect(await revocationCount(org, c1.id)).toBe(1);
+    expect(await keyEnabled(c1.id)).toBe(false);
+    await expect(
+      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+    ).rejects.toThrow();
+
+    const listed = await client().identity.credentials.list(
+      {},
+      { context: contextOf(org, org.adminId) },
+    );
+    const byId = new Map(listed.credentials.map((c) => [c.id, c]));
+    expect(byId.get(c1.id)?.enabled).toBe(false);
+    expect(byId.get(untouched.id)?.enabled).toBe(true);
+  }, 120_000);
+
+  it('Revoking a credential is permanent: only a rotation or a new creation restores access, and c1 stays revoked', async () => {
+    const org = await freshOrg();
+    const identifier = `svc-perm-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+    const c1 = await seed(org, 'Bound', { userId: identifier });
+    await client().identity.credentials.revoke(
+      { credential: c1.id },
+      { context: contextOf(org, org.adminId) },
+    );
+
+    // A rotation of the revoked credential (the account has no active one) yields a new key.
+    const rotated = await client().identity.credentials.rotate(
+      { credential: c1.id },
+      { context: contextOf(org, org.adminId) },
+    );
+
+    expect(rotated.id).not.toBe(c1.id);
+    const fresh = await exchangeMachineToken(auth, {
+      clientId: rotated.id,
+      clientSecret: rotated.secret,
+    });
+    expect(fresh.accessToken.length).toBeGreaterThan(0);
+    // c1 itself is still revoked and unusable.
+    expect(await revocationCount(org, c1.id)).toBe(1);
+    expect(await keyEnabled(c1.id)).toBe(false);
+    await expect(
+      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+    ).rejects.toThrow();
+  }, 120_000);
+
+  it('A Better Auth admin member who is not the owner revokes a key through the operation, headerless', async () => {
+    const org = await freshOrg();
+    const c1 = await seed(org, 'Admin revokes');
+
+    await client().identity.credentials.revoke(
+      { credential: c1.id },
+      { context: contextOf(org, org.adminId) },
+    );
+
+    expect(await revocationCount(org, c1.id)).toBe(1);
+    expect(await keyEnabled(c1.id)).toBe(false);
+  }, 120_000);
+
+  it('An owner revokes a key through the operation, headerless', async () => {
+    const org = await freshOrg();
+    const c1 = await seed(org, 'Owner revokes');
+
+    await client().identity.credentials.revoke(
+      { credential: c1.id },
+      { context: contextOf(org, org.ownerId) },
+    );
+
+    expect(await revocationCount(org, c1.id)).toBe(1);
+    expect(await keyEnabled(c1.id)).toBe(false);
+  }, 120_000);
+});

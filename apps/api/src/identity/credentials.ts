@@ -397,3 +397,22 @@ export async function rotateCredential(args: {
     return { id: created.id, secret: created.secret };
   });
 }
+
+/**
+ * Revokes a credential permanently (design D8): the revocation row and the disable are
+ * idempotent in the helper, so revoking an already revoked credential is a no-op.
+ */
+export async function revokeCredential(args: {
+  readonly auth: AuthInstance;
+  readonly appPool: Pool;
+  readonly tenantId: string;
+  readonly adminId: string;
+  readonly credentialId: string;
+}): Promise<void> {
+  await revokeMachineCredential(args.auth, {
+    userId: args.adminId,
+    id: args.credentialId,
+    pool: args.appPool,
+    tenantId: args.tenantId,
+  });
+}
