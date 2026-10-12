@@ -1012,4 +1012,39 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     expect(second.id).not.toBe(first.id);
     expect((await keyIds(org)).sort()).toEqual([first.id, second.id].sort());
   }, 120_000);
+
+  /**
+   * Task 9.5c: "Concurrent credential creation for one service account yields one": GIVEN a
+   * service account with no active credential, WHEN two admins create a credential bound to it
+   * at the same time, THEN exactly one succeeds, the other fails with
+   * `CATALOG_VALIDATION_FAILED`, and exactly one credential is active.
+   *
+   * Production behavior expected: the check-then-insert of `createCredential`
+   * (`./credentials.ts`) runs under a per-service-account Postgres advisory lock.
+   */
+  it('Concurrent credential creation for one service account yields one', async () => {
+    const org = await freshOrg();
+    const identifier = `svc-race-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org, identifier);
+    const input = { name: 'Bound', kind: 'integration', userId: identifier };
+
+    const results = await Promise.allSettled([
+      client().identity.credentials.create(input, { context: contextOf(org) }),
+      client().identity.credentials.create(input, { context: contextOf(org) }),
+    ]);
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<{ id: string; secret: string }> => r.status === 'fulfilled',
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    const keys = await readAllApiKeys(authRepository, org.tenantId);
+    const active = keys.filter((k) => readApiKeyMetadata(k.metadata).userId === identifier);
+    expect(active).toHaveLength(1);
+    expect(active.map((k) => k.id)).toEqual(fulfilled.map((r) => r.value.id));
+    expect(await keyIds(org)).toHaveLength(1);
+  }, 120_000);
 });

@@ -2424,7 +2424,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       credential": a second create for a service account with an active credential
       is refused, and one for a service account whose credential was revoked
       succeeds.
-- [ ] 9.5c Creation of a credential bound to a service account takes a
+- [x] 9.5c Creation of a credential bound to a service account takes a
       **per-service-account advisory lock**, introduced here, that rotation (9.6b) and
       deletion (10.7) also take, so the check-then-insert
       of Q40 cannot be raced by two concurrent creates (the partial unique index of the

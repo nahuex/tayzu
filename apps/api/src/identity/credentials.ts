@@ -249,24 +249,41 @@ export async function createCredential(args: {
   readonly authRepository?: AuthRepository;
   readonly appPool?: Pool;
 }): Promise<{ readonly id: string; readonly secret: string }> {
-  if (args.userId !== undefined) {
-    // Fail closed when the host did not wire the lookups.
-    if (args.appPool === undefined || args.authRepository === undefined) {
-      throw new CredentialConflictError();
-    }
-    if (!(await serviceAccountExists(args.appPool, args.tenantId, args.userId))) {
+  const { userId, appPool, authRepository } = args;
+  if (userId === undefined) return insertCredential(args);
+  // Fail closed when the host did not wire the lookups.
+  if (appPool === undefined || authRepository === undefined) {
+    throw new CredentialConflictError();
+  }
+  // Serialized per service account (D8): rotation and deletion take the same lock.
+  return withTenantTransaction(appPool, { tenantId: args.tenantId }, async (lockClient) => {
+    await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+      `service-account:${args.tenantId}:${userId}`,
+    ]);
+    if (!(await serviceAccountExists(appPool, args.tenantId, userId))) {
       throw new CredentialTargetNotFoundError();
     }
     // Resolved decision Q40: one active credential per service account.
     const [keys, revoked] = await Promise.all([
-      readAllApiKeys(args.authRepository, args.tenantId),
-      readRevokedIds(args.appPool, args.tenantId),
+      readAllApiKeys(authRepository, args.tenantId),
+      readRevokedIds(appPool, args.tenantId),
     ]);
     const hasActive = keys.some(
-      (key) => !revoked.has(key.id) && readApiKeyMetadata(key.metadata).userId === args.userId,
+      (key) => !revoked.has(key.id) && readApiKeyMetadata(key.metadata).userId === userId,
     );
     if (hasActive) throw new CredentialConflictError();
-  }
+    return insertCredential(args);
+  });
+}
+
+async function insertCredential(args: {
+  readonly auth: AuthInstance;
+  readonly tenantId: string;
+  readonly adminId: string;
+  readonly name: string;
+  readonly kind: 'integration' | 'agent';
+  readonly userId?: string;
+}): Promise<{ readonly id: string; readonly secret: string }> {
   const created = await createMachineCredential(args.auth, {
     userId: args.adminId,
     organizationId: args.tenantId,
