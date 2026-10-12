@@ -13,6 +13,7 @@
  * creation response only, never logged or emailed.
  */
 import type { Route } from '@orpc/server';
+import type { Pool } from 'pg';
 import {
   digestInvitationToken,
   emitAccountLinkEvent,
@@ -39,6 +40,7 @@ import {
   type ResolvedIdentityTarget,
 } from './identity/identity-target.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
+import { DEFAULT_CREDENTIAL_CAP, listCredentials } from './identity/credentials.js';
 
 /** Generic on purpose: never says which user, if any, already holds the subject. */
 class IdentityLinkRejectedError extends Error {
@@ -111,6 +113,10 @@ export interface CreateIdentityRouterOptions {
   readonly emailGate?: EmailTenantGate;
   /** The trusted `INVITATION_LINK_BASE_URL`; the link's origin comes only from it. */
   readonly invitationLinkBaseUrl?: string;
+  /** The `tayzu_app` pool the revocation list is read through (task 9.2). */
+  readonly appPool?: Pool;
+  /** The credential cap of task 9.5d; the viewer's page size. Default 200. */
+  readonly credentialCap?: number;
 }
 
 export interface CreateUserInput {
@@ -316,6 +322,25 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
 
   return {
     identity: {
+      credentials: {
+        list: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'list',
+            resolveTarget: () => undefined,
+          },
+          handler: ({ context }) => {
+            // Fail closed when the host did not wire the revocation-list pool.
+            if (options.appPool === undefined) throw new IdentityInputError();
+            return listCredentials({
+              authRepository: options.authRepository,
+              appPool: options.appPool,
+              tenantId: rawTenantId(context),
+              cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+            });
+          },
+        }),
+      },
       users: {
         // Authorization runs before input parsing: a denied caller learns nothing about validity.
         create: defineIdentityOperation({

@@ -2349,7 +2349,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       restriction of 5.1c (an import and a direct `member` read each failing), and
       `pnpm lint` staying green on the real tree; and `pnpm --filter
       @tayzu/api test` passes with the two migrated tests.
-- [ ] 9.2 `identity.credentials.list`: projects org-owned API keys to `{ id, name,
+- [x] 9.2 `identity.credentials.list`: projects org-owned API keys to `{ id, name,
       kind, prefix, createdAt, lastRequest, enabled, rotationDueAt, createdBy }`.
       `id` is the opaque key id that rotate and revoke take as `{credential}` (the
       view had no id to address a credential by), `prefix` is the constant

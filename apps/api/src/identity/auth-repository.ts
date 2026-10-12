@@ -13,6 +13,11 @@ export interface ApiKeyRead {
   readonly id: string;
   readonly name: string | null;
   readonly referenceId: string;
+  readonly enabled: boolean;
+  readonly createdAt: Date;
+  readonly lastRequest: Date | null;
+  /** Raw column value: a JSON string from SQL; the reader accepts an object too. */
+  readonly metadata: unknown;
 }
 
 export interface InvitationRead {
@@ -60,7 +65,7 @@ export interface AdminRecipientRead {
 export interface AuthRepository {
   listApiKeys: (
     tenantId: string,
-    page: { limit: number; cursor?: string },
+    page: { limit: number; cursor?: string; configId?: string },
   ) => Promise<{ keys: ApiKeyRead[]; nextCursor?: string }>;
   apiKeyById: (tenantId: string, keyId: string) => Promise<ApiKeyRead | undefined>;
   invitationById: (tenantId: string, invitationId: string) => Promise<InvitationRead | undefined>;
@@ -100,6 +105,10 @@ interface ApiKeyRow {
   id: string;
   name: string | null;
   reference_id: string;
+  enabled: boolean | null;
+  created_at: Date;
+  last_request: Date | null;
+  metadata: unknown;
 }
 interface InvitationRow {
   id: string;
@@ -132,6 +141,10 @@ const toApiKey = (r: ApiKeyRow): ApiKeyRead => ({
   id: r.id,
   name: r.name,
   referenceId: r.reference_id,
+  enabled: r.enabled !== false,
+  createdAt: r.created_at,
+  lastRequest: r.last_request,
+  metadata: r.metadata,
 });
 const toInvitation = (r: InvitationRow): InvitationRead => ({
   id: r.id,
@@ -169,6 +182,8 @@ function requireTenant(tenantId: unknown): asserts tenantId is string {
 
 export function createAuthRepository(authPool: Pool): AuthRepository {
   const MEMBER_COLUMNS = 'id, organization_id, user_id, role';
+  // Never selects the hashed `key` column.
+  const API_KEY_COLUMNS = 'id, name, reference_id, enabled, created_at, last_request, metadata';
   const INVITATION_COLUMNS = 'id, organization_id, email, inviter_id, status, expires_at, role';
 
   return {
@@ -176,10 +191,11 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       requireTenant(tenantId);
       // Keyset paging on the id; one extra row tells whether the end was reached.
       const result = await authPool.query<ApiKeyRow>(
-        `select id, name, reference_id from auth.apikey
+        `select ${API_KEY_COLUMNS} from auth.apikey
          where reference_id = $1 and ($2::text is null or id > $2)
+           and ($4::text is null or config_id = $4)
          order by id limit $3`,
-        [tenantId, page.cursor ?? null, page.limit + 1],
+        [tenantId, page.cursor ?? null, page.limit + 1, page.configId ?? null],
       );
       const rows = result.rows.slice(0, page.limit);
       const last = rows[rows.length - 1];
@@ -193,7 +209,7 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
     async apiKeyById(tenantId, keyId) {
       requireTenant(tenantId);
       const result = await authPool.query<ApiKeyRow>(
-        'select id, name, reference_id from auth.apikey where reference_id = $1 and id = $2',
+        `select ${API_KEY_COLUMNS} from auth.apikey where reference_id = $1 and id = $2`,
         [tenantId, keyId],
       );
       const row = result.rows[0];
