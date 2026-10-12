@@ -48,6 +48,8 @@ export interface Config {
   readonly invitationRecipientCap: { readonly max: number; readonly windowSeconds: number };
   /** Notice emails per tenant (Q58); window in seconds. */
   readonly noticeTenantCap: { readonly max: number; readonly windowSeconds: number };
+  /** Per-key verification limit of a machine credential (043 Q44); copied into each key at creation. */
+  readonly machineCredentialRateLimit: { readonly max: number; readonly windowSeconds: number };
   /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
   readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
@@ -73,6 +75,7 @@ const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
 const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
 const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
 const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
+const DEFAULT_MACHINE_CREDENTIAL_LIMIT = { max: 60, windowSeconds: 3600 };
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 
 const MIN_SECRET_LENGTH = 32;
@@ -363,6 +366,12 @@ export function loadConfig(env: Env): Config {
     'NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_NOTICE_TENANT_LIMIT,
   );
+  const machineCredentialRateLimit = limitWithDefaults(
+    env,
+    'MACHINE_CREDENTIAL_RATE_LIMIT_MAX',
+    'MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_MACHINE_CREDENTIAL_LIMIT,
+  );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const backchannelLogoutRateLimitPerMinute =
     optionalPositiveInt(env, 'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE') ??
@@ -387,6 +396,7 @@ export function loadConfig(env: Env): Config {
     invitationTenantCap,
     invitationRecipientCap,
     noticeTenantCap,
+    machineCredentialRateLimit,
     invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     telemetryDisabled: loadTelemetryDisabled(env),

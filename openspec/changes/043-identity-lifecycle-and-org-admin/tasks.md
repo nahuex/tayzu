@@ -2390,7 +2390,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (default 90 days). Verify: `credentials.test.ts` (pure) covers a credential
       rotated 91 days ago flagged due and one rotated yesterday not, and a credential
       never rotated, created 91 days ago, flagged due and one created yesterday not.
-- [ ] 9.5 `identity.credentials.create` (integration and agent credentials): the
+- [x] 9.5 `identity.credentials.create` (integration and agent credentials): the
       per-key rate limit of **60 verifications per hour**, configurable in
       `apps/api/src/config.ts` with `limitWithDefaults` (a disabled or zero value fails
       startup; Resolved decision Q44), and the no-stored-secret-characters setting are

@@ -3,6 +3,8 @@
  * (`043` design D7 and D8). The viewer (task 9.2) lives here; the rest arrives
  * with task group 9.
  */
+import type { AuthInstance } from '@tayzu/auth';
+import { createMachineCredential } from '@tayzu/auth/machine-credentials';
 import { withTenantTransaction } from '@tayzu/db';
 import type { Pool } from 'pg';
 
@@ -39,6 +41,7 @@ export interface CredentialView {
 
 export interface ApiKeyMetadata {
   actorKind?: string;
+  role?: string;
   userId?: string;
   createdBy?: string;
   rotatedAt?: string;
@@ -57,7 +60,7 @@ export function readApiKeyMetadata(value: unknown): ApiKeyMetadata {
   if (typeof parsed !== 'object' || parsed === null) return {};
   const source = parsed as Record<string, unknown>;
   const result: ApiKeyMetadata = {};
-  for (const field of ['actorKind', 'userId', 'createdBy', 'rotatedAt'] as const) {
+  for (const field of ['actorKind', 'role', 'userId', 'createdBy', 'rotatedAt'] as const) {
     const entry = Object.hasOwn(source, field) ? source[field] : undefined;
     if (typeof entry === 'string') result[field] = entry;
   }
@@ -183,4 +186,28 @@ export async function listCredentials(args: {
     };
   });
   return { credentials, truncated: ordered.length > args.cap };
+}
+
+/** The key `name`: 1 to 32 characters of `[A-Za-z0-9 _.-]` (the plugin allows 32). */
+export const CREDENTIAL_NAME_PATTERN = /^[A-Za-z0-9 _.-]{1,32}$/;
+
+/**
+ * Creates an integration or agent credential for the tenant, headerless (task 9.1b), with the
+ * acting admin as `userId` and recorded as `createdBy`. The secret is returned once.
+ */
+export async function createCredential(args: {
+  readonly auth: AuthInstance;
+  readonly tenantId: string;
+  readonly adminId: string;
+  readonly name: string;
+  readonly kind: 'integration' | 'agent';
+}): Promise<{ readonly id: string; readonly secret: string }> {
+  const created = await createMachineCredential(args.auth, {
+    userId: args.adminId,
+    organizationId: args.tenantId,
+    name: args.name,
+    actorKind: args.kind,
+    metadata: { createdBy: args.adminId },
+  });
+  return { id: created.id, secret: created.secret };
 }

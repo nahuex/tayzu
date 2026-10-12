@@ -785,3 +785,47 @@ describe('a zero notice cap fails startup (043 task 6.12, Q58, 002 Q39)', () => 
     expect(error.message).toContain(name);
   });
 });
+
+/**
+ * `043` task 9.5 (Resolved decision Q44): the per-key rate limit of a machine credential is a
+ * max/window pair with its enabled default (60 verifications per hour) in code; a zero or
+ * disabled value fails startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `machineCredentialRateLimit: { max: number; windowSeconds: number }` (60 per 3600 s), from
+ *   `MACHINE_CREDENTIAL_RATE_LIMIT_MAX` and `MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS`,
+ *   through `limitWithDefaults`.
+ */
+describe('a zero machine-credential rate limit fails startup (043 task 9.5, Q44, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['machineCredentialRateLimit'];
+
+  it('machineCredentialRateLimit is enabled by default in code: 60 per hour', () => {
+    expect(read(loadConfig(env()))).toEqual({ max: 60, windowSeconds: 3600 });
+  });
+
+  it('machineCredentialRateLimit is only tuned by the environment', () => {
+    expect(
+      read(
+        loadConfig(
+          env({
+            MACHINE_CREDENTIAL_RATE_LIMIT_MAX: '7',
+            MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS: '120',
+          }),
+        ),
+      ),
+    ).toEqual({ max: 7, windowSeconds: 120 });
+  });
+
+  it.each(
+    ['MACHINE_CREDENTIAL_RATE_LIMIT_MAX', 'MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS'].flatMap(
+      (name) =>
+        ['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'].map(
+          (value) => [name, value] as const,
+        ),
+    ),
+  )('%s=%j (disabled or zero) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});

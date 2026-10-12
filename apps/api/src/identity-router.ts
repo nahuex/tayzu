@@ -40,7 +40,12 @@ import {
   type ResolvedIdentityTarget,
 } from './identity/identity-target.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
-import { DEFAULT_CREDENTIAL_CAP, listCredentials } from './identity/credentials.js';
+import {
+  CREDENTIAL_NAME_PATTERN,
+  DEFAULT_CREDENTIAL_CAP,
+  createCredential,
+  listCredentials,
+} from './identity/credentials.js';
 
 /** Generic on purpose: never says which user, if any, already holds the subject. */
 class IdentityLinkRejectedError extends Error {
@@ -208,6 +213,16 @@ function parseInput(raw: unknown): CreateUserInput {
   return { email: holdableEmail(email), name, role: role as AssignableOrgRole };
 }
 
+function parseCredentialInput(raw: unknown): { name: string; kind: 'integration' | 'agent' } {
+  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
+  const { name, kind } = raw as Record<string, unknown>;
+  if (typeof name !== 'string' || !CREDENTIAL_NAME_PATTERN.test(name)) {
+    throw new IdentityInputError();
+  }
+  if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
+  return { name, kind };
+}
+
 function parseInviteInput(raw: unknown): InviteUserInput {
   if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
   const { email, role } = raw as Record<string, unknown>;
@@ -323,6 +338,25 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   return {
     identity: {
       credentials: {
+        // Step-up applies (D4); the key's limits are plugin-level configuration (Q44).
+        create: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'create',
+            resolveTarget: () => undefined,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: async ({ context, input: rawInput }) => {
+            const { name, kind } = parseCredentialInput(rawInput);
+            return createCredential({
+              auth: options.auth,
+              tenantId: rawTenantId(context),
+              adminId: (context['actor'] as { id: string }).id,
+              name,
+              kind,
+            });
+          },
+        }),
         list: defineIdentityOperation({
           authorization: {
             kind: RESOURCE_KINDS.credential,

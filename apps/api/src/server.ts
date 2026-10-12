@@ -83,6 +83,7 @@ export interface CreateAppOptions {
    * Budget for `POST /v1/auth/token` (D20), independent of `rateLimit`. The
    * bucket key is the caller's IP plus the body's client id; omitted: no limiter.
    */
+  readonly machineCredentialRateLimit?: CreateAuthOptions['machineCredentialRateLimit'];
   readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
   /** Visma Connect SSO (D23), forwarded to `createAuth`; omitted: SSO is not registered. */
   readonly sso?: CreateAuthOptions['sso'];
@@ -203,6 +204,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     trustedOrigins: options.allowedOrigins,
     ...(options.sso === undefined ? {} : { sso: options.sso }),
     ...(options.preAuthRateLimit === undefined ? {} : { rateLimit: options.preAuthRateLimit }),
+    ...(options.machineCredentialRateLimit === undefined
+      ? {}
+      : { machineCredentialRateLimit: options.machineCredentialRateLimit }),
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
 

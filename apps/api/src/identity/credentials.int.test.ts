@@ -526,3 +526,284 @@ describe('identity.credentials.list (task 9.2)', () => {
     expect(byId.get(ofActive.id)?.enabled).toBe(true);
   }, 120_000);
 });
+
+/**
+ * Task 9.5 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (`identity.credentials.create`, integration and agent credentials; design D8; Resolved
+ * decisions Q20, Q44, Q90, Q94).
+ *
+ * Scenario (verbatim from the spec): "Creating a credential requires step-up and bounds its
+ * use": WHEN an admin without a fresh step-up verification creates a credential, THEN the
+ * operation fails with `AUTH_STEP_UP_REQUIRED`; with a fresh verification the created key has
+ * the configured rate limit and stores no secret characters. The step-up part is asserted over
+ * HTTP in 14.4; this block is the service-level part (the key's limits, its metadata, the name
+ * limit, and a non-owner `admin` and an `owner` each creating through the operation).
+ *
+ * ## Production symbols expected
+ *
+ * - `createIdentityRouter` (`../identity-router.js`): `identity.credentials.create`, a
+ *   `defineIdentityOperation` on `RESOURCE_KINDS.credential` / `create`, flat input
+ *   `{ name: string; kind: 'integration' | 'agent' }` (`name` 1 to 32 characters of
+ *   `[A-Za-z0-9 _.-]`), output containing `{ id: string; secret: string }` (the secret once).
+ *   It calls the headerless `createMachineCredential` with `userId` the acting admin and the
+ *   metadata `{ createdBy: <acting admin> }`.
+ * - `createAuth` (`@tayzu/auth`) gains the option `machineCredentialRateLimit?: { max: number;
+ *   timeWindowMs: number }` (default 60 per 3 600 000 ms), the plugin-level `rateLimit` of the
+ *   `machine-credential` apiKey config, plus `startingCharactersConfig: { shouldStore: false }`.
+ */
+describe('identity.credentials.create (task 9.5)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+  let userSync: ReturnType<typeof createUserSync>;
+  let defaultAuth: AuthInstance;
+
+  function authWith(rateLimit?: { max: number; timeWindowMs: number }): AuthInstance {
+    const options = {
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+      ...(rateLimit === undefined ? {} : { machineCredentialRateLimit: rateLimit }),
+    };
+    return createAuth(options);
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    userSync = createUserSync({ pool: appPool, authz: cerbos });
+    defaultAuth = authWith();
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function clientFor(auth: AuthInstance) {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface CreateOutput {
+    readonly id: string;
+    readonly secret: string;
+  }
+
+  interface CreatableClient {
+    identity: {
+      credentials: {
+        create(
+          input: { name: string; kind: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<CreateOutput>;
+      };
+    };
+  }
+
+  function creator(auth: AuthInstance): CreatableClient {
+    return clientFor(auth);
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly ownerId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(auth: AuthInstance): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Create Owner',
+      email: `create-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Create Org', slug: `create-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Create Admin',
+      email: `create-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, ownerId: owner.userId, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org, actorId: string): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: actorId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  interface KeyRow {
+    readonly id: string;
+    readonly start: string | null;
+    readonly prefix: string | null;
+    readonly rate_limit_enabled: boolean | null;
+    readonly rate_limit_max: number | null;
+    readonly rate_limit_time_window: number | null;
+    readonly expires_at: Date | null;
+    readonly metadata: unknown;
+  }
+
+  async function keyRows(org: Org): Promise<KeyRow[]> {
+    const rows = await authPool.query<KeyRow>(
+      `select id, start, prefix, rate_limit_enabled, rate_limit_max, rate_limit_time_window,
+              expires_at, metadata
+         from auth.apikey where reference_id = $1 order by created_at`,
+      [org.tenantId],
+    );
+    return rows.rows;
+  }
+
+  const metadataOf = (row: KeyRow): Record<string, unknown> =>
+    readApiKeyMetadata(row.metadata) as Record<string, unknown>;
+
+  it('Creating a credential requires step-up and bounds its use: a non-owner admin creates a key with the default limit of 60 per hour, no stored secret characters, no expiry, and createdBy', async () => {
+    const org = await freshOrg(defaultAuth);
+
+    const created = await creator(defaultAuth).identity.credentials.create(
+      { name: 'Billing sync', kind: 'integration' },
+      { context: contextOf(org, org.adminId) },
+    );
+
+    expect(created.secret).toMatch(/^tayzu_mc_/);
+    const rows = await keyRows(org);
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row?.id).toBe(created.id);
+    expect(row?.rate_limit_enabled).toBe(true);
+    expect(row?.rate_limit_max).toBe(60);
+    expect(row?.rate_limit_time_window).toBe(3_600_000);
+    expect(row?.start ?? '').toBe('');
+    expect(row?.expires_at).toBeNull();
+    expect(row !== undefined && JSON.stringify(row)).not.toContain(created.secret);
+    expect(row === undefined ? {} : metadataOf(row)).toEqual({
+      actorKind: 'integration',
+      role: 'member',
+      createdBy: org.adminId,
+    });
+    expect((await readAllApiKeys(authRepository, org.tenantId)).map((k) => k.id)).toEqual([
+      created.id,
+    ]);
+  }, 120_000);
+
+  it('An owner creates an agent credential through the operation, recorded as the creator', async () => {
+    const org = await freshOrg(defaultAuth);
+
+    const created = await creator(defaultAuth).identity.credentials.create(
+      { name: 'Planner agent', kind: 'agent' },
+      { context: contextOf(org, org.ownerId) },
+    );
+
+    const [row] = await keyRows(org);
+    expect(row?.id).toBe(created.id);
+    expect(row === undefined ? {} : metadataOf(row)).toEqual({
+      actorKind: 'agent',
+      role: 'member',
+      createdBy: org.ownerId,
+    });
+    expect(row?.rate_limit_max).toBe(60);
+  }, 120_000);
+
+  it('A configured limit is honored by the created key', async () => {
+    const tuned = authWith({ max: 7, timeWindowMs: 120_000 });
+    const org = await freshOrg(tuned);
+
+    await creator(tuned).identity.credentials.create(
+      { name: 'Tuned', kind: 'integration' },
+      { context: contextOf(org, org.adminId) },
+    );
+
+    const [row] = await keyRows(org);
+    expect(row?.rate_limit_enabled).toBe(true);
+    expect(row?.rate_limit_max).toBe(7);
+    expect(row?.rate_limit_time_window).toBe(120_000);
+    expect(row?.start ?? '').toBe('');
+  }, 120_000);
+
+  it('A changed limit applies only to keys created afterwards', async () => {
+    const before = authWith({ max: 60, timeWindowMs: 3_600_000 });
+    const after = authWith({ max: 5, timeWindowMs: 60_000 });
+    const org = await freshOrg(before);
+
+    const first = await creator(before).identity.credentials.create(
+      { name: 'Before change', kind: 'integration' },
+      { context: contextOf(org, org.adminId) },
+    );
+    const second = await creator(after).identity.credentials.create(
+      { name: 'After change', kind: 'integration' },
+      { context: contextOf(org, org.adminId) },
+    );
+
+    const byId = new Map((await keyRows(org)).map((r) => [r.id, r]));
+    expect(byId.get(first.id)?.rate_limit_max).toBe(60);
+    expect(byId.get(first.id)?.rate_limit_time_window).toBe(3_600_000);
+    expect(byId.get(second.id)?.rate_limit_max).toBe(5);
+    expect(byId.get(second.id)?.rate_limit_time_window).toBe(60_000);
+  }, 120_000);
+
+  it('A 33-character name is refused with CATALOG_VALIDATION_FAILED and nothing is created; 32 characters are accepted', async () => {
+    const org = await freshOrg(defaultAuth);
+    const client = creator(defaultAuth);
+
+    await expect(
+      client.identity.credentials.create(
+        { name: 'a'.repeat(33), kind: 'integration' },
+        { context: contextOf(org, org.adminId) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await keyRows(org)).toHaveLength(0);
+
+    await client.identity.credentials.create(
+      { name: 'a'.repeat(32), kind: 'integration' },
+      { context: contextOf(org, org.adminId) },
+    );
+    expect(await keyRows(org)).toHaveLength(1);
+  }, 120_000);
+
+  it('A name outside [A-Za-z0-9 _.-] or empty is refused with CATALOG_VALIDATION_FAILED', async () => {
+    const org = await freshOrg(defaultAuth);
+    const client = creator(defaultAuth);
+
+    for (const name of ['', 'bad/name', 'semi;colon', 'émile']) {
+      await expect(
+        client.identity.credentials.create(
+          { name, kind: 'integration' },
+          { context: contextOf(org, org.adminId) },
+        ),
+      ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    }
+    expect(await keyRows(org)).toHaveLength(0);
+  }, 120_000);
+
+  it('A member is denied by Cerbos and nothing is created', async () => {
+    const org = await freshOrg(defaultAuth);
+
+    await expect(
+      creator(defaultAuth).identity.credentials.create(
+        { name: 'Denied', kind: 'integration' },
+        {
+          context: {
+            tenantId: org.tenantId,
+            actor: { type: 'user', id: org.adminId },
+            principal: { roles: ['member'] },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
+    expect(await keyRows(org)).toHaveLength(0);
+  }, 120_000);
+});

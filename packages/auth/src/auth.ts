@@ -713,6 +713,11 @@ export interface CreateAuthOptions {
    * `genericOAuth` provider; otherwise no SSO plugin exists.
    */
   readonly sso?: VismaConnectOptions;
+  /**
+   * Task 9.5 (043 Q44): the per-key verification limit of a machine credential, copied into
+   * each key at creation. Defaults to 60 per hour.
+   */
+  readonly machineCredentialRateLimit?: { readonly max: number; readonly timeWindowMs: number };
 }
 
 /** The structural slice of `@tayzu/catalog`'s `UserSync` this package calls. */
@@ -964,6 +969,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         references: 'organization',
         defaultPrefix: 'tayzu_mc_',
         enableMetadata: true,
+        // Task 9.5 (Q44): plugin-level, because `createApiKey` rejects per-key `rateLimit*`
+        // properties on a headerless-or-not call; the window is in milliseconds.
+        rateLimit: {
+          enabled: true,
+          maxRequests: options.machineCredentialRateLimit?.max ?? 60,
+          timeWindow: options.machineCredentialRateLimit?.timeWindowMs ?? 3_600_000,
+        },
+        // No first characters of a secret are stored (D7).
+        startingCharactersConfig: { shouldStore: false },
       }),
       preAuthRateLimitPlugin(options),
       ...(options.sso === undefined ? [] : [vismaConnect(options.sso)]),

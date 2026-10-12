@@ -66,6 +66,10 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       },
       rateLimit: config.rateLimit,
       tokenExchangeRateLimit: config.tokenExchangeRateLimit,
+      machineCredentialRateLimit: {
+        max: config.machineCredentialRateLimit.max,
+        timeWindowMs: config.machineCredentialRateLimit.windowSeconds * 1000,
+      },
       bodyLimit: config.bodyLimit,
     });
     const ownedAuthPool = authPool;
