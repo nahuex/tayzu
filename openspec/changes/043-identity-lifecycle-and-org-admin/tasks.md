@@ -2589,7 +2589,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       with two non-revoked credentials (seeded directly, as before the one-credential
       rule) is deleted and both are rejected within the 5-second cache window, and a service account that a
       relation targets being deleted all the same.
-- [ ] 10.7b Every `service_account` route (`serviceAccounts.delete`; `setStatus`
+- [x] 10.7b Every `service_account` route (`serviceAccounts.delete`; `setStatus`
       reaches the service-account branch only for a resolved service account, 11.5)
       and the `userId` of
       `credentials.create` (9.5b) resolve their target through one server-side

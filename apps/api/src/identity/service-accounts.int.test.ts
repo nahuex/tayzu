@@ -825,4 +825,157 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
     expect(await nonRevokedBound(tenant.tenantId, identifier)).toEqual([]);
   }, 120_000);
+
+  // Task 10.7b: every service-account route resolves its target as a service account (Q62).
+  async function failureOf(run: () => Promise<unknown>): Promise<Record<string, unknown>> {
+    try {
+      await run();
+    } catch (error) {
+      return {
+        code: (error as { code?: unknown }).code,
+        status: (error as { status?: unknown }).status,
+        message: (error as Error).message,
+        data: (error as { data?: unknown }).data,
+      };
+    }
+    return { code: 'NO_ERROR' };
+  }
+
+  async function userSnapshot(tenantId: string, identifier: string): Promise<unknown> {
+    return await withTenantTransaction(appPool, { tenantId }, async (db) => {
+      const result = await db.query<{ spec: string; version: string }>(
+        `select e.spec_properties::text as spec, e.version::text as version
+           from catalog_entity e
+           join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+          where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+        [tenantId, identifier],
+      );
+      return result.rows;
+    });
+  }
+
+  async function seedUserRow(
+    tenantId: string,
+    identifier: string,
+    properties: Record<string, unknown>,
+  ): Promise<void> {
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId,
+        actor: { type: 'system', id: 'service-accounts-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      { blueprint: '_user', identifier, title: 'Seeded user', spec: { properties } },
+    );
+  }
+
+  /** Seeds the `_user` row only when the membership hook did not already write it. */
+  async function ensureHumanRow(
+    tenantId: string,
+    identifier: string,
+    portRole: string,
+  ): Promise<void> {
+    if ((await userRows(tenantId, identifier)).length > 0) return;
+    await seedUserRow(tenantId, identifier, {
+      accountKind: 'standard',
+      status: 'Active',
+      portRole,
+    });
+  }
+
+  it('A service-account route refuses a human target: a delete of another human, of the admin, of an owner and of look-alikes answers the same CATALOG_NOT_FOUND as an unknown id, with rows intact, no credential revoked and no event emitted', async () => {
+    const tenant = await freshTenant();
+    const suffix = randomUUID().slice(0, 8);
+    const adminEmail = (
+      await authPool.query<{ email: string }>('select email from auth."user" where id = $1', [
+        tenant.adminId,
+      ])
+    ).rows[0]?.email;
+    const ownerEmail = (
+      await authPool.query<{ email: string }>(
+        `select u.email from auth.member m join auth."user" u on u.id = m.user_id
+          where m.organization_id = $1 and m.role = 'owner'`,
+        [tenant.tenantId],
+      )
+    ).rows[0]?.email;
+    expect(adminEmail).toBeDefined();
+    expect(ownerEmail).toBeDefined();
+    const alice = `alice-${suffix}@example.com`;
+    // A standard `_user` with an `svc-` shape, and a service `_user` without one (seeded directly).
+    const svcShapedHuman = `svc-human-${suffix}`;
+    const serviceWithoutPrefix = `ci-bot-${suffix}`;
+    await ensureHumanRow(tenant.tenantId, adminEmail ?? '', 'admin');
+    await ensureHumanRow(tenant.tenantId, ownerEmail ?? '', 'owner');
+    await seedUserRow(tenant.tenantId, alice, {
+      accountKind: 'standard',
+      status: 'Active',
+      portRole: 'member',
+    });
+    await seedUserRow(tenant.tenantId, svcShapedHuman, {
+      accountKind: 'standard',
+      status: 'Active',
+      portRole: 'member',
+    });
+    await seedUserRow(tenant.tenantId, serviceWithoutPrefix, {
+      accountKind: 'service',
+      status: 'Active',
+      portRole: 'member',
+    });
+    // Credentials bound to those identifiers must survive the refused deletes.
+    const bound: string[] = [];
+    for (const userId of [alice, svcShapedHuman, serviceWithoutPrefix, adminEmail ?? '']) {
+      const key = await createMachineCredential(auth, {
+        userId: tenant.adminId,
+        organizationId: tenant.tenantId,
+        name: 'Bound to a non service account',
+        actorKind: 'integration',
+        metadata: { createdBy: tenant.adminId, userId },
+      });
+      bound.push(key.id);
+    }
+    const targets = [
+      alice,
+      adminEmail ?? '',
+      ownerEmail ?? '',
+      svcShapedHuman,
+      serviceWithoutPrefix,
+    ];
+    const before = new Map<string, unknown>();
+    for (const target of targets) before.set(target, await userSnapshot(tenant.tenantId, target));
+    const eventsBefore = new Map<string, unknown>();
+    for (const target of targets) {
+      eventsBefore.set(target, await changeEvents(tenant.tenantId, target));
+    }
+    const statusBefore = (await logRecords(STATUS_EVENT, tenant.tenantId)).length;
+    const deletedBefore = (
+      await logRecords('catalog.audit.service_account_deleted', tenant.tenantId)
+    ).length;
+
+    const unknown = await failureOf(() =>
+      deleter().identity.serviceAccounts.delete(
+        { user: `svc-unknown-${suffix}` },
+        { context: context(tenant) },
+      ),
+    );
+    expect(unknown['code']).toBe('CATALOG_NOT_FOUND');
+
+    for (const target of targets) {
+      // WHEN an admin deletes the human (or look-alike), THEN the answer equals the unknown id's.
+      const failure = await failureOf(() =>
+        deleter().identity.serviceAccounts.delete({ user: target }, { context: context(tenant) }),
+      );
+      expect(failure).toEqual(unknown);
+      // AND the row and its status are intact.
+      expect(await userSnapshot(tenant.tenantId, target)).toEqual(before.get(target));
+      expect(await changeEvents(tenant.tenantId, target)).toEqual(eventsBefore.get(target));
+    }
+
+    // AND no credential is revoked and no event is emitted.
+    for (const id of bound) expect(await revocationCount(tenant.tenantId, id)).toBe(0);
+    expect(await nonRevokedBound(tenant.tenantId, alice)).toHaveLength(1);
+    expect((await logRecords(STATUS_EVENT, tenant.tenantId)).length).toBe(statusBefore);
+    expect(
+      (await logRecords('catalog.audit.service_account_deleted', tenant.tenantId)).length,
+    ).toBe(deletedBefore);
+  }, 120_000);
 });

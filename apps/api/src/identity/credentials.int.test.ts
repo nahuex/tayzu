@@ -1003,6 +1003,42 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     expect(await keyIds(other)).toHaveLength(0);
   }, 120_000);
 
+  it('A credential bound to a human or to a look-alike is refused with the same answer as an unknown id (task 10.7b)', async () => {
+    const org = await freshOrg();
+    const suffix = randomUUID().slice(0, 8);
+    const humanLookalike = `svc-human-${suffix}`;
+    const noPrefix = `ci-bot-${suffix}`;
+    const alice = `alice-${suffix}@example.com`;
+    await seedUser(org, humanLookalike, { accountKind: 'standard', status: 'Active' });
+    // A service `_user` without the `svc-` identifier shape is not a service account either.
+    await seedUser(org, noPrefix, { accountKind: 'service', status: 'Active' });
+    await seedUser(org, alice, { accountKind: 'standard', status: 'Active' });
+
+    const attempt = async (userId: string): Promise<Record<string, unknown>> => {
+      try {
+        await client().identity.credentials.create(
+          { name: 'Bound', kind: 'integration', userId },
+          { context: contextOf(org) },
+        );
+      } catch (error) {
+        return {
+          code: (error as { code?: unknown }).code,
+          status: (error as { status?: unknown }).status,
+          message: (error as Error).message,
+          data: (error as { data?: unknown }).data,
+        };
+      }
+      return { code: 'NO_ERROR' };
+    };
+
+    const unknown = await attempt(`svc-unknown-${suffix}`);
+    expect(unknown['code']).toBe('CATALOG_NOT_FOUND');
+    for (const userId of [alice, org.adminId, humanLookalike, noPrefix]) {
+      expect(await attempt(userId)).toEqual(unknown);
+    }
+    expect(await keyIds(org)).toHaveLength(0);
+  }, 120_000);
+
   it('A credential bound to a service account of the tenant is created with its svc- identifier in the metadata', async () => {
     const org = await freshOrg();
     const identifier = `svc-ok-${randomUUID().slice(0, 8)}`;
