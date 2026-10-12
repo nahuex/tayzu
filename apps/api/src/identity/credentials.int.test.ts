@@ -2372,3 +2372,184 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     expect(await keyEnabled(c1.id)).toBe(false);
   }, 120_000);
 });
+
+/**
+ * Task 9.10 (design D8 and the log event table): rotation and revocation log events carry only
+ * opaque credential identifiers, never a secret, even under a forced serialization of the full
+ * credential object.
+ *
+ * Verify clause: a marker-leak check: a credential secret string never appears in the
+ * `catalog.audit.credential_rotated` or `catalog.security.credential_revoked` record.
+ *
+ * ## Production symbols expected
+ *
+ * - `identity.credentials.rotate` (`rotateCredential` in `./credentials.js`) emits, through
+ *   `emitIdentityEvent`, `catalog.audit.credential_rotated` (INFO) with exactly the attributes
+ *   `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id` and
+ *   `tayzu.identity.credential.new_id`.
+ * - `identity.credentials.revoke` (`revokeCredential`) emits `catalog.security.credential_revoked`
+ *   (WARN) with exactly `tayzu.tenant.id`, `tayzu.actor.id` and `tayzu.identity.credential.id`.
+ *
+ * ## Why this fails right now
+ *
+ * Neither event is emitted yet, so the records are missing.
+ */
+describe('credential rotation and revocation events never carry a secret (task 9.10)', () => {
+  const ROTATED = 'catalog.audit.credential_rotated';
+  const REVOKED = 'catalog.security.credential_revoked';
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface EventClient {
+    identity: {
+      credentials: {
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+        revoke(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  function client(): EventClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  async function freshOrg(): Promise<{ tenantId: string; adminId: string }> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Leak Owner',
+      email: `leak-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Leak Org', slug: `leak-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Leak Admin',
+      email: `leak-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  async function eventsOf(name: string, tenantId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === name && record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+  }
+
+  function contextOf(org: { tenantId: string; adminId: string }): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: org.adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  it('A rotation record carries only opaque identifiers: neither the old nor the new secret appears in catalog.audit.credential_rotated', async () => {
+    const org = await freshOrg();
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Leak rotate',
+      actorKind: 'integration',
+      metadata: { createdBy: org.adminId },
+    });
+
+    const rotated = await client().identity.credentials.rotate(
+      { credential: c1.id },
+      { context: contextOf(org) },
+    );
+
+    const events = await eventsOf(ROTATED, org.tenantId);
+    expect(events).toHaveLength(1);
+    const record = events[0];
+    expect(record?.severityText).toBe('INFO');
+    expect(record?.attributes).toEqual({
+      'tayzu.tenant.id': org.tenantId,
+      'tayzu.actor.id': org.adminId,
+      'tayzu.identity.credential.old_id': c1.id,
+      'tayzu.identity.credential.new_id': rotated.id,
+    });
+    // Forced serialization of the whole record: no secret anywhere in it.
+    const serialized = JSON.stringify(record, (_key, value: unknown) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    );
+    expect(c1.secret.length).toBeGreaterThan(0);
+    expect(rotated.secret.length).toBeGreaterThan(0);
+    expect(serialized).not.toContain(c1.secret);
+    expect(serialized).not.toContain(rotated.secret);
+  }, 120_000);
+
+  it('A revocation record carries only opaque identifiers: the secret never appears in catalog.security.credential_revoked', async () => {
+    const org = await freshOrg();
+    const c1 = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Leak revoke',
+      actorKind: 'integration',
+      metadata: { createdBy: org.adminId },
+    });
+
+    await client().identity.credentials.revoke({ credential: c1.id }, { context: contextOf(org) });
+
+    const events = (await eventsOf(REVOKED, org.tenantId)).filter(
+      (record) => record.attributes['tayzu.identity.credential.id'] === c1.id,
+    );
+    expect(events).toHaveLength(1);
+    const record = events[0];
+    expect(record?.severityText).toBe('WARN');
+    expect(record?.attributes).toEqual({
+      'tayzu.tenant.id': org.tenantId,
+      'tayzu.actor.id': org.adminId,
+      'tayzu.identity.credential.id': c1.id,
+    });
+    const serialized = JSON.stringify(record, (_key, value: unknown) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    );
+    expect(c1.secret.length).toBeGreaterThan(0);
+    expect(serialized).not.toContain(c1.secret);
+  }, 120_000);
+});

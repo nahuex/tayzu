@@ -394,6 +394,16 @@ export async function rotateCredential(args: {
       }
       throw error;
     }
+    emitIdentityEvent({
+      name: 'catalog.audit.credential_rotated',
+      severity: 'INFO',
+      attributes: {
+        'tayzu.tenant.id': args.tenantId,
+        'tayzu.actor.id': args.adminId,
+        'tayzu.identity.credential.old_id': old.id,
+        'tayzu.identity.credential.new_id': created.id,
+      },
+    });
     return { id: created.id, secret: created.secret };
   });
 }
@@ -414,5 +424,14 @@ export async function revokeCredential(args: {
     id: args.credentialId,
     pool: args.appPool,
     tenantId: args.tenantId,
+  });
+  emitIdentityEvent({
+    name: 'catalog.security.credential_revoked',
+    severity: 'WARN',
+    attributes: {
+      'tayzu.tenant.id': args.tenantId,
+      'tayzu.actor.id': args.adminId,
+      'tayzu.identity.credential.id': args.credentialId,
+    },
   });
 }

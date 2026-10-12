@@ -2477,7 +2477,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `credentials.int.test.ts` covers "Revoking a credential is permanent", and a Better
       Auth `admin` member who is not the owner and an `owner` each revoking a key through
       the operation with the headerless call of 9.1b.
-- [ ] 9.10 Rotation and revocation log events carry only opaque credential
+- [x] 9.10 Rotation and revocation log events carry only opaque credential
       identifiers, never a secret, even under a forced serialization of the full
       credential object. Verify: `credentials.int.test.ts` covers a marker-leak
       check: a credential secret string never appears in the
