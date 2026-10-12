@@ -2382,7 +2382,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       object) being pinned by an assertion while the reader accepts both an object
       and a JSON string, and the paged lookup finding a key beyond the limit (a
       tenant seeded with more keys than the limit).
-- [ ] 9.3 A credential is shown disabled when its key is disabled, it is
+- [x] 9.3 A credential is shown disabled when its key is disabled, it is
       revoked, or its bound service account is `Disabled`. Verify:
       `credentials.int.test.ts` covers each of the three cases.
 - [ ] 9.4 `rotationDueAt` is computed from the credential's `metadata.rotatedAt`, or

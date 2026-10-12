@@ -92,6 +92,27 @@ async function readRevokedIds(appPool: Pool, tenantId: string): Promise<Set<stri
   return new Set(rows.map((r) => r.credential_id));
 }
 
+/** The identifiers, among `identifiers`, of the tenant's `_user` entities whose status is `Disabled`. */
+async function readDisabledAccounts(
+  appPool: Pool,
+  tenantId: string,
+  identifiers: string[],
+): Promise<Set<string>> {
+  if (identifiers.length === 0) return new Set();
+  const rows = await withTenantTransaction(appPool, { tenantId }, async (client) => {
+    const result = await client.query<{ identifier: string }>(
+      `select e.identifier from catalog_entity e
+         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+        where e.tenant_id = $1 and b.identifier = '_user'
+          and e.identifier = any($2::text[])
+          and e.spec_properties ->> 'status' = 'Disabled'`,
+      [tenantId, identifiers],
+    );
+    return result.rows;
+  });
+  return new Set(rows.map((r) => r.identifier));
+}
+
 /** The page of the viewer: non-revoked credentials first, at most `cap` entries. */
 export async function listCredentials(args: {
   authRepository: AuthRepository;
@@ -109,8 +130,16 @@ export async function listCredentials(args: {
     ...keys.filter((k) => !revoked.has(k.id)).sort(byAge),
     ...keys.filter((k) => revoked.has(k.id)).sort(byAge),
   ];
-  const credentials = ordered.slice(0, args.cap).map((key): CredentialView => {
-    const metadata = readApiKeyMetadata(key.metadata);
+  const page = ordered.slice(0, args.cap).map((key) => ({
+    key,
+    metadata: readApiKeyMetadata(key.metadata),
+  }));
+  const disabledAccounts = await readDisabledAccounts(
+    args.appPool,
+    args.tenantId,
+    page.flatMap(({ metadata }) => (metadata.userId === undefined ? [] : [metadata.userId])),
+  );
+  const credentials = page.map(({ key, metadata }): CredentialView => {
     const kind: CredentialKind =
       metadata.userId !== undefined
         ? 'service_account'
@@ -124,7 +153,10 @@ export async function listCredentials(args: {
       prefix: CREDENTIAL_PREFIX,
       createdAt: key.createdAt,
       lastRequest: key.lastRequest,
-      enabled: key.enabled && !revoked.has(key.id),
+      enabled:
+        key.enabled &&
+        !revoked.has(key.id) &&
+        !(metadata.userId !== undefined && disabledAccounts.has(metadata.userId)),
       rotationDueAt: null,
       ...(metadata.createdBy === undefined ? {} : { createdBy: metadata.createdBy }),
     };

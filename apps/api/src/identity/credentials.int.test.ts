@@ -54,7 +54,7 @@ import {
   type MachineCredentialActorKind,
 } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
-import { createUserSync } from '@tayzu/catalog';
+import { createEntityService, createUserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -436,5 +436,93 @@ describe('identity.credentials.list (task 9.2)', () => {
     // The key that sorts last is beyond the first pages of 3.
     const last = seeded.map((s) => s.id).sort()[seeded.length - 1];
     expect(ids).toContain(last);
+  }, 120_000);
+
+  /*
+   * Task 9.3: "A credential MUST be shown disabled when its key is disabled, it is revoked,
+   * or its bound service account is `Disabled`." Each case is checked next to an untouched
+   * credential of the same tenant that stays enabled. Production symbols expected: none new;
+   * `identity.credentials.list` of 9.2 joins `metadata.userId` to the tenant's `_user`
+   * entity (identifier = `metadata.userId`) and derives `enabled` from its `status`.
+   */
+  async function listFor(tenant: Tenant): Promise<Map<string, CredentialView>> {
+    const output = (await clientFor().identity.credentials.list(
+      {},
+      { context: context(tenant) },
+    )) as ListOutput;
+    return new Map(output.credentials.map((c) => [c.id, c]));
+  }
+
+  async function seedBound(tenant: Tenant, name: string, userId: string): Promise<Seeded> {
+    const created = await createMachineCredential(auth, {
+      userId: tenant.adminId,
+      organizationId: tenant.tenantId,
+      name,
+      actorKind: 'integration',
+      metadata: { userId, createdBy: tenant.adminId },
+    });
+    return { id: created.id, secret: created.secret };
+  }
+
+  async function seedServiceAccount(
+    tenant: Tenant,
+    identifier: string,
+    status: 'Active' | 'Disabled',
+  ): Promise<void> {
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId: tenant.tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      {
+        blueprint: '_user',
+        identifier,
+        title: 'Service account',
+        spec: { properties: { accountKind: 'service', status } },
+      },
+    );
+  }
+
+  it('A credential is shown disabled when its key is disabled', async () => {
+    const tenant = await freshTenant();
+    const disabled = await seed(tenant, 'Disabled key');
+    const untouched = await seed(tenant, 'Untouched key');
+    await authPool.query('update auth.apikey set enabled = false where id = $1', [disabled.id]);
+
+    const byId = await listFor(tenant);
+
+    expect(byId.get(disabled.id)?.enabled).toBe(false);
+    expect(byId.get(untouched.id)?.enabled).toBe(true);
+  }, 120_000);
+
+  it('A credential is shown disabled when it is revoked', async () => {
+    const tenant = await freshTenant();
+    const revoked = await seed(tenant, 'Revoked key');
+    const untouched = await seed(tenant, 'Untouched key');
+    await revoke(tenant, revoked.id);
+
+    const byId = await listFor(tenant);
+
+    expect(byId.get(revoked.id)?.enabled).toBe(false);
+    expect(byId.get(untouched.id)?.enabled).toBe(true);
+  }, 120_000);
+
+  it('A credential is shown disabled when its bound service account is Disabled', async () => {
+    const tenant = await freshTenant();
+    const suffix = randomUUID().slice(0, 8);
+    const disabledAccount = `svc-off-${suffix}`;
+    const activeAccount = `svc-on-${suffix}`;
+    await seedServiceAccount(tenant, disabledAccount, 'Disabled');
+    await seedServiceAccount(tenant, activeAccount, 'Active');
+    const ofDisabled = await seedBound(tenant, 'Of disabled account', disabledAccount);
+    const ofActive = await seedBound(tenant, 'Of active account', activeAccount);
+
+    const byId = await listFor(tenant);
+
+    expect(byId.get(ofDisabled.id)?.kind).toBe('service_account');
+    expect(byId.get(ofDisabled.id)?.enabled).toBe(false);
+    expect(byId.get(ofActive.id)?.kind).toBe('service_account');
+    expect(byId.get(ofActive.id)?.enabled).toBe(true);
   }, 120_000);
 });
