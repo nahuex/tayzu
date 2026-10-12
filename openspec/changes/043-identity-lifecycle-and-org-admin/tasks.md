@@ -2483,7 +2483,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       check: a credential secret string never appears in the
       `catalog.audit.credential_rotated` or `catalog.security.credential_revoked`
       record.
-- [ ] 9.11 A foreign or unknown credential id answers `CATALOG_NOT_FOUND`: the
+- [x] 9.11 A foreign or unknown credential id answers `CATALOG_NOT_FOUND`: the
       helper throws `AuthContextError` for a foreign credential today, and the
       identity operation maps it. The key is read through an adapter-level lookup (the repository of 5.1b)
       filtered by `referenceId` and `configId` and paged to the end, never limited like

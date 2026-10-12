@@ -2553,3 +2553,201 @@ describe('credential rotation and revocation events never carry a secret (task 9
     expect(serialized).not.toContain(c1.secret);
   }, 120_000);
 });
+
+/**
+ * Task 9.11 (spec "Targets belong to the caller's tenant", scenario "Another tenant's credential
+ * cannot be listed, rotated or revoked"): a foreign or unknown credential id answers the same
+ * `CATALOG_NOT_FOUND`, and the key is read through the adapter-level lookup filtered by
+ * `referenceId`.
+ *
+ * ## Production symbols expected
+ *
+ * - `identity.credentials.revoke` and `identity.credentials.rotate` (`createIdentityRouter` in
+ *   `../identity-router.js`) fail with an error whose `code` is `CATALOG_NOT_FOUND` for another
+ *   tenant's credential and for an unknown id, with identical status, message and data. For revoke
+ *   the `AuthContextError` of `revokeMachineCredential` is mapped (`./credentials.js`).
+ * - `AuthRepository.apiKeyById` / `listApiKeys` (`./auth-repository.js`) filter by `referenceId`.
+ */
+describe('a foreign or unknown credential id answers CATALOG_NOT_FOUND (task 9.11)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface TargetClient {
+    identity: {
+      credentials: {
+        revoke(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): TargetClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Target Owner',
+      email: `target-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Target Org', slug: `target-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Target Admin',
+      email: `target-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: org.adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  function seed(org: Org, name: string) {
+    return createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name,
+      actorKind: 'integration',
+      metadata: { createdBy: org.adminId },
+    });
+  }
+
+  async function failureOf(run: () => Promise<unknown>): Promise<Record<string, unknown>> {
+    try {
+      await run();
+    } catch (error) {
+      return {
+        code: (error as { code?: unknown }).code,
+        status: (error as { status?: unknown }).status,
+        message: (error as Error).message,
+        data: (error as { data?: unknown }).data,
+      };
+    }
+    return { code: 'NO_ERROR' };
+  }
+
+  async function revocationCount(org: Org, id: string): Promise<number> {
+    const result = await withTenantTransaction(appPool, { tenantId: org.tenantId }, (c) =>
+      c.query<{ n: string }>(
+        `select count(*)::text as n from machine_credential_revocation
+          where credential_id = $1 and tenant_id = $2`,
+        [id, org.tenantId],
+      ),
+    );
+    return Number(result.rows[0]?.n);
+  }
+
+  async function keyCount(org: Org): Promise<number> {
+    return (await readAllApiKeys(authRepository, org.tenantId)).length;
+  }
+
+  it("Another tenant's credential cannot be rotated or revoked: both answer CATALOG_NOT_FOUND, identical to an unknown id, and tenant t2's key is untouched", async () => {
+    const t1 = await freshOrg();
+    const t2 = await freshOrg();
+    const foreign = await seed(t2, 'Foreign');
+    const unknownId = randomUUID();
+    const t1Keys = await keyCount(t1);
+    const t2Keys = await keyCount(t2);
+
+    const revokeForeign = await failureOf(() =>
+      client().identity.credentials.revoke({ credential: foreign.id }, { context: contextOf(t1) }),
+    );
+    const revokeUnknown = await failureOf(() =>
+      client().identity.credentials.revoke({ credential: unknownId }, { context: contextOf(t1) }),
+    );
+    const rotateForeign = await failureOf(() =>
+      client().identity.credentials.rotate({ credential: foreign.id }, { context: contextOf(t1) }),
+    );
+    const rotateUnknown = await failureOf(() =>
+      client().identity.credentials.rotate({ credential: unknownId }, { context: contextOf(t1) }),
+    );
+
+    expect(revokeForeign['code']).toBe('CATALOG_NOT_FOUND');
+    expect(revokeUnknown['code']).toBe('CATALOG_NOT_FOUND');
+    expect(rotateForeign['code']).toBe('CATALOG_NOT_FOUND');
+    expect(rotateUnknown['code']).toBe('CATALOG_NOT_FOUND');
+    // The same answer for a foreign and an unknown id, and for both operations.
+    expect(revokeForeign).toEqual(revokeUnknown);
+    expect(rotateForeign).toEqual(rotateUnknown);
+    expect(revokeForeign).toEqual(rotateForeign);
+
+    // Nothing changed in either tenant.
+    expect(await revocationCount(t2, foreign.id)).toBe(0);
+    expect(await revocationCount(t1, foreign.id)).toBe(0);
+    expect(await keyCount(t1)).toBe(t1Keys);
+    expect(await keyCount(t2)).toBe(t2Keys);
+    const stored = await authPool.query<{ enabled: boolean }>(
+      'select enabled from auth.apikey where id = $1',
+      [foreign.id],
+    );
+    expect(stored.rows[0]?.enabled).toBe(true);
+    const exchange = await exchangeMachineToken(auth, {
+      clientId: foreign.id,
+      clientSecret: foreign.secret,
+    });
+    expect(exchange.accessToken.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  it("The key lookup is filtered by referenceId: another tenant's key is not found by id, and is absent from the tenant's paged read", async () => {
+    const t1 = await freshOrg();
+    const t2 = await freshOrg();
+    const own = await seed(t1, 'Own');
+    const foreign = await seed(t2, 'Foreign');
+
+    expect((await authRepository.apiKeyById(t1.tenantId, own.id))?.referenceId).toBe(t1.tenantId);
+    expect(await authRepository.apiKeyById(t1.tenantId, foreign.id)).toBeUndefined();
+    expect(await authRepository.apiKeyById(t2.tenantId, own.id)).toBeUndefined();
+    const ids = (await readAllApiKeys(authRepository, t1.tenantId)).map((k) => k.id);
+    expect(ids).toContain(own.id);
+    expect(ids).not.toContain(foreign.id);
+  }, 120_000);
+});
