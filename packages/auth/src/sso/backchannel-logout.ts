@@ -4,7 +4,7 @@
  *
  * Checks run in order and fail closed at the first failing one: signature
  * (RS256, key named by `kid` in the discovered JWKS, `node:crypto` only),
- * `typ`, `iss`, `aud`, `iat`/`exp` (+-30s skew), `events`, no `nonce`. Any
+ * `typ`, `iss`, `aud`, `iat`/`exp` (+-30s skew), `events`, no `nonce`, `sid` or `sub` present. Any
  * failure resolves `null`; nothing from the token or the provider reaches
  * logs, spans or errors.
  */
@@ -127,12 +127,18 @@ export async function verifyLogoutToken(
     if (Object.hasOwn(claims, 'nonce')) {
       return null;
     }
+    // 7. At least one of `sid` / `sub` names what to revoke.
+    const sid = optionalString(claims['sid']);
+    const sub = optionalString(claims['sub']);
+    if (sid === undefined && sub === undefined) {
+      return null;
+    }
 
     return {
       jti: optionalString(claims['jti']),
       exp,
-      sid: optionalString(claims['sid']),
-      sub: optionalString(claims['sub']),
+      sid,
+      sub,
     };
   } catch {
     return null;

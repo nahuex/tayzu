@@ -547,6 +547,50 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
       expect(serialized, 'no sensitive value in the span or counter').not.toContain(secret);
     }
   }, 60_000);
+
+  /**
+   * Task 13.10 of 043 (`002` VCDM M14; spec requirement "The hand-offs from the
+   * authentication baseline hold", scenario "A malformed logout token is cheap
+   * to refuse"): a validly-signed `logout+jwt` carrying neither `sid` nor `sub`
+   * is rejected, its `jti` is not consumed (no replay record), and the same `jti`
+   * still works afterwards in a valid token.
+   *
+   * Production symbols expected: `verifyLogoutToken` (`@tayzu/auth`,
+   * `sso/backchannel-logout.ts`) resolves `null` when both `sid` and `sub` are
+   * absent, so the route never records `backchannel-logout:{aud}:{jti}`.
+   */
+  it('A logout token with neither sid nor sub is rejected and does not consume its jti, which a valid token can still use', async () => {
+    const sid = `sid-${randomUUID()}`;
+    const userId = await ssoSession(sid);
+    const before = await sessionCount(userId);
+    expect(before).toBeGreaterThan(0);
+
+    const valid = logoutClaims(sid);
+    const jti = valid['jti'] as string;
+    const identifier = `backchannel-logout:${stub.clientId}:${jti}`;
+
+    const malformed: Record<string, unknown> = { ...valid };
+    Reflect.deleteProperty(malformed, 'sid');
+    Reflect.deleteProperty(malformed, 'sub');
+    const refused = await postLogout(stub.signJwt(malformed, { typ: 'logout+jwt' }));
+    expect(refused.statusCode, 'the refusal looks like every other outcome').toBe(200);
+
+    const consumed = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      identifier,
+    ]);
+    expect(consumed.rows, 'the refused token did not consume its jti').toHaveLength(0);
+    expect(await sessionCount(userId), 'the refused token revoked nothing').toBe(before);
+
+    // The same jti, now in a valid token, is still usable.
+    const accepted = await postLogout(stub.signJwt(valid, { typ: 'logout+jwt' }));
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.body).toBe(refused.body);
+    expect(await sessionCount(userId), 'the valid token with the same jti revokes').toBe(0);
+    const recorded = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      identifier,
+    ]);
+    expect(recorded.rows, 'the valid token consumed the jti').toHaveLength(1);
+  }, 60_000);
 });
 
 /**

@@ -3119,7 +3119,7 @@ SSO surfaces of M18) are recorded there with their justification.
       longer inserts an unbounded number of rows (`002` VCDM M13). Verify:
       `reauthorization-limits.int.test.ts` covers repeated blocked attempts of one
       session inserting at most the configured number of rows.
-- [ ] 13.10 A back-channel logout token with neither `sid` nor `sub` is rejected
+- [x] 13.10 A back-channel logout token with neither `sid` nor `sub` is rejected
       and does not consume its `jti` (`002` VCDM M14). Verify:
       `backchannel-logout.int.test.ts` covers such a token being refused and the same
       `jti` still usable afterwards in a valid token.
