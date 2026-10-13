@@ -3420,7 +3420,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `createAppFromEnv` with SSO configured and no limit variable answering the
       callback with `AUTH_RATE_LIMITED` and `Retry-After` past the default from one IP,
       with no database access past the limit.
-- [ ] 14.21 The `/v1/*` catch-all accepts only the methods the merged router routes
+- [x] 14.21 The `/v1/*` catch-all accepts only the methods the merged router routes
       (Resolved decision Q141): `GET`, `POST`, `PUT`, `PATCH` and `DELETE` (Fastify
       derives `HEAD` from `GET`; the CORS preflight stays with `@fastify/cors`), so
       `QUERY` is not registered and leaves the allowlist of 14.3b. Verify:

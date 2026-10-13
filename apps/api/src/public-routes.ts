@@ -51,12 +51,6 @@ export const PUBLIC_ROUTE_ALLOWLIST: readonly PublicRoute[] = [
     reason: 'CORS preflight on the catch-all, answered by @fastify/cors before the handler.',
   },
   {
-    method: 'QUERY',
-    path: '/v1/*',
-    reason:
-      'Fastify rejects QUERY without a Content-Type (400) before the handler; the router has no QUERY procedure.',
-  },
-  {
     method: '*',
     path: '/v1/auth/visma-connect/reauthorize/callback',
     reason: 'Visma Connect re-authorization callback: authenticated by the OIDC state.',

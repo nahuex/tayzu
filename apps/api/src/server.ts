@@ -911,38 +911,44 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     };
   }
 
-  app.all('/v1/*', { config: v1Config }, async (request, reply) => {
-    const resolved = await resolveOnce(request);
-    if ('error' in resolved) {
-      // Same mapping and body shape as any other error, via oRPC's own JSON.
-      const mapped = toOrpcError(resolved.error);
-      return reply.status(mapped.status).send(mapped.toJSON());
-    }
-    const context = resolved.context;
-    // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
-    // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
-    // principals are always `member` (Q28), so only a user can carry `admin` here.
-    if (context.principal?.roles.includes('admin') === true) {
-      const session = await (auth.api as AuthSessionSurface).getSession({
-        headers: toWebHeaders(request),
-      });
-      if (session?.user?.twoFactorEnabled !== true) {
-        const mapped = toOrpcError(new AuthStepUpError());
+  // The methods the merged router routes (Q141); `HEAD` is derived from `GET`.
+  app.route({
+    method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    url: '/v1/*',
+    config: v1Config,
+    handler: async (request, reply) => {
+      const resolved = await resolveOnce(request);
+      if ('error' in resolved) {
+        // Same mapping and body shape as any other error, via oRPC's own JSON.
+        const mapped = toOrpcError(resolved.error);
         return reply.status(mapped.status).send(mapped.toJSON());
       }
-    }
-    const result = await openApiHandler.handle(request, reply, {
-      context: {
-        ...context,
-        [STEP_UP_HEADERS]: toWebHeaders(request),
-        // Q42: the session headers `invite` and `cancelInvitation` forward to Better Auth.
-        [REQUEST_HEADERS]: toWebHeaders(request),
-      },
-    });
-    if (!result.matched) {
-      return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });
-    }
-    return undefined;
+      const context = resolved.context;
+      // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
+      // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
+      // principals are always `member` (Q28), so only a user can carry `admin` here.
+      if (context.principal?.roles.includes('admin') === true) {
+        const session = await (auth.api as AuthSessionSurface).getSession({
+          headers: toWebHeaders(request),
+        });
+        if (session?.user?.twoFactorEnabled !== true) {
+          const mapped = toOrpcError(new AuthStepUpError());
+          return reply.status(mapped.status).send(mapped.toJSON());
+        }
+      }
+      const result = await openApiHandler.handle(request, reply, {
+        context: {
+          ...context,
+          [STEP_UP_HEADERS]: toWebHeaders(request),
+          // Q42: the session headers `invite` and `cancelInvitation` forward to Better Auth.
+          [REQUEST_HEADERS]: toWebHeaders(request),
+        },
+      });
+      if (!result.matched) {
+        return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });
+      }
+      return undefined;
+    },
   });
 
   await app.ready();
