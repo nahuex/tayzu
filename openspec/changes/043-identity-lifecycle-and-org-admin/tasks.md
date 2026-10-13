@@ -3286,7 +3286,7 @@ SSO surfaces of M18) are recorded there with their justification.
       unknown-id response, and for the target-less routes (invite, `users.create`,
       `serviceAccounts.create`, `credentials.list`) asserts that the write lands only in
       `t1` and that the list omits `t2`'s credentials.
-- [ ] 14.9 A route-table-driven authorization matrix over HTTP (Resolved decision
+- [x] 14.9 A route-table-driven authorization matrix over HTTP (Resolved decision
       Q45), built from the router's own procedure list so a new route cannot be
       forgotten: for each of the thirteen oRPC routes, the admin (with a fresh step-up
       where the route is high-risk) is allowed (the service-account routes included: the
