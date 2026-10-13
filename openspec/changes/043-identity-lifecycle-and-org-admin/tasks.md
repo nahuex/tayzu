@@ -2831,7 +2831,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       tenant's credential cannot be listed, rotated or revoked" for list, the created
       key's `referenceId` being `t1`, and a create bound to `t2`'s service account
       being refused.
-- [ ] 12.7 `identity.credentials.rotate` and `revoke` on another tenant's
+- [x] 12.7 `identity.credentials.rotate` and `revoke` on another tenant's
       credential answer `CATALOG_NOT_FOUND`. Verify: the same scenario for rotate
       and revoke, asserting the credential is still usable and no revocation row was
       written.

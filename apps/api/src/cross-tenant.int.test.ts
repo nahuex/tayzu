@@ -34,6 +34,7 @@ import {
   exchangeMachineToken,
   type AuthInstance,
 } from '@tayzu/auth';
+import { createMachineCredential } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
@@ -882,4 +883,165 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
       'the credential still exchanges',
     ).resolves.toBeDefined();
   }, 90_000);
+});
+
+/**
+ * Task 12.7 of openspec/changes/043-identity-lifecycle-and-org-admin (rotate and revoke).
+ *
+ * Scenario (spec "Targets belong to the caller's tenant", "Another tenant's credential cannot be
+ * listed, rotated or revoked"): for `identity.credentials.rotate` and `.revoke`, an admin of `t1`
+ * acting on a credential of `t2` gets `CATALOG_NOT_FOUND` identical to an unknown id, the
+ * credential stays enabled and its token exchange still succeeds, and no
+ * `machine_credential_revocation` row is written in either tenant.
+ *
+ * ## Production symbols expected
+ *
+ * None new: task 9.11 already implements this (the same behavior is covered in
+ * `identity/credentials.int.test.ts`). This test is the matrix entry and is expected to pass on
+ * arrival (a regression guard).
+ */
+describe('cross-tenant matrix: credentials rotate and revoke (task 12.7)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface CredentialClient {
+    identity: {
+      credentials: {
+        rotate(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+        revoke(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  const credentials = (): CredentialClient => client;
+
+  async function freshTenant(label: string): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: `${label} Admin`,
+      email: `${label}-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `${label} Org`,
+      organizationSlug: `${label}-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  function sessionContext(tenant: Tenant): Record<string, unknown> {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: tenant.adminId },
+      principal: { roles: ['admin'] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  async function revocations(tenantId: string): Promise<number> {
+    const result = await withTenantTransaction(appPool, { tenantId }, (db) =>
+      db.query<{ n: string }>(
+        'select count(*)::text as n from machine_credential_revocation where tenant_id = $1',
+        [tenantId],
+      ),
+    );
+    return Number(result.rows[0]?.n);
+  }
+
+  async function failureOf(call: Promise<unknown>): Promise<Record<string, unknown>> {
+    const thrown: unknown = await call.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    return {
+      code: (thrown as { code?: unknown }).code,
+      status: (thrown as { status?: unknown }).status,
+      message: (thrown as { message?: unknown }).message,
+      data: (thrown as { data?: unknown }).data,
+    };
+  }
+
+  for (const operation of ['rotate', 'revoke'] as const) {
+    it(`Another tenant's credential cannot be ${operation === 'rotate' ? 'rotated' : 'revoked'}: t1's admin gets CATALOG_NOT_FOUND like an unknown id, the credential stays enabled and exchangeable, and no revocation row is written`, async () => {
+      const t1 = await freshTenant('t1');
+      const t2 = await freshTenant('t2');
+      const foreign = await createMachineCredential(auth, {
+        userId: t2.adminId,
+        organizationId: t2.tenantId,
+        name: 'Foreign',
+        actorKind: 'integration',
+        metadata: { createdBy: t2.adminId },
+      });
+      const t1Revocations = await revocations(t1.tenantId);
+      const t2Revocations = await revocations(t2.tenantId);
+
+      const foreignFailure = await failureOf(
+        credentials().identity.credentials[operation](
+          { credential: foreign.id },
+          { context: sessionContext(t1) },
+        ),
+      );
+      const unknownFailure = await failureOf(
+        credentials().identity.credentials[operation](
+          { credential: randomUUID() },
+          { context: sessionContext(t1) },
+        ),
+      );
+
+      expect(foreignFailure['code']).toBe('CATALOG_NOT_FOUND');
+      expect(unknownFailure['code']).toBe('CATALOG_NOT_FOUND');
+      expect(foreignFailure, 'same as an unknown id').toEqual(unknownFailure);
+      const stored = await authPool.query<{ enabled: boolean; reference_id: string }>(
+        'select enabled, reference_id from auth.apikey where id = $1',
+        [foreign.id],
+      );
+      expect(stored.rows[0]?.enabled, 'still enabled').toBe(true);
+      expect(stored.rows[0]?.reference_id).toBe(t2.tenantId);
+      expect(await revocations(t2.tenantId), 'no revocation in t2').toBe(t2Revocations);
+      expect(await revocations(t1.tenantId), 'no revocation in t1').toBe(t1Revocations);
+      await expect(
+        exchangeMachineToken(auth, { clientId: foreign.id, clientSecret: foreign.secret }),
+        'the credential still exchanges',
+      ).resolves.toBeDefined();
+    }, 120_000);
+  }
 });
