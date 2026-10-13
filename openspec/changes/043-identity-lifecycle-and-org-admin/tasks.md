@@ -2864,7 +2864,7 @@ M20: 11.2); the two
 explicit deferrals (the in-memory `@fastify/rate-limit` budgets of M13 and the
 SSO surfaces of M18) are recorded there with their justification.
 
-- [ ] 13.1 The machine-credential create and revoke operations (library functions in
+- [x] 13.1 The machine-credential create and revoke operations (library functions in
       `packages/auth/src/machine-credentials.ts`: `002` registers no routes for them
       and no non-test code calls them) are reachable only through
       `identity.credentials.*` and `identity.serviceAccounts.*`, behind Cerbos (the
