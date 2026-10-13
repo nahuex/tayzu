@@ -8,6 +8,7 @@
 import { createPool } from '@tayzu/db';
 
 import { loadConfig } from './config.js';
+import { createEmailSender } from './email-sender.js';
 import { createApp, type App } from './server.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -57,6 +58,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
   const authSecret = config.betterAuthSecret;
   const { cerbosAddress, allowedOrigins } = config;
 
+  const emailSender = createEmailSender(config);
   const appPool = createPool(appUrl);
   let authPool: ReturnType<typeof createPool> | undefined;
   try {
@@ -91,6 +93,19 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       },
       bodyLimit: config.bodyLimit,
       mountIdentityRoutes: config.mountIdentityRoutes,
+      email: {
+        sender: emailSender,
+        ...(config.invitationLinkBaseUrl === undefined
+          ? {}
+          : { invitationLinkBaseUrl: config.invitationLinkBaseUrl }),
+        disabledTenantIds: config.emailDisabledTenantIds,
+        killSwitch: config.invitationEmailKillSwitch,
+        ...(config.identityTokenHmacSecret === undefined
+          ? {}
+          : { recipientKeySecret: config.identityTokenHmacSecret }),
+        tenantCap: config.invitationTenantCap,
+        recipientCap: config.invitationRecipientCap,
+      },
     });
     const ownedAuthPool = authPool;
     return {

@@ -34,6 +34,7 @@ import {
   type AuthInstance,
   type BackchannelLogoutOutcome,
   type CreateAuthOptions,
+  type EmailSender,
   type RateLimitBucketStoreOptions,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
@@ -51,7 +52,8 @@ import { createIdentityRouter } from './identity-router.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
 import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
 import { createAuthRepository } from './identity/auth-repository.js';
-import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
+import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -115,6 +117,20 @@ export interface CreateAppOptions {
   readonly identity?: {
     readonly emailGate?: EmailTenantGate;
     readonly invitationLinkBaseUrl?: string;
+  };
+  /**
+   * 043 task 14.11 (D5, Q138): the email settings of the production start. With the
+   * identity routes mounted, `createApp` builds the one gate from them and hands the gate
+   * and the link base URL to the identity router.
+   */
+  readonly email?: {
+    readonly sender: EmailSender;
+    readonly invitationLinkBaseUrl?: string;
+    readonly disabledTenantIds: readonly string[];
+    readonly killSwitch: boolean;
+    readonly recipientKeySecret?: string;
+    readonly tenantCap: { readonly max: number; readonly windowSeconds: number };
+    readonly recipientCap: { readonly max: number; readonly windowSeconds: number };
   };
   /**
    * 043 task 14.3 (D15): mounts the identity routes (the accept route and the identity
@@ -249,6 +265,25 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
 
+  const { email } = options;
+  const emailGate =
+    email === undefined
+      ? options.identity?.emailGate
+      : createEmailTenantGate({
+          disabledTenantIds: email.disabledTenantIds,
+          capStore: createInMemoryEmailCapStore({
+            tenant: email.tenantCap,
+            recipient: email.recipientCap,
+          }),
+          sender: email.sender,
+          killSwitch: email.killSwitch,
+          ...(email.recipientKeySecret === undefined
+            ? {}
+            : { recipientKeySecret: email.recipientKeySecret }),
+        });
+  const invitationLinkBaseUrl =
+    email === undefined ? options.identity?.invitationLinkBaseUrl : email.invitationLinkBaseUrl;
+
   // D10: one router, one handler, one interceptor chain for the catalog and identity routes.
   const router = {
     ...createCatalogRouter({
@@ -263,12 +298,8 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           withUserLock: createWithUserLock(options.authPool),
           appPool,
           userSync,
-          ...(options.identity?.emailGate === undefined
-            ? {}
-            : { emailGate: options.identity.emailGate }),
-          ...(options.identity?.invitationLinkBaseUrl === undefined
-            ? {}
-            : { invitationLinkBaseUrl: options.identity.invitationLinkBaseUrl }),
+          ...(emailGate === undefined ? {} : { emailGate }),
+          ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
         })
       : {}),
   };

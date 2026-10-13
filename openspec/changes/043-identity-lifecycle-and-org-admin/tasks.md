@@ -3308,7 +3308,7 @@ SSO surfaces of M18) are recorded there with their justification.
       asserting `CATALOG_VALIDATION_FAILED` and no lookup or write, and fails when a
       procedure of the router is missing from it.
 
-- [ ] 14.11 The production start builds the email path (Resolved decision Q138; design
+- [x] 14.11 The production start builds the email path (Resolved decision Q138; design
       D5 "Sender selection", Q80). `createAppFromEnv` builds the sender once per process
       with `createEmailSender(config)`, and `createApp` takes the email settings in place
       of the prebuilt `identity.emailGate`: the sender, `INVITATION_LINK_BASE_URL`, the
