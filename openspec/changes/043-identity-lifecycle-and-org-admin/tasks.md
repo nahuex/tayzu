@@ -3195,7 +3195,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `accept-route.http.int.test.ts` covers "A new person accepts and can then sign
       in" over HTTP, without a session, and the route being absent from the OpenAPI document and from the
       `contract:check` input.
-- [ ] 14.2 `x-tayzu-risk: high` on every operation in the set (`setStatus`,
+- [x] 14.2 `x-tayzu-risk: high` on every operation in the set (`setStatus`,
       `invite`, `identity.users.create`, `serviceAccounts.create`/`delete`,
       `credentials.create`/`rotate`/`revoke`, and the SSO
       `linkSsoAccount` and `unlinkSsoAccount`), per Resolved decisions Q19 and Q31.
