@@ -91,3 +91,34 @@ export async function hasExpiredTemporaryPasswordMarker(
   const expiry = await findMarkerExpiry(adapter, userId);
   return expiry !== null && !(expiry > Date.now());
 }
+
+/** Far-future `expiresAt` so Better Auth's cleanup of expired verification rows never reaches the marker. */
+const MARKER_EXPIRES_AT_SENTINEL = new Date('9999-12-31T23:59:59.000Z');
+
+/** A temporary password stops working 48 hours after the creation (Resolved decision Q142). */
+const TEMPORARY_PASSWORD_TTL_MS = 48 * 60 * 60 * 1000;
+
+/** The adapter surface the marker write needs. */
+interface MarkerWriteAdapter {
+  createVerificationValue(data: {
+    identifier: string;
+    value: string;
+    expiresAt: Date;
+  }): Promise<unknown>;
+}
+
+/**
+ * Writes the marker of 13.5e for a user just created with a temporary password:
+ * the sentinel in `expiresAt`, the real expiry in `value`. Rejects if the write
+ * fails, so the caller fails before the user joins a tenant.
+ */
+export async function writeTemporaryPasswordMarker(
+  adapter: MarkerWriteAdapter,
+  userId: string,
+): Promise<void> {
+  await adapter.createVerificationValue({
+    identifier: temporaryPasswordMarkerIdentifier(userId),
+    value: new Date(Date.now() + TEMPORARY_PASSWORD_TTL_MS).toISOString(),
+    expiresAt: MARKER_EXPIRES_AT_SENTINEL,
+  });
+}

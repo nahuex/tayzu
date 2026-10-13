@@ -34,7 +34,10 @@
 import { isAPIError } from 'better-auth/api';
 
 import type { AuthInstance } from './auth.js';
-import { generateTemporaryPassword } from './identity/temporary-password.js';
+import {
+  generateTemporaryPassword,
+  writeTemporaryPasswordMarker,
+} from './identity/temporary-password.js';
 import { emitIdentityEvent } from './telemetry/identity-telemetry.js';
 
 export interface BootstrapAdminParams {
@@ -73,6 +76,10 @@ interface CreateUserApiSurface {
   createUser(args: {
     body: { name: string; email: string; password: string };
   }): Promise<{ user: { id: string; email: string } }>;
+}
+
+interface MarkerContextSurface {
+  readonly internalAdapter: Parameters<typeof writeTemporaryPasswordMarker>[0];
 }
 
 interface CreateOrganizationApiSurface {
@@ -128,6 +135,11 @@ export async function bootstrapAdmin(
       body: { name: params.adminName, email: params.adminEmail, password: temporaryPassword },
     });
     userId = result.user.id;
+    // Before the organization exists, so the admin never joins a tenant without the marker (Q36).
+    await writeTemporaryPasswordMarker(
+      (await (auth.$context as Promise<MarkerContextSurface>)).internalAdapter,
+      userId,
+    );
   } catch (error) {
     if (errorCode(error) === USER_ALREADY_EXISTS_CODE) {
       return noOp;

@@ -3395,7 +3395,7 @@ SSO surfaces of M18) are recorded there with their justification.
       covers `CREDENTIAL_CAP=1` and `SERVICE_ACCOUNT_CAP=1` each refusing the second
       creation over HTTP with `CATALOG_VALIDATION_FAILED` and nothing created.
 
-- [ ] 14.19 `identity.users.create` and the bootstrap CLI write the temporary-password
+- [x] 14.19 `identity.users.create` and the bootstrap CLI write the temporary-password
       marker that 13.5, 13.5c and 13.5d honor (Resolved decisions Q36, Q138 and Q139;
       `002` VCDM M11): `temp-password:<userId>` in `auth.verification` in the
       representation of 13.5e, its `value` the expiry 48 hours after the creation

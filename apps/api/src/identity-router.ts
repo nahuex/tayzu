@@ -24,6 +24,7 @@ import {
   nextStatus,
   validatePassword,
   withIdentitySpan,
+  writeTemporaryPasswordMarker,
   wouldLeaveNoSignInMethod,
   type AuthInstance,
 } from '@tayzu/auth';
@@ -664,6 +665,11 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                   role: GLOBAL_USER_ROLE,
                 },
               });
+              // The marker precedes the membership: a failed write leaves the user outside the tenant (Q36).
+              await writeTemporaryPasswordMarker(
+                (await verificationContext()).internalAdapter,
+                created.user.id,
+              );
               // `addMember` answers FORBIDDEN past the membership limit.
               await withGenericRefusal(
                 () =>

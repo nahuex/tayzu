@@ -94,4 +94,5 @@ export {
 export {
   generateTemporaryPassword,
   hasActiveTemporaryPasswordMarker,
+  writeTemporaryPasswordMarker,
 } from './identity/temporary-password.js';
