@@ -15,14 +15,16 @@ type Env = Readonly<Record<string, string | undefined>>;
 /**
  * Startup assertion on a runtime database role (design Q62, D6): the role in
  * effect must not be a superuser, must not have BYPASSRLS and must own no
- * catalog table. Judges `current_user`, and throws a fixed message so nothing
+ * catalog table nor `machine_credential_revocation`, which the `catalog\_%`
+ * pattern does not match (Q109). Judges `current_user`, and throws a fixed message so nothing
  * from the connection (host, password, role name) reaches the error.
  */
 async function assertRuntimeRole(pool: ReturnType<typeof createPool>): Promise<void> {
   const result = await pool.query<{ privileged: boolean }>(
     `select (r.rolsuper or r.rolbypassrls or exists (
        select 1 from pg_class c
-       where c.relowner = r.oid and c.relkind in ('r', 'p') and c.relname like 'catalog\\_%'
+       where c.relowner = r.oid and c.relkind in ('r', 'p')
+         and (c.relname like 'catalog\\_%' or c.relname = 'machine_credential_revocation')
      )) as privileged
      from pg_roles r where r.rolname = current_user`,
   );

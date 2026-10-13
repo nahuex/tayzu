@@ -48,6 +48,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { connect, createServer } from 'node:net';
 
+import { runMigrations } from '@tayzu/db';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -1553,6 +1554,197 @@ describe('production app wiring: runtime database roles are checked at startup (
   }, 60_000);
 
   it('tayzu_app and tayzu_auth start normally', async () => {
+    state.pools.set('app', appRole);
+    state.pools.set('auth', authRole);
+
+    const outcome = await startOutcome();
+
+    expect(outcome, 'startup succeeds with the two runtime roles').toEqual({
+      started: true,
+      message: '',
+    });
+  }, 60_000);
+});
+
+/**
+ * Task 11.1c (design Q109, D6, Gates): the startup assertion on the runtime
+ * database roles also fails when a runtime role owns
+ * `machine_credential_revocation`, a table that the `catalog\_%` name pattern
+ * does not match. The task cites no spec scenario; the behavior comes from
+ * Resolved decision Q109.
+ *
+ * ## Harness
+ *
+ * The test needs a role that owns `machine_credential_revocation` and nothing
+ * else the assertion already looks at (not a superuser, no `BYPASSRLS`, no
+ * `catalog_%` table), so that only the new clause can fail startup. Moving
+ * that table's ownership in the shared test database would break files that
+ * run concurrently, so the test migrates a private scratch database (pattern:
+ * `packages/catalog/src/persistence/schema.int.test.ts`), creates a throwaway
+ * role there, hands it the table and runs a pool as that role (`SET ROLE`).
+ * The pool stands for the role behind `DATABASE_URL` / `AUTH_DATABASE_URL`
+ * (`createPool` is mocked above). The other slot is the real `tayzu_app` or
+ * `tayzu_auth` role of the shared database. The throwaway role is dropped
+ * afterwards.
+ *
+ * ## Production symbols expected
+ *
+ * `assertRuntimeRole` in `./bootstrap.ts` (not exported; observed through
+ * `createAppFromEnv`) additionally treats a role that owns a relation named
+ * `machine_credential_revocation` as privileged, and throws the existing fixed
+ * message `A runtime database role is privileged: startup aborted`, with no
+ * connection detail.
+ *
+ * ## Why this fails right now
+ *
+ * The check only matches `catalog\_%`, so the role passes and startup
+ * succeeds (assertion failure: "started"). The real-roles test already passes.
+ */
+describe('production app wiring: a runtime role owning machine_credential_revocation fails startup (task 11.1c, Q109)', () => {
+  const FIXED_MESSAGE = 'A runtime database role is privileged: startup aborted';
+  const APP_PASSWORD = `app-pw-${randomUUID()}`;
+  const AUTH_PASSWORD = `auth-pw-${randomUUID()}`;
+  const PRODUCTION_ENV: Record<string, string> = {
+    ...ENV,
+    DATABASE_URL: `postgres://tayzu_app:${APP_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
+    AUTH_DATABASE_URL: `postgres://tayzu_auth:${AUTH_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
+    NODE_ENV: 'production',
+    EMAIL_PROVIDER: 'none',
+    BETTER_AUTH_URL: 'https://api.tayzu.test',
+    TAYZU_TELEMETRY_DISABLED: 'true',
+  };
+
+  const suffix = randomUUID().replaceAll('-', '');
+  const scratchName = `tayzu_api_mcr_${suffix}`;
+  const roleName = `tayzu_test_mcr_${suffix}`;
+  const ownPools: Pool[] = [];
+  let adminPool: Pool;
+  let scratchOwnerPool: Pool;
+  let revocationOwner: Pool;
+  let appRole: Pool;
+  let authRole: Pool;
+
+  function baseUrl(): string {
+    const url = process.env['DATABASE_URL'];
+    if (url === undefined || url.trim() === '') {
+      throw new Error(
+        'DATABASE_URL is not set: the int project global setup should stop this run.',
+      );
+    }
+    return url;
+  }
+
+  function poolOn(database: string | undefined, role: string | undefined): Pool {
+    const url = new URL(baseUrl());
+    if (database !== undefined) {
+      url.pathname = `/${database}`;
+    }
+    const pool = new Pool({ connectionString: url.href, max: 2 });
+    if (role !== undefined) {
+      pool.on('connect', (client) => {
+        void client.query(`SET ROLE ${role}`).catch(() => undefined);
+      });
+    }
+    pool.on('error', () => undefined);
+    ownPools.push(pool);
+    return pool;
+  }
+
+  beforeAll(async () => {
+    const { authPool } = await harnessPools();
+    // Test-only: acting as tayzu_auth needs the SET option on the cluster role.
+    await authPool.query(
+      `do $$ begin execute format('grant tayzu_auth to %I with set true', current_user); end $$`,
+    );
+    appRole = poolOn(undefined, 'tayzu_app');
+    authRole = poolOn(undefined, 'tayzu_auth');
+
+    adminPool = poolOn(undefined, undefined);
+    await adminPool.query(`create database ${scratchName}`);
+    scratchOwnerPool = poolOn(scratchName, undefined);
+    await runMigrations(scratchOwnerPool);
+    await scratchOwnerPool.query(`create role ${roleName} nologin`);
+    await scratchOwnerPool.query(
+      `do $$ begin execute format('grant ${roleName} to %I with set true', current_user); end $$`,
+    );
+    // ALTER TABLE ... OWNER TO requires the new owner to hold CREATE on the schema.
+    await scratchOwnerPool.query(`grant create on schema public to ${roleName}`);
+    await scratchOwnerPool.query(
+      `alter table public.machine_credential_revocation owner to ${roleName}`,
+    );
+    revocationOwner = poolOn(scratchName, roleName);
+
+    const facts = await revocationOwner.query<{
+      who: string;
+      privileged: boolean;
+      owns_revocation: boolean;
+      owns_catalog: boolean;
+    }>(
+      `select r.rolname as who,
+              (r.rolsuper or r.rolbypassrls) as privileged,
+              exists (select 1 from pg_class c where c.relowner = r.oid
+                        and c.relname = 'machine_credential_revocation') as owns_revocation,
+              exists (select 1 from pg_class c where c.relowner = r.oid
+                        and c.relkind in ('r', 'p') and c.relname like 'catalog\\_%') as owns_catalog
+         from pg_roles r where r.rolname = current_user`,
+    );
+    expect(facts.rows[0], 'precondition: only the new clause can flag this role').toEqual({
+      who: roleName,
+      privileged: false,
+      owns_revocation: true,
+      owns_catalog: false,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    state.pools.clear();
+    await Promise.all(ownPools.map((pool) => pool.end()));
+    const cleanup = new Pool({ connectionString: baseUrl(), max: 1 });
+    cleanup.on('error', () => undefined);
+    try {
+      await cleanup.query(`drop database if exists ${scratchName} with (force)`);
+      await cleanup.query(`drop role if exists ${roleName}`);
+    } finally {
+      await cleanup.end();
+    }
+  }, 120_000);
+
+  async function startOutcome(): Promise<{ started: boolean; message: string }> {
+    return createAppFromEnv(PRODUCTION_ENV).then(
+      async (app) => {
+        await app.close();
+        return { started: true, message: '' };
+      },
+      (error: unknown) => ({
+        started: false,
+        message: error instanceof Error ? error.message : 'non-error rejection',
+      }),
+    );
+  }
+
+  it.each([
+    ['DATABASE_URL', 'app'],
+    ['AUTH_DATABASE_URL', 'auth'],
+  ] as const)(
+    'a role owning machine_credential_revocation behind %s fails startup with the fixed message',
+    async (_variable, slot) => {
+      state.pools.set('app', appRole);
+      state.pools.set('auth', authRole);
+      state.pools.set(slot, revocationOwner);
+
+      const outcome = await startOutcome();
+
+      expect(outcome.started, 'startup fails instead of starting').toBe(false);
+      expect(outcome.message).toBe(FIXED_MESSAGE);
+      expect(outcome.message).not.toContain(APP_PASSWORD);
+      expect(outcome.message).not.toContain(AUTH_PASSWORD);
+      expect(outcome.message).not.toContain('db.invalid');
+      expect(outcome.message).not.toContain(roleName);
+    },
+    60_000,
+  );
+
+  it('the real tayzu_app and tayzu_auth roles still start', async () => {
     state.pools.set('app', appRole);
     state.pools.set('auth', authRole);
 

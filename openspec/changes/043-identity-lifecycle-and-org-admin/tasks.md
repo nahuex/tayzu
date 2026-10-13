@@ -2660,7 +2660,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `context-resolver.int.test.ts` covers a revocation in one tenant not poisoning
       the cache of another: credential id `c1` revoked in `t2` and cached, then a `t1`
       principal with the same id is still accepted.
-- [ ] 11.1c The startup assertion on the runtime database roles covers
+- [x] 11.1c The startup assertion on the runtime database roles covers
       `machine_credential_revocation` (Resolved decision Q109). `assertRuntimeRole` in
       `apps/api/src/bootstrap.ts` fails for a superuser, for `BYPASSRLS` and for the owner
       of a relation whose name matches `catalog\_%`, which `machine_credential_revocation`
