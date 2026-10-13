@@ -93,6 +93,8 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       },
       bodyLimit: config.bodyLimit,
       mountIdentityRoutes: config.mountIdentityRoutes,
+      credentialCap: config.credentialCap,
+      serviceAccountCap: config.serviceAccountCap,
       email: {
         sender: emailSender,
         ...(config.invitationLinkBaseUrl === undefined

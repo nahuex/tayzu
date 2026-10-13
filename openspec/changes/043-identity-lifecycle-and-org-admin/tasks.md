@@ -3389,7 +3389,7 @@ SSO surfaces of M18) are recorded there with their justification.
       with `CATALOG_VALIDATION_FAILED` and creating neither a `_user` nor a key, a
       revoked key not counting, and a concurrent `credentials.create` and
       `serviceAccounts.create` at one below the cap yielding exactly one success.
-- [ ] 14.18 The configured caps reach the router (Resolved decision Q138; 9.5d, 10.8):
+- [x] 14.18 The configured caps reach the router (Resolved decision Q138; 9.5d, 10.8):
       `createAppFromEnv` passes `CREDENTIAL_CAP` and `SERVICE_ACCOUNT_CAP` through
       `createApp` to the identity router. Verify: `identity-wiring.int.test.ts` (14.11)
       covers `CREDENTIAL_CAP=1` and `SERVICE_ACCOUNT_CAP=1` each refusing the second

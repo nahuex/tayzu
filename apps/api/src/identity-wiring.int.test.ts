@@ -39,6 +39,7 @@ import {
 import { randomInt, randomUUID } from 'node:crypto';
 
 import type { createRecordingEmailSender } from '@tayzu/auth';
+import { withTenantTransaction } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -634,5 +635,157 @@ describe('the accept route runs the shed and sends the admin notice (task 14.15)
     expect(countFor(otherAdmin.email), 'the other administrator').toBe(1);
     expect(countFor(invitee), 'the invitee').toBe(0);
     expect(countFor(plain.email), 'a plain member').toBe(0);
+  }, 120_000);
+});
+
+/**
+ * Task 14.18 (Resolved decision Q138; 9.5d, 10.8): "`identity-wiring.int.test.ts` (14.11)
+ * covers `CREDENTIAL_CAP=1` and `SERVICE_ACCOUNT_CAP=1` each refusing the second creation
+ * over HTTP with `CATALOG_VALIDATION_FAILED` and nothing created."
+ *
+ * Each case builds its own app through `createAppFromEnv` with the one cap set. The first
+ * creation succeeds (200); the second is refused and leaves no key and no `_user`.
+ *
+ * Production symbols expected: none new; `createAppFromEnv` (`./bootstrap.js`) passes
+ * `config.credentialCap` and `config.serviceAccountCap` through `createApp` (`./server.js`)
+ * to `createIdentityRouter`'s `credentialCap` and `serviceAccountCap` options.
+ */
+describe('the configured caps reach the identity router (task 14.18)', () => {
+  let pools: HarnessPools;
+  let baseApp: App;
+  const apps: App[] = [];
+
+  async function buildApp(extra: Record<string, string>): Promise<App> {
+    const built = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN}`,
+      INVITATION_LINK_BASE_URL: LINK_ORIGIN,
+      IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
+      MOUNT_IDENTITY_ROUTES: 'true',
+      ...extra,
+    });
+    apps.push(built);
+    return built;
+  }
+
+  beforeAll(async () => {
+    pools = await harnessPools();
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+    baseApp = await buildApp({});
+  }, 60_000);
+
+  afterAll(async () => {
+    for (const built of apps) await built.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function adminOn(target: App): Promise<BootstrappedTenant> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(baseApp.auth, {
+      pool: testAppPool(),
+      name: 'Identity Cap Admin',
+      email: `identity-cap-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Identity Cap ${suffix}`,
+      organizationSlug: `identity-cap-${suffix}`,
+      ip: randomIp(),
+    });
+    return await enrolledAdminSession(target, tenant, {
+      password: TEST_PASSWORD,
+      origin: ORIGIN,
+    });
+  }
+
+  async function postJson(
+    target: App,
+    cookie: string,
+    url: string,
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; body: string; code: unknown }> {
+    const response = await target.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify(body),
+    });
+    let code: unknown;
+    try {
+      code = response.json<{ code?: unknown }>().code;
+    } catch {
+      // A non-JSON body leaves the code undefined, which fails the assertions.
+    }
+    return { status: response.statusCode, body: response.body, code };
+  }
+
+  async function keyCount(tenantId: string): Promise<number> {
+    const result = await pools.authPool.query('select 1 from auth.apikey where reference_id = $1', [
+      tenantId,
+    ]);
+    return result.rows.length;
+  }
+
+  async function userEntityCount(tenantId: string, identifier: string): Promise<number> {
+    return await withTenantTransaction(pools.appPool, { tenantId }, async (db) => {
+      const result = await db.query(
+        `select 1 from catalog_entity e
+           join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+          where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+        [tenantId, identifier],
+      );
+      return result.rows.length;
+    });
+  }
+
+  it('CREDENTIAL_CAP=1 refuses the second credential creation over HTTP with CATALOG_VALIDATION_FAILED and creates nothing', async () => {
+    const target = await buildApp({ CREDENTIAL_CAP: '1' });
+    const admin = await adminOn(target);
+
+    const first = await postJson(target, admin.cookie, '/v1/credentials', {
+      name: 'cap-key-1',
+      kind: 'integration',
+    });
+    expect(first.status, first.body).toBe(200);
+    expect(await keyCount(admin.organizationId)).toBe(1);
+
+    const second = await postJson(target, admin.cookie, '/v1/credentials', {
+      name: 'cap-key-2',
+      kind: 'integration',
+    });
+
+    expect(second.status, second.body).not.toBe(200);
+    expect(second.code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(await keyCount(admin.organizationId), 'no second key').toBe(1);
+  }, 120_000);
+
+  it('SERVICE_ACCOUNT_CAP=1 refuses the second service-account creation over HTTP with CATALOG_VALIDATION_FAILED and creates nothing', async () => {
+    const target = await buildApp({ SERVICE_ACCOUNT_CAP: '1' });
+    const admin = await adminOn(target);
+    const firstId = `svc-cap-a-${randomUUID().slice(0, 8)}`;
+    const secondId = `svc-cap-b-${randomUUID().slice(0, 8)}`;
+
+    const first = await postJson(target, admin.cookie, '/v1/service-accounts', {
+      identifier: firstId,
+    });
+    expect(first.status, first.body).toBe(200);
+    expect(await keyCount(admin.organizationId)).toBe(1);
+
+    const second = await postJson(target, admin.cookie, '/v1/service-accounts', {
+      identifier: secondId,
+    });
+
+    expect(second.status, second.body).not.toBe(200);
+    expect(second.code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(await userEntityCount(admin.organizationId, secondId), 'no second _user').toBe(0);
+    expect(await keyCount(admin.organizationId), 'no second key').toBe(1);
   }, 120_000);
 });

@@ -142,6 +142,9 @@ export interface CreateAppOptions {
    * procedures). Omitted: off, and each answers like an unknown `/v1` path.
    */
   readonly mountIdentityRoutes?: boolean;
+  /** 043 task 14.18 (Q138): the credential and service-account caps handed to the identity router. */
+  readonly credentialCap?: number;
+  readonly serviceAccountCap?: number;
   /**
    * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
@@ -338,6 +341,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           userSync,
           ...(emailGate === undefined ? {} : { emailGate }),
           ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+          ...(options.credentialCap === undefined ? {} : { credentialCap: options.credentialCap }),
+          ...(options.serviceAccountCap === undefined
+            ? {}
+            : { serviceAccountCap: options.serviceAccountCap }),
         })
       : {}),
   };
