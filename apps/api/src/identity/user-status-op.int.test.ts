@@ -53,7 +53,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { createRouterClient } from '@orpc/server';
 import { createRecordingEmailSender } from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
-import { createUserSync } from '@tayzu/catalog';
+import { createEntityService, createUserSync } from '@tayzu/catalog';
 import { withTenantTransaction } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
@@ -757,5 +757,268 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     expect(await statusOf(otherAdminsId)).toBe('pending');
     expect(await statusOf(otherTenantId)).toBe('pending');
     expect(await forThese()).toHaveLength(2);
+  }, 120_000);
+
+  /**
+   * Task 11.5 (Resolved decisions Q62 and Q117; design D6 "Operations", D13). Spec: "Disabling a
+   * service account takes effect within seconds" names `identity.users.setStatus` on the service
+   * account's `_user`; a service account has no Better Auth user, so `setStatus` writes only
+   * `_user.status`. The branch is chosen by the RESOLVED `accountKind` of the target, never by the
+   * shape of the identifier alone.
+   *
+   * Production behavior expected: `identity.users.setStatus` (`../identity-router.js`), when the
+   * `{user}` identifier resolves, server-side and within the caller's tenant, to a `_user` with
+   * `accountKind == "service"` and an `svc-` identifier, validates through `nextStatus`, writes
+   * `_user.status` through `userSync.writeUserChange` (`change` `admin_disable` / `admin_enable`,
+   * principal `{ kind: 'admin', id: <admin> }`, `onBehalfOf` the admin, the `svc-…` identifier as
+   * the subject so that the adapter emits `tayzu.identity.service_account.id`) and does nothing
+   * else: no Better Auth read or write, no session deletion or `session_revoked`, no ban, no
+   * invitation cancellation. Any other target without a Better Auth user (a standard `_user` with an
+   * `svc-`-shaped identifier, a service `_user` without the prefix, an unknown id) is answered
+   * exactly like an unknown id and nothing is written or emitted.
+   */
+  it('setStatus for a service account writes only the _user: disable and enable change only the _user entity, each emits one user_status_changed with the admin and the svc identifier, and touch no Better Auth user, session, ban, invitation or credential', async () => {
+    const fixture = await freshFixture();
+    const identifier = `svc-status-${randomUUID().slice(0, 8)}`;
+    interface ServiceAccountClient {
+      identity: {
+        serviceAccounts: {
+          create(
+            input: { identifier: string },
+            options: { context: Record<string, unknown> },
+          ): Promise<unknown>;
+        };
+      };
+    }
+    // GIVEN an `Active` service account of the tenant (created through its own operation).
+    await (client as unknown as ServiceAccountClient).identity.serviceAccounts.create(
+      { identifier },
+      { context: context(fixture) },
+    );
+    expect(await userStatus(fixture.tenantId, identifier)).toBe('Active');
+
+    const propertiesOf = async (): Promise<Record<string, unknown>> =>
+      await withTenantTransaction(appPool, { tenantId: fixture.tenantId }, async (db) => {
+        const result = await db.query<{ properties: Record<string, unknown> }>(
+          `select e.spec_properties as properties
+             from catalog_entity e
+             join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+            where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+          [fixture.tenantId, identifier],
+        );
+        return result.rows[0]?.properties ?? {};
+      });
+    const authState = async (): Promise<unknown> => {
+      const users = await authPool.query<{ n: string }>(
+        'select count(*)::text as n from auth."user"',
+      );
+      const members = await authPool.query<{ n: string }>(
+        'select count(*)::text as n from auth.member where organization_id = $1',
+        [fixture.tenantId],
+      );
+      const sessions = await authPool.query<{ n: string }>(
+        'select count(*)::text as n from auth.session where user_id = any($1)',
+        [[fixture.adminId, fixture.targetId]],
+      );
+      const banned = await authPool.query<{ id: string; banned: boolean | null }>(
+        'select id, banned from auth."user" where id = any($1) order by id',
+        [[fixture.adminId, fixture.targetId]],
+      );
+      const keys = await authPool.query<{ id: string; metadata: unknown }>(
+        'select id, metadata from auth.apikey where reference_id = $1 order by id',
+        [fixture.tenantId],
+      );
+      return {
+        users: users.rows[0]?.n,
+        members: members.rows[0]?.n,
+        sessions: sessions.rows[0]?.n,
+        banned: banned.rows,
+        keys: keys.rows,
+      };
+    };
+    const pendingInvitation = `inv-${randomUUID()}`;
+    await authPool.query(
+      `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+       values ($1, $2, $3, 'member', 'pending', now() + interval '48 hours', now(), $4)`,
+      [
+        pendingInvitation,
+        fixture.tenantId,
+        `someone-${randomUUID()}@example.test`,
+        fixture.adminId,
+      ],
+    );
+    const before = await authState();
+    const propertiesBefore = await propertiesOf();
+    const eventsBefore = (await changeEvents(fixture.tenantId, identifier)).length;
+    const revokedBefore = (await logRecords(REVOKED_EVENT)).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === fixture.tenantId,
+    ).length;
+    const cancelledBefore = (await logRecords('catalog.audit.invitation_cancelled')).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === fixture.tenantId,
+    ).length;
+    const eventsOf = async (change: 'admin_disable' | 'admin_enable') =>
+      (await logRecords(STATUS_EVENT)).filter(
+        (record) =>
+          record.attributes['tayzu.tenant.id'] === fixture.tenantId &&
+          record.attributes['tayzu.identity.service_account.id'] === identifier &&
+          record.attributes['tayzu.identity.user.status.event'] === change,
+      );
+
+    // WHEN an admin disables the service account.
+    await statusClient().identity.users.setStatus(
+      { user: identifier, status: 'Disabled' },
+      { context: context(fixture) },
+    );
+
+    // THEN only the `_user` entity changed: status `Disabled`, every other property intact,
+    // one change event written as `system` on behalf of the admin.
+    expect(await userStatus(fixture.tenantId, identifier)).toBe('Disabled');
+    expect(await propertiesOf()).toEqual({ ...propertiesBefore, status: 'Disabled' });
+    const afterDisable = await changeEvents(fixture.tenantId, identifier);
+    expect(afterDisable).toHaveLength(eventsBefore + 1);
+    expect(afterDisable.at(-1)).toMatchObject({
+      actor_type: 'system',
+      on_behalf_of_type: 'user',
+      on_behalf_of_id: fixture.adminId,
+    });
+    // AND nothing of Better Auth changed: users, members, sessions, bans and the credential.
+    expect(await authState()).toEqual(before);
+    expect(await sessionCount(fixture.adminId)).toBe(1);
+    // AND no session was revoked and no invitation was cancelled.
+    expect(
+      (await logRecords(REVOKED_EVENT)).filter(
+        (record) => record.attributes['tayzu.tenant.id'] === fixture.tenantId,
+      ),
+    ).toHaveLength(revokedBefore);
+    expect(
+      (await logRecords('catalog.audit.invitation_cancelled')).filter(
+        (record) => record.attributes['tayzu.tenant.id'] === fixture.tenantId,
+      ),
+    ).toHaveLength(cancelledBefore);
+    // AND exactly one `user_status_changed` names the admin, the `svc-…` identifier and the event.
+    const disabled = await eventsOf('admin_disable');
+    expect(disabled).toHaveLength(1);
+    expect(disabled[0]?.attributes).toMatchObject({
+      'tayzu.tenant.id': fixture.tenantId,
+      'tayzu.actor.id': fixture.adminId,
+      'tayzu.identity.service_account.id': identifier,
+      'tayzu.identity.user.status.from': 'Active',
+      'tayzu.identity.user.status.to': 'Disabled',
+      'tayzu.identity.user.status.event': 'admin_disable',
+    });
+
+    // WHEN the admin re-enables the service account.
+    await statusClient().identity.users.setStatus(
+      { user: identifier, status: 'Active' },
+      { context: context(fixture) },
+    );
+
+    // THEN only the `_user` entity changed again, back to `Active`.
+    expect(await userStatus(fixture.tenantId, identifier)).toBe('Active');
+    expect(await propertiesOf()).toEqual(propertiesBefore);
+    const afterEnable = await changeEvents(fixture.tenantId, identifier);
+    expect(afterEnable).toHaveLength(eventsBefore + 2);
+    expect(afterEnable.at(-1)).toMatchObject({
+      actor_type: 'system',
+      on_behalf_of_type: 'user',
+      on_behalf_of_id: fixture.adminId,
+    });
+    expect(await authState()).toEqual(before);
+    const enabled = await eventsOf('admin_enable');
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0]?.attributes).toMatchObject({
+      'tayzu.tenant.id': fixture.tenantId,
+      'tayzu.actor.id': fixture.adminId,
+      'tayzu.identity.service_account.id': identifier,
+      'tayzu.identity.user.status.from': 'Disabled',
+      'tayzu.identity.user.status.to': 'Active',
+      'tayzu.identity.user.status.event': 'admin_enable',
+    });
+    expect(await eventsOf('admin_disable')).toHaveLength(1);
+    // The pending invitation of the admin was never touched.
+    const invitation = await authPool.query<{ status: string }>(
+      'select status from auth.invitation where id = $1',
+      [pendingInvitation],
+    );
+    expect(invitation.rows[0]?.status).toBe('pending');
+  }, 120_000);
+
+  it('setStatus chooses the service-account branch by the resolved accountKind, never by the identifier alone: a human never takes it, and a standard _user with an svc- identifier or a service _user without one is refused like an unknown id with nothing written', async () => {
+    const fixture = await freshFixture();
+    const suffix = randomUUID().slice(0, 8);
+    const svcShapedStandard = `svc-human-${suffix}`;
+    const serviceWithoutPrefix = `ci-bot-${suffix}`;
+    for (const [identifier, accountKind] of [
+      [svcShapedStandard, 'standard'],
+      [serviceWithoutPrefix, 'service'],
+    ] as const) {
+      await createEntityService({ pool: appPool, authz: cerbos }).create(
+        {
+          tenantId: fixture.tenantId,
+          actor: { type: 'system', id: 'user-status-op-test-seed' },
+          principal: { roles: ['admin'] },
+        },
+        {
+          blueprint: '_user',
+          identifier,
+          title: 'Seeded user',
+          spec: { properties: { accountKind, status: 'Active', portRole: 'member' } },
+        },
+      );
+    }
+    const failureOf = async (identifier: string, status: 'Active' | 'Disabled') => {
+      try {
+        await statusClient().identity.users.setStatus(
+          { user: identifier, status },
+          { context: context(fixture) },
+        );
+      } catch (error) {
+        const { code, status: httpStatus, message } = error as Record<string, unknown>;
+        return { code, status: httpStatus, message };
+      }
+      return { code: 'NO_ERROR' };
+    };
+    const statusEventCount = async (): Promise<number> =>
+      (await logRecords(STATUS_EVENT)).filter(
+        (record) => record.attributes['tayzu.tenant.id'] === fixture.tenantId,
+      ).length;
+
+    // GIVEN the two look-alikes (seeded directly) and an unknown id for reference.
+    const refused = [svcShapedStandard, serviceWithoutPrefix];
+    const eventsBefore = new Map<string, unknown>();
+    for (const identifier of refused) {
+      eventsBefore.set(identifier, await changeEvents(fixture.tenantId, identifier));
+    }
+    const statusEventsBefore = await statusEventCount();
+    const unknown = await failureOf(`svc-unknown-${suffix}`, 'Disabled');
+    expect(unknown.code).toBe('CATALOG_NOT_FOUND');
+
+    // WHEN an admin disables each look-alike, THEN the answer equals the unknown id's.
+    for (const identifier of refused) {
+      expect(await failureOf(identifier, 'Disabled')).toEqual(unknown);
+      expect(await userStatus(fixture.tenantId, identifier)).toBe('Active');
+      expect(await changeEvents(fixture.tenantId, identifier)).toEqual(
+        eventsBefore.get(identifier),
+      );
+    }
+    expect(await statusEventCount()).toBe(statusEventsBefore);
+
+    // AND a human target never takes the service-account branch: the human branch revokes the
+    // sessions and bans the single-membership user, and the audit event names the Better Auth user
+    // and no service account.
+    await statusClient().identity.users.setStatus(
+      { user: fixture.targetEmail, status: 'Disabled' },
+      { context: context(fixture) },
+    );
+    expect(await userStatus(fixture.tenantId, fixture.targetEmail)).toBe('Disabled');
+    expect(await isBanned(fixture.targetId)).toBe(true);
+    expect(await sessionCount(fixture.targetId)).toBe(0);
+    const humanEvents = await statusEventsOf(fixture, 'admin_disable');
+    expect(humanEvents).toHaveLength(1);
+    expect(humanEvents[0]?.attributes).not.toHaveProperty('tayzu.identity.service_account.id');
+    // AND the refused look-alikes stayed untouched by that call.
+    for (const identifier of refused) {
+      expect(await userStatus(fixture.tenantId, identifier)).toBe('Active');
+    }
   }, 120_000);
 });

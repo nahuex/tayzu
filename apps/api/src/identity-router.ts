@@ -29,7 +29,11 @@ import {
 } from '@tayzu/auth';
 import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
-import { createServiceAccount, deleteServiceAccount } from './identity/service-accounts.js';
+import {
+  createServiceAccount,
+  deleteServiceAccount,
+  isValidServiceAccountIdentifier,
+} from './identity/service-accounts.js';
 import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
@@ -48,8 +52,10 @@ import {
   DEFAULT_CREDENTIAL_CAP,
   createCredential,
   listCredentials,
+  CredentialTargetNotFoundError,
   revokeCredential,
   rotateCredential,
+  serviceAccountExists,
 } from './identity/credentials.js';
 
 /** Generic on purpose: never says which user, if any, already holds the subject. */
@@ -763,7 +769,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           authorization: {
             kind: RESOURCE_KINDS.user,
             action: 'updateStatus',
-            resolveTarget: userTargetOf,
+            // A service account has no Better Auth user to resolve: an identifier of its shape
+            // skips the user lookup, and the handler resolves its `accountKind` (Q62, task 11.5).
+            resolveTarget: (raw) => {
+              const target = userTargetOf(raw);
+              return typeof target.id === 'string' && isValidServiceAccountIdentifier(target.id)
+                ? undefined
+                : target;
+            },
           },
           route: HIGH_RISK_ROUTE,
           handler: async ({ context, input: rawInput, target }): Promise<void> => {
@@ -773,12 +786,36 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             const { status } = parseStatusInput(rawInput);
             const tenantId = rawTenantId(context);
             const adminId = (context['actor'] as { id: string }).id;
-            const userId = (target as ResolvedIdentityTarget).id;
+            const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
+            if (target === undefined) {
+              // Service-account branch: only `_user.status` is written (no Better Auth user).
+              const identifier = userTargetOf(rawInput).id;
+              if (
+                options.appPool === undefined ||
+                !(await serviceAccountExists(options.appPool, tenantId, identifier))
+              ) {
+                throw new CredentialTargetNotFoundError();
+              }
+              nextStatus(await userSync.readStatus({ tenantId, email: identifier }), change);
+              await runWithIdentityContext({ adminId }, () =>
+                userSync.writeUserChange({
+                  tenantId,
+                  email: identifier,
+                  name: identifier,
+                  change,
+                  userId: identifier,
+                  accountKind: 'service',
+                  principal: { kind: 'admin', id: adminId },
+                  onBehalfOf: { type: 'user', id: adminId },
+                }),
+              );
+              return;
+            }
+            const userId = target.id;
             const adapter = (await authContext()).internalAdapter;
             const user = await options.authRepository.userInTenant(tenantId, userId);
             const authUser = await adapter.findUserById(userId);
             if (user === undefined || authUser === null) throw new IdentityInputError();
-            const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
             const current = await userSync.readStatus({ tenantId, email: user.email });
             nextStatus(current, change);
             await runWithIdentityContext({ adminId }, () =>

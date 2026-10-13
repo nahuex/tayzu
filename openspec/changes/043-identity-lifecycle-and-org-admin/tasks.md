@@ -2719,7 +2719,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `catalog.audit.invitation_cancelled` logged for it, an invitation created by another admin
       stays pending, an invitation created by the same user in another tenant stays
       pending, and re-enabling restores none.
-- [ ] 11.5 `identity.users.setStatus` for a service account (its `svc-…`
+- [x] 11.5 `identity.users.setStatus` for a service account (its `svc-…`
       identifier) writes only `_user.status` (it has no Better Auth user). The branch is chosen by the
       resolved `accountKind` of the target (10.7b), never by the shape of the identifier
       alone. Verify:
