@@ -181,14 +181,14 @@ describe('An admin SSO unlink revokes every session of the user (task 8.5j, Q86)
 
   async function adminLink(tenant: Tenant, person: Person, sub: string): Promise<void> {
     await client.identity.users.linkSsoAccount(
-      { user: person.email, subject: sub },
+      { params: { user: person.email }, body: { subject: sub } },
       { context: adminContext(tenant) },
     );
   }
 
   async function adminUnlink(tenant: Tenant, person: Person): Promise<void> {
     await client.identity.users.unlinkSsoAccount(
-      { user: person.email },
+      { params: { user: person.email } },
       { context: adminContext(tenant) },
     );
   }

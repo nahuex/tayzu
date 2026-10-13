@@ -724,10 +724,10 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
       principal: { roles: ['admin'] },
     };
     await identity.identity.users.linkSsoAccount(
-      { user: target.email, subject: `smoke-link-sub-${randomUUID()}` },
+      { params: { user: target.email }, body: { subject: `smoke-link-sub-${randomUUID()}` } },
       { context },
     );
-    await identity.identity.users.unlinkSsoAccount({ user: target.email }, { context });
+    await identity.identity.users.unlinkSsoAccount({ params: { user: target.email } }, { context });
   }, 60_000);
 
   it('back-channel logout: revoked, replay, invalid and no_match all answer the same 200', async () => {

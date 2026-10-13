@@ -164,7 +164,7 @@ describe('cross-tenant matrix (tasks 12.x)', () => {
     const email = `cross-invite-${randomUUID()}@example.test`;
 
     const { invitationId } = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(t1) },
     );
 
@@ -186,7 +186,10 @@ describe('cross-tenant matrix (tasks 12.x)', () => {
       const email = `cross-named-${randomUUID()}@example.test`;
 
       const thrown: unknown = await client.identity.users
-        .invite({ email, role: 'member', [field]: t2.tenantId }, { context: sessionContext(t1) })
+        .invite(
+          { body: { email, role: 'member', [field]: t2.tenantId } },
+          { context: sessionContext(t1) },
+        )
         .then(
           () => undefined,
           (error: unknown) => error,
@@ -229,7 +232,7 @@ describe('cross-tenant matrix (tasks 12.x)', () => {
       const t2 = await freshTenant('t2');
       const email = `cross-${operation.toLowerCase()}-${randomUUID()}@example.test`;
       const created = await client.identity.users.invite(
-        { email, role: 'member' },
+        { body: { email, role: 'member' } },
         { context: sessionContext(t2) },
       );
       const before = await invitationSnapshot(created.invitationId);
@@ -238,13 +241,13 @@ describe('cross-tenant matrix (tasks 12.x)', () => {
 
       const foreign = await rejectionOf(
         client.identity.users[operation](
-          { invitation: created.invitationId },
+          { params: { invitation: created.invitationId } },
           { context: sessionContext(t1) },
         ),
       );
       const unknown = await rejectionOf(
         client.identity.users[operation](
-          { invitation: randomUUID() },
+          { params: { invitation: randomUUID() } },
           { context: sessionContext(t1) },
         ),
       );
@@ -461,7 +464,7 @@ describe('cross-tenant matrix: setStatus (task 12.4)', () => {
     identity: {
       users: {
         setStatus(
-          input: { user: string; status: 'Active' | 'Disabled' },
+          input: { params: { user: string }; body: { status: 'Active' | 'Disabled' } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -599,13 +602,13 @@ describe('cross-tenant matrix: setStatus (task 12.4)', () => {
 
       const foreign = await rejectionOf(
         statusClient().identity.users.setStatus(
-          { user: victim.email, status },
+          { params: { user: victim.email }, body: { status } },
           { context: sessionContext(t1) },
         ),
       );
       const unknown = await rejectionOf(
         statusClient().identity.users.setStatus(
-          { user: `nobody-${randomUUID()}@example.test`, status },
+          { params: { user: `nobody-${randomUUID()}@example.test` }, body: { status } },
           { context: sessionContext(t1) },
         ),
       );
@@ -646,7 +649,7 @@ describe('cross-tenant matrix: setStatus (task 12.4)', () => {
     const t2Before = await userSync.getUser({ tenantId: t2.tenantId, email: both.email });
 
     await statusClient().identity.users.setStatus(
-      { user: both.email, status: 'Disabled' },
+      { params: { user: both.email }, body: { status: 'Disabled' } },
       { context: sessionContext(t1) },
     );
 
@@ -661,7 +664,7 @@ describe('cross-tenant matrix: setStatus (task 12.4)', () => {
     expect(((await accountRow(both.userId)) as { banned: unknown }).banned).not.toBe(true);
 
     await statusClient().identity.users.setStatus(
-      { user: both.email, status: 'Active' },
+      { params: { user: both.email }, body: { status: 'Active' } },
       { context: sessionContext(t1) },
     );
 
@@ -700,11 +703,11 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
     identity: {
       serviceAccounts: {
         create(
-          input: { identifier: string },
+          input: { body: { identifier: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ clientId: string; clientSecret: string }>;
         delete(
-          input: { user: string },
+          input: { params: { user: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -824,7 +827,7 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
     const t2KeysBefore = await keysOf(t2.tenantId);
 
     const created = await accounts().identity.serviceAccounts.create(
-      { identifier },
+      { body: { identifier } },
       { context: sessionContext(t1) },
     );
 
@@ -844,7 +847,7 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
     const t2 = await freshTenant('t2');
     const identifier = `svc-x12-${randomUUID().slice(0, 8)}`;
     const created = await accounts().identity.serviceAccounts.create(
-      { identifier },
+      { body: { identifier } },
       { context: sessionContext(t2) },
     );
     const entityBefore = await userEntities(t2.tenantId, identifier);
@@ -853,13 +856,13 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
 
     const foreign = await rejectionOf(
       accounts().identity.serviceAccounts.delete(
-        { user: identifier },
+        { params: { user: identifier } },
         { context: sessionContext(t1) },
       ),
     );
     const unknown = await rejectionOf(
       accounts().identity.serviceAccounts.delete(
-        { user: `svc-nobody-${randomUUID().slice(0, 8)}` },
+        { params: { user: `svc-nobody-${randomUUID().slice(0, 8)}` } },
         { context: sessionContext(t1) },
       ),
     );
@@ -915,11 +918,11 @@ describe('cross-tenant matrix: credentials list and create (task 12.6)', () => {
     identity: {
       credentials: {
         list(
-          input: Record<string, never>,
+          input: { query: Record<string, never> },
           options: { context: Record<string, unknown> },
         ): Promise<ListOutput>;
         create(
-          input: { name: string; kind: string; userId?: string },
+          input: { body: { name: string; kind: string; userId?: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -1023,7 +1026,10 @@ describe('cross-tenant matrix: credentials list and create (task 12.6)', () => {
       tenantId: t2.tenantId,
     });
 
-    const output = await isolation().identity.credentials.list({}, { context: sessionContext(t1) });
+    const output = await isolation().identity.credentials.list(
+      { query: {} },
+      { context: sessionContext(t1) },
+    );
 
     const ids = output.credentials.map((c) => c.id);
     expect(ids).toEqual([own.id]);
@@ -1035,7 +1041,10 @@ describe('cross-tenant matrix: credentials list and create (task 12.6)', () => {
     expect(serialized).not.toContain(foreignRevoked.id);
 
     // The other direction: t2's admin sees only t2's credentials.
-    const theirs = await isolation().identity.credentials.list({}, { context: sessionContext(t2) });
+    const theirs = await isolation().identity.credentials.list(
+      { query: {} },
+      { context: sessionContext(t2) },
+    );
     expect(theirs.credentials.map((c) => c.id).sort()).toEqual(
       [foreignLive.id, foreignRevoked.id].sort(),
     );
@@ -1047,14 +1056,17 @@ describe('cross-tenant matrix: credentials list and create (task 12.6)', () => {
     const t2Before = await keyIds(t2);
 
     const created = await isolation().identity.credentials.create(
-      { name: 'Created in t1', kind: 'integration' },
+      { body: { name: 'Created in t1', kind: 'integration' } },
       { context: sessionContext(t1) },
     );
 
     expect(await referenceIdsOf([created.id])).toEqual([t1.tenantId]);
     expect(await keyIds(t1)).toEqual([created.id]);
     expect(await keyIds(t2)).toEqual(t2Before);
-    const listed = await isolation().identity.credentials.list({}, { context: sessionContext(t1) });
+    const listed = await isolation().identity.credentials.list(
+      { query: {} },
+      { context: sessionContext(t1) },
+    );
     expect(listed.credentials.map((c) => c.id)).toEqual([created.id]);
   }, 120_000);
 
@@ -1080,7 +1092,7 @@ describe('cross-tenant matrix: credentials list and create (task 12.6)', () => {
     const attempt = async (userId: string): Promise<Record<string, unknown>> => {
       try {
         await isolation().identity.credentials.create(
-          { name: 'Cross tenant', kind: 'integration', userId },
+          { body: { name: 'Cross tenant', kind: 'integration', userId } },
           { context: sessionContext(t1) },
         );
       } catch (error) {
@@ -1129,11 +1141,11 @@ describe('cross-tenant matrix: credentials rotate and revoke (task 12.7)', () =>
     identity: {
       credentials: {
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
         revoke(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -1233,13 +1245,13 @@ describe('cross-tenant matrix: credentials rotate and revoke (task 12.7)', () =>
 
       const foreignFailure = await failureOf(
         credentials().identity.credentials[operation](
-          { credential: foreign.id },
+          { params: { credential: foreign.id } },
           { context: sessionContext(t1) },
         ),
       );
       const unknownFailure = await failureOf(
         credentials().identity.credentials[operation](
-          { credential: randomUUID() },
+          { params: { credential: randomUUID() } },
           { context: sessionContext(t1) },
         ),
       );
@@ -1295,13 +1307,13 @@ describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12
     identity: {
       users: {
         setStatus(
-          input: { user: string; status: 'Active' | 'Disabled' },
+          input: { params: { user: string }; body: { status: 'Active' | 'Disabled' } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
       credentials: {
         revoke(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -1409,7 +1421,7 @@ describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12
     requests.length = 0;
 
     await targets().identity.users.setStatus(
-      { user: email, status: 'Disabled' },
+      { params: { user: email }, body: { status: 'Disabled' } },
       { context: sessionContext(t1) },
     );
 
@@ -1433,7 +1445,7 @@ describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12
 
     const thrown = await rejectionOf(
       targets().identity.users.setStatus(
-        { user: email, status: 'Disabled' },
+        { params: { user: email }, body: { status: 'Disabled' } },
         { context: sessionContext(t1) },
       ),
     );
@@ -1455,7 +1467,7 @@ describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12
     requests.length = 0;
 
     await targets().identity.credentials.revoke(
-      { credential: own.id },
+      { params: { credential: own.id } },
       { context: sessionContext(t1) },
     );
 
@@ -1481,7 +1493,7 @@ describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12
 
     const thrown = await rejectionOf(
       targets().identity.credentials.revoke(
-        { credential: foreign.id },
+        { params: { credential: foreign.id } },
         { context: sessionContext(t1) },
       ),
     );
@@ -1519,15 +1531,15 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
     identity: {
       users: {
         create(
-          input: { email: string; name: string; role: 'member' | 'admin' },
+          input: { body: { email: string; name: string; role: 'member' | 'admin' } },
           options: { context: Record<string, unknown> },
         ): Promise<{ userId: string; email: string }>;
         linkSsoAccount(
-          input: { user: string; subject: string },
+          input: { params: { user: string }; body: { subject: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
         unlinkSsoAccount(
-          input: { user: string },
+          input: { params: { user: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -1652,7 +1664,7 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
     ]);
 
     const created = await users().identity.users.create(
-      { email, name: 'Created', role: 'member' },
+      { body: { email, name: 'Created', role: 'member' } },
       { context: sessionContext(t1) },
     );
 
@@ -1678,11 +1690,11 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
       const call = (email: string): Promise<unknown> =>
         operation === 'linkSsoAccount'
           ? users().identity.users.linkSsoAccount(
-              { user: email, subject },
+              { params: { user: email }, body: { subject } },
               { context: sessionContext(t1) },
             )
           : users().identity.users.unlinkSsoAccount(
-              { user: email },
+              { params: { user: email } },
               { context: sessionContext(t1) },
             );
       const foreign = await rejectionOf(call(victim.email));
@@ -1713,7 +1725,7 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
 
     await rejectionOf(
       users().identity.users.linkSsoAccount(
-        { user: both.email, subject },
+        { params: { user: both.email }, body: { subject } },
         { context: sessionContext(t1) },
       ),
     );
@@ -1731,7 +1743,7 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
     // The link is recorded while the user still has a single membership.
     const subject = `sub-${randomUUID()}`;
     await users().identity.users.linkSsoAccount(
-      { user: both.email, subject },
+      { params: { user: both.email }, body: { subject } },
       { context: sessionContext(t1) },
     );
     await memberOf(both.userId, t2.tenantId);
@@ -1745,7 +1757,7 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
 
     await rejectionOf(
       users().identity.users.unlinkSsoAccount(
-        { user: both.email },
+        { params: { user: both.email } },
         { context: sessionContext(t1) },
       ),
     );

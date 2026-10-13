@@ -144,7 +144,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
 
     // GIVEN a caller with the `admin` role; WHEN they create a user.
     const result = await client.identity.users.create(
-      { email, name: 'Created By Admin', role: 'member' },
+      { body: { email, name: 'Created By Admin', role: 'member' } },
       { context: context(tenantId, ['admin']) },
     );
 
@@ -174,7 +174,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     // GIVEN a caller with only the `member` role; WHEN they attempt to create a user.
     const thrown: unknown = await client.identity.users
       .create(
-        { email, name: 'Should Not Exist', role: 'member' },
+        { body: { email, name: 'Should Not Exist', role: 'member' } },
         { context: context(tenantId, ['member']) },
       )
       .then(
@@ -210,7 +210,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     const email = `org-admin-${randomUUID()}@example.test`;
 
     const result = await client.identity.users.create(
-      { email, name: 'Org Admin', role: 'admin' },
+      { body: { email, name: 'Org Admin', role: 'admin' } },
       { context: context(tenantId, ['admin']) },
     );
 
@@ -225,7 +225,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     const email = `org-member-${randomUUID()}@example.test`;
 
     const result = await client.identity.users.create(
-      { email, name: 'Org Member', role: 'member' },
+      { body: { email, name: 'Org Member', role: 'member' } },
       { context: context(tenantId, ['admin']) },
     );
 
@@ -242,7 +242,10 @@ describe('identity.users.create (task 18.3, design D22)', () => {
       const email = `invalid-role-${randomUUID()}@example.test`;
 
       const thrown: unknown = await client.identity.users
-        .create({ email, name: 'Invalid Role', role }, { context: context(tenantId, ['admin']) })
+        .create(
+          { body: { email, name: 'Invalid Role', role } },
+          { context: context(tenantId, ['admin']) },
+        )
         .then(
           () => undefined,
           (error: unknown) => error,

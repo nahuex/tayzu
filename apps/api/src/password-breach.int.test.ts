@@ -232,7 +232,7 @@ describe('The breached-password check (task 8.1b, design Q23)', () => {
 
     const error = await caught(
       client.identity.users.create(
-        { email, name: 'Temporary', role: 'member' },
+        { body: { email, name: 'Temporary', role: 'member' } },
         {
           context: {
             tenantId,
@@ -323,7 +323,7 @@ describe('The breached-password check (task 8.1b, design Q23)', () => {
 
     const error = await caught(
       client.identity.users.create(
-        { email, name: 'Temporary', role: 'member' },
+        { body: { email, name: 'Temporary', role: 'member' } },
         {
           context: {
             tenantId,

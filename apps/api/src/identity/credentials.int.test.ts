@@ -269,7 +269,7 @@ describe('identity.credentials.list (task 9.2)', () => {
     const foreign = await seed(other, 'Foreign credential');
 
     const output = (await clientFor().identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
 
@@ -309,7 +309,10 @@ describe('identity.credentials.list (task 9.2)', () => {
     await seed(tenant, 'Hidden credential');
 
     await expect(
-      clientFor().identity.credentials.list({}, { context: context(tenant, ['member']) }),
+      clientFor().identity.credentials.list(
+        { query: {} },
+        { context: context(tenant, ['member']) },
+      ),
     ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
   }, 120_000);
 
@@ -320,7 +323,7 @@ describe('identity.credentials.list (task 9.2)', () => {
     await inBatches(revoked.length, 10, (i) => revoke(tenant, revoked[i]?.id ?? ''));
 
     const output = (await clientFor().identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
 
@@ -347,7 +350,7 @@ describe('identity.credentials.list (task 9.2)', () => {
     ];
 
     const output = (await clientFor(5).identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
 
@@ -372,7 +375,7 @@ describe('identity.credentials.list (task 9.2)', () => {
     await seed(tenant, 'active-two');
 
     const output = (await clientFor(5).identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
 
@@ -387,7 +390,7 @@ describe('identity.credentials.list (task 9.2)', () => {
     await inBatches(revoked.length, 2, (i) => revoke(tenant, revoked[i]?.id ?? ''));
 
     const output = (await clientFor(7).identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
 
@@ -400,7 +403,7 @@ describe('identity.credentials.list (task 9.2)', () => {
     const created = await seed(tenant, 'Addressable');
 
     const output = (await clientFor().identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
 
@@ -419,7 +422,7 @@ describe('identity.credentials.list (task 9.2)', () => {
     const without = await seed(tenant, 'Without creator', 'agent', false);
 
     const output = (await clientFor().identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
 
@@ -487,7 +490,7 @@ describe('identity.credentials.list (task 9.2)', () => {
    */
   async function listFor(tenant: Tenant): Promise<Map<string, CredentialView>> {
     const output = (await clientFor().identity.credentials.list(
-      {},
+      { query: {} },
       { context: context(tenant) },
     )) as ListOutput;
     return new Map(output.credentials.map((c) => [c.id, c]));
@@ -642,7 +645,7 @@ describe('identity.credentials.create (task 9.5)', () => {
     identity: {
       credentials: {
         create(
-          input: { name: string; kind: string },
+          input: { body: { name: string; kind: string } },
           options: { context: Record<string, unknown> },
         ): Promise<CreateOutput>;
       };
@@ -715,7 +718,7 @@ describe('identity.credentials.create (task 9.5)', () => {
     const org = await freshOrg(defaultAuth);
 
     const created = await creator(defaultAuth).identity.credentials.create(
-      { name: 'Billing sync', kind: 'integration' },
+      { body: { name: 'Billing sync', kind: 'integration' } },
       { context: contextOf(org, org.adminId) },
     );
 
@@ -744,7 +747,7 @@ describe('identity.credentials.create (task 9.5)', () => {
     const org = await freshOrg(defaultAuth);
 
     const created = await creator(defaultAuth).identity.credentials.create(
-      { name: 'Planner agent', kind: 'agent' },
+      { body: { name: 'Planner agent', kind: 'agent' } },
       { context: contextOf(org, org.ownerId) },
     );
 
@@ -763,7 +766,7 @@ describe('identity.credentials.create (task 9.5)', () => {
     const org = await freshOrg(tuned);
 
     await creator(tuned).identity.credentials.create(
-      { name: 'Tuned', kind: 'integration' },
+      { body: { name: 'Tuned', kind: 'integration' } },
       { context: contextOf(org, org.adminId) },
     );
 
@@ -780,11 +783,11 @@ describe('identity.credentials.create (task 9.5)', () => {
     const org = await freshOrg(before);
 
     const first = await creator(before).identity.credentials.create(
-      { name: 'Before change', kind: 'integration' },
+      { body: { name: 'Before change', kind: 'integration' } },
       { context: contextOf(org, org.adminId) },
     );
     const second = await creator(after).identity.credentials.create(
-      { name: 'After change', kind: 'integration' },
+      { body: { name: 'After change', kind: 'integration' } },
       { context: contextOf(org, org.adminId) },
     );
 
@@ -801,14 +804,14 @@ describe('identity.credentials.create (task 9.5)', () => {
 
     await expect(
       client.identity.credentials.create(
-        { name: 'a'.repeat(33), kind: 'integration' },
+        { body: { name: 'a'.repeat(33), kind: 'integration' } },
         { context: contextOf(org, org.adminId) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     expect(await keyRows(org)).toHaveLength(0);
 
     await client.identity.credentials.create(
-      { name: 'a'.repeat(32), kind: 'integration' },
+      { body: { name: 'a'.repeat(32), kind: 'integration' } },
       { context: contextOf(org, org.adminId) },
     );
     expect(await keyRows(org)).toHaveLength(1);
@@ -821,7 +824,7 @@ describe('identity.credentials.create (task 9.5)', () => {
     for (const name of ['', 'bad/name', 'semi;colon', 'émile']) {
       await expect(
         client.identity.credentials.create(
-          { name, kind: 'integration' },
+          { body: { name, kind: 'integration' } },
           { context: contextOf(org, org.adminId) },
         ),
       ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
@@ -834,7 +837,7 @@ describe('identity.credentials.create (task 9.5)', () => {
 
     await expect(
       creator(defaultAuth).identity.credentials.create(
-        { name: 'Denied', kind: 'integration' },
+        { body: { name: 'Denied', kind: 'integration' } },
         {
           context: {
             tenantId: org.tenantId,
@@ -896,7 +899,7 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     identity: {
       credentials: {
         create(
-          input: { name: string; kind: string; userId?: string },
+          input: { body: { name: string; kind: string; userId?: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -994,7 +997,7 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     for (const userId of targets) {
       await expect(
         client().identity.credentials.create(
-          { name: 'Bound', kind: 'integration', userId },
+          { body: { name: 'Bound', kind: 'integration', userId } },
           { context: contextOf(org) },
         ),
       ).rejects.toMatchObject({ code: 'CATALOG_NOT_FOUND' });
@@ -1017,7 +1020,7 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     const attempt = async (userId: string): Promise<Record<string, unknown>> => {
       try {
         await client().identity.credentials.create(
-          { name: 'Bound', kind: 'integration', userId },
+          { body: { name: 'Bound', kind: 'integration', userId } },
           { context: contextOf(org) },
         );
       } catch (error) {
@@ -1045,7 +1048,7 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     await seedServiceAccount(org, identifier);
 
     const created = await client().identity.credentials.create(
-      { name: 'Bound', kind: 'integration', userId: identifier },
+      { body: { name: 'Bound', kind: 'integration', userId: identifier } },
       { context: contextOf(org) },
     );
 
@@ -1068,10 +1071,13 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     await seedServiceAccount(org, identifier);
     const input = { name: 'Bound', kind: 'integration', userId: identifier };
 
-    const first = await client().identity.credentials.create(input, { context: contextOf(org) });
+    const first = await client().identity.credentials.create(
+      { body: input },
+      { context: contextOf(org) },
+    );
 
     await expect(
-      client().identity.credentials.create(input, { context: contextOf(org) }),
+      client().identity.credentials.create({ body: input }, { context: contextOf(org) }),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     expect(await keyIds(org)).toEqual([first.id]);
 
@@ -1082,9 +1088,12 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
       tenantId: org.tenantId,
     });
 
-    const second = await client().identity.credentials.create(input, {
-      context: contextOf(org),
-    });
+    const second = await client().identity.credentials.create(
+      { body: input },
+      {
+        context: contextOf(org),
+      },
+    );
     expect(second.id).not.toBe(first.id);
     expect((await keyIds(org)).sort()).toEqual([first.id, second.id].sort());
   }, 120_000);
@@ -1105,8 +1114,8 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
     const input = { name: 'Bound', kind: 'integration', userId: identifier };
 
     const results = await Promise.allSettled([
-      client().identity.credentials.create(input, { context: contextOf(org) }),
-      client().identity.credentials.create(input, { context: contextOf(org) }),
+      client().identity.credentials.create({ body: input }, { context: contextOf(org) }),
+      client().identity.credentials.create({ body: input }, { context: contextOf(org) }),
     ]);
 
     const fulfilled = results.filter(
@@ -1170,7 +1179,7 @@ describe('the credential cap holds (task 9.5d, Q56)', () => {
     identity: {
       credentials: {
         create(
-          input: { name: string; kind: string },
+          input: { body: { name: string; kind: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -1256,10 +1265,16 @@ describe('the credential cap holds (task 9.5d, Q56)', () => {
     expect(await keyCount(org)).toBe(200);
 
     await expect(
-      client().identity.credentials.create(input('One too many'), { context: contextOf(org) }),
+      client().identity.credentials.create(
+        { body: input('One too many') },
+        { context: contextOf(org) },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     await expect(
-      client().identity.credentials.create(input('a'.repeat(33)), { context: contextOf(org) }),
+      client().identity.credentials.create(
+        { body: input('a'.repeat(33)) },
+        { context: contextOf(org) },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     expect(await keyCount(org)).toBe(200);
 
@@ -1270,13 +1285,19 @@ describe('the credential cap holds (task 9.5d, Q56)', () => {
       pool: appPool,
       tenantId: org.tenantId,
     });
-    const created = await client().identity.credentials.create(input('After revoke'), {
-      context: contextOf(org),
-    });
+    const created = await client().identity.credentials.create(
+      { body: input('After revoke') },
+      {
+        context: contextOf(org),
+      },
+    );
     expect(created.secret).toMatch(/^tayzu_mc_/);
     expect(await keyCount(org)).toBe(201);
     await expect(
-      client().identity.credentials.create(input('Over again'), { context: contextOf(org) }),
+      client().identity.credentials.create(
+        { body: input('Over again') },
+        { context: contextOf(org) },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     expect(await keyCount(org)).toBe(201);
   }, 300_000);
@@ -1287,11 +1308,17 @@ describe('the credential cap holds (task 9.5d, Q56)', () => {
     const other = await freshOrg();
 
     await expect(
-      client().identity.credentials.create(input('Blocked'), { context: contextOf(full) }),
+      client().identity.credentials.create(
+        { body: input('Blocked') },
+        { context: contextOf(full) },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
-    const created = await client().identity.credentials.create(input('Free'), {
-      context: contextOf(other),
-    });
+    const created = await client().identity.credentials.create(
+      { body: input('Free') },
+      {
+        context: contextOf(other),
+      },
+    );
     expect(created.id).toEqual(expect.any(String));
   }, 300_000);
 
@@ -1300,8 +1327,14 @@ describe('the credential cap holds (task 9.5d, Q56)', () => {
     await seedMany(org, 199);
 
     const results = await Promise.allSettled([
-      client().identity.credentials.create(input('Racer one'), { context: contextOf(org) }),
-      client().identity.credentials.create(input('Racer two'), { context: contextOf(org) }),
+      client().identity.credentials.create(
+        { body: input('Racer one') },
+        { context: contextOf(org) },
+      ),
+      client().identity.credentials.create(
+        { body: input('Racer two') },
+        { context: contextOf(org) },
+      ),
     ]);
 
     const fulfilled = results.filter((r) => r.status === 'fulfilled');
@@ -1365,11 +1398,11 @@ describe('identity.credentials.rotate (task 9.6)', () => {
     identity: {
       credentials: {
         list(
-          input: Record<string, never>,
+          input: { query: Record<string, never> },
           options: { context: Record<string, unknown> },
         ): Promise<ListOutput>;
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<RotateOutput>;
       };
@@ -1502,7 +1535,7 @@ describe('identity.credentials.rotate (task 9.6)', () => {
     ).resolves.toMatchObject({ tenantId: org.tenantId, actor: { type: 'integration', id: c1.id } });
 
     const listed = await client().identity.credentials.list(
-      {},
+      { query: {} },
       { context: contextOf(org, org.ownerId) },
     );
     const c1Id = listed.credentials.find((c) => c.id === c1.id)?.id;
@@ -1510,7 +1543,7 @@ describe('identity.credentials.rotate (task 9.6)', () => {
 
     const before = Date.now();
     const rotated = await client().identity.credentials.rotate(
-      { credential: c1Id ?? '' },
+      { params: { credential: c1Id ?? '' } },
       { context: contextOf(org, org.ownerId) },
     );
     const after = Date.now();
@@ -1555,7 +1588,7 @@ describe('identity.credentials.rotate (task 9.6)', () => {
 
     // AND the listing shows c2 created by the rotating admin, its due date counted from rotatedAt.
     const after2 = await client().identity.credentials.list(
-      {},
+      { query: {} },
       { context: contextOf(org, org.ownerId) },
     );
     const byId = new Map(after2.credentials.map((c) => [c.id, c]));
@@ -1580,7 +1613,7 @@ describe('identity.credentials.rotate (task 9.6)', () => {
     });
 
     const rotated = await client().identity.credentials.rotate(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org, org.ownerId) },
     );
 
@@ -1648,7 +1681,7 @@ describe('identity.credentials.rotate is serialized (task 9.6b, Q40)', () => {
     identity: {
       credentials: {
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -1759,11 +1792,11 @@ describe('identity.credentials.rotate is serialized (task 9.6b, Q40)', () => {
 
     const results = await Promise.allSettled([
       client().identity.credentials.rotate(
-        { credential: c1.id },
+        { params: { credential: c1.id } },
         { context: contextOf(org, org.ownerId) },
       ),
       client().identity.credentials.rotate(
-        { credential: c1.id },
+        { params: { credential: c1.id } },
         { context: contextOf(org, org.adminId) },
       ),
     ]);
@@ -1795,11 +1828,11 @@ describe('identity.credentials.rotate is serialized (task 9.6b, Q40)', () => {
 
     const results = await Promise.allSettled([
       client().identity.credentials.rotate(
-        { credential: c1.id },
+        { params: { credential: c1.id } },
         { context: contextOf(org, org.ownerId) },
       ),
       client().identity.credentials.rotate(
-        { credential: c1.id },
+        { params: { credential: c1.id } },
         { context: contextOf(org, org.adminId) },
       ),
     ]);
@@ -1842,7 +1875,7 @@ describe('identity.credentials.rotate is serialized (task 9.6b, Q40)', () => {
 
     await expect(
       client().identity.credentials.rotate(
-        { credential: c1.id },
+        { params: { credential: c1.id } },
         { context: contextOf(org, org.ownerId) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
@@ -1870,7 +1903,7 @@ describe('identity.credentials.rotate is serialized (task 9.6b, Q40)', () => {
     });
 
     const rotated = await client().identity.credentials.rotate(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org, org.ownerId) },
     );
 
@@ -1905,7 +1938,7 @@ describe('identity.credentials.rotate compensates a failed revoke (task 9.7)', (
     identity: {
       credentials: {
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -1986,7 +2019,7 @@ describe('identity.credentials.rotate compensates a failed revoke (task 9.7)', (
     try {
       await expect(
         client().identity.credentials.rotate(
-          { credential: c1.id },
+          { params: { credential: c1.id } },
           {
             context: {
               tenantId: org.tenantId,
@@ -2057,7 +2090,7 @@ describe('identity.credentials.rotate signals an incomplete compensation (task 9
     identity: {
       credentials: {
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -2119,7 +2152,7 @@ describe('identity.credentials.rotate signals an incomplete compensation (task 9
     try {
       await expect(
         client().identity.credentials.rotate(
-          { credential: c1.id },
+          { params: { credential: c1.id } },
           {
             context: {
               tenantId: org.tenantId,
@@ -2201,15 +2234,15 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     identity: {
       credentials: {
         list(
-          input: Record<string, never>,
+          input: { query: Record<string, never> },
           options: { context: Record<string, unknown> },
         ): Promise<ListOutput>;
         revoke(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -2317,7 +2350,7 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     expect(await revocationCount(org, c1.id)).toBe(0);
 
     await client().identity.credentials.revoke(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org, org.adminId) },
     );
 
@@ -2333,7 +2366,7 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     // Revoking it again is a no-op: it resolves, adds no row and restores nothing.
     await expect(
       client().identity.credentials.revoke(
-        { credential: c1.id },
+        { params: { credential: c1.id } },
         { context: contextOf(org, org.ownerId) },
       ),
     ).resolves.not.toThrow();
@@ -2344,7 +2377,7 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     ).rejects.toThrow();
 
     const listed = await client().identity.credentials.list(
-      {},
+      { query: {} },
       { context: contextOf(org, org.adminId) },
     );
     const byId = new Map(listed.credentials.map((c) => [c.id, c]));
@@ -2358,13 +2391,13 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     await seedServiceAccount(org, identifier);
     const c1 = await seed(org, 'Bound', { userId: identifier });
     await client().identity.credentials.revoke(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org, org.adminId) },
     );
 
     // A rotation of the revoked credential (the account has no active one) yields a new key.
     const rotated = await client().identity.credentials.rotate(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org, org.adminId) },
     );
 
@@ -2387,7 +2420,7 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     const c1 = await seed(org, 'Admin revokes');
 
     await client().identity.credentials.revoke(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org, org.adminId) },
     );
 
@@ -2400,7 +2433,7 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     const c1 = await seed(org, 'Owner revokes');
 
     await client().identity.credentials.revoke(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org, org.ownerId) },
     );
 
@@ -2465,11 +2498,11 @@ describe('credential rotation and revocation events never carry a secret (task 9
     identity: {
       credentials: {
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
         revoke(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -2535,7 +2568,7 @@ describe('credential rotation and revocation events never carry a secret (task 9
     });
 
     const rotated = await client().identity.credentials.rotate(
-      { credential: c1.id },
+      { params: { credential: c1.id } },
       { context: contextOf(org) },
     );
 
@@ -2569,7 +2602,10 @@ describe('credential rotation and revocation events never carry a secret (task 9
       metadata: { createdBy: org.adminId },
     });
 
-    await client().identity.credentials.revoke({ credential: c1.id }, { context: contextOf(org) });
+    await client().identity.credentials.revoke(
+      { params: { credential: c1.id } },
+      { context: contextOf(org) },
+    );
 
     const events = (await eventsOf(REVOKED, org.tenantId)).filter(
       (record) => record.attributes['tayzu.identity.credential.id'] === c1.id,
@@ -2630,11 +2666,11 @@ describe('a foreign or unknown credential id answers CATALOG_NOT_FOUND (task 9.1
     identity: {
       credentials: {
         revoke(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -2735,16 +2771,28 @@ describe('a foreign or unknown credential id answers CATALOG_NOT_FOUND (task 9.1
     const t2Keys = await keyCount(t2);
 
     const revokeForeign = await failureOf(() =>
-      client().identity.credentials.revoke({ credential: foreign.id }, { context: contextOf(t1) }),
+      client().identity.credentials.revoke(
+        { params: { credential: foreign.id } },
+        { context: contextOf(t1) },
+      ),
     );
     const revokeUnknown = await failureOf(() =>
-      client().identity.credentials.revoke({ credential: unknownId }, { context: contextOf(t1) }),
+      client().identity.credentials.revoke(
+        { params: { credential: unknownId } },
+        { context: contextOf(t1) },
+      ),
     );
     const rotateForeign = await failureOf(() =>
-      client().identity.credentials.rotate({ credential: foreign.id }, { context: contextOf(t1) }),
+      client().identity.credentials.rotate(
+        { params: { credential: foreign.id } },
+        { context: contextOf(t1) },
+      ),
     );
     const rotateUnknown = await failureOf(() =>
-      client().identity.credentials.rotate({ credential: unknownId }, { context: contextOf(t1) }),
+      client().identity.credentials.rotate(
+        { params: { credential: unknownId } },
+        { context: contextOf(t1) },
+      ),
     );
 
     expect(revokeForeign['code']).toBe('CATALOG_NOT_FOUND');

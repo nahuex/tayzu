@@ -178,13 +178,13 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     identity: {
       serviceAccounts: {
         create(
-          input: { identifier: string },
+          input: { body: { identifier: string } },
           options: { context: Record<string, unknown> },
         ): Promise<CreatedServiceAccount>;
       };
       credentials: {
         list(
-          input: Record<string, never>,
+          input: { query: Record<string, never> },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -321,7 +321,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     const sentBefore = sender.sent.length;
 
     const created = await creator().identity.serviceAccounts.create(
-      { identifier: IDENTIFIER },
+      { body: { identifier: IDENTIFIER } },
       { context: context(tenant) },
     );
 
@@ -369,7 +369,10 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(name.length).toBeLessThanOrEqual(32);
 
     // AND neither value appears in any later read of the account or its credentials.
-    const listed = await creator().identity.credentials.list({}, { context: context(tenant) });
+    const listed = await creator().identity.credentials.list(
+      { query: {} },
+      { context: context(tenant) },
+    );
     const laterReads = JSON.stringify([listed, rows, keys]);
     expect(laterReads).not.toContain(created.clientSecret);
     expect(JSON.stringify(rows)).not.toContain(created.clientId);
@@ -417,7 +420,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     // WHEN an admin creates the service account again, THEN it fails and nothing is created.
     await expect(
       creator().identity.serviceAccounts.create(
-        { identifier: IDENTIFIER },
+        { body: { identifier: IDENTIFIER } },
         { context: context(tenant) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
@@ -436,7 +439,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
       tenantId: tenant.tenantId,
     });
     const created = await creator().identity.serviceAccounts.create(
-      { identifier: IDENTIFIER },
+      { body: { identifier: IDENTIFIER } },
       { context: context(tenant) },
     );
 
@@ -456,7 +459,10 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     // WHEN an admin creates a service account, THEN the operation fails.
     try {
       await expect(
-        creator().identity.serviceAccounts.create({ identifier }, { context: context(tenant) }),
+        creator().identity.serviceAccounts.create(
+          { body: { identifier } },
+          { context: context(tenant) },
+        ),
       ).rejects.toThrow();
     } finally {
       keySeam.failTenants.delete(tenant.tenantId);
@@ -486,7 +492,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     identity: {
       serviceAccounts: {
         create(
-          input: { identifier: string; role?: string; moderatedBlueprints?: string[] },
+          input: { body: { identifier: string; role?: string; moderatedBlueprints?: string[] } },
           options: { context: Record<string, unknown> },
         ): Promise<CreatedServiceAccount>;
       };
@@ -511,7 +517,10 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     for (const attempt of attempts) {
       // WHEN an admin attempts to create a service account with that role or grant.
       await expect(
-        ceilingClient().identity.serviceAccounts.create(attempt, { context: context(tenant) }),
+        ceilingClient().identity.serviceAccounts.create(
+          { body: attempt },
+          { context: context(tenant) },
+        ),
       ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
 
       // THEN no `_user` entity is created.
@@ -531,7 +540,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     const identifier = `svc-member-${randomUUID().slice(0, 8)}`;
 
     const created = await ceilingClient().identity.serviceAccounts.create(
-      { identifier, role: 'member', moderatedBlueprints: [] },
+      { body: { identifier, role: 'member', moderatedBlueprints: [] } },
       { context: context(tenant) },
     );
 
@@ -553,7 +562,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     // WHEN an actor without the grant attempts to create a service account.
     await expect(
       creator().identity.serviceAccounts.create(
-        { identifier },
+        { body: { identifier } },
         {
           context: {
             tenantId: tenant.tenantId,
@@ -577,17 +586,17 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     identity: {
       serviceAccounts: {
         delete(
-          input: { user: string },
+          input: { params: { user: string } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
       credentials: {
         create(
-          input: { name: string; kind: string; userId?: string },
+          input: { body: { name: string; kind: string; userId?: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
         rotate(
-          input: { credential: string },
+          input: { params: { credential: string } },
           options: { context: Record<string, unknown> },
         ): Promise<{ id: string; secret: string }>;
       };
@@ -636,7 +645,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
 
   async function createAccount(tenant: Tenant, identifier: string): Promise<CreatedServiceAccount> {
     return await creator().identity.serviceAccounts.create(
-      { identifier },
+      { body: { identifier } },
       { context: context(tenant) },
     );
   }
@@ -651,7 +660,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     });
 
     await deleter().identity.serviceAccounts.delete(
-      { user: identifier },
+      { params: { user: identifier } },
       { context: context(tenant) },
     );
 
@@ -697,7 +706,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(await nonRevokedBound(tenant.tenantId, identifier)).toHaveLength(2);
 
     await deleter().identity.serviceAccounts.delete(
-      { user: identifier },
+      { params: { user: identifier } },
       { context: context(tenant) },
     );
 
@@ -733,7 +742,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     });
 
     await deleter().identity.serviceAccounts.delete(
-      { user: identifier },
+      { params: { user: identifier } },
       { context: context(tenant) },
     );
 
@@ -761,7 +770,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     });
     keySeam.pauseAfterRevoke.set(tenant.tenantId, { entered: signalEntered, wait });
     const deletion = deleter().identity.serviceAccounts.delete(
-      { user: identifier },
+      { params: { user: identifier } },
       { context: context(tenant) },
     );
     try {
@@ -797,7 +806,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
 
     const { concurrentSettledWhilePaused } = await deleteWhile(tenant, identifier, () =>
       deleter().identity.credentials.create(
-        { name: 'During deletion', kind: 'integration', userId: identifier },
+        { body: { name: 'During deletion', kind: 'integration', userId: identifier } },
         { context: context(tenant) },
       ),
     );
@@ -816,7 +825,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
 
     const { concurrentSettledWhilePaused } = await deleteWhile(tenant, identifier, () =>
       deleter().identity.credentials.rotate(
-        { credential: created.clientId },
+        { params: { credential: created.clientId } },
         { context: context(tenant) },
       ),
     );
@@ -953,7 +962,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
 
     const unknown = await failureOf(() =>
       deleter().identity.serviceAccounts.delete(
-        { user: `svc-unknown-${suffix}` },
+        { params: { user: `svc-unknown-${suffix}` } },
         { context: context(tenant) },
       ),
     );
@@ -962,7 +971,10 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     for (const target of targets) {
       // WHEN an admin deletes the human (or look-alike), THEN the answer equals the unknown id's.
       const failure = await failureOf(() =>
-        deleter().identity.serviceAccounts.delete({ user: target }, { context: context(tenant) }),
+        deleter().identity.serviceAccounts.delete(
+          { params: { user: target } },
+          { context: context(tenant) },
+        ),
       );
       expect(failure).toEqual(unknown);
       // AND the row and its status are intact.
@@ -1035,7 +1047,10 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     const statusEventsBefore = (await logRecords(STATUS_EVENT, tenant.tenantId)).length;
 
     await expect(
-      creator().identity.serviceAccounts.create({ identifier }, { context: context(tenant) }),
+      creator().identity.serviceAccounts.create(
+        { body: { identifier } },
+        { context: context(tenant) },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
 
     expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
@@ -1057,7 +1072,10 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
 
     const outcomes = await Promise.allSettled(
       identifiers.map((identifier) =>
-        creator().identity.serviceAccounts.create({ identifier }, { context: context(tenant) }),
+        creator().identity.serviceAccounts.create(
+          { body: { identifier } },
+          { context: context(tenant) },
+        ),
       ),
     );
 

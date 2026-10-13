@@ -47,7 +47,11 @@ import {
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
+import { createIdentityRouter } from './identity-router.js';
 import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
+import { createAuthRepository } from './identity/auth-repository.js';
+import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
@@ -101,6 +105,14 @@ export interface CreateAppOptions {
    */
   readonly reauthorizationMaxPendingPerSession?: number;
   readonly reauthorizationCallbackRateLimit?: { readonly max: number; readonly window: number };
+  /**
+   * The email path of the invitation operations (design D10), built by the host from
+   * configuration; omitted: `invite` and `resendInvitation` fail closed.
+   */
+  readonly identity?: {
+    readonly emailGate?: EmailTenantGate;
+    readonly invitationLinkBaseUrl?: string;
+  };
 }
 
 export interface App {
@@ -125,6 +137,8 @@ interface AuthSessionSurface {
 }
 
 const STEP_UP_HEADERS = '__stepUpHeaders';
+/** Resolved decision Q42: the key `identity-router.ts` reads the request's session headers from. */
+const REQUEST_HEADERS = '__requestHeaders';
 
 interface StepUpHandlerContext {
   readonly [STEP_UP_HEADERS]: Headers;
@@ -219,10 +233,27 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
 
-  const router = createCatalogRouter({
-    blueprints: createBlueprintService({ pool: appPool, authz }),
-    entities: createEntityService({ pool: appPool, authz }),
-  });
+  // D10: one router, one handler, one interceptor chain for the catalog and identity routes.
+  const router = {
+    ...createCatalogRouter({
+      blueprints: createBlueprintService({ pool: appPool, authz }),
+      entities: createEntityService({ pool: appPool, authz }),
+    }),
+    ...createIdentityRouter({
+      auth,
+      authz,
+      authRepository: createAuthRepository(options.authPool),
+      withUserLock: createWithUserLock(options.authPool),
+      appPool,
+      userSync,
+      ...(options.identity?.emailGate === undefined
+        ? {}
+        : { emailGate: options.identity.emailGate }),
+      ...(options.identity?.invitationLinkBaseUrl === undefined
+        ? {}
+        : { invitationLinkBaseUrl: options.identity.invitationLinkBaseUrl }),
+    }),
+  };
   // D4: the guard runs after context resolution and before the operation, for
   // every procedure whose route spec carries `x-tayzu-risk: high`. The caller's
   // headers travel in the handler context, under a private key.
@@ -755,7 +786,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       }
     }
     const result = await openApiHandler.handle(request, reply, {
-      context: { ...context, [STEP_UP_HEADERS]: toWebHeaders(request) },
+      context: {
+        ...context,
+        [STEP_UP_HEADERS]: toWebHeaders(request),
+        // Q42: the session headers `invite` and `cancelInvitation` forward to Better Auth.
+        [REQUEST_HEADERS]: toWebHeaders(request),
+      },
     });
     if (!result.matched) {
       return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });

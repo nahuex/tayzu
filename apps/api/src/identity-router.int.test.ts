@@ -158,7 +158,7 @@ describe('identity.users.create writes the _user through the membership hook onl
 
     // WHEN an admin creates a user through `identity.users.create`.
     const created = await client.identity.users.create(
-      { email, name: 'Created By Admin', role: 'member' },
+      { body: { email, name: 'Created By Admin', role: 'member' } },
       { context: context(tenantId, adminId) },
     );
 
@@ -222,7 +222,7 @@ describe('identity.users.create writes the _user through the membership hook onl
       context: (raw: Record<string, unknown>) => raw,
     });
     await stubbed.identity.users.create(
-      { email, name: 'No Second Write', role: 'member' },
+      { body: { email, name: 'No Second Write', role: 'member' } },
       { context: context(tenantId, `admin-${randomUUID()}`) },
     );
 
@@ -371,7 +371,7 @@ describe('identity router authorization telemetry (task 5.3)', () => {
 
     await expect(
       client.identity.users.create(
-        { email, name, role: 'member' },
+        { body: { email, name, role: 'member' } },
         { context: callerContext(tenantId, actorId, ['member']) },
       ),
     ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
@@ -403,7 +403,7 @@ describe('identity router authorization telemetry (task 5.3)', () => {
     const name = `Allowed Name ${randomUUID()}`;
 
     const created = await client.identity.users.create(
-      { email, name, role: 'member' },
+      { body: { email, name, role: 'member' } },
       { context: callerContext(tenantId, adminId, ['admin']) },
     );
 
@@ -447,10 +447,13 @@ describe('identity router authorization telemetry (task 5.3)', () => {
     const unknown = `nobody-${randomUUID()}@example.test`;
 
     await expect(
-      client.identity.users.linkSsoAccount({ user: unknown, subject }, { context: admin }),
+      client.identity.users.linkSsoAccount(
+        { params: { user: unknown }, body: { subject } },
+        { context: admin },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_NOT_FOUND' });
     await expect(
-      client.identity.users.unlinkSsoAccount({ user: unknown }, { context: admin }),
+      client.identity.users.unlinkSsoAccount({ params: { user: unknown } }, { context: admin }),
     ).rejects.toMatchObject({ code: 'CATALOG_NOT_FOUND' });
 
     const written = await authPool.query(
@@ -468,16 +471,22 @@ describe('identity router authorization telemetry (task 5.3)', () => {
 
     // Control: the same target, addressed by its identifier, is linked.
     await client.identity.users.linkSsoAccount(
-      { user: target.email, subject: `visma-sub-${randomUUID()}` },
+      { params: { user: target.email }, body: { subject: `visma-sub-${randomUUID()}` } },
       { context: admin },
     );
     expect(await ssoAccountCount(target.userId), 'control: linked by identifier').toBe(1);
 
     await expect(
-      client.identity.users.linkSsoAccount({ userId: target.userId, subject }, { context: admin }),
+      client.identity.users.linkSsoAccount(
+        { body: { userId: target.userId, subject } },
+        { context: admin },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     await expect(
-      client.identity.users.unlinkSsoAccount({ userId: target.userId }, { context: admin }),
+      client.identity.users.unlinkSsoAccount(
+        { body: { userId: target.userId } },
+        { context: admin },
+      ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
 
     const written = await authPool.query(
@@ -599,14 +608,14 @@ describe('identity operations refuse a target with a membership in another tenan
 
     await expect(
       client.identity.users.linkSsoAccount(
-        { user: target.email, subject },
+        { params: { user: target.email }, body: { subject } },
         { context: adminContext(tenantA) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
     // The admin of the other tenant is refused as well.
     await expect(
       client.identity.users.linkSsoAccount(
-        { user: target.email, subject },
+        { params: { user: target.email }, body: { subject } },
         { context: adminContext(tenantB) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
@@ -624,7 +633,7 @@ describe('identity operations refuse a target with a membership in another tenan
 
     await expect(
       client.identity.users.unlinkSsoAccount(
-        { user: target.email },
+        { params: { user: target.email } },
         { context: adminContext(tenantA) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
@@ -638,13 +647,13 @@ describe('identity operations refuse a target with a membership in another tenan
     const subject = `visma-sub-${randomUUID()}`;
 
     await client.identity.users.linkSsoAccount(
-      { user: target.email, subject },
+      { params: { user: target.email }, body: { subject } },
       { context: adminContext(tenantA) },
     );
     expect(await linkedSubjects(target.userId)).toEqual([subject]);
 
     await client.identity.users.unlinkSsoAccount(
-      { user: target.email },
+      { params: { user: target.email } },
       { context: adminContext(tenantA) },
     );
     expect(await linkedSubjects(target.userId)).toEqual([]);
@@ -795,7 +804,7 @@ describe('linkSsoAccount refuses an admin or owner target (task 13.2b, Q88)', ()
 
     await expect(
       client.identity.users.linkSsoAccount(
-        { user: target.email, subject },
+        { params: { user: target.email }, body: { subject } },
         { context: adminContext(tenantId, actingAdminId) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
@@ -833,7 +842,7 @@ describe('linkSsoAccount refuses an admin or owner target (task 13.2b, Q88)', ()
 
     await expect(
       client.identity.users.linkSsoAccount(
-        { user: ownerEmail, subject },
+        { params: { user: ownerEmail }, body: { subject } },
         { context: adminContext(tenantId, `admin-${randomUUID()}`) },
       ),
     ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
@@ -847,7 +856,7 @@ describe('linkSsoAccount refuses an admin or owner target (task 13.2b, Q88)', ()
     const subject = `visma-sub-${randomUUID()}`;
 
     await client.identity.users.linkSsoAccount(
-      { user: target.email, subject },
+      { params: { user: target.email }, body: { subject } },
       { context: adminContext(tenantId, `admin-${randomUUID()}`) },
     );
 
@@ -1254,7 +1263,7 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
 
       const answer = await answerOf(
         client.identity.users.create(
-          { email: target.email, name: 'Probe', role: 'member' },
+          { body: { email: target.email, name: 'Probe', role: 'member' } },
           { context: adminContext(tenantId, adminId) },
         ),
       );
@@ -1286,7 +1295,7 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
     const target = await seedUser(tenantId);
     const subject = `visma-sub-${randomUUID()}`;
     await client.identity.users.linkSsoAccount(
-      { user: holder.email, subject },
+      { params: { user: holder.email }, body: { subject } },
       { context: adminContext(tenantId, adminId) },
     );
     const before = await snapshot(target.userId, target.email, tenantId);
@@ -1294,7 +1303,7 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
 
     const answer = await answerOf(
       client.identity.users.linkSsoAccount(
-        { user: target.email, subject },
+        { params: { user: target.email }, body: { subject } },
         { context: adminContext(tenantId, adminId) },
       ),
     );
@@ -1327,7 +1336,7 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
 
     const answer = await answerOf(
       client.identity.users.linkSsoAccount(
-        { user: target.email, subject },
+        { params: { user: target.email }, body: { subject } },
         { context: adminContext(tenantId, adminId) },
       ),
     );
@@ -1348,7 +1357,10 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
     const context = adminContext(tenantId, adminId);
     const holder = await seedUser(tenantId);
     const taken = `visma-sub-${randomUUID()}`;
-    await client.identity.users.linkSsoAccount({ user: holder.email, subject: taken }, { context });
+    await client.identity.users.linkSsoAccount(
+      { params: { user: holder.email }, body: { subject: taken } },
+      { context },
+    );
     const linked = await seedUser(tenantId);
     const twoTenant = await seedUser(tenantId);
     await authPool.query(
@@ -1361,23 +1373,26 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
 
     const answers = [
       await answerOf(
-        client.identity.users.linkSsoAccount({ user: linked.email, subject: taken }, { context }),
-      ),
-      await answerOf(
         client.identity.users.linkSsoAccount(
-          { user: twoTenant.email, subject: `visma-sub-${randomUUID()}` },
+          { params: { user: linked.email }, body: { subject: taken } },
           { context },
         ),
       ),
       await answerOf(
         client.identity.users.linkSsoAccount(
-          { user: peerAdmin.email, subject: `visma-sub-${randomUUID()}` },
+          { params: { user: twoTenant.email }, body: { subject: `visma-sub-${randomUUID()}` } },
           { context },
         ),
       ),
       await answerOf(
         client.identity.users.linkSsoAccount(
-          { user: peerOwner.email, subject: `visma-sub-${randomUUID()}` },
+          { params: { user: peerAdmin.email }, body: { subject: `visma-sub-${randomUUID()}` } },
+          { context },
+        ),
+      ),
+      await answerOf(
+        client.identity.users.linkSsoAccount(
+          { params: { user: peerOwner.email }, body: { subject: `visma-sub-${randomUUID()}` } },
           { context },
         ),
       ),
@@ -1401,7 +1416,7 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
     const email = `created-${randomUUID()}@example.test`;
 
     const created = await client.identity.users.create(
-      { email, name: 'Lifecycle User', role: 'admin' },
+      { body: { email, name: 'Lifecycle User', role: 'admin' } },
       { context: adminContext(tenantId, adminId) },
     );
 
@@ -1426,15 +1441,15 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
       identity: {
         credentials: {
           create(
-            input: { name: string; kind: 'integration' | 'agent' },
+            input: { body: { name: string; kind: 'integration' | 'agent' } },
             options: { context: Record<string, unknown> },
           ): Promise<{ id: string; secret: string }>;
           rotate(
-            input: { credential: string },
+            input: { params: { credential: string } },
             options: { context: Record<string, unknown> },
           ): Promise<{ id: string; secret: string }>;
           revoke(
-            input: { credential: string },
+            input: { params: { credential: string } },
             options: { context: Record<string, unknown> },
           ): Promise<unknown>;
         };
@@ -1458,7 +1473,7 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
       const credentials = (client as unknown as CredentialClient).identity.credentials;
 
       const created = await credentials.create(
-        { name: 'Lifecycle key', kind: 'agent' },
+        { body: { name: 'Lifecycle key', kind: 'agent' } },
         { context: adminContext(org.tenantId, org.adminId) },
       );
 
@@ -1479,12 +1494,12 @@ describe('create and link give one generic answer to every conflict (task 13.3)'
       const credentials = (client as unknown as CredentialClient).identity.credentials;
       const context = adminContext(org.tenantId, org.adminId);
       const first = await credentials.create(
-        { name: 'Lifecycle rotate', kind: 'integration' },
+        { body: { name: 'Lifecycle rotate', kind: 'integration' } },
         { context },
       );
 
-      const rotated = await credentials.rotate({ credential: first.id }, { context });
-      await credentials.revoke({ credential: rotated.id }, { context });
+      const rotated = await credentials.rotate({ params: { credential: first.id } }, { context });
+      await credentials.revoke({ params: { credential: rotated.id } }, { context });
 
       const rotations = await eventsOf('catalog.audit.credential_rotated', org.tenantId);
       expect(rotations).toHaveLength(1);

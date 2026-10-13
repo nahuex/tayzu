@@ -259,7 +259,7 @@ describe('withUserLock (task 8.5i, Resolved decision Q87)', () => {
 
     const subject = `visma-sub-${randomUUID()}`;
     await client.identity.users.linkSsoAccount(
-      { user: target.email, subject },
+      { params: { user: target.email }, body: { subject } },
       {
         context: {
           tenantId: org.id,

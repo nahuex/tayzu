@@ -344,7 +344,7 @@ describe('The session paths that the shed still missed are closed (task 8.5k)', 
 
   async function adminLink(tenant: Tenant, person: Person, sub: string): Promise<void> {
     await client.identity.users.linkSsoAccount(
-      { user: person.email, subject: sub },
+      { params: { user: person.email }, body: { subject: sub } },
       {
         context: {
           tenantId: tenant.tenantId,

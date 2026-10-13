@@ -48,6 +48,11 @@ import {
 } from './identity/identity-target.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
 import {
+  parseIdentityInput,
+  type InputSchema,
+  type ParsedIdentityInput,
+} from './identity/parse-input.js';
+import {
   CREDENTIAL_NAME_PATTERN,
   DEFAULT_CREDENTIAL_CAP,
   createCredential,
@@ -217,10 +222,6 @@ export interface InviteUserOutput {
 
 type RawContext = Record<string, unknown>;
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim() !== '';
-}
-
 /** Canonicalizes an address and rejects one the platform cannot hold (Q33), before any side effect. */
 function holdableEmail(raw: string): string {
   const canonical = canonicalEmail(raw);
@@ -228,78 +229,98 @@ function holdableEmail(raw: string): string {
   return canonical;
 }
 
-function parseInput(raw: unknown): CreateUserInput {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { email, name, role } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(email) || !isNonEmptyString(name) || !isNonEmptyString(role)) {
-    throw new IdentityInputError();
+const EMAIL_FIELD = { kind: 'string', maxLength: 254 } as const;
+const ROLE_FIELD = { kind: 'string', maxLength: 16 } as const;
+/** A `{user}` path value: an email or a `svc-...` identifier. */
+const USER_PARAM = { user: EMAIL_FIELD } as const;
+const INVITATION_PARAM = { invitation: { kind: 'string', maxLength: 64 } } as const;
+const CREDENTIAL_PARAM = { credential: { kind: 'string', maxLength: 64 } } as const;
+
+/** The detailed input shape of each procedure (design D10 "Input contract"). */
+const SCHEMAS = {
+  createUser: {
+    body: { email: EMAIL_FIELD, name: { kind: 'string', maxLength: 200 }, role: ROLE_FIELD },
+  },
+  invite: { body: { email: EMAIL_FIELD, role: ROLE_FIELD } },
+  invitation: { params: INVITATION_PARAM },
+  setStatus: { params: USER_PARAM, body: { status: { kind: 'string', maxLength: 16 } } },
+  link: { params: USER_PARAM, body: { subject: { kind: 'string', maxLength: 256 } } },
+  user: { params: USER_PARAM },
+  createServiceAccount: {
+    body: {
+      identifier: { kind: 'string', maxLength: 64 },
+      role: { ...ROLE_FIELD, optional: true },
+      moderatedBlueprints: {
+        kind: 'stringList',
+        maxItems: 64,
+        item: { maxLength: 128 },
+        optional: true,
+      },
+    },
+  },
+  createCredential: {
+    body: {
+      name: { kind: 'string', maxLength: 32, pattern: CREDENTIAL_NAME_PATTERN },
+      kind: { kind: 'string', maxLength: 16 },
+      userId: { kind: 'string', maxLength: 64, optional: true },
+    },
+  },
+  listCredentials: { query: {} },
+  credential: { params: CREDENTIAL_PARAM },
+} satisfies Record<string, InputSchema>;
+
+/**
+ * Parses the detailed input of a request. oRPC's `detailed` structure also carries the
+ * request `headers`; no procedure reads them (the session travels in the host context),
+ * so that one transport section is set aside and the rest goes through the strict parser.
+ */
+function parseDetailedInput(schema: InputSchema, raw: unknown): ParsedIdentityInput {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return parseIdentityInput(schema, raw);
   }
-  if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
-  return { email: holdableEmail(email), name, role: role as AssignableOrgRole };
+  const sections: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  delete sections['headers'];
+  return parseIdentityInput(schema, sections);
 }
 
-function parseCredentialInput(raw: unknown): {
-  name: string;
-  kind: 'integration' | 'agent';
-  userId?: string;
-} {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { name, kind, userId } = raw as Record<string, unknown>;
-  if (typeof name !== 'string' || !CREDENTIAL_NAME_PATTERN.test(name)) {
-    throw new IdentityInputError();
-  }
-  if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
-  if (userId === undefined) return { name, kind };
-  if (typeof userId !== 'string') throw new IdentityInputError();
-  return { name, kind, userId };
+/** The `{name}` path value of the raw input as a string, or `undefined` when it is not one. */
+function paramOf(raw: unknown, name: string): string | undefined {
+  const params =
+    typeof raw === 'object' && raw !== null
+      ? (raw as Record<string, unknown>)['params']
+      : undefined;
+  const value =
+    typeof params === 'object' && params !== null
+      ? (params as Record<string, unknown>)[name]
+      : undefined;
+  return typeof value === 'string' ? value : undefined;
 }
 
-function parseInviteInput(raw: unknown): InviteUserInput {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  // The tenant comes only from the host: any undeclared field (an organization or tenant id) is rejected.
-  if (Object.keys(raw).some((key) => key !== 'email' && key !== 'role')) {
-    throw new IdentityInputError();
-  }
-  const { email, role } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(email) || !isNonEmptyString(role)) throw new IdentityInputError();
-  // Exact match (design D4 "Roles"): no splitting, trimming or case folding.
-  if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
-  return { email: holdableEmail(email), role: role as AssignableOrgRole };
-}
-
-/** The `{invitation}` identifier of a cancel as an invitation target; malformed input yields an id the resolver rejects. */
+/** The `{invitation}` identifier as an invitation target; malformed input yields an id the resolver rejects. */
 function invitationTargetOf(raw: unknown): { kind: 'invitation'; id: string } {
-  const invitation =
-    typeof raw === 'object' && raw !== null
-      ? (raw as Record<string, unknown>)['invitation']
-      : undefined;
-  return { kind: 'invitation', id: invitation as string };
+  return { kind: 'invitation', id: paramOf(raw, 'invitation') as string };
 }
 
-/** The `{credential}` identifier of a rotate as a credential target; malformed input yields an id the resolver rejects. */
+/** The `{credential}` identifier as a credential target; malformed input yields an id the resolver rejects. */
 function credentialTargetOf(raw: unknown): { kind: 'credential'; id: string } {
-  const credential =
-    typeof raw === 'object' && raw !== null
-      ? (raw as Record<string, unknown>)['credential']
-      : undefined;
-  return { kind: 'credential', id: credential as string };
+  return { kind: 'credential', id: paramOf(raw, 'credential') as string };
+}
+
+/** The `{user}` identifier as a user target; malformed input yields an id the resolver rejects. */
+function userTargetOf(raw: unknown): { kind: 'user'; id: string } {
+  return { kind: 'user', id: paramOf(raw, 'user') as string };
+}
+
+/** The role of an invite or a create: exact match (design D4 "Roles"), no trimming or case folding. */
+function assignableRole(role: unknown): AssignableOrgRole {
+  if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role as string)) {
+    throw new IdentityInputError();
+  }
+  return role as AssignableOrgRole;
 }
 
 /** The Visma Connect provider id of the `account` row (design D23/D24). */
 const SSO_PROVIDER_ID = 'visma-connect';
-
-export interface SsoLinkInput {
-  /** The `_user` identifier of the target (Resolved decision Q31), not a Better Auth id. */
-  readonly user: string;
-  readonly subject: string;
-}
-
-function parseLinkInput(raw: unknown): SsoLinkInput {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { user, subject } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(user) || !isNonEmptyString(subject)) throw new IdentityInputError();
-  return { user, subject };
-}
 
 /** The slice of Better Auth's internal adapter the admin-recorded linking uses (design D24 path (b)). */
 interface AccountAdapterSurface {
@@ -315,14 +336,6 @@ interface AccountAdapterSurface {
     findUserById(userId: string): Promise<{ name: string } | null>;
     updateUser(userId: string, data: { banned: boolean }): Promise<unknown>;
   };
-}
-
-/** The statuses an admin may set (task 11.2); the transition table decides the rest. */
-function parseStatusInput(raw: unknown): { status: 'Active' | 'Disabled' } {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { status } = raw as Record<string, unknown>;
-  if (status !== 'Active' && status !== 'Disabled') throw new IdentityInputError();
-  return { status };
 }
 
 /** The tenant of the caller; the wrapper already proved it is a non-empty string. */
@@ -341,12 +354,24 @@ function emitAdminLinkEvent(event: 'linked' | 'unlinked', context: RawContext): 
 type OperationObject = Parameters<Extract<Route['spec'], (...args: never[]) => unknown>>[0];
 
 /** Q50: `x-tayzu-risk: high`, so the D4 step-up guard applies to the procedure. */
-const HIGH_RISK_ROUTE = {
-  spec: (current: OperationObject): OperationObject => {
-    const marked = { ...current, 'x-tayzu-risk': 'high' };
-    return marked;
-  },
-};
+function markHighRisk(current: OperationObject): OperationObject {
+  const marked = { ...current, 'x-tayzu-risk': 'high' };
+  return marked;
+}
+
+/** A route declaration of design D10; `inputStructure: 'detailed'` on every one. */
+function identityRoute(
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  path: string,
+  options: { readonly highRisk?: true } = {},
+): Route {
+  return {
+    method,
+    path: path as `/${string}`,
+    inputStructure: 'detailed',
+    ...(options.highRisk === true ? { spec: markHighRisk } : {}),
+  };
+}
 
 export function createIdentityRouter(options: CreateIdentityRouterOptions) {
   const userApi = options.auth.api as CreateUserApiSurface;
@@ -379,15 +404,6 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
     authz: options.authz,
     targetResolver,
   });
-
-  /** The `user` identifier of a link/unlink body as a user target; malformed input yields an id the resolver rejects. */
-  function userTargetOf(raw: unknown): { kind: 'user'; id: string } {
-    const user =
-      typeof raw === 'object' && raw !== null
-        ? (raw as Record<string, unknown>)['user']
-        : undefined;
-    return { kind: 'user', id: user as string };
-  }
 
   /** Logs the internal cause of a refused create or link: opaque identifiers and a bounded reason only (Q115). */
   function emitConflictRefused(
@@ -446,9 +462,13 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'create',
             resolveTarget: () => undefined,
           },
-          route: HIGH_RISK_ROUTE,
+          route: identityRoute('POST', '/v1/credentials', { highRisk: true }),
           handler: async ({ context, input: rawInput }) => {
-            const { name, kind, userId } = parseCredentialInput(rawInput);
+            const { body } = parseDetailedInput(SCHEMAS.createCredential, rawInput);
+            const name = body['name'] as string;
+            const kind = body['kind'];
+            const userId = body['userId'] as string | undefined;
+            if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
             const created = await createCredential({
               authRepository: options.authRepository,
               ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
@@ -480,8 +500,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'rotate',
             resolveTarget: credentialTargetOf,
           },
-          route: HIGH_RISK_ROUTE,
-          handler: ({ context, target }) => {
+          route: identityRoute('POST', '/v1/credentials/{credential}/rotate', { highRisk: true }),
+          handler: ({ context, input: rawInput, target }) => {
+            parseDetailedInput(SCHEMAS.credential, rawInput);
             // Fail closed when the host did not wire the revocation-list pool.
             if (options.appPool === undefined || target === undefined) {
               throw new IdentityInputError();
@@ -503,8 +524,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'revoke',
             resolveTarget: credentialTargetOf,
           },
-          route: HIGH_RISK_ROUTE,
-          handler: async ({ context, target }) => {
+          route: identityRoute('POST', '/v1/credentials/{credential}/revoke', { highRisk: true }),
+          handler: async ({ context, input: rawInput, target }) => {
+            parseDetailedInput(SCHEMAS.credential, rawInput);
             // Fail closed when the host did not wire the revocation-list pool.
             if (options.appPool === undefined || target === undefined) {
               throw new IdentityInputError();
@@ -524,7 +546,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'list',
             resolveTarget: () => undefined,
           },
-          handler: ({ context }) => {
+          route: identityRoute('GET', '/v1/credentials'),
+          handler: ({ context, input: rawInput }) => {
+            parseDetailedInput(SCHEMAS.listCredentials, rawInput);
             // Fail closed when the host did not wire the revocation-list pool.
             if (options.appPool === undefined) throw new IdentityInputError();
             return listCredentials({
@@ -544,25 +568,20 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'create',
             resolveTarget: () => undefined,
           },
-          route: HIGH_RISK_ROUTE,
+          route: identityRoute('POST', '/v1/service-accounts', { highRisk: true }),
           handler: async ({ context, input: rawInput }) => {
             // Fail closed when the host did not wire the lookups and the writer.
             if (options.appPool === undefined || options.userSync === undefined) {
               throw new IdentityInputError();
             }
-            const fields =
-              typeof rawInput === 'object' && rawInput !== null
-                ? (rawInput as Record<string, unknown>)
-                : undefined;
-            const identifier = fields?.['identifier'];
-            if (typeof identifier !== 'string') throw new IdentityInputError();
-            // Ceiling (D6): only `member` and no moderated blueprints, before anything is written.
-            const { role, moderatedBlueprints } = fields ?? {};
-            if (role !== undefined && role !== 'member') throw new IdentityInputError();
-            if (
-              moderatedBlueprints !== undefined &&
-              !(Array.isArray(moderatedBlueprints) && moderatedBlueprints.length === 0)
-            ) {
+            const { body } = parseDetailedInput(SCHEMAS.createServiceAccount, rawInput);
+            const identifier = body['identifier'] as string;
+            // Ceiling (D6): only `member` and an empty `moderatedBlueprints` list, before anything is written.
+            if (body['role'] !== undefined && body['role'] !== 'member') {
+              throw new IdentityInputError();
+            }
+            const moderated = body['moderatedBlueprints'];
+            if (Array.isArray(moderated) && moderated.length > 0) {
               throw new IdentityInputError();
             }
             return await createServiceAccount({
@@ -587,15 +606,11 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'delete',
             resolveTarget: () => undefined,
           },
-          route: HIGH_RISK_ROUTE,
+          route: identityRoute('DELETE', '/v1/service-accounts/{user}', { highRisk: true }),
           handler: async ({ context, input: rawInput }): Promise<void> => {
             // Fail closed when the host did not wire the lookups.
             if (options.appPool === undefined) throw new IdentityInputError();
-            const user =
-              typeof rawInput === 'object' && rawInput !== null
-                ? (rawInput as Record<string, unknown>)['user']
-                : undefined;
-            if (typeof user !== 'string') throw new IdentityInputError();
+            const user = parseDetailedInput(SCHEMAS.user, rawInput).params['user'] as string;
             await deleteServiceAccount({
               auth: options.auth,
               authz: options.authz,
@@ -616,8 +631,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'create',
             resolveTarget: () => undefined,
           },
+          route: identityRoute('POST', '/v1/users', { highRisk: true }),
           handler: async ({ context, input: rawInput }): Promise<CreateUserOutput> => {
-            const input = parseInput(rawInput);
+            const { body } = parseDetailedInput(SCHEMAS.createUser, rawInput);
+            const input: CreateUserInput = {
+              email: holdableEmail(body['email'] as string),
+              name: body['name'] as string,
+              role: assignableRole(body['role']),
+            };
             const temporaryPassword = generateTemporaryPassword();
             // Admin `createUser` enforces only the maximum length: the policy minimum is applied here (Q22).
             if (!validatePassword(temporaryPassword).ok) throw new IdentityInputError();
@@ -708,8 +729,13 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'invite',
             resolveTarget: () => undefined,
           },
+          route: identityRoute('POST', '/v1/users/invitations', { highRisk: true }),
           handler: async ({ context, input: rawInput }): Promise<InviteUserOutput> => {
-            const input = parseInviteInput(rawInput);
+            const { body } = parseDetailedInput(SCHEMAS.invite, rawInput);
+            const input: InviteUserInput = {
+              email: holdableEmail(body['email'] as string),
+              role: assignableRole(body['role']),
+            };
             const { emailGate, invitationLinkBaseUrl } = options;
             // Fail closed when the host did not wire the email path: nothing is created.
             if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
@@ -771,7 +797,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'invite',
             resolveTarget: invitationTargetOf,
           },
-          handler: async ({ context, target }): Promise<void> => {
+          route: identityRoute('POST', '/v1/users/invitations/{invitation}/cancel'),
+          handler: async ({ context, input: rawInput, target }): Promise<void> => {
+            parseDetailedInput(SCHEMAS.invitation, rawInput);
             const headers = context[REQUEST_HEADERS];
             if (!(headers instanceof Headers)) throw new IdentityInputError();
             // Better Auth's cancel ignores the status, so only a `pending` invitation is cancelled (Q123, Q129).
@@ -793,7 +821,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'invite',
             resolveTarget: invitationTargetOf,
           },
-          handler: async ({ context, target }): Promise<InviteUserOutput> => {
+          route: identityRoute('POST', '/v1/users/invitations/{invitation}/resend'),
+          handler: async ({ context, input: rawInput, target }): Promise<InviteUserOutput> => {
+            parseDetailedInput(SCHEMAS.invitation, rawInput);
             const { emailGate, invitationLinkBaseUrl } = options;
             if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
               throw new IdentityInputError();
@@ -834,9 +864,10 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'update',
             resolveTarget: userTargetOf,
           },
-          route: HIGH_RISK_ROUTE,
+          route: identityRoute('POST', '/v1/users/{user}/sso-account', { highRisk: true }),
           handler: async ({ context, input: rawInput, target }): Promise<void> => {
-            const input = parseLinkInput(rawInput);
+            const { body } = parseDetailedInput(SCHEMAS.link, rawInput);
+            const input = { subject: body['subject'] as string };
             const adapter = (await authContext()).internalAdapter;
             const userId = (target as ResolvedIdentityTarget).id;
             await options.withUserLock(userId, async () => {
@@ -880,18 +911,20 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 : target;
             },
           },
-          route: HIGH_RISK_ROUTE,
+          route: identityRoute('PUT', '/v1/users/{user}/status', { highRisk: true }),
           handler: async ({ context, input: rawInput, target }): Promise<void> => {
             // Fail closed when the host did not wire the writer.
             const { userSync } = options;
             if (userSync === undefined) throw new IdentityInputError();
-            const { status } = parseStatusInput(rawInput);
+            const parsed = parseDetailedInput(SCHEMAS.setStatus, rawInput);
+            const status = parsed.body['status'];
+            if (status !== 'Active' && status !== 'Disabled') throw new IdentityInputError();
             const tenantId = rawTenantId(context);
             const adminId = (context['actor'] as { id: string }).id;
             const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
             if (target === undefined) {
               // Service-account branch: only `_user.status` is written (no Better Auth user).
-              const identifier = userTargetOf(rawInput).id;
+              const identifier = parsed.params['user'] as string;
               if (
                 options.appPool === undefined ||
                 !(await serviceAccountExists(options.appPool, tenantId, identifier))
@@ -994,8 +1027,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             action: 'update',
             resolveTarget: userTargetOf,
           },
-          route: HIGH_RISK_ROUTE,
-          handler: async ({ context, target }): Promise<void> => {
+          route: identityRoute('DELETE', '/v1/users/{user}/sso-account', { highRisk: true }),
+          handler: async ({ context, input: rawInput, target }): Promise<void> => {
+            parseDetailedInput(SCHEMAS.user, rawInput);
             const userId = (target as ResolvedIdentityTarget).id;
             const adapter = (await authContext()).internalAdapter;
             await refuseMultiTenantTarget(userId);

@@ -3151,7 +3151,7 @@ SSO surfaces of M18) are recorded there with their justification.
 
 ## 14. API contract and mount gate
 
-- [ ] 14.1 oRPC procedures for the thirteen operations of design D10 (the three
+- [x] 14.1 oRPC procedures for the thirteen operations of design D10 (the three
       existing procedures `create`, `linkSsoAccount` and `unlinkSsoAccount` gain their
       `.route` and are addressed by the `{user}` identifier, Resolved decision Q31),
       each built with the wrapper of 5.3b and declaring `.route({ method, path, spec })`

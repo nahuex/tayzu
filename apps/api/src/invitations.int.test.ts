@@ -228,7 +228,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN an admin invites `bob@example.com`.
     await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
 
@@ -271,7 +271,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN an admin invites `alice@example.com`.
     await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
 
@@ -321,7 +321,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN an admin invites `bob@example.com`.
     const response = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
 
@@ -362,7 +362,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     ];
     for (const [email, callContext] of attempts) {
       const thrown: unknown = await client.identity.users
-        .invite({ email, role: 'member' }, { context: callContext })
+        .invite({ body: { email, role: 'member' } }, { context: callContext })
         .then(
           () => undefined,
           (error: unknown) => error,
@@ -403,7 +403,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
       const email = `badrole-${randomUUID()}@example.test`;
 
       const thrown: unknown = await client.identity.users
-        .invite({ email, role }, { context: sessionContext(tenant) })
+        .invite({ body: { email, role } }, { context: sessionContext(tenant) })
         .then(
           () => undefined,
           (error: unknown) => error,
@@ -424,7 +424,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN an admin invites `bob@example.com` with role `admin`.
     await client.identity.users.invite(
-      { email, role: 'admin' },
+      { body: { email, role: 'admin' } },
       { context: sessionContext(tenant) },
     );
 
@@ -461,7 +461,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // GIVEN a pending invitation to `bob@example.com`.
     const first = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
     const firstRows = await invitationsOf(tenant.tenantId, email);
@@ -472,7 +472,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     // WHEN the admin invites `bob@example.com` again.
     const before = Date.now();
     const second = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
     const after = Date.now();
@@ -511,7 +511,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // GIVEN a pending invitation to `bob@example.com`.
     const created = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
     const before = await invitationsOf(tenant.tenantId, email);
@@ -521,7 +521,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN the admin cancels it.
     await client.identity.users.cancelInvitation(
-      { invitation: created.invitationId },
+      { params: { invitation: created.invitationId } },
       { context: sessionContext(tenant) },
     );
 
@@ -554,7 +554,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // GIVEN a pending invitation to `bob@example.com` created 10 hours ago.
     const created = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
     await authPool.query(
@@ -581,7 +581,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN the admin resends it.
     const response = await client.identity.users.resendInvitation(
-      { invitation: created.invitationId },
+      { params: { invitation: created.invitationId } },
       { context: sessionContext(tenant) },
     );
 
@@ -641,7 +641,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN an admin invites `bob@example.com`.
     const thrown: unknown = await client.identity.users
-      .invite({ email, role: 'member' }, { context: sessionContext(tenant) })
+      .invite({ body: { email, role: 'member' } }, { context: sessionContext(tenant) })
       .then(
         () => undefined,
         (error: unknown) => error,
@@ -671,7 +671,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     // WHEN an actor without the invite grant attempts to invite a user.
     const thrown: unknown = await client.identity.users
       .invite(
-        { email, role: 'member' },
+        { body: { email, role: 'member' } },
         {
           context: {
             tenantId: tenant.tenantId,
@@ -770,14 +770,17 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     const tenant = await freshTenant();
     const email = `member-${randomUUID()}@example.test`;
     await client.identity.users.create(
-      { email, name: 'Existing Member', role: 'member' },
+      { body: { email, name: 'Existing Member', role: 'member' } },
       { context: sessionContext(tenant) },
     );
     const sentBefore = emailsTo(email).length;
 
     // WHEN an admin invites an email that already belongs to a member.
     const thrown = await rejection(
-      client.identity.users.invite({ email, role: 'member' }, { context: sessionContext(tenant) }),
+      client.identity.users.invite(
+        { body: { email, role: 'member' } },
+        { context: sessionContext(tenant) },
+      ),
     );
 
     // THEN the generic code answers, without Better Auth's text or any membership hint...
@@ -806,7 +809,10 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN an admin invites a 101st address.
     const thrown = await rejection(
-      client.identity.users.invite({ email, role: 'member' }, { context: sessionContext(tenant) }),
+      client.identity.users.invite(
+        { body: { email, role: 'member' } },
+        { context: sessionContext(tenant) },
+      ),
     );
 
     // THEN the generic code answers, with no provider text...
@@ -832,7 +838,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     // WHEN an admin creates a 101st user.
     const thrown = await rejection(
       client.identity.users.create(
-        { email, name: 'Over Limit', role: 'member' },
+        { body: { email, name: 'Over Limit', role: 'member' } },
         { context: sessionContext(tenant) },
       ),
     );
@@ -886,11 +892,11 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // GIVEN an invitation of `t1` that is already cancelled (by an explicit cancel)...
     const earlier = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(t1) },
     );
     await client.identity.users.cancelInvitation(
-      { invitation: earlier.invitationId },
+      { params: { invitation: earlier.invitationId } },
       { context: sessionContext(t1) },
     );
     // ...one that is rejected (seeded directly)...
@@ -902,11 +908,11 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     );
     // ...a pending one of `t1`, and another pending one of `t2` to the same address.
     const pending = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(t1) },
     );
     const other = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(t2) },
     );
     const statusOf = async (tenantId: string, id: string): Promise<string | undefined> =>
@@ -918,7 +924,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     // WHEN an admin of `t1` creates the user `bob@example.com`.
     await client.identity.users.create(
-      { email, name: 'Bob', role: 'member' },
+      { body: { email, name: 'Bob', role: 'member' } },
       { context: sessionContext(t1) },
     );
 
@@ -967,7 +973,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     const t1 = await freshTenant();
     const email = `full-${randomUUID()}@example.test`;
     const pending = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(t1) },
     );
     // GIVEN an organization with 100 members.
@@ -982,7 +988,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     // WHEN the creation fails.
     const thrown = await rejection(
       client.identity.users.create(
-        { email, name: 'Over Limit', role: 'member' },
+        { body: { email, name: 'Over Limit', role: 'member' } },
         { context: sessionContext(t1) },
       ),
     );
@@ -1051,13 +1057,13 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
 
     const resend = await rejection(
       client.identity.users.resendInvitation(
-        { invitation: invitationId },
+        { params: { invitation: invitationId } },
         { context: sessionContext(tenant) },
       ),
     );
     const cancel = await rejection(
       client.identity.users.cancelInvitation(
-        { invitation: invitationId },
+        { params: { invitation: invitationId } },
         { context: sessionContext(tenant) },
       ),
     );
@@ -1083,7 +1089,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     const email = `accepted-${randomUUID()}@example.test`;
     // GIVEN an invitation to `bob@example.com` that `bob` has accepted.
     const created = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
     const template = emailsTo(email)[0]?.template;
@@ -1107,11 +1113,11 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     const tenant = await freshTenant();
     const email = `cancelled-${randomUUID()}@example.test`;
     const created = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
     await client.identity.users.cancelInvitation(
-      { invitation: created.invitationId },
+      { params: { invitation: created.invitationId } },
       { context: sessionContext(tenant) },
     );
     expect(await statusOfInvitation(created.invitationId)).toBe('canceled');
@@ -1136,19 +1142,19 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     const t1 = await freshTenant();
     const t2 = await freshTenant();
     const foreign = await client.identity.users.invite(
-      { email: `foreign-${randomUUID()}@example.test`, role: 'member' },
+      { body: { email: `foreign-${randomUUID()}@example.test`, role: 'member' } },
       { context: sessionContext(t2) },
     );
 
     const missing = await rejection(
       client.identity.users.cancelInvitation(
-        { invitation: randomUUID() },
+        { params: { invitation: randomUUID() } },
         { context: sessionContext(t1) },
       ),
     );
     const crossTenant = await rejection(
       client.identity.users.cancelInvitation(
-        { invitation: foreign.invitationId },
+        { params: { invitation: foreign.invitationId } },
         { context: sessionContext(t1) },
       ),
     );
@@ -1184,7 +1190,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     // WHEN an admin invites one more address.
     const email = `hundredth-${randomUUID()}@example.test`;
     const created = await client.identity.users.invite(
-      { email, role: 'member' },
+      { body: { email, role: 'member' } },
       { context: sessionContext(tenant) },
     );
 

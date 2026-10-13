@@ -269,7 +269,7 @@ describe('A link cannot race a join (task 8.5h, Resolved decision Q87)', () => {
       linkHook = { inside: () => undefined, holdAfterMs: HOLD_MS };
 
       const link = client.identity.users.linkSsoAccount(
-        { user: person.email, subject: `race-sub-${randomUUID()}` },
+        { params: { user: person.email }, body: { subject: `race-sub-${randomUUID()}` } },
         { context: adminContext(t1.tenantId) },
       );
       await linkChecked.promise;
@@ -305,7 +305,7 @@ describe('A link cannot race a join (task 8.5h, Resolved decision Q87)', () => {
       );
       const link = client.identity.users
         .linkSsoAccount(
-          { user: person.email, subject: `race-sub-${randomUUID()}` },
+          { params: { user: person.email }, body: { subject: `race-sub-${randomUUID()}` } },
           { context: adminContext(t1.tenantId) },
         )
         .then(

@@ -148,7 +148,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     identity: {
       users: {
         setStatus(
-          input: { user: string; status: 'Active' | 'Disabled' },
+          input: { params: { user: string }; body: { status: 'Active' | 'Disabled' } },
           options: { context: Record<string, unknown> },
         ): Promise<unknown>;
       };
@@ -344,7 +344,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN an admin disables the user.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Disabled' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Disabled' } },
       { context: context(fixture) },
     );
 
@@ -369,7 +369,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN the admin re-enables the user.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Active' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Active' } },
       { context: context(fixture) },
     );
 
@@ -409,7 +409,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN an admin disables the user.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Disabled' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Disabled' } },
       { context: context(fixture) },
     );
 
@@ -440,7 +440,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN the admin re-enables the user.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Active' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Active' } },
       { context: context(fixture) },
     );
 
@@ -505,7 +505,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     // WHEN `u1` attempts to change their own status to `Disabled`, naming themselves by email.
     await expect(
       statusClient().identity.users.setStatus(
-        { user: u1.email, status: 'Disabled' },
+        { params: { user: u1.email }, body: { status: 'Disabled' } },
         { context: selfContext },
       ),
     ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
@@ -586,7 +586,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN an admin disables the user.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Disabled' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Disabled' } },
       { context: context(fixture) },
     );
 
@@ -695,7 +695,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN the inviter is disabled.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Disabled' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Disabled' } },
       { context: context(fixture) },
     );
 
@@ -746,7 +746,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN the inviter is re-enabled.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Active' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Active' } },
       { context: context(fixture) },
     );
 
@@ -784,7 +784,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
       identity: {
         serviceAccounts: {
           create(
-            input: { identifier: string },
+            input: { body: { identifier: string } },
             options: { context: Record<string, unknown> },
           ): Promise<unknown>;
         };
@@ -792,7 +792,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     }
     // GIVEN an `Active` service account of the tenant (created through its own operation).
     await (client as unknown as ServiceAccountClient).identity.serviceAccounts.create(
-      { identifier },
+      { body: { identifier } },
       { context: context(fixture) },
     );
     expect(await userStatus(fixture.tenantId, identifier)).toBe('Active');
@@ -868,7 +868,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN an admin disables the service account.
     await statusClient().identity.users.setStatus(
-      { user: identifier, status: 'Disabled' },
+      { params: { user: identifier }, body: { status: 'Disabled' } },
       { context: context(fixture) },
     );
 
@@ -911,7 +911,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
     // WHEN the admin re-enables the service account.
     await statusClient().identity.users.setStatus(
-      { user: identifier, status: 'Active' },
+      { params: { user: identifier }, body: { status: 'Active' } },
       { context: context(fixture) },
     );
 
@@ -971,7 +971,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     const failureOf = async (identifier: string, status: 'Active' | 'Disabled') => {
       try {
         await statusClient().identity.users.setStatus(
-          { user: identifier, status },
+          { params: { user: identifier }, body: { status } },
           { context: context(fixture) },
         );
       } catch (error) {
@@ -1009,7 +1009,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     // sessions and bans the single-membership user, and the audit event names the Better Auth user
     // and no service account.
     await statusClient().identity.users.setStatus(
-      { user: fixture.targetEmail, status: 'Disabled' },
+      { params: { user: fixture.targetEmail }, body: { status: 'Disabled' } },
       { context: context(fixture) },
     );
     expect(await userStatus(fixture.tenantId, fixture.targetEmail)).toBe('Disabled');
@@ -1086,7 +1086,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     try {
       // WHEN the admin of t1 disables the user.
       await statusClient().identity.users.setStatus(
-        { user: fixture.targetEmail, status: 'Disabled' },
+        { params: { user: fixture.targetEmail }, body: { status: 'Disabled' } },
         { context: adminContext },
       );
 
@@ -1142,7 +1142,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
 
       // WHEN the admin re-enables the user in t1.
       await statusClient().identity.users.setStatus(
-        { user: fixture.targetEmail, status: 'Active' },
+        { params: { user: fixture.targetEmail }, body: { status: 'Active' } },
         { context: adminContext },
       );
       vi.setSystemTime(Date.now() + 10_000);

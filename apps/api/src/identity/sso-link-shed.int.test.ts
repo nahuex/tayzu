@@ -318,7 +318,7 @@ describe('An SSO link its user did not make does not survive into a second tenan
   /** The link an admin of the user's tenant records (`linkSsoAccount`): no marker. */
   async function adminLink(tenant: Tenant, person: Person, sub: string): Promise<void> {
     await client.identity.users.linkSsoAccount(
-      { user: person.email, subject: sub },
+      { params: { user: person.email }, body: { subject: sub } },
       {
         context: {
           tenantId: tenant.tenantId,

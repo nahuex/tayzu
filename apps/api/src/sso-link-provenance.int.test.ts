@@ -455,7 +455,7 @@ describe('Positive provenance of SSO links (task 8.5g, Resolved decision Q87)', 
     const sub = `prov-sub-${randomUUID()}`;
 
     await client.identity.users.linkSsoAccount(
-      { user: member.email, subject: sub },
+      { params: { user: member.email }, body: { subject: sub } },
       { context: adminContext(member.tenantId) },
     );
 
@@ -507,7 +507,7 @@ describe('Positive provenance of SSO links (task 8.5g, Resolved decision Q87)', 
     await harness.reset();
 
     await client.identity.users.unlinkSsoAccount(
-      { user: member.email },
+      { params: { user: member.email } },
       { context: adminContext(member.tenantId) },
     );
 
@@ -519,7 +519,7 @@ describe('Positive provenance of SSO links (task 8.5g, Resolved decision Q87)', 
 
     // The same sub, recorded again by an admin, is unmarked: nothing stale is inherited.
     await client.identity.users.linkSsoAccount(
-      { user: member.email, subject: sub },
+      { params: { user: member.email }, body: { subject: sub } },
       { context: adminContext(member.tenantId) },
     );
     expect(await markerCountForUser(member.userId, [sub])).toBe(0);
@@ -556,7 +556,7 @@ describe('Positive provenance of SSO links (task 8.5g, Resolved decision Q87)', 
 
     await harness.reset();
     await client.identity.users.linkSsoAccount(
-      { user: adminMember.email, subject: `prov-sub-${randomUUID()}` },
+      { params: { user: adminMember.email }, body: { subject: `prov-sub-${randomUUID()}` } },
       { context: adminContext(adminMember.tenantId) },
     );
 
@@ -608,7 +608,7 @@ describe('Positive provenance of SSO links (task 8.5g, Resolved decision Q87)', 
     const joiner = await newMember();
     const sub = `seam-sub-${randomUUID()}`;
     await client.identity.users.linkSsoAccount(
-      { user: joiner.email, subject: sub },
+      { params: { user: joiner.email }, body: { subject: sub } },
       { context: adminContext(joiner.tenantId) },
     );
     const [seeded] = await accountsOf(joiner.userId);

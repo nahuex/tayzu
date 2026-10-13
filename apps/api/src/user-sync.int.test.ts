@@ -299,7 +299,7 @@ describe('Creating a user creates a matching `_user` entity, written only by the
     const email = `created-${id}@example.test`;
 
     await client.identity.users.create(
-      { email, name: 'Created By Admin', role: 'member' },
+      { body: { email, name: 'Created By Admin', role: 'member' } },
       {
         context: {
           tenantId: org.id,

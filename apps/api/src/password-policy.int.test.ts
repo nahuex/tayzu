@@ -252,7 +252,7 @@ describe('The password policy on Better Auth routes (task 8.1c, design Q22)', ()
     try {
       const error = await caught(
         client.identity.users.create(
-          { email, name: 'Short Password', role: 'member' },
+          { body: { email, name: 'Short Password', role: 'member' } },
           {
             context: {
               tenantId,

@@ -196,7 +196,7 @@ describe('email boundary (task 7.11, Resolved decision Q33)', () => {
       // WHEN an admin invites the address.
       const code = await codeOf(
         client.identity.users.invite(
-          { email, role: 'member' },
+          { body: { email, role: 'member' } },
           { context: sessionContext(tenant) },
         ),
       );
@@ -227,7 +227,7 @@ describe('email boundary (task 7.11, Resolved decision Q33)', () => {
       // WHEN an admin creates a user for the address.
       const code = await codeOf(
         client.identity.users.create(
-          { email, name: 'Boundary User', role: 'member' },
+          { body: { email, name: 'Boundary User', role: 'member' } },
           { context: sessionContext(tenant) },
         ),
       );
@@ -258,7 +258,7 @@ describe('email boundary (task 7.11, Resolved decision Q33)', () => {
     // WHEN an admin invites the plus-alias of a plain address.
     const code = await codeOf(
       client.identity.users.invite(
-        { email: alias, role: 'member' },
+        { body: { email: alias, role: 'member' } },
         { context: sessionContext(tenant) },
       ),
     );
@@ -272,7 +272,7 @@ describe('email boundary (task 7.11, Resolved decision Q33)', () => {
     // CONTROL: the plain address is accepted and does reach the recipient cap, so the
     // zero above is the validation's doing, not an unwired cap.
     await client.identity.users.invite(
-      { email: plain, role: 'member' },
+      { body: { email: plain, role: 'member' } },
       { context: sessionContext(tenant) },
     );
     const consumed = capCalls.slice(capsBefore);

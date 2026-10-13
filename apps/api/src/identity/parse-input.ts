@@ -24,7 +24,17 @@ export interface ObjectField {
   readonly optional?: boolean;
 }
 
-export type InputField = StringField | ObjectField;
+/** A list of strings: the length and every item's limits are checked before anything else. */
+export interface StringListField {
+  readonly kind: 'stringList';
+  readonly maxItems: number;
+  /** Per-item limits; items are never optional. */
+  readonly item: Omit<StringField, 'kind' | 'optional'>;
+  /** Defaults to false (required). */
+  readonly optional?: boolean;
+}
+
+export type InputField = StringField | ObjectField | StringListField;
 
 export interface InputSchema {
   readonly params?: Readonly<Record<string, InputField>>;
@@ -74,6 +84,12 @@ function parseString(field: StringField, value: unknown): string {
   return value;
 }
 
+function parseStringList(field: StringListField, value: unknown): string[] {
+  if (!Array.isArray(value)) throw new IdentityInputError();
+  if (value.length > field.maxItems) throw new IdentityInputError();
+  return value.map((item: unknown) => parseString({ kind: 'string', ...field.item }, item));
+}
+
 function parseSection(
   fields: Readonly<Record<string, InputField>>,
   raw: unknown,
@@ -95,6 +111,8 @@ function parseSection(
     }
     if (field.kind === 'string') {
       out[key] = parseString(field, value);
+    } else if (field.kind === 'stringList') {
+      out[key] = parseStringList(field, value);
     } else {
       if (!isPlainRecord(value)) throw new IdentityInputError();
       out[key] = cloneScreened(value);
