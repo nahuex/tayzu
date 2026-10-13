@@ -3321,7 +3321,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `createEmailSender` selects under `NODE_ENV=test`) covers an admin's invite and
       resend over HTTP each answering 200 and sending one `InvitationEmail` whose link
       origin is `INVITATION_LINK_BASE_URL`.
-- [ ] 14.12 The email caps use a store shared across replicas (Resolved decision Q138;
+- [x] 14.12 The email caps use a store shared across replicas (Resolved decision Q138;
       design D4 "Invitation email caps", Q15, Q101): an `EmailCapStore` over `002`'s
       DB-backed `RateLimitBucketStore` (6.10; `auth.rate_limit`, hashed keys, no
       migration) maps the gate's and the dispatcher's scopes onto the `invitation_*` and

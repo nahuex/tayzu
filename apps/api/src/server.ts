@@ -52,8 +52,8 @@ import { createIdentityRouter } from './identity-router.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
 import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
 import { createAuthRepository } from './identity/auth-repository.js';
+import { createDbEmailCapStore } from './identity/email-cap-store.js';
 import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
-import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -131,6 +131,9 @@ export interface CreateAppOptions {
     readonly recipientKeySecret?: string;
     readonly tenantCap: { readonly max: number; readonly windowSeconds: number };
     readonly recipientCap: { readonly max: number; readonly windowSeconds: number };
+    /** The notices' buckets (Q101, 6.12b); the defaults are 60 per hour and 3 per 24 hours. */
+    readonly noticeTenantCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly noticeRecipientCap?: { readonly max: number; readonly windowSeconds: number };
   };
   /**
    * 043 task 14.3 (D15): mounts the identity routes (the accept route and the identity
@@ -188,6 +191,11 @@ const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
 
 /** Q74: the path of the request target, without its query. Every guard keys on this. */
+/** A configured cap as the bucket store's rule. */
+function ruleOf(cap: { readonly max: number; readonly windowSeconds: number }) {
+  return { max: cap.max, window: cap.windowSeconds };
+}
+
 function pathnameOf(request: FastifyRequest): string {
   return request.url.split('?', 1)[0] ?? '';
 }
@@ -271,9 +279,20 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       ? options.identity?.emailGate
       : createEmailTenantGate({
           disabledTenantIds: email.disabledTenantIds,
-          capStore: createInMemoryEmailCapStore({
-            tenant: email.tenantCap,
-            recipient: email.recipientCap,
+          capStore: createDbEmailCapStore({
+            store: createRateLimitBucketStore({
+              adapter: (
+                (await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] }
+              ).adapter,
+              rules: {
+                invitation_tenant: ruleOf(email.tenantCap),
+                invitation_recipient: ruleOf(email.recipientCap),
+                notice_tenant: ruleOf(email.noticeTenantCap ?? { max: 60, windowSeconds: 3600 }),
+                notice_recipient: ruleOf(
+                  email.noticeRecipientCap ?? { max: 3, windowSeconds: 86_400 },
+                ),
+              },
+            }),
           }),
           sender: email.sender,
           killSwitch: email.killSwitch,

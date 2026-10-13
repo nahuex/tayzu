@@ -105,6 +105,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
           : { recipientKeySecret: config.identityTokenHmacSecret }),
         tenantCap: config.invitationTenantCap,
         recipientCap: config.invitationRecipientCap,
+        noticeTenantCap: config.noticeTenantCap,
       },
     });
     const ownedAuthPool = authPool;
