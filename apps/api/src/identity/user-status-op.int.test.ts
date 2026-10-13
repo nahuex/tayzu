@@ -1023,4 +1023,141 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
       expect(await userStatus(fixture.tenantId, identifier)).toBe('Active');
     }
   }, 120_000);
+
+  /**
+   * Task 11.2b. Scenarios (verbatim from the spec):
+   * - "A member of two tenants is disabled in one only": GIVEN an `Active` user who belongs to
+   *   `t1` and `t2`, with a session in each, WHEN the admin of `t1` disables the user, THEN the
+   *   user's `t1` session is rejected and their `_user` status in `t1` is `Disabled`, AND their
+   *   `t2` session, `_user` status and global account are unchanged, and re-enabling in `t1`
+   *   restores only `t1`.
+   * - "A disabled user is not revived by signing in" (the two-tenant case): for a user disabled
+   *   in one of two tenants, a sign-in leaves the `Disabled` status in that tenant unchanged and
+   *   the resolver still rejects the user there.
+   * Task 11.2b adds: the disable revokes only the sessions of `t1` and does not set `banned`.
+   *
+   * The resolver caches the `_user` status for 5 s, so only `Date` is faked and moved past that
+   * window before each check that depends on a status change (the cache is not what is tested).
+   */
+  it('A member of two tenants is disabled in one only: the disable revokes only the t1 sessions and does not set banned, the t2 session, status and account are unchanged, a sign-in leaves t1 Disabled and rejected by the resolver, and re-enabling restores only t1', async () => {
+    const fixture = await freshFixture();
+    const t1 = fixture.tenantId;
+    const suffix = randomUUID();
+    const second = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Status Owner 2',
+      email: `status-owner2-${suffix}@example.test`,
+      password: PASSWORD,
+      organizationName: `Status Org 2 ${suffix}`,
+      organizationSlug: `status2-${suffix}`,
+      ip: randomIp(),
+    });
+    const t2 = second.organizationId;
+    // GIVEN an `Active` user of t1 and t2 ...
+    await addMember(fixture.targetId, t2, 'member');
+    expect(await userStatus(t1, fixture.targetEmail), 'precondition: Active in t1').toBe('Active');
+    expect(await userStatus(t2, fixture.targetEmail), 'precondition: Active in t2').toBe('Active');
+    // ... with a session in each (the active organization of each session set directly).
+    const sessionIn = async (tenantId: string): Promise<{ cookie: string; token: string }> => {
+      const signedIn = await signInAdminUser(app.auth, {
+        email: fixture.targetEmail,
+        password: PASSWORD,
+        ip: randomIp(),
+      });
+      await authPool.query('update auth.session set active_organization_id = $1 where token = $2', [
+        tenantId,
+        signedIn.token,
+      ]);
+      return { cookie: signedIn.cookie, token: signedIn.token };
+    };
+    const sessionExists = async (token: string): Promise<boolean> =>
+      (await authPool.query('select 1 from auth.session where token = $1', [token])).rows.length ===
+      1;
+    const s1 = await sessionIn(t1);
+    const s2 = await sessionIn(t2);
+    expect((await useSession(s1.cookie)).statusCode, 'precondition: t1 session').toBe(200);
+    expect((await useSession(s2.cookie)).statusCode, 'precondition: t2 session').toBe(200);
+    const eventsT2Before = await changeEvents(t2, fixture.targetEmail);
+    const revokedBefore = (await logRecords(REVOKED_EVENT)).filter(
+      (record) => record.attributes['tayzu.actor.id'] === fixture.targetId,
+    ).length;
+    const adminContext = context(fixture);
+
+    try {
+      // WHEN the admin of t1 disables the user.
+      await statusClient().identity.users.setStatus(
+        { user: fixture.targetEmail, status: 'Disabled' },
+        { context: adminContext },
+      );
+
+      // THEN the t1 session is rejected (401, no reason) and the t1 status is `Disabled`.
+      const rejected = await useSession(s1.cookie);
+      expect(rejected.statusCode).toBe(401);
+      expect(rejected.json<{ code: string }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
+      expect(rejected.body).not.toMatch(/user_banned|user_disabled|banned|disabled/i);
+      expect(await userStatus(t1, fixture.targetEmail)).toBe('Disabled');
+      expect(await sessionExists(s1.token), 'the t1 session was deleted').toBe(false);
+      for (const cookie of fixture.cookies) {
+        expect((await useSession(cookie)).statusCode, 'every t1 session is revoked').toBe(401);
+      }
+
+      // AND only the t1 sessions were revoked, each with `admin_action` in t1, none in t2.
+      const revoked = (await logRecords(REVOKED_EVENT)).filter(
+        (record) => record.attributes['tayzu.actor.id'] === fixture.targetId,
+      );
+      expect(revoked.length).toBeGreaterThan(revokedBefore);
+      for (const record of revoked.slice(revokedBefore)) {
+        expect(record.attributes['tayzu.auth.revocation.reason']).toBe('admin_action');
+        expect(record.attributes['tayzu.tenant.id']).toBe(t1);
+      }
+
+      // AND the user is not banned (a member of two tenants), and the t2 session, `_user` and
+      // global account are unchanged.
+      expect(await isBanned(fixture.targetId), 'the disable does not set banned').toBe(false);
+      expect(await sessionExists(s2.token), 'the t2 session was not deleted').toBe(true);
+      expect((await useSession(s2.cookie)).statusCode).toBe(200);
+      expect(await userStatus(t2, fixture.targetEmail)).toBe('Active');
+      expect(await changeEvents(t2, fixture.targetEmail)).toEqual(eventsT2Before);
+      const account = await authPool.query<{ email: string }>(
+        'select email from auth."user" where id = $1',
+        [fixture.targetId],
+      );
+      expect(account.rows[0]?.email).toBe(fixture.targetEmail);
+
+      // WHEN the user signs in again (the account is not banned, so the sign-in succeeds) ...
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 10_000 });
+      const eventsT1AfterDisable = await changeEvents(t1, fixture.targetEmail);
+      const statusRecordsBefore = (await logRecords(STATUS_EVENT)).length;
+      const revived = await sessionIn(t1);
+
+      // THEN the t1 status stays `Disabled`, nothing was written, and the resolver rejects the
+      // user in t1 while still accepting them in t2.
+      expect(await userStatus(t1, fixture.targetEmail)).toBe('Disabled');
+      expect(await changeEvents(t1, fixture.targetEmail)).toEqual(eventsT1AfterDisable);
+      expect((await logRecords(STATUS_EVENT)).length).toBe(statusRecordsBefore);
+      const stillRejected = await useSession(revived.cookie);
+      expect(stillRejected.statusCode).toBe(401);
+      expect(stillRejected.json<{ code: string }>().code).toBe('CATALOG_CONTEXT_REQUIRED');
+      expect((await useSession(s2.cookie)).statusCode).toBe(200);
+
+      // WHEN the admin re-enables the user in t1.
+      await statusClient().identity.users.setStatus(
+        { user: fixture.targetEmail, status: 'Active' },
+        { context: adminContext },
+      );
+      vi.setSystemTime(Date.now() + 10_000);
+
+      // THEN t1 is restored: `Active`, accepted again on the new session; the revoked sessions
+      // are not restored; still not banned; t2 untouched.
+      expect(await userStatus(t1, fixture.targetEmail)).toBe('Active');
+      expect((await useSession(revived.cookie)).statusCode).toBe(200);
+      expect(await sessionExists(s1.token)).toBe(false);
+      expect(await isBanned(fixture.targetId)).toBe(false);
+      expect((await useSession(s2.cookie)).statusCode).toBe(200);
+      expect(await userStatus(t2, fixture.targetEmail)).toBe('Active');
+      expect(await changeEvents(t2, fixture.targetEmail)).toEqual(eventsT2Before);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 120_000);
 });

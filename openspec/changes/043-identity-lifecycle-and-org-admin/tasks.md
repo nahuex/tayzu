@@ -2790,7 +2790,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       seam is released the shed revokes that session; the same for a membership added
       directly, whose `_user` is written only after the hook's shed; and the rewritten
       case of `context-resolver-principal.int.test.ts` passes.
-- [ ] 11.2b For a user with memberships in two tenants, disabling in `t1` revokes
+- [x] 11.2b For a user with memberships in two tenants, disabling in `t1` revokes
       only the sessions of `t1` and does not set `banned`, so the same user keeps
       working in `t2`; enabling in `t1` restores only `t1`. Verify:
       `user-status-op.int.test.ts` covers "A member of two tenants is disabled in one
