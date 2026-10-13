@@ -3490,7 +3490,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `catalog.audit.user_created` included), and
       `otel-smoke-check.int.test.ts` fails when a declared name is missing from the
       imported module.
-- [ ] 15.2 Extend `otel-smoke-check` to run every operation in this change once
+- [x] 15.2 Extend `otel-smoke-check` to run every operation in this change once
       successfully and once per applicable error or denial class. Among them it drives
       a banned user's local sign-in with the correct password, which logs
       `auth.security.login_failed` with `002`'s declared reason `account_disabled`

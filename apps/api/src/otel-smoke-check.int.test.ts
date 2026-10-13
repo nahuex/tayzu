@@ -428,6 +428,18 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
     expect(second.cookie).not.toBe('');
   }, 60_000);
 
+  it('sessions: a banned user signing in with the correct password is refused like a wrong password (task 13.4b)', async () => {
+    const tenant = await newTenant('Smoke Banned');
+    await authPool.query('update auth."user" set banned = true where id = $1', [tenant.userId]);
+
+    const refused = await postJson(handler, '/sign-in/email', {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+    });
+    expect(refused.status).toBe(401);
+    expect(refused.headers.getSetCookie().some((c) => c.includes('session_token'))).toBe(false);
+  }, 60_000);
+
   it('rate limit: repeated failed sign-ins from one IP and email are blocked with 429', async () => {
     const limitedAuth = createAuth({
       db: drizzle(authPool, { schema: authSchema }),
@@ -1013,9 +1025,9 @@ describe('otel-smoke-check, 002: every declared signal appears with its declared
       },
     );
 
-    it('login_failed covers bad_credentials and mfa_failed', () => {
+    it('login_failed covers bad_credentials, mfa_failed and account_disabled', () => {
       expect(logValues(harness, 'auth.security.login_failed', 'tayzu.auth.failure_reason')).toEqual(
-        new Set(['bad_credentials', 'mfa_failed']),
+        new Set(['bad_credentials', 'mfa_failed', 'account_disabled']),
       );
     });
 
