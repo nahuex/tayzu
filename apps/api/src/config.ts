@@ -62,6 +62,8 @@ export interface Config {
   readonly backchannelLogoutRateLimitPerMinute: number;
   /** Explicit opt-out of telemetry (Q41); only the exact `true` enables it. */
   readonly telemetryDisabled: boolean;
+  /** `MOUNT_IDENTITY_ROUTES` (043 task 14.3, D15); off by default. */
+  readonly mountIdentityRoutes: boolean;
 }
 
 interface RateLimit {
@@ -310,6 +312,14 @@ function loadInvitationEmailKillSwitch(env: Env): boolean {
   throw new Error('INVITATION_EMAIL_KILL_SWITCH is malformed (true or false is required).');
 }
 
+/** `MOUNT_IDENTITY_ROUTES`: unset or `false` is off, `true` is on, anything else fails. */
+function loadMountIdentityRoutes(env: Env): boolean {
+  const value = env['MOUNT_IDENTITY_ROUTES'];
+  if (value === undefined || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error('MOUNT_IDENTITY_ROUTES is malformed (true or false is required).');
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
@@ -411,5 +421,6 @@ export function loadConfig(env: Env): Config {
     credentialCap,
     serviceAccountCap,
     telemetryDisabled: loadTelemetryDisabled(env),
+    mountIdentityRoutes: loadMountIdentityRoutes(env),
   };
 }

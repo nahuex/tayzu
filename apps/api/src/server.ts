@@ -116,6 +116,11 @@ export interface CreateAppOptions {
     readonly emailGate?: EmailTenantGate;
     readonly invitationLinkBaseUrl?: string;
   };
+  /**
+   * 043 task 14.3 (D15): mounts the identity routes (the accept route and the identity
+   * procedures). Omitted: off, and each answers like an unknown `/v1` path.
+   */
+  readonly mountIdentityRoutes?: boolean;
 }
 
 export interface App {
@@ -245,20 +250,22 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       blueprints: createBlueprintService({ pool: appPool, authz }),
       entities: createEntityService({ pool: appPool, authz }),
     }),
-    ...createIdentityRouter({
-      auth,
-      authz,
-      authRepository: createAuthRepository(options.authPool),
-      withUserLock: createWithUserLock(options.authPool),
-      appPool,
-      userSync,
-      ...(options.identity?.emailGate === undefined
-        ? {}
-        : { emailGate: options.identity.emailGate }),
-      ...(options.identity?.invitationLinkBaseUrl === undefined
-        ? {}
-        : { invitationLinkBaseUrl: options.identity.invitationLinkBaseUrl }),
-    }),
+    ...(options.mountIdentityRoutes === true
+      ? createIdentityRouter({
+          auth,
+          authz,
+          authRepository: createAuthRepository(options.authPool),
+          withUserLock: createWithUserLock(options.authPool),
+          appPool,
+          userSync,
+          ...(options.identity?.emailGate === undefined
+            ? {}
+            : { emailGate: options.identity.emailGate }),
+          ...(options.identity?.invitationLinkBaseUrl === undefined
+            ? {}
+            : { invitationLinkBaseUrl: options.identity.invitationLinkBaseUrl }),
+        })
+      : {}),
   };
   // D4: the guard runs after context resolution and before the operation, for
   // every procedure whose route spec carries `x-tayzu-risk: high`. The caller's
@@ -750,44 +757,46 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     }
   });
 
-  // 043 task 14.1b: the invitation acceptance is a plain public route (no session,
-  // no catch-all), behind its own DB-backed limiter.
-  const acceptFlow = createAcceptFlow({
-    auth,
-    authz,
-    authRepository: createAuthRepository(options.authPool),
-    authPool: options.authPool,
-    userSync,
-    stepUp: stepUpGuard,
-    ...(reauthorization === undefined ? {} : { reauthorization }),
-  });
-  app.post(
-    INVITATION_ACCEPT_PATH,
-    {
-      preHandler: createAcceptRateLimitPreHandler({
-        store: createRateLimitBucketStore({
-          adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
-            .adapter,
-          rules: {
-            invitation_accept:
-              options.invitationAcceptRateLimit ?? DEFAULT_INVITATION_ACCEPT_RATE_LIMIT,
-          },
+  if (options.mountIdentityRoutes === true) {
+    // 043 task 14.1b: the invitation acceptance is a plain public route (no session,
+    // no catch-all), behind its own DB-backed limiter.
+    const acceptFlow = createAcceptFlow({
+      auth,
+      authz,
+      authRepository: createAuthRepository(options.authPool),
+      authPool: options.authPool,
+      userSync,
+      stepUp: stepUpGuard,
+      ...(reauthorization === undefined ? {} : { reauthorization }),
+    });
+    app.post(
+      INVITATION_ACCEPT_PATH,
+      {
+        preHandler: createAcceptRateLimitPreHandler({
+          store: createRateLimitBucketStore({
+            adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+              .adapter,
+            rules: {
+              invitation_accept:
+                options.invitationAcceptRateLimit ?? DEFAULT_INVITATION_ACCEPT_RATE_LIMIT,
+            },
+          }),
         }),
-      }),
-    },
-    async (request, reply) => {
-      try {
-        const { userId } = await acceptFlow.acceptRequest({
-          body: request.body,
-          headers: toWebHeaders(request),
-        });
-        return await reply.status(200).send({ userId });
-      } catch (error) {
-        const mapped = toOrpcError(error);
-        return reply.status(mapped.status).send(mapped.toJSON());
-      }
-    },
-  );
+      },
+      async (request, reply) => {
+        try {
+          const { userId } = await acceptFlow.acceptRequest({
+            body: request.body,
+            headers: toWebHeaders(request),
+          });
+          return await reply.status(200).send({ userId });
+        } catch (error) {
+          const mapped = toOrpcError(error);
+          return reply.status(mapped.status).send(mapped.toJSON());
+        }
+      },
+    );
+  }
 
   let v1Config: { rateLimit?: object } = {};
   if (options.rateLimit !== undefined) {

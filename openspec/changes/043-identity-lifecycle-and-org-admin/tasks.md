@@ -3201,7 +3201,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `linkSsoAccount` and `unlinkSsoAccount`), per Resolved decisions Q19 and Q31.
       Verify: `openapi.test.ts` covers "Every route in the high-risk set is marked",
       reading the committed `openapi/identity.openapi.json` of 14.1c.
-- [ ] 14.3 `mountIdentityRoutes` (environment `MOUNT_IDENTITY_ROUTES`), **off by
+- [x] 14.3 `mountIdentityRoutes` (environment `MOUNT_IDENTITY_ROUTES`), **off by
       default**: with it off none of the fourteen routes is registered (the accept
       route included), and each answers **like an unknown `/v1` path**: 401
       `CATALOG_CONTEXT_REQUIRED` for an unauthenticated call (the catch-all resolves

@@ -887,3 +887,44 @@ describe('a zero or disabled service-account cap fails startup (043 task 10.8, Q
     },
   );
 });
+
+describe('MOUNT_IDENTITY_ROUTES parsing (task 14.3, design D15)', () => {
+  it('is off when unset', () => {
+    expect(loadConfig(env()).mountIdentityRoutes).toBe(false);
+  });
+
+  it('is on for the exact value true', () => {
+    expect(loadConfig(env({ MOUNT_IDENTITY_ROUTES: 'true' })).mountIdentityRoutes).toBe(true);
+  });
+
+  it('is off for the exact value false', () => {
+    expect(loadConfig(env({ MOUNT_IDENTITY_ROUTES: 'false' })).mountIdentityRoutes).toBe(false);
+  });
+
+  it.each(['1', 'yes', 'TRUE', 'True', 'on', '', '  '])(
+    'MOUNT_IDENTITY_ROUTES=%j is malformed and fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ MOUNT_IDENTITY_ROUTES: value })));
+      expect(error.message).toContain('MOUNT_IDENTITY_ROUTES');
+    },
+  );
+
+  it('is wired through createAppFromEnv to the accept route: absent by default, registered when true', async () => {
+    const local = {
+      DATABASE_URL: 'postgres://tayzu_app:app-pw-s3cret@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL:
+        'postgres://tayzu_auth:auth-pw-s3cret@127.0.0.1:1/tayzu?sslmode=verify-full',
+      NODE_ENV: 'test',
+    };
+    const closed = await createAppFromEnv(env(local));
+    const open = await createAppFromEnv(env({ ...local, MOUNT_IDENTITY_ROUTES: 'true' }));
+    try {
+      const accept = { method: 'POST', url: '/v1/auth/invitations/accept' } as const;
+      expect(closed.app.hasRoute(accept)).toBe(false);
+      expect(open.app.hasRoute(accept)).toBe(true);
+    } finally {
+      await closed.close();
+      await open.close();
+    }
+  });
+});

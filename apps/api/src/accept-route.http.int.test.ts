@@ -85,6 +85,8 @@ describe('POST /v1/auth/invitations/accept over HTTP (task 14.1b, design D4, Q8,
       authSecret: TEST_SECRET,
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ORIGIN],
+      // Task 14.3: the routes are off by default; this file exercises the accept route.
+      ...{ mountIdentityRoutes: true },
     });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
     userSync = createUserSync({ pool: pools.appPool, authz: cerbos });

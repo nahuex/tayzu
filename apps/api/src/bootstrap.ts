@@ -90,6 +90,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
         timeWindowMs: config.machineCredentialRateLimit.windowSeconds * 1000,
       },
       bodyLimit: config.bodyLimit,
+      mountIdentityRoutes: config.mountIdentityRoutes,
     });
     const ownedAuthPool = authPool;
     return {

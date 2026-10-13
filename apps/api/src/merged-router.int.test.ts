@@ -104,6 +104,8 @@ describe('the identity router is merged with the catalog router into one handler
       allowedOrigins: [ORIGIN],
       // Spread so this file type-checks before `CreateAppOptions.identity` exists.
       ...{
+        // Task 14.3: the identity routes are off by default; this file exercises them.
+        mountIdentityRoutes: true,
         identity: {
           emailGate: createEmailTenantGate({
             disabledTenantIds: [],
