@@ -3358,7 +3358,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `INVITATION_TENANT_RATE_LIMIT_MAX=1` refusing the second invite with scope
       `tenant`, and `INVITATION_RECIPIENT_RATE_LIMIT_MAX=1` refusing the same address
       invited from a second tenant with scope `recipient`.
-- [ ] 14.14 The recipient-domain allowlist wraps the real sender whenever it is set, in
+- [x] 14.14 The recipient-domain allowlist wraps the real sender whenever it is set, in
       any environment (Resolved decisions Q99 and Q138; 6.5, 6.5b): `createEmailSender`
       wraps the provider's sender with `createAllowlistEmailSender`, which `@tayzu/auth`
       exports. Verify: `email-sender.test.ts` covers `EMAIL_PROVIDER=acs` with

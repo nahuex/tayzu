@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Load-bearing import order: the telemetry harness registers before `@tayzu/auth` loads.
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { loadConfig } from './config.js';
 // The module under test. Does not exist yet.
 import { createEmailSender } from './email-sender.js';
@@ -16,6 +18,20 @@ import { createEmailSender } from './email-sender.js';
  * `'none'` it returns the non-sending sender (it exposes no `sent`). The `acs`
  * branch is covered by 6.4 and 6.5b.
  */
+
+const acsCalls = vi.hoisted(() => [] as { recipients: { to: { address: string }[] } }[]);
+
+// Only the provider's sender is replaced by a recording stub, so nothing leaves the process;
+// the allowlist wrapper and everything else stay the real `@tayzu/auth` exports.
+vi.mock('@tayzu/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tayzu/auth')>()),
+  createAzureCommunicationEmailSender: () => ({
+    send: (to: string) => {
+      acsCalls.push({ recipients: { to: [{ address: to }] } });
+      return Promise.resolve();
+    },
+  }),
+}));
 
 const RECIPIENT = 'marker-recipient@example.com';
 const TEMPLATE = {
@@ -64,5 +80,75 @@ describe('email sender selection (043 task 6.5)', () => {
     await sender.send(RECIPIENT, TEMPLATE);
 
     expect('sent' in sender).toBe(false);
+  });
+});
+
+describe('the recipient-domain allowlist wraps the real sender (043 task 14.14)', () => {
+  const BLOCKED_EVENT = 'catalog.security.email_recipient_blocked';
+  const ALLOWED_RECIPIENT = 'person@allowed.example';
+  const BLOCKED_LOCAL = 'marker-recipient-14-14';
+  const BLOCKED_DOMAIN = 'blocked-marker.example';
+  let harness: TelemetryTestHarness;
+
+  function acsConfig() {
+    return loadConfig(
+      env({
+        NODE_ENV: 'production',
+        EMAIL_PROVIDER: 'acs',
+        ACS_CONNECTION_STRING: 'endpoint=https://acs.invalid/;accesskey=dGVzdA==',
+        EMAIL_SENDER_ADDRESS: 'donotreply@allowed.example',
+        EMAIL_RECIPIENT_DOMAIN_ALLOWLIST: 'allowed.example',
+      }),
+    );
+  }
+
+  beforeAll(() => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+  });
+
+  beforeEach(async () => {
+    acsCalls.length = 0;
+    await harness.reset();
+  });
+
+  it('EMAIL_PROVIDER=acs with the allowlist refuses a recipient of another domain without reaching the provider, and logs the block with no address', async () => {
+    const sender = createEmailSender(acsConfig());
+
+    await expect(
+      sender.send(`${BLOCKED_LOCAL}@${BLOCKED_DOMAIN}`, TEMPLATE),
+    ).rejects.toBeInstanceOf(Error);
+
+    expect(acsCalls, 'the provider is never reached').toHaveLength(0);
+    await harness.forceFlush();
+    const records = [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === BLOCKED_EVENT,
+    );
+    expect(records).toHaveLength(1);
+    const logged = JSON.stringify({
+      body: records[0]?.body,
+      attributes: records[0]?.attributes,
+    });
+    expect(logged).not.toContain(BLOCKED_LOCAL);
+    expect(logged).not.toContain(BLOCKED_DOMAIN);
+  });
+
+  it('EMAIL_PROVIDER=acs with the allowlist lets a recipient of an allowed domain reach the provider', async () => {
+    const sender = createEmailSender(acsConfig());
+
+    await sender.send(ALLOWED_RECIPIENT, TEMPLATE);
+
+    expect(acsCalls.map((message) => message.recipients.to.map((to) => to.address))).toEqual([
+      [ALLOWED_RECIPIENT],
+    ]);
+    await harness.forceFlush();
+    const blocked = [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === BLOCKED_EVENT,
+    );
+    expect(blocked).toHaveLength(0);
   });
 });
