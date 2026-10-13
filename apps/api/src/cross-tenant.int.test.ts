@@ -1262,3 +1262,231 @@ describe('cross-tenant matrix: credentials rotate and revoke (task 12.7)', () =>
     }, 120_000);
   }
 });
+
+/**
+ * Task 12.8 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q135).
+ *
+ * Verify: with a recording Cerbos client, a call on a target of the caller's tenant reaches Cerbos
+ * with the resource tenant taken from the record, and a call whose target belongs to `t2` answers
+ * `CATALOG_NOT_FOUND` with no Cerbos request carrying a resource of `t2`. (The `same_tenant` denial
+ * of a principal of one tenant on a resource of another is pinned by the Cerbos policy tests.)
+ *
+ * Covered on a user target (`identity.users.setStatus`) and a credential target
+ * (`identity.credentials.revoke`).
+ *
+ * ## Production symbols expected
+ *
+ * None new: `defineIdentityOperation` already asks Cerbos with the resolved target's tenant. If it
+ * already behaves this way these tests pass at once (a regression guard).
+ */
+describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12.8)", () => {
+  type CheckResourcesRequest = Parameters<CerbosClient['checkResources']>[0];
+
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let userSync: UserSync;
+  const requests: CheckResourcesRequest[] = [];
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface TargetClient {
+    identity: {
+      users: {
+        setStatus(
+          input: { user: string; status: 'Active' | 'Disabled' },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+      credentials: {
+        revoke(
+          input: { credential: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    userSync = createUserSync({ pool: appPool, authz: cerbos });
+    const adapter = createUserSyncAdapter({ userSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    // Records every Cerbos request, then delegates to the real Cerbos.
+    const recording = Object.create(cerbos) as CerbosClient;
+    recording.checkResources = (request: CheckResourcesRequest) => {
+      requests.push(request);
+      return cerbos.checkResources(request);
+    };
+    const capStore = createInMemoryEmailCapStore({
+      tenant: { max: 1000, windowSeconds: 3600 },
+      recipient: { max: 1000, windowSeconds: 86_400 },
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: recording,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender: createRecordingEmailSender(),
+        }),
+        appPool,
+        userSync: adapter,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  const targets = (): TargetClient => client;
+
+  async function freshTenant(label: string): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: `${label} Admin`,
+      email: `${label}-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `${label} Org`,
+      organizationSlug: `${label}-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  function sessionContext(tenant: Tenant): Record<string, unknown> {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: tenant.adminId },
+      principal: { roles: ['admin'] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  async function memberOf(email: string, tenantId: string): Promise<void> {
+    const created = await createAdminUser(auth, { name: 'Target', email, password: TEST_PASSWORD });
+    await (
+      auth.api as {
+        addMember(args: {
+          body: { userId: string; role: 'member'; organizationId: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({ body: { userId: created.userId, role: 'member', organizationId: tenantId } });
+  }
+
+  function resourceTenants(list: readonly CheckResourcesRequest[]): unknown[] {
+    return list.flatMap((request) =>
+      request.resources.map((entry) => entry.resource.attr?.['tenantId']),
+    );
+  }
+
+  async function rejectionOf(call: Promise<unknown>): Promise<unknown> {
+    const thrown: unknown = await call.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    return thrown;
+  }
+
+  it("A setStatus on a target of the caller's tenant reaches Cerbos with the resource tenant of the record", async () => {
+    const t1 = await freshTenant('t1');
+    const email = `cerbos-own-${randomUUID()}@example.test`;
+    await memberOf(email, t1.tenantId);
+    requests.length = 0;
+
+    await targets().identity.users.setStatus(
+      { user: email, status: 'Disabled' },
+      { context: sessionContext(t1) },
+    );
+
+    const targetChecks = requests.filter((request) =>
+      request.resources.some((entry) => entry.actions.includes('updateStatus')),
+    );
+    expect(targetChecks.length, 'a check on the resolved target reached Cerbos').toBeGreaterThan(0);
+    for (const request of targetChecks) {
+      expect(request.principal.attr?.['tenantId']).toBe(t1.tenantId);
+    }
+    expect(resourceTenants(targetChecks)).toEqual(targetChecks.map(() => t1.tenantId));
+    expect((await userSync.getUser({ tenantId: t1.tenantId, email }))?.status).toBe('Disabled');
+  }, 90_000);
+
+  it('A setStatus on a user of t2 answers CATALOG_NOT_FOUND and no Cerbos request carries a resource of t2', async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const email = `cerbos-foreign-${randomUUID()}@example.test`;
+    await memberOf(email, t2.tenantId);
+    requests.length = 0;
+
+    const thrown = await rejectionOf(
+      targets().identity.users.setStatus(
+        { user: email, status: 'Disabled' },
+        { context: sessionContext(t1) },
+      ),
+    );
+
+    expect((thrown as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+    expect(resourceTenants(requests), 'nothing of t2 reaches Cerbos').not.toContain(t2.tenantId);
+    expect((await userSync.getUser({ tenantId: t2.tenantId, email }))?.status).toBe('Active');
+  }, 90_000);
+
+  it("A credentials.revoke on a credential of the caller's tenant reaches Cerbos with the resource tenant of the record", async () => {
+    const t1 = await freshTenant('t1');
+    const own = await createMachineCredential(auth, {
+      userId: t1.adminId,
+      organizationId: t1.tenantId,
+      name: 'Own',
+      actorKind: 'integration',
+      metadata: { createdBy: t1.adminId },
+    });
+    requests.length = 0;
+
+    await targets().identity.credentials.revoke(
+      { credential: own.id },
+      { context: sessionContext(t1) },
+    );
+
+    const tenants = resourceTenants(requests);
+    expect(tenants.length, 'Cerbos was asked').toBeGreaterThan(0);
+    expect(tenants.every((tenant) => tenant === t1.tenantId)).toBe(true);
+    expect(
+      requests.some((request) => request.resources.some((e) => e.resource.id === own.id)),
+    ).toBe(true);
+  }, 90_000);
+
+  it('A credentials.revoke on a credential of t2 answers CATALOG_NOT_FOUND and no Cerbos request carries a resource of t2', async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const foreign = await createMachineCredential(auth, {
+      userId: t2.adminId,
+      organizationId: t2.tenantId,
+      name: 'Foreign',
+      actorKind: 'integration',
+      metadata: { createdBy: t2.adminId },
+    });
+    requests.length = 0;
+
+    const thrown = await rejectionOf(
+      targets().identity.credentials.revoke(
+        { credential: foreign.id },
+        { context: sessionContext(t1) },
+      ),
+    );
+
+    expect((thrown as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+    expect(resourceTenants(requests), 'nothing of t2 reaches Cerbos').not.toContain(t2.tenantId);
+  }, 90_000);
+});

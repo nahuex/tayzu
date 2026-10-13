@@ -2835,7 +2835,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       credential answer `CATALOG_NOT_FOUND`. Verify: the same scenario for rotate
       and revoke, asserting the credential is still usable and no revocation row was
       written.
-- [ ] 12.8 Cerbos receives the target's real tenant, not the caller's (Resolved
+- [x] 12.8 Cerbos receives the target's real tenant, not the caller's (Resolved
       decision Q135): the resource tenant comes from the resolved record, never from
       `ctx.tenantId`. Verify: with a recording Cerbos client, a call on a target of the
       caller's tenant reaches Cerbos with the resource tenant taken from the record, and
