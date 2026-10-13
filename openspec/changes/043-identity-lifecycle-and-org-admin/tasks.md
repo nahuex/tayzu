@@ -3275,7 +3275,7 @@ SSO surfaces of M18) are recorded there with their justification.
       succeeding with the same status and body shape as the new-account path (for an
       account whose email was never verified), and an `admin` invitation answering
       `AUTH_STEP_UP_REQUIRED` only after the token and the session matched.
-- [ ] 14.8 A cross-tenant request per route over HTTP, called by `t1`'s admin: each
+- [x] 14.8 A cross-tenant request per route over HTTP, called by `t1`'s admin: each
       route with a target (cancel, resend, setStatus, link, unlink,
       `serviceAccounts.delete`, rotate, revoke, `credentials.create` with a `userId`,
       and accept with a `t2` invitation) answers like an unknown target. The
