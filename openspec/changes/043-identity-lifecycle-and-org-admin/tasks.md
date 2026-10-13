@@ -3139,7 +3139,7 @@ SSO surfaces of M18) are recorded there with their justification.
       directory that holds a pinned digest, and fails for a digest pinned only where no
       entry reads it; `pnpm lint` passes and `docs/security/dependencies.md` lists each
       pinned digest with its tracking mechanism and owner.
-- [ ] 13.13 The DAST API scan asserts that it received 2xx responses on
+- [x] 13.13 The DAST API scan asserts that it received 2xx responses on
       operations, so a scan that only ever sees 401 or 415 fails instead of passing
       silently (`002` VCDM M18; the SSO, back-channel and re-auth surfaces are
       deferred to `010`, design Risks). The check is `scripts/ci/dast-coverage.ts`, and

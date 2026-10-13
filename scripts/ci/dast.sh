@@ -297,6 +297,8 @@ api_scan() {
   run_zap "API scan" zap-api-scan.py -t catalog.openapi.json -f openapi -S \
     -O "http://localhost:${API_PORT}" -z "$csrf" \
     -J api_report_json.json -w api_report_md.md -r api_report_html.html
+  # Task 13.13: a scan that only saw 401 or 415 must fail, not pass silently.
+  (cd "$REPO_ROOT" && pnpm exec tsx scripts/ci/dast-coverage.ts "$ZAP_WORK/api_report_json.json")
 }
 
 down() {
