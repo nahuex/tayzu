@@ -2728,7 +2728,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       with the admin as `tayzu.actor.id` and the `svc-…` identifier as
       `tayzu.identity.service_account.id` (4.1e, Resolved decision Q117), and a human
       target never taking the service-account branch.
-- [ ] 11.6 `resolveContext`'s machine branch rejects a principal whose token
+- [x] 11.6 `resolveContext`'s machine branch rejects a principal whose token
       carries a `userId` claim (the service account's `svc-…` identifier, Resolved decision
       Q90) when the bound `_user` is **absent or not `Active`**
       (`Disabled`, or removed by a delete or a tamper; Resolved decision Q40), through

@@ -85,7 +85,11 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import { withTenantTransaction, type createPool } from '@tayzu/db';
 
 import type { AuthInstance } from './auth.js';
-import { logger, revocationChecksCounter } from './telemetry/instruments.js';
+import {
+  logger,
+  principalRejectionsCounter,
+  revocationChecksCounter,
+} from './telemetry/instruments.js';
 import { AuthContextError } from './errors.js';
 import { isIdle } from './session-idle.js';
 
@@ -220,6 +224,40 @@ function parseMachineTokenPayload(payload: Record<string, unknown>): ResolvedCon
 }
 
 /**
+ * Task 11.6, Q90: the service account's `svc-…` identifier, carried by the
+ * token's `userId` claim, or `null` for a token without it.
+ */
+function serviceAccountIdOf(payload: Record<string, unknown>): string | null {
+  const { userId } = payload;
+  return typeof userId === 'string' && userId.length > 0 ? userId : null;
+}
+
+/** Task 11.6, D13: the state of a service account's bound `_user`. */
+type ServiceAccountState = 'active' | 'disabled' | 'missing' | 'lookup_failed';
+
+/** Task 11.6, D13: reads the bound `_user`'s status under the token's tenant. */
+async function readServiceAccountState(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+  userId: string,
+): Promise<Exclude<ServiceAccountState, 'lookup_failed'>> {
+  return withTenantTransaction(pool, { tenantId }, async (client) => {
+    const result = await client.query<{ status: unknown }>(
+      `select e.spec_properties ->> 'status' as status
+         from catalog_entity e
+         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+        where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+      [tenantId, userId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return 'missing';
+    }
+    return row.status === 'Active' ? 'active' : 'disabled';
+  });
+}
+
+/**
  * The slice of Better Auth's own `AuthContext` (`auth.$context`, `./auth.ts`'s
  * own doc comment) this module reads: its low-level model adapter, the same
  * primitive `./auth.ts`'s `databaseHooks` reach via `context.context.adapter`.
@@ -249,6 +287,11 @@ const REVOCATION_CACHE_TTL_MS = 5000;
 
 interface RevocationCacheEntry {
   readonly revoked: boolean;
+  readonly expiresAt: number;
+}
+
+interface ServiceAccountCacheEntry {
+  readonly state: 'active' | 'disabled' | 'missing';
   readonly expiresAt: number;
 }
 
@@ -336,6 +379,7 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   const jwtApi = jwtApiOf(options.auth);
   const membershipCache = new Map<string, MembershipCacheEntry>();
   const revocationCache = new Map<string, RevocationCacheEntry>();
+  const serviceAccountCache = new Map<string, ServiceAccountCacheEntry>();
 
   // Task 5.7, design D21: consults `machine_credential_revocation` through
   // an in-process cache keyed by `credential_id` (TTL 5 s). Read under the
@@ -396,6 +440,29 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     return revoked ? 'rejected' : 'allowed';
   }
 
+  // Task 11.6, design D13, Q40: the bound `_user` of a service account must be
+  // `Active`. Cached at most 5 s per (tenant, identifier); a lookup failure is
+  // never cached and is never treated as `Active`.
+  async function serviceAccountState(
+    pool: ReturnType<typeof createPool>,
+    tenantId: string,
+    userId: string,
+  ): Promise<ServiceAccountState> {
+    const now = Date.now();
+    const cacheKey = JSON.stringify([tenantId, userId]);
+    const cached = serviceAccountCache.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.state;
+    }
+    try {
+      const state = await readServiceAccountState(pool, tenantId, userId);
+      serviceAccountCache.set(cacheKey, { state, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+      return state;
+    } catch {
+      return 'lookup_failed';
+    }
+  }
+
   // Task 3.6, design D19: the independent membership re-check. A cache hit
   // (younger than `MEMBERSHIP_CACHE_TTL_MS`) skips the lookup; a miss
   // queries Better Auth's own `member` table directly. Any lookup failure
@@ -454,6 +521,32 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
         )
       ) {
         rejectMissingContext();
+      }
+      // Task 11.6: chosen by the credential branch (a bound machine token),
+      // never by comparing `actor.type`.
+      const serviceAccountId = serviceAccountIdOf(verified.payload);
+      if (serviceAccountId !== null) {
+        const state = await serviceAccountState(
+          options.revocationPool,
+          resolved.tenantId,
+          serviceAccountId,
+        );
+        if (state !== 'active') {
+          if (state !== 'lookup_failed') {
+            const attributes = {
+              'tayzu.identity.rejection.reason':
+                state === 'disabled' ? 'service_account_disabled' : 'service_account_missing',
+              'tayzu.actor.type': resolved.actor.type,
+            };
+            principalRejectionsCounter.add(1, attributes);
+            logger.emit({
+              eventName: 'catalog.security.principal_rejected',
+              severityNumber: SeverityNumber.WARN,
+              attributes,
+            });
+          }
+          rejectMissingContext();
+        }
       }
       return resolved;
     }

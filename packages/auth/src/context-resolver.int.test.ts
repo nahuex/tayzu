@@ -1686,3 +1686,443 @@ describe('resolveContext: revocation cache is keyed per tenant (task 11.1b)', ()
     await expectContextRequiredRejection(resolveContext(await tokenFor(t2, c1)));
   });
 });
+
+/**
+ * Task 11.6 (design D13 "Principal checks", Resolved decisions Q40, Q90;
+ * `specs/identity-lifecycle-and-org-admin/spec.md`, "Service accounts"):
+ *
+ * #### Scenario: Disabling a service account takes effect within seconds
+ * - GIVEN service account `svc-ci-github` is `Active`, with an access token already issued
+ * - WHEN an admin disables it
+ * - THEN its status becomes `Disabled`, the issued token is rejected within the cache window, and a new exchange is refused
+ *
+ * #### Scenario: Re-enabling restores access without a new credential
+ * - GIVEN a `Disabled` service account
+ * - WHEN an admin re-enables it
+ * - THEN its status becomes `Active` and the same credential exchanges a token again
+ *
+ * #### Scenario: A token for a deleted service account is rejected
+ * - GIVEN a service account that was deleted while a credential and an issued token survive
+ * - WHEN the token is used, or the credential is exchanged
+ * - THEN the call is rejected and no token is issued
+ *
+ * Also named by the task: a non-revoked key bound to an identifier that has no
+ * `_user` (seeded as in 10.3) does not resolve; a lookup failure rejects; a
+ * token without the `userId` claim is unaffected; each rejection logs
+ * `catalog.security.principal_rejected` (reason `service_account_disabled` or
+ * `service_account_missing`) and increments `tayzu.identity.principal_rejections`.
+ * (The exchange half of each scenario is task 11.7's, in `token-exchange.int.test.ts`.)
+ *
+ * ## Production symbols expected
+ *
+ * No new exports: `createContextResolver` in `./context-resolver.js` keeps its
+ * signature. Its bearer branch reads the token's `userId` claim, looks up the
+ * `_user` entity with that identifier in the token's tenant through
+ * `revocationPool` (cached at most 5 s on `Date.now()`), and rejects with
+ * `CATALOG_CONTEXT_REQUIRED` unless `spec_properties.status` is `Active`.
+ * Telemetry in `./telemetry/instruments.js`: log event
+ * `catalog.security.principal_rejected` (WARN; attributes
+ * `tayzu.identity.rejection.reason`, `tayzu.actor.type`) and counter
+ * `tayzu.identity.principal_rejections` (same two attributes).
+ *
+ * ## Expected failure
+ *
+ * Assertion failures: today the bearer branch never reads the claim, so a
+ * token of a disabled, deleted or never-created service account still resolves.
+ */
+describe('resolveContext: service-account principal check (task 11.6, D13, Q40)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  function resolverOver(pool: TestDb['$client']): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: pool });
+  }
+
+  /** Cache window (5 s) plus margin; only `Date` is faked. */
+  const PAST_CACHE_WINDOW_MS = 10_000;
+
+  function advanceClock(offsetMs: number): void {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + offsetMs });
+  }
+
+  interface ServiceAccountFixture {
+    readonly tenantId: string;
+    readonly serviceAccountId: string;
+    readonly credential: CreatedMachineCredential;
+    readonly bearer: Headers;
+  }
+
+  async function newTenantAdmin(): Promise<{ organizationId: string; userId: string }> {
+    const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Service Account Principal Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return { organizationId: tenant.organizationId, userId: tenant.userId };
+  }
+
+  /** A credential bound (metadata `userId`) to `serviceAccountId`, and an already-issued token for it. */
+  async function issueBoundToken(
+    admin: { organizationId: string; userId: string },
+    serviceAccountId: string,
+  ): Promise<ServiceAccountFixture> {
+    const credential = await createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'SA principal credential',
+      actorKind: 'integration',
+      metadata: { userId: serviceAccountId, createdBy: admin.userId },
+    });
+    const exchanged = await exchangeMachineToken(auth, {
+      clientId: credential.id,
+      clientSecret: credential.secret,
+    });
+    return {
+      tenantId: admin.organizationId,
+      serviceAccountId,
+      credential,
+      bearer: new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    };
+  }
+
+  function newServiceAccountId(): string {
+    return `svc-${randomUUID()}`;
+  }
+
+  /** An `Active` service account `_user` plus a bound credential and an issued token. */
+  async function activeServiceAccount(): Promise<ServiceAccountFixture> {
+    const admin = await newTenantAdmin();
+    const serviceAccountId = newServiceAccountId();
+    await seedUserRow(testAppPool(), {
+      tenantId: admin.organizationId,
+      email: serviceAccountId,
+      name: serviceAccountId,
+      status: 'Active',
+    });
+    return issueBoundToken(admin, serviceAccountId);
+  }
+
+  /** Writes the `_user` status directly, standing in for the admin operation. */
+  async function setStatus(
+    fixture: ServiceAccountFixture,
+    status: 'Active' | 'Disabled',
+  ): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId: fixture.tenantId }, async (client) => {
+      const result = await client.query(
+        `update catalog_entity
+            set spec_properties = jsonb_set(spec_properties, '{status}', to_jsonb($3::text))
+          where tenant_id = $1 and identifier = $2`,
+        [fixture.tenantId, fixture.serviceAccountId, status],
+      );
+      expect(result.rowCount, 'sanity: the service account _user row exists').toBe(1);
+    });
+  }
+
+  /** Removes the `_user` entity, standing in for a delete or a tamper. */
+  async function removeUser(fixture: ServiceAccountFixture): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId: fixture.tenantId }, async (client) => {
+      const result = await client.query(
+        'delete from catalog_entity where tenant_id = $1 and identifier = $2',
+        [fixture.tenantId, fixture.serviceAccountId],
+      );
+      expect(result.rowCount, 'sanity: the service account _user row existed').toBe(1);
+    });
+  }
+
+  function expectResolved(resolved: unknown, fixture: ServiceAccountFixture): void {
+    expect(resolved).toMatchObject({
+      tenantId: fixture.tenantId,
+      actor: { type: 'integration', id: fixture.credential.id },
+      principal: { roles: ['member'] },
+    });
+  }
+
+  it('Disabling a service account takes effect within seconds', async () => {
+    // GIVEN `Active` with an access token already issued: it resolves, which
+    // also warms the cache with "Active".
+    const fixture = await activeServiceAccount();
+    const resolveContext = resolverOver(appPool);
+    expectResolved(await resolveContext(fixture.bearer), fixture);
+
+    // WHEN an admin disables it ...
+    await setStatus(fixture, 'Disabled');
+
+    // THEN the already-issued token is rejected once the cache window passed.
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await expectContextRequiredRejection(resolveContext(fixture.bearer));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Re-enabling restores access without a new credential', async () => {
+    const fixture = await activeServiceAccount();
+    const resolveContext = resolverOver(appPool);
+    await setStatus(fixture, 'Disabled');
+
+    // GIVEN a `Disabled` service account: the token is rejected.
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await expectContextRequiredRejection(resolveContext(fixture.bearer));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // WHEN an admin re-enables it ...
+    await setStatus(fixture, 'Active');
+
+    // THEN the very same token (same credential, nothing new issued) resolves
+    // again after the cache window.
+    advanceClock(2 * PAST_CACHE_WINDOW_MS);
+    try {
+      expectResolved(await resolveContext(fixture.bearer), fixture);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('A token for a deleted service account is rejected', async () => {
+    // GIVEN an `Active` service account whose credential (never revoked) and
+    // issued token survive the removal of its `_user`.
+    const fixture = await activeServiceAccount();
+    const resolveContext = resolverOver(appPool);
+    expectResolved(await resolveContext(fixture.bearer), fixture);
+    await removeUser(fixture);
+
+    // WHEN the token is used after the cache window THEN it is rejected.
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await expectContextRequiredRejection(resolveContext(fixture.bearer));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('A non-revoked key bound to an identifier with no _user does not resolve', async () => {
+    // GIVEN a non-revoked credential bound to `svc-…` with no `_user` at all
+    // (seeded directly, as in 10.3), and a token minted from it.
+    const admin = await newTenantAdmin();
+    const fixture = await issueBoundToken(admin, newServiceAccountId());
+
+    // WHEN the token is used THEN it does not resolve (fresh resolver: no cache).
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+  });
+
+  it('A lookup failure of the service account _user rejects', async () => {
+    const fixture = await activeServiceAccount();
+
+    // Control: with a reachable lookup the same token resolves, so the
+    // rejection below can only come from the failing `_user` lookup.
+    expectResolved(await resolverOver(appPool)(fixture.bearer), fixture);
+
+    // GIVEN a pool on which only the catalog entity read fails (the revocation
+    // list stays reachable, so the revocation check is not what rejects).
+    const failing = poolFailingOnEntityReads(appPool);
+
+    // THEN the unreachable check is never treated as `Active`.
+    await expectContextRequiredRejection(resolverOver(failing)(fixture.bearer));
+  });
+
+  it('A token without the userId claim is unaffected', async () => {
+    // GIVEN an integration credential bound to no service account, in a
+    // tenant with no service account `_user` at all.
+    const admin = await newTenantAdmin();
+    const credential = await createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'Unbound credential',
+      actorKind: 'integration',
+    });
+    const exchanged = await exchangeMachineToken(auth, {
+      clientId: credential.id,
+      clientSecret: credential.secret,
+    });
+    const harness = registeredHarness();
+    await harness.reset();
+
+    // WHEN the token is used THEN it resolves as before ...
+    const resolved = await resolverOver(appPool)(
+      new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    );
+    expect(resolved).toEqual({
+      tenantId: admin.organizationId,
+      actor: { type: 'integration', id: credential.id },
+      principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
+    });
+
+    // ... and no principal rejection is logged or counted.
+    await harness.forceFlush();
+    expect(principalRejectedLogs(harness)).toHaveLength(0);
+    expect(rejectionPoints(harness)).toHaveLength(0);
+  });
+
+  it('A disabled service account logs principal_rejected and counts the rejection', async () => {
+    const fixture = await activeServiceAccount();
+    await setStatus(fixture, 'Disabled');
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+    await harness.forceFlush();
+
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_disabled',
+      'tayzu.actor.type': 'integration',
+    });
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_disabled',
+      'tayzu.actor.type': 'integration',
+    });
+  });
+
+  it('A deleted service account logs principal_rejected with reason service_account_missing', async () => {
+    const fixture = await activeServiceAccount();
+    await removeUser(fixture);
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+    await harness.forceFlush();
+
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_missing',
+      'tayzu.actor.type': 'integration',
+    });
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_missing',
+      'tayzu.actor.type': 'integration',
+    });
+  });
+
+  it('A key bound to an identifier with no _user counts service_account_missing', async () => {
+    const admin = await newTenantAdmin();
+    const fixture = await issueBoundToken(admin, newServiceAccountId());
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+    await harness.forceFlush();
+
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_missing',
+      'tayzu.actor.type': 'integration',
+    });
+  });
+
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  function principalRejectedLogs(
+    harness: TelemetryTestHarness,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']>[number][] {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'catalog.security.principal_rejected',
+    );
+  }
+
+  // `@opentelemetry/sdk-metrics`'s `DataPointType.SUM`, inlined like above.
+  const SUM_DATA_POINT_TYPE = 3;
+
+  function rejectionPoints(harness: TelemetryTestHarness): {
+    attributes: Attributes;
+    value: number;
+  }[] {
+    const points: { attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === 'tayzu.identity.principal_rejections' &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === SUM_DATA_POINT_TYPE
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+});
+
+type QueryFunction = (...args: unknown[]) => Promise<unknown>;
+
+/**
+ * A view of `pool` whose clients fail every query that reads `catalog_entity`
+ * and delegate everything else, so only the `_user` lookup is unreachable.
+ */
+function poolFailingOnEntityReads(pool: TestDb['$client']): TestDb['$client'] {
+  const bound = (target: object, property: string | symbol): unknown => {
+    const value: unknown = Reflect.get(target, property);
+    return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+  };
+  return new Proxy(pool, {
+    get(target, property) {
+      if (property !== 'connect') {
+        return bound(target, property);
+      }
+      return async (): Promise<unknown> => {
+        const client = await target.connect();
+        return new Proxy(client, {
+          get(clientTarget, clientProperty) {
+            if (clientProperty !== 'query') {
+              return bound(clientTarget, clientProperty);
+            }
+            return (...args: unknown[]): Promise<unknown> => {
+              const text: unknown = args[0];
+              if (typeof text === 'string' && text.includes('catalog_entity')) {
+                return Promise.reject(new Error('simulated _user lookup failure'));
+              }
+              return (clientTarget.query as unknown as QueryFunction).apply(clientTarget, args);
+            };
+          },
+        });
+      };
+    },
+  });
+}

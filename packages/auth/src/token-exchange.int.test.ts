@@ -191,7 +191,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -202,7 +202,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // admin-user.js`'s own import of `../auth.js` is type-only (erased at compile
 // time, `verbatimModuleSyntax`), so it carries no runtime ordering weight --
 // same reasoning as every other int test file in this package.
-import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, seedUserRow, testAppPool } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver } from './context-resolver.js';
@@ -698,6 +698,31 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
         moderatedBlueprints: ['service'],
       },
     };
+
+    // The real `_user` entity exists in the catalog (the resolver requires it
+    // `Active`), then is tampered by a direct write of the same properties.
+    await seedUserRow(testAppPool(), {
+      tenantId: admin.organizationId,
+      email: serviceAccountId,
+      name: serviceAccountId,
+      status: 'Active',
+    });
+    await withTenantTransaction(
+      testAppPool(),
+      { tenantId: admin.organizationId },
+      async (client) => {
+        const written = await client.query(
+          `update catalog_entity set spec_properties = $3::jsonb
+            where tenant_id = $1 and identifier = $2`,
+          [
+            admin.organizationId,
+            serviceAccountId,
+            JSON.stringify({ status: tamperedRow.status, ...tamperedRow.properties }),
+          ],
+        );
+        expect(written.rowCount, 'sanity: the service account _user row exists').toBe(1);
+      },
+    );
 
     // WHEN it exchanges its credential ...
     const exchanged = await exchangeMachineToken(
