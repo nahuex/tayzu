@@ -23,6 +23,7 @@ import {
   createContextResolver,
   createEnrolledStepUpCheck,
   createRateLimitBucketStore,
+  createServiceAccountLookup,
   createStepUpGuard,
   emitInternalError,
   emitRateLimited,
@@ -275,6 +276,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       : { machineCredentialRateLimit: options.machineCredentialRateLimit }),
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+  const serviceAccountLookup = createServiceAccountLookup(appPool);
 
   const { email } = options;
   // One cap store shared by the invitation gate and the notice dispatcher (Q138).
@@ -819,10 +821,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
     }
     try {
-      const { accessToken } = await exchangeMachineToken(auth, {
-        clientId: body.clientId,
-        clientSecret: body.clientSecret,
-      });
+      const { accessToken } = await exchangeMachineToken(
+        auth,
+        { clientId: body.clientId, clientSecret: body.clientSecret },
+        { serviceAccountLookup },
+      );
       return await reply.status(200).send({ accessToken });
     } catch (error) {
       const mapped = toOrpcError(error);

@@ -3374,7 +3374,7 @@ SSO surfaces of M18) are recorded there with their justification.
       the sessions issued through it, with `catalog.security.sso_link_shed` (path
       `acceptance`) logged, and an accepted `admin` invitation sending one
       `AdminAcceptedNotice` to each other administrator and none to the invitee.
-- [ ] 14.16 The token exchange route passes the service-account lookup that 11.7 needs
+- [x] 14.16 The token exchange route passes the service-account lookup that 11.7 needs
       (Resolved decision Q138; design D13 machine branch, Q40): `server.ts` calls
       `exchangeMachineToken` with a `serviceAccountLookup` over the `tayzu_app` pool,
       which `@tayzu/auth` exports. Verify: `token-exchange.http.int.test.ts` (in

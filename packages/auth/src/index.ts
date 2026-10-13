@@ -39,6 +39,7 @@ export {
   type ExchangeMachineTokenParams,
   type ExchangedMachineToken,
 } from './token-exchange.js';
+export { createServiceAccountLookup } from './service-account-lookup.js';
 export {
   createEnrolledStepUpCheck,
   createStepUpGuard,
