@@ -13,6 +13,7 @@ import {
   type CerbosClient,
   type ResourceKind,
 } from '@tayzu/authz';
+import { emitIdentityEvent } from '@tayzu/auth';
 import { recordAuthzDecision } from '@tayzu/catalog';
 
 import type {
@@ -30,6 +31,9 @@ class IdentityForbiddenError extends Error {
     this.name = 'IdentityForbiddenError';
   }
 }
+
+/** The Cerbos action whose self-target deny is a security signal (design D3). */
+const STATUS_ACTION = 'updateStatus';
 
 export interface IdentityOperationDeps {
   readonly authz: CerbosClient;
@@ -201,6 +205,15 @@ export function createDefineIdentityOperation(
             action,
             false,
           );
+          // Design D3: the policy denies `updateStatus` on oneself; the target id is the
+          // resolved Better Auth user id, so an email-addressed self-target is caught too.
+          if (action === STATUS_ACTION && target.id === caller.actor.id) {
+            emitIdentityEvent({
+              name: 'catalog.security.self_status_change_denied',
+              severity: 'WARN',
+              attributes: { 'tayzu.tenant.id': caller.tenantId, 'tayzu.actor.id': caller.actor.id },
+            });
+          }
           throw new IdentityForbiddenError();
         }
       }

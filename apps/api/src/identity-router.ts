@@ -762,7 +762,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
         setStatus: defineIdentityOperation({
           authorization: {
             kind: RESOURCE_KINDS.user,
-            action: 'update',
+            action: 'updateStatus',
             resolveTarget: userTargetOf,
           },
           route: HIGH_RISK_ROUTE,

@@ -102,6 +102,7 @@ const ORIGIN = 'https://app.tayzu.test';
 const PASSWORD = 'correct horse battery staple';
 const STATUS_EVENT = 'catalog.audit.user_status_changed';
 const REVOKED_EVENT = 'auth.security.session_revoked';
+const SELF_DENIED_EVENT = 'catalog.security.self_status_change_denied';
 
 const ENV: Record<string, string> = {
   DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
@@ -456,5 +457,80 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
       ip: randomIp(),
     });
     expect((await useSession(signedIn.cookie)).statusCode).toBe(200);
+  }, 120_000);
+
+  /**
+   * Task 11.3. Scenario "A user cannot disable themselves" (verbatim): GIVEN an admin user
+   * `u1`, WHEN `u1` attempts to change their own status to `Disabled`, THEN the operation is
+   * denied with `AUTH_FORBIDDEN`, `u1` stays `Active`, and a
+   * `catalog.security.self_status_change_denied` event is logged.
+   *
+   * The `{user}` identifier is the admin's own EMAIL, so the self-deny only works if the
+   * comparison uses the resolved Better Auth user id (design D3, Q90), not the raw identifier.
+   *
+   * Production symbol expected: the event `catalog.security.self_status_change_denied`
+   * (WARN, attributes `tayzu.tenant.id` and `tayzu.actor.id` only), emitted by the identity
+   * pipeline when the Cerbos deny of `updateStatus` is a self-target.
+   */
+  it('A user cannot disable themselves: an admin naming their own email is denied with AUTH_FORBIDDEN, stays Active with nothing written or revoked, and self_status_change_denied is logged', async () => {
+    const suffix = randomUUID();
+    const owner = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Self Owner',
+      email: `self-owner-${suffix}@example.test`,
+      password: PASSWORD,
+      organizationName: `Self Org ${suffix}`,
+      organizationSlug: `self-${suffix}`,
+      ip: randomIp(),
+    });
+    const tenantId = owner.organizationId;
+    // GIVEN an admin user `u1`, `Active`, with a live session.
+    const u1 = await newMemberSession(tenantId, 'self-admin', 'admin');
+    const selfContext = {
+      tenantId,
+      actor: { type: 'user', id: u1.userId },
+      principal: { roles: ['admin'] },
+    };
+    expect(await userStatus(tenantId, u1.email)).toBe('Active');
+    // An admin session is authenticated but may be refused by the catalog (403): live means not 401.
+    expect((await useSession(u1.cookie)).statusCode, 'precondition: live session').not.toBe(401);
+    const eventsBefore = (await changeEvents(tenantId, u1.email)).length;
+    const deniedBefore = (await logRecords(SELF_DENIED_EVENT)).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === tenantId,
+    ).length;
+    const statusBefore = (await logRecords(STATUS_EVENT)).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === tenantId,
+    ).length;
+
+    // WHEN `u1` attempts to change their own status to `Disabled`, naming themselves by email.
+    await expect(
+      statusClient().identity.users.setStatus(
+        { user: u1.email, status: 'Disabled' },
+        { context: selfContext },
+      ),
+    ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
+
+    // THEN `u1` stays `Active`, nothing was written, and nothing was revoked or banned.
+    expect(await userStatus(tenantId, u1.email)).toBe('Active');
+    expect(await changeEvents(tenantId, u1.email)).toHaveLength(eventsBefore);
+    expect(await sessionCount(u1.userId)).toBe(1);
+    expect(await isBanned(u1.userId)).toBe(false);
+    expect((await useSession(u1.cookie)).statusCode).not.toBe(401);
+    const statusAfter = (await logRecords(STATUS_EVENT)).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === tenantId,
+    ).length;
+    expect(statusAfter).toBe(statusBefore);
+
+    // AND exactly one `catalog.security.self_status_change_denied` is logged, with the tenant
+    // and the actor and no email.
+    const denied = (await logRecords(SELF_DENIED_EVENT)).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+    expect(denied).toHaveLength(deniedBefore + 1);
+    expect(denied.at(-1)?.attributes).toMatchObject({
+      'tayzu.tenant.id': tenantId,
+      'tayzu.actor.id': u1.userId,
+    });
+    expect(JSON.stringify(denied.at(-1))).not.toContain(u1.email);
   }, 120_000);
 });

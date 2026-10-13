@@ -2697,7 +2697,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       13.4's) for a single-membership user through the operation pipeline, with the `auth.security.session_revoked` event (reason `admin_action`)
       emitted for each revoked session, and a re-enabled single-membership user is no
       longer `banned`, is accepted by `resolveContext` and can sign in.
-- [ ] 11.3 A user attempting to change their own status is denied and a
+- [x] 11.3 A user attempting to change their own status is denied and a
       `catalog.security.self_status_change_denied` event is logged. Verify:
       `user-status-op.int.test.ts` covers "A user cannot disable themselves" through
       the email-addressed `{user}` identifier, proving the self-deny compares the
