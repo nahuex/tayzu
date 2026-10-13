@@ -109,6 +109,7 @@ export interface CreateAppOptions {
    * seconds; omitted: no limiter.
    */
   readonly reauthorizationMaxPendingPerSession?: number;
+  /** Defaults to 10 per 60 seconds when omitted (043 task 14.20). */
   readonly reauthorizationCallbackRateLimit?: { readonly max: number; readonly window: number };
   /** Limit of the public invitation-accept route, per caller IP; `window` is in seconds. */
   readonly invitationAcceptRateLimit?: { readonly max: number; readonly window: number };
@@ -187,6 +188,7 @@ const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
 const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
 /** Default budget of the public accept route, per caller IP (window in seconds). */
 const DEFAULT_INVITATION_ACCEPT_RATE_LIMIT = { max: 10, window: 60 } as const;
+const DEFAULT_REAUTHORIZATION_CALLBACK_RATE_LIMIT = { max: 10, window: 60 } as const;
 /** Skew added to the token's `exp` for the replay record's lifetime (D26). */
 const LOGOUT_JTI_SKEW_SECONDS = 30;
 /** Generous per-IP floor (D26): high enough not to drop legitimate logout bursts. */
@@ -729,20 +731,18 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // Q36: the re-authorization callback (query redirect or `form_post`). The
   // single-use `state` binds it to the session; it answers a bare 200 or 400.
   // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
-  const reauthorizationCallbackLimit =
-    options.reauthorizationCallbackRateLimit === undefined
-      ? undefined
-      : createAcceptRateLimitPreHandler({
-          scope: 'reauthorization_callback',
-          store: createRateLimitBucketStore({
-            adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
-              .adapter,
-            rules: { reauthorization_callback: options.reauthorizationCallbackRateLimit },
-          }),
-        });
-  const callbackRoute = reauthorizationCallbackLimit
-    ? { preHandler: reauthorizationCallbackLimit }
-    : {};
+  const reauthorizationCallbackLimit = createAcceptRateLimitPreHandler({
+    scope: 'reauthorization_callback',
+    store: createRateLimitBucketStore({
+      adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+        .adapter,
+      rules: {
+        reauthorization_callback:
+          options.reauthorizationCallbackRateLimit ?? DEFAULT_REAUTHORIZATION_CALLBACK_RATE_LIMIT,
+      },
+    }),
+  });
+  const callbackRoute = { preHandler: reauthorizationCallbackLimit };
   await app.register((scope, _opts, done) => {
     scope.addContentTypeParser(
       'application/x-www-form-urlencoded',

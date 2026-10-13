@@ -928,3 +928,59 @@ describe('MOUNT_IDENTITY_ROUTES parsing (task 14.3, design D15)', () => {
     }
   });
 });
+
+/**
+ * `043` task 14.20 (Resolved decisions Q138 and Q140; `002` VCDM M13): the limiters of the
+ * accept route and of the re-authorization callback take their defaults from `config.ts`,
+ * each 10 per 60 seconds through `limitWithDefaults`.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `invitationAcceptRateLimit: { max: number; windowSeconds: number }`, from
+ *   `INVITATION_ACCEPT_RATE_LIMIT_MAX` and `INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS`;
+ * - `reauthorizationCallbackRateLimit: { max: number; windowSeconds: number }`, from
+ *   `REAUTHORIZATION_CALLBACK_RATE_LIMIT_MAX` and
+ *   `REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS`.
+ */
+describe('accept and re-authorization callback limits (043 task 14.20, Q138, Q140)', () => {
+  const LIMITS = [
+    {
+      key: 'invitationAcceptRateLimit',
+      max: 'INVITATION_ACCEPT_RATE_LIMIT_MAX',
+      window: 'INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS',
+    },
+    {
+      key: 'reauthorizationCallbackRateLimit',
+      max: 'REAUTHORIZATION_CALLBACK_RATE_LIMIT_MAX',
+      window: 'REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS',
+    },
+  ] as const;
+
+  const read = (config: Config, key: string): unknown =>
+    (config as unknown as Record<string, unknown>)[key];
+
+  it.each(LIMITS)('$key defaults to 10 per 60 seconds', ({ key }) => {
+    expect(read(loadConfig(env()), key)).toEqual({ max: 10, windowSeconds: 60 });
+  });
+
+  it.each(LIMITS)('$key is tuned by its two variables', ({ key, max, window }) => {
+    expect(read(loadConfig(env({ [max]: '7', [window]: '120' })), key)).toEqual({
+      max: 7,
+      windowSeconds: 120,
+    });
+  });
+
+  it.each(LIMITS)('$key tunes the maximum alone', ({ key, max }) => {
+    expect(read(loadConfig(env({ [max]: '4' })), key)).toEqual({ max: 4, windowSeconds: 60 });
+  });
+
+  it.each(
+    LIMITS.flatMap(({ max, window }) =>
+      [max, window].flatMap((name) =>
+        ['0', '-1', 'abc', '', '1.5', 'off'].map((value) => [name, value] as const),
+      ),
+    ),
+  )('%s=%j (malformed) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});

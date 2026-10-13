@@ -3407,7 +3407,7 @@ SSO surfaces of M18) are recorded there with their justification.
       routes of 13.5 and holding a marker whose expiry is 48 hours after the
       creation, a failing marker write leaving no membership, and the same for an admin
       created by the bootstrap CLI's `main()`.
-- [ ] 14.20 The limiters of the accept route and of the re-authorization callback take
+- [x] 14.20 The limiters of the accept route and of the re-authorization callback take
       their defaults from `apps/api/src/config.ts` (Resolved decisions Q138 and Q140;
       8.13, 13.9; `002` VCDM M13): `INVITATION_ACCEPT_RATE_LIMIT_MAX` and
       `INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS`, and

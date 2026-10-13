@@ -31,7 +31,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
 
 import type { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
@@ -42,6 +42,7 @@ import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixture
 import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAppFromEnv } from './bootstrap.js';
 import { createApp, type App } from './server.js';
 
 const ORIGIN = 'https://app.tayzu.test';
@@ -296,4 +297,110 @@ describe('reauthorization.start is bounded per session (task 13.9b, VCDM M13)', 
     expect(typeof data?.reauthorizationUrl).toBe('string');
     expect(await pendingStates(other.userId)).toBe(1);
   }, 120_000);
+});
+
+/**
+ * Task 14.20 of change 043 (Resolved decisions Q138 and Q140; `002` VCDM M13): an app
+ * built through `createAppFromEnv` with SSO configured and no limit variable limits the
+ * callback by default, 10 per 60 seconds per IP.
+ *
+ * ## Harness
+ *
+ * `@tayzu/db`'s `createPool` is mocked to hand out the harness pools (the production URLs
+ * need `sslmode=verify-full`) only while `defaultState.pools` is filled; the other tests of
+ * this file never fill it, so they see the real `createPool`. The auth pool is wrapped in
+ * the query spy of the first describe.
+ *
+ * ## Production symbols expected (the red phase)
+ *
+ * - `createAppFromEnv` (`apps/api/src/bootstrap.ts`) passes
+ *   `config.reauthorizationCallbackRateLimit` (`config.ts`, 10 per 60 seconds, 14.20) to
+ *   `createApp` as `reauthorizationCallbackRateLimit`; `createApp` applies the same default
+ *   when the option is omitted.
+ */
+const defaultState = vi.hoisted(() => ({ pools: new Map<string, unknown>() }));
+
+vi.mock('@tayzu/db', async (importActual) => {
+  const actual = await importActual<typeof import('@tayzu/db')>();
+  return {
+    ...actual,
+    createPool: vi.fn((url: string, ...rest: unknown[]) => {
+      const real = defaultState.pools.get(url.includes('tayzu_auth') ? 'auth' : 'app');
+      if (real === undefined) {
+        return (actual.createPool as (...args: unknown[]) => unknown)(url, ...rest);
+      }
+      return new Proxy(real as object, {
+        get(target, prop) {
+          if (prop === 'end') {
+            return () => Promise.resolve();
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function'
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      });
+    }),
+  };
+});
+
+describe('The callback is limited by default on createAppFromEnv (task 14.20, Q140)', () => {
+  const DEFAULT_MAX = 10;
+  let app: App;
+  let stub: OidcStub;
+  const queries: string[] = [];
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    stub = await startOidcStub();
+    defaultState.pools.set('app', pools.appPool);
+    defaultState.pools.set('auth', spyOnQueries(pools.authPool, queries));
+    app = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: ORIGIN,
+      INVITATION_LINK_BASE_URL: ORIGIN,
+      IDENTITY_TOKEN_HMAC_SECRET: 'limits-hmac-test-only-secret-0123456789-abcdef',
+      VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
+      VISMA_CONNECT_CLIENT_ID: stub.clientId,
+      VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+    defaultState.pools.clear();
+  }, 60_000);
+
+  function callback(ip: string) {
+    return app.app.inject({
+      method: 'GET',
+      url: `${CALLBACK_PATH}?code=c&state=unknown-state-${randomUUID()}`,
+      headers: { 'x-forwarded-for': ip, origin: ORIGIN },
+    });
+  }
+
+  function verificationQueries(): number {
+    return queries.filter((text) => text.includes('auth.verification')).length;
+  }
+
+  it('answers AUTH_RATE_LIMITED with Retry-After past the default from one IP, with no database access', async () => {
+    const ip = randomIp();
+    for (let i = 0; i < DEFAULT_MAX; i += 1) {
+      const response = await callback(ip);
+      expect(response.statusCode, response.body).toBe(400);
+    }
+
+    const afterLimit = verificationQueries();
+    for (let i = 0; i < 3; i += 1) {
+      const refused = await callback(ip);
+      expect(refused.statusCode, refused.body).toBe(429);
+      expect(refused.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+      expect(refused.headers['retry-after']).toMatch(/^\d+$/);
+    }
+    expect(verificationQueries()).toBe(afterLimit);
+  }, 60_000);
 });

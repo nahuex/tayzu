@@ -91,6 +91,14 @@ export async function createAppFromEnv(env: Env): Promise<App> {
         max: config.machineCredentialRateLimit.max,
         timeWindowMs: config.machineCredentialRateLimit.windowSeconds * 1000,
       },
+      invitationAcceptRateLimit: {
+        max: config.invitationAcceptRateLimit.max,
+        window: config.invitationAcceptRateLimit.windowSeconds,
+      },
+      reauthorizationCallbackRateLimit: {
+        max: config.reauthorizationCallbackRateLimit.max,
+        window: config.reauthorizationCallbackRateLimit.windowSeconds,
+      },
       bodyLimit: config.bodyLimit,
       mountIdentityRoutes: config.mountIdentityRoutes,
       credentialCap: config.credentialCap,

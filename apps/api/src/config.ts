@@ -50,6 +50,13 @@ export interface Config {
   readonly noticeTenantCap: { readonly max: number; readonly windowSeconds: number };
   /** Per-key verification limit of a machine credential (043 Q44); copied into each key at creation. */
   readonly machineCredentialRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Public invitation-accept route, per caller IP (Q138); window in seconds. */
+  readonly invitationAcceptRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Re-authorization callback, per caller IP (Q140); window in seconds. */
+  readonly reauthorizationCallbackRateLimit: {
+    readonly max: number;
+    readonly windowSeconds: number;
+  };
   /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
   readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
@@ -71,6 +78,8 @@ interface RateLimit {
   readonly timeWindowMs: number;
 }
 
+/** The accept route and the re-authorization callback: 10 per 60 seconds per IP (Q138, Q140). */
+const DEFAULT_PUBLIC_ROUTE_LIMIT = { max: 10, windowSeconds: 60 } as const;
 const DEFAULT_BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE = 600;
 
 // Enabled defaults (Q39); the environment only tunes them.
@@ -388,6 +397,18 @@ export function loadConfig(env: Env): Config {
     'MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_MACHINE_CREDENTIAL_LIMIT,
   );
+  const invitationAcceptRateLimit = limitWithDefaults(
+    env,
+    'INVITATION_ACCEPT_RATE_LIMIT_MAX',
+    'INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_PUBLIC_ROUTE_LIMIT,
+  );
+  const reauthorizationCallbackRateLimit = limitWithDefaults(
+    env,
+    'REAUTHORIZATION_CALLBACK_RATE_LIMIT_MAX',
+    'REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_PUBLIC_ROUTE_LIMIT,
+  );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const credentialCap = optionalPositiveInt(env, 'CREDENTIAL_CAP') ?? DEFAULT_CREDENTIAL_CAP;
   const serviceAccountCap =
@@ -416,6 +437,8 @@ export function loadConfig(env: Env): Config {
     invitationRecipientCap,
     noticeTenantCap,
     machineCredentialRateLimit,
+    invitationAcceptRateLimit,
+    reauthorizationCallbackRateLimit,
     invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     credentialCap,
