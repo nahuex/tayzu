@@ -3515,7 +3515,7 @@ SSO surfaces of M18) are recorded there with their justification.
       attribute key outside the contract's allowed set. Verify: `otel-smoke-check`
       fails when a deliberately added `tayzu.identity.invitation.email` metric
       attribute is introduced in a scratch branch.
-- [ ] 15.4 Marker-leak test across this change's signals, in memory. Verify:
+- [x] 15.4 Marker-leak test across this change's signals, in memory. Verify:
       `otel-smoke-check` covers "Invited email never reaches telemetry" for an
       invite, an expired-acceptance attempt, a rate-limited invite, a credential
       rotation (secret value as the marker), an acceptance carrying a marker

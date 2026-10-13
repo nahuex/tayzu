@@ -64,6 +64,7 @@
  * and the OTel metrics API has no proxy meter provider.
  */
 import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { inspect } from 'node:util';
 
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 
@@ -72,6 +73,8 @@ import {
   authSchema,
   AuthRateLimitedError,
   createAllowlistEmailSender,
+  createAzureCommunicationEmailSender,
+  createNonSendingEmailSender,
   createAuth,
   createContextResolver,
   createRecordingEmailSender,
@@ -97,6 +100,7 @@ import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtu
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { exchangeMachineToken } from '../../../packages/auth/src/token-exchange.js';
 import { LOG_EVENTS, METRICS, SPANS } from '../../../packages/authz/src/telemetry/contract.js';
+import { USER_ENTITY_IDENTIFIER_PLACEHOLDER } from '../../../packages/catalog/src/telemetry/contract.js';
 import * as identityContract from '../../../packages/auth/src/telemetry/identity-contract.js';
 import {
   EXPECTED_LOG_EVENTS,
@@ -3293,4 +3297,450 @@ describe('otel-smoke-check, 043: no tayzu.identity.* metric carries an attribute
       expect([...(declared?.attributes ?? [])].sort()).toEqual([...attributes].sort());
     },
   );
+});
+
+/**
+ * Task 15.4 (openspec/changes/043-identity-lifecycle-and-org-admin; spec scenarios "Invited email
+ * never reaches telemetry", "The invitation link never leaves the email", "The email provider's
+ * failure never leaks", and the placeholder of Resolved decisions Q107, Q113 and Q119).
+ *
+ * A marker-leak test across this change's signals, in memory: the markers go through the real
+ * operations (invite, resend, an expired and a wrong-token acceptance, a successful acceptance, a
+ * rate-limited invite, a credential rotation, status changes, a failing provider) and the exported
+ * corpus of the whole run (spans, metric data points, log records) plus every response and error
+ * the operations gave back must hold none of them. The Cerbos client is the real one wrapped in a
+ * recorder that sees what the decision log would record.
+ */
+/** The six catalog spans that require `tayzu.catalog.entity.identifier` (Resolved decision Q107). */
+const ENTITY_IDENTIFIER_SPANS: readonly string[] = [
+  'catalog.entity.create',
+  'catalog.entity.upsert',
+  'catalog.entity.get',
+  'catalog.entity.delete',
+  'catalog.entity.status.write',
+  'catalog.entity.related.list',
+];
+
+describe('otel-smoke-check, 043: marker values never reach a signal (task 15.4)', () => {
+  let app: App;
+  let pools: HarnessPools;
+  let harness: TelemetryTestHarness;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: ReturnType<typeof createAuthRepository>;
+  let shed: ReturnType<typeof createSsoLinkShed>;
+  const real = createCerbosClient({ address: IDENTITY_CERBOS, tls: false });
+  const checked: unknown[] = [];
+  const recordingAuthz = new Proxy(real, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]): unknown => {
+        if (prop === 'checkResources' || prop === 'planResources') checked.push(args[0]);
+        return Reflect.apply(value as (...a: unknown[]) => unknown, target, args);
+      };
+    },
+  });
+  const recorded = createRecordingEmailSender();
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    pools = await harnessPools();
+    await runMigrations(pools.authPool);
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: IDENTITY_CERBOS,
+      allowedOrigins: [IDENTITY_ORIGIN],
+      mountIdentityRoutes: true,
+      email: {
+        sender: createNonSendingEmailSender(),
+        invitationLinkBaseUrl: IDENTITY_ORIGIN,
+        disabledTenantIds: [],
+        killSwitch: false,
+        recipientKeySecret: IDENTITY_SECRET,
+        tenantCap: { max: 1000, windowSeconds: 3600 },
+        recipientCap: { max: 1000, windowSeconds: 86_400 },
+      },
+    });
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: recordingAuthz }),
+    });
+    repository = createAuthRepository(pools.authPool);
+    shed = createSsoLinkShed({ authPool: pools.authPool });
+  }, 120_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  type Sender = Parameters<typeof createEmailTenantGate>[0]['sender'];
+
+  function gateWith(sender: Sender, recipientMax = 1000): EmailTenantGate {
+    return createEmailTenantGate({
+      disabledTenantIds: [],
+      capStore: createInMemoryEmailCapStore({
+        tenant: { max: 1000, windowSeconds: 3600 },
+        recipient: { max: recipientMax, windowSeconds: 86_400 },
+      }),
+      sender,
+      recipientKeySecret: IDENTITY_SECRET,
+    });
+  }
+
+  /** Delivers to the recording fake, which the test reads the token from, and to a second sender. */
+  function teeTo(second: Sender): Sender {
+    return {
+      send: async (to, template) => {
+        await recorded.send(to, template);
+        await second.send(to, template);
+      },
+    };
+  }
+
+  function routerWith(emailGate: EmailTenantGate): IdentityClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth: app.auth,
+        authz: recordingAuthz,
+        authRepository: repository,
+        withUserLock: createWithUserLock(pools.authPool),
+        emailGate,
+        invitationLinkBaseUrl: IDENTITY_ORIGIN,
+        appPool: pools.appPool,
+        userSync: adapter,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  function flow() {
+    return createAcceptFlow({
+      auth: app.auth,
+      authz: recordingAuthz,
+      authRepository: repository,
+      authPool: pools.authPool,
+      userSync: adapter,
+      ssoLinkShed: shed,
+    });
+  }
+
+  async function newTenant(label: string): Promise<BootstrappedTenant> {
+    const id = randomUUID();
+    return await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: `Marker ${label}`,
+      email: `idmarker-${label.toLowerCase()}-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Marker Org ${id}`,
+      organizationSlug: `idmarker-${id}`,
+      ip: randomIp(),
+    });
+  }
+
+  function adminContext(tenant: BootstrappedTenant): Record<string, unknown> {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.organizationId,
+      actor: { type: 'user', id: tenant.userId },
+      principal: { roles: ['admin'] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  const markerEmail = (label: string): string => `marker-${label}-${randomUUID()}@example.com`;
+  const markerPassword = (): string => `Marker-Pw-${randomUUID()}-Zz9!`;
+
+  function tokenFor(email: string): { token: string; link: string } {
+    const message = [...recorded.sent].reverse().find((candidate) => candidate.to === email);
+    if (message?.template.kind !== 'InvitationEmail') {
+      throw new Error('the invitation email was not sent');
+    }
+    const token = new URLSearchParams(new URL(message.template.link).hash.slice(1)).get('token');
+    return { token: token ?? '', link: message.template.link };
+  }
+
+  function acceptHttp(body: Record<string, unknown>) {
+    return app.app.inject({
+      method: 'POST',
+      url: IDENTITY_ACCEPT_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: IDENTITY_ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify(body),
+    });
+  }
+
+  async function rejectionOf(operation: Promise<unknown>): Promise<unknown> {
+    try {
+      await operation;
+    } catch (error) {
+      return error;
+    }
+    throw new Error('the operation was expected to fail');
+  }
+
+  /** Everything a caller could read of a response or an error, own properties and causes included. */
+  const textOf = (value: unknown): string => inspect(value, { depth: 8, showHidden: true });
+
+  async function expectNoLeak(
+    markers: Readonly<Record<string, string>>,
+    responses: Readonly<Record<string, unknown>> = {},
+  ): Promise<void> {
+    await harness.forceFlush();
+    const entries = exportedCorpus(harness);
+    expect(entries.length, 'the corpus is not empty').toBeGreaterThan(0);
+    for (const [label, marker] of Object.entries(markers)) {
+      expect(marker.length, `${label} marker is non-trivial`).toBeGreaterThanOrEqual(6);
+      expect(leaks(entries, marker), `${label} must never appear on any signal`).toEqual([]);
+      expect(
+        JSON.stringify(checked).includes(marker),
+        `${label} must never appear in a Cerbos request`,
+      ).toBe(false);
+      for (const [name, response] of Object.entries(responses)) {
+        expect(textOf(response).includes(marker), `${label} must not be in ${name}`).toBe(false);
+      }
+    }
+  }
+
+  it('Invited email never reaches telemetry: an invite, a resend and an expired acceptance', async () => {
+    const tenant = await newTenant('Invite');
+    const context = adminContext(tenant);
+    const router = routerWith(gateWith(teeTo(createNonSendingEmailSender())));
+    const email = markerEmail('invited');
+
+    const created = await router.identity.users.invite(
+      { body: { email, role: 'member' } },
+      { context },
+    );
+    const resent = await router.identity.users.resendInvitation(
+      { params: { invitation: created.invitationId } },
+      { context },
+    );
+    const { token } = tokenFor(email);
+    await pools.authPool.query(
+      "update auth.invitation set expires_at = now() - interval '1 hour' where id = $1",
+      [created.invitationId],
+    );
+    const expired = await acceptHttp({
+      invitationId: created.invitationId,
+      token,
+      password: markerPassword(),
+    });
+    expect(expired.statusCode).toBe(404);
+
+    await expectNoLeak(
+      { 'invited email': email, 'invitation token': token },
+      { invite: created, resend: resent, 'expired acceptance': expired.body },
+    );
+  }, 120_000);
+
+  it('Invited email never reaches telemetry: a rate-limited invite', async () => {
+    const tenant = await newTenant('Limited');
+    const context = adminContext(tenant);
+    const router = routerWith(gateWith(teeTo(createNonSendingEmailSender()), 1));
+    const email = markerEmail('limited');
+
+    await router.identity.users.invite({ body: { email, role: 'member' } }, { context });
+    const refused = await rejectionOf(
+      router.identity.users.invite({ body: { email, role: 'member' } }, { context }),
+    );
+    expect(refused).toMatchObject({ code: 'AUTH_RATE_LIMITED' });
+
+    await expectNoLeak({ 'invited email': email }, { 'rate-limited invite': refused });
+  }, 120_000);
+
+  it('Invited email never reaches telemetry: an acceptance carrying a marker password and a marker token', async () => {
+    const tenant = await newTenant('Accept');
+    const router = routerWith(gateWith(teeTo(createNonSendingEmailSender())));
+    const email = markerEmail('accepting');
+    const password = markerPassword();
+    const invited = await router.identity.users.invite(
+      { body: { email, role: 'member' } },
+      { context: adminContext(tenant) },
+    );
+    const { token } = tokenFor(email);
+
+    const markerToken = `markertoken${randomUUID().replaceAll('-', '')}`.slice(0, token.length);
+    const wrongToken = await acceptHttp({
+      invitationId: invited.invitationId,
+      token: markerToken,
+      password,
+    });
+    expect(wrongToken.statusCode).toBe(404);
+    const accepted = await flow().accept({
+      invitationId: invited.invitationId,
+      token,
+      password,
+    });
+    expect(accepted.userId).toBeTruthy();
+
+    await expectNoLeak(
+      {
+        'invited email': email,
+        'marker password': password,
+        'marker token': markerToken,
+        'invitation token': token,
+      },
+      { 'wrong-token acceptance': wrongToken.body, acceptance: accepted },
+    );
+  }, 120_000);
+
+  it('Invited email never reaches telemetry: a credential rotation, with the secret as the marker', async () => {
+    const tenant = await newTenant('Rotate');
+    const context = adminContext(tenant);
+    const router = routerWith(gateWith(teeTo(createNonSendingEmailSender())));
+
+    const created = await router.identity.credentials.create(
+      { body: { name: 'Marker integration', kind: 'integration' } },
+      { context },
+    );
+    const rotated = await router.identity.credentials.rotate(
+      { params: { credential: created.id } },
+      { context },
+    );
+    expect(rotated.secret).not.toBe(created.secret);
+    const listed = await router.identity.credentials.list({ query: {} }, { context });
+
+    await expectNoLeak(
+      { 'created secret': created.secret, 'rotated secret': rotated.secret },
+      { list: listed },
+    );
+  }, 120_000);
+
+  it('The invitation link never leaves the email: an invite and a resend', async () => {
+    const tenant = await newTenant('Link');
+    const context = adminContext(tenant);
+    const keeper = createNonSendingEmailSender();
+    const router = routerWith(gateWith(teeTo(keeper)));
+    const email = markerEmail('link');
+
+    const created = await router.identity.users.invite(
+      { body: { email, role: 'member' } },
+      { context },
+    );
+    const firstLink = tokenFor(email);
+    const resent = await router.identity.users.resendInvitation(
+      { params: { invitation: created.invitationId } },
+      { context },
+    );
+    const secondLink = tokenFor(email);
+    expect(secondLink.token, 'a resend mails a link with its own token').not.toBe('');
+
+    const markers: Record<string, string> = {
+      'first token': firstLink.token,
+      'first link': firstLink.link,
+      'first id-plus-token fragment': new URL(firstLink.link).hash.slice(1),
+      'second token': secondLink.token,
+      'second link': secondLink.link,
+    };
+    await expectNoLeak(markers, {
+      invite: created,
+      resend: resent,
+      'non-sending sender': keeper,
+    });
+    expect(Object.keys(keeper), 'the non-sending sender keeps nothing').toEqual(['send']);
+  }, 120_000);
+
+  it("The email provider's failure never leaks: a failure that contains the recipient address", async () => {
+    const tenant = await newTenant('Provider');
+    const context = adminContext(tenant);
+    const email = markerEmail('provider');
+    const failing = createAzureCommunicationEmailSender({
+      senderAddress: 'noreply@tayzu.test',
+      client: {
+        beginSend: () =>
+          Promise.reject(new Error(`Invalid recipient ${email}: mailbox unavailable`)),
+      },
+    });
+    const router = routerWith(gateWith(failing));
+
+    let outcome: unknown;
+    try {
+      outcome = await router.identity.users.invite(
+        { body: { email, role: 'member' } },
+        { context },
+      );
+    } catch (error) {
+      outcome = error;
+    }
+
+    await expectNoLeak({ 'invited email': email }, { 'provider failure': outcome });
+  }, 120_000);
+
+  it('the catalog spans, audit events and Cerbos requests of the _user writes carry the placeholder, never the email', async () => {
+    const tenant = await newTenant('Writes');
+    const context = adminContext(tenant);
+    const router = routerWith(gateWith(teeTo(createNonSendingEmailSender())));
+    const spansBefore = new Set(harness.spanExporter.getFinishedSpans());
+    const logsBefore = new Set(harness.logExporter.getFinishedLogRecords());
+    const checksBefore = checked.length;
+
+    // An invite, an acceptance and a status change: each writes the invitee's `_user` row.
+    const email = markerEmail('writes');
+    const invited = await router.identity.users.invite(
+      { body: { email, role: 'member' } },
+      { context },
+    );
+    const { token } = tokenFor(email);
+    await flow().accept({ invitationId: invited.invitationId, token, password: markerPassword() });
+    await router.identity.users.setStatus(
+      { params: { user: email }, body: { status: 'Disabled' } },
+      { context },
+    );
+    await router.identity.users.setStatus(
+      { params: { user: email }, body: { status: 'Active' } },
+      { context },
+    );
+    await harness.forceFlush();
+
+    const userSpans = harness.spanExporter
+      .getFinishedSpans()
+      .filter(
+        (span) =>
+          !spansBefore.has(span) &&
+          ENTITY_IDENTIFIER_SPANS.includes(span.name) &&
+          span.attributes['tayzu.catalog.blueprint.identifier'] === '_user',
+      );
+    expect(
+      userSpans.length,
+      'the writes produced catalog spans of the _user blueprint',
+    ).toBeGreaterThan(0);
+    for (const span of userSpans) {
+      expect(span.attributes['tayzu.catalog.entity.identifier'], span.name).toBe(
+        USER_ENTITY_IDENTIFIER_PLACEHOLDER,
+      );
+    }
+
+    const audits = [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        !logsBefore.has(record) &&
+        record.eventName === 'catalog.audit.mutation' &&
+        record.attributes['tayzu.catalog.blueprint.identifier'] === '_user',
+    );
+    expect(audits.length, 'the writes produced catalog.audit.mutation events').toBeGreaterThan(0);
+    for (const record of audits) {
+      expect(record.attributes['tayzu.catalog.resource.identifier']).toBe(
+        USER_ENTITY_IDENTIFIER_PLACEHOLDER,
+      );
+    }
+
+    const entityChecks = checked
+      .slice(checksBefore)
+      .flatMap(
+        (request) =>
+          (request as { resources?: { resource: { kind: string; id: string } }[] }).resources ?? [],
+      )
+      .filter((entry) => entry.resource.kind === 'catalog_entity');
+    expect(entityChecks.length, 'the writes made catalog_entity checks').toBeGreaterThan(0);
+    expect(
+      entityChecks.some((entry) => entry.resource.id === USER_ENTITY_IDENTIFIER_PLACEHOLDER),
+      'a _user entity is checked with the placeholder as its resource id',
+    ).toBe(true);
+
+    await expectNoLeak({ 'invited email': email });
+  }, 120_000);
 });
