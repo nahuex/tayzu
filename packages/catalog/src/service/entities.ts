@@ -26,7 +26,7 @@ import type { ParsedPropertySchema } from '../domain/blueprint-definition.js';
 import { areCanonicallyEqual } from '../domain/canonical.js';
 import type { ActorType, CatalogContext, Principal } from '../domain/context.js';
 import { assertEntitySpecSize, assertEntityStatusSize } from '../domain/entity-limits.js';
-import { CatalogError, isCatalogError } from '../domain/errors.js';
+import { AuthorizationError, CatalogError, isCatalogError } from '../domain/errors.js';
 import { parseEntityIdentifier } from '../domain/identifiers.js';
 import { defaultCatalogLimits, type CatalogLimits } from '../domain/limits.js';
 import { assertCursorLength, decodeCursor, encodeCursor } from '../domain/pagination.js';
@@ -1142,6 +1142,11 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     additionalAuthorization: ({ ctx, input, stored }) => {
       const next = newEntityAuthzAttributes({ ctx, input });
       const replaces = (input as { mode?: unknown }).mode === 'replace';
+      // Task 13.6b (002 VCDM M15): a replace that omits `ownerTeam` would silently release
+      // ownership, so it is refused; naming a team (or `merge`) is the way to change it.
+      if (replaces && stored['ownerTeam'] !== undefined && next['ownerTeam'] === undefined) {
+        throw new AuthorizationError();
+      }
       if (next['ownerTeam'] === undefined && !replaces) return undefined;
       if (next['ownerTeam'] === stored['ownerTeam']) return undefined;
       return {

@@ -3057,7 +3057,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `upsert` authorized as `create` cannot land as an update (`002` VCDM M4).
       Verify: `pipeline-recheck.int.test.ts` covers a concurrent ownership change
       between the authorization and the write failing closed, and the upsert case.
-- [ ] 13.6b A `replace`-mode `upsert` without `ownerTeam` cannot silently release
+- [x] 13.6b A `replace`-mode `upsert` without `ownerTeam` cannot silently release
       ownership (`002` VCDM M15). Verify: `entities-upsert-ownership.int.test.ts`
       covers an owning-team member's `replace` upsert without `ownerTeam` being
       refused or keeping the owner, per `001`'s ownership spec.
