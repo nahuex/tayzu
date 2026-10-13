@@ -7,11 +7,13 @@
  * setting; the store hashes it, and it never reaches a signal or a response.
  */
 import { ORPCError } from '@orpc/server';
-import type { RateLimitBucketStore } from '@tayzu/auth';
+import type { RateLimitBucketStore, RateLimitScope } from '@tayzu/auth';
 import type { preHandlerAsyncHookHandler } from 'fastify';
 
 export interface AcceptRateLimitOptions {
   readonly store: RateLimitBucketStore;
+  /** The bucket scope; the accept route's own unless another public route reuses this limiter (13.9). */
+  readonly scope?: RateLimitScope;
 }
 
 export function createAcceptRateLimitPreHandler(
@@ -23,7 +25,7 @@ export function createAcceptRateLimitPreHandler(
   });
   return async (request, reply) => {
     const result = await options.store.consume({
-      scope: 'invitation_accept',
+      scope: options.scope ?? 'invitation_accept',
       kind: 'ip',
       value: request.ip,
     });

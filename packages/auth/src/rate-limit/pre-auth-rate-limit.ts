@@ -67,7 +67,9 @@ export type RateLimitScope =
   | 'invitation_recipient'
   | 'notice_tenant'
   // Change 043 (task 6.12b): the notices' own per-recipient bucket, apart from invitation_recipient.
-  | 'notice_recipient';
+  | 'notice_recipient'
+  // Change 043 (task 13.9): the public re-authorization callback's limiter.
+  | 'reauthorization_callback';
 
 /** The kinds a bucket key can be namespaced by; `tenant` was added by change 043 (task 6.10). */
 export type BucketKeyKind = 'ip' | 'email' | 'user' | 'tenant';

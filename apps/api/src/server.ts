@@ -22,6 +22,7 @@ import {
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  createRateLimitBucketStore,
   createStepUpGuard,
   emitInternalError,
   emitRateLimited,
@@ -33,6 +34,7 @@ import {
   type AuthInstance,
   type BackchannelLogoutOutcome,
   type CreateAuthOptions,
+  type RateLimitBucketStoreOptions,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import type { createPool } from '@tayzu/db';
@@ -45,6 +47,7 @@ import {
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
+import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
@@ -91,6 +94,12 @@ export interface CreateAppOptions {
   readonly preAuthRateLimit?: CreateAuthOptions['rateLimit'];
   /** Back-channel logout budget per source IP per minute (D26, Q32); omitted: 600. */
   readonly backchannelLogoutRateLimitPerMinute?: number;
+  /**
+   * Limit of the public re-authorization callback (043 task 13.9), per caller IP on the
+   * DB-backed store, consumed before the callback's database `delete`. `window` is in
+   * seconds; omitted: no limiter.
+   */
+  readonly reauthorizationCallbackRateLimit?: { readonly max: number; readonly window: number };
 }
 
 export interface App {
@@ -588,6 +597,21 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
 
   // Q36: the re-authorization callback (query redirect or `form_post`). The
   // single-use `state` binds it to the session; it answers a bare 200 or 400.
+  // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
+  const reauthorizationCallbackLimit =
+    options.reauthorizationCallbackRateLimit === undefined
+      ? undefined
+      : createAcceptRateLimitPreHandler({
+          scope: 'reauthorization_callback',
+          store: createRateLimitBucketStore({
+            adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+              .adapter,
+            rules: { reauthorization_callback: options.reauthorizationCallbackRateLimit },
+          }),
+        });
+  const callbackRoute = reauthorizationCallbackLimit
+    ? { preHandler: reauthorizationCallbackLimit }
+    : {};
   await app.register((scope, _opts, done) => {
     scope.addContentTypeParser(
       'application/x-www-form-urlencoded',
@@ -611,11 +635,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         ? reply.status(200).send({})
         : reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
     };
-    scope.get(REAUTH_CALLBACK_PATH, (request, reply) => {
+    scope.get(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const query = request.query as Record<string, unknown>;
       return handle({ code: query['code'], state: query['state'] }, reply);
     });
-    scope.post(REAUTH_CALLBACK_PATH, (request, reply) => {
+    scope.post(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const body = request.body as Record<string, unknown> | undefined;
       return handle({ code: body?.['code'], state: body?.['state'] }, reply);
     });

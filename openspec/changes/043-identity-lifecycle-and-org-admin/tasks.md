@@ -3107,7 +3107,7 @@ SSO surfaces of M18) are recorded there with their justification.
       reaching `createAppFromEnv` passes with its local fixture host, and
       `config.test.ts` is unchanged and green, its `createAppFromEnv` case included (the
       missing secret still reported before the host refusal).
-- [ ] 13.9 The public re-authorization callback has its own limiter on the
+- [x] 13.9 The public re-authorization callback has its own limiter on the
       DB-backed store (a sixth new `RateLimitScope` value, `reauthorization_callback`,
       in the TypeScript union, after the four of 6.10 and the `notice_recipient` of 6.12b; neither executable telemetry contract enumerates the values,
       but `002`'s design declares the enum closed, so this amends it, recorded in
