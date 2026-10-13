@@ -3127,7 +3127,7 @@ SSO surfaces of M18) are recorded there with their justification.
       JWKS are fetched, so a malformed RS256-shaped token triggers no outbound call
       (`002` VCDM M14). Verify: `backchannel-logout.int.test.ts` covers a token failing
       a cheap check with the discovery and JWKS fetchers recording zero calls.
-- [ ] 13.12 Dependabot tracks the pinned image digests (`postgres`, Cerbos and ZAP in
+- [x] 13.12 Dependabot tracks the pinned image digests (`postgres`, Cerbos and ZAP in
       `ci.yml`, the compose file and `scripts/ci/dast.sh`; `.github/dependabot.yml` lists
       npm and github-actions only today), as `002`'s gate asks (`002` VCDM M17, Resolved
       decision Q95): the file gains the `docker` ecosystem and, where a pin sits in a

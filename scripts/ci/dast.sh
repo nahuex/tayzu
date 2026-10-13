@@ -25,10 +25,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# postgres:16, pinned by digest like the CI test services (task 24.9).
-PG_IMAGE="${DAST_PG_IMAGE:-postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54}"
-# ghcr.io/zaproxy/zaproxy:stable, pinned by digest like the Cerbos image.
-ZAP_IMAGE="${DAST_ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef}"
+# postgres and ZAP, pinned by digest in Dockerfile.images so that Dependabot
+# can read and bump them (task 13.12).
+pinned_image() {
+  awk -v stage="$1" '$1 == "FROM" && $4 == stage { print $2 }' "$SCRIPT_DIR/Dockerfile.images"
+}
+PG_IMAGE="${DAST_PG_IMAGE:-$(pinned_image postgres)}"
+ZAP_IMAGE="${DAST_ZAP_IMAGE:-$(pinned_image zap)}"
 PG_CONTAINER="tayzu-dast-postgres"
 PG_PORT="${DAST_PG_PORT:-5433}"
 API_PORT="${DAST_API_PORT:-3000}"

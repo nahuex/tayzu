@@ -8,7 +8,7 @@ the SSA.
 
 ## Automated updates
 
-Dependabot opens weekly pull requests for two ecosystems
+Dependabot opens weekly pull requests for three ecosystems
 (`.github/dependabot.yml`):
 
 - **npm**, root directory. Minor and patch updates are grouped into a single
@@ -16,6 +16,20 @@ Dependabot opens weekly pull requests for two ecosystems
   still opens its own pull request for review.
 - **github-actions**, root directory. Every action pinned in `ci.yml` and the
   composite action under `.github/actions/setup/` is covered.
+- **docker**, directories `/` and `/scripts/ci`. It reads `compose.yaml` and
+  `scripts/ci/Dockerfile.images`, so the pinned image digests below are
+  bumped by pull request (task 13.12).
+
+### Pinned image digests
+
+| Image                     | Pinned in                                                                            | Tracking mechanism                                                | Owner    |
+| ------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- | -------- |
+| `postgres:16`             | `scripts/ci/Dockerfile.images` (read by `dast.sh`), `ci.yml` services                | Dependabot `docker`, `/scripts/ci`; `ci.yml` copy updated by hand | Platform |
+| `ghcr.io/cerbos/cerbos`   | `compose.yaml`, `ci.yml`, `scripts/dev/start-cerbos.sh`, `scripts/policy-compile.sh` | Dependabot `docker`, `/`; the other copies updated by hand        | Platform |
+| `ghcr.io/zaproxy/zaproxy` | `scripts/ci/Dockerfile.images` (read by `dast.sh`), `ci.yml` `docker_name`           | Dependabot `docker`, `/scripts/ci`; `ci.yml` copy updated by hand | Platform |
+
+`apps/api/src/dependabot-config.test.ts` fails when a digest is pinned only
+where no `docker` entry reads it.
 
 Runtime-coupled versions are held on purpose. `@types/node` stays on the
 major version of the Node runtime (22), so Dependabot ignores its major

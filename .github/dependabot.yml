@@ -20,3 +20,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # Reads compose.yaml (Cerbos) and scripts/ci/Dockerfile.images (postgres, ZAP).
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /scripts/ci
+    schedule:
+      interval: weekly
