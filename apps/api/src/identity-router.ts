@@ -246,6 +246,10 @@ function parseCredentialInput(raw: unknown): {
 
 function parseInviteInput(raw: unknown): InviteUserInput {
   if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
+  // The tenant comes only from the host: any undeclared field (an organization or tenant id) is rejected.
+  if (Object.keys(raw).some((key) => key !== 'email' && key !== 'role')) {
+    throw new IdentityInputError();
+  }
   const { email, role } = raw as Record<string, unknown>;
   if (!isNonEmptyString(email) || !isNonEmptyString(role)) throw new IdentityInputError();
   // Exact match (design D4 "Roles"): no splitting, trimming or case folding.

@@ -2802,7 +2802,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 
 All tests live in `cross-tenant.int.test.ts` and seed two tenants.
 
-- [ ] 12.1 `identity.users.invite` creates the invitation only in the host
+- [x] 12.1 `identity.users.invite` creates the invitation only in the host
       tenant and rejects a body that names an organization. Verify: an invitation
       created by `t1`'s admin has `organizationId = t1`, and a body with an
       organization or tenant field is rejected.
