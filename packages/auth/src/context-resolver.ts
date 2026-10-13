@@ -138,7 +138,7 @@ interface SessionResult {
     readonly activeOrganizationId?: string | null;
     readonly updatedAt: Date;
   };
-  readonly user: { readonly id: string; readonly email?: string };
+  readonly user: { readonly id: string; readonly email?: string; readonly banned?: boolean | null };
 }
 
 interface AuthApiSurface {
@@ -629,6 +629,22 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     // (`session.updateAge`, design D3's "kept") both apply as usual here.
     const result = await api.getSession({ headers });
     if (result === null) {
+      rejectMissingContext();
+    }
+
+    // Task 13.4, Q77: a disabled (`banned`) user is rejected whatever the
+    // `_user` status; the reason goes only to the log and the counter.
+    if (result.user.banned === true) {
+      const attributes = {
+        'tayzu.identity.rejection.reason': 'user_banned',
+        'tayzu.actor.type': 'user',
+      };
+      principalRejectionsCounter.add(1, attributes);
+      logger.emit({
+        eventName: 'catalog.security.principal_rejected',
+        severityNumber: SeverityNumber.WARN,
+        attributes,
+      });
       rejectMissingContext();
     }
 

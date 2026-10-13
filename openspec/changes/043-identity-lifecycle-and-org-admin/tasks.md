@@ -2946,7 +2946,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `contract.test.ts` is not edited)
       asserts the four names are declared in the module, with both forms of
       `catalog.audit.user_created`.
-- [ ] 13.4 `resolveContext` rejects a disabled (`banned`) user, with the same
+- [x] 13.4 `resolveContext` rejects a disabled (`banned`) user, with the same
       rejection as 11.8 (401 `CATALOG_CONTEXT_REQUIRED`, the reason only in the log;
       Resolved decision Q77), logging `catalog.security.principal_rejected` with the
       reason `user_banned` and incrementing `tayzu.identity.principal_rejections`, so

@@ -2559,6 +2559,236 @@ describe('resolveContext: a human is admitted only with an Active _user (task 11
   }, 60_000);
 });
 
+/**
+ * Task 13.4 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * decision Q77; design D13). Spec scenario, quoted from
+ * `specs/identity-lifecycle-and-org-admin/spec.md`:
+ *
+ * #### Scenario: A disabled user's sessions stop working
+ * - GIVEN an `Active` user with a single membership and a live session
+ * - WHEN an admin disables the user
+ * - THEN the next request on that session is rejected with
+ *   `CATALOG_CONTEXT_REQUIRED` (401) and no reason in the body, a new sign-in
+ *   (local or SSO) is refused, and a session of that user that the deletion did
+ *   not reach (seeded directly) is rejected with
+ *   `catalog.security.principal_rejected` and the reason `user_banned`
+ *
+ * The admin operation (`setStatus`) is a later task; the ban it makes is
+ * standing in here as a direct write of `auth."user".banned`, and the session
+ * "the deletion did not reach" is simply a session row left in place. The
+ * deletion-reached half (a deleted session row) is covered too. The refused
+ * sign-ins are in `banned-sign-in.int.test.ts`.
+ *
+ * ## Production symbols expected
+ *
+ * No new symbol: `createContextResolver` (`./context-resolver.ts`) rejects, in
+ * its session-cookie branch, a session whose Better Auth user is `banned`, with
+ * the same `AuthContextError` as a missing session (no reason in the error),
+ * logs `catalog.security.principal_rejected` (WARN; `tayzu.identity.rejection.
+ * reason` `user_banned`, `tayzu.actor.type` `user`) and increments
+ * `tayzu.identity.principal_rejections` with the same attributes. The ban is
+ * checked from the session read, whatever the `_user` status.
+ */
+describe('resolveContext: a banned user is rejected (task 13.4, D13, Q77)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  const SUM_DATA_POINT_TYPE = 3;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  function resolver(): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: appPool });
+  }
+
+  async function newTenant(): Promise<{
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly email: string;
+    readonly cookie: string;
+  }> {
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Banned Resolver Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return {
+      tenantId: tenant.organizationId,
+      userId: tenant.userId,
+      email,
+      cookie: tenant.cookie,
+    };
+  }
+
+  async function setBanned(userId: string, banned: boolean): Promise<void> {
+    await db.execute(sql`update auth."user" set banned = ${banned} where id = ${userId}`);
+  }
+
+  function principalRejectedLogs(
+    harness: TelemetryTestHarness,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']>[number][] {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'catalog.security.principal_rejected',
+    );
+  }
+
+  function rejectionPoints(
+    harness: TelemetryTestHarness,
+  ): { attributes: Attributes; value: number }[] {
+    const points: { attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === 'tayzu.identity.principal_rejections' &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === SUM_DATA_POINT_TYPE
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  async function expectBannedRejection(
+    resolveContext: (headers: Headers) => Promise<unknown>,
+    cookie: string,
+  ): Promise<void> {
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie })));
+    await harness.forceFlush();
+
+    const expected = {
+      'tayzu.identity.rejection.reason': 'user_banned',
+      'tayzu.actor.type': 'user',
+    };
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual(expected);
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual(expected);
+  }
+
+  it("A disabled user's sessions stop working: a session the deletion did not reach is rejected with user_banned and a deleted session is rejected without a reason", async () => {
+    // GIVEN an `Active` user with a single membership and two live sessions.
+    const member = await newTenant();
+    const second = await signInAdminUser(auth, {
+      email: member.email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const resolveContext = resolver();
+    expect(await resolveContext(new Headers({ cookie: member.cookie })), 'control').toMatchObject({
+      tenantId: member.tenantId,
+      actor: { type: 'user', id: member.userId },
+    });
+
+    // WHEN the user is disabled: banned, and one session deleted; the other
+    // session row is left in place (seeded directly).
+    await setBanned(member.userId, true);
+    await db.execute(sql`delete from auth.session where token = ${second.token}`);
+
+    // THEN the deleted session is rejected with CATALOG_CONTEXT_REQUIRED and no
+    // principal_rejected record (it never resolves to a user) ...
+    const harness = registeredHarness();
+    await harness.reset();
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie: second.cookie })));
+    await harness.forceFlush();
+    expect(principalRejectedLogs(harness)).toHaveLength(0);
+
+    // ... and the session the deletion did not reach is rejected with the reason `user_banned`.
+    await expectBannedRejection(resolveContext, member.cookie);
+
+    // AND the rejection carries no reason in its message or serialization.
+    const rejection = await resolveContext(new Headers({ cookie: member.cookie })).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const control = await resolveContext(new Headers()).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(rejection).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+    expect((rejection as Error).message).toBe((control as Error).message);
+    expect(JSON.stringify(rejection) + (rejection as Error).message).not.toMatch(
+      /user_banned|banned/i,
+    );
+
+    // AND re-enabling (clearing the ban) admits the session again.
+    await setBanned(member.userId, false);
+    expect(await resolveContext(new Headers({ cookie: member.cookie }))).toMatchObject({
+      tenantId: member.tenantId,
+      actor: { type: 'user', id: member.userId },
+    });
+  }, 60_000);
+
+  it('A banned user whose _user is still Active is rejected with the reason user_banned', async () => {
+    const member = await newTenant();
+    const other = await newTenant();
+    const status = await withTenantTransaction(
+      appPool,
+      { tenantId: member.tenantId },
+      async (client) => {
+        const result = await client.query<{ status: unknown }>(
+          `select spec_properties ->> 'status' as status
+           from catalog_entity where tenant_id = $1 and identifier = $2`,
+          [member.tenantId, member.email],
+        );
+        return result.rows[0]?.status;
+      },
+    );
+    expect(status, 'sanity: the _user is Active').toBe('Active');
+    const resolveContext = resolver();
+
+    await setBanned(member.userId, true);
+
+    await expectBannedRejection(resolveContext, member.cookie);
+    // AND another user (not banned) is unaffected.
+    expect(await resolveContext(new Headers({ cookie: other.cookie }))).toMatchObject({
+      tenantId: other.tenantId,
+      actor: { type: 'user', id: other.userId },
+    });
+  }, 60_000);
+});
+
 type QueryFunction = (...args: unknown[]) => Promise<unknown>;
 
 /**
