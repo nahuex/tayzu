@@ -80,6 +80,16 @@ function isAccountUniqueViolation(error: unknown): boolean {
   return false;
 }
 
+/** Generic on purpose: never says whether the address already has an account, here or elsewhere. */
+class IdentityCreateRejectedError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED' as const;
+
+  constructor() {
+    super('The user could not be created');
+    this.name = 'IdentityCreateRejectedError';
+  }
+}
+
 class IdentityInputError extends Error {
   readonly code = 'CATALOG_VALIDATION_FAILED' as const;
 
@@ -379,9 +389,28 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
     return { kind: 'user', id: user as string };
   }
 
+  /** Logs the internal cause of a refused create or link: opaque identifiers and a bounded reason only (Q115). */
+  function emitConflictRefused(
+    context: RawContext,
+    reason: 'account_exists' | 'target_in_other_tenant' | 'sub_already_linked',
+    userId?: string,
+  ): void {
+    emitIdentityEvent({
+      name: 'catalog.security.identity_conflict_refused',
+      severity: 'WARN',
+      attributes: {
+        'tayzu.tenant.id': rawTenantId(context),
+        'tayzu.actor.id': (context['actor'] as { id: string }).id,
+        'tayzu.identity.conflict.reason': reason,
+        ...(userId === undefined ? {} : { 'tayzu.identity.user.id': userId }),
+      },
+    });
+  }
+
   /** `002` VCDM M10: an account with a membership in a second tenant is never linked or unlinked from one tenant. */
-  async function refuseMultiTenantTarget(userId: string): Promise<void> {
+  async function refuseMultiTenantTarget(userId: string, context?: RawContext): Promise<void> {
     if ((await options.authRepository.globalMembershipTenantsOf(userId)).length > 1) {
+      if (context !== undefined) emitConflictRefused(context, 'target_in_other_tenant', userId);
       throw new IdentityLinkRejectedError();
     }
   }
@@ -420,7 +449,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           route: HIGH_RISK_ROUTE,
           handler: async ({ context, input: rawInput }) => {
             const { name, kind, userId } = parseCredentialInput(rawInput);
-            return createCredential({
+            const created = await createCredential({
               authRepository: options.authRepository,
               ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
               ...(userId === undefined ? {} : { userId }),
@@ -431,6 +460,17 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               name,
               kind,
             });
+            emitIdentityEvent({
+              name: 'catalog.audit.credential_created',
+              severity: 'INFO',
+              attributes: {
+                'tayzu.tenant.id': rawTenantId(context),
+                'tayzu.actor.id': (context['actor'] as { id: string }).id,
+                'tayzu.identity.credential.id': created.id,
+                'tayzu.identity.credential.kind': kind,
+              },
+            });
+            return created;
           },
         }),
         // Step-up applies (D4); the old key is resolved inside the tenant by the target resolver.
@@ -582,6 +622,21 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             // Admin `createUser` enforces only the maximum length: the policy minimum is applied here (Q22).
             if (!validatePassword(temporaryPassword).ok) throw new IdentityInputError();
             const adminId = (context['actor'] as { id: string }).id;
+            // One generic answer to every existing-account cause; the cause is only logged (Q115).
+            const existingUser = await options.authRepository.globalUserByEmail(input.email);
+            if (existingUser !== undefined) {
+              const tenants = await options.authRepository.globalMembershipTenantsOf(
+                existingUser.id,
+              );
+              emitConflictRefused(
+                context,
+                tenants.some((tenant) => tenant !== rawTenantId(context))
+                  ? 'target_in_other_tenant'
+                  : 'account_exists',
+                existingUser.id,
+              );
+              throw new IdentityCreateRejectedError();
+            }
             // The membership hook is the single `_user` writer; it reads the admin from the store (Q76, Q117).
             const { user } = await runWithIdentityContext({ adminId }, async () => {
               const created = await userApi.createUser({
@@ -632,6 +687,17 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 },
               });
             }
+            emitIdentityEvent({
+              name: 'catalog.audit.user_created',
+              severity: 'INFO',
+              attributes: {
+                'tayzu.tenant.id': tenantId,
+                'tayzu.actor.id': adminId,
+                'tayzu.identity.user.id': user.id,
+                'tayzu.identity.user.role': input.role,
+                'tayzu.identity.user.source': 'admin',
+              },
+            });
             return { userId: user.id, email: user.email, temporaryPassword };
           },
         }),
@@ -775,13 +841,16 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             const userId = (target as ResolvedIdentityTarget).id;
             await options.withUserLock(userId, async () => {
               // The checks run inside the lock (task 8.5i).
-              await refuseMultiTenantTarget(userId);
+              await refuseMultiTenantTarget(userId, context);
               await refuseAdminOrOwnerTarget(context, userId);
               const existing = await options.authRepository.globalAccountByKey(
                 SSO_PROVIDER_ID,
                 input.subject,
               );
-              if (existing !== undefined) throw new IdentityLinkRejectedError();
+              if (existing !== undefined) {
+                emitConflictRefused(context, 'sub_already_linked', userId);
+                throw new IdentityLinkRejectedError();
+              }
               try {
                 await adapter.linkAccount({
                   userId,

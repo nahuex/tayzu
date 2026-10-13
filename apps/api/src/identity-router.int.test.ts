@@ -1052,3 +1052,449 @@ describe('an admin links their own identity through /link-social with step-up (t
     expect(await linkedSubjects(admin.userId)).toEqual([sub]);
   }, 60_000);
 });
+
+/**
+ * Task 13.3 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * decision Q115, G9-6; `002` Q42).
+ *
+ * Scenario (verbatim from the spec): "Create and link give one generic answer
+ * to every conflict"
+ * - WHEN an admin creates a user for an email that already has an account in
+ *   this tenant or in another tenant, or links a `sub` that is already linked,
+ *   or links a `sub` to an admin or an owner
+ * - THEN every cause answers with the same `CATALOG_VALIDATION_FAILED` and a
+ *   fixed message, and no state changes, so a failed probe leaves no partial
+ *   state
+ * - AND each cause is logged only in
+ *   `catalog.security.identity_conflict_refused`, with its own bounded reason
+ *   and no email or `sub`
+ *
+ * Task 13.3 also: each lifecycle action emits its declared event
+ * (`catalog.audit.user_created`, `catalog.audit.credential_created`,
+ * `catalog.audit.credential_rotated`, `catalog.security.credential_revoked`).
+ * The design's log events table gives their attributes.
+ *
+ * ## Production symbols expected
+ *
+ * None new in the module graph. `createIdentityRouter` emits, through
+ * `emitIdentityEvent`:
+ * - `catalog.security.identity_conflict_refused` (WARN) with `tayzu.tenant.id`,
+ *   `tayzu.actor.id`, `tayzu.identity.conflict.reason` (`account_exists` |
+ *   `target_in_other_tenant` | `sub_already_linked`) and, when the target
+ *   account exists, `tayzu.identity.user.id`; `users.create` and
+ *   `users.linkSsoAccount` answer every conflict with one
+ *   `CATALOG_VALIDATION_FAILED` and one fixed message per operation.
+ * - `catalog.audit.user_created` (INFO) from `users.create`: `tayzu.tenant.id`,
+ *   `tayzu.actor.id`, `tayzu.identity.user.id`, `tayzu.identity.user.role`,
+ *   `tayzu.identity.user.source` = `admin`.
+ * - `catalog.audit.credential_created` (INFO) from `credentials.create`:
+ *   `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id`,
+ *   `tayzu.identity.credential.kind`.
+ * The rotated and revoked events already exist; their tests pass on arrival.
+ */
+describe('create and link give one generic answer to every conflict (task 13.3)', () => {
+  const CONFLICT = 'catalog.security.identity_conflict_refused';
+  let harness: TelemetryTestHarness;
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface SignInSurface {
+    signInEmail(args: {
+      body: { email: string; password: string };
+      headers: Headers;
+    }): Promise<unknown>;
+  }
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+        userSync: createUserSyncAdapter({ userSync }),
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  function randomIp(): string {
+    const octet = (): string => randomInt(1, 255).toString(10);
+    return `10.${octet()}.${octet()}.${octet()}`;
+  }
+
+  async function freshTenant(): Promise<string> {
+    const id = randomUUID();
+    const owner = await createAdminUser(auth, {
+      name: 'Tenant Owner',
+      email: `owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await (auth.api as CreateOrganizationSurface).createOrganization({
+      body: { name: 'Conflict Org', slug: `conflict-${id}`, userId: owner.userId },
+    });
+    return org.id;
+  }
+
+  /** A user with a live session; a member of `tenantId` as `role`, or of no tenant. */
+  async function seedUser(
+    tenantId: string | undefined,
+    role: 'member' | 'admin' | 'owner' = 'member',
+  ): Promise<{ userId: string; email: string }> {
+    const user = await createAdminUser(auth, {
+      name: 'Conflict Target',
+      email: `target-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    if (tenantId !== undefined) {
+      await (auth.api as AddMemberSurface).addMember({
+        body: { userId: user.userId, organizationId: tenantId, role },
+      });
+    }
+    await (auth.api as SignInSurface).signInEmail({
+      body: { email: user.email, password: TEST_PASSWORD },
+      headers: new Headers({ 'x-forwarded-for': randomIp() }),
+    });
+    return user;
+  }
+
+  function adminContext(tenantId: string, adminId: string): Record<string, unknown> {
+    return {
+      tenantId,
+      actor: { type: 'user', id: adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  /** Everything a conflict must leave untouched, for the user and for the address. */
+  async function snapshot(userId: string, email: string, tenantId: string): Promise<string> {
+    const query = async (text: string, values: unknown[]): Promise<unknown[]> =>
+      (await authPool.query(text, values)).rows as unknown[];
+    return JSON.stringify({
+      users: await query(
+        `select id, name, email, role, banned, updated_at from auth."user" where email = $1 order by id`,
+        [email],
+      ),
+      accounts: await query(
+        `select id, provider_id, account_id, password from auth.account where user_id = $1 order by id`,
+        [userId],
+      ),
+      members: await query(
+        `select organization_id, role from auth.member where user_id = $1 order by organization_id`,
+        [userId],
+      ),
+      sessions: await query(`select id from auth.session where user_id = $1 order by id`, [userId]),
+      userEntities: await query(
+        `select seq from catalog_change_event
+          where tenant_id = $1 and blueprint_identifier = '_user' and resource_identifier = $2
+          order by seq`,
+        [tenantId, email],
+      ),
+    });
+  }
+
+  async function answerOf(call: Promise<unknown>): Promise<Record<string, unknown>> {
+    const error = await call.then(
+      () => {
+        throw new Error('expected the call to be rejected');
+      },
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    const { code, message, status, data } = error as Record<string, unknown>;
+    expect(code).toBe('CATALOG_VALIDATION_FAILED');
+    return { code, message, status, data };
+  }
+
+  async function refusals(tenantId: string) {
+    const records = await linkLogEvents(harness, CONFLICT);
+    return records.filter((record) => record.attributes['tayzu.tenant.id'] === tenantId);
+  }
+
+  function expectNoLeak(answer: unknown, event: unknown, secrets: readonly string[]): void {
+    const serialized = JSON.stringify([answer, event]);
+    for (const secret of secrets) expect(serialized).not.toContain(secret);
+  }
+
+  it('creating a user for an email that already has an account in this tenant, in another tenant, or in none answers one fixed CATALOG_VALIDATION_FAILED, changes nothing and logs its own reason', async () => {
+    const tenantId = await freshTenant();
+    const otherTenantId = await freshTenant();
+    const adminId = `admin-${randomUUID()}`;
+    const cases = [
+      { reason: 'account_exists', target: await seedUser(tenantId) },
+      { reason: 'target_in_other_tenant', target: await seedUser(otherTenantId) },
+      { reason: 'account_exists', target: await seedUser(undefined) },
+    ] as const;
+
+    const answers: Record<string, unknown>[] = [];
+    for (const { reason, target } of cases) {
+      const before = await snapshot(target.userId, target.email, tenantId);
+
+      const answer = await answerOf(
+        client.identity.users.create(
+          { email: target.email, name: 'Probe', role: 'member' },
+          { context: adminContext(tenantId, adminId) },
+        ),
+      );
+      answers.push(answer);
+
+      expect(
+        await snapshot(target.userId, target.email, tenantId),
+        `${reason}: no state change`,
+      ).toBe(before);
+      const events = (await refusals(tenantId)).filter(
+        (record) => record.attributes['tayzu.identity.user.id'] === target.userId,
+      );
+      expect(events, `${reason}: one refusal event for the target`).toHaveLength(1);
+      expect(events[0]?.severityText).toBe('WARN');
+      expect(events[0]?.attributes['tayzu.identity.conflict.reason']).toBe(reason);
+      expect(events[0]?.attributes['tayzu.actor.id']).toBe(adminId);
+      expectNoLeak(answer, events[0], [target.email]);
+    }
+
+    // Every cause answers identically: same code, status, message and data.
+    expect(answers[1]).toEqual(answers[0]);
+    expect(answers[2]).toEqual(answers[0]);
+  }, 120_000);
+
+  it('linking a sub that is already linked answers the generic CATALOG_VALIDATION_FAILED, changes nothing and logs sub_already_linked', async () => {
+    const tenantId = await freshTenant();
+    const adminId = `admin-${randomUUID()}`;
+    const holder = await seedUser(tenantId);
+    const target = await seedUser(tenantId);
+    const subject = `visma-sub-${randomUUID()}`;
+    await client.identity.users.linkSsoAccount(
+      { user: holder.email, subject },
+      { context: adminContext(tenantId, adminId) },
+    );
+    const before = await snapshot(target.userId, target.email, tenantId);
+    const holderBefore = await snapshot(holder.userId, holder.email, tenantId);
+
+    const answer = await answerOf(
+      client.identity.users.linkSsoAccount(
+        { user: target.email, subject },
+        { context: adminContext(tenantId, adminId) },
+      ),
+    );
+
+    expect(await snapshot(target.userId, target.email, tenantId)).toBe(before);
+    expect(await snapshot(holder.userId, holder.email, tenantId), 'the holder keeps the link').toBe(
+      holderBefore,
+    );
+    const events = (await refusals(tenantId)).filter(
+      (record) => record.attributes['tayzu.identity.user.id'] === target.userId,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes['tayzu.identity.conflict.reason']).toBe('sub_already_linked');
+    expect(events[0]?.attributes['tayzu.actor.id']).toBe(adminId);
+    expectNoLeak(answer, events[0], [target.email, holder.email, subject]);
+  }, 120_000);
+
+  it('linking a sub to a user with a membership in another tenant answers the generic rejection and logs target_in_other_tenant', async () => {
+    const tenantId = await freshTenant();
+    const otherTenantId = await freshTenant();
+    const adminId = `admin-${randomUUID()}`;
+    const target = await seedUser(tenantId);
+    await authPool.query(
+      `insert into auth.member (id, organization_id, user_id, role, created_at)
+       values ($1, $2, $3, 'member', now())`,
+      [randomUUID(), otherTenantId, target.userId],
+    );
+    const subject = `visma-sub-${randomUUID()}`;
+    const before = await snapshot(target.userId, target.email, tenantId);
+
+    const answer = await answerOf(
+      client.identity.users.linkSsoAccount(
+        { user: target.email, subject },
+        { context: adminContext(tenantId, adminId) },
+      ),
+    );
+
+    expect(await snapshot(target.userId, target.email, tenantId)).toBe(before);
+    const events = await refusals(tenantId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes['tayzu.identity.conflict.reason']).toBe('target_in_other_tenant');
+    expect(events[0]?.attributes['tayzu.identity.user.id']).toBe(target.userId);
+    expect(events[0]?.attributes['tayzu.actor.id']).toBe(adminId);
+    expectNoLeak(answer, events[0], [target.email, subject]);
+  }, 120_000);
+
+  it('every link cause (already linked, other tenant, admin, owner) answers byte-identically', async () => {
+    const tenantId = await freshTenant();
+    const otherTenantId = await freshTenant();
+    const adminId = `admin-${randomUUID()}`;
+    const context = adminContext(tenantId, adminId);
+    const holder = await seedUser(tenantId);
+    const taken = `visma-sub-${randomUUID()}`;
+    await client.identity.users.linkSsoAccount({ user: holder.email, subject: taken }, { context });
+    const linked = await seedUser(tenantId);
+    const twoTenant = await seedUser(tenantId);
+    await authPool.query(
+      `insert into auth.member (id, organization_id, user_id, role, created_at)
+       values ($1, $2, $3, 'member', now())`,
+      [randomUUID(), otherTenantId, twoTenant.userId],
+    );
+    const peerAdmin = await seedUser(tenantId, 'admin');
+    const peerOwner = await seedUser(tenantId, 'owner');
+
+    const answers = [
+      await answerOf(
+        client.identity.users.linkSsoAccount({ user: linked.email, subject: taken }, { context }),
+      ),
+      await answerOf(
+        client.identity.users.linkSsoAccount(
+          { user: twoTenant.email, subject: `visma-sub-${randomUUID()}` },
+          { context },
+        ),
+      ),
+      await answerOf(
+        client.identity.users.linkSsoAccount(
+          { user: peerAdmin.email, subject: `visma-sub-${randomUUID()}` },
+          { context },
+        ),
+      ),
+      await answerOf(
+        client.identity.users.linkSsoAccount(
+          { user: peerOwner.email, subject: `visma-sub-${randomUUID()}` },
+          { context },
+        ),
+      ),
+    ];
+
+    for (const answer of answers.slice(1)) expect(answer).toEqual(answers[0]);
+    const reasons = (await refusals(tenantId)).map(
+      (record) => record.attributes['tayzu.identity.conflict.reason'],
+    );
+    expect([...reasons].sort()).toEqual([
+      'sub_already_linked',
+      'target_in_other_tenant',
+      'target_is_admin_or_owner',
+      'target_is_admin_or_owner',
+    ]);
+  }, 120_000);
+
+  it('an admin creating a user emits catalog.audit.user_created with the admin as actor and the source admin, and no email', async () => {
+    const tenantId = await freshTenant();
+    const adminId = `admin-${randomUUID()}`;
+    const email = `created-${randomUUID()}@example.test`;
+
+    const created = await client.identity.users.create(
+      { email, name: 'Lifecycle User', role: 'admin' },
+      { context: adminContext(tenantId, adminId) },
+    );
+
+    const events = (await linkLogEvents(harness, 'catalog.audit.user_created')).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.severityText).toBe('INFO');
+    expect(events[0]?.attributes).toEqual({
+      'tayzu.tenant.id': tenantId,
+      'tayzu.actor.id': adminId,
+      'tayzu.identity.user.id': created.userId,
+      'tayzu.identity.user.role': 'admin',
+      'tayzu.identity.user.source': 'admin',
+    });
+    expect(JSON.stringify(events[0])).not.toContain(email);
+    expect(JSON.stringify(events[0])).not.toContain(created.temporaryPassword);
+  }, 60_000);
+
+  describe('credential lifecycle events', () => {
+    interface CredentialClient {
+      identity: {
+        credentials: {
+          create(
+            input: { name: string; kind: 'integration' | 'agent' },
+            options: { context: Record<string, unknown> },
+          ): Promise<{ id: string; secret: string }>;
+          rotate(
+            input: { credential: string },
+            options: { context: Record<string, unknown> },
+          ): Promise<{ id: string; secret: string }>;
+          revoke(
+            input: { credential: string },
+            options: { context: Record<string, unknown> },
+          ): Promise<unknown>;
+        };
+      };
+    }
+
+    async function freshOrgWithAdmin(): Promise<{ tenantId: string; adminId: string }> {
+      const tenantId = await freshTenant();
+      const admin = await seedUser(tenantId, 'admin');
+      return { tenantId, adminId: admin.userId };
+    }
+
+    function eventsOf(name: string, tenantId: string) {
+      return linkLogEvents(harness, name).then((records) =>
+        records.filter((record) => record.attributes['tayzu.tenant.id'] === tenantId),
+      );
+    }
+
+    it('creating a credential emits catalog.audit.credential_created with opaque identifiers and no secret', async () => {
+      const org = await freshOrgWithAdmin();
+      const credentials = (client as unknown as CredentialClient).identity.credentials;
+
+      const created = await credentials.create(
+        { name: 'Lifecycle key', kind: 'agent' },
+        { context: adminContext(org.tenantId, org.adminId) },
+      );
+
+      const events = await eventsOf('catalog.audit.credential_created', org.tenantId);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.severityText).toBe('INFO');
+      expect(events[0]?.attributes).toEqual({
+        'tayzu.tenant.id': org.tenantId,
+        'tayzu.actor.id': org.adminId,
+        'tayzu.identity.credential.id': created.id,
+        'tayzu.identity.credential.kind': 'agent',
+      });
+      expect(JSON.stringify(events[0])).not.toContain(created.secret);
+    }, 120_000);
+
+    it('rotating a credential emits catalog.audit.credential_rotated and revoking one emits catalog.security.credential_revoked (pass on arrival)', async () => {
+      const org = await freshOrgWithAdmin();
+      const credentials = (client as unknown as CredentialClient).identity.credentials;
+      const context = adminContext(org.tenantId, org.adminId);
+      const first = await credentials.create(
+        { name: 'Lifecycle rotate', kind: 'integration' },
+        { context },
+      );
+
+      const rotated = await credentials.rotate({ credential: first.id }, { context });
+      await credentials.revoke({ credential: rotated.id }, { context });
+
+      const rotations = await eventsOf('catalog.audit.credential_rotated', org.tenantId);
+      expect(rotations).toHaveLength(1);
+      expect(rotations[0]?.attributes['tayzu.identity.credential.old_id']).toBe(first.id);
+      expect(rotations[0]?.attributes['tayzu.identity.credential.new_id']).toBe(rotated.id);
+      const revocations = (
+        await eventsOf('catalog.security.credential_revoked', org.tenantId)
+      ).filter((record) => record.attributes['tayzu.identity.credential.id'] === rotated.id);
+      expect(revocations).toHaveLength(1);
+      expect(revocations[0]?.severityText).toBe('WARN');
+    }, 120_000);
+  });
+});

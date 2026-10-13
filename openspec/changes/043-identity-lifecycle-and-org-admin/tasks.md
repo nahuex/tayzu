@@ -2907,7 +2907,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `target_is_admin_or_owner` and no email or `sub`, a link on a plain `member` still
       succeeding, and an admin linking their own identity through `/link-social` with
       step-up.
-- [ ] 13.3 `createUser` and `linkSsoAccount` give one generic answer to every
+- [x] 13.3 `createUser` and `linkSsoAccount` give one generic answer to every
       conflict (an account that already exists in this tenant, one in another
       tenant, a `sub` that is already linked, an `admin` or `owner` target of a link, 13.2b): `CATALOG_VALIDATION_FAILED`, a fixed
       message and no state change, so a failed probe leaves no partial state and the

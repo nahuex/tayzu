@@ -158,12 +158,22 @@ describe('identity telemetry helpers (task 2.0c)', () => {
 });
 
 describe('identity contract module (task 2.0c, Resolved decision Q74)', () => {
-  it('is importable from the package index with no name declared', () => {
+  it('is importable from the package index and holds the names 13.3 declares', () => {
     expect(index.IDENTITY_SPANS).toBe(contract.IDENTITY_SPANS);
     expect(index.IDENTITY_METRICS).toBe(contract.IDENTITY_METRICS);
     expect(index.IDENTITY_LOG_EVENTS).toBe(contract.IDENTITY_LOG_EVENTS);
+    const eventNames = index.IDENTITY_LOG_EVENTS.map((entry) =>
+      typeof entry === 'string' ? entry : entry.name,
+    );
     expect(index.IDENTITY_SPANS).toEqual([]);
     expect(index.IDENTITY_METRICS).toEqual([]);
-    expect(index.IDENTITY_LOG_EVENTS).toEqual([]);
+    expect([...eventNames].sort()).toEqual(
+      [
+        'catalog.audit.user_created',
+        'catalog.audit.credential_created',
+        'catalog.audit.credential_rotated',
+        'catalog.security.credential_revoked',
+      ].sort(),
+    );
   });
 });
