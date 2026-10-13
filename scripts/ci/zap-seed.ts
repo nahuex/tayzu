@@ -11,6 +11,8 @@ import { createHmac } from 'node:crypto';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { generateTemporaryPassword } from '../../packages/auth/src/identity/temporary-password.js';
+
 type Env = Readonly<Record<string, string | undefined>>;
 
 export interface ZapSeedConfig {
@@ -278,13 +280,18 @@ export async function mfaSessionCookie(
   client: SeedClient,
   credentials: { readonly email: string; readonly password: string },
 ): Promise<{ readonly cookie: string; readonly secret: string }> {
-  const enrollment = await signInForSessionCookie({ ...client, ...credentials });
-  const enabled = await postAuth(
+  const temporarySession = await signInForSessionCookie({ ...client, ...credentials });
+  // The bootstrap password is temporary (043 task 13.5): until it is changed the
+  // session reaches only `/change-password`. The new one satisfies the password policy.
+  const password = generateTemporaryPassword();
+  const changed = await postAuth(
     client,
-    '/two-factor/enable',
-    { password: credentials.password },
-    enrollment,
+    '/change-password',
+    { currentPassword: credentials.password, newPassword: password },
+    temporarySession,
   );
+  const enrollment = cookiesOf(changed, temporarySession);
+  const enabled = await postAuth(client, '/two-factor/enable', { password }, enrollment);
   const { totpURI } = (await enabled.json()) as { totpURI?: unknown };
   const secret = typeof totpURI === 'string' ? new URL(totpURI).searchParams.get('secret') : null;
   if (secret === null) {
@@ -297,7 +304,12 @@ export async function mfaSessionCookie(
     cookiesOf(enabled, enrollment),
   );
 
-  const challenge = await postAuth(client, '/sign-in/email', credentials, undefined);
+  const challenge = await postAuth(
+    client,
+    '/sign-in/email',
+    { email: credentials.email, password },
+    undefined,
+  );
   // A fresh time step, so the sign-in code is never the enrollment code.
   const now = await waitForNextTotpStep();
   const verified = await postAuth(

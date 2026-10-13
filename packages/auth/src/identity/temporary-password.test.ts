@@ -25,7 +25,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validatePassword } from './password-policy.js';
 import { generateTemporaryPassword } from './temporary-password.js';
@@ -88,5 +88,46 @@ describe('the two call sites use the shared generator', () => {
     expect(source).not.toMatch(/\brandomBytes\b/);
     expect(source).not.toMatch(/function\s+generateTemporaryPassword\b/);
     expect(source).toMatch(/\bgenerateTemporaryPassword\(\)/);
+  });
+});
+
+describe('bootstrap passwords are held to the password policy', () => {
+  it('a bootstrap password failing the policy is refused: no admin password is returned and no organization is created', async () => {
+    vi.resetModules();
+    // A generator that (wrongly) yields a password failing the policy: no symbol, no digit.
+    vi.doMock('./temporary-password.js', () => ({
+      generateTemporaryPassword: () => 'weakpasswordweakpassword',
+    }));
+    try {
+      const { bootstrapAdmin } = await import('../bootstrap-admin.js');
+      const createUser = vi.fn((args: { body: { password: string } }) => {
+        // Stands in for the `/admin/create-user` policy hook of 8.1b.
+        if (!validatePassword(args.body.password).ok) {
+          return Promise.reject(new Error('PASSWORD_POLICY_VIOLATION'));
+        }
+        return Promise.resolve({ user: { id: 'user-1', email: 'admin@example.test' } });
+      });
+      const createOrganization = vi.fn(() => Promise.resolve({ id: 'org-1', slug: 'acme' }));
+      const auth = { api: { createUser, createOrganization } } as unknown as Parameters<
+        typeof bootstrapAdmin
+      >[0];
+
+      await expect(
+        bootstrapAdmin(
+          auth,
+          {
+            organizationName: 'Acme',
+            organizationSlug: 'acme',
+            adminName: 'Admin',
+            adminEmail: 'admin@example.test',
+          },
+          { operatorId: 'op-1' },
+        ),
+      ).rejects.toBeDefined();
+      expect(createOrganization).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('./temporary-password.js');
+      vi.resetModules();
+    }
   });
 });

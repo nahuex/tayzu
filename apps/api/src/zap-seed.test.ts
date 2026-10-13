@@ -50,9 +50,12 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { validatePassword } from '../../../packages/auth/src/identity/password-policy.js';
+
 // The module under test. Does not exist yet.
 import {
   buildZapAuthHeader,
+  mfaSessionCookie,
   parseZapSeedConfig,
   signInForSessionCookie,
 } from '../../../scripts/ci/zap-seed.js';
@@ -371,6 +374,79 @@ describe('ZAP seed script: the moved bootstrap CLI (task 4.6b)', () => {
       'TAYZU_OPERATOR_ID',
     ]) {
       expect(source, name).toContain(name);
+    }
+  });
+});
+
+/**
+ * `043` task 13.5b: the bootstrap password is temporary, so the first sign-in only
+ * reaches `/change-password` (13.5). The seed changes it to a policy-compliant
+ * password (8.1) before enrolling MFA, and uses the new one afterwards.
+ */
+describe('ZAP seed script: honors the forced password change (task 13.5b)', () => {
+  const TEMPORARY = 'Temp0rary!Bootstrap-Pw#2468';
+  const BASE32_SECRET = 'JBSWY3DPEHPK3PXP';
+
+  it('changes the temporary password to a policy-compliant one before MFA enrollment and uses it afterwards', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      const calls: { path: string; body: Record<string, unknown>; cookie: string | null }[] = [];
+      const fakeFetch = vi.fn<typeof fetch>((input, init) => {
+        const url = new URL(
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        );
+        const headers = new Headers(init?.headers);
+        const body =
+          typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        calls.push({
+          path: url.pathname.replace('/api/auth', ''),
+          body,
+          cookie: headers.get('cookie'),
+        });
+        const path = url.pathname.replace('/api/auth', '');
+        const respond = (json: unknown, cookie: string): Response =>
+          new Response(JSON.stringify(json), {
+            status: 200,
+            headers: { 'set-cookie': `better-auth.session_token=${cookie}; Path=/; HttpOnly` },
+          });
+        if (path === '/two-factor/enable') {
+          return Promise.resolve(
+            respond({ totpURI: `otpauth://totp/Tayzu?secret=${BASE32_SECRET}` }, 'enabled.sig'),
+          );
+        }
+        return Promise.resolve(respond({ ok: true }, `${path.replace(/\W/g, '')}.sig`));
+      });
+
+      const pending = mfaSessionCookie(
+        { baseUrl: 'http://127.0.0.1:3000', origin: 'http://127.0.0.1:3000', fetch: fakeFetch },
+        { email: 'zap-admin@example.test', password: TEMPORARY },
+      );
+      await vi.advanceTimersByTimeAsync(31_000);
+      await pending;
+
+      const paths = calls.map((call) => call.path);
+      const change = paths.indexOf('/change-password');
+      const enable = paths.indexOf('/two-factor/enable');
+      expect(change).toBeGreaterThan(-1);
+      expect(enable).toBeGreaterThan(change);
+      // Only the sign-in precedes the change.
+      expect(paths.slice(0, change)).toEqual(['/sign-in/email']);
+
+      const changeCall = calls[change];
+      expect(changeCall?.cookie).toContain('better-auth.session_token=');
+      expect(changeCall?.body['currentPassword']).toBe(TEMPORARY);
+      const newPassword = changeCall?.body['newPassword'];
+      expect(typeof newPassword).toBe('string');
+      expect(newPassword).not.toBe(TEMPORARY);
+      expect(validatePassword(String(newPassword)).ok).toBe(true);
+
+      // Afterwards the new password is the credential, never the temporary one.
+      expect(calls[enable]?.body['password']).toBe(newPassword);
+      const laterSignIns = calls.slice(change + 1).filter((c) => c.path === '/sign-in/email');
+      expect(laterSignIns.length).toBeGreaterThan(0);
+      for (const signIn of laterSignIns) expect(signIn.body['password']).toBe(newPassword);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

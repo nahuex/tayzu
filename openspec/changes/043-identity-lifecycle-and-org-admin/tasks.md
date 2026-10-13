@@ -3011,7 +3011,7 @@ SSO surfaces of M18) are recorded there with their justification.
       the change-password route, `/sign-out` and `/get-session` on both `/v1` (where
       only the change is reachable) and `/api/auth/*`, and that changing it clears
       the marker.
-- [ ] 13.5b (Resolved decision Q136: its shared generator, both call sites and the
+- [x] 13.5b (Resolved decision Q136: its shared generator, both call sites and the
       1000-password test landed before 8.1c; what remains here is the rest of the
       Verify.) The generated temporary password satisfies the password policy of 8.1 by
       construction. Today it is `randomBytes(24)` as base64url, whose only symbols are
