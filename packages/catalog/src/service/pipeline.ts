@@ -125,6 +125,12 @@ export interface CatalogOperationHandlerParams<Input> {
   /** From `withTenantTransaction`: `app.tenant_id` and `statement_timeout` are already set. */
   readonly client: PoolClient;
   readonly input: Input;
+  /**
+   * What `loadAttributes` returned for the authorization (task 13.6): `undefined`
+   * when it found no entity or the operation has no `loadAttributes`. A handler
+   * that writes re-verifies it after its own `FOR UPDATE`.
+   */
+  readonly authorizedAttributes: AuthorizationDeclaration['attributes'];
 }
 
 export type CatalogOperationHandler<Input, Output> = (
@@ -507,6 +513,7 @@ export function defineCatalogOperation<Input, Output>(
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
+        let authorized: AuthorizationDeclaration['attributes'];
         if (typeof authorization === 'function') {
           const declaration = authorization({ ctx, input });
           const loaded =
@@ -515,6 +522,7 @@ export function defineCatalogOperation<Input, Output>(
               : await withTenantTransaction(pool, ctx, (client) =>
                   loadAttributes({ ctx, client, input }),
                 );
+          authorized = loaded;
           const missing =
             loadAttributes !== undefined &&
             loaded === undefined &&
@@ -536,7 +544,7 @@ export function defineCatalogOperation<Input, Output>(
         const result = await withTenantTransaction(
           pool,
           ctx,
-          (client) => handler({ ctx, client, input }),
+          (client) => handler({ ctx, client, input, authorizedAttributes: authorized }),
           {
             statementTimeoutMs,
           },

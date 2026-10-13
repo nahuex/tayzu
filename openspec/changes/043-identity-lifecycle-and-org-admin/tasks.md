@@ -3051,7 +3051,7 @@ SSO surfaces of M18) are recorded there with their justification.
       wrong password (the HTTP response's own status, error code and body, and no
       session cookie set) with no session row remaining, and the user able to sign in again after an admin sets a new
       temporary password.
-- [ ] 13.6 Authorization and the write run against the same state: the handler
+- [x] 13.6 Authorization and the write run against the same state: the handler
       re-verifies `ownerTeam`, `locked` and `createdBy` inside its own transaction,
       after `FOR UPDATE`, so a concurrent ownership or lock change is seen and an
       `upsert` authorized as `create` cannot land as an update (`002` VCDM M4).

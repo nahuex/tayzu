@@ -85,6 +85,29 @@ export async function loadEntityAuthzAttributes(params: {
   });
 }
 
+/**
+ * Task 13.6 (002 VCDM M4): called by a writing handler after its own `FOR
+ * UPDATE`, so the write runs against the state the authorization decided on.
+ * `ownerTeam`, `locked` and `createdBy` (or the entity's absence) must be what
+ * `authorized` recorded; anything else fails closed with `AUTH_FORBIDDEN`.
+ */
+export async function assertAuthorizedStateUnchanged(params: {
+  readonly ctx: CatalogContext;
+  readonly client: PoolClient;
+  readonly input: unknown;
+  readonly authorized: EntityAuthzAttributes | undefined;
+}): Promise<void> {
+  const current = await loadEntityAuthzAttributes(params);
+  const { authorized } = params;
+  if (current === undefined || authorized === undefined) {
+    if (current !== authorized) throw new AuthorizationError();
+    return;
+  }
+  for (const key of ['ownerTeam', 'locked', 'createdBy']) {
+    if (current[key] !== authorized[key]) throw new AuthorizationError();
+  }
+}
+
 /** The attributes of the entity a `create` is about to write, read defensively from the untrusted input. */
 export function newEntityAuthzAttributes(params: {
   readonly ctx: CatalogContext;

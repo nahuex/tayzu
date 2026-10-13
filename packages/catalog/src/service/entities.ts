@@ -88,6 +88,7 @@ import {
   type PlanFilter,
 } from '@tayzu/authz';
 import {
+  assertAuthorizedStateUnchanged,
   loadEntityAuthzAttributes as loadEntityAttributes,
   newEntityAuthzAttributes,
 } from './entity-authz-attributes.js';
@@ -1162,7 +1163,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
-    handler: async ({ ctx, client, input: rawInput }) => {
+    handler: async ({ ctx, client, input: rawInput, authorizedAttributes }) => {
       const input = parseSafeEntityInput(rawInput, limits) as UpsertEntityInput;
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
@@ -1184,6 +1185,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintRow.id);
       const currentRow = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, identifier, {
         forUpdate: true,
+      });
+      await assertAuthorizedStateUnchanged({
+        ctx,
+        client,
+        input: rawInput,
+        authorized: authorizedAttributes,
       });
 
       if (
@@ -1691,7 +1698,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
-    handler: async ({ ctx, client, input }) => {
+    handler: async ({ ctx, client, input, authorizedAttributes }) => {
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       trace
@@ -1711,6 +1718,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
 
       const row = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, input.identifier, {
         forUpdate: true,
+      });
+      await assertAuthorizedStateUnchanged({
+        ctx,
+        client,
+        input,
+        authorized: authorizedAttributes,
       });
       if (!row) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
 
