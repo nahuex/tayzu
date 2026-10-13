@@ -798,31 +798,46 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               if (single) await adapter.updateUser(userId, { banned: false });
               return;
             }
-            // Design D13 (Q123): the user's pending invitations of this tenant are cancelled; others are skipped.
-            const pending = await options.authRepository.pendingInvitationsByEmail(
-              tenantId,
-              user.email,
-            );
-            for (const invitation of pending) {
-              const attributes = {
-                'tayzu.identity.invitation.id': invitation.id,
-                'tayzu.identity.invitation.reason': 'user_disabled',
-              };
-              const cancelled = await withIdentitySpan(
-                'identity.invitation.cancel',
-                attributes,
-                () => options.authRepository.markInvitationCancelled(tenantId, invitation.id),
-              );
-              if (!cancelled) continue;
-              emitIdentityEvent({
-                name: 'catalog.audit.invitation_cancelled',
-                severity: 'INFO',
-                attributes: {
-                  'tayzu.tenant.id': tenantId,
-                  'tayzu.actor.id': adminId,
-                  ...attributes,
-                },
-              });
+            // Design D13 (Q63, Q123): the pending invitations to the user and those the user created
+            // in this tenant are cancelled; any other status is skipped.
+            const toCancel = [
+              {
+                reason: 'user_disabled',
+                invitations: await options.authRepository.pendingInvitationsByEmail(
+                  tenantId,
+                  user.email,
+                ),
+              },
+              {
+                reason: 'inviter_disabled',
+                invitations: await options.authRepository.pendingInvitationsByInviter(
+                  tenantId,
+                  userId,
+                ),
+              },
+            ];
+            for (const { reason, invitations } of toCancel) {
+              for (const invitation of invitations) {
+                const attributes = {
+                  'tayzu.identity.invitation.id': invitation.id,
+                  'tayzu.identity.invitation.reason': reason,
+                };
+                const cancelled = await withIdentitySpan(
+                  'identity.invitation.cancel',
+                  attributes,
+                  () => options.authRepository.markInvitationCancelled(tenantId, invitation.id),
+                );
+                if (!cancelled) continue;
+                emitIdentityEvent({
+                  name: 'catalog.audit.invitation_cancelled',
+                  severity: 'INFO',
+                  attributes: {
+                    'tayzu.tenant.id': tenantId,
+                    'tayzu.actor.id': adminId,
+                    ...attributes,
+                  },
+                });
+              }
             }
             const revoked = await options.authRepository.deleteSessionsOf(tenantId, userId);
             for (let index = 0; index < revoked; index += 1) {

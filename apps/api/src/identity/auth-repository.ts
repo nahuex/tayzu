@@ -71,6 +71,8 @@ export interface AuthRepository {
   invitationById: (tenantId: string, invitationId: string) => Promise<InvitationRead | undefined>;
   /** The `pending` invitations of the tenant to the (canonical) email. */
   pendingInvitationsByEmail: (tenantId: string, email: string) => Promise<InvitationRead[]>;
+  /** The `pending` invitations of the tenant created by the inviter. */
+  pendingInvitationsByInviter: (tenantId: string, inviterId: string) => Promise<InvitationRead[]>;
   listMembers: (tenantId: string) => Promise<MemberRead[]>;
   /** The owners and admins of the tenant other than `excludeUserId`, with their membership dates. */
   adminRecipients: (tenantId: string, excludeUserId: string) => Promise<AdminRecipientRead[]>;
@@ -235,6 +237,17 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
          where organization_id = $1 and lower(email) = lower($2) and status = 'pending'
          order by id`,
         [tenantId, email],
+      );
+      return result.rows.map(toInvitation);
+    },
+
+    async pendingInvitationsByInviter(tenantId, inviterId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<InvitationRow>(
+        `select ${INVITATION_COLUMNS} from auth.invitation
+         where organization_id = $1 and inviter_id = $2 and status = 'pending'
+         order by id`,
+        [tenantId, inviterId],
       );
       return result.rows.map(toInvitation);
     },

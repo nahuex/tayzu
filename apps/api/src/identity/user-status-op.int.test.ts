@@ -632,4 +632,130 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
       'tayzu.identity.invitation.reason': 'user_disabled',
     });
   }, 120_000);
+
+  /**
+   * Task 11.4b (Resolved decisions Q63 and Q123; design D13). Scenario "Disabling cancels the
+   * invitations the user created" (verbatim): GIVEN an admin who created two pending invitations
+   * to other people and one that its invitee has accepted, and another admin's pending
+   * invitation, WHEN the first admin is disabled, THEN their two pending invitations become
+   * `cancelled` with reason `inviter_disabled`, the accepted one stays `accepted` with no
+   * cancellation logged, the other admin's stays `pending`, and re-enabling restores none.
+   * Task 11.4b adds: an invitation created by the same user in another tenant stays pending.
+   * Stored `cancelled` is Better Auth's `canceled`.
+   *
+   * Production behavior expected: the `identity.users.setStatus` handler, on `Disabled`, also
+   * reads the tenant's pending invitations whose inviter is the disabled user, cancels each
+   * (span `identity.invitation.cancel` with `tayzu.identity.invitation.id` and the reason
+   * `inviter_disabled`) and logs `catalog.audit.invitation_cancelled` (`tayzu.tenant.id`,
+   * `tayzu.actor.id` = the acting admin, `tayzu.identity.invitation.id`,
+   * `tayzu.identity.invitation.reason` = `inviter_disabled`) for each one it cancelled only.
+   * Enabling cancels or restores nothing.
+   */
+  it("Disabling cancels the invitations the user created: the user's two pending invitations become cancelled with the reason inviter_disabled (logged and traced), the accepted one stays accepted with no cancellation logged, another admin's and the same user's other-tenant invitations stay pending, and re-enabling restores none", async () => {
+    const fixture = await freshFixture();
+    const cancelledEvent = 'catalog.audit.invitation_cancelled';
+    // The user being disabled is the inviter: `fixture.targetId` (a plain member here, which is
+    // enough for the inviter column; the acting admin is `fixture.adminId`).
+    const inviterId = fixture.targetId;
+    const otherAdminId = fixture.adminId;
+    const insertInvitation = async (
+      organizationId: string,
+      status: 'pending' | 'accepted',
+      inviter: string,
+    ): Promise<string> => {
+      const id = `inv-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+         values ($1, $2, $3, 'member', $4, now() + interval '48 hours', now(), $5)`,
+        [id, organizationId, `invitee-${randomUUID()}@example.test`, status, inviter],
+      );
+      return id;
+    };
+    const statusOf = async (id: string): Promise<string | undefined> => {
+      const result = await authPool.query<{ status: string }>(
+        'select status from auth.invitation where id = $1',
+        [id],
+      );
+      return result.rows[0]?.status;
+    };
+
+    // GIVEN the inviter created two pending invitations and one that its invitee accepted,
+    // another admin has a pending invitation, and the inviter has a pending one in another tenant.
+    const otherTenant = `org-${randomUUID()}`;
+    await authPool.query(
+      'insert into auth.organization (id, name, slug, created_at) values ($1, $2, $3, now())',
+      [otherTenant, 'Other Org', `slug-${otherTenant}`],
+    );
+    const pendingA = await insertInvitation(fixture.tenantId, 'pending', inviterId);
+    const pendingB = await insertInvitation(fixture.tenantId, 'pending', inviterId);
+    const acceptedId = await insertInvitation(fixture.tenantId, 'accepted', inviterId);
+    const otherAdminsId = await insertInvitation(fixture.tenantId, 'pending', otherAdminId);
+    const otherTenantId = await insertInvitation(otherTenant, 'pending', inviterId);
+    const all = [pendingA, pendingB, acceptedId, otherAdminsId, otherTenantId];
+
+    // WHEN the inviter is disabled.
+    await statusClient().identity.users.setStatus(
+      { user: fixture.targetEmail, status: 'Disabled' },
+      { context: context(fixture) },
+    );
+
+    // THEN their two pending invitations are `cancelled` (stored `canceled`).
+    expect(await statusOf(pendingA)).toBe('canceled');
+    expect(await statusOf(pendingB)).toBe('canceled');
+    // AND the accepted one stays `accepted`, the other admin's and the other tenant's stay `pending`.
+    expect(await statusOf(acceptedId)).toBe('accepted');
+    expect(await statusOf(otherAdminsId)).toBe('pending');
+    expect(await statusOf(otherTenantId)).toBe('pending');
+
+    // AND exactly two cancellations are logged, for the two pending ones, with the reason
+    // `inviter_disabled`, the tenant and the acting admin, and no email.
+    const forThese = async () =>
+      (await logRecords(cancelledEvent)).filter((record) =>
+        all.some((id) => record.attributes['tayzu.identity.invitation.id'] === id),
+      );
+    const events = await forThese();
+    expect(events, 'one cancellation event per pending invitation only').toHaveLength(2);
+    expect(
+      events.map((record) => record.attributes['tayzu.identity.invitation.id']).sort(),
+    ).toEqual([pendingA, pendingB].sort());
+    for (const record of events) {
+      expect(record.attributes).toMatchObject({
+        'tayzu.tenant.id': fixture.tenantId,
+        'tayzu.actor.id': fixture.adminId,
+        'tayzu.identity.invitation.reason': 'inviter_disabled',
+      });
+      expect(JSON.stringify(record.attributes)).not.toContain('@example.test');
+    }
+
+    // AND one `identity.invitation.cancel` span per cancelled invitation carries the reason.
+    await harness.forceFlush();
+    const spans = harness.spanExporter
+      .getFinishedSpans()
+      .filter(
+        (span) =>
+          span.name === 'identity.invitation.cancel' &&
+          all.some((id) => span.attributes['tayzu.identity.invitation.id'] === id),
+      );
+    expect(spans).toHaveLength(2);
+    expect(spans.map((span) => span.attributes['tayzu.identity.invitation.id']).sort()).toEqual(
+      [pendingA, pendingB].sort(),
+    );
+    for (const span of spans) {
+      expect(span.attributes['tayzu.identity.invitation.reason']).toBe('inviter_disabled');
+    }
+
+    // WHEN the inviter is re-enabled.
+    await statusClient().identity.users.setStatus(
+      { user: fixture.targetEmail, status: 'Active' },
+      { context: context(fixture) },
+    );
+
+    // THEN no invitation is restored and nothing else changed or was logged.
+    expect(await statusOf(pendingA)).toBe('canceled');
+    expect(await statusOf(pendingB)).toBe('canceled');
+    expect(await statusOf(acceptedId)).toBe('accepted');
+    expect(await statusOf(otherAdminsId)).toBe('pending');
+    expect(await statusOf(otherTenantId)).toBe('pending');
+    expect(await forThese()).toHaveLength(2);
+  }, 120_000);
 });

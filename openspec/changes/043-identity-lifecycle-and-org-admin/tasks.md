@@ -2707,7 +2707,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       (Resolved decision Q123). Verify: `user-status-op.int.test.ts` covers "Disabling
       cancels pending invitations", including an accepted invitation of the same user
       staying `accepted`, with no `catalog.audit.invitation_cancelled` logged for it.
-- [ ] 11.4b Disabling a user also cancels the pending invitations that user
+- [x] 11.4b Disabling a user also cancels the pending invitations that user
       **created** in that tenant (reason `inviter_disabled`, Resolved decision Q63;
       design D13), and enabling restores none; an invitation whose status is not
       `pending` is skipped (Resolved decision Q123). The acceptance check of 8.5f stays the
