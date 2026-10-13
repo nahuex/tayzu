@@ -3332,7 +3332,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `apps/api/src/identity/`) covers two stores over one database sharing one count
       per scope, the send past the per-recipient cap being refused with
       `AUTH_RATE_LIMITED` and `Retry-After`, and every key stored only as a hash.
-- [ ] 14.13 The gate's controls reach production (Resolved decision Q138; 6.6 to 6.9):
+- [x] 14.13 The gate's controls reach production (Resolved decision Q138; 6.6 to 6.9):
       `createAppFromEnv` passes the kill switch, the disabled tenants, the tenant and
       recipient caps and the recipient key secret from the configuration. Verify:
       `identity-wiring.int.test.ts` (14.11) covers `INVITATION_EMAIL_KILL_SWITCH=true`

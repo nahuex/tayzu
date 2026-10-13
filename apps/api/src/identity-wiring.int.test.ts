@@ -29,6 +29,9 @@
  *   `identity.emailGate`); with the switch on, `createApp` (`./server.js`) builds the
  *   gate of D5 and hands the gate and the link base URL to `createIdentityRouter`.
  */
+// Load-bearing import order (design D1): the telemetry harness registers before anything
+// that loads `@tayzu/auth` creates its logger (task 14.13 reads log events).
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { randomInt, randomUUID } from 'node:crypto';
 
 import type { createRecordingEmailSender } from '@tayzu/auth';
@@ -211,4 +214,189 @@ describe('identity email wiring through createAppFromEnv (task 14.11)', () => {
     expect(after.at(-1)?.template.kind).toBe('InvitationEmail');
     expect(linkOf(email, after.length - 1).origin).toBe(LINK_ORIGIN);
   });
+});
+
+/**
+ * Task 14.13 (Resolved decision Q138; 6.6 to 6.9): "`identity-wiring.int.test.ts` (14.11)
+ * covers `INVITATION_EMAIL_KILL_SWITCH=true` answering an invite with `AUTH_RATE_LIMITED`
+ * scope `global`, a tenant in `EMAIL_DISABLED_TENANT_IDS` answering 200 with nothing sent
+ * and `catalog.security.email_tenant_blocked` logged, `INVITATION_TENANT_RATE_LIMIT_MAX=1`
+ * refusing the second invite with scope `tenant`, and `INVITATION_RECIPIENT_RATE_LIMIT_MAX=1`
+ * refusing the same address invited from a second tenant with scope `recipient`."
+ *
+ * Each case builds its own app through `createAppFromEnv` with the one control set. The
+ * admins are created through a plain app (tenant ids are only known afterwards, which the
+ * disabled-tenant case needs); sessions live in the database, so the cookie works on the
+ * app under test. The refusal scope is read from the `limit_scope` attribute of
+ * `catalog.security.invitation_rate_limited` (the response never reveals it).
+ *
+ * Production symbols expected: none new; `createAppFromEnv` already passes the controls
+ * from the configuration (this task proves it). Config fields as in `config.ts`.
+ */
+describe('identity email gate controls reach production (task 14.13)', () => {
+  const RATE_EVENT = 'catalog.security.invitation_rate_limited';
+  const BLOCKED_EVENT = 'catalog.security.email_tenant_blocked';
+  let pools: HarnessPools;
+  let baseApp: App;
+  let harness: TelemetryTestHarness;
+  const apps: App[] = [];
+
+  async function buildApp(
+    extra: Record<string, string>,
+  ): Promise<{ app: App; sender: RecordingSender }> {
+    const before = state.senders.length;
+    const built = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN}`,
+      INVITATION_LINK_BASE_URL: LINK_ORIGIN,
+      IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
+      MOUNT_IDENTITY_ROUTES: 'true',
+      ...extra,
+    });
+    apps.push(built);
+    expect(state.senders.length, 'one sender is built for this app').toBe(before + 1);
+    return { app: built, sender: state.senders[before] as RecordingSender };
+  }
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    pools = await harnessPools();
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+    baseApp = (await buildApp({})).app;
+  }, 60_000);
+
+  afterAll(async () => {
+    for (const built of apps) await built.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function adminOn(target: App): Promise<BootstrappedTenant> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(baseApp.auth, {
+      pool: testAppPool(),
+      name: 'Identity Gate Admin',
+      email: `identity-gate-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Identity Gate ${suffix}`,
+      organizationSlug: `identity-gate-${suffix}`,
+      ip: randomIp(),
+    });
+    return await enrolledAdminSession(target, tenant, {
+      password: TEST_PASSWORD,
+      origin: ORIGIN,
+    });
+  }
+
+  async function invite(
+    target: App,
+    cookie: string,
+    email: string,
+  ): Promise<{ status: number; body: string; code: unknown }> {
+    const response = await target.app.inject({
+      method: 'POST',
+      url: '/v1/users/invitations',
+      headers: {
+        cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify({ email, role: 'member' }),
+    });
+    let code: unknown;
+    try {
+      code = response.json<{ code?: unknown }>().code;
+    } catch {
+      // A non-JSON body leaves the code undefined, which fails the assertions.
+    }
+    return { status: response.statusCode, body: response.body, code };
+  }
+
+  async function eventsOf(name: string, tenantId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === name && record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+  }
+
+  async function limitScopes(tenantId: string): Promise<unknown[]> {
+    return (await eventsOf(RATE_EVENT, tenantId)).map(
+      (record) => record.attributes['tayzu.identity.invitation.limit_scope'],
+    );
+  }
+
+  it('INVITATION_EMAIL_KILL_SWITCH=true answers an invite with AUTH_RATE_LIMITED, scope global, and sends nothing', async () => {
+    const { app: target, sender } = await buildApp({ INVITATION_EMAIL_KILL_SWITCH: 'true' });
+    const admin = await adminOn(target);
+    const email = `identity-gate-kill-${randomUUID()}@example.test`;
+
+    const answer = await invite(target, admin.cookie, email);
+
+    expect(answer.status, answer.body).toBe(429);
+    expect(answer.code).toBe('AUTH_RATE_LIMITED');
+    expect(sender.sent.filter((message) => message.to === email)).toHaveLength(0);
+    expect(await limitScopes(admin.organizationId)).toEqual(['global']);
+  }, 60_000);
+
+  it('a tenant in EMAIL_DISABLED_TENANT_IDS answers 200, sends nothing and logs catalog.security.email_tenant_blocked', async () => {
+    const admin = await adminOn(baseApp);
+    const { app: target, sender } = await buildApp({
+      EMAIL_DISABLED_TENANT_IDS: admin.organizationId,
+    });
+    const email = `identity-gate-disabled-${randomUUID()}@example.test`;
+
+    const answer = await invite(target, admin.cookie, email);
+
+    expect(answer.status, answer.body).toBe(200);
+    expect(sender.sent.filter((message) => message.to === email)).toHaveLength(0);
+    const blocked = await eventsOf(BLOCKED_EVENT, admin.organizationId);
+    expect(blocked, 'exactly one email_tenant_blocked event').toHaveLength(1);
+    expect(JSON.stringify(blocked[0])).not.toContain(email);
+  }, 60_000);
+
+  it('INVITATION_TENANT_RATE_LIMIT_MAX=1 refuses the second invite with scope tenant', async () => {
+    const { app: target, sender } = await buildApp({ INVITATION_TENANT_RATE_LIMIT_MAX: '1' });
+    const admin = await adminOn(target);
+    const first = `identity-gate-tenant-a-${randomUUID()}@example.test`;
+    const second = `identity-gate-tenant-b-${randomUUID()}@example.test`;
+
+    const allowed = await invite(target, admin.cookie, first);
+    const refused = await invite(target, admin.cookie, second);
+
+    expect(allowed.status, allowed.body).toBe(200);
+    expect(refused.status, refused.body).toBe(429);
+    expect(refused.code).toBe('AUTH_RATE_LIMITED');
+    expect(sender.sent.filter((message) => message.to === first)).toHaveLength(1);
+    expect(sender.sent.filter((message) => message.to === second)).toHaveLength(0);
+    expect(await limitScopes(admin.organizationId)).toEqual(['tenant']);
+  }, 60_000);
+
+  it('INVITATION_RECIPIENT_RATE_LIMIT_MAX=1 refuses the same address invited from a second tenant with scope recipient', async () => {
+    const { app: target, sender } = await buildApp({ INVITATION_RECIPIENT_RATE_LIMIT_MAX: '1' });
+    const firstAdmin = await adminOn(target);
+    const secondAdmin = await adminOn(target);
+    const email = `identity-gate-recipient-${randomUUID()}@example.test`;
+
+    const allowed = await invite(target, firstAdmin.cookie, email);
+    const refused = await invite(target, secondAdmin.cookie, email);
+
+    expect(allowed.status, allowed.body).toBe(200);
+    expect(refused.status, refused.body).toBe(429);
+    expect(refused.code).toBe('AUTH_RATE_LIMITED');
+    expect(sender.sent.filter((message) => message.to === email)).toHaveLength(1);
+    expect(await limitScopes(secondAdmin.organizationId)).toEqual(['recipient']);
+    expect(await limitScopes(firstAdmin.organizationId)).toEqual([]);
+    const logged = await eventsOf(RATE_EVENT, secondAdmin.organizationId);
+    expect(JSON.stringify(logged)).not.toContain(email);
+  }, 60_000);
 });
