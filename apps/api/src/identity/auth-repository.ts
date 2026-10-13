@@ -90,6 +90,8 @@ export interface AuthRepository {
     invitationId: string,
     db?: Pick<Pool, 'query'>,
   ) => Promise<boolean>;
+  /** Sets a `pending` invitation of the tenant to `canceled` (Better Auth's spelling); true when a row changed. */
+  markInvitationCancelled: (tenantId: string, invitationId: string) => Promise<boolean>;
   globalUserByEmail: (email: string) => Promise<UserRead | undefined>;
   globalUserById: (userId: string) => Promise<UserRead | undefined>;
   /** Whether a member of the tenant is banned; `undefined` when the user is not a member. */
@@ -311,6 +313,16 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       requireTenant(tenantId);
       const result = await db.query(
         `update auth.invitation set status = 'accepted'
+         where organization_id = $1 and id = $2 and status = 'pending'`,
+        [tenantId, invitationId],
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async markInvitationCancelled(tenantId, invitationId) {
+      requireTenant(tenantId);
+      const result = await authPool.query(
+        `update auth.invitation set status = 'canceled'
          where organization_id = $1 and id = $2 and status = 'pending'`,
         [tenantId, invitationId],
       );

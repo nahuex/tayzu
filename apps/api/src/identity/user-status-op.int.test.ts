@@ -533,4 +533,103 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
     });
     expect(JSON.stringify(denied.at(-1))).not.toContain(u1.email);
   }, 120_000);
+
+  /**
+   * Task 11.4 (Resolved decision Q123; design D13). Scenario "Disabling cancels pending
+   * invitations" (verbatim): GIVEN a pending invitation to `bob@example.com` from this tenant and
+   * an existing `bob`, WHEN an admin disables `bob`, THEN the invitation's state becomes
+   * `cancelled` with reason `user_disabled`, AND an invitation of `bob` that was already accepted
+   * stays `accepted` and no cancellation is logged for it. Task 11.4 adds: the cancellation is
+   * of that tenant only (a pending invitation to the same address from another tenant stays
+   * pending). Stored `cancelled` is Better Auth's `canceled`.
+   *
+   * Production behavior expected: the `identity.users.setStatus` handler, on `Disabled`, reads the
+   * tenant's pending invitations to the user's email (`authRepository.pendingInvitationsByEmail`),
+   * cancels each (span `identity.invitation.cancel` with `tayzu.identity.invitation.id` and the
+   * reason `user_disabled`) and logs `catalog.audit.invitation_cancelled` (`tayzu.tenant.id`,
+   * `tayzu.actor.id` = the admin, `tayzu.identity.invitation.id`,
+   * `tayzu.identity.invitation.reason` = `user_disabled`) for each one it cancelled only.
+   */
+  it("Disabling cancels pending invitations: the pending invitation to the user from this tenant becomes cancelled with the reason user_disabled and is logged and traced, an accepted invitation of the user stays accepted with no cancellation logged, and another tenant's pending invitation to the address stays pending", async () => {
+    const fixture = await freshFixture();
+    const cancelledEvent = 'catalog.audit.invitation_cancelled';
+    const insertInvitation = async (
+      organizationId: string,
+      status: 'pending' | 'accepted',
+    ): Promise<string> => {
+      const id = `inv-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+         values ($1, $2, $3, 'member', $4, now() + interval '48 hours', now(), $5)`,
+        [id, organizationId, fixture.targetEmail, status, fixture.adminId],
+      );
+      return id;
+    };
+    const statusOf = async (id: string): Promise<string | undefined> => {
+      const result = await authPool.query<{ status: string }>(
+        'select status from auth.invitation where id = $1',
+        [id],
+      );
+      return result.rows[0]?.status;
+    };
+
+    // GIVEN a pending invitation to the user from this tenant, one already accepted, and a
+    // pending one to the same address from another tenant.
+    const otherTenant = `org-${randomUUID()}`;
+    await authPool.query(
+      'insert into auth.organization (id, name, slug, created_at) values ($1, $2, $3, now())',
+      [otherTenant, 'Other Org', `slug-${otherTenant}`],
+    );
+    const pendingId = await insertInvitation(fixture.tenantId, 'pending');
+    const acceptedId = await insertInvitation(fixture.tenantId, 'accepted');
+    const foreignId = await insertInvitation(otherTenant, 'pending');
+
+    // WHEN an admin disables the user.
+    await statusClient().identity.users.setStatus(
+      { user: fixture.targetEmail, status: 'Disabled' },
+      { context: context(fixture) },
+    );
+
+    // THEN the pending invitation is `cancelled` (stored `canceled`).
+    expect(await statusOf(pendingId)).toBe('canceled');
+    // AND the accepted one stays `accepted`, and the other tenant's stays `pending`.
+    expect(await statusOf(acceptedId)).toBe('accepted');
+    expect(await statusOf(foreignId)).toBe('pending');
+
+    // AND exactly one cancellation is logged, for the pending invitation, with the reason
+    // `user_disabled`, the tenant and the admin, and no email.
+    const events = (await logRecords(cancelledEvent)).filter(
+      (record) => record.attributes['tayzu.tenant.id'] === fixture.tenantId,
+    );
+    const forTarget = events.filter((record) =>
+      [pendingId, acceptedId, foreignId].some(
+        (id) => record.attributes['tayzu.identity.invitation.id'] === id,
+      ),
+    );
+    expect(forTarget, 'one cancellation event, for the pending invitation only').toHaveLength(1);
+    expect(forTarget[0]?.attributes).toMatchObject({
+      'tayzu.tenant.id': fixture.tenantId,
+      'tayzu.actor.id': fixture.adminId,
+      'tayzu.identity.invitation.id': pendingId,
+      'tayzu.identity.invitation.reason': 'user_disabled',
+    });
+    expect(JSON.stringify(forTarget[0]?.attributes)).not.toContain(fixture.targetEmail);
+
+    // AND one `identity.invitation.cancel` span carries the same id and reason, none for the others.
+    await harness.forceFlush();
+    const spans = harness.spanExporter
+      .getFinishedSpans()
+      .filter(
+        (span) =>
+          span.name === 'identity.invitation.cancel' &&
+          [pendingId, acceptedId, foreignId].some(
+            (id) => span.attributes['tayzu.identity.invitation.id'] === id,
+          ),
+      );
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.attributes).toMatchObject({
+      'tayzu.identity.invitation.id': pendingId,
+      'tayzu.identity.invitation.reason': 'user_disabled',
+    });
+  }, 120_000);
 });

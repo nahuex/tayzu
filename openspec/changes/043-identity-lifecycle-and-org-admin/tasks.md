@@ -2702,7 +2702,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `user-status-op.int.test.ts` covers "A user cannot disable themselves" through
       the email-addressed `{user}` identifier, proving the self-deny compares the
       resolved Better Auth user id and is not vacuous.
-- [ ] 11.4 Disabling a user cancels their pending invitations **of that tenant**
+- [x] 11.4 Disabling a user cancels their pending invitations **of that tenant**
       (reason `user_disabled`), skipping any invitation whose status is not `pending`
       (Resolved decision Q123). Verify: `user-status-op.int.test.ts` covers "Disabling
       cancels pending invitations", including an accepted invitation of the same user
