@@ -3234,3 +3234,63 @@ describe('otel-smoke-check, 043: every declared identity signal appears with its
     expect([...new Set(offenders)]).toEqual([]);
   });
 });
+
+/*
+ * Task 15.3 (043): the cardinality guard extends to `tayzu.identity.*` metrics:
+ * no attribute key outside the contract's allowed set. A deliberately added
+ * `tayzu.identity.invitation.email` attribute makes this fail. The allowed set is
+ * the spec side, in `identity-contract-expected.ts`, and the module's own
+ * declaration must agree with it. The 002 guard above only inspects
+ * `tayzu.auth.*` / `tayzu.authz.*`.
+ */
+describe('otel-smoke-check, 043: no tayzu.identity.* metric carries an attribute key outside its declared set (task 15.3)', () => {
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    await harness.forceFlush();
+  });
+
+  it('every tayzu.identity.* data point carries only keys of its declared set, and no invitation email key', () => {
+    const allowedByMetric = new Map(
+      EXPECTED_METRICS.map((metric) => [metric.name, metric.attributes] as const),
+    );
+    const offenders: string[] = [];
+    let identityMetrics = 0;
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          const name = metric.descriptor.name;
+          if (!name.startsWith('tayzu.identity.')) continue;
+          identityMetrics += 1;
+          const allowed = allowedByMetric.get(name);
+          if (allowed === undefined) {
+            offenders.push(`${name}: not a declared metric`);
+            continue;
+          }
+          for (const point of metric.dataPoints) {
+            for (const key of Object.keys(point.attributes)) {
+              if (!allowed.includes(key)) offenders.push(`${name}: ${key}`);
+              if (key === 'tayzu.identity.invitation.email') offenders.push(`${name}: ${key}`);
+            }
+          }
+        }
+      }
+    }
+    expect(identityMetrics, 'no tayzu.identity.* metric was captured').toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+
+  it.each(EXPECTED_METRICS.map((metric) => [metric.name, metric.attributes] as const))(
+    '%s declares exactly its allowed attribute keys in the imported module',
+    (name, attributes) => {
+      const declared = (
+        identityContract.IDENTITY_METRICS as readonly {
+          name: string;
+          attributes: readonly string[];
+        }[]
+      ).find((metric) => metric.name === name);
+      expect([...(declared?.attributes ?? [])].sort()).toEqual([...attributes].sort());
+    },
+  );
+});

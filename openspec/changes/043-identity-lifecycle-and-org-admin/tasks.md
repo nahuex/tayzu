@@ -3511,7 +3511,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `tayzu.auth.failure_reason` on `auth.security.login_failed` equal exactly
       `{bad_credentials, mfa_failed, account_disabled}`, and logging the banned sign-in
       as `bad_credentials` in a scratch branch makes it fail.
-- [ ] 15.3 Extend the cardinality guard to `tayzu.identity.*` metrics: no
+- [x] 15.3 Extend the cardinality guard to `tayzu.identity.*` metrics: no
       attribute key outside the contract's allowed set. Verify: `otel-smoke-check`
       fails when a deliberately added `tayzu.identity.invitation.email` metric
       attribute is introduced in a scratch branch.
