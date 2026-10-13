@@ -21,6 +21,7 @@ import {
   emitSessionRevoked,
   generateInvitationToken,
   generateTemporaryPassword,
+  nextStatus,
   validatePassword,
   withIdentitySpan,
   wouldLeaveNoSignInMethod,
@@ -291,7 +292,17 @@ interface AccountAdapterSurface {
     deleteAccount(id: string): Promise<void>;
     listSessions(userId: string): Promise<readonly unknown[]>;
     deleteUserSessions(userId: string): Promise<unknown>;
+    findUserById(userId: string): Promise<{ name: string } | null>;
+    updateUser(userId: string, data: { banned: boolean }): Promise<unknown>;
   };
+}
+
+/** The statuses an admin may set (task 11.2); the transition table decides the rest. */
+function parseStatusInput(raw: unknown): { status: 'Active' | 'Disabled' } {
+  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
+  const { status } = raw as Record<string, unknown>;
+  if (status !== 'Active' && status !== 'Disabled') throw new IdentityInputError();
+  return { status };
 }
 
 /** The tenant of the caller; the wrapper already proved it is a non-empty string. */
@@ -745,6 +756,56 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               }
             });
             emitAdminLinkEvent('linked', context);
+          },
+        }),
+        // Tenant-scoped (Q25): the tenant's sessions go always; the global ban only for a single membership.
+        setStatus: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'update',
+            resolveTarget: userTargetOf,
+          },
+          route: HIGH_RISK_ROUTE,
+          handler: async ({ context, input: rawInput, target }): Promise<void> => {
+            // Fail closed when the host did not wire the writer.
+            const { userSync } = options;
+            if (userSync === undefined) throw new IdentityInputError();
+            const { status } = parseStatusInput(rawInput);
+            const tenantId = rawTenantId(context);
+            const adminId = (context['actor'] as { id: string }).id;
+            const userId = (target as ResolvedIdentityTarget).id;
+            const adapter = (await authContext()).internalAdapter;
+            const user = await options.authRepository.userInTenant(tenantId, userId);
+            const authUser = await adapter.findUserById(userId);
+            if (user === undefined || authUser === null) throw new IdentityInputError();
+            const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
+            const current = await userSync.readStatus({ tenantId, email: user.email });
+            nextStatus(current, change);
+            await runWithIdentityContext({ adminId }, () =>
+              userSync.writeUserChange({
+                tenantId,
+                email: user.email,
+                name: authUser.name,
+                change,
+                userId,
+                principal: { kind: 'admin', id: adminId },
+                onBehalfOf: { type: 'user', id: adminId },
+              }),
+            );
+            const single =
+              (await options.authRepository.globalMembershipTenantsOf(userId)).length === 1;
+            if (status === 'Active') {
+              if (single) await adapter.updateUser(userId, { banned: false });
+              return;
+            }
+            const revoked = await options.authRepository.deleteSessionsOf(tenantId, userId);
+            for (let index = 0; index < revoked; index += 1) {
+              emitSessionRevoked({ actorId: userId, tenantId, reason: 'admin_action' });
+            }
+            if (single) {
+              await adapter.updateUser(userId, { banned: true });
+              await adapter.deleteUserSessions(userId);
+            }
           },
         }),
         unlinkSsoAccount: defineIdentityOperation({

@@ -2672,7 +2672,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `NODE_ENV` other than `test`) covers startup failing when a runtime role owns
       `machine_credential_revocation`, with the fixed message and no connection detail,
       and still starting with the real `tayzu_app` and `tayzu_auth` roles.
-- [ ] 11.2 `identity.users.setStatus` for a human is **tenant-scoped** (Resolved
+- [x] 11.2 `identity.users.setStatus` for a human is **tenant-scoped** (Resolved
       decision Q25): it validates through `nextStatus`, checks the Cerbos grant, writes
       `_user.status` as `system` with `onBehalfOf` the admin (appending a change
       event) and revokes only the sessions whose active organization is the tenant,
