@@ -3063,9 +3063,19 @@ SSO surfaces of M18) are recorded there with their justification.
       refused or keeping the owner, per `001`'s ownership spec.
 - [ ] 13.6c `Inherited` ownership is unreachable today (`readInherited` returns
       nothing); until a chain can be declared, an entity whose ownership is `Inherited`
-      is not updatable by a non-admin (fail closed; Resolved decision Q37) and the `002` spec correction is recorded for a `002` follow-up (`002`
-      VCDM M15). Verify: `inherited-ownership.int.test.ts` covers a non-admin member's
-      update of such an entity being denied and an admin's allowed.
+      is not updatable by a non-admin (fail closed; Resolved decision Q37) and the `002`
+      spec correction is recorded for a `002` follow-up (`002` VCDM M15). Per Resolved
+      decision Q137, `createEntityService` takes an optional `ownership` option (the
+      `OwnershipConfig` of `@tayzu/authz` and its `readInherited` walker), threaded
+      through `loadEntityAuthzAttributes` and `newEntityAuthzAttributes`, whose default
+      is today's behavior; when the resolved ownership is `Inherited` the attributes
+      sent to Cerbos carry `locked: true`, so the deny of 8.6 applies with no policy
+      change. Verify: `inherited-ownership.int.test.ts` (in
+      `packages/catalog/src/service/`, real Cerbos, the state built through the
+      `ownership` option) covers a non-admin member's update of such an entity being
+      denied with `AUTH_FORBIDDEN`, for a member of the inherited owning team and for a
+      member with no team, an admin's update being allowed, and, as a control, a
+      `Direct`-owned entity still being updatable by its team's member.
 - [x] 13.7 Keys created through `002`'s machine-credential path get the
       plugin-level per-key rate limit (60 per hour, configurable, Q44) and no stored
       first characters (`002` residual risk; 9.5), with the headerless call. Verify:
@@ -3297,6 +3307,77 @@ SSO surfaces of M18) are recorded there with their justification.
       `prototype` key at depth 1 and 3, an undeclared field and an over-length value,
       asserting `CATALOG_VALIDATION_FAILED` and no lookup or write, and fails when a
       procedure of the router is missing from it.
+
+- [ ] 14.11 The production start builds the email path (Resolved decision Q138; design
+      D5 "Sender selection", Q80). `createAppFromEnv` builds the sender once per process
+      with `createEmailSender(config)`, and `createApp` takes the email settings in place
+      of the prebuilt `identity.emailGate`: the sender, `INVITATION_LINK_BASE_URL`, the
+      disabled tenants, the kill switch, the recipient key secret
+      (`IDENTITY_TOKEN_HMAC_SECRET`, 6.7b) and the caps of 6.6, 6.7 and 6.12b. With the
+      switch on it builds the one gate of D5 from them and hands the gate and the link
+      base URL to the identity router. Verify: `identity-wiring.int.test.ts` (in
+      `apps/api/src/`; every case is built through `createAppFromEnv` with
+      `MOUNT_IDENTITY_ROUTES=true` and observes the sends of the recording sender that
+      `createEmailSender` selects under `NODE_ENV=test`) covers an admin's invite and
+      resend over HTTP each answering 200 and sending one `InvitationEmail` whose link
+      origin is `INVITATION_LINK_BASE_URL`.
+- [ ] 14.12 The email caps use a store shared across replicas (Resolved decision Q138;
+      design D4 "Invitation email caps", Q15, Q101): an `EmailCapStore` over `002`'s
+      DB-backed `RateLimitBucketStore` (6.10; `auth.rate_limit`, hashed keys, no
+      migration) maps the gate's and the dispatcher's scopes onto the `invitation_*` and
+      `notice_*` buckets and refuses with `AuthRateLimitedError` and the bucket's
+      `Retry-After`; `createApp` registers their rules from the configuration (the
+      defaults of 6.6, 6.7 and 6.12b) and both the gate and the dispatcher use it. The
+      in-memory store stays a test double. Verify: `email-cap-store.int.test.ts` (in
+      `apps/api/src/identity/`) covers two stores over one database sharing one count
+      per scope, the send past the per-recipient cap being refused with
+      `AUTH_RATE_LIMITED` and `Retry-After`, and every key stored only as a hash.
+- [ ] 14.13 The gate's controls reach production (Resolved decision Q138; 6.6 to 6.9):
+      `createAppFromEnv` passes the kill switch, the disabled tenants, the tenant and
+      recipient caps and the recipient key secret from the configuration. Verify:
+      `identity-wiring.int.test.ts` (14.11) covers `INVITATION_EMAIL_KILL_SWITCH=true`
+      answering an invite with `AUTH_RATE_LIMITED` scope `global`, a tenant in
+      `EMAIL_DISABLED_TENANT_IDS` answering 200 with nothing sent and
+      `catalog.security.email_tenant_blocked` logged,
+      `INVITATION_TENANT_RATE_LIMIT_MAX=1` refusing the second invite with scope
+      `tenant`, and `INVITATION_RECIPIENT_RATE_LIMIT_MAX=1` refusing the same address
+      invited from a second tenant with scope `recipient`.
+- [ ] 14.14 The recipient-domain allowlist wraps the real sender whenever it is set, in
+      any environment (Resolved decisions Q99 and Q138; 6.5, 6.5b): `createEmailSender`
+      wraps the provider's sender with `createAllowlistEmailSender`, which `@tayzu/auth`
+      exports. Verify: `email-sender.test.ts` covers `EMAIL_PROVIDER=acs` with
+      `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST` refusing a recipient of another domain without
+      reaching the provider and logging `catalog.security.email_recipient_blocked` with
+      no address, and a recipient of an allowed domain reaching it.
+- [ ] 14.15 The accept route runs the shed and sends the admin notice (Resolved
+      decisions Q30, Q39 and Q138; 8.5h, 8.5m, 8.15): `createApp` builds the shed core
+      once, passing its port to `createAuth` and the core to `createAcceptFlow`, and
+      builds the notice dispatcher of 6.12 over the shared store of 14.12 and the sender
+      of 14.11 and passes it as `notices`. Verify: `identity-wiring.int.test.ts` (14.11)
+      covers an existing account's acceptance over HTTP removing its unmarked SSO link and
+      the sessions issued through it, with `catalog.security.sso_link_shed` (path
+      `acceptance`) logged, and an accepted `admin` invitation sending one
+      `AdminAcceptedNotice` to each other administrator and none to the invitee.
+- [ ] 14.16 The token exchange route passes the service-account lookup that 11.7 needs
+      (Resolved decision Q138; design D13 machine branch, Q40): `server.ts` calls
+      `exchangeMachineToken` with a `serviceAccountLookup` over the `tayzu_app` pool,
+      which `@tayzu/auth` exports. Verify: `token-exchange.http.int.test.ts` (in
+      `apps/api/src/`) covers `POST /v1/auth/token` for the credential of a `Disabled`
+      service account and of one whose `_user` row was deleted each answering like an
+      invalid credential with no token, and the same credential receiving a token again
+      after re-enabling.
+- [ ] 14.17 The key issued by `identity.serviceAccounts.create` counts against the
+      credential cap (Resolved decisions Q56 and Q138; 9.5d), under the same
+      `credential-cap:<tenant>` advisory lock as `identity.credentials.create`. Verify:
+      `service-accounts.int.test.ts` covers a tenant at the cap refusing the creation
+      with `CATALOG_VALIDATION_FAILED` and creating neither a `_user` nor a key, a
+      revoked key not counting, and a concurrent `credentials.create` and
+      `serviceAccounts.create` at one below the cap yielding exactly one success.
+- [ ] 14.18 The configured caps reach the router (Resolved decision Q138; 9.5d, 10.8):
+      `createAppFromEnv` passes `CREDENTIAL_CAP` and `SERVICE_ACCOUNT_CAP` through
+      `createApp` to the identity router. Verify: `identity-wiring.int.test.ts` (14.11)
+      covers `CREDENTIAL_CAP=1` and `SERVICE_ACCOUNT_CAP=1` each refusing the second
+      creation over HTTP with `CATALOG_VALIDATION_FAILED` and nothing created.
 
 ## 15. Telemetry contract enforcement
 
