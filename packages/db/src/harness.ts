@@ -210,11 +210,17 @@ async function ensureMigratorRole(bootstrap: Client): Promise<void> {
     DO $$
     BEGIN
       IF EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = 'drizzle') THEN
-        ALTER SCHEMA drizzle OWNER TO ${MIGRATOR_ROLE};
+        IF EXISTS (
+          SELECT 1 FROM pg_catalog.pg_namespace
+          WHERE nspname = 'drizzle' AND nspowner <> '${MIGRATOR_ROLE}'::regrole
+        ) THEN
+          ALTER SCHEMA drizzle OWNER TO ${MIGRATOR_ROLE};
+        END IF;
         IF EXISTS (
           SELECT 1 FROM pg_catalog.pg_class c
           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
           WHERE n.nspname = 'drizzle' AND c.relname = '__drizzle_migrations'
+            AND c.relowner <> '${MIGRATOR_ROLE}'::regrole
         ) THEN
           ALTER TABLE drizzle.__drizzle_migrations OWNER TO ${MIGRATOR_ROLE};
         END IF;
@@ -257,8 +263,22 @@ async function runMigrationsAsMigrator(url: string): Promise<void> {
  * table to its current owner is a no-op.
  */
 async function reassignCatalogTableOwnership(bootstrap: Client): Promise<void> {
-  for (const table of CATALOG_TABLES) {
-    await bootstrap.query(`ALTER TABLE ${table} OWNER TO ${MIGRATOR_ROLE};`);
+  // `ALTER TABLE ... OWNER TO` takes an ACCESS EXCLUSIVE lock even when the
+  // owner is already correct, which blocks concurrent tests: only touch the
+  // tables whose owner differs. Fixed literals only.
+  const { rows } = await bootstrap.query<{ relname: string }>(
+    `SELECT c.relname
+     FROM pg_catalog.pg_class c
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public'
+       AND c.relkind IN ('r', 'p')
+       AND c.relname = ANY($1::text[])
+       AND c.relowner <> '${MIGRATOR_ROLE}'::regrole`,
+    [[...CATALOG_TABLES]],
+  );
+  for (const { relname } of rows) {
+    // Only names read back from pg_catalog for the fixed list above reach here.
+    await bootstrap.query(`ALTER TABLE public."${relname}" OWNER TO ${MIGRATOR_ROLE};`);
   }
 }
 
@@ -276,7 +296,12 @@ async function reassignAuthOwnership(bootstrap: Client): Promise<void> {
     DECLARE
       obj record;
     BEGIN
-      ALTER SCHEMA auth OWNER TO ${MIGRATOR_ROLE};
+      IF EXISTS (
+        SELECT 1 FROM pg_catalog.pg_namespace
+        WHERE nspname = 'auth' AND nspowner <> '${MIGRATOR_ROLE}'::regrole
+      ) THEN
+        ALTER SCHEMA auth OWNER TO ${MIGRATOR_ROLE};
+      END IF;
       FOR obj IN
         SELECT n.nspname AS schema_name, c.relname AS rel_name, c.relkind AS kind
         FROM pg_catalog.pg_class c
