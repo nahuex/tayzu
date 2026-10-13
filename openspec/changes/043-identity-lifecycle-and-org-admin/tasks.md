@@ -2958,7 +2958,7 @@ SSO surfaces of M18) are recorded there with their justification.
       whose `_user` is still `Active` being rejected with the reason `user_banned`, and
       `banned-sign-in.int.test.ts` covers a banned user being refused at local
       sign-in and at the SSO callback.
-- [ ] 13.4b A banned user's sign-in fails exactly like any other sign-in failure
+- [x] 13.4b A banned user's sign-in fails exactly like any other sign-in failure
       (Resolved decision Q54, VCDM G3). Better Auth's admin plugin refuses a banned
       user with a distinct error after a correct password, a credential-validity oracle
       that would break `002`'s rule that sign-in failures are identical, and it becomes

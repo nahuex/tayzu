@@ -35,6 +35,7 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import { SeverityNumber, type AnyValueMap } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -43,6 +44,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // Import order is load-bearing (design D1): the harness registers before `./auth.js`.
 import './__fixtures__/registered-harness.js';
 import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
+import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { startOidcStub, type OidcStub } from './__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from './__fixtures__/test-secret.js';
 import { createAuth, type AuthInstance } from './auth.js';
@@ -297,5 +299,128 @@ describe('A banned user is refused at sign-in (task 13.4, D13)', () => {
     expect(hasSessionCookie(refused), 'no session cookie is set').toBe(false);
     expect(await sessionCount(user.userId), 'no new session row').toBe(sessionsBefore);
     expect(bodyText).not.toMatch(/banned/i);
+  }, 60_000);
+});
+
+/**
+ * Task 13.4b (design D13, Q54). The attempt of a banned user is logged
+ * internally as `catalog.security.banned_sign_in_attempt` (WARN) with
+ * `tayzu.identity.user.id` and `tayzu.identity.sign_in.channel` (`local` |
+ * `sso`) and no email, once per attempt on each channel, while the response
+ * stays uniform (the SSO one is the `401 AUTH_SSO_REJECTED` above).
+ *
+ * Production symbols expected: the emission from `auth.ts` (through the
+ * identity telemetry helpers); the event name is declared in 15.1.
+ */
+describe('A banned sign-in attempt is logged once per attempt with its channel (task 13.4b, D13)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let stub: OidcStub;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    stub = await startOidcStub();
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+    if ('error' in registration) {
+      throw new Error('createTelemetryTestHarness() failed while the module graph loaded', {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+  }, 60_000);
+
+  afterAll(async () => {
+    await stub.close();
+    await endQuietly(db.$client);
+  });
+
+  async function bannedUser(): Promise<{ userId: string; email: string }> {
+    const email = `banned-log-${randomUUID()}@example.test`;
+    const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Banned Log User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Banned Log Org',
+      organizationSlug: `banned-log-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    await db.execute(sql`update auth."user" set banned = true where id = ${tenant.userId}`);
+    return { userId: tenant.userId, email };
+  }
+
+  async function attempts(): Promise<
+    { severity: SeverityNumber | undefined; attributes: AnyValueMap; body: unknown }[]
+  > {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter((record) => record.eventName === 'catalog.security.banned_sign_in_attempt')
+      .map((record) => ({
+        severity: record.severityNumber,
+        attributes: record.attributes,
+        body: record.body,
+      }));
+  }
+
+  it('A banned local sign-in emits one banned_sign_in_attempt with channel local, the user id and no email', async () => {
+    const user = await bannedUser();
+    await harness.reset();
+
+    const refused = await handlerOf(auth)(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+        body: JSON.stringify({ email: user.email, password: TEST_PASSWORD }),
+      }),
+    );
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+
+    const records = await attempts();
+    expect(records, 'once per banned attempt').toHaveLength(1);
+    expect(records[0]?.severity).toBe(SeverityNumber.WARN);
+    expect(records[0]?.attributes).toEqual({
+      'tayzu.identity.user.id': user.userId,
+      'tayzu.identity.sign_in.channel': 'local',
+    });
+    expect(JSON.stringify(records)).not.toContain(user.email);
+  }, 60_000);
+
+  it('A banned SSO callback emits one banned_sign_in_attempt with channel sso, the user id and no email', async () => {
+    const user = await bannedUser();
+    const sub = `banned-log-sub-${randomUUID()}`;
+    await db.insert(authSchema.account).values({
+      id: randomUUID(),
+      accountId: sub,
+      providerId: PROVIDER_ID,
+      userId: user.userId,
+    });
+    const idpEmail = `idp-${randomUUID()}@example.test`;
+    stub.setSubject({ sub, email: idpEmail, name: 'Banned Log Sso', sid: `sid-${randomUUID()}` });
+    const started = await initiateSignIn(auth, stub);
+    await harness.reset();
+
+    const refused = await completeCallback(auth, started.cookie, started.params);
+    expect(refused.status).toBe(401);
+
+    const records = await attempts();
+    expect(records, 'once per banned attempt').toHaveLength(1);
+    expect(records[0]?.severity).toBe(SeverityNumber.WARN);
+    expect(records[0]?.attributes).toEqual({
+      'tayzu.identity.user.id': user.userId,
+      'tayzu.identity.sign_in.channel': 'sso',
+    });
+    const serialized = JSON.stringify(records);
+    expect(serialized).not.toContain(user.email);
+    expect(serialized).not.toContain(idpEmail);
   }, 60_000);
 });

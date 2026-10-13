@@ -338,13 +338,40 @@ function emitStepUpSucceeded(params: {
  * other failure reason is reachable from this route yet (`mfa_failed`,
  * `account_disabled` are later tasks' concern).
  */
-function emitLoginFailed(reason: 'bad_credentials' | 'mfa_failed' = 'bad_credentials'): void {
+function emitLoginFailed(
+  reason: 'bad_credentials' | 'mfa_failed' | 'account_disabled' = 'bad_credentials',
+): void {
   logger.emit({
     eventName: 'auth.security.login_failed',
     severityNumber: SeverityNumber.WARN,
     attributes: { [FAILURE_REASON_ATTRIBUTE]: reason },
   });
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'login_failed' });
+}
+
+/** Better Auth's own error code for a banned user, thrown by the admin plugin after the password verified. */
+const BANNED_USER_ERROR_CODE = 'BANNED_USER';
+
+/**
+ * Task 13.4b (design D13, Q54): the response of a wrong password, which a banned user's
+ * sign-in is rewritten into. A returned `Response` keeps its own status and body; a thrown
+ * error would keep the original result's status.
+ */
+function wrongPasswordResponse(): Response {
+  const error = APIError.from('UNAUTHORIZED', {
+    code: 'INVALID_EMAIL_OR_PASSWORD',
+    message: 'Invalid email or password',
+  });
+  return Response.json(error.body, { status: error.statusCode });
+}
+
+/** Task 13.4b: the internal record of a banned attempt, with its channel and the opaque user id. */
+function emitBannedSignInAttempt(userId: string, channel: 'local' | 'sso'): void {
+  emitIdentityEvent({
+    name: 'catalog.security.banned_sign_in_attempt',
+    severity: 'WARN',
+    attributes: { 'tayzu.identity.user.id': userId, 'tayzu.identity.sign_in.channel': channel },
+  });
 }
 
 /** The reasons of `auth.security.session_revoked` (043 Resolved decision Q86). */
@@ -536,6 +563,44 @@ async function encryptIdToken<T extends { readonly idToken?: unknown }>(
     return { data: account };
   }
   return { data: { ...account, idToken: await setTokenUtil(account.idToken, context.context) } };
+}
+
+function isBannedUserError(error: unknown): boolean {
+  return (
+    isAPIError(error) &&
+    (error.body as { code?: unknown } | undefined)?.code === BANNED_USER_ERROR_CODE
+  );
+}
+
+/**
+ * Task 13.4b (design D13): logs a banned user's sign-in attempt on its channel. Runs before
+ * the admin plugin's own `session.create.before`, which then refuses the session; the ban
+ * test mirrors that plugin's (an elapsed `banExpires` is no ban).
+ */
+async function recordBannedAttempt(
+  userId: string,
+  context: Parameters<typeof getSessionFromCtx>[0],
+): Promise<void> {
+  const channel =
+    context.path === GENERIC_OAUTH_CALLBACK_ROUTE
+      ? 'sso'
+      : context.path === SIGN_IN_EMAIL_PATH
+        ? 'local'
+        : undefined;
+  if (channel === undefined) {
+    return;
+  }
+  const user = (await context.context.internalAdapter.findUserById(userId)) as {
+    banned?: boolean | null;
+    banExpires?: Date | string | null;
+  } | null;
+  if (user?.banned !== true) {
+    return;
+  }
+  if (user.banExpires && new Date(user.banExpires).getTime() < Date.now()) {
+    return;
+  }
+  emitBannedSignInAttempt(userId, channel);
 }
 
 /**
@@ -942,6 +1007,26 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           },
         },
       }),
+      // Task 13.4b (design D13): plugin database hooks run in plugin order, so this one must
+      // precede `admin()`, whose `session.create.before` refuses a banned user.
+      {
+        id: 'banned-sign-in-attempt-log',
+        init: () => ({
+          options: {
+            databaseHooks: {
+              session: {
+                create: {
+                  before: async (session, context) => {
+                    if (context) {
+                      await recordBannedAttempt(session.userId, context);
+                    }
+                  },
+                },
+              },
+            },
+          },
+        }),
+      },
       admin(),
       // Task 8.1b (design Q23): k-anonymity breach check; fails closed with a 500
       // when the range service is unreachable. `/admin/create-user` is checked by
@@ -1233,19 +1318,23 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               activeOrganizationId: snapshot.previousActiveOrganizationId,
             });
           }
-          return;
+          return undefined;
         }
         if (ctx.path === SIGN_IN_EMAIL_PATH) {
           if (isAPIError(ctx.context.returned)) {
+            if (isBannedUserError(ctx.context.returned)) {
+              emitLoginFailed('account_disabled');
+              return wrongPasswordResponse();
+            }
             emitLoginFailed();
-            return;
+            return undefined;
           }
           const response = ctx.context.returned as SignInEmailSuccessResponse;
           if (response.user.twoFactorEnabled === true) {
             // Credentials accepted, second factor pending: the two-factor plugin's own
             // after hook (it runs after this one) turns this into a challenge, not a session.
             mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'challenge_issued' });
-            return;
+            return undefined;
           }
           const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
             model: 'session',
@@ -1255,24 +1344,24 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
           });
-          return;
+          return undefined;
         }
         if (ctx.path === SIGN_OUT_PATH) {
           if (!isAPIError(ctx.context.returned)) {
             sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'logout' });
           }
-          return;
+          return undefined;
         }
         if (ctx.path === SIGN_IN_SOCIAL_PATH) {
           const body = ctx.body as { provider?: unknown } | null | undefined;
           if (!isAPIError(ctx.context.returned) && body?.provider === SELF_LINK_PROVIDER_ID) {
             ssoEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'sso_initiated' });
           }
-          return;
+          return undefined;
         }
         if (ctx.path === CHANGE_PASSWORD_PATH) {
           if (isAPIError(ctx.context.returned)) {
-            return;
+            return undefined;
           }
           const response = ctx.context.returned as ChangePasswordSuccessResponse;
           const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
@@ -1284,13 +1373,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
             reason: PASSWORD_CHANGE_REVOCATION_REASON,
           });
-          return;
+          return undefined;
         }
         if (ctx.path === VERIFY_PASSWORD_PATH) {
           // Q49: same marker and 5-minute window as an MFA verification, keyed
           // by the current session's token.
           if (isAPIError(ctx.context.returned)) {
-            return;
+            return undefined;
           }
           const session = await getSessionFromCtx(ctx).catch(() => null);
           // Q51: never shadow a still-fresh `mfa` marker with a weaker `password` one.
@@ -1304,7 +1393,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               expiresAt: new Date(Date.now() + STEP_UP_FRESHNESS_MS),
             });
           }
-          return;
+          return undefined;
         }
         if (ctx.path.startsWith(TWO_FACTOR_VERIFY_PATH_PREFIX)) {
           // Task 4.2, design D4: record the freshness marker `./step-up.ts`'s
@@ -1316,12 +1405,12 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           if (isAPIError(ctx.context.returned)) {
             mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'failed' });
             emitLoginFailed('mfa_failed');
-            return;
+            return undefined;
           }
           mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'verified' });
           const response = ctx.context.returned as TwoFactorVerifySuccessResponse;
           if (response.token === undefined || response.token === null) {
-            return;
+            return undefined;
           }
           await ctx.context.internalAdapter.createVerificationValue({
             identifier: stepUpVerificationIdentifier(response.token),
@@ -1351,6 +1440,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             });
           }
         }
+        return undefined;
       }),
     },
   });
