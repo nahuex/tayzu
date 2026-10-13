@@ -4,7 +4,12 @@
  * Scaffolded by `043` task 1.4 (design Q30); the rest of its behavior arrives with
  * task group 10.
  */
-import { emitIdentityEvent, withIdentitySpan, type AuthInstance } from '@tayzu/auth';
+import {
+  emitIdentityEvent,
+  recordIdentityMetric,
+  withIdentitySpan,
+  type AuthInstance,
+} from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import type { CerbosClient } from '@tayzu/authz';
 import { createEntityService, type EntityService } from '@tayzu/catalog';
@@ -155,6 +160,10 @@ export async function createServiceAccount(args: {
             'tayzu.identity.service_account.id': identifier,
           },
         });
+        recordIdentityMetric('tayzu.identity.service_accounts', 1, {
+          'tayzu.tenant.id': tenantId,
+          'tayzu.identity.service_account.mutation': 'created',
+        });
         return { user, clientId: key.id, clientSecret: key.secret };
       }),
   );
@@ -218,6 +227,10 @@ export async function deleteServiceAccount(args: {
             'tayzu.actor.id': adminId,
             'tayzu.identity.service_account.id': identifier,
           },
+        });
+        recordIdentityMetric('tayzu.identity.service_accounts', 1, {
+          'tayzu.tenant.id': tenantId,
+          'tayzu.identity.service_account.mutation': 'deleted',
         });
       }),
   );

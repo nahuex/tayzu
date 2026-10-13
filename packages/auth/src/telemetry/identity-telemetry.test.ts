@@ -107,8 +107,9 @@ describe('identity telemetry helpers (task 2.0c)', () => {
     expect(span?.attributes['tayzu.tenant.id']).toBe('tenant-a');
     expect(span?.status.code).toBe(SpanStatusCode.ERROR);
     const exceptions = span?.events.filter((event) => event.name === 'exception');
+    expect(span?.attributes['error.type']).toBe('internal');
     expect(exceptions).toHaveLength(1);
-    expect(exceptions?.[0]?.attributes?.['exception.message']).toBe('boom');
+    expect(exceptions?.[0]?.attributes ?? {}).not.toHaveProperty(['exception.message']);
   });
 
   it('the span helper rethrows an error thrown asynchronously and records it too', async () => {
@@ -126,7 +127,10 @@ describe('identity telemetry helpers (task 2.0c)', () => {
       .getFinishedSpans()
       .find((candidate) => candidate.name === 'identity.test.async_span');
     expect(span?.status.code).toBe(SpanStatusCode.ERROR);
-    expect(span?.events.some((event) => event.name === 'exception')).toBe(true);
+    expect(span?.attributes['error.type']).toBe('internal');
+    const exceptions = span?.events.filter((event) => event.name === 'exception');
+    expect(exceptions).toHaveLength(1);
+    expect(exceptions?.[0]?.attributes ?? {}).not.toHaveProperty(['exception.message']);
   });
 
   it('the metric recorder adds to a counter under the @tayzu/auth scope', async () => {

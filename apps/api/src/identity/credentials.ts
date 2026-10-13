@@ -3,7 +3,7 @@
  * (`043` design D7 and D8). The viewer (task 9.2) lives here; the rest arrives
  * with task group 9.
  */
-import { emitIdentityEvent, type AuthInstance } from '@tayzu/auth';
+import { emitIdentityEvent, recordIdentityMetric, type AuthInstance } from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { withTenantTransaction } from '@tayzu/db';
 import type { Pool } from 'pg';
@@ -229,6 +229,30 @@ export async function serviceAccountExists(
     return result.rows;
   });
   return rows.length > 0;
+}
+
+/** The kind of an existing credential (`integration` or `agent`), `undefined` when it is neither. */
+export async function credentialKindOf(
+  authRepository: AuthRepository,
+  tenantId: string,
+  credentialId: string,
+): Promise<'integration' | 'agent' | undefined> {
+  const key = await authRepository.apiKeyById(tenantId, credentialId);
+  const kind = key === undefined ? undefined : readApiKeyMetadata(key.metadata).actorKind;
+  return kind === 'integration' || kind === 'agent' ? kind : undefined;
+}
+
+/** Counts one credential mutation (`tayzu.identity.credential_mutations`). */
+export function recordCredentialMutation(
+  tenantId: string,
+  kind: 'integration' | 'agent',
+  mutation: 'created' | 'rotated' | 'revoked',
+): void {
+  recordIdentityMetric('tayzu.identity.credential_mutations', 1, {
+    'tayzu.tenant.id': tenantId,
+    'tayzu.identity.credential.kind': kind,
+    'tayzu.identity.credential.mutation': mutation,
+  });
 }
 
 /** The key `name`: 1 to 32 characters of `[A-Za-z0-9 _.-]` (the plugin allows 32). */

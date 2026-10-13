@@ -7,6 +7,7 @@
 import {
   AuthRateLimitedError,
   emitIdentityEvent,
+  recordIdentityMetric,
   type EmailSender,
   type EmailTemplate,
 } from '@tayzu/auth';
@@ -52,6 +53,10 @@ export function createEmailTenantGate(deps: {
         'tayzu.tenant.id': tenantId,
         'tayzu.identity.invitation.limit_scope': scope,
       },
+    });
+    recordIdentityMetric('tayzu.identity.invitations', 1, {
+      'tayzu.tenant.id': tenantId,
+      'tayzu.identity.invitation.mutation': 'rate_limited',
     });
   }
   async function consumeCap(scope: 'tenant' | 'recipient', key: string, tenantId: string) {

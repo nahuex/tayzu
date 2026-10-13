@@ -22,6 +22,7 @@ import {
   generateInvitationToken,
   generateTemporaryPassword,
   nextStatus,
+  recordIdentityMetric,
   validatePassword,
   withIdentitySpan,
   writeTemporaryPasswordMarker,
@@ -59,6 +60,8 @@ import {
   createCredential,
   listCredentials,
   CredentialTargetNotFoundError,
+  credentialKindOf,
+  recordCredentialMutation,
   revokeCredential,
   rotateCredential,
   serviceAccountExists,
@@ -448,6 +451,35 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
     throw new IdentityLinkRejectedError();
   }
 
+  /**
+   * One invitation cancellation (design D4, Observability contract): the `identity.invitation.cancel`
+   * span around `cancel`, then the audit event and the funnel counter. `cancel` answering `false`
+   * means another writer got there first, so nothing is recorded.
+   */
+  async function recordInvitationCancel(
+    tenantId: string,
+    adminId: string,
+    invitationId: string,
+    reason: 'admin_cancel' | 're_invite' | 'user_disabled' | 'inviter_disabled' | 'user_created',
+    cancel: () => Promise<unknown> = () => Promise.resolve(),
+  ): Promise<void> {
+    const attributes = {
+      'tayzu.identity.invitation.id': invitationId,
+      'tayzu.identity.invitation.reason': reason,
+    };
+    const result = await withIdentitySpan('identity.invitation.cancel', attributes, cancel);
+    if (result === false) return;
+    emitIdentityEvent({
+      name: 'catalog.audit.invitation_cancelled',
+      severity: 'INFO',
+      attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': adminId, ...attributes },
+    });
+    recordIdentityMetric('tayzu.identity.invitations', 1, {
+      'tayzu.tenant.id': tenantId,
+      'tayzu.identity.invitation.mutation': 'cancelled',
+    });
+  }
+
   return {
     identity: {
       credentials: {
@@ -459,35 +491,38 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: () => undefined,
           },
           route: identityRoute('POST', '/v1/credentials', { highRisk: true }),
-          handler: async ({ context, input: rawInput }) => {
-            const { body } = parseDetailedInput(SCHEMAS.createCredential, rawInput);
-            const name = body['name'] as string;
-            const kind = body['kind'];
-            const userId = body['userId'] as string | undefined;
-            if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
-            const created = await createCredential({
-              authRepository: options.authRepository,
-              ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
-              ...(userId === undefined ? {} : { userId }),
-              cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
-              auth: options.auth,
-              tenantId: rawTenantId(context),
-              adminId: (context['actor'] as { id: string }).id,
-              name,
-              kind,
-            });
-            emitIdentityEvent({
-              name: 'catalog.audit.credential_created',
-              severity: 'INFO',
-              attributes: {
-                'tayzu.tenant.id': rawTenantId(context),
-                'tayzu.actor.id': (context['actor'] as { id: string }).id,
-                'tayzu.identity.credential.id': created.id,
-                'tayzu.identity.credential.kind': kind,
-              },
-            });
-            return created;
-          },
+          handler: ({ context, input: rawInput }) =>
+            withIdentitySpan('identity.credential.create', {}, async (span) => {
+              const { body } = parseDetailedInput(SCHEMAS.createCredential, rawInput);
+              const name = body['name'] as string;
+              const kind = body['kind'];
+              const userId = body['userId'] as string | undefined;
+              if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
+              span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+              const created = await createCredential({
+                authRepository: options.authRepository,
+                ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
+                ...(userId === undefined ? {} : { userId }),
+                cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+                auth: options.auth,
+                tenantId: rawTenantId(context),
+                adminId: (context['actor'] as { id: string }).id,
+                name,
+                kind,
+              });
+              emitIdentityEvent({
+                name: 'catalog.audit.credential_created',
+                severity: 'INFO',
+                attributes: {
+                  'tayzu.tenant.id': rawTenantId(context),
+                  'tayzu.actor.id': (context['actor'] as { id: string }).id,
+                  'tayzu.identity.credential.id': created.id,
+                  'tayzu.identity.credential.kind': kind,
+                },
+              });
+              recordCredentialMutation(rawTenantId(context), kind, 'created');
+              return created;
+            }),
         }),
         // Step-up applies (D4); the old key is resolved inside the tenant by the target resolver.
         rotate: defineIdentityOperation({
@@ -497,21 +532,28 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: credentialTargetOf,
           },
           route: identityRoute('POST', '/v1/credentials/{credential}/rotate', { highRisk: true }),
-          handler: ({ context, input: rawInput, target }) => {
-            parseDetailedInput(SCHEMAS.credential, rawInput);
-            // Fail closed when the host did not wire the revocation-list pool.
-            if (options.appPool === undefined || target === undefined) {
-              throw new IdentityInputError();
-            }
-            return rotateCredential({
-              auth: options.auth,
-              authRepository: options.authRepository,
-              appPool: options.appPool,
-              tenantId: rawTenantId(context),
-              adminId: (context['actor'] as { id: string }).id,
-              credentialId: target.id,
-            });
-          },
+          handler: ({ context, input: rawInput, target }) =>
+            withIdentitySpan('identity.credential.rotate', {}, async (span) => {
+              parseDetailedInput(SCHEMAS.credential, rawInput);
+              // Fail closed when the host did not wire the revocation-list pool.
+              if (options.appPool === undefined || target === undefined) {
+                throw new IdentityInputError();
+              }
+              const tenantId = rawTenantId(context);
+              const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
+              if (kind !== undefined)
+                span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+              const rotated = await rotateCredential({
+                auth: options.auth,
+                authRepository: options.authRepository,
+                appPool: options.appPool,
+                tenantId,
+                adminId: (context['actor'] as { id: string }).id,
+                credentialId: target.id,
+              });
+              if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'rotated');
+              return rotated;
+            }),
         }),
         // Step-up applies (D4); permanent, and a repeat is a no-op.
         revoke: defineIdentityOperation({
@@ -521,20 +563,26 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: credentialTargetOf,
           },
           route: identityRoute('POST', '/v1/credentials/{credential}/revoke', { highRisk: true }),
-          handler: async ({ context, input: rawInput, target }) => {
-            parseDetailedInput(SCHEMAS.credential, rawInput);
-            // Fail closed when the host did not wire the revocation-list pool.
-            if (options.appPool === undefined || target === undefined) {
-              throw new IdentityInputError();
-            }
-            await revokeCredential({
-              auth: options.auth,
-              appPool: options.appPool,
-              tenantId: rawTenantId(context),
-              adminId: (context['actor'] as { id: string }).id,
-              credentialId: target.id,
-            });
-          },
+          handler: ({ context, input: rawInput, target }) =>
+            withIdentitySpan('identity.credential.revoke', {}, async (span) => {
+              parseDetailedInput(SCHEMAS.credential, rawInput);
+              // Fail closed when the host did not wire the revocation-list pool.
+              if (options.appPool === undefined || target === undefined) {
+                throw new IdentityInputError();
+              }
+              const tenantId = rawTenantId(context);
+              const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
+              if (kind !== undefined)
+                span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+              await revokeCredential({
+                auth: options.auth,
+                appPool: options.appPool,
+                tenantId,
+                adminId: (context['actor'] as { id: string }).id,
+                credentialId: target.id,
+              });
+              if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'revoked');
+            }),
         }),
         list: defineIdentityOperation({
           authorization: {
@@ -543,17 +591,20 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: () => undefined,
           },
           route: identityRoute('GET', '/v1/credentials'),
-          handler: ({ context, input: rawInput }) => {
-            parseDetailedInput(SCHEMAS.listCredentials, rawInput);
-            // Fail closed when the host did not wire the revocation-list pool.
-            if (options.appPool === undefined) throw new IdentityInputError();
-            return listCredentials({
-              authRepository: options.authRepository,
-              appPool: options.appPool,
-              tenantId: rawTenantId(context),
-              cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
-            });
-          },
+          handler: ({ context, input: rawInput }) =>
+            withIdentitySpan('identity.credential.list', {}, async (span) => {
+              parseDetailedInput(SCHEMAS.listCredentials, rawInput);
+              // Fail closed when the host did not wire the revocation-list pool.
+              if (options.appPool === undefined) throw new IdentityInputError();
+              const listed = await listCredentials({
+                authRepository: options.authRepository,
+                appPool: options.appPool,
+                tenantId: rawTenantId(context),
+                cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+              });
+              span.setAttributes({ 'tayzu.identity.credential.count': listed.credentials.length });
+              return listed;
+            }),
         }),
       },
       serviceAccounts: {
@@ -693,22 +744,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             for (const invitation of pending) {
               const headers = context[REQUEST_HEADERS];
               if (!(headers instanceof Headers)) throw new IdentityInputError();
-              const attributes = {
-                'tayzu.identity.invitation.id': invitation.id,
-                'tayzu.identity.invitation.reason': 'user_created',
-              };
-              await withIdentitySpan('identity.invitation.cancel', attributes, () =>
+              await recordInvitationCancel(tenantId, adminId, invitation.id, 'user_created', () =>
                 cancelApi.cancelInvitation({ body: { invitationId: invitation.id }, headers }),
               );
-              emitIdentityEvent({
-                name: 'catalog.audit.invitation_cancelled',
-                severity: 'INFO',
-                attributes: {
-                  'tayzu.tenant.id': tenantId,
-                  'tayzu.actor.id': adminId,
-                  ...attributes,
-                },
-              });
             }
             emitIdentityEvent({
               name: 'catalog.audit.user_created',
@@ -732,65 +770,82 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: () => undefined,
           },
           route: identityRoute('POST', '/v1/users/invitations', { highRisk: true }),
-          handler: async ({ context, input: rawInput }): Promise<InviteUserOutput> => {
-            const { body } = parseDetailedInput(SCHEMAS.invite, rawInput);
-            const input: InviteUserInput = {
-              email: holdableEmail(body['email'] as string),
-              role: assignableRole(body['role']),
-            };
-            const { emailGate, invitationLinkBaseUrl } = options;
-            // Fail closed when the host did not wire the email path: nothing is created.
-            if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
-              throw new IdentityInputError();
-            }
-            const headers = context[REQUEST_HEADERS];
-            if (!(headers instanceof Headers)) throw new IdentityInputError();
-            const tenantId = rawTenantId(context);
-            const adminId = (context['actor'] as { id: string }).id;
-            const invitation = await runWithIdentityContext({ adminId }, () =>
-              withGenericRefusal(
-                () =>
-                  inviteApi.createInvitation({
-                    body: { email: input.email, role: input.role, organizationId: tenantId },
-                    headers,
+          handler: ({ context, input: rawInput }): Promise<InviteUserOutput> =>
+            withIdentitySpan('identity.invitation.create', {}, async (span) => {
+              const { body } = parseDetailedInput(SCHEMAS.invite, rawInput);
+              const input: InviteUserInput = {
+                email: holdableEmail(body['email'] as string),
+                role: assignableRole(body['role']),
+              };
+              span.setAttributes({ 'tayzu.identity.invitation.role': input.role });
+              const { emailGate, invitationLinkBaseUrl } = options;
+              // Fail closed when the host did not wire the email path: nothing is created.
+              if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
+                throw new IdentityInputError();
+              }
+              const headers = context[REQUEST_HEADERS];
+              if (!(headers instanceof Headers)) throw new IdentityInputError();
+              const tenantId = rawTenantId(context);
+              const adminId = (context['actor'] as { id: string }).id;
+              // Better Auth cancels the address's pending invitations inside its create (Q42).
+              const earlier = await options.authRepository.pendingInvitationsByEmail(
+                tenantId,
+                input.email,
+              );
+              const invitation = await runWithIdentityContext({ adminId }, () =>
+                withGenericRefusal(
+                  () =>
+                    inviteApi.createInvitation({
+                      body: { email: input.email, role: input.role, organizationId: tenantId },
+                      headers,
+                    }),
+                  ({ code }) => INVITATION_REFUSAL_CODES.includes(code),
+                ),
+              );
+              span.setAttributes({ 'tayzu.identity.invitation.id': invitation.id });
+              for (const previous of earlier) {
+                const now = await options.authRepository.invitationById(tenantId, previous.id);
+                if (now?.status === 'pending') continue;
+                await recordInvitationCancel(tenantId, adminId, previous.id, 're_invite');
+              }
+              const token = generateInvitationToken();
+              await (
+                await verificationContext()
+              ).internalAdapter.createVerificationValue({
+                identifier: `invitation-accept:${invitation.id}`,
+                value: digestInvitationToken(token),
+                expiresAt: new Date(invitation.expiresAt),
+              });
+              await emailGate.send({
+                tenantId,
+                to: input.email,
+                template: {
+                  kind: 'InvitationEmail',
+                  link: buildInvitationLink({
+                    baseUrl: invitationLinkBaseUrl,
+                    invitationId: invitation.id,
+                    token,
                   }),
-                ({ code }) => INVITATION_REFUSAL_CODES.includes(code),
-              ),
-            );
-            const token = generateInvitationToken();
-            await (
-              await verificationContext()
-            ).internalAdapter.createVerificationValue({
-              identifier: `invitation-accept:${invitation.id}`,
-              value: digestInvitationToken(token),
-              expiresAt: new Date(invitation.expiresAt),
-            });
-            await emailGate.send({
-              tenantId,
-              to: input.email,
-              template: {
-                kind: 'InvitationEmail',
-                link: buildInvitationLink({
-                  baseUrl: invitationLinkBaseUrl,
-                  invitationId: invitation.id,
-                  token,
-                }),
-                expiryText: INVITATION_EXPIRY_TEXT,
-              },
-            });
-            emitIdentityEvent({
-              name: 'catalog.audit.invitation_created',
-              severity: 'INFO',
-              attributes: {
+                  expiryText: INVITATION_EXPIRY_TEXT,
+                },
+              });
+              emitIdentityEvent({
+                name: 'catalog.audit.invitation_created',
+                severity: 'INFO',
+                attributes: {
+                  'tayzu.tenant.id': tenantId,
+                  'tayzu.actor.type': (context['actor'] as { type: string }).type,
+                  'tayzu.actor.id': adminId,
+                  'tayzu.identity.invitation.id': invitation.id,
+                  'tayzu.identity.invitation.role': input.role,
+                },
+              });
+              recordIdentityMetric('tayzu.identity.invitations', 1, {
                 'tayzu.tenant.id': tenantId,
-                'tayzu.actor.type': (context['actor'] as { type: string }).type,
-                'tayzu.actor.id': adminId,
-                'tayzu.identity.invitation.id': invitation.id,
-                'tayzu.identity.invitation.role': input.role,
-              },
-            });
-            return { invitationId: invitation.id };
-          },
+                'tayzu.identity.invitation.mutation': 'created',
+              });
+              return { invitationId: invitation.id };
+            }),
         }),
         // Design D4 (Q47): resolved on the server, cancelled with the admin's forwarded session headers.
         cancelInvitation: defineIdentityOperation({
@@ -810,10 +865,17 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               (target as ResolvedIdentityTarget).id,
             );
             if (invitation?.status !== 'pending') throw new IdentityInputError();
-            await cancelApi.cancelInvitation({
-              body: { invitationId: (target as ResolvedIdentityTarget).id },
-              headers,
-            });
+            await recordInvitationCancel(
+              rawTenantId(context),
+              (context['actor'] as { id: string }).id,
+              invitation.id,
+              'admin_cancel',
+              () =>
+                cancelApi.cancelInvitation({
+                  body: { invitationId: invitation.id },
+                  headers,
+                }),
+            );
           },
         }),
         // Design D4 "Resend": a new token on the same verification row, so the expiry and the invitation stay as they are.
@@ -824,40 +886,58 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: invitationTargetOf,
           },
           route: identityRoute('POST', '/v1/users/invitations/{invitation}/resend'),
-          handler: async ({ context, input: rawInput, target }): Promise<InviteUserOutput> => {
-            parseDetailedInput(SCHEMAS.invitation, rawInput);
-            const { emailGate, invitationLinkBaseUrl } = options;
-            if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
-              throw new IdentityInputError();
-            }
-            const tenantId = rawTenantId(context);
-            const invitation = await options.authRepository.invitationById(
-              tenantId,
-              (target as ResolvedIdentityTarget).id,
-            );
-            // Only a `pending` invitation is resent (Q123).
-            if (invitation?.status !== 'pending') throw new IdentityInputError();
-            const token = generateInvitationToken();
-            await (
-              await verificationContext()
-            ).internalAdapter.updateVerificationByIdentifier(`invitation-accept:${invitation.id}`, {
-              value: digestInvitationToken(token),
-            });
-            await emailGate.send({
-              tenantId,
-              to: invitation.email,
-              template: {
-                kind: 'InvitationEmail',
-                link: buildInvitationLink({
-                  baseUrl: invitationLinkBaseUrl,
-                  invitationId: invitation.id,
-                  token,
-                }),
-                expiryText: INVITATION_EXPIRY_TEXT,
+          handler: ({ context, input: rawInput, target }): Promise<InviteUserOutput> =>
+            withIdentitySpan(
+              'identity.invitation.resend',
+              { 'tayzu.identity.invitation.id': (target as ResolvedIdentityTarget).id },
+              async () => {
+                parseDetailedInput(SCHEMAS.invitation, rawInput);
+                const { emailGate, invitationLinkBaseUrl } = options;
+                if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
+                  throw new IdentityInputError();
+                }
+                const tenantId = rawTenantId(context);
+                const invitation = await options.authRepository.invitationById(
+                  tenantId,
+                  (target as ResolvedIdentityTarget).id,
+                );
+                // Only a `pending` invitation is resent (Q123).
+                if (invitation?.status !== 'pending') throw new IdentityInputError();
+                const token = generateInvitationToken();
+                await (
+                  await verificationContext()
+                ).internalAdapter.updateVerificationByIdentifier(
+                  `invitation-accept:${invitation.id}`,
+                  {
+                    value: digestInvitationToken(token),
+                  },
+                );
+                await emailGate.send({
+                  tenantId,
+                  to: invitation.email,
+                  template: {
+                    kind: 'InvitationEmail',
+                    link: buildInvitationLink({
+                      baseUrl: invitationLinkBaseUrl,
+                      invitationId: invitation.id,
+                      token,
+                    }),
+                    expiryText: INVITATION_EXPIRY_TEXT,
+                  },
+                });
+                emitIdentityEvent({
+                  name: 'catalog.audit.invitation_resent',
+                  severity: 'INFO',
+                  attributes: {
+                    'tayzu.tenant.id': tenantId,
+                    'tayzu.actor.type': (context['actor'] as { type: string }).type,
+                    'tayzu.actor.id': (context['actor'] as { id: string }).id,
+                    'tayzu.identity.invitation.id': invitation.id,
+                  },
+                });
+                return { invitationId: invitation.id };
               },
-            });
-            return { invitationId: invitation.id };
-          },
+            ),
         }),
         // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.
         linkSsoAccount: defineIdentityOperation({
@@ -914,114 +994,114 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             },
           },
           route: identityRoute('PUT', '/v1/users/{user}/status', { highRisk: true }),
-          handler: async ({ context, input: rawInput, target }): Promise<void> => {
-            // Fail closed when the host did not wire the writer.
-            const { userSync } = options;
-            if (userSync === undefined) throw new IdentityInputError();
-            const parsed = parseDetailedInput(SCHEMAS.setStatus, rawInput);
-            const status = parsed.body['status'];
-            if (status !== 'Active' && status !== 'Disabled') throw new IdentityInputError();
-            const tenantId = rawTenantId(context);
-            const adminId = (context['actor'] as { id: string }).id;
-            const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
-            if (target === undefined) {
-              // Service-account branch: only `_user.status` is written (no Better Auth user).
-              const identifier = parsed.params['user'] as string;
-              if (
-                options.appPool === undefined ||
-                !(await serviceAccountExists(options.appPool, tenantId, identifier))
-              ) {
-                throw new CredentialTargetNotFoundError();
+          handler: ({ context, input: rawInput, target }): Promise<void> =>
+            withIdentitySpan('identity.user.set_status', {}, async (span): Promise<void> => {
+              // Fail closed when the host did not wire the writer.
+              const { userSync } = options;
+              if (userSync === undefined) throw new IdentityInputError();
+              const parsed = parseDetailedInput(SCHEMAS.setStatus, rawInput);
+              const status = parsed.body['status'];
+              if (status !== 'Active' && status !== 'Disabled') throw new IdentityInputError();
+              span.setAttributes({ 'tayzu.identity.user.status.to': status });
+              const tenantId = rawTenantId(context);
+              const adminId = (context['actor'] as { id: string }).id;
+              const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
+              if (target === undefined) {
+                // Service-account branch: only `_user.status` is written (no Better Auth user).
+                const identifier = parsed.params['user'] as string;
+                if (
+                  options.appPool === undefined ||
+                  !(await serviceAccountExists(options.appPool, tenantId, identifier))
+                ) {
+                  throw new CredentialTargetNotFoundError();
+                }
+                const serviceCurrent = await userSync.readStatus({ tenantId, email: identifier });
+                nextStatus(serviceCurrent, change);
+                if (serviceCurrent !== null) {
+                  span.setAttributes({ 'tayzu.identity.user.status.from': serviceCurrent });
+                }
+                const written = await runWithIdentityContext({ adminId }, () =>
+                  userSync.writeUserChange({
+                    tenantId,
+                    email: identifier,
+                    name: identifier,
+                    change,
+                    userId: identifier,
+                    accountKind: 'service',
+                    principal: { kind: 'admin', id: adminId },
+                    onBehalfOf: { type: 'user', id: adminId },
+                  }),
+                );
+                // A write that changed nothing returns no event and counts for nothing.
+                if (written !== undefined) {
+                  recordIdentityMetric('tayzu.identity.service_accounts', 1, {
+                    'tayzu.tenant.id': tenantId,
+                    'tayzu.identity.service_account.mutation':
+                      status === 'Disabled' ? 'disabled' : 'enabled',
+                  });
+                }
+                return;
               }
-              nextStatus(await userSync.readStatus({ tenantId, email: identifier }), change);
+              const userId = target.id;
+              const adapter = (await authContext()).internalAdapter;
+              const user = await options.authRepository.userInTenant(tenantId, userId);
+              const authUser = await adapter.findUserById(userId);
+              if (user === undefined || authUser === null) throw new IdentityInputError();
+              const current = await userSync.readStatus({ tenantId, email: user.email });
+              nextStatus(current, change);
+              if (current !== null)
+                span.setAttributes({ 'tayzu.identity.user.status.from': current });
               await runWithIdentityContext({ adminId }, () =>
                 userSync.writeUserChange({
                   tenantId,
-                  email: identifier,
-                  name: identifier,
+                  email: user.email,
+                  name: authUser.name,
                   change,
-                  userId: identifier,
-                  accountKind: 'service',
+                  userId,
                   principal: { kind: 'admin', id: adminId },
                   onBehalfOf: { type: 'user', id: adminId },
                 }),
               );
-              return;
-            }
-            const userId = target.id;
-            const adapter = (await authContext()).internalAdapter;
-            const user = await options.authRepository.userInTenant(tenantId, userId);
-            const authUser = await adapter.findUserById(userId);
-            if (user === undefined || authUser === null) throw new IdentityInputError();
-            const current = await userSync.readStatus({ tenantId, email: user.email });
-            nextStatus(current, change);
-            await runWithIdentityContext({ adminId }, () =>
-              userSync.writeUserChange({
-                tenantId,
-                email: user.email,
-                name: authUser.name,
-                change,
-                userId,
-                principal: { kind: 'admin', id: adminId },
-                onBehalfOf: { type: 'user', id: adminId },
-              }),
-            );
-            const single =
-              (await options.authRepository.globalMembershipTenantsOf(userId)).length === 1;
-            if (status === 'Active') {
-              if (single) await adapter.updateUser(userId, { banned: false });
-              return;
-            }
-            // Design D13 (Q63, Q123): the pending invitations to the user and those the user created
-            // in this tenant are cancelled; any other status is skipped.
-            const toCancel = [
-              {
-                reason: 'user_disabled',
-                invitations: await options.authRepository.pendingInvitationsByEmail(
-                  tenantId,
-                  user.email,
-                ),
-              },
-              {
-                reason: 'inviter_disabled',
-                invitations: await options.authRepository.pendingInvitationsByInviter(
-                  tenantId,
-                  userId,
-                ),
-              },
-            ];
-            for (const { reason, invitations } of toCancel) {
-              for (const invitation of invitations) {
-                const attributes = {
-                  'tayzu.identity.invitation.id': invitation.id,
-                  'tayzu.identity.invitation.reason': reason,
-                };
-                const cancelled = await withIdentitySpan(
-                  'identity.invitation.cancel',
-                  attributes,
-                  () => options.authRepository.markInvitationCancelled(tenantId, invitation.id),
-                );
-                if (!cancelled) continue;
-                emitIdentityEvent({
-                  name: 'catalog.audit.invitation_cancelled',
-                  severity: 'INFO',
-                  attributes: {
-                    'tayzu.tenant.id': tenantId,
-                    'tayzu.actor.id': adminId,
-                    ...attributes,
-                  },
-                });
+              const single =
+                (await options.authRepository.globalMembershipTenantsOf(userId)).length === 1;
+              if (status === 'Active') {
+                if (single) await adapter.updateUser(userId, { banned: false });
+                return;
               }
-            }
-            const revoked = await options.authRepository.deleteSessionsOf(tenantId, userId);
-            for (let index = 0; index < revoked; index += 1) {
-              emitSessionRevoked({ actorId: userId, tenantId, reason: 'admin_action' });
-            }
-            if (single) {
-              await adapter.updateUser(userId, { banned: true });
-              await adapter.deleteUserSessions(userId);
-            }
-          },
+              // Design D13 (Q63, Q123): the pending invitations to the user and those the user created
+              // in this tenant are cancelled; any other status is skipped.
+              const toCancel = [
+                {
+                  reason: 'user_disabled' as const,
+                  invitations: await options.authRepository.pendingInvitationsByEmail(
+                    tenantId,
+                    user.email,
+                  ),
+                },
+                {
+                  reason: 'inviter_disabled' as const,
+                  invitations: await options.authRepository.pendingInvitationsByInviter(
+                    tenantId,
+                    userId,
+                  ),
+                },
+              ];
+              for (const { reason, invitations } of toCancel) {
+                for (const invitation of invitations) {
+                  await recordInvitationCancel(tenantId, adminId, invitation.id, reason, () =>
+                    options.authRepository.markInvitationCancelled(tenantId, invitation.id),
+                  );
+                }
+              }
+              const revoked = await options.authRepository.deleteSessionsOf(tenantId, userId);
+              for (let index = 0; index < revoked; index += 1) {
+                emitSessionRevoked({ actorId: userId, tenantId, reason: 'admin_action' });
+              }
+              if (single) {
+                await adapter.updateUser(userId, { banned: true });
+                await adapter.deleteUserSessions(userId);
+              }
+            }),
         }),
         unlinkSsoAccount: defineIdentityOperation({
           authorization: {

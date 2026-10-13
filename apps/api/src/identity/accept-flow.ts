@@ -16,11 +16,13 @@ import {
   emitIdentityEvent,
   hasActiveTemporaryPasswordMarker,
   isIdle,
+  recordIdentityMetric,
   toCerbosRole,
   validatePassword,
   verifyInvitationToken,
   withIdentitySpan,
   type AuthInstance,
+  type IdentitySpanHandle,
   type StepUpGuard,
 } from '@tayzu/auth';
 
@@ -62,6 +64,9 @@ export interface AcceptFlowOptions {
   /** Test seam, awaited immediately before each step; a throw fails that step. */
   readonly onStep?: (step: Step) => void | Promise<void>;
 }
+
+/** Why a request that carried a session cookie was not allowed to use it (design D4 step 5). */
+export type CrossSiteDenial = 'csrf_rejected' | 'origin_rejected';
 
 export interface AcceptInput {
   readonly invitationId: string;
@@ -173,11 +178,12 @@ function tokenIdentifier(invitationId: string): string {
 }
 
 export function createAcceptFlow(options: AcceptFlowOptions): {
-  accept(input: AcceptInput): Promise<{ userId: string }>;
+  accept(input: AcceptInput, span?: IdentitySpanHandle): Promise<{ userId: string }>;
   acceptRequest(request: {
     body: unknown;
     session?: AcceptInput['session'];
     headers?: Headers;
+    crossSiteDenial?: CrossSiteDenial;
   }): Promise<{ userId: string }>;
 } {
   const { authRepository: repository, authPool, userSync } = options;
@@ -289,7 +295,10 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     return notFound();
   }
 
-  async function accept(rawInput: AcceptInput): Promise<{ userId: string }> {
+  async function accept(
+    rawInput: AcceptInput,
+    span?: IdentitySpanHandle,
+  ): Promise<{ userId: string }> {
     const input: AcceptInput =
       rawInput.session === undefined && rawInput.headers !== undefined
         ? { ...rawInput, session: await readSession(rawInput.headers) }
@@ -321,6 +330,8 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     const role = invitation.role === 'admin' ? 'admin' : 'member';
 
     const existing = await repository.globalUserByEmail(email);
+    const path = existing === undefined ? 'new_account' : 'existing_account';
+    span?.setAttributes({ 'tayzu.identity.invitation.path': path });
     if (existing !== undefined && input.session?.userId !== existing.id) {
       // The match is on the account of the invitation email only, with no
       // verified-email condition (Q38).
@@ -558,7 +569,13 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
         'tayzu.actor.type': 'user',
         'tayzu.actor.id': userId,
         'tayzu.identity.user.id': userId,
+        'tayzu.identity.invitation.role': role,
+        'tayzu.identity.invitation.path': path,
       },
+    });
+    recordIdentityMetric('tayzu.identity.invitations', 1, {
+      'tayzu.tenant.id': tenantId,
+      'tayzu.identity.invitation.mutation': 'accepted',
     });
     if (existing === undefined && role === 'admin') {
       await step('admin_notice');
@@ -572,6 +589,7 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     body: unknown;
     session?: AcceptInput['session'];
     headers?: Headers;
+    crossSiteDenial?: CrossSiteDenial;
   }): Promise<{ userId: string }> {
     let parsed: Record<string, unknown>;
     try {
@@ -597,14 +615,29 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     return withIdentitySpan(
       'identity.invitation.accept',
       { 'tayzu.identity.invitation.id': invitationId },
-      () =>
-        accept({
-          invitationId,
-          token: parsed['token'] as string,
-          ...(parsed['password'] !== undefined && { password: parsed['password'] as string }),
-          ...(request.session !== undefined && { session: request.session }),
-          ...(request.headers !== undefined && { headers: request.headers }),
-        }),
+      (span) => {
+        // The session was not read: the uniform rejection follows only for an existing account.
+        if (request.crossSiteDenial !== undefined) {
+          emitIdentityEvent({
+            name: 'catalog.security.invitation_acceptance_denied',
+            severity: 'WARN',
+            attributes: {
+              'tayzu.identity.invitation.id': invitationId,
+              'tayzu.identity.invitation.denial_reason': request.crossSiteDenial,
+            },
+          });
+        }
+        return accept(
+          {
+            invitationId,
+            token: parsed['token'] as string,
+            ...(parsed['password'] !== undefined && { password: parsed['password'] as string }),
+            ...(request.session !== undefined && { session: request.session }),
+            ...(request.headers !== undefined && { headers: request.headers }),
+          },
+          span,
+        );
+      },
     );
   }
 

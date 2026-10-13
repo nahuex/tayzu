@@ -873,13 +873,21 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           // Q24, Q38: the session is read only for a request that carries the CSRF
           // header and an allowed `Origin`; otherwise the flow sees no session, and an
           // existing account gets the uniform rejection (a new person needs no session).
-          const crossSiteSafe =
-            request.headers['x-csrf-token'] === 'orpc' &&
-            request.headers.origin !== undefined &&
-            allowedOrigins.has(request.headers.origin);
+          const csrfPresent = request.headers['x-csrf-token'] === 'orpc';
+          const originAllowed =
+            request.headers.origin !== undefined && allowedOrigins.has(request.headers.origin);
+          const crossSiteSafe = csrfPresent && originAllowed;
+          // Only a request that carries a cookie had a session to refuse (design D4 step 5).
+          const crossSiteDenial =
+            crossSiteSafe || request.headers.cookie === undefined
+              ? undefined
+              : csrfPresent
+                ? 'origin_rejected'
+                : 'csrf_rejected';
           const { userId } = await acceptFlow.acceptRequest({
             body: request.body,
             ...(crossSiteSafe && { headers: toWebHeaders(request) }),
+            ...(crossSiteDenial !== undefined && { crossSiteDenial }),
           });
           return await reply.status(200).send({ userId });
         } catch (error) {

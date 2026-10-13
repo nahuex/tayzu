@@ -73,6 +73,7 @@ export {
   recordIdentityMetric,
   withIdentitySpan,
   type IdentityAttributes,
+  type IdentitySpanHandle,
   type IdentitySeverity,
 } from './telemetry/identity-telemetry.js';
 export {

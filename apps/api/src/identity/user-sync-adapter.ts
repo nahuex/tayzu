@@ -8,6 +8,7 @@
 import {
   emitIdentityEvent,
   nextStatus,
+  recordIdentityMetric,
   type StatusEvent,
   type UserStatus,
   type UserSyncPort,
@@ -79,6 +80,13 @@ function emitStatusChanged(
 ): void {
   const service = input.accountKind === 'service';
   const { principal } = input;
+  // Operator and ban-hook writes have no human behind them: the platform acts.
+  recordIdentityMetric('tayzu.identity.user_status_changes', 1, {
+    'tayzu.tenant.id': input.tenantId,
+    'tayzu.identity.user.status.to': to,
+    'tayzu.actor.type':
+      principal === undefined || principal.kind === 'operator' ? 'system' : 'user',
+  });
   emitIdentityEvent({
     name: 'catalog.audit.user_status_changed',
     severity: 'INFO',

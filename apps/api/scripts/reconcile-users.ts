@@ -82,7 +82,7 @@ export async function main(options: ReconcileOptions = {}): Promise<void> {
           await withIdentitySpan(
             'identity.user.reconcile',
             { 'tayzu.tenant.id': tenantId, 'tayzu.identity.operator.id': operatorId },
-            async () => {
+            async (span) => {
               const members = await auth.query<MemberRow>(
                 `select u.id, u.email, u.name, m.role, u.banned
                    from auth.member m
@@ -153,6 +153,10 @@ export async function main(options: ReconcileOptions = {}): Promise<void> {
                 });
               }
 
+              span.setAttributes({
+                'tayzu.identity.reconcile.created': created,
+                'tayzu.identity.reconcile.orphans': orphans.length,
+              });
               emitIdentityEvent({
                 name: 'catalog.audit.users_reconciled',
                 severity: 'INFO',
