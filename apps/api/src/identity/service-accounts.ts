@@ -15,6 +15,7 @@ import type { AuthRepository } from './auth-repository.js';
 import {
   CredentialConflictError,
   CredentialTargetNotFoundError,
+  DEFAULT_CREDENTIAL_CAP,
   readAllApiKeys,
   readApiKeyMetadata,
   readRevokedIds,
@@ -57,6 +58,8 @@ export async function createServiceAccount(args: {
   readonly identifier: string;
   /** The most service accounts the tenant may hold (Q56). */
   readonly cap?: number;
+  /** The most non-revoked credentials the tenant may hold, the new key included (Q56, Q138). */
+  readonly credentialCap?: number;
 }): Promise<{ user: EntityOutput; clientId: string; clientSecret: string }> {
   const { tenantId, adminId, identifier } = args;
   if (!isValidServiceAccountIdentifier(identifier)) throw new CredentialConflictError();
@@ -83,10 +86,20 @@ export async function createServiceAccount(args: {
         if (Number(count.rows[0]?.n) >= (args.cap ?? DEFAULT_SERVICE_ACCOUNT_CAP)) {
           throw new CredentialConflictError();
         }
+        // Same lock as `identity.credentials.create` (Q138): the key counts against the cap.
+        await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+          `credential-cap:${tenantId}`,
+        ]);
         const [keys, revoked] = await Promise.all([
           readAllApiKeys(args.authRepository, tenantId),
           readRevokedIds(args.appPool, tenantId),
         ]);
+        if (
+          keys.filter((key) => !revoked.has(key.id)).length >=
+          (args.credentialCap ?? DEFAULT_CREDENTIAL_CAP)
+        ) {
+          throw new CredentialConflictError();
+        }
         // Resolved decision Q40: the new account must not inherit a surviving credential.
         if (
           keys.some(

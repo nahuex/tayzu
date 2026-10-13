@@ -3382,7 +3382,7 @@ SSO surfaces of M18) are recorded there with their justification.
       service account and of one whose `_user` row was deleted each answering like an
       invalid credential with no token, and the same credential receiving a token again
       after re-enabling.
-- [ ] 14.17 The key issued by `identity.serviceAccounts.create` counts against the
+- [x] 14.17 The key issued by `identity.serviceAccounts.create` counts against the
       credential cap (Resolved decisions Q56 and Q138; 9.5d), under the same
       `credential-cap:<tenant>` advisory lock as `identity.credentials.create`. Verify:
       `service-accounts.int.test.ts` covers a tenant at the cap refusing the creation

@@ -588,6 +588,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               tenantId: rawTenantId(context),
               adminId: (context['actor'] as { id: string }).id,
               identifier,
+              credentialCap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
               ...(options.serviceAccountCap === undefined
                 ? {}
                 : { cap: options.serviceAccountCap }),

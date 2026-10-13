@@ -1088,4 +1088,136 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(await keyRows(tenant.tenantId)).toHaveLength(1);
     expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(1);
   }, 180_000);
+
+  // Task 14.17: the key issued by `identity.serviceAccounts.create` counts against the credential
+  // cap (Resolved decisions Q56 and Q138; 9.5d), under the `credential-cap:<tenant>` advisory
+  // lock of `identity.credentials.create`. Production symbol expected: `createServiceAccount`
+  // (`./service-accounts.js`) takes `credentialCap?: number` (default `DEFAULT_CREDENTIAL_CAP`),
+  // which `createIdentityRouter` feeds from `options.credentialCap`; beyond it the creation fails
+  // with `CredentialConflictError` (`CATALOG_VALIDATION_FAILED`) before anything is written.
+  interface CappedClient {
+    identity: {
+      serviceAccounts: CreatingClient['identity']['serviceAccounts'];
+      credentials: {
+        create(
+          input: { body: { name: string; kind: string } },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function cappedClient(credentialCap: number): CappedClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore: createInMemoryEmailCapStore({
+            tenant: { max: 1000, windowSeconds: 3600 },
+            recipient: { max: 1000, windowSeconds: 86_400 },
+          }),
+          sender,
+        }),
+        appPool,
+        userSync: createUserSyncAdapter({
+          userSync: createUserSync({ pool: appPool, authz: cerbos }),
+        }),
+        credentialCap,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  /** Seeds plain organization keys (bound to no service account) and returns their ids. */
+  async function seedKeys(tenant: Tenant, count: number): Promise<string[]> {
+    return await Promise.all(
+      Array.from({ length: count }, async (_, index) => {
+        const created = await createMachineCredential(auth, {
+          userId: tenant.adminId,
+          organizationId: tenant.tenantId,
+          name: `seed-${String(index)}`,
+          actorKind: 'integration',
+          metadata: { createdBy: tenant.adminId },
+        });
+        return created.id;
+      }),
+    );
+  }
+
+  it('The key of a service account counts against the credential cap: a tenant at the cap refuses the creation with CATALOG_VALIDATION_FAILED and creates neither a _user nor a key, and a revoked key does not count', async () => {
+    const cap = 3;
+    const tenant = await freshTenant();
+    const ids = await seedKeys(tenant, cap);
+    const identifier = `svc-capped-${randomUUID().slice(0, 8)}`;
+    const statusEventsBefore = (await logRecords(STATUS_EVENT, tenant.tenantId)).length;
+
+    await expect(
+      cappedClient(cap).identity.serviceAccounts.create(
+        { body: { identifier } },
+        { context: context(tenant) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await changeEvents(tenant.tenantId, identifier)).toHaveLength(0);
+    expect(await keyRows(tenant.tenantId)).toHaveLength(cap);
+    expect(await logRecords(CREATED_EVENT, tenant.tenantId)).toHaveLength(0);
+    expect((await logRecords(STATUS_EVENT, tenant.tenantId)).length).toBe(statusEventsBefore);
+
+    // A revoked key does not count: revoking one frees exactly one place.
+    await revokeMachineCredential(auth, {
+      userId: tenant.adminId,
+      id: ids[0] ?? '',
+      pool: appPool,
+      tenantId: tenant.tenantId,
+    });
+    const created = await cappedClient(cap).identity.serviceAccounts.create(
+      { body: { identifier } },
+      { context: context(tenant) },
+    );
+    expect(created.clientId).toEqual(expect.any(String));
+    expect(await userRows(tenant.tenantId, identifier)).toHaveLength(1);
+    expect(await keyRows(tenant.tenantId)).toHaveLength(cap + 1);
+
+    // The tenant is at the cap again, so the next creation is refused.
+    const another = `svc-capped-more-${randomUUID().slice(0, 8)}`;
+    await expect(
+      cappedClient(cap).identity.serviceAccounts.create(
+        { body: { identifier: another } },
+        { context: context(tenant) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await userRows(tenant.tenantId, another)).toHaveLength(0);
+    expect(await keyRows(tenant.tenantId)).toHaveLength(cap + 1);
+  }, 180_000);
+
+  it('A concurrent credentials.create and serviceAccounts.create at one below the cap yield exactly one success under the same lock', async () => {
+    const cap = 4;
+    const tenant = await freshTenant();
+    await seedKeys(tenant, cap - 1);
+    const identifier = `svc-race-cap-${randomUUID().slice(0, 8)}`;
+    const api = cappedClient(cap);
+
+    const outcomes = await Promise.allSettled([
+      api.identity.credentials.create(
+        { body: { name: 'Racing credential', kind: 'integration' } },
+        { context: context(tenant) },
+      ),
+      api.identity.serviceAccounts.create({ body: { identifier } }, { context: context(tenant) }),
+    ]);
+
+    const fulfilled = outcomes.filter((outcome) => outcome.status === 'fulfilled');
+    const rejected = outcomes.filter((outcome) => outcome.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(await keyRows(tenant.tenantId)).toHaveLength(cap);
+    // A refused service account leaves no _user behind; an accepted one has exactly its key.
+    const accountCreated = (await userRows(tenant.tenantId, identifier)).length;
+    expect(accountCreated).toBe(outcomes[1].status === 'fulfilled' ? 1 : 0);
+  }, 180_000);
 });
