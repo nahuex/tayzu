@@ -121,6 +121,11 @@ export interface CreateAppOptions {
    * procedures). Omitted: off, and each answers like an unknown `/v1` path.
    */
   readonly mountIdentityRoutes?: boolean;
+  /**
+   * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
+   * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
+   */
+  readonly configureApp?: (app: FastifyInstance) => void | Promise<void>;
 }
 
 export interface App {
@@ -352,6 +357,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
+  await options.configureApp?.(app);
   // Q74, D18: first hook of all. A target that is not origin-form, or whose
   // path (before the query) holds `%`, `//` or a backslash, answers the
   // allowlist's own 404 before any other hook or the router can normalize it.

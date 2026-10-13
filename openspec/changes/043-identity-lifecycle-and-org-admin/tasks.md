@@ -3216,7 +3216,7 @@ SSO surfaces of M18) are recorded there with their justification.
       switch" by enumerating the Fastify route table **and** the router's
       procedures, and `config.test.ts` covers the default being off, `true` and
       `false` being accepted and any other value failing startup.
-- [ ] 14.3b With the switch **on**, every Fastify route outside an explicit public
+- [x] 14.3b With the switch **on**, every Fastify route outside an explicit public
       allowlist is behind `resolveContext` (VCDM G4), so a new
       route cannot become public by accident. The allowlist is explicit and reviewed
       (the accept route and the routes `002` leaves public). Verify:
