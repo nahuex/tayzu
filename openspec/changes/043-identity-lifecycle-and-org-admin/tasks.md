@@ -3261,7 +3261,7 @@ SSO surfaces of M18) are recorded there with their justification.
       confirmation travels in the query string). Verify: `delete-routes.http.int.test.ts`
       covers each `DELETE` route reading its target from the path, and a foreign or
       unknown target answering the same `CATALOG_NOT_FOUND` with nothing changed.
-- [ ] 14.7 The existing-account acceptance over HTTP (Resolved decisions Q24 and
+- [x] 14.7 The existing-account acceptance over HTTP (Resolved decisions Q24 and
       Q38): the route reads the session cookie, requires the CSRF custom header and
       performs its own `Origin` check (`/v1` has only the CSRF header, CORS and
       SameSite=Lax, and Better Auth's origin check covers only `/api/auth/*`), which
