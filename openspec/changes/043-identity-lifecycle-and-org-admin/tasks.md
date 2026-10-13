@@ -2806,7 +2806,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       tenant and rejects a body that names an organization. Verify: an invitation
       created by `t1`'s admin has `organizationId = t1`, and a body with an
       organization or tenant field is rejected.
-- [ ] 12.2 `identity.users.cancelInvitation` and `resendInvitation` on another
+- [x] 12.2 `identity.users.cancelInvitation` and `resendInvitation` on another
       tenant's invitation answer `CATALOG_NOT_FOUND`, the same as an unknown id.
       Verify: "Another tenant's invitation cannot be cancelled or resent"
       for cancel and resend, asserting the invitation is unchanged and no email was

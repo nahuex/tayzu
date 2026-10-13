@@ -184,4 +184,70 @@ describe('cross-tenant matrix (tasks 12.x)', () => {
     },
     90_000,
   );
+
+  // Task 12.2. Spec: "Another tenant's invitation cannot be cancelled or resent".
+  async function invitationSnapshot(id: string): Promise<unknown> {
+    const invitation = await authPool.query<Record<string, unknown>>(
+      'select * from auth.invitation where id = $1',
+      [id],
+    );
+    const verification = await authPool.query<Record<string, unknown>>(
+      'select * from auth.verification where identifier = $1',
+      [`invitation-accept:${id}`],
+    );
+    return { invitation: invitation.rows, verification: verification.rows };
+  }
+
+  async function rejectionOf(call: Promise<unknown>): Promise<unknown> {
+    const thrown: unknown = await call.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    return thrown;
+  }
+
+  it.each([['cancelInvitation'], ['resendInvitation']] as const)(
+    "Another tenant's invitation cannot be cancelled or resent: %s by t1's admin on a pending invitation of t2 fails with CATALOG_NOT_FOUND like an unknown id, the invitation is unchanged and no email is sent",
+    async (operation) => {
+      const t1 = await freshTenant('t1');
+      const t2 = await freshTenant('t2');
+      const email = `cross-${operation.toLowerCase()}-${randomUUID()}@example.test`;
+      const created = await client.identity.users.invite(
+        { email, role: 'member' },
+        { context: sessionContext(t2) },
+      );
+      const before = await invitationSnapshot(created.invitationId);
+      const emailsBefore = emailsTo(email).length;
+      expect(emailsBefore, 'the invitation email of t2 was sent once').toBe(1);
+
+      const foreign = await rejectionOf(
+        client.identity.users[operation](
+          { invitation: created.invitationId },
+          { context: sessionContext(t1) },
+        ),
+      );
+      const unknown = await rejectionOf(
+        client.identity.users[operation](
+          { invitation: randomUUID() },
+          { context: sessionContext(t1) },
+        ),
+      );
+
+      expect((foreign as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+      expect((unknown as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+      expect((foreign as { message?: unknown }).message, 'same as an unknown id').toBe(
+        (unknown as { message?: unknown }).message,
+      );
+      expect((foreign as { status?: unknown }).status).toBe(
+        (unknown as { status?: unknown }).status,
+      );
+      expect(
+        await invitationSnapshot(created.invitationId),
+        'invitation and token unchanged',
+      ).toEqual(before);
+      expect(emailsTo(email).length, 'no email was sent').toBe(emailsBefore);
+    },
+    90_000,
+  );
 });
