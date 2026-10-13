@@ -3233,7 +3233,7 @@ SSO surfaces of M18) are recorded there with their justification.
       local verification, and an admin without an enrolled factor getting
       `AUTH_STEP_UP_REQUIRED` on any `/v1` call (an invited admin starts blocked until
       they enrol).
-- [ ] 14.5 Error mapping over HTTP: `AUTH_FORBIDDEN` and `AUTH_STEP_UP_REQUIRED`
+- [x] 14.5 Error mapping over HTTP: `AUTH_FORBIDDEN` and `AUTH_STEP_UP_REQUIRED`
       are 403, `AUTH_RATE_LIMITED` is 429 **with a `Retry-After` header** (the caps and
       the accept route's limiter), a foreign or unknown target is 404. Verify:
       `errors.http.int.test.ts` covers each over the mounted server, the header on each
