@@ -18,7 +18,7 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1 and Q4-Q131 in `design.md` (there is no Q2 or
+Tasks follow the Resolved decisions Q1 and Q4-Q142 in `design.md` (there is no Q2 or
 Q3). The ninth amendment's two open questions are Q116 (the invitee is the actor of an
 acceptance, and the bootstrap records the operator's opaque id) and Q117
 (`catalog.audit.user_status_changed` records every status change, with the principal of
@@ -3051,6 +3051,22 @@ SSO surfaces of M18) are recorded there with their justification.
       wrong password (the HTTP response's own status, error code and body, and no
       session cookie set) with no session row remaining, and the user able to sign in again after an admin sets a new
       temporary password.
+- [ ] 13.5e The temporary-password marker survives Better Auth's cleanup of expired
+      verification rows (Resolved decision Q142; `002` VCDM M11). `findVerificationValue`
+      deletes every `auth.verification` row whose `expiresAt` has passed, for any user,
+      so a marker that kept its expiry in `expiresAt` vanished at expiry and the expired
+      temporary password signed in again (13.5d failed open). The marker's `expiresAt` is
+      the far-future sentinel `9999-12-31T23:59:59Z` of the SSO-link marker, and its
+      `value` holds the real expiry as an ISO-8601 timestamp, which both readers of
+      `packages/auth/src/identity/temporary-password.ts` compare against; a `value` that
+      does not parse fails closed in both (it restricts a session like an active marker
+      and refuses a sign-in like an expired one), and the row is deleted only by the
+      password change (13.5) or with the user. The tests of 13.5, 13.5c and 13.5d that
+      seed the marker by hand are **rewritten** to this representation, not loosened.
+      Verify: `temporary-password.int.test.ts` covers an expired marker staying in place
+      after a `findVerificationValue` call for another identifier and still blocking the
+      sign-in, and a marker whose `value` does not parse restricting a session and
+      refusing a sign-in.
 - [x] 13.6 Authorization and the write run against the same state: the handler
       re-verifies `ownerTeam`, `locked` and `createdBy` inside its own transaction,
       after `FOR UPDATE`, so a concurrent ownership or lock change is seen and an
@@ -3378,6 +3394,42 @@ SSO surfaces of M18) are recorded there with their justification.
       `createApp` to the identity router. Verify: `identity-wiring.int.test.ts` (14.11)
       covers `CREDENTIAL_CAP=1` and `SERVICE_ACCOUNT_CAP=1` each refusing the second
       creation over HTTP with `CATALOG_VALIDATION_FAILED` and nothing created.
+
+- [ ] 14.19 `identity.users.create` and the bootstrap CLI write the temporary-password
+      marker that 13.5, 13.5c and 13.5d honor (Resolved decisions Q36, Q138 and Q139;
+      `002` VCDM M11): `temp-password:<userId>` in `auth.verification` in the
+      representation of 13.5e, its `value` the expiry 48 hours after the creation
+      (Resolved decision Q142), written right after `createUser` and before
+      `addMember`, so a marker that cannot be written fails the operation before the
+      user joins the tenant. Verify: `temporary-password-marker.int.test.ts` (in
+      `apps/api/src/`) covers a user created through `identity.users.create` with no
+      hand-seeded marker, signing in with the returned password, reaching only the
+      routes of 13.5 and holding a marker whose expiry is 48 hours after the
+      creation, a failing marker write leaving no membership, and the same for an admin
+      created by the bootstrap CLI's `main()`.
+- [ ] 14.20 The limiters of the accept route and of the re-authorization callback take
+      their defaults from `apps/api/src/config.ts` (Resolved decisions Q138 and Q140;
+      8.13, 13.9; `002` VCDM M13): `INVITATION_ACCEPT_RATE_LIMIT_MAX` and
+      `INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS`, and
+      `REAUTHORIZATION_CALLBACK_RATE_LIMIT_MAX` and
+      `REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS`, each 10 per 60 seconds
+      through `limitWithDefaults`, passed by `createAppFromEnv`, and `createApp`
+      applying the same default when the option is omitted. Verify: `config.test.ts`
+      covers both defaults, an override and a malformed value failing startup, and
+      `reauthorization-limits.int.test.ts` covers an app built through
+      `createAppFromEnv` with SSO configured and no limit variable answering the
+      callback with `AUTH_RATE_LIMITED` and `Retry-After` past the default from one IP,
+      with no database access past the limit.
+- [ ] 14.21 The `/v1/*` catch-all accepts only the methods the merged router routes
+      (Resolved decision Q141): `GET`, `POST`, `PUT`, `PATCH` and `DELETE` (Fastify
+      derives `HEAD` from `GET`; the CORS preflight stays with `@fastify/cors`), so
+      `QUERY` is not registered and leaves the allowlist of 14.3b. Verify:
+      `catch-all-methods.int.test.ts` (in `apps/api/src/`) covers an anonymous and an
+      authenticated `QUERY` on a `/v1` path answering Fastify's 404 without resolving a
+      context, every method that a route of the merged router declares being in the
+      catch-all's list (so a new method cannot be forgotten), and a CORS preflight on a
+      `/v1` path answering as before; `route-auth-allowlist.int.test.ts` (14.3b) stays
+      green with no `QUERY` entry in the allowlist.
 
 ## 15. Telemetry contract enforcement
 
