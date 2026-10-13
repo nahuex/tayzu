@@ -386,6 +386,27 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
     }
   }
 
+  /**
+   * Q88: an admin never records a `sub` on an admin or an owner of the tenant (identity laundering).
+   * The cause is logged with opaque identifiers only (Q115); the caller sees the generic rejection.
+   */
+  async function refuseAdminOrOwnerTarget(context: RawContext, userId: string): Promise<void> {
+    const tenantId = rawTenantId(context);
+    const member = await options.authRepository.memberOf(tenantId, userId);
+    if (member?.role !== 'admin' && member?.role !== 'owner') return;
+    emitIdentityEvent({
+      name: 'catalog.security.identity_conflict_refused',
+      severity: 'WARN',
+      attributes: {
+        'tayzu.tenant.id': tenantId,
+        'tayzu.actor.id': (context['actor'] as { id: string }).id,
+        'tayzu.identity.conflict.reason': 'target_is_admin_or_owner',
+        'tayzu.identity.user.id': userId,
+      },
+    });
+    throw new IdentityLinkRejectedError();
+  }
+
   return {
     identity: {
       credentials: {
@@ -753,8 +774,9 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             const adapter = (await authContext()).internalAdapter;
             const userId = (target as ResolvedIdentityTarget).id;
             await options.withUserLock(userId, async () => {
-              // The check runs inside the lock (task 8.5i); the admin/owner refusal is task 13.2b's.
+              // The checks run inside the lock (task 8.5i).
               await refuseMultiTenantTarget(userId);
+              await refuseAdminOrOwnerTarget(context, userId);
               const existing = await options.authRepository.globalAccountByKey(
                 SSO_PROVIDER_ID,
                 input.subject,

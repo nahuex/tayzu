@@ -43,8 +43,12 @@
  */
 // Load-bearing import order (design D1): the telemetry harness registers
 // before anything that loads `@tayzu/auth` creates its logger.
-import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
-import { randomUUID } from 'node:crypto';
+import {
+  linkLogEvents,
+  registration,
+  type TelemetryTestHarness,
+} from './__fixtures__/link-telemetry.js';
+import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
 import { authSchema, createAuth, type AuthInstance, type UserSyncPort } from '@tayzu/auth';
@@ -52,7 +56,7 @@ import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
 import { harnessPools } from './__fixtures__/pools.js';
@@ -60,7 +64,14 @@ import { createIdentityRouter } from './identity-router.js';
 import { createAuthRepository } from './identity/auth-repository.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
-import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  createAdminUser,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
+import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
+import { createApp, type App } from './server.js';
 import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 interface CreateOrganizationSurface {
@@ -637,5 +648,407 @@ describe('identity operations refuse a target with a membership in another tenan
       { context: adminContext(tenantA) },
     );
     expect(await linkedSubjects(target.userId)).toEqual([]);
+  }, 60_000);
+});
+
+/**
+ * Task 13.2b of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * decision Q88, Q115; spec scenario "An admin cannot record an SSO link on an
+ * admin or an owner").
+ *
+ * Scenario (verbatim from the spec):
+ * - GIVEN another admin and an owner of `t1`, WHEN an admin of `t1` links an SSO
+ *   `sub` to either of them, THEN the operation is refused with the same generic
+ *   rejection as every other link conflict, no account is written and no session
+ *   is revoked, and they can still link their own identity through the
+ *   self-service route with a fresh step-up verification.
+ * - AND `catalog.security.identity_conflict_refused` is logged with the reason
+ *   `target_is_admin_or_owner` and opaque identifiers only.
+ *
+ * ## Production symbols expected
+ *
+ * None new beyond the telemetry contract (design, log events table):
+ * `catalog.security.identity_conflict_refused` (WARN) with `tayzu.tenant.id`,
+ * `tayzu.actor.id` (the acting admin), `tayzu.identity.conflict.reason` and
+ * `tayzu.identity.user.id` (the target's Better Auth user id). `linkSsoAccount`
+ * reads the target's membership role in the host tenant through the repository
+ * of 5.1b and refuses `admin` and `owner`.
+ */
+describe('linkSsoAccount refuses an admin or owner target (task 13.2b, Q88)', () => {
+  const EVENT = 'catalog.security.identity_conflict_refused';
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface SessionApiSurface {
+    signInEmail(args: {
+      body: { email: string; password: string };
+      headers: Headers;
+    }): Promise<unknown>;
+  }
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  function randomIp(): string {
+    const octet = (): string => randomInt(1, 255).toString(10);
+    return `10.${octet()}.${octet()}.${octet()}`;
+  }
+
+  async function freshTenant(): Promise<{ tenantId: string; ownerId: string; ownerEmail: string }> {
+    const id = randomUUID();
+    const ownerEmail = `owner-${id}@example.test`;
+    const owner = await createAdminUser(auth, {
+      name: 'Tenant Owner',
+      email: ownerEmail,
+      password: TEST_PASSWORD,
+    });
+    const org = await (auth.api as CreateOrganizationSurface).createOrganization({
+      body: { name: 'Admin Link Org', slug: `admin-link-${id}`, userId: owner.userId },
+    });
+    return { tenantId: org.id, ownerId: owner.userId, ownerEmail };
+  }
+
+  async function userWithRole(
+    tenantId: string,
+    role: 'member' | 'admin' | 'owner',
+  ): Promise<{ userId: string; email: string }> {
+    const user = await createAdminUser(auth, {
+      name: `Target ${role}`,
+      email: `${role}-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await (auth.api as AddMemberSurface).addMember({
+      body: { userId: user.userId, organizationId: tenantId, role },
+    });
+    return user;
+  }
+
+  function adminContext(tenantId: string, adminId: string): Record<string, unknown> {
+    return {
+      tenantId,
+      actor: { type: 'user', id: adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function accountCount(userId: string): Promise<number> {
+    const result = await authPool.query<{ count: string }>(
+      `select count(*)::text as count from auth.account where user_id = $1 and provider_id = 'visma-connect'`,
+      [userId],
+    );
+    return Number(result.rows[0]?.count);
+  }
+
+  async function sessionCount(userId: string): Promise<number> {
+    const result = await authPool.query<{ count: string }>(
+      `select count(*)::text as count from auth.session where user_id = $1`,
+      [userId],
+    );
+    return Number(result.rows[0]?.count);
+  }
+
+  async function refusals(tenantId: string) {
+    const records = await linkLogEvents(harness, EVENT);
+    return records.filter((record) => record.attributes['tayzu.tenant.id'] === tenantId);
+  }
+
+  async function expectRefused(role: 'admin' | 'owner'): Promise<void> {
+    const { tenantId } = await freshTenant();
+    const actingAdminId = `admin-${randomUUID()}`;
+    const target = await userWithRole(tenantId, role);
+    const subject = `visma-sub-${randomUUID()}`;
+    await (auth.api as SessionApiSurface).signInEmail({
+      body: { email: target.email, password: TEST_PASSWORD },
+      headers: new Headers({ 'x-forwarded-for': randomIp() }),
+    });
+    const sessionsBefore = await sessionCount(target.userId);
+    expect(sessionsBefore, 'precondition: the target has a live session').toBeGreaterThan(0);
+
+    await expect(
+      client.identity.users.linkSsoAccount(
+        { user: target.email, subject },
+        { context: adminContext(tenantId, actingAdminId) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect(await accountCount(target.userId), 'no account row was written').toBe(0);
+    const bySub = await authPool.query(
+      `select 1 from auth.account where provider_id = 'visma-connect' and account_id = $1`,
+      [subject],
+    );
+    expect(bySub.rows, 'the sub is linked to nobody').toHaveLength(0);
+    expect(await sessionCount(target.userId), 'no session was revoked').toBe(sessionsBefore);
+
+    const events = await refusals(tenantId);
+    expect(events).toHaveLength(1);
+    const attributes = events[0]?.attributes;
+    expect(attributes?.['tayzu.identity.conflict.reason']).toBe('target_is_admin_or_owner');
+    expect(attributes?.['tayzu.actor.id']).toBe(actingAdminId);
+    expect(attributes?.['tayzu.identity.user.id']).toBe(target.userId);
+    const serialized = JSON.stringify(events[0]);
+    expect(serialized, 'no email in the event').not.toContain(target.email);
+    expect(serialized, 'no sub in the event').not.toContain(subject);
+  }
+
+  it('A link on an admin of the tenant is refused with CATALOG_VALIDATION_FAILED, writes nothing, revokes nothing and logs target_is_admin_or_owner', async () => {
+    await expectRefused('admin');
+  }, 60_000);
+
+  it('A link on an owner of the tenant is refused with CATALOG_VALIDATION_FAILED, writes nothing, revokes nothing and logs target_is_admin_or_owner', async () => {
+    await expectRefused('owner');
+  }, 60_000);
+
+  it('A link on the creating owner of the tenant is refused as well', async () => {
+    const { tenantId, ownerId, ownerEmail } = await freshTenant();
+    const subject = `visma-sub-${randomUUID()}`;
+
+    await expect(
+      client.identity.users.linkSsoAccount(
+        { user: ownerEmail, subject },
+        { context: adminContext(tenantId, `admin-${randomUUID()}`) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect(await accountCount(ownerId)).toBe(0);
+  }, 60_000);
+
+  it('control: a link on a plain member still succeeds and logs no refusal', async () => {
+    const { tenantId } = await freshTenant();
+    const target = await userWithRole(tenantId, 'member');
+    const subject = `visma-sub-${randomUUID()}`;
+
+    await client.identity.users.linkSsoAccount(
+      { user: target.email, subject },
+      { context: adminContext(tenantId, `admin-${randomUUID()}`) },
+    );
+
+    expect(await accountCount(target.userId)).toBe(1);
+    expect(await refusals(tenantId)).toHaveLength(0);
+  }, 60_000);
+});
+
+/**
+ * Task 13.2b, last clause: "an admin linking their own identity through
+ * `/link-social` with step-up" still succeeds. Driven through the real
+ * `createApp` and the local OIDC stub, like `link-social-step-up.int.test.ts`.
+ * Runs for an `owner` and for an `admin` member.
+ */
+describe('an admin links their own identity through /link-social with step-up (task 13.2b)', () => {
+  const ORIGIN = 'http://localhost:3000';
+  const AUTH_BASE_URL = `${ORIGIN}/api/auth`;
+  const PROVIDER_ID = 'visma-connect';
+  let app: App;
+  let stub: OidcStub;
+  let authPool: Pool;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    stub = await startOidcStub();
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+  }, 60_000);
+
+  function randomIp(): string {
+    const octet = (): string => randomInt(1, 255).toString(10);
+    return `10.${octet()}.${octet()}.${octet()}`;
+  }
+
+  function cookieFrom(setCookie: string | string[] | number | undefined): string {
+    const cookies = Array.isArray(setCookie)
+      ? setCookie
+      : typeof setCookie === 'string'
+        ? [setCookie]
+        : [];
+    return cookies.map((raw) => raw.split(';')[0]).join('; ');
+  }
+
+  async function selfLink(cookie: string, email: string, sub: string): Promise<void> {
+    const handler = (app.auth as unknown as { handler: (request: Request) => Promise<Response> })
+      .handler;
+    stub.setSubject({
+      sub,
+      email,
+      name: 'Admin Self Link',
+      sid: `sid-${randomUUID()}`,
+      claims: { email_verified: true },
+    });
+    const initiated = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/link-social',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ORIGIN,
+        host: 'localhost:3000',
+        cookie,
+      },
+      payload: JSON.stringify({ provider: PROVIDER_ID, callbackURL: '/' }),
+    });
+    expect(initiated.statusCode, initiated.body).toBe(200);
+    const approval = await fetch(initiated.json<{ url: string }>().url, { redirect: 'manual' });
+    const page = await approval.text();
+    const inputs = Object.fromEntries(
+      [...page.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [
+        m[1] ?? '',
+        m[2] ?? '',
+      ]),
+    );
+    const code = inputs['code'];
+    const state = inputs['state'];
+    if (code === undefined || state === undefined) {
+      throw new Error('the OIDC stub did not return code and state');
+    }
+    const params = new URLSearchParams({
+      code,
+      state,
+      ...(inputs['iss'] === undefined ? {} : { iss: inputs['iss'] }),
+    });
+    const callbackCookie = [cookie, cookieFrom(initiated.headers['set-cookie'])]
+      .filter((part) => part !== '')
+      .join('; ');
+    const headers = (): Record<string, string> => ({
+      'x-forwarded-for': randomIp(),
+      cookie: callbackCookie,
+    });
+    const posted = await handler(
+      new Request(`${AUTH_BASE_URL}/callback/${PROVIDER_ID}`, {
+        method: 'POST',
+        headers: {
+          ...headers(),
+          'content-type': 'application/x-www-form-urlencoded',
+          origin: ORIGIN,
+        },
+        body: params.toString(),
+      }),
+    );
+    const location = posted.headers.get('location');
+    if (
+      posted.status >= 300 &&
+      posted.status < 400 &&
+      location !== null &&
+      new URL(location, AUTH_BASE_URL).pathname.endsWith(`/callback/${PROVIDER_ID}`)
+    ) {
+      await handler(
+        new Request(new URL(location, AUTH_BASE_URL), { method: 'GET', headers: headers() }),
+      );
+    }
+  }
+
+  async function linkedSubjects(userId: string): Promise<string[]> {
+    const result = await authPool.query<{ account_id: string }>(
+      `select account_id from auth.account where user_id = $1 and provider_id = $2`,
+      [userId, PROVIDER_ID],
+    );
+    return result.rows.map((row) => row.account_id);
+  }
+
+  it('an owner links their own identity with a fresh MFA verification', async () => {
+    const email = `self-owner-${randomUUID()}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Self Link Owner',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Self Link Org',
+      organizationSlug: `self-link-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const session = await enrolledAdminSession(app, tenant, {
+      password: TEST_PASSWORD,
+      origin: ORIGIN,
+    });
+    const sub = `self-sub-${randomUUID()}`;
+
+    await selfLink(session.cookie, email, sub);
+
+    expect(await linkedSubjects(tenant.userId)).toEqual([sub]);
+  }, 60_000);
+
+  it('an admin member links their own identity with a fresh MFA verification', async () => {
+    const ownerEmail = `self-admin-owner-${randomUUID()}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Self Link Owner',
+      email: ownerEmail,
+      password: TEST_PASSWORD,
+      organizationName: 'Self Link Admin Org',
+      organizationSlug: `self-link-admin-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const email = `self-admin-${randomUUID()}@example.test`;
+    const admin = await createAdminUser(app.auth, {
+      name: 'Self Link Admin',
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (app.auth.api as AddMemberSurface).addMember({
+      body: { userId: admin.userId, organizationId: tenant.organizationId, role: 'admin' },
+    });
+    const signedIn = await app.app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/email',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        origin: ORIGIN,
+        host: 'localhost:3000',
+      },
+      payload: JSON.stringify({ email, password: TEST_PASSWORD }),
+    });
+    expect(signedIn.statusCode, signedIn.body).toBe(200);
+    const session = await enrolledAdminSession(
+      app,
+      { email, cookie: cookieFrom(signedIn.headers['set-cookie']) },
+      { password: TEST_PASSWORD, origin: ORIGIN },
+    );
+    const sub = `self-admin-sub-${randomUUID()}`;
+
+    await selfLink(session.cookie, email, sub);
+
+    expect(await linkedSubjects(admin.userId)).toEqual([sub]);
   }, 60_000);
 });

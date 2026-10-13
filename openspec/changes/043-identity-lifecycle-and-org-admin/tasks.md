@@ -2887,7 +2887,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `identity-router.int.test.ts` covers `linkSsoAccount` and `unlinkSsoAccount` on a
       two-tenant user being refused. A link recorded while the user was single-tenant
       does not survive into a second tenant (8.5g, 8.5h).
-- [ ] 13.2b `identity.users.linkSsoAccount` refuses a target that is an `admin` or an
+- [x] 13.2b `identity.users.linkSsoAccount` refuses a target that is an `admin` or an
       `owner` of the tenant (Resolved decision Q88), with the generic rejection of
       13.3, because an admin who records their own `sub` on a peer admin would hold a
       session as that admin and pass the SSO step-up with their own identity (identity
