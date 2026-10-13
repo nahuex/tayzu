@@ -3531,7 +3531,7 @@ SSO surfaces of M18) are recorded there with their justification.
       request that those writes and reads make holds it either (a recording Cerbos client
       around the real one, which sees what the decision log records): a `_user` entity is
       checked with the placeholder of 4.1d as its resource id (Resolved decision Q119).
-- [ ] 15.5 For the routes of this capability, and for the catalog entity routes whose
+- [x] 15.5 For the routes of this capability, and for the catalog entity routes whose
       `{blueprint}` is `_user` (Resolved decision Q119), the exported HTTP path is the
       route template, so no email, invitation id or credential id leaves the process;
       because `/v1/*` is one catch-all, the template is computed by matching the parsed
