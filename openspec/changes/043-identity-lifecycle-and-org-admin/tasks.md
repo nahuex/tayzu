@@ -3244,7 +3244,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `PUT /v1/users/svc-ci-github/status` resolving, and a `%` path being 404,
       including the `a%40b` that oRPC's generated client sends (a known limitation,
       recorded in the "Email in the `{user}` path" ticket).
-- [ ] 14.6b The `DELETE` routes (`DELETE /v1/service-accounts/{user}` and
+- [x] 14.6b The `DELETE` routes (`DELETE /v1/service-accounts/{user}` and
       `DELETE /v1/users/{user}/sso-account`) rely on the `inputStructure: 'detailed'`
       that every identity route declares (14.1) and take
       their target from the path (`045` adds `DELETE /v1/organization`, whose
