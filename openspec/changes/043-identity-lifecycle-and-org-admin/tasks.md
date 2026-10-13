@@ -2878,7 +2878,7 @@ SSO surfaces of M18) are recorded there with their justification.
       exported from the `@tayzu/auth` index, are exported from the subpath, and have
       no caller outside `apps/api/src/identity/**` and the tests. The composite key
       is 11.1 and the high-risk marker is 14.2.
-- [ ] 13.2 Identity operations that act on the global account refuse a target that
+- [x] 13.2 Identity operations that act on the global account refuse a target that
       has a membership outside the caller's tenant, so an admin of one tenant cannot
       link an SSO `sub` to a user who also belongs to another tenant (`002` VCDM M10;
       `setStatus` is tenant-scoped instead, Resolved decision Q25). The target's

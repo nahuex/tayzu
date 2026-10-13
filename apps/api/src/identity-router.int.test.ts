@@ -477,3 +477,165 @@ describe('identity router authorization telemetry (task 5.3)', () => {
     expect(await ssoAccountCount(target.userId), 'the userId unlink deleted nothing').toBe(1);
   }, 60_000);
 });
+
+/**
+ * Task 13.2 of openspec/changes/043-identity-lifecycle-and-org-admin (`002` VCDM
+ * M10): identity operations that act on the global account refuse a target with
+ * a membership outside the caller's tenant. `linkSsoAccount` and
+ * `unlinkSsoAccount` on a two-tenant user are refused with the generic
+ * `CATALOG_VALIDATION_FAILED` and change nothing; the same operations on a
+ * single-tenant user (control) succeed.
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createIdentityRouter` reads `globalMembershipTenantsOf` (5.1b).
+ * The behavior may already exist, in which case these pass on arrival.
+ */
+describe('identity operations refuse a target with a membership in another tenant (task 13.2)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  async function freshTenantId(): Promise<string> {
+    const id = randomUUID();
+    const owner = await createAdminUser(auth, {
+      name: 'Tenant Owner',
+      email: `owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await (auth.api as CreateOrganizationSurface).createOrganization({
+      body: { name: 'Two Tenant Org', slug: `two-tenant-${id}`, userId: owner.userId },
+    });
+    return org.id;
+  }
+
+  function adminContext(tenantId: string): Record<string, unknown> {
+    return {
+      tenantId,
+      actor: { type: 'user', id: `admin-${randomUUID()}` },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function memberOf(tenantId: string): Promise<{ userId: string; email: string }> {
+    const email = `member-${randomUUID()}@example.test`;
+    const user = await createAdminUser(auth, {
+      name: 'Two Tenant Target',
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (auth.api as AddMemberSurface).addMember({
+      body: { userId: user.userId, organizationId: tenantId, role: 'member' },
+    });
+    return user;
+  }
+
+  /** A second membership, seeded directly so no membership hook can shed anything. */
+  async function seedMembership(tenantId: string, userId: string): Promise<void> {
+    await authPool.query(
+      `insert into auth.member (id, organization_id, user_id, role, created_at)
+       values ($1, $2, $3, 'member', now())`,
+      [randomUUID(), tenantId, userId],
+    );
+  }
+
+  async function seedLink(userId: string, sub: string): Promise<void> {
+    await authPool.query(
+      `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+       values ($1, $2, 'visma-connect', $3, now(), now())`,
+      [randomUUID(), sub, userId],
+    );
+  }
+
+  async function linkedSubjects(userId: string): Promise<string[]> {
+    const result = await authPool.query<{ account_id: string }>(
+      `select account_id from auth.account where user_id = $1 and provider_id = 'visma-connect'`,
+      [userId],
+    );
+    return result.rows.map((row) => row.account_id);
+  }
+
+  it('linkSsoAccount on a two-tenant user is refused with CATALOG_VALIDATION_FAILED and writes no account row', async () => {
+    const tenantA = await freshTenantId();
+    const tenantB = await freshTenantId();
+    const target = await memberOf(tenantA);
+    await seedMembership(tenantB, target.userId);
+    const subject = `visma-sub-${randomUUID()}`;
+
+    await expect(
+      client.identity.users.linkSsoAccount(
+        { user: target.email, subject },
+        { context: adminContext(tenantA) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    // The admin of the other tenant is refused as well.
+    await expect(
+      client.identity.users.linkSsoAccount(
+        { user: target.email, subject },
+        { context: adminContext(tenantB) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect(await linkedSubjects(target.userId), 'no account row was written').toEqual([]);
+  }, 60_000);
+
+  it('unlinkSsoAccount on a two-tenant user is refused with CATALOG_VALIDATION_FAILED and deletes nothing', async () => {
+    const tenantA = await freshTenantId();
+    const tenantB = await freshTenantId();
+    const target = await memberOf(tenantA);
+    await seedMembership(tenantB, target.userId);
+    const subject = `visma-sub-${randomUUID()}`;
+    await seedLink(target.userId, subject);
+
+    await expect(
+      client.identity.users.unlinkSsoAccount(
+        { user: target.email },
+        { context: adminContext(tenantA) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect(await linkedSubjects(target.userId), 'the link is still there').toEqual([subject]);
+  }, 60_000);
+
+  it('control: the same operations on a single-tenant user succeed', async () => {
+    const tenantA = await freshTenantId();
+    const target = await memberOf(tenantA);
+    const subject = `visma-sub-${randomUUID()}`;
+
+    await client.identity.users.linkSsoAccount(
+      { user: target.email, subject },
+      { context: adminContext(tenantA) },
+    );
+    expect(await linkedSubjects(target.userId)).toEqual([subject]);
+
+    await client.identity.users.unlinkSsoAccount(
+      { user: target.email },
+      { context: adminContext(tenantA) },
+    );
+    expect(await linkedSubjects(target.userId)).toEqual([]);
+  }, 60_000);
+});
