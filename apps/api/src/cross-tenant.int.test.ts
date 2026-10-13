@@ -34,9 +34,9 @@ import {
   exchangeMachineToken,
   type AuthInstance,
 } from '@tayzu/auth';
-import { createMachineCredential } from '@tayzu/auth/machine-credentials';
+import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
-import { createUserSync, type UserSync } from '@tayzu/catalog';
+import { createEntityService, createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -883,6 +883,223 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
       'the credential still exchanges',
     ).resolves.toBeDefined();
   }, 90_000);
+});
+
+/**
+ * Task 12.6 of openspec/changes/043-identity-lifecycle-and-org-admin (list and create).
+ *
+ * Scenario (verbatim from the spec, "Another tenant's credential cannot be listed, rotated or
+ * revoked"): GIVEN a credential of tenant `t2`, WHEN an admin of `t1` lists, rotates or revokes
+ * it, THEN the list omits it and rotate and revoke fail with `CATALOG_NOT_FOUND`. This block
+ * covers the list, the `referenceId` that create writes, and a create bound to `t2`'s service
+ * account (rotate and revoke are 12.7's).
+ *
+ * Production symbols expected: none new (`createIdentityRouter` in `./identity-router.js`,
+ * `identity.credentials.list` and `identity.credentials.create`).
+ */
+describe('cross-tenant matrix: credentials list and create (task 12.6)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface ListOutput {
+    readonly credentials: readonly { readonly id: string }[];
+    readonly truncated: boolean;
+  }
+
+  interface IsolationClient {
+    identity: {
+      credentials: {
+        list(
+          input: Record<string, never>,
+          options: { context: Record<string, unknown> },
+        ): Promise<ListOutput>;
+        create(
+          input: { name: string; kind: string; userId?: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  interface Seeded {
+    readonly id: string;
+    readonly secret: string;
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  const isolation = (): IsolationClient => client;
+
+  async function freshTenant(label: string): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: `${label} Admin`,
+      email: `${label}-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `${label} Org`,
+      organizationSlug: `${label}-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  function sessionContext(tenant: Tenant): Record<string, unknown> {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: tenant.adminId },
+      principal: { roles: ['admin'] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  function seed(tenant: Tenant, name: string): Promise<Seeded> {
+    return createMachineCredential(auth, {
+      userId: tenant.adminId,
+      organizationId: tenant.tenantId,
+      name,
+      actorKind: 'integration',
+      metadata: { createdBy: tenant.adminId },
+    }).then((c) => ({ id: c.id, secret: c.secret }));
+  }
+
+  async function referenceIdsOf(ids: readonly string[]): Promise<string[]> {
+    const rows = await authPool.query<{ reference_id: string }>(
+      'select reference_id from auth.apikey where id = any($1::text[])',
+      [ids],
+    );
+    return rows.rows.map((r) => r.reference_id);
+  }
+
+  async function keyIds(tenant: Tenant): Promise<string[]> {
+    const rows = await authPool.query<{ id: string }>(
+      'select id from auth.apikey where reference_id = $1',
+      [tenant.tenantId],
+    );
+    return rows.rows.map((r) => r.id);
+  }
+
+  it("Another tenant's credential cannot be listed: t1's list omits t2's credentials, live and revoked, and shows only t1's own", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const own = await seed(t1, 'Own credential');
+    const foreignLive = await seed(t2, 'Foreign live');
+    const foreignRevoked = await seed(t2, 'Foreign revoked');
+    await revokeMachineCredential(auth, {
+      userId: t2.adminId,
+      id: foreignRevoked.id,
+      pool: appPool,
+      tenantId: t2.tenantId,
+    });
+
+    const output = await isolation().identity.credentials.list({}, { context: sessionContext(t1) });
+
+    const ids = output.credentials.map((c) => c.id);
+    expect(ids).toEqual([own.id]);
+    expect(ids).not.toContain(foreignLive.id);
+    expect(ids).not.toContain(foreignRevoked.id);
+    expect(output.truncated).toBe(false);
+    const serialized = JSON.stringify(output);
+    expect(serialized).not.toContain(foreignLive.id);
+    expect(serialized).not.toContain(foreignRevoked.id);
+
+    // The other direction: t2's admin sees only t2's credentials.
+    const theirs = await isolation().identity.credentials.list({}, { context: sessionContext(t2) });
+    expect(theirs.credentials.map((c) => c.id).sort()).toEqual(
+      [foreignLive.id, foreignRevoked.id].sort(),
+    );
+  }, 120_000);
+
+  it("Create writes only the host tenant's referenceId: the created key's referenceId is t1 and t2 gains no key", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const t2Before = await keyIds(t2);
+
+    const created = await isolation().identity.credentials.create(
+      { name: 'Created in t1', kind: 'integration' },
+      { context: sessionContext(t1) },
+    );
+
+    expect(await referenceIdsOf([created.id])).toEqual([t1.tenantId]);
+    expect(await keyIds(t1)).toEqual([created.id]);
+    expect(await keyIds(t2)).toEqual(t2Before);
+    const listed = await isolation().identity.credentials.list({}, { context: sessionContext(t1) });
+    expect(listed.credentials.map((c) => c.id)).toEqual([created.id]);
+  }, 120_000);
+
+  it("A create bound to t2's service account is refused with CATALOG_NOT_FOUND, like an unknown id, and nothing is written to either tenant", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const suffix = randomUUID().slice(0, 8);
+    const foreign = `svc-t2-${suffix}`;
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId: t2.tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      {
+        blueprint: '_user',
+        identifier: foreign,
+        title: 'Seeded service account',
+        spec: { properties: { accountKind: 'service', status: 'Active' } },
+      },
+    );
+
+    const attempt = async (userId: string): Promise<Record<string, unknown>> => {
+      try {
+        await isolation().identity.credentials.create(
+          { name: 'Cross tenant', kind: 'integration', userId },
+          { context: sessionContext(t1) },
+        );
+      } catch (error) {
+        return {
+          code: (error as { code?: unknown }).code,
+          status: (error as { status?: unknown }).status,
+          message: (error as Error).message,
+          data: (error as { data?: unknown }).data,
+        };
+      }
+      return { code: 'NO_ERROR' };
+    };
+
+    const refused = await attempt(foreign);
+    expect(refused['code']).toBe('CATALOG_NOT_FOUND');
+    expect(await attempt(`svc-unknown-${suffix}`)).toEqual(refused);
+    expect(await keyIds(t1)).toHaveLength(0);
+    expect(await keyIds(t2)).toHaveLength(0);
+  }, 120_000);
 });
 
 /**
