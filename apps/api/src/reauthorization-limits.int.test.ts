@@ -28,13 +28,19 @@
  *   header.
  * - `RateLimitScope` gains `reauthorization_callback`.
  */
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 
 import type { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
-import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
+import { csrfHeaders } from './__fixtures__/csrf.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 
@@ -163,4 +169,131 @@ describe('The re-authorization callback is limited (task 13.9, VCDM M13)', () =>
     const other = await callback(randomIp(), 'GET');
     expect(other.statusCode, other.body).toBe(400);
   }, 60_000);
+});
+
+/**
+ * Task 13.9b of change 043 (requirement "The hand-offs from the authentication baseline
+ * hold": "`reauthorization.start` MUST be bounded per session"; `002` VCDM M13).
+ *
+ * ## Production symbols expected (the red phase)
+ *
+ * - `CreateAppOptions` (`apps/api/src/server.ts`) gains the optional
+ *   `reauthorizationMaxPendingPerSession: number`, passed to `createReauthorization`
+ *   (`apps/api/src/reauthorization.ts`) as the same-named option. `start` inserts a
+ *   `sso-reauth-state:` row into `auth.verification` only while the session has fewer than
+ *   that many unexpired state rows bound to it; beyond it no row is inserted. What a
+ *   blocked attempt answers is left open: only the row count is asserted.
+ */
+describe('reauthorization.start is bounded per session (task 13.9b, VCDM M13)', () => {
+  const MAX_PENDING = 3;
+  let app: App;
+  let stub: OidcStub;
+  let authPool: Awaited<ReturnType<typeof harnessPools>>['authPool'];
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    stub = await startOidcStub();
+    app = await createApp({
+      appPool: pools.appPool,
+      authPool: pools.authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+      reauthorizationMaxPendingPerSession: MAX_PENDING,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+  }, 60_000);
+
+  async function ssoSessionUser(): Promise<{ cookie: string; userId: string }> {
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Reauth Bound User',
+      email: `reauth-bound-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Reauth Bound Org',
+      organizationSlug: `reauth-bound-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const totpSecret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      secret: totpSecret,
+      origin: ORIGIN,
+    });
+    await authPool.query('update auth.session set sso_sid = $1 where user_id = $2', [
+      `sid-${randomUUID()}`,
+      tenant.userId,
+    ]);
+    return { cookie, userId: tenant.userId };
+  }
+
+  /** A high-risk call that step-up refuses, which makes the interceptor call `start`. */
+  function blockedAttempt(cookie: string) {
+    return app.app.inject({
+      method: 'DELETE',
+      url: `/v1/blueprints/no-such-${randomUUID().slice(0, 8)}`,
+      headers: {
+        cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('DELETE'),
+      },
+    });
+  }
+
+  async function pendingStates(userId: string): Promise<number> {
+    const result = await authPool.query<{ count: string }>(
+      `select count(*)::text as count from auth.verification v
+       where v.identifier like 'sso-reauth-state:%'
+         and exists (
+           select 1 from auth.session s
+           where s.user_id = $1 and position(s.token in v.value) > 0
+         )`,
+      [userId],
+    );
+    return Number(result.rows[0]?.count);
+  }
+
+  it('Repeated blocked attempts of one session insert at most the configured number of rows', async () => {
+    const { cookie, userId } = await ssoSessionUser();
+
+    for (let i = 0; i < MAX_PENDING; i += 1) {
+      const response = await blockedAttempt(cookie);
+      const data = response.json<{ data?: { reauthorizationUrl?: unknown } }>().data;
+      expect(response.statusCode, response.body).toBe(403);
+      expect(typeof data?.reauthorizationUrl, 'precondition: start ran').toBe('string');
+    }
+    expect(await pendingStates(userId)).toBe(MAX_PENDING);
+
+    for (let i = 0; i < MAX_PENDING * 3; i += 1) {
+      await blockedAttempt(cookie);
+    }
+    expect(await pendingStates(userId)).toBeLessThanOrEqual(MAX_PENDING);
+  }, 120_000);
+
+  it('The bound is per session: another session still starts a re-authorization', async () => {
+    const exhausted = await ssoSessionUser();
+    for (let i = 0; i < MAX_PENDING + 2; i += 1) {
+      await blockedAttempt(exhausted.cookie);
+    }
+    const other = await ssoSessionUser();
+    const response = await blockedAttempt(other.cookie);
+    const data = response.json<{ data?: { reauthorizationUrl?: unknown } }>().data;
+    expect(typeof data?.reauthorizationUrl).toBe('string');
+    expect(await pendingStates(other.userId)).toBe(1);
+  }, 120_000);
 });

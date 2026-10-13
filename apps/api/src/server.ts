@@ -99,6 +99,7 @@ export interface CreateAppOptions {
    * DB-backed store, consumed before the callback's database `delete`. `window` is in
    * seconds; omitted: no limiter.
    */
+  readonly reauthorizationMaxPendingPerSession?: number;
   readonly reauthorizationCallbackRateLimit?: { readonly max: number; readonly window: number };
 }
 
@@ -244,6 +245,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           clientId: options.sso.clientId,
           clientSecret: options.sso.clientSecret,
           redirectUri: new URL(REAUTH_CALLBACK_PATH, callbackBase).toString(),
+          ...(options.reauthorizationMaxPendingPerSession === undefined
+            ? {}
+            : { maxPendingPerSession: options.reauthorizationMaxPendingPerSession }),
         });
   const openApiHandler = new OpenAPIHandler(router, {
     clientInterceptors: [

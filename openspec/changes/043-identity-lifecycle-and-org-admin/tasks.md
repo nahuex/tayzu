@@ -3115,7 +3115,7 @@ SSO surfaces of M18) are recorded there with their justification.
       the database `delete` it performs per hit (`002` VCDM M13). Verify:
       `reauthorization-limits.int.test.ts` covers the callback being rate-limited with
       no database access once the limit is hit.
-- [ ] 13.9b `reauthorization.start` is bounded per session, so a blocked attempt no
+- [x] 13.9b `reauthorization.start` is bounded per session, so a blocked attempt no
       longer inserts an unbounded number of rows (`002` VCDM M13). Verify:
       `reauthorization-limits.int.test.ts` covers repeated blocked attempts of one
       session inserting at most the configured number of rows.
