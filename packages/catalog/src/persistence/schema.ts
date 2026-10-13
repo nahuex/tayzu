@@ -312,17 +312,24 @@ export const catalogTenantSequence = pgTable(
  * same operation that disables the underlying `apiKey` config row, so the
  * two can never disagree about whether a credential is revoked. The
  * machine-token branch of `resolveContext()` (task 5.7) consults it on every
- * request through an in-process cache keyed by `credential_id`, so
- * `credential_id` is the primary key: at most one row settles the question
- * for a given credential. Same `tenant_isolation` `pgPolicy`/`FORCE ROW LEVEL
+ * request through an in-process cache keyed by `(tenant_id, credential_id)`,
+ * which is also the primary key: at most one row settles the question for a
+ * given credential of a given tenant, and another tenant's row with the same
+ * credential id neither blocks nor shadows it (043 task 11.1). Same `tenant_isolation` `pgPolicy`/`FORCE ROW LEVEL
  * SECURITY` treatment as every other catalog table (design D6).
  */
 export const machineCredentialRevocation = pgTable(
   'machine_credential_revocation',
   {
-    credentialId: text('credential_id').notNull().primaryKey(),
+    credentialId: text('credential_id').notNull(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }).notNull(),
     tenantId: text('tenant_id').notNull(),
   },
-  (t) => [tenantIsolationPolicy(t.tenantId)],
+  (t) => [
+    primaryKey({
+      name: 'machine_credential_revocation_pkey',
+      columns: [t.tenantId, t.credentialId],
+    }),
+    tenantIsolationPolicy(t.tenantId),
+  ],
 );

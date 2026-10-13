@@ -2644,7 +2644,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       `pnpm --filter @tayzu/auth test`, `pnpm --filter @tayzu/api test` and `pnpm
       --filter @tayzu/catalog test` stay green with the rejection of 11.8 applied in
       a scratch branch (a member without a row fails, a member with one passes).
-- [ ] 11.1 (Checkpoint 3) Migration `0011_machine_credential_revocation_tenant_key`:
+- [x] 11.1 (Checkpoint 3) Migration `0011_machine_credential_revocation_tenant_key`:
       `machine_credential_revocation` gets a composite `(tenant_id, credential_id)`
       key, with `migrations/down/0011_machine_credential_revocation_tenant_key.down.sql`,
       `meta/0011_snapshot.json` and its
