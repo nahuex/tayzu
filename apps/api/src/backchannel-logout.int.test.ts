@@ -570,8 +570,8 @@ describe('apps/api back-channel logout rate limit from the environment (task 22.
     poolState.pools.set('auth', pools.authPool);
     stub = await startOidcStub();
     app = await createAppFromEnv({
-      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       BETTER_AUTH_SECRET: TEST_SECRET,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: 'https://app.tayzu.test',

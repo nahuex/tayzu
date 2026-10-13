@@ -33,8 +33,25 @@ async function assertRuntimeRole(pool: ReturnType<typeof createPool>): Promise<v
   }
 }
 
+const LOCAL_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Fails closed: an unparsable URL counts as non-local. Never reads the credentials. */
+function isLocalHost(url: string): boolean {
+  try {
+    return LOCAL_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export async function createAppFromEnv(env: Env): Promise<App> {
   const config = loadConfig(env);
+  const isTestEnv = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  // NODE_ENV=test relaxes the https checks, the role assertion and the OTLP requirement
+  // (002 VCDM M12, Q98), so it is never allowed against a remote database.
+  if (isTestEnv && !(isLocalHost(config.appDatabaseUrl) && isLocalHost(config.authDatabaseUrl))) {
+    throw new Error('NODE_ENV=test requires a local database host: startup aborted');
+  }
   const appUrl = config.appDatabaseUrl;
   const authUrl = config.authDatabaseUrl;
   const authSecret = config.betterAuthSecret;
@@ -44,7 +61,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
   let authPool: ReturnType<typeof createPool> | undefined;
   try {
     authPool = createPool(authUrl);
-    if ((env['NODE_ENV'] ?? process.env['NODE_ENV']) !== 'test') {
+    if (!isTestEnv) {
       await assertRuntimeRole(appPool);
       await assertRuntimeRole(authPool);
     }

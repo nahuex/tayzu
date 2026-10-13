@@ -73,8 +73,8 @@ vi.mock('@tayzu/db', async (importActual) => {
 
 import { start } from './main.js';
 
-const APP_URL = 'postgres://tayzu_app:pw-app-marker@db.invalid:5432/tayzu?sslmode=verify-full';
-const AUTH_URL = 'postgres://tayzu_auth:pw-auth-marker@db.invalid:5432/tayzu?sslmode=verify-full';
+const APP_URL = 'postgres://tayzu_app:pw-app-marker@127.0.0.1:1/tayzu?sslmode=verify-full';
+const AUTH_URL = 'postgres://tayzu_auth:pw-auth-marker@127.0.0.1:1/tayzu?sslmode=verify-full';
 const ORIGIN = 'https://app.tayzu.test';
 
 interface Received {

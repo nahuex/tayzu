@@ -3071,7 +3071,7 @@ SSO surfaces of M18) are recorded there with their justification.
       first characters (`002` residual risk; 9.5), with the headerless call. Verify:
       `machine-credentials.int.test.ts` covers the configured limit and an empty stored
       start on a created key.
-- [ ] 13.8 Startup refuses `NODE_ENV=test` together with a non-local database host,
+- [x] 13.8 Startup refuses `NODE_ENV=test` together with a non-local database host,
       because `NODE_ENV=test` relaxes the https checks, the role assertion and the OTLP
       requirement (`002` VCDM M12). The refusal lives in **`createAppFromEnv`**
       (`apps/api/src/bootstrap.ts`), not in `loadConfig` (Resolved decision Q98), so the

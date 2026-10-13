@@ -98,8 +98,8 @@ vi.mock('@tayzu/db', async (importActual) => {
 
 import { start, type RunningServer } from './main.js';
 
-const APP_URL = 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full';
-const AUTH_URL = 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full';
+const APP_URL = 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full';
+const AUTH_URL = 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full';
 
 function env(
   overrides: Record<string, string | undefined> = {},

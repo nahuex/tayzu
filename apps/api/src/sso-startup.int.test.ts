@@ -78,8 +78,8 @@ const MARKER = 'discovery-body-marker-7f3a';
 
 function baseEnv(): Record<string, string> {
   return {
-    DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-    AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+    DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+    AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
     BETTER_AUTH_SECRET: TEST_SECRET,
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: ORIGIN,

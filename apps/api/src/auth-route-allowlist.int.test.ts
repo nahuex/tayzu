@@ -419,8 +419,8 @@ describe('apps/api /api/auth/change-password (task 23.16, design Q46 and D18)', 
     poolState.pools.set('app', pools.appPool);
     poolState.pools.set('auth', pools.authPool);
     app = await createAppFromEnv({
-      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       BETTER_AUTH_SECRET: TEST_SECRET,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ALLOWED_ORIGIN,

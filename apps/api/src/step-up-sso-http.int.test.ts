@@ -127,8 +127,8 @@ describe('SSO step-up satisfied over HTTP (task 23.8, design Q36 and D25)', () =
     state.pools.set('auth', pools.authPool);
     stub = await startOidcStub();
     app = await createAppFromEnv({
-      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       BETTER_AUTH_SECRET: TEST_SECRET,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ORIGIN,
@@ -374,8 +374,8 @@ describe('SSO step-up callback URL base (task 25.5, design Q64 and Q36)', () => 
 
   async function buildApp(extra: Record<string, string>): Promise<App> {
     const built = await createAppFromEnv({
-      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       BETTER_AUTH_SECRET: TEST_SECRET,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ORIGIN,
