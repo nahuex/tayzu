@@ -379,6 +379,13 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
     return { kind: 'user', id: user as string };
   }
 
+  /** `002` VCDM M10: an account with a membership in a second tenant is never linked or unlinked from one tenant. */
+  async function refuseMultiTenantTarget(userId: string): Promise<void> {
+    if ((await options.authRepository.globalMembershipTenantsOf(userId)).length > 1) {
+      throw new IdentityLinkRejectedError();
+    }
+  }
+
   return {
     identity: {
       credentials: {
@@ -746,8 +753,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             const adapter = (await authContext()).internalAdapter;
             const userId = (target as ResolvedIdentityTarget).id;
             await options.withUserLock(userId, async () => {
-              // The check runs inside the lock (task 8.5i); its refusal is task 13.2b's.
-              await options.authRepository.globalMembershipTenantsOf(userId);
+              // The check runs inside the lock (task 8.5i); the admin/owner refusal is task 13.2b's.
+              await refuseMultiTenantTarget(userId);
               const existing = await options.authRepository.globalAccountByKey(
                 SSO_PROVIDER_ID,
                 input.subject,
@@ -900,6 +907,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           handler: async ({ context, target }): Promise<void> => {
             const userId = (target as ResolvedIdentityTarget).id;
             const adapter = (await authContext()).internalAdapter;
+            await refuseMultiTenantTarget(userId);
             const accounts = await options.authRepository.globalAccountsOf(userId);
             const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);
             // Design D24: never leave the user with no password and no linked SSO account.

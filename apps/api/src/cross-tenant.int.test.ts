@@ -1490,3 +1490,270 @@ describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12
     expect(resourceTenants(requests), 'nothing of t2 reaches Cerbos').not.toContain(t2.tenantId);
   }, 90_000);
 });
+
+/**
+ * Task 12.9. Spec: "Targets belong to the caller's tenant" (every user targeted MUST belong to the
+ * host's `tenantId`, otherwise `CATALOG_NOT_FOUND`, identical to a nonexistent id) and the scenario
+ * "A user with memberships in two tenants cannot be linked": GIVEN a user who belongs to `t1` and
+ * `t2`, WHEN an admin of `t1` links or unlinks an SSO `sub` for it, THEN the operation is refused
+ * and nothing changes.
+ *
+ * Verify: that scenario for link and unlink, and the foreign target answering the same as an
+ * unknown one; `create` writes only the host tenant.
+ *
+ * ## Production symbols expected
+ *
+ * None new. `identity.users.create` already writes only the host tenant and the targets of link and
+ * unlink are resolved inside the tenant; the two-tenant refusal in `linkSsoAccount` and
+ * `unlinkSsoAccount` (task 13.2b, 002 VCDM M10) is the behavior expected to be missing today.
+ */
+describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let userSync: UserSync;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface UsersClient {
+    identity: {
+      users: {
+        create(
+          input: { email: string; name: string; role: 'member' | 'admin' },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ userId: string; email: string }>;
+        linkSsoAccount(
+          input: { user: string; subject: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+        unlinkSsoAccount(
+          input: { user: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    const adapter = createUserSyncAdapter({ userSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    const capStore = createInMemoryEmailCapStore({
+      tenant: { max: 1000, windowSeconds: 3600 },
+      recipient: { max: 1000, windowSeconds: 86_400 },
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender: createRecordingEmailSender(),
+        }),
+        appPool: pools.appPool,
+        userSync: adapter,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  const users = (): UsersClient => client;
+
+  async function freshTenant(label: string): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: `${label} Admin`,
+      email: `${label}-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `${label} Org`,
+      organizationSlug: `${label}-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  function sessionContext(tenant: Tenant): Record<string, unknown> {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: tenant.adminId },
+      principal: { roles: ['admin'] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  async function memberOf(userId: string, tenantId: string): Promise<void> {
+    await (
+      auth.api as {
+        addMember(args: {
+          body: { userId: string; role: 'member'; organizationId: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({ body: { userId, role: 'member', organizationId: tenantId } });
+  }
+
+  async function newUser(label: string): Promise<{ userId: string; email: string }> {
+    const email = `cross-users-${label}-${randomUUID()}@example.test`;
+    const created = await createAdminUser(auth, { name: label, email, password: TEST_PASSWORD });
+    return { userId: created.userId, email };
+  }
+
+  async function accountsOf(userId: string): Promise<readonly Record<string, unknown>[]> {
+    const result = await authPool.query<Record<string, unknown>>(
+      'select * from auth.account where user_id = $1 order by id',
+      [userId],
+    );
+    return result.rows;
+  }
+
+  async function membershipsOf(userId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ organization_id: string }>(
+      'select organization_id from auth.member where user_id = $1 order by organization_id',
+      [userId],
+    );
+    return result.rows.map((row) => row.organization_id);
+  }
+
+  async function subjectOwners(subject: string): Promise<number> {
+    const result = await authPool.query('select 1 from auth.account where account_id = $1', [
+      subject,
+    ]);
+    return result.rows.length;
+  }
+
+  async function rejectionOf(call: Promise<unknown>): Promise<unknown> {
+    const thrown: unknown = await call.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    return thrown;
+  }
+
+  it('identity.users.create writes only the host tenant: the membership and the _user are in t1 and nothing exists in t2', async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const email = `cross-create-${randomUUID()}@example.test`;
+    const t2Before = await authPool.query('select id from auth.member where organization_id = $1', [
+      t2.tenantId,
+    ]);
+
+    const created = await users().identity.users.create(
+      { email, name: 'Created', role: 'member' },
+      { context: sessionContext(t1) },
+    );
+
+    expect(await membershipsOf(created.userId), 'the only membership is t1').toEqual([t1.tenantId]);
+    expect((await userSync.getUser({ tenantId: t1.tenantId, email }))?.status).toBe('Active');
+    expect(await userSync.getUser({ tenantId: t2.tenantId, email }), 'no _user in t2').toBeFalsy();
+    const t2After = await authPool.query('select id from auth.member where organization_id = $1', [
+      t2.tenantId,
+    ]);
+    expect(t2After.rows, 't2 gained no member').toEqual(t2Before.rows);
+  }, 90_000);
+
+  it.each([['linkSsoAccount'], ['unlinkSsoAccount']] as const)(
+    "Another tenant's user cannot be linked or unlinked: %s by t1's admin on a user whose only membership is t2 fails with CATALOG_NOT_FOUND like an unknown user and nothing changes",
+    async (operation) => {
+      const t1 = await freshTenant('t1');
+      const t2 = await freshTenant('t2');
+      const victim = await newUser('victim');
+      await memberOf(victim.userId, t2.tenantId);
+      const subject = `sub-${randomUUID()}`;
+      const accountsBefore = await accountsOf(victim.userId);
+
+      const call = (email: string): Promise<unknown> =>
+        operation === 'linkSsoAccount'
+          ? users().identity.users.linkSsoAccount(
+              { user: email, subject },
+              { context: sessionContext(t1) },
+            )
+          : users().identity.users.unlinkSsoAccount(
+              { user: email },
+              { context: sessionContext(t1) },
+            );
+      const foreign = await rejectionOf(call(victim.email));
+      const unknown = await rejectionOf(call(`nobody-${randomUUID()}@example.test`));
+
+      expect((foreign as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+      expect((unknown as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+      expect((foreign as { message?: unknown }).message, 'same as an unknown user').toBe(
+        (unknown as { message?: unknown }).message,
+      );
+      expect((foreign as { status?: unknown }).status).toBe(
+        (unknown as { status?: unknown }).status,
+      );
+      expect(await accountsOf(victim.userId), 'accounts unchanged').toEqual(accountsBefore);
+      expect(await subjectOwners(subject), 'the sub was not linked').toBe(0);
+    },
+    90_000,
+  );
+
+  it("A user with memberships in two tenants cannot be linked: t1's admin linking an SSO sub for a member of t1 and t2 is refused and nothing changes", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const both = await newUser('both');
+    await memberOf(both.userId, t1.tenantId);
+    await memberOf(both.userId, t2.tenantId);
+    const subject = `sub-${randomUUID()}`;
+    const accountsBefore = await accountsOf(both.userId);
+
+    await rejectionOf(
+      users().identity.users.linkSsoAccount(
+        { user: both.email, subject },
+        { context: sessionContext(t1) },
+      ),
+    );
+
+    expect(await accountsOf(both.userId), 'no account written').toEqual(accountsBefore);
+    expect(await subjectOwners(subject), 'the sub was not linked').toBe(0);
+    expect(await membershipsOf(both.userId)).toEqual([t1.tenantId, t2.tenantId].sort());
+  }, 90_000);
+
+  it("A user with memberships in two tenants cannot be unlinked: t1's admin unlinking the SSO sub of a member of t1 and t2 is refused and the link and the sessions stay", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const both = await newUser('both');
+    await memberOf(both.userId, t1.tenantId);
+    // The link is recorded while the user still has a single membership.
+    const subject = `sub-${randomUUID()}`;
+    await users().identity.users.linkSsoAccount(
+      { user: both.email, subject },
+      { context: sessionContext(t1) },
+    );
+    await memberOf(both.userId, t2.tenantId);
+    const signedIn = await signInAdminUser(auth, {
+      email: both.email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    expect(await subjectOwners(subject), 'precondition: the link exists').toBe(1);
+    const accountsBefore = await accountsOf(both.userId);
+
+    await rejectionOf(
+      users().identity.users.unlinkSsoAccount(
+        { user: both.email },
+        { context: sessionContext(t1) },
+      ),
+    );
+
+    expect(await accountsOf(both.userId), 'accounts unchanged').toEqual(accountsBefore);
+    const session = await authPool.query('select 1 from auth.session where token = $1', [
+      signedIn.token,
+    ]);
+    expect(session.rows, 'the session was not revoked').toHaveLength(1);
+  }, 90_000);
+});

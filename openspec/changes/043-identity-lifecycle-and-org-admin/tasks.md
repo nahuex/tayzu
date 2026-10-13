@@ -2842,7 +2842,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       a call whose target belongs to `t2` answers `CATALOG_NOT_FOUND` with no Cerbos
       request carrying a resource of `t2`; the `same_tenant` denial of a principal of
       one tenant on a resource of another is pinned by the Cerbos policy tests.
-- [ ] 12.9 `identity.users.create`, `linkSsoAccount` and `unlinkSsoAccount` (the
+- [x] 12.9 `identity.users.create`, `linkSsoAccount` and `unlinkSsoAccount` (the
       three routes `002` already had, Resolved decision Q31): `create` writes only the
       host tenant, a target of another tenant answers `CATALOG_NOT_FOUND`, and a target
       with a membership in two tenants is refused for link and unlink (`002` VCDM
