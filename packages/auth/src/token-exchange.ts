@@ -103,6 +103,9 @@ const ROLE_METADATA_KEY = 'role';
 /** Task 10.6: the service account's `svc-…` identifier, stored in the credential's metadata. */
 const USER_ID_METADATA_KEY = 'userId';
 
+/** The only `_user.status` that may exchange a token (task 11.7). */
+const SERVICE_ACCOUNT_ACTIVE_STATUS = 'Active';
+
 /** design D5: "a 1-hour access token." */
 const ONE_HOUR_SECONDS = 60 * 60;
 
@@ -137,7 +140,7 @@ export interface ServiceAccountUserRow {
 }
 
 /**
- * Ports the exchange depends on (task 10.6). The row is looked up for 11.7;
+ * Ports the exchange depends on (task 10.6). The row gates the exchange (11.7);
  * nothing is ever copied from it into the signed payload (Resolved decision Q12).
  */
 export interface ExchangeMachineTokenPorts {
@@ -322,7 +325,13 @@ export async function exchangeMachineToken(
   const boundUserId = key.metadata?.[USER_ID_METADATA_KEY];
   const userId = typeof boundUserId === 'string' ? boundUserId : undefined;
   if (userId !== undefined && ports.serviceAccountLookup !== undefined) {
-    await ports.serviceAccountLookup({ tenantId: key.referenceId, userId });
+    // Task 11.7: an absent or non-`Active` `_user` never gets a token; a
+    // rejected lookup propagates, so the exchange fails closed.
+    const row = await ports.serviceAccountLookup({ tenantId: key.referenceId, userId });
+    if (row?.status !== SERVICE_ACCOUNT_ACTIVE_STATUS) {
+      recordFailedExchange(actorKind);
+      throw new AuthInvalidCredentialsError();
+    }
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000);

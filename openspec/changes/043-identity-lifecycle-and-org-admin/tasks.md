@@ -2741,7 +2741,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       credential that survives the delete still does not resolve), a non-revoked key
       bound to an identifier that has no `_user` (seeded as in 10.3) not resolving, and a
       lookup failure rejecting.
-- [ ] 11.7 Token exchange refuses to mint a token for a service account whose
+- [x] 11.7 Token exchange refuses to mint a token for a service account whose
       `_user` is `Disabled`, absent or otherwise not `Active`, and re-enabling
       restores the same credential. Verify: `token-exchange.int.test.ts` covers the
       refusal for a `Disabled` and for a deleted service account and for a non-revoked
