@@ -3299,7 +3299,7 @@ SSO surfaces of M18) are recorded there with their justification.
       admin-allowed case of `serviceAccounts.create` and `serviceAccounts.delete`
       asserted by name.
 
-- [ ] 14.10 Every procedure of the identity router is covered by the input contract
+- [x] 14.10 Every procedure of the identity router is covered by the input contract
       of 5.3d, driven by the router's own procedure list so a new procedure cannot be
       forgotten. Verify: `identity-input.int.test.ts` calls each of the thirteen procedures through `createRouterClient` **as an admin** (the wrapper's role check
       comes before the input is parsed, design D10, so any other caller would get

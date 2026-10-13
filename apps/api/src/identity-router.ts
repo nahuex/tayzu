@@ -283,32 +283,27 @@ function parseDetailedInput(schema: InputSchema, raw: unknown): ParsedIdentityIn
   return parseIdentityInput(schema, sections);
 }
 
-/** The `{name}` path value of the raw input as a string, or `undefined` when it is not one. */
-function paramOf(raw: unknown, name: string): string | undefined {
-  const params =
-    typeof raw === 'object' && raw !== null
-      ? (raw as Record<string, unknown>)['params']
-      : undefined;
-  const value =
-    typeof params === 'object' && params !== null
-      ? (params as Record<string, unknown>)[name]
-      : undefined;
-  return typeof value === 'string' ? value : undefined;
-}
-
-/** The `{invitation}` identifier as an invitation target; malformed input yields an id the resolver rejects. */
+/**
+ * The `{invitation}` identifier as an invitation target. The input is parsed first, so a hostile or
+ * oversized request is refused before the resolver looks anything up (task 14.10).
+ */
 function invitationTargetOf(raw: unknown): { kind: 'invitation'; id: string } {
-  return { kind: 'invitation', id: paramOf(raw, 'invitation') as string };
+  const { params } = parseDetailedInput(SCHEMAS.invitation, raw);
+  return { kind: 'invitation', id: params['invitation'] as string };
 }
 
-/** The `{credential}` identifier as a credential target; malformed input yields an id the resolver rejects. */
+/** The `{credential}` identifier as a credential target, parsed before any lookup (task 14.10). */
 function credentialTargetOf(raw: unknown): { kind: 'credential'; id: string } {
-  return { kind: 'credential', id: paramOf(raw, 'credential') as string };
+  const { params } = parseDetailedInput(SCHEMAS.credential, raw);
+  return { kind: 'credential', id: params['credential'] as string };
 }
 
-/** The `{user}` identifier as a user target; malformed input yields an id the resolver rejects. */
-function userTargetOf(raw: unknown): { kind: 'user'; id: string } {
-  return { kind: 'user', id: paramOf(raw, 'user') as string };
+/** The `{user}` identifier as a user target, parsed with the procedure's schema before any lookup. */
+function userTargetOf(schema: InputSchema): (raw: unknown) => { kind: 'user'; id: string } {
+  return (raw) => {
+    const { params } = parseDetailedInput(schema, raw);
+    return { kind: 'user', id: params['user'] as string };
+  };
 }
 
 /** The role of an invite or a create: exact match (design D4 "Roles"), no trimming or case folding. */
@@ -862,7 +857,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           authorization: {
             kind: RESOURCE_KINDS.user,
             action: 'update',
-            resolveTarget: userTargetOf,
+            resolveTarget: userTargetOf(SCHEMAS.link),
           },
           route: identityRoute('POST', '/v1/users/{user}/sso-account', { highRisk: true }),
           handler: async ({ context, input: rawInput, target }): Promise<void> => {
@@ -905,7 +900,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             // A service account has no Better Auth user to resolve: an identifier of its shape
             // skips the user lookup, and the handler resolves its `accountKind` (Q62, task 11.5).
             resolveTarget: (raw) => {
-              const target = userTargetOf(raw);
+              const target = userTargetOf(SCHEMAS.setStatus)(raw);
               return typeof target.id === 'string' && isValidServiceAccountIdentifier(target.id)
                 ? undefined
                 : target;
@@ -1025,7 +1020,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           authorization: {
             kind: RESOURCE_KINDS.user,
             action: 'update',
-            resolveTarget: userTargetOf,
+            resolveTarget: userTargetOf(SCHEMAS.user),
           },
           route: identityRoute('DELETE', '/v1/users/{user}/sso-account', { highRisk: true }),
           handler: async ({ context, input: rawInput, target }): Promise<void> => {
