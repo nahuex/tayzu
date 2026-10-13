@@ -3051,7 +3051,7 @@ SSO surfaces of M18) are recorded there with their justification.
       wrong password (the HTTP response's own status, error code and body, and no
       session cookie set) with no session row remaining, and the user able to sign in again after an admin sets a new
       temporary password.
-- [ ] 13.5e The temporary-password marker survives Better Auth's cleanup of expired
+- [x] 13.5e The temporary-password marker survives Better Auth's cleanup of expired
       verification rows (Resolved decision Q142; `002` VCDM M11). `findVerificationValue`
       deletes every `auth.verification` row whose `expiresAt` has passed, for any user,
       so a marker that kept its expiry in `expiresAt` vanished at expiry and the expired

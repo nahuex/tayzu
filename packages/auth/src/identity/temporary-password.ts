@@ -53,37 +53,41 @@ interface MarkerLookupAdapter {
   findOne(args: {
     readonly model: 'verification';
     where: { field: string; value: string }[];
-  }): Promise<{ readonly expiresAt?: unknown } | null>;
+  }): Promise<{ readonly value?: unknown } | null>;
 }
 
-/** Whether the user holds an unexpired temporary-password marker. Rejects if the lookup fails. */
+/**
+ * The marker's real expiry (Resolved decision Q142): Better Auth deletes every row
+ * whose `expiresAt` has passed, so the row keeps a far-future sentinel there and the
+ * expiry as an ISO-8601 timestamp in `value`. `null` when there is no marker;
+ * `NaN` when the value does not parse, so both readers fail closed.
+ */
+async function findMarkerExpiry(
+  adapter: MarkerLookupAdapter,
+  userId: string,
+): Promise<number | null> {
+  const row = await adapter.findOne({
+    model: 'verification',
+    where: [{ field: 'identifier', value: temporaryPasswordMarkerIdentifier(userId) }],
+  });
+  if (row === null) return null;
+  return typeof row.value === 'string' ? new Date(row.value).getTime() : Number.NaN;
+}
+
+/** Whether the user holds an unexpired (or unreadable) marker. Rejects if the lookup fails. */
 export async function hasActiveTemporaryPasswordMarker(
   adapter: MarkerLookupAdapter,
   userId: string,
 ): Promise<boolean> {
-  const row = await adapter.findOne({
-    model: 'verification',
-    where: [{ field: 'identifier', value: temporaryPasswordMarkerIdentifier(userId) }],
-  });
-  return (
-    row !== null &&
-    (row.expiresAt instanceof Date || typeof row.expiresAt === 'string') &&
-    new Date(row.expiresAt).getTime() > Date.now()
-  );
+  const expiry = await findMarkerExpiry(adapter, userId);
+  return expiry !== null && !(expiry <= Date.now());
 }
 
-/** Whether the user holds a temporary-password marker whose expiry has passed. Rejects if the lookup fails. */
+/** Whether the user holds a marker whose expiry has passed (or is unreadable). Rejects if the lookup fails. */
 export async function hasExpiredTemporaryPasswordMarker(
   adapter: MarkerLookupAdapter,
   userId: string,
 ): Promise<boolean> {
-  const row = await adapter.findOne({
-    model: 'verification',
-    where: [{ field: 'identifier', value: temporaryPasswordMarkerIdentifier(userId) }],
-  });
-  return (
-    row !== null &&
-    (row.expiresAt instanceof Date || typeof row.expiresAt === 'string') &&
-    new Date(row.expiresAt).getTime() <= Date.now()
-  );
+  const expiry = await findMarkerExpiry(adapter, userId);
+  return expiry !== null && !(expiry > Date.now());
 }

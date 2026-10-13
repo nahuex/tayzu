@@ -2490,8 +2490,12 @@ describe('The accept route honors the temporary-password marker (task 13.5c, VCD
   async function writeMarker(userId: string): Promise<void> {
     await authPool.query(
       `insert into auth.verification (id, identifier, value, expires_at)
-       values ($1, $2, 'temporary-password', now() + interval '1 hour')`,
-      [randomUUID(), `temp-password:${userId}`],
+       values ($1, $2, $3, '9999-12-31T23:59:59Z')`,
+      [
+        randomUUID(),
+        `temp-password:${userId}`,
+        new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      ],
     );
   }
 

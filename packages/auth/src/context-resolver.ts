@@ -268,7 +268,7 @@ interface AuthContextSurface {
     findOne(data: {
       readonly model: 'member' | 'verification';
       readonly where: ReadonlyArray<{ readonly field: string; readonly value: string }>;
-    }): Promise<{ readonly role?: unknown; readonly expiresAt?: unknown } | null>;
+    }): Promise<{ readonly role?: unknown; readonly value?: unknown } | null>;
   };
 }
 

@@ -138,13 +138,19 @@ describe('A temporary password grants only a password change (task 13.5, D13, Q3
     };
   }
 
-  async function writeMarker(userId: string, expiresInMs: number): Promise<void> {
+  // Representation of task 13.5e (Resolved decision Q142): the far-future sentinel in
+  // `expiresAt`, the real expiry as an ISO-8601 string in `value`.
+  async function writeMarkerValue(userId: string, value: string): Promise<void> {
     await db.insert(authSchema.verification).values({
       id: randomUUID(),
       identifier: `temp-password:${userId}`,
-      value: 'temporary-password',
-      expiresAt: new Date(Date.now() + expiresInMs),
+      value,
+      expiresAt: new Date('9999-12-31T23:59:59.000Z'),
     });
+  }
+
+  async function writeMarker(userId: string, expiresInMs: number): Promise<void> {
+    await writeMarkerValue(userId, new Date(Date.now() + expiresInMs).toISOString());
   }
 
   async function markerCount(userId: string): Promise<number> {
@@ -396,6 +402,92 @@ describe('A temporary password grants only a password change (task 13.5, D13, Q3
       const signedIn = await postSignIn(user.email, newTemporary);
       expect(signedIn.status).toBe(200);
       expect(await sessionCount(user.userId)).toBe(1);
+    }, 60_000);
+  });
+
+  /**
+   * Task 13.5e (Resolved decision Q142): the marker survives Better Auth's cleanup of
+   * expired verification rows.
+   *
+   * Production symbols expected: `hasActiveTemporaryPasswordMarker` and
+   * `hasExpiredTemporaryPasswordMarker` in `identity/temporary-password.ts` compare
+   * the row's `value` (ISO-8601 real expiry) instead of `expiresAt` (the sentinel
+   * `9999-12-31T23:59:59Z`); a `value` that does not parse is "active" for the first
+   * and "expired" for the second (fail closed).
+   */
+  describe('the marker survives the cleanup of expired verification rows (task 13.5e, Q142)', () => {
+    const SIGN_IN_URL = `${AUTH_BASE_URL}/sign-in/email`;
+
+    function postSignIn(email: string, password: string): Promise<Response> {
+      return handlerOf(auth)(
+        new Request(SIGN_IN_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+          body: JSON.stringify({ email, password }),
+        }),
+      );
+    }
+
+    async function sessionCount(userId: string): Promise<number> {
+      const result = await db.execute<{ n: string }>(
+        sql`select count(*)::text as n from auth.session where user_id = ${userId}`,
+      );
+      return Number(result.rows[0]?.n ?? 0);
+    }
+
+    async function clearSessions(userId: string): Promise<void> {
+      await db.execute(sql`delete from auth.session where user_id = ${userId}`);
+    }
+
+    it('an expired marker stays in place after a findVerificationValue call for another identifier, and still blocks the sign-in', async () => {
+      const user = await newUser();
+      await clearSessions(user.userId);
+      await writeMarker(user.userId, -60 * 1000);
+
+      const context = (await (auth as unknown as { $context: Promise<unknown> }).$context) as {
+        internalAdapter: { findVerificationValue(identifier: string): Promise<unknown> };
+      };
+      await context.internalAdapter.findVerificationValue(`unrelated-identifier-${randomUUID()}`);
+
+      expect(await markerCount(user.userId), 'the cleanup did not remove the marker').toBe(1);
+
+      const wrong = await postSignIn(user.email, `${user.password}-wrong`);
+      const expired = await postSignIn(user.email, user.password);
+      expect(wrong.status).toBeGreaterThanOrEqual(400);
+      expect(expired.status).toBe(wrong.status);
+      expect(await expired.json()).toEqual(await wrong.json());
+      expect(await sessionCount(user.userId), 'no session row remains').toBe(0);
+    }, 60_000);
+
+    it('a marker whose value does not parse restricts a session like an active marker', async () => {
+      const user = await newUser();
+      const cookie = await signIn(user);
+      await writeMarkerValue(user.userId, 'not-a-timestamp');
+
+      const session = await authRequest('/get-session', cookie, 'GET');
+      expect(session.status).toBe(200);
+
+      const listAccounts = await authRequest('/list-accounts', cookie, 'GET');
+      expect(listAccounts.status, 'list-accounts is refused').toBeGreaterThanOrEqual(400);
+      expect(listAccounts.status).toBeLessThan(500);
+
+      await expect(resolveContext(new Headers({ cookie }))).rejects.toMatchObject({
+        code: 'CATALOG_CONTEXT_REQUIRED',
+      });
+      expect(await markerCount(user.userId), 'the marker is not deleted').toBe(1);
+    }, 60_000);
+
+    it('a marker whose value does not parse refuses a sign-in like an expired one', async () => {
+      const user = await newUser();
+      await clearSessions(user.userId);
+      await writeMarkerValue(user.userId, 'not-a-timestamp');
+
+      const wrong = await postSignIn(user.email, `${user.password}-wrong`);
+      const refused = await postSignIn(user.email, user.password);
+      expect(wrong.status).toBeGreaterThanOrEqual(400);
+      expect(refused.status).toBe(wrong.status);
+      expect(await refused.json()).toEqual(await wrong.json());
+      expect(await sessionCount(user.userId), 'no session row remains').toBe(0);
     }, 60_000);
   });
 });
