@@ -3167,7 +3167,7 @@ SSO surfaces of M18) are recorded there with their justification.
       serving a catalog route and an identity route, the step-up interceptor and the
       error mapping applying to both, and a `Retry-After` set through
       `ResponseHeadersPlugin` on an identity 429 and absent from a catalog answer.
-- [ ] 14.1c A second committed OpenAPI document, `openapi/identity.openapi.json`, is
+- [x] 14.1c A second committed OpenAPI document, `openapi/identity.openapi.json`, is
       generated from the identity router in `apps/api` by a small generator over the
       router's `.route` declarations (method, path, `spec`), using only dependencies
       `apps/api` already has, with its own `contract:generate` and `contract:check`

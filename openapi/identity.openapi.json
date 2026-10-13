@@ -1,0 +1,136 @@
+{
+  "info": {
+    "title": "Tayzu Identity API",
+    "version": "0.0.0"
+  },
+  "openapi": "3.1.1",
+  "paths": {
+    "/v1/credentials": {
+      "get": {
+        "operationId": "identity.credentials.list"
+      },
+      "post": {
+        "operationId": "identity.credentials.create",
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/credentials/{credential}/revoke": {
+      "post": {
+        "operationId": "identity.credentials.revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential",
+            "required": true
+          }
+        ],
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/credentials/{credential}/rotate": {
+      "post": {
+        "operationId": "identity.credentials.rotate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "credential",
+            "required": true
+          }
+        ],
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/service-accounts": {
+      "post": {
+        "operationId": "identity.serviceAccounts.create",
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/service-accounts/{user}": {
+      "delete": {
+        "operationId": "identity.serviceAccounts.delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user",
+            "required": true
+          }
+        ],
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/users": {
+      "post": {
+        "operationId": "identity.users.create",
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/users/invitations": {
+      "post": {
+        "operationId": "identity.users.invite",
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/users/invitations/{invitation}/cancel": {
+      "post": {
+        "operationId": "identity.users.cancelInvitation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invitation",
+            "required": true
+          }
+        ]
+      }
+    },
+    "/v1/users/invitations/{invitation}/resend": {
+      "post": {
+        "operationId": "identity.users.resendInvitation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invitation",
+            "required": true
+          }
+        ]
+      }
+    },
+    "/v1/users/{user}/sso-account": {
+      "delete": {
+        "operationId": "identity.users.unlinkSsoAccount",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user",
+            "required": true
+          }
+        ],
+        "x-tayzu-risk": "high"
+      },
+      "post": {
+        "operationId": "identity.users.linkSsoAccount",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user",
+            "required": true
+          }
+        ],
+        "x-tayzu-risk": "high"
+      }
+    },
+    "/v1/users/{user}/status": {
+      "put": {
+        "operationId": "identity.users.setStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user",
+            "required": true
+          }
+        ],
+        "x-tayzu-risk": "high"
+      }
+    }
+  }
+}
