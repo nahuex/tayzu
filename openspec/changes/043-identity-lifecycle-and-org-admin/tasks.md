@@ -3238,7 +3238,7 @@ SSO surfaces of M18) are recorded there with their justification.
       the accept route's limiter), a foreign or unknown target is 404. Verify:
       `errors.http.int.test.ts` covers each over the mounted server, the header on each
       429, and that the accept route's rejections are all the same 404.
-- [ ] 14.6 `{user}` is the `_user` entity identifier (an email or `svc-…`) sent
+- [x] 14.6 `{user}` is the `_user` entity identifier (an email or `svc-…`) sent
       unencoded, and a path containing `%` answers 404 (`002` Q74). Verify:
       `user-path.http.int.test.ts` covers `PUT /v1/users/{email}/status` and
       `PUT /v1/users/svc-ci-github/status` resolving, and a `%` path being 404,
