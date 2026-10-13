@@ -3066,7 +3066,7 @@ SSO surfaces of M18) are recorded there with their justification.
       is not updatable by a non-admin (fail closed; Resolved decision Q37) and the `002` spec correction is recorded for a `002` follow-up (`002`
       VCDM M15). Verify: `inherited-ownership.int.test.ts` covers a non-admin member's
       update of such an entity being denied and an admin's allowed.
-- [ ] 13.7 Keys created through `002`'s machine-credential path get the
+- [x] 13.7 Keys created through `002`'s machine-credential path get the
       plugin-level per-key rate limit (60 per hour, configurable, Q44) and no stored
       first characters (`002` residual risk; 9.5), with the headerless call. Verify:
       `machine-credentials.int.test.ts` covers the configured limit and an empty stored

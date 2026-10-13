@@ -104,6 +104,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
 
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -817,5 +818,92 @@ describe('Machine credential create and revoke by Better Auth role (task 13.1)',
         })
       ).valid,
     ).toBe(false);
+  });
+});
+
+/**
+ * `043` task 13.7 (`002` residual risk; design D8, Resolved decision Q44; task 9.5):
+ * keys created through the machine-credential path get the plugin-level per-key rate
+ * limit (60 per hour by default, configurable) and no stored first characters, with
+ * the headerless call. Verify: "covers the configured limit and an empty stored start
+ * on a created key."
+ *
+ * Expected production symbols: `createAuth({ ..., machineCredentialRateLimit: { max,
+ * timeWindowMs } })` (`./auth.ts`); `createMachineCredential` (headerless, unchanged).
+ */
+describe('Machine credential rate limit and stored start (task 13.7)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+  const LIMIT = 3;
+  const WINDOW_MS = 3_600_000;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      machineCredentialRateLimit: { max: LIMIT, timeWindowMs: WINDOW_MS },
+    });
+    api = apiOf(auth);
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  async function newCredential(): Promise<CreatedMachineCredential> {
+    const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_ADMIN_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Machine Credential Limit Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'Limited credential',
+      actorKind: 'integration',
+    });
+  }
+
+  it('a created key is limited to the configured number of verifications per window', async () => {
+    const created = await newCredential();
+
+    for (let i = 0; i < LIMIT; i += 1) {
+      const result = await api.verifyApiKey({
+        body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+      });
+      expect(result.valid, `verification ${String(i + 1)} is within the limit`).toBe(true);
+    }
+    const over = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(over.valid, 'the verification beyond the configured limit is refused').toBe(false);
+
+    const rows = await db
+      .select()
+      .from(authSchema.apikey)
+      .where(eq(authSchema.apikey.id, created.id));
+    expect(rows[0]?.rateLimitEnabled, 'the limit is enabled on the stored key').toBe(true);
+    expect(rows[0]?.rateLimitMax, 'the configured maximum is copied into the key').toBe(LIMIT);
+    expect(rows[0]?.rateLimitTimeWindow, 'the window is stored in milliseconds').toBe(WINDOW_MS);
+  });
+
+  it('a created key stores no first characters of its secret', async () => {
+    const created = await newCredential();
+
+    const rows = await db
+      .select()
+      .from(authSchema.apikey)
+      .where(eq(authSchema.apikey.id, created.id));
+    expect(rows).toHaveLength(1);
+    const start = rows[0]?.start;
+    expect(start === null || start === '', 'the stored start is empty').toBe(true);
+    expect(rows[0]?.key, 'the stored key is hashed, not the secret').not.toBe(created.secret);
   });
 });
