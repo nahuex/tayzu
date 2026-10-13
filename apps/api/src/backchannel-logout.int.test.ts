@@ -591,6 +591,77 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
     ]);
     expect(recorded.rows, 'the valid token consumed the jti').toHaveLength(1);
   }, 60_000);
+
+  /**
+   * Task 13.11 of 043 (`002` VCDM M14; spec scenario "A malformed logout token is
+   * cheap to refuse"): a token failing a cheap claim check (no `sid` and `sub`,
+   * wrong `typ`, `iss`, `aud`, expired, no `events` member, a `nonce`) is refused
+   * before the discovery document and the JWKS are fetched, so no outbound call
+   * is made for it.
+   *
+   * Production symbols expected: `verifyLogoutToken` (`@tayzu/auth`,
+   * `sso/backchannel-logout.ts`) runs every claim check that needs no key before
+   * its first `fetch`, and verifies the signature last. The discovery and JWKS
+   * fetchers are observed through `globalThis.fetch` (the verifier's only outbound
+   * path), filtered to the stub's origin so unrelated calls are ignored.
+   */
+  it('A token failing a cheap claim check is refused with zero discovery and JWKS fetches, while a token passing them does fetch', async () => {
+    const sid = `sid-${randomUUID()}`;
+    const stubOrigin = new URL(stub.discoveryUrl).origin;
+    const now = Math.floor(Date.now() / 1000);
+
+    const withoutSidAndSub: Record<string, unknown> = { ...logoutClaims(sid) };
+    Reflect.deleteProperty(withoutSidAndSub, 'sid');
+    Reflect.deleteProperty(withoutSidAndSub, 'sub');
+    const withoutEvents: Record<string, unknown> = { ...logoutClaims(sid) };
+    Reflect.deleteProperty(withoutEvents, 'events');
+
+    const cheapFailures: Record<string, string> = {
+      'neither sid nor sub': stub.signJwt(withoutSidAndSub, { typ: 'logout+jwt' }),
+      'typ is not logout+jwt': stub.signJwt(logoutClaims(sid)),
+      'iss is not the issuer': stub.signJwt(
+        { ...logoutClaims(sid), iss: 'https://evil.example.test' },
+        { typ: 'logout+jwt' },
+      ),
+      'aud is not the client': stub.signJwt(
+        { ...logoutClaims(sid), aud: 'someone-else' },
+        { typ: 'logout+jwt' },
+      ),
+      'expired beyond the skew': stub.signJwt(
+        { ...logoutClaims(sid), iat: now - 7200, exp: now - 3600 },
+        { typ: 'logout+jwt' },
+      ),
+      'no events member': stub.signJwt(withoutEvents, { typ: 'logout+jwt' }),
+      'carries a nonce': stub.signJwt(
+        { ...logoutClaims(sid), nonce: randomUUID() },
+        { typ: 'logout+jwt' },
+      ),
+    };
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    try {
+      const outboundCalls = (): number =>
+        fetchSpy.mock.calls.filter(([input]) => {
+          const url =
+            typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          return url.startsWith(stubOrigin);
+        }).length;
+
+      for (const [reason, token] of Object.entries(cheapFailures)) {
+        const before = outboundCalls();
+        const response = await postLogout(token);
+        expect(response.statusCode, `${reason}: answers like every other outcome`).toBe(200);
+        expect(outboundCalls() - before, `${reason}: no discovery or JWKS fetch`).toBe(0);
+      }
+
+      // Control: a token that passes every cheap check does reach discovery and the JWKS.
+      const before = outboundCalls();
+      await postLogout(stub.signJwt(logoutClaims(sid), { typ: 'logout+jwt' }));
+      expect(outboundCalls() - before, 'the spy observes real fetches').toBeGreaterThanOrEqual(2);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }, 60_000);
 });
 
 /**

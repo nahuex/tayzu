@@ -3123,7 +3123,7 @@ SSO surfaces of M18) are recorded there with their justification.
       and does not consume its `jti` (`002` VCDM M14). Verify:
       `backchannel-logout.int.test.ts` covers such a token being refused and the same
       `jti` still usable afterwards in a valid token.
-- [ ] 13.11 The cheap claim checks of back-channel logout run before discovery and
+- [x] 13.11 The cheap claim checks of back-channel logout run before discovery and
       JWKS are fetched, so a malformed RS256-shaped token triggers no outbound call
       (`002` VCDM M14). Verify: `backchannel-logout.int.test.ts` covers a token failing
       a cheap check with the discovery and JWKS fetchers recording zero calls.

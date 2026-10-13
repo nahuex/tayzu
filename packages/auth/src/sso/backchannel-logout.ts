@@ -2,9 +2,11 @@
  * Validation of the `logout_token` Visma Connect posts to the back-channel
  * logout endpoint (task 22.1, design D26).
  *
- * Checks run in order and fail closed at the first failing one: signature
- * (RS256, key named by `kid` in the discovered JWKS, `node:crypto` only),
- * `typ`, `iss`, `aud`, `iat`/`exp` (+-30s skew), `events`, no `nonce`, `sid` or `sub` present. Any
+ * Checks run in order and fail closed at the first failing one: `typ`, `iss`,
+ * `aud`, `iat`/`exp` (+-30s skew), `events`, no `nonce`, `sid` or `sub` present,
+ * then the signature last (RS256, key named by `kid` in the discovered JWKS,
+ * `node:crypto` only), so only a token passing every cheap check causes an
+ * outbound discovery or JWKS fetch (task 13.11 of 043). Any
  * failure resolves `null`; nothing from the token or the provider reaches
  * logs, spans or errors.
  */
@@ -16,6 +18,8 @@ const LOGOUT_SKEW_SECONDS = 30;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
 export interface LogoutTokenExpectation {
+  /** The issuer from the startup discovery, so `iss` is checked without a fetch. */
+  readonly issuer: string;
   readonly discoveryUrl: string;
   readonly clientId: string;
 }
@@ -73,11 +77,46 @@ export async function verifyLogoutToken(
       return null;
     }
 
-    // 1. Signature, against the discovery document's JWKS.
+    // 1. `typ` header.
+    if (header['typ'] !== LOGOUT_TOKEN_TYP) {
+      return null;
+    }
+    // 2. `iss` and `aud`.
+    if (claims['iss'] !== expected.issuer || !audienceMatches(claims['aud'], expected.clientId)) {
+      return null;
+    }
+    // 3. `iat` / `exp` with the skew allowance.
+    const { iat, exp } = claims;
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      typeof iat !== 'number' ||
+      typeof exp !== 'number' ||
+      iat - LOGOUT_SKEW_SECONDS > now ||
+      exp + LOGOUT_SKEW_SECONDS < now
+    ) {
+      return null;
+    }
+    // 4. `events` carries the back-channel logout member.
+    const events = claims['events'];
+    if (!isRecord(events) || !Object.hasOwn(events, LOGOUT_EVENT)) {
+      return null;
+    }
+    // 5. No `nonce`.
+    if (Object.hasOwn(claims, 'nonce')) {
+      return null;
+    }
+    // 6. At least one of `sid` / `sub` names what to revoke.
+    const sid = optionalString(claims['sid']);
+    const sub = optionalString(claims['sub']);
+    if (sid === undefined && sub === undefined) {
+      return null;
+    }
+
+    // 7. Signature last, against the discovery document's JWKS: the only checks that
+    // fetch, so a token failing any cheap check above triggers no outbound call.
     const discovery = await fetchJson(expected.discoveryUrl);
-    const issuer = discovery?.['issuer'];
     const jwksUri = discovery?.['jwks_uri'];
-    if (typeof issuer !== 'string' || typeof jwksUri !== 'string') {
+    if (typeof jwksUri !== 'string') {
       return null;
     }
     const jwks = await fetchJson(jwksUri);
@@ -96,41 +135,6 @@ export async function verifyLogoutToken(
         Buffer.from(signaturePart, 'base64url'),
       );
     if (!signatureValid) {
-      return null;
-    }
-
-    // 2. `typ` header.
-    if (header['typ'] !== LOGOUT_TOKEN_TYP) {
-      return null;
-    }
-    // 3. `iss` and `aud`.
-    if (claims['iss'] !== issuer || !audienceMatches(claims['aud'], expected.clientId)) {
-      return null;
-    }
-    // 4. `iat` / `exp` with the skew allowance.
-    const { iat, exp } = claims;
-    const now = Math.floor(Date.now() / 1000);
-    if (
-      typeof iat !== 'number' ||
-      typeof exp !== 'number' ||
-      iat - LOGOUT_SKEW_SECONDS > now ||
-      exp + LOGOUT_SKEW_SECONDS < now
-    ) {
-      return null;
-    }
-    // 5. `events` carries the back-channel logout member.
-    const events = claims['events'];
-    if (!isRecord(events) || !Object.hasOwn(events, LOGOUT_EVENT)) {
-      return null;
-    }
-    // 6. No `nonce`.
-    if (Object.hasOwn(claims, 'nonce')) {
-      return null;
-    }
-    // 7. At least one of `sid` / `sub` names what to revoke.
-    const sid = optionalString(claims['sid']);
-    const sub = optionalString(claims['sub']);
-    if (sid === undefined && sub === undefined) {
       return null;
     }
 

@@ -190,9 +190,8 @@ function toWebRequest(request: FastifyRequest, baseUrl: string | undefined): Req
 
 export async function createApp(options: CreateAppOptions): Promise<App> {
   // Q48, D23: a configured provider that cannot be discovered fails startup.
-  if (options.sso !== undefined) {
-    await assertDiscoverable(options.sso.discoveryUrl);
-  }
+  const ssoIssuer =
+    options.sso === undefined ? undefined : await assertDiscoverable(options.sso.discoveryUrl);
   // The auth handle runs on the host's `tayzu_auth` pool; the catalog and
   // revocation pool run as `tayzu_app` so RLS applies.
   const authDb = drizzle(options.authPool, { schema: authSchema });
@@ -492,8 +491,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   async function handleLogoutToken(
     token: string,
     config: NonNullable<CreateAppOptions['sso']>,
+    issuer: string,
   ): Promise<BackchannelLogoutOutcome> {
     const verified = await verifyLogoutToken(token, {
+      issuer,
       discoveryUrl: config.discoveryUrl,
       clientId: config.clientId,
     });
@@ -545,7 +546,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const sso = options.sso;
   // Without SSO configuration the route is disabled: it answers 404.
   await app.register((scope, _opts, done) => {
-    if (sso === undefined) {
+    if (sso === undefined || ssoIssuer === undefined) {
       // Explicit 404, so the `/v1/*` catch-all never answers for it.
       scope.post(BACKCHANNEL_LOGOUT_PATH, (_request, reply) =>
         reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 }),
@@ -588,7 +589,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           if (malformed) {
             return 'invalid';
           }
-          return handleLogoutToken(token, sso);
+          return handleLogoutToken(token, sso, ssoIssuer);
         });
         if (malformed) {
           return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
