@@ -2815,7 +2815,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       account (with its session), creates the membership only in `t2`. Verify: the
       accept of `t2`'s invitation leaves `t1` without a new member and no cross-tenant
       write.
-- [ ] 12.4 `identity.users.setStatus` on a user whose only membership is in
+- [x] 12.4 `identity.users.setStatus` on a user whose only membership is in
       another tenant answers `CATALOG_NOT_FOUND`, and on a user with memberships in two
       tenants it acts on the caller's tenant only (Resolved decision Q25). Verify:
       "Another tenant's user cannot have its status changed" and "A member of two
