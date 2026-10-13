@@ -3433,7 +3433,7 @@ SSO surfaces of M18) are recorded there with their justification.
 
 ## 15. Telemetry contract enforcement
 
-- [ ] 15.1 Extend the telemetry contract of the identity change with every remaining
+- [x] 15.1 Extend the telemetry contract of the identity change with every remaining
       span, metric and log event from design.md's Observability contract (the user
       and credential lifecycle events were declared by 13.3), in the separate
       identity contract module of 2.0c,

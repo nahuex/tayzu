@@ -92,6 +92,12 @@ import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtu
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { exchangeMachineToken } from '../../../packages/auth/src/token-exchange.js';
 import { LOG_EVENTS, METRICS, SPANS } from '../../../packages/authz/src/telemetry/contract.js';
+import * as identityContract from '../../../packages/auth/src/telemetry/identity-contract.js';
+import {
+  EXPECTED_LOG_EVENTS,
+  EXPECTED_METRICS,
+  EXPECTED_SPANS,
+} from '../../../packages/auth/src/__fixtures__/identity-contract-expected.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -1743,4 +1749,51 @@ describe('otel-smoke-check, 002: Visma Connect values never reach a signal (task
       });
     await expectNoLeak(markers);
   }, 60_000);
+});
+
+/*
+ * Task 15.1 (043): "`otel-smoke-check.int.test.ts` fails when a declared name is
+ * missing from the imported module." The smoke check imports the identity
+ * contract module in addition to `@tayzu/authz`'s contract; this check fails
+ * for every name of design.md's Observability contract that the module does not
+ * declare, so a name cannot be dropped (or never added) without the smoke check
+ * going red. The expected names are the spec side, in
+ * `packages/auth/src/__fixtures__/identity-contract-expected.ts`.
+ *
+ * Production symbols expected: `IDENTITY_SPANS`, `IDENTITY_METRICS` and
+ * `IDENTITY_LOG_EVENTS` exported by `packages/auth/src/telemetry/identity-contract.ts`,
+ * each a list of objects with a `name` (a log event may be a bare string).
+ */
+describe('otel-smoke-check, 043: every declared identity name is in the imported contract module (task 15.1)', () => {
+  function namesOf(list: unknown): Set<string> {
+    const entries = Array.isArray(list) ? (list as readonly unknown[]) : [];
+    return new Set(
+      entries.map((entry) =>
+        typeof entry === 'string' ? entry : String((entry as { name?: unknown }).name),
+      ),
+    );
+  }
+
+  const declared = identityContract as Record<string, unknown>;
+
+  it.each(EXPECTED_SPANS.map((span) => [span.name] as const))(
+    'span %s is declared in the identity contract module',
+    (name) => {
+      expect(namesOf(declared.IDENTITY_SPANS).has(name)).toBe(true);
+    },
+  );
+
+  it.each(EXPECTED_METRICS.map((metric) => [metric.name] as const))(
+    'metric %s is declared in the identity contract module',
+    (name) => {
+      expect(namesOf(declared.IDENTITY_METRICS).has(name)).toBe(true);
+    },
+  );
+
+  it.each(EXPECTED_LOG_EVENTS.map((event) => [event.name] as const))(
+    'log event %s is declared in the identity contract module',
+    (name) => {
+      expect(namesOf(declared.IDENTITY_LOG_EVENTS).has(name)).toBe(true);
+    },
+  );
 });

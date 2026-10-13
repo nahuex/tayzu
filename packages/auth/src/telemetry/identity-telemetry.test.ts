@@ -19,8 +19,10 @@
  *   of that name on the `@tayzu/auth` meter (created on first use).
  *
  * `packages/auth/src/telemetry/identity-contract.ts`:
- * - `IDENTITY_SPANS`, `IDENTITY_METRICS`, `IDENTITY_LOG_EVENTS`: arrays, all
- *   empty for now (13.3 and 15.1 fill them).
+ * - `IDENTITY_SPANS`, `IDENTITY_METRICS`, `IDENTITY_LOG_EVENTS`: arrays. 13.3
+ *   and 15.1 fill them; this file only checks that the index re-exports them
+ *   and that the four log events of 13.3 remain. `identity-contract.test.ts`
+ *   pins the complete contract.
  *
  * `packages/auth/src/index.ts` re-exports all six symbols.
  *
@@ -158,22 +160,20 @@ describe('identity telemetry helpers (task 2.0c)', () => {
 });
 
 describe('identity contract module (task 2.0c, Resolved decision Q74)', () => {
-  it('is importable from the package index and holds the names 13.3 declares', () => {
+  it('is importable from the package index and still holds the names 13.3 declares', () => {
     expect(index.IDENTITY_SPANS).toBe(contract.IDENTITY_SPANS);
     expect(index.IDENTITY_METRICS).toBe(contract.IDENTITY_METRICS);
     expect(index.IDENTITY_LOG_EVENTS).toBe(contract.IDENTITY_LOG_EVENTS);
     const eventNames = index.IDENTITY_LOG_EVENTS.map((entry) =>
       typeof entry === 'string' ? entry : entry.name,
     );
-    expect(index.IDENTITY_SPANS).toEqual([]);
-    expect(index.IDENTITY_METRICS).toEqual([]);
-    expect([...eventNames].sort()).toEqual(
-      [
+    expect(eventNames).toEqual(
+      expect.arrayContaining([
         'catalog.audit.user_created',
         'catalog.audit.credential_created',
         'catalog.audit.credential_rotated',
         'catalog.security.credential_revoked',
-      ].sort(),
+      ]),
     );
   });
 });
