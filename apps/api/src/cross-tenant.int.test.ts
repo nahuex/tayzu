@@ -27,10 +27,16 @@
 import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
-import { authSchema, createAuth, createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
+import {
+  authSchema,
+  createAuth,
+  createRecordingEmailSender,
+  exchangeMachineToken,
+  type AuthInstance,
+} from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
@@ -664,4 +670,216 @@ describe('cross-tenant matrix: setStatus (task 12.4)', () => {
     expect(await statusIn(t2.tenantId, both.email)).toBe('Active');
     expect(await accountRow(both.userId)).toEqual(accountBefore);
   }, 120_000);
+});
+
+/**
+ * Task 12.5. Spec scenario (verbatim): "Another tenant's user cannot have its status changed":
+ * GIVEN a user whose membership is only in tenant `t2`, WHEN an admin of `t1` ... deletes a
+ * service account of `t2`, THEN the operation fails with `CATALOG_NOT_FOUND` and nothing changes.
+ * Requirement "Targets belong to the caller's tenant": every service account targeted MUST belong
+ * to the host's `tenantId`, otherwise `CATALOG_NOT_FOUND`, identical to a nonexistent id.
+ *
+ * Verify: "the created entity and key are in `t1`, and the foreign delete leaves the service
+ * account and its credential intact."
+ *
+ * ## Production symbols expected
+ *
+ * None new: `identity.serviceAccounts.create` (10.3) and `.delete` (10.7) exist. If they already
+ * behave this way these tests pass at once (a regression guard).
+ */
+describe('cross-tenant matrix: service accounts (task 12.5)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface ServiceAccountClient {
+    identity: {
+      serviceAccounts: {
+        create(
+          input: { identifier: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ clientId: string; clientSecret: string }>;
+        delete(
+          input: { user: string },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    const capStore = createInMemoryEmailCapStore({
+      tenant: { max: 1000, windowSeconds: 3600 },
+      recipient: { max: 1000, windowSeconds: 86_400 },
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender: createRecordingEmailSender(),
+        }),
+        appPool,
+        userSync: adapter,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  const accounts = (): ServiceAccountClient => client;
+
+  async function freshTenant(label: string): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: `${label} Admin`,
+      email: `${label}-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `${label} Org`,
+      organizationSlug: `${label}-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  function sessionContext(tenant: Tenant): Record<string, unknown> {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: tenant.adminId },
+      principal: { roles: ['admin'] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  /** Every `_user` entity of the tenant with the identifier, read under that tenant. */
+  async function userEntities(tenantId: string, identifier: string): Promise<readonly unknown[]> {
+    const result = await withTenantTransaction(appPool, { tenantId }, (db) =>
+      db.query<Record<string, unknown>>(
+        `select e.identifier, e.spec_properties
+           from catalog_entity e
+           join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+          where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+        [tenantId, identifier],
+      ),
+    );
+    return result.rows;
+  }
+
+  async function keysOf(
+    tenantId: string,
+  ): Promise<readonly { id: string; reference_id: string }[]> {
+    const result = await authPool.query<{ id: string; reference_id: string }>(
+      'select id, reference_id from auth.apikey where reference_id = $1 order by id',
+      [tenantId],
+    );
+    return result.rows;
+  }
+
+  async function revocations(tenantId: string): Promise<number> {
+    const result = await withTenantTransaction(appPool, { tenantId }, (db) =>
+      db.query<{ n: string }>(
+        'select count(*)::text as n from machine_credential_revocation where tenant_id = $1',
+        [tenantId],
+      ),
+    );
+    return Number(result.rows[0]?.n);
+  }
+
+  async function rejectionOf(call: Promise<unknown>): Promise<unknown> {
+    const thrown: unknown = await call.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    return thrown;
+  }
+
+  it('identity.serviceAccounts.create creates only in the host tenant: the _user entity and the key are in t1 and nothing exists in t2', async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const identifier = `svc-x12-${randomUUID().slice(0, 8)}`;
+    const t2KeysBefore = await keysOf(t2.tenantId);
+
+    const created = await accounts().identity.serviceAccounts.create(
+      { identifier },
+      { context: sessionContext(t1) },
+    );
+
+    expect(await userEntities(t1.tenantId, identifier), 'the entity is in t1').toHaveLength(1);
+    expect(await userEntities(t2.tenantId, identifier), 'no entity in t2').toEqual([]);
+    const t1Keys = await keysOf(t1.tenantId);
+    expect(
+      t1Keys.map((key) => key.id),
+      'the key is in t1',
+    ).toEqual([created.clientId]);
+    expect(t1Keys[0]?.reference_id).toBe(t1.tenantId);
+    expect(await keysOf(t2.tenantId), 'no key in t2').toEqual(t2KeysBefore);
+  }, 90_000);
+
+  it("Another tenant's service account cannot be deleted: t1's admin deleting a service account of t2 fails with CATALOG_NOT_FOUND like an unknown id, and the service account and its credential stay intact and usable", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const identifier = `svc-x12-${randomUUID().slice(0, 8)}`;
+    const created = await accounts().identity.serviceAccounts.create(
+      { identifier },
+      { context: sessionContext(t2) },
+    );
+    const entityBefore = await userEntities(t2.tenantId, identifier);
+    const keysBefore = await keysOf(t2.tenantId);
+    expect(entityBefore, 'precondition').toHaveLength(1);
+
+    const foreign = await rejectionOf(
+      accounts().identity.serviceAccounts.delete(
+        { user: identifier },
+        { context: sessionContext(t1) },
+      ),
+    );
+    const unknown = await rejectionOf(
+      accounts().identity.serviceAccounts.delete(
+        { user: `svc-nobody-${randomUUID().slice(0, 8)}` },
+        { context: sessionContext(t1) },
+      ),
+    );
+
+    expect((foreign as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+    expect((unknown as { code?: unknown }).code).toBe('CATALOG_NOT_FOUND');
+    expect((foreign as { message?: unknown }).message, 'same as an unknown id').toBe(
+      (unknown as { message?: unknown }).message,
+    );
+    expect((foreign as { status?: unknown }).status).toBe((unknown as { status?: unknown }).status);
+    expect(await userEntities(t2.tenantId, identifier), 'the service account is intact').toEqual(
+      entityBefore,
+    );
+    expect(await keysOf(t2.tenantId), 'the credential row is intact').toEqual(keysBefore);
+    expect(await revocations(t2.tenantId), 'nothing was revoked').toBe(0);
+    await expect(
+      exchangeMachineToken(auth, {
+        clientId: created.clientId,
+        clientSecret: created.clientSecret,
+      }),
+      'the credential still exchanges',
+    ).resolves.toBeDefined();
+  }, 90_000);
 });

@@ -2821,7 +2821,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       "Another tenant's user cannot have its status changed" and "A member of two
       tenants is disabled in one only" (the other tenant's status, sessions and `banned`
       are untouched).
-- [ ] 12.5 `identity.serviceAccounts.create` creates only in the host tenant, and
+- [x] 12.5 `identity.serviceAccounts.create` creates only in the host tenant, and
       `delete` of another tenant's service account answers `CATALOG_NOT_FOUND`.
       Verify: the created entity and key are in `t1`, and the foreign delete leaves
       the service account and its credential intact.
