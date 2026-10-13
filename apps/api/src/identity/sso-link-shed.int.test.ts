@@ -173,6 +173,8 @@ describe('An SSO link its user did not make does not survive into a second tenan
   let failShedDeletes = false;
   /** Tenants whose membership deletion (the acceptance's compensation) fails. */
   const failingMemberDeletes = new Set<string>();
+  /** A seam run by the membership hook's shed port before it sheds (task 11.8); unset elsewhere. */
+  let beforeHookShed: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
     if ('error' in registration) {
@@ -205,7 +207,13 @@ describe('An SSO link its user did not make does not survive into a second tenan
       trustedOrigins: [ORIGIN],
       sso,
       userSync: adapter,
-      ssoLinkShed: shedCore.port,
+      ssoLinkShed: {
+        ...shedCore.port,
+        shed: async (input: Parameters<typeof shedCore.port.shed>[0]) => {
+          await beforeHookShed?.();
+          return shedCore.port.shed(input);
+        },
+      },
     });
     api = auth.api as ApiSurface;
     const real = createAuthRepository(authPool);
@@ -697,6 +705,103 @@ describe('An SSO link its user did not make does not survive into a second tenan
     expect((await sessionAlive(ssoCookie)).alive, 'the SSO session is revoked').toBe(false);
     expect(await setActiveStatus(ssoCookie, t2.tenantId)).toBeGreaterThanOrEqual(400);
     expect(await v1Status(ssoCookie)).toBeGreaterThanOrEqual(400);
+    expect(await userStatus(t2.tenantId, person.email)).toBe('Active');
+  }, 60_000);
+
+  // ---- scenario: a joined tenant stays unreachable until the shed is done (task 11.8) ----------------------
+
+  /**
+   * Task 11.8, Resolved decision Q112; spec "A joined tenant stays unreachable until
+   * the shed is done": a session minted through a link the user did not make switches
+   * its active organization to the joined tenant while the membership exists and the
+   * shed has not run, and calls a `/v1` route. The resolver rejects the call (401
+   * `CATALOG_CONTEXT_REQUIRED`, the `_user` of the joined tenant not yet `Active`),
+   * and once the shed has run that session is revoked.
+   */
+  async function reachJoinedTenant(
+    ssoCookie: string,
+    joinedTenantId: string,
+  ): Promise<{ switched: number; status: number; code: unknown }> {
+    const switched = await setActiveStatus(ssoCookie, joinedTenantId);
+    const response = await app.app.inject({
+      method: 'GET',
+      url: '/v1/blueprints',
+      headers: { cookie: ssoCookie },
+    });
+    return {
+      switched,
+      status: response.statusCode,
+      code: response.json<{ code?: unknown }>().code,
+    };
+  }
+
+  it('A joined tenant stays unreachable until the shed is done: an existing-account acceptance held between addMember and the shed', async () => {
+    const t1 = await freshTenant();
+    const t2 = await freshTenant();
+    const { person, ssoCookie } = await linkedMemberWithSsoSession(t1);
+    const invitation = await invite(t2, person.email);
+    const acceptingCookie = await passwordSession(person);
+    const accepting = await sessionAlive(acceptingCookie);
+    let held:
+      | { reach: Awaited<ReturnType<typeof reachJoinedTenant>>; userStatus: string | undefined }
+      | undefined;
+
+    await flowWith(async (step) => {
+      if (step !== 'shed') return;
+      // `addMember` has returned and the shed has not run.
+      held = {
+        reach: await reachJoinedTenant(ssoCookie, t2.tenantId),
+        userStatus: await userStatus(t2.tenantId, person.email),
+      };
+    }).accept({ ...invitation, session: { userId: person.userId, sessionId: accepting.id ?? '' } });
+
+    expect(held, 'the seam between addMember and the shed ran').toBeDefined();
+    expect(held?.reach.switched, 'the membership exists, so the session can switch to t2').toBe(
+      200,
+    );
+    expect(held?.userStatus, 'the _user of t2 is not Active yet').toBe('Invited');
+    expect(held?.reach.status, 'the resolver rejects the call').toBe(401);
+    expect(held?.reach.code).toBe('CATALOG_CONTEXT_REQUIRED');
+    expect(
+      (await sessionAlive(ssoCookie)).alive,
+      'once the shed has run the session is revoked',
+    ).toBe(false);
+    expect(await userStatus(t2.tenantId, person.email)).toBe('Active');
+  }, 60_000);
+
+  it('A joined tenant stays unreachable until the shed is done: a membership added directly, whose _user is written only after the hook shed', async () => {
+    const t1 = await freshTenant();
+    const t2 = await freshTenant();
+    const { person, ssoCookie } = await linkedMemberWithSsoSession(t1);
+    let held:
+      | { reach: Awaited<ReturnType<typeof reachJoinedTenant>>; userStatus: string | undefined }
+      | undefined;
+    beforeHookShed = async () => {
+      // The membership row exists; the hook has neither shed nor written the `_user`.
+      held = {
+        reach: await reachJoinedTenant(ssoCookie, t2.tenantId),
+        userStatus: await userStatus(t2.tenantId, person.email),
+      };
+    };
+    try {
+      await api.addMember({
+        body: { userId: person.userId, organizationId: t2.tenantId, role: 'member' },
+      });
+    } finally {
+      beforeHookShed = undefined;
+    }
+
+    expect(held, 'the seam before the hook shed ran').toBeDefined();
+    expect(held?.reach.switched, 'the membership exists, so the session can switch to t2').toBe(
+      200,
+    );
+    expect(held?.userStatus, 'no _user is written before the shed').toBeUndefined();
+    expect(held?.reach.status, 'the resolver rejects the call').toBe(401);
+    expect(held?.reach.code).toBe('CATALOG_CONTEXT_REQUIRED');
+    expect(
+      (await sessionAlive(ssoCookie)).alive,
+      'once the shed has run the session is revoked',
+    ).toBe(false);
     expect(await userStatus(t2.tenantId, person.email)).toBe('Active');
   }, 60_000);
 

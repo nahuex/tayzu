@@ -2747,7 +2747,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       refusal for a `Disabled` and for a deleted service account and for a non-revoked
       key bound to an identifier that has no `_user` (seeded as in 10.3), and
       "Re-enabling restores access without a new credential".
-- [ ] 11.8 `resolveContext` admits a **human** only when their `_user.status` in the
+- [x] 11.8 `resolveContext` admits a **human** only when their `_user.status` in the
       active tenant is `Active` (Resolved decision Q105, part 3, which amends the
       "`Disabled` only" rule of Q25: deny unless `Active`, like the machine branch of
       11.6). Every other status (`Disabled`, `Invited`, `Staged`) is rejected with the

@@ -295,6 +295,11 @@ interface ServiceAccountCacheEntry {
   readonly expiresAt: number;
 }
 
+interface HumanStatusCacheEntry {
+  readonly state: 'active' | 'disabled' | 'missing';
+  readonly expiresAt: number;
+}
+
 interface MembershipCacheEntry {
   /** The Better Auth member role, or `null` for a non-member. */
   readonly role: string | null;
@@ -308,6 +313,31 @@ interface MembershipCacheEntry {
 export function toCerbosRole(memberRole: string): 'admin' | 'member' {
   const roles = memberRole.split(',').map((role) => role.trim());
   return roles.includes('owner') || roles.includes('admin') ? 'admin' : 'member';
+}
+
+/**
+ * Task 11.8, D13, Q105: reads the member's `_user` status under the active
+ * tenant. Any status other than `Active` is `disabled` ("present and not Active").
+ */
+async function readHumanState(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+  email: string,
+): Promise<'active' | 'disabled' | 'missing'> {
+  return withTenantTransaction(pool, { tenantId }, async (client) => {
+    const result = await client.query<{ status: unknown }>(
+      `select e.spec_properties ->> 'status' as status
+         from catalog_entity e
+         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+        where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+      [tenantId, email],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return 'missing';
+    }
+    return row.status === 'Active' ? 'active' : 'disabled';
+  });
 }
 
 /** design Q34, D8: the `_user` entity's teams and moderated blueprints. */
@@ -380,6 +410,7 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   const membershipCache = new Map<string, MembershipCacheEntry>();
   const revocationCache = new Map<string, RevocationCacheEntry>();
   const serviceAccountCache = new Map<string, ServiceAccountCacheEntry>();
+  const humanStatusCache = new Map<string, HumanStatusCacheEntry>();
 
   // Task 5.7, design D21: consults `machine_credential_revocation` through
   // an in-process cache keyed by `credential_id` (TTL 5 s). Read under the
@@ -460,6 +491,30 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       return state;
     } catch {
       return 'lookup_failed';
+    }
+  }
+
+  // Task 11.8, design D13, Q105: a human is admitted only with an `Active`
+  // `_user` in the active tenant. Status only, cached at most 5 s per
+  // (tenant, user); a lookup failure is never cached (`null`).
+  async function humanState(
+    pool: ReturnType<typeof createPool>,
+    tenantId: string,
+    userId: string,
+    email: string,
+  ): Promise<HumanStatusCacheEntry['state'] | null> {
+    const now = Date.now();
+    const cacheKey = JSON.stringify([tenantId, userId]);
+    const cached = humanStatusCache.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.state;
+    }
+    try {
+      const state = await readHumanState(pool, tenantId, email);
+      humanStatusCache.set(cacheKey, { state, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+      return state;
+    } catch {
+      return null;
     }
   }
 
@@ -590,14 +645,34 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       rejectMissingContext();
     }
 
-    // Task 23.1, Q34: teams and moderated blueprints come from the caller's
-    // `_user` entity. If it cannot be read the principal is left absent, so
-    // Cerbos denies (fail closed) instead of assuming empty grants.
+    // Task 11.8, Q105: the `_user` of the active tenant must be `Active`.
+    // Without an email the row cannot be looked up, which fails closed.
     const actor = { type: 'user', id: result.user.id } as const;
     const email = result.user.email;
     if (typeof email !== 'string' || email.length === 0) {
-      return { tenantId, actor };
+      rejectMissingContext();
     }
+    const state = await humanState(options.revocationPool, tenantId, result.user.id, email);
+    if (state !== 'active') {
+      if (state !== null) {
+        const attributes = {
+          'tayzu.identity.rejection.reason':
+            state === 'disabled' ? 'user_disabled' : 'user_missing',
+          'tayzu.actor.type': actor.type,
+        };
+        principalRejectionsCounter.add(1, attributes);
+        logger.emit({
+          eventName: 'catalog.security.principal_rejected',
+          severityNumber: SeverityNumber.WARN,
+          attributes,
+        });
+      }
+      rejectMissingContext();
+    }
+
+    // Task 23.1, Q34: teams and moderated blueprints come from the caller's
+    // `_user` entity. If it cannot be read the principal is left absent, so
+    // Cerbos denies (fail closed) instead of assuming empty grants.
     try {
       const grants = await readUserEntityGrants(options.revocationPool, tenantId, email);
       return {

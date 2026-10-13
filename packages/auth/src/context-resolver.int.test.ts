@@ -2090,6 +2090,475 @@ describe('resolveContext: service-account principal check (task 11.6, D13, Q40)'
   }
 });
 
+/**
+ * Task 11.8 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * decision Q105 part 3, which amends the "`Disabled` only" rule of Q25; Q46,
+ * Q50, Q77; design D13). Spec scenarios, quoted from
+ * `specs/identity-lifecycle-and-org-admin/spec.md`:
+ *
+ * #### Scenario: An `Invited` member is rejected by the resolver
+ * - GIVEN a member of `t1` whose `_user` in `t1` is `Invited`, as a failed
+ *   acceptance can leave it, or `Staged`
+ * - WHEN the member calls any `/v1` route in `t1`
+ * - THEN the call is rejected with `CATALOG_CONTEXT_REQUIRED` (401) and no
+ *   reason in the body, `catalog.security.principal_rejected` is logged, and
+ *   the same user is accepted in a tenant where their `_user` is `Active`
+ *
+ * #### Scenario: A member of two tenants is disabled in one only
+ * - GIVEN an `Active` user who belongs to `t1` and `t2`, with a session in each
+ * - WHEN the admin of `t1` disables the user
+ * - THEN the user's `t1` session is rejected and their `_user` status in `t1`
+ *   is `Disabled`
+ * - AND their `t2` session, `_user` status and global account are unchanged,
+ *   and re-enabling in `t1` restores only `t1`
+ *
+ * Also from the requirement "Every member has a `_user` row": a human member
+ * with no `_user` row in the active tenant is rejected (reason `user_missing`).
+ *
+ * ## Production symbols expected
+ *
+ * No new symbol: `createContextResolver` (`./context-resolver.ts`) gains, in its
+ * session-cookie branch, a read of the member's `_user` status in the active
+ * tenant through `revocationPool` (cached 5 s per `(tenantId, userId)`, status
+ * only; the grants read stays uncached). Any status other than `Active` rejects
+ * with the reason `user_disabled`, an absent row with `user_missing`, and a
+ * failed lookup rejects too and is never cached. A rejection throws the same
+ * `AuthContextError` as a missing session (no reason in the error), logs
+ * `catalog.security.principal_rejected` (`tayzu.identity.rejection.reason`,
+ * `tayzu.actor.type` `user`) and increments
+ * `tayzu.identity.principal_rejections` with the same attributes.
+ *
+ * ## Why these fail right now
+ *
+ * The resolver reads the `_user` row only for its grants, admits any status
+ * (assertion failures: the promise resolves instead of rejecting), returns a
+ * principal-less context on a failed lookup, and never logs a rejection.
+ */
+describe('resolveContext: a human is admitted only with an Active _user (task 11.8, D13, Q105)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  type UserStatus = 'Staged' | 'Invited' | 'Active' | 'Disabled';
+
+  interface AddMemberSurface {
+    addMember(args: {
+      body: { userId: string; organizationId: string; role: string };
+    }): Promise<unknown>;
+  }
+
+  interface Placement {
+    readonly tenantId: string;
+    /** The member's `_user` status in that tenant, or `null` for no row at all. */
+    readonly status: UserStatus | null;
+  }
+
+  interface Member {
+    readonly userId: string;
+    readonly email: string;
+    /** One live session cookie per placement, active on that placement's tenant. */
+    readonly cookies: readonly string[];
+  }
+
+  interface PoolProbe {
+    fail: boolean;
+    entityQueries: number;
+  }
+
+  /** Cache window (5 s) plus margin; only `Date` is faked. */
+  const PAST_CACHE_WINDOW_MS = 10_000;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  function resolverOver(pool: TestDb['$client']): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: pool });
+  }
+
+  function advanceClock(offsetMs: number): void {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + offsetMs });
+  }
+
+  /** A pool whose clients count (and, while `probe.fail`, fail) every `catalog_entity` query. */
+  function probedPool(pool: TestDb['$client'], probe: PoolProbe): TestDb['$client'] {
+    const bound = (target: object, property: string | symbol): unknown => {
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+    };
+    return new Proxy(pool, {
+      get(target, property) {
+        if (property !== 'connect') {
+          return bound(target, property);
+        }
+        return async (): Promise<unknown> => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(clientTarget, clientProperty) {
+              if (clientProperty !== 'query') {
+                return bound(clientTarget, clientProperty);
+              }
+              return (...args: unknown[]): Promise<unknown> => {
+                const text: unknown = args[0];
+                if (typeof text === 'string' && text.includes('catalog_entity')) {
+                  probe.entityQueries += 1;
+                  if (probe.fail) {
+                    return Promise.reject(new Error('simulated _user lookup failure'));
+                  }
+                }
+                return (clientTarget.query as unknown as QueryFunction).apply(clientTarget, args);
+              };
+            },
+          });
+        };
+      },
+    });
+  }
+
+  async function newTenant(): Promise<string> {
+    const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Human Status Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return tenant.organizationId;
+  }
+
+  /**
+   * A user who belongs to every placement's tenant, with the `_user` row each
+   * placement names (seeded directly) and one session per placement made active
+   * on that tenant (the session row is updated directly, as the membership
+   * re-check of 3.6 does for a switched tenant).
+   */
+  async function newMember(placements: readonly Placement[]): Promise<Member> {
+    const email = randomEmail();
+    const created = await createAdminUser(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+    });
+    for (const placement of placements) {
+      await (auth.api as AddMemberSurface).addMember({
+        body: { userId: created.userId, organizationId: placement.tenantId, role: 'member' },
+      });
+      if (placement.status !== null) {
+        await seedUserRow(testAppPool(), {
+          tenantId: placement.tenantId,
+          email,
+          name: TEST_USER_NAME,
+          status: placement.status,
+        });
+      }
+    }
+    const cookies: string[] = [];
+    for (const placement of placements) {
+      const signedIn = await signInAdminUser(auth, {
+        email,
+        password: TEST_PASSWORD,
+        ip: randomIp(),
+      });
+      await db.execute(sql`
+        update auth.session set active_organization_id = ${placement.tenantId}
+        where token = ${signedIn.token}
+      `);
+      cookies.push(signedIn.cookie);
+    }
+    return { userId: created.userId, email, cookies };
+  }
+
+  /** Writes the `_user` status directly, standing in for the admin operation. */
+  async function setStatus(tenantId: string, email: string, status: UserStatus): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId }, async (client) => {
+      const result = await client.query(
+        `update catalog_entity
+            set spec_properties = jsonb_set(spec_properties, '{status}', to_jsonb($3::text))
+          where tenant_id = $1 and identifier = $2`,
+        [tenantId, email, status],
+      );
+      expect(result.rowCount, 'sanity: the _user row exists').toBe(1);
+    });
+  }
+
+  async function userStatusOf(tenantId: string, email: string): Promise<unknown> {
+    return withTenantTransaction(appPool, { tenantId }, async (client) => {
+      const result = await client.query<{ status: unknown }>(
+        `select spec_properties ->> 'status' as status
+           from catalog_entity where tenant_id = $1 and identifier = $2`,
+        [tenantId, email],
+      );
+      return result.rows[0]?.status;
+    });
+  }
+
+  function cookieHeaders(cookie: string | undefined): Headers {
+    if (cookie === undefined) {
+      throw new Error('fixture: the member has no session for this placement');
+    }
+    return new Headers({ cookie });
+  }
+
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  function principalRejectedLogs(
+    harness: TelemetryTestHarness,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']>[number][] {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'catalog.security.principal_rejected',
+    );
+  }
+
+  // `@opentelemetry/sdk-metrics`'s `DataPointType.SUM`, inlined like above.
+  const SUM_DATA_POINT_TYPE = 3;
+
+  function rejectionPoints(harness: TelemetryTestHarness): {
+    attributes: Attributes;
+    value: number;
+  }[] {
+    const points: { attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === 'tayzu.identity.principal_rejections' &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === SUM_DATA_POINT_TYPE
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  /** Rejects `cookie` and checks the log record and the counter name exactly `reason`. */
+  async function expectRejectedWithReason(
+    resolveContext: (headers: Headers) => Promise<unknown>,
+    cookie: string | undefined,
+    reason: string,
+  ): Promise<void> {
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolveContext(cookieHeaders(cookie)));
+    await harness.forceFlush();
+
+    const expected = { 'tayzu.identity.rejection.reason': reason, 'tayzu.actor.type': 'user' };
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual(expected);
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual(expected);
+  }
+
+  it('A member of two tenants is disabled in one only', async () => {
+    // GIVEN a user of t1 and t2 with a session in each; their `_user` is
+    // `Disabled` in t1 and `Active` in t2 (seeded directly).
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    const member = await newMember([
+      { tenantId: t1, status: 'Disabled' },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    // THEN the t1 session is rejected, with the reason `user_disabled` in the log.
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_disabled');
+    expect(await userStatusOf(t1, member.email)).toBe('Disabled');
+
+    // AND the t2 session, `_user` status and global account are unchanged.
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+      actor: { type: 'user', id: member.userId },
+      principal: { roles: ['member'] },
+    });
+    expect(await userStatusOf(t2, member.email)).toBe('Active');
+    const account = await db.execute<{ banned: boolean | null }>(sql`
+      select banned from auth."user" where id = ${member.userId}
+    `);
+    expect(account.rows[0]?.banned ?? false, 'the global account is not banned').toBe(false);
+
+    // AND re-enabling in t1 restores only t1: t1 resolves again after the
+    // cache window, and t2 is still served.
+    await setStatus(t1, member.email, 'Active');
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      expect(await resolveContext(cookieHeaders(member.cookies[0]))).toMatchObject({
+        tenantId: t1,
+        actor: { type: 'user', id: member.userId },
+      });
+      expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+        tenantId: t2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await userStatusOf(t2, member.email)).toBe('Active');
+  }, 60_000);
+
+  it('An Invited member is rejected by the resolver: a member whose _user is Invited', async () => {
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    // GIVEN a member of t1 whose `_user` in t1 is `Invited`, as a failed
+    // acceptance leaves it, and an `Active` one in t2.
+    const member = await newMember([
+      { tenantId: t1, status: 'Invited' },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    // THEN the call is rejected and logged with `user_disabled` ("present and not Active") ...
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_disabled');
+
+    // ... and the same user is accepted in the tenant where the row is `Active`.
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+      actor: { type: 'user', id: member.userId },
+    });
+  }, 60_000);
+
+  it('An Invited member is rejected by the resolver: a member whose _user is Staged', async () => {
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    const member = await newMember([
+      { tenantId: t1, status: 'Staged' },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_disabled');
+
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+      actor: { type: 'user', id: member.userId },
+    });
+  }, 60_000);
+
+  it('A member with no _user row in the active tenant is rejected with user_missing', async () => {
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    // GIVEN a member of t1 with no `_user` row there (a member that predates
+    // 043, or whose row was removed by hand) and an `Active` row in t2.
+    const member = await newMember([
+      { tenantId: t1, status: null },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_missing');
+
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+    });
+  }, 60_000);
+
+  it('Every rejection answers CATALOG_CONTEXT_REQUIRED with no reason in the body', async () => {
+    const tenant = await newTenant();
+    const missingCredential = await resolverOver(appPool)(new Headers()).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(missingCredential, 'control: a missing credential rejects').toBeInstanceOf(Error);
+    const controlMessage = (missingCredential as Error).message;
+
+    for (const status of ['Disabled', 'Invited', 'Staged', null] as const) {
+      const member = await newMember([{ tenantId: tenant, status }]);
+      const rejection = await resolverOver(appPool)(cookieHeaders(member.cookies[0])).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      expect(rejection, `status ${String(status)} is rejected`).toMatchObject({
+        code: 'CATALOG_CONTEXT_REQUIRED',
+      });
+      // The message (the body the HTTP layer answers with) is the one of a
+      // missing credential, and neither it nor the serialized error names a reason.
+      expect((rejection as Error).message).toBe(controlMessage);
+      const serialized = JSON.stringify(rejection) + (rejection as Error).message;
+      expect(serialized).not.toMatch(
+        /user_disabled|user_missing|user_banned|disabled|missing_row/i,
+      );
+    }
+  }, 120_000);
+
+  it('A second request within 5 seconds does not repeat the status lookup', async () => {
+    const tenant = await newTenant();
+    const member = await newMember([{ tenantId: tenant, status: 'Active' }]);
+    const probe: PoolProbe = { fail: false, entityQueries: 0 };
+    const resolveContext = resolverOver(probedPool(appPool, probe));
+
+    // WHEN the member is resolved: the status read and the grants read both query.
+    await resolveContext(cookieHeaders(member.cookies[0]));
+    const firstRequest = probe.entityQueries;
+    expect(firstRequest, 'sanity: the first request queried the catalog').toBeGreaterThan(0);
+
+    // THEN a second request within the window skips the status read (the
+    // grants read stays uncached, so it still queries).
+    probe.entityQueries = 0;
+    await resolveContext(cookieHeaders(member.cookies[0]));
+    expect(probe.entityQueries, 'the status lookup is not repeated').toBeLessThan(firstRequest);
+
+    // AND after the 5-second window the lookup is made again.
+    probe.entityQueries = 0;
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await resolveContext(cookieHeaders(member.cookies[0]));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(probe.entityQueries, 'the cache expired after 5 seconds').toBe(firstRequest);
+  }, 60_000);
+
+  it('A lookup failure rejects and is not cached', async () => {
+    const tenant = await newTenant();
+    const member = await newMember([{ tenantId: tenant, status: 'Active' }]);
+    const probe: PoolProbe = { fail: true, entityQueries: 0 };
+    const resolveContext = resolverOver(probedPool(appPool, probe));
+
+    // GIVEN the `_user` lookup is unreachable, THEN the member is rejected
+    // (fail closed), not resolved without a principal.
+    await expectContextRequiredRejection(resolveContext(cookieHeaders(member.cookies[0])));
+
+    // AND the failure was not cached: once the lookup works, the next request
+    // (inside the 5-second window) looks again and is admitted.
+    probe.fail = false;
+    expect(await resolveContext(cookieHeaders(member.cookies[0]))).toMatchObject({
+      tenantId: tenant,
+      actor: { type: 'user', id: member.userId },
+      principal: { roles: ['member'] },
+    });
+  }, 60_000);
+});
+
 type QueryFunction = (...args: unknown[]) => Promise<unknown>;
 
 /**
