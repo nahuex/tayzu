@@ -2825,7 +2825,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       `delete` of another tenant's service account answers `CATALOG_NOT_FOUND`.
       Verify: the created entity and key are in `t1`, and the foreign delete leaves
       the service account and its credential intact.
-- [ ] 12.6 `identity.credentials.list` and `create`: the list omits other
+- [x] 12.6 `identity.credentials.list` and `create`: the list omits other
       tenants' credentials and create writes only the host tenant's `referenceId`, and
       a `userId` of another tenant answers `CATALOG_NOT_FOUND`. Verify: "Another
       tenant's credential cannot be listed, rotated or revoked" for list, the created
