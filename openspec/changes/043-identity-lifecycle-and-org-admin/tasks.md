@@ -3224,7 +3224,7 @@ SSO surfaces of M18) are recorded there with their justification.
       server with the switch on, fails for a route that is neither on the allowlist nor
       behind `resolveContext`, and fails when a scratch route is added to the server
       outside both.
-- [ ] 14.4 Step-up over HTTP with the switch on: an admin session without a fresh
+- [x] 14.4 Step-up over HTTP with the switch on: an admin session without a fresh
       verification gets `AUTH_STEP_UP_REQUIRED` for each high-risk route and nothing
       changes. Verify: `step-up.http.int.test.ts` covers "A hijacked admin session
       without a fresh MFA cannot mint power" over the mounted server, a `password`
