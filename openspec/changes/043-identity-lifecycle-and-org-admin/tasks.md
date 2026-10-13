@@ -3184,7 +3184,7 @@ SSO surfaces of M18) are recorded there with their justification.
       scratch edit, the generated document listing the thirteen routes with their
       methods and paths and **not** the accept route, and the document containing no
       schema object.
-- [ ] 14.1b The acceptance is a **plain Fastify route**, `POST
+- [x] 14.1b The acceptance is a **plain Fastify route**, `POST
       /v1/auth/invitations/accept`, registered before the `/v1/*` catch-all like
       `app.post(TOKEN_EXCHANGE_PATH)` (the catch-all would answer an unauthenticated
       call 401), parsing the body into a null-prototype object and subject to the

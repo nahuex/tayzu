@@ -48,6 +48,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
 import { createIdentityRouter } from './identity-router.js';
+import { createAcceptFlow } from './identity/accept-flow.js';
 import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
 import { createAuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
@@ -105,6 +106,8 @@ export interface CreateAppOptions {
    */
   readonly reauthorizationMaxPendingPerSession?: number;
   readonly reauthorizationCallbackRateLimit?: { readonly max: number; readonly window: number };
+  /** Limit of the public invitation-accept route, per caller IP; `window` is in seconds. */
+  readonly invitationAcceptRateLimit?: { readonly max: number; readonly window: number };
   /**
    * The email path of the invitation operations (design D10), built by the host from
    * configuration; omitted: `invite` and `resendInvitation` fail closed.
@@ -147,6 +150,9 @@ interface StepUpHandlerContext {
 }
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
+/** Default budget of the public accept route, per caller IP (window in seconds). */
+const DEFAULT_INVITATION_ACCEPT_RATE_LIMIT = { max: 10, window: 60 } as const;
 /** Skew added to the token's `exp` for the replay record's lifetime (D26). */
 const LOGOUT_JTI_SKEW_SECONDS = 30;
 /** Generous per-IP floor (D26): high enough not to drop legitimate logout bursts. */
@@ -743,6 +749,45 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return reply.status(mapped.status).send(mapped.toJSON());
     }
   });
+
+  // 043 task 14.1b: the invitation acceptance is a plain public route (no session,
+  // no catch-all), behind its own DB-backed limiter.
+  const acceptFlow = createAcceptFlow({
+    auth,
+    authz,
+    authRepository: createAuthRepository(options.authPool),
+    authPool: options.authPool,
+    userSync,
+    stepUp: stepUpGuard,
+    ...(reauthorization === undefined ? {} : { reauthorization }),
+  });
+  app.post(
+    INVITATION_ACCEPT_PATH,
+    {
+      preHandler: createAcceptRateLimitPreHandler({
+        store: createRateLimitBucketStore({
+          adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+            .adapter,
+          rules: {
+            invitation_accept:
+              options.invitationAcceptRateLimit ?? DEFAULT_INVITATION_ACCEPT_RATE_LIMIT,
+          },
+        }),
+      }),
+    },
+    async (request, reply) => {
+      try {
+        const { userId } = await acceptFlow.acceptRequest({
+          body: request.body,
+          headers: toWebHeaders(request),
+        });
+        return await reply.status(200).send({ userId });
+      } catch (error) {
+        const mapped = toOrpcError(error);
+        return reply.status(mapped.status).send(mapped.toJSON());
+      }
+    },
+  );
 
   let v1Config: { rateLimit?: object } = {};
   if (options.rateLimit !== undefined) {
