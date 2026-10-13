@@ -810,7 +810,9 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
       });
     const authState = async (): Promise<unknown> => {
       const users = await authPool.query<{ n: string }>(
-        'select count(*)::text as n from auth."user"',
+        `select count(*)::text as n from auth."user"
+          where id in (select user_id from auth.member where organization_id = $1)`,
+        [fixture.tenantId],
       );
       const members = await authPool.query<{ n: string }>(
         'select count(*)::text as n from auth.member where organization_id = $1',
