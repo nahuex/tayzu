@@ -96,6 +96,11 @@ import type { SsoLinkShedPort } from './identity/ports.js';
 import { validatePassword } from './identity/password-policy.js';
 import type { StatusEvent } from './identity/user-status.js';
 import { organizationAccess } from './org-access.js';
+import {
+  TEMPORARY_PASSWORD_ALLOWED_PATHS,
+  hasActiveTemporaryPasswordMarker,
+  temporaryPasswordMarkerIdentifier,
+} from './identity/temporary-password.js';
 import { isIdle } from './session-idle.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
 import {
@@ -1207,6 +1212,21 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 message: 'UNAUTHORIZED',
               });
             }
+            // Task 13.5, Q36: a session under a temporary-password marker reaches only
+            // the change-password route, `/sign-out` and `/get-session`. A failed
+            // lookup refuses (fail closed).
+            if (
+              peek &&
+              !TEMPORARY_PASSWORD_ALLOWED_PATHS.includes(ctx.path) &&
+              (await hasActiveTemporaryPasswordMarker(ctx.context.adapter, peek.user.id).catch(
+                () => true,
+              ))
+            ) {
+              throw new APIError('FORBIDDEN', {
+                code: 'PASSWORD_CHANGE_REQUIRED',
+                message: 'PASSWORD_CHANGE_REQUIRED',
+              });
+            }
           }
           if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
             // Task 3.5, design D19: snapshot the session's current active
@@ -1364,6 +1384,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           const response = ctx.context.returned as ChangePasswordSuccessResponse;
+          await ctx.context.adapter.deleteMany({
+            model: 'verification',
+            where: [
+              {
+                field: 'identifier',
+                value: temporaryPasswordMarkerIdentifier(response.user.id),
+              },
+            ],
+          });
           const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
             model: 'session',
             where: [{ field: 'token', value: response.token }],

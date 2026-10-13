@@ -2997,7 +2997,7 @@ SSO surfaces of M18) are recorded there with their justification.
       and `banned-sign-in.int.test.ts` covers the SSO callback giving the same uniform
       `401 AUTH_SSO_REJECTED` as any other callback failure, and the event being emitted
       once per banned attempt on each channel with no email in it.
-- [ ] 13.5 Temporary and bootstrap passwords force a change at first sign-in,
+- [x] 13.5 Temporary and bootstrap passwords force a change at first sign-in,
       through a marker row in `auth.verification` (identifier
       `temp-password:<userId>`, `expiresAt` equal to the expiry; Resolved decision
       Q36, no migration). Two places honor it: `resolveContext` for `/v1`, and,

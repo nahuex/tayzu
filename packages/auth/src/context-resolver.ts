@@ -81,6 +81,7 @@
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
  */
+import { hasActiveTemporaryPasswordMarker } from './identity/temporary-password.js';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { withTenantTransaction, type createPool } from '@tayzu/db';
 
@@ -265,9 +266,9 @@ async function readServiceAccountState(
 interface AuthContextSurface {
   readonly adapter: {
     findOne(data: {
-      readonly model: 'member';
+      readonly model: 'member' | 'verification';
       readonly where: ReadonlyArray<{ readonly field: string; readonly value: string }>;
-    }): Promise<{ readonly role?: unknown } | null>;
+    }): Promise<{ readonly role?: unknown; readonly expiresAt?: unknown } | null>;
   };
 }
 
@@ -645,6 +646,15 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
         severityNumber: SeverityNumber.WARN,
         attributes,
       });
+      rejectMissingContext();
+    }
+
+    // Task 13.5, Q36: under a temporary-password marker nothing on `/v1` is reachable.
+    // A failed lookup rejects (fail closed).
+    const markerHeld = await contextOf(options.auth)
+      .then((context) => hasActiveTemporaryPasswordMarker(context.adapter, result.user.id))
+      .catch(() => true);
+    if (markerHeld) {
       rejectMissingContext();
     }
 

@@ -35,3 +35,39 @@ export function generateTemporaryPassword(): string {
   }
   return chars.join('');
 }
+
+/** Identifier of the `auth.verification` marker that forces a password change (Resolved decision Q36). */
+export function temporaryPasswordMarkerIdentifier(userId: string): string {
+  return `temp-password:${userId}`;
+}
+
+/** The routes a session under an unexpired marker may reach on `/api/auth/*`. */
+export const TEMPORARY_PASSWORD_ALLOWED_PATHS: readonly string[] = [
+  '/change-password',
+  '/sign-out',
+  '/get-session',
+];
+
+/** The adapter surface the marker lookup needs. */
+interface MarkerLookupAdapter {
+  findOne(args: {
+    readonly model: 'verification';
+    where: { field: string; value: string }[];
+  }): Promise<{ readonly expiresAt?: unknown } | null>;
+}
+
+/** Whether the user holds an unexpired temporary-password marker. Rejects if the lookup fails. */
+export async function hasActiveTemporaryPasswordMarker(
+  adapter: MarkerLookupAdapter,
+  userId: string,
+): Promise<boolean> {
+  const row = await adapter.findOne({
+    model: 'verification',
+    where: [{ field: 'identifier', value: temporaryPasswordMarkerIdentifier(userId) }],
+  });
+  return (
+    row !== null &&
+    (row.expiresAt instanceof Date || typeof row.expiresAt === 'string') &&
+    new Date(row.expiresAt).getTime() > Date.now()
+  );
+}
