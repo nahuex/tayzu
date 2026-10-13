@@ -130,6 +130,8 @@ describe('A link cannot race a join (task 8.5h, Resolved decision Q87)', () => {
   const shedLockCalls: string[] = [];
   /** The tenants each membership check of a link saw. */
   const checks: { userId: string; tenants: readonly string[] }[] = [];
+  /** Fired once, after the link's membership check for `userId` has run (inside the lock). */
+  let afterCheckHook: { userId: string; fire: () => void } | undefined;
 
   let client: ReturnType<
     typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
@@ -176,6 +178,11 @@ describe('A link cannot race a join (task 8.5h, Resolved decision Q87)', () => {
       globalMembershipTenantsOf: async (userId) => {
         const tenants = await real.globalMembershipTenantsOf(userId);
         checks.push({ userId, tenants });
+        const hook = afterCheckHook;
+        if (hook?.userId === userId) {
+          afterCheckHook = undefined;
+          hook.fire();
+        }
         return tenants;
       },
     };
@@ -256,14 +263,16 @@ describe('A link cannot race a join (task 8.5h, Resolved decision Q87)', () => {
       const t1 = await freshTenant();
       const t2 = await freshTenant();
       const person = await singleTenantMember(t1);
-      const linkInside = signal();
-      linkHook = { inside: linkInside.fire, holdAfterMs: HOLD_MS };
+      const linkChecked = signal();
+      // The join starts only once the link's check ran (and saw one tenant); the link keeps the lock.
+      afterCheckHook = { userId: person.userId, fire: linkChecked.fire };
+      linkHook = { inside: () => undefined, holdAfterMs: HOLD_MS };
 
       const link = client.identity.users.linkSsoAccount(
         { user: person.email, subject: `race-sub-${randomUUID()}` },
         { context: adminContext(t1.tenantId) },
       );
-      await linkInside.promise;
+      await linkChecked.promise;
       const join = api.addMember({
         body: { userId: person.userId, organizationId: t2.tenantId, role: 'member' },
       });
