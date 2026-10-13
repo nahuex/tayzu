@@ -29,7 +29,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { createRouterClient } from '@orpc/server';
 import { authSchema, createAuth, createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
-import { createUserSync } from '@tayzu/catalog';
+import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -37,10 +37,18 @@ import type { Pool } from 'pg';
 
 import {
   bootstrapTestTenant,
+  createAdminUser,
+  signInAdminUser,
   testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  digestInvitationToken,
+  generateInvitationToken,
+} from '../../../packages/auth/src/identity/invitation-token.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAcceptFlow } from './identity/accept-flow.js';
+import { runWithIdentityContext } from './identity/identity-context.js';
 import { createAuthRepository } from './identity/auth-repository.js';
 import { createEmailTenantGate } from './identity/email-tenant-gate.js';
 import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
@@ -250,4 +258,170 @@ describe('cross-tenant matrix (tasks 12.x)', () => {
     },
     90_000,
   );
+});
+
+/**
+ * Task 12.3. Spec: "Targets belong to the caller's tenant" (every Better Auth
+ * call is given the host tenant only) and "Invitation acceptance" (the accept
+ * route derives the tenant from the invitation record).
+ *
+ * Verify: "the accept of `t2`'s invitation leaves `t1` without a new member and
+ * no cross-tenant write", for a new and for an existing account (with its
+ * session). Written against `createAcceptFlow` as it stands; if it already
+ * behaves this way these tests pass at once (a regression guard).
+ */
+describe('cross-tenant matrix: acceptance (task 12.3)', () => {
+  const PASSWORD = 'Café-Mañana-Passäphrase-2026!';
+
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let userSync: UserSync;
+  let flow: ReturnType<typeof createAcceptFlow>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    const adapter = createUserSyncAdapter({ userSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    flow = createAcceptFlow({
+      auth,
+      authz: cerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(label: string): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: `${label} Admin`,
+      email: `${label}-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `${label} Org`,
+      organizationSlug: `${label}-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string) {
+    const api = auth.api as {
+      createInvitation(args: {
+        body: { email: string; role: 'member'; organizationId: string };
+        headers: Headers;
+      }): Promise<{ id: string; expiresAt: Date | string }>;
+    };
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at) values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** Everything of a tenant that an acceptance elsewhere must not touch. */
+  async function tenantState(tenantId: string, email: string): Promise<unknown> {
+    const members = await authPool.query<Record<string, unknown>>(
+      'select * from auth.member where organization_id = $1 order by id',
+      [tenantId],
+    );
+    const invitations = await authPool.query<Record<string, unknown>>(
+      'select * from auth.invitation where organization_id = $1 order by id',
+      [tenantId],
+    );
+    const catalogUser = await userSync.getUser({ tenantId, email });
+    return { members: members.rows, invitations: invitations.rows, catalogUser };
+  }
+
+  async function memberships(email: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ organization_id: string }>(
+      `select m.organization_id from auth.member m join auth."user" u on u.id = m.user_id
+       where u.email = $1 order by m.organization_id`,
+      [email],
+    );
+    return result.rows.map((row) => row.organization_id);
+  }
+
+  it("The acceptance of t2's invitation by a new account creates the membership only in t2: t1 has no new member and no write", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const email = `cross-accept-new-${randomUUID()}@example.test`;
+    const invitation = await invite(t2, email);
+    const t1Before = await tenantState(t1.tenantId, email);
+
+    const result = await flow.accept({ ...invitation, password: PASSWORD });
+
+    expect(await memberships(email), 'the only membership is t2').toEqual([t2.tenantId]);
+    expect(result.userId).toBeDefined();
+    expect(await tenantState(t1.tenantId, email), 't1 is unchanged').toEqual(t1Before);
+    expect((await userSync.getUser({ tenantId: t2.tenantId, email }))?.status).toBe('Active');
+    expect(await userSync.getUser({ tenantId: t1.tenantId, email }), 'no _user in t1').toBeFalsy();
+  }, 90_000);
+
+  it("The acceptance of t2's invitation by an existing account with its session creates the membership only in t2: t1 has no new member and no write", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const home = await freshTenant('home');
+    const email = `cross-accept-existing-${randomUUID()}@example.test`;
+    const created = await createAdminUser(auth, { name: 'Carol', email, password: TEST_PASSWORD });
+    await (
+      auth.api as {
+        addMember(args: {
+          body: { userId: string; role: 'member'; organizationId: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({
+      body: { userId: created.userId, role: 'member', organizationId: home.tenantId },
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      'select id from auth.session where token = $1',
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    const invitation = await invite(t2, email);
+    const t1Before = await tenantState(t1.tenantId, email);
+
+    const result = await flow.accept({
+      ...invitation,
+      session: {
+        userId: created.userId,
+        sessionId,
+        headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+      },
+    });
+
+    expect(result.userId).toBe(created.userId);
+    expect(await memberships(email), 'home and t2 only').toEqual(
+      [home.tenantId, t2.tenantId].sort(),
+    );
+    expect(await tenantState(t1.tenantId, email), 't1 is unchanged').toEqual(t1Before);
+    expect((await userSync.getUser({ tenantId: t2.tenantId, email }))?.status).toBe('Active');
+    expect(await userSync.getUser({ tenantId: t1.tenantId, email }), 'no _user in t1').toBeFalsy();
+  }, 90_000);
 });

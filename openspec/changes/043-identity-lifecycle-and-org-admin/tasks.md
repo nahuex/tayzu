@@ -2811,7 +2811,7 @@ All tests live in `cross-tenant.int.test.ts` and seed two tenants.
       Verify: "Another tenant's invitation cannot be cancelled or resent"
       for cancel and resend, asserting the invitation is unchanged and no email was
       sent.
-- [ ] 12.3 The acceptance of an invitation of `t2`, for a new and for an existing
+- [x] 12.3 The acceptance of an invitation of `t2`, for a new and for an existing
       account (with its session), creates the membership only in `t2`. Verify: the
       accept of `t2`'s invitation leaves `t1` without a new member and no cross-tenant
       write.
