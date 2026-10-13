@@ -287,4 +287,115 @@ describe('A temporary password grants only a password change (task 13.5, D13, Q3
     expect(refused.status).toBeGreaterThanOrEqual(400);
     expect(await markerCount(user.userId)).toBe(1);
   }, 60_000);
+
+  /**
+   * Task 13.5d (Resolved decisions Q36, Q97, design D13): an expired marker blocks
+   * sign-in with the uniform failure.
+   *
+   * Production symbols expected: a `hooks.after` on `/sign-in/email` in `auth.ts`
+   * (the one of task 13.4b) that, when the sign-in succeeded and the user holds an
+   * expired marker, deletes the session just created and RETURNS a `Response` with
+   * the wrong password's status, error code and body, without the session
+   * `Set-Cookie`.
+   */
+  describe('an expired temporary-password marker blocks sign-in (task 13.5d)', () => {
+    const SIGN_IN_URL = `${AUTH_BASE_URL}/sign-in/email`;
+
+    function postSignIn(email: string, password: string): Promise<Response> {
+      return handlerOf(auth)(
+        new Request(SIGN_IN_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+          body: JSON.stringify({ email, password }),
+        }),
+      );
+    }
+
+    async function sessionCount(userId: string): Promise<number> {
+      const result = await db.execute<{ n: string }>(
+        sql`select count(*)::text as n from auth.session where user_id = ${userId}`,
+      );
+      return Number(result.rows[0]?.n ?? 0);
+    }
+
+    async function clearSessions(userId: string): Promise<void> {
+      await db.execute(sql`delete from auth.session where user_id = ${userId}`);
+    }
+
+    function sessionCookies(response: Response): string[] {
+      return response.headers
+        .getSetCookie()
+        .filter((raw) => raw.includes('session_token') && !/=\s*;/.test(raw));
+    }
+
+    it('the correct temporary password after the marker expired answers exactly like a wrong password, with no session and no cookie', async () => {
+      const user = await newUser();
+      await clearSessions(user.userId);
+      await writeMarker(user.userId, -60 * 1000);
+
+      const wrong = await postSignIn(user.email, `${user.password}-wrong`);
+      const expired = await postSignIn(user.email, user.password);
+
+      expect(wrong.status).toBeGreaterThanOrEqual(400);
+      expect(expired.status, "the HTTP response's own status").toBe(wrong.status);
+      const wrongBody = (await wrong.json()) as { code?: string; message?: string };
+      const expiredBody = (await expired.json()) as { code?: string; message?: string };
+      expect(expiredBody.code).toBe(wrongBody.code);
+      expect(expiredBody).toEqual(wrongBody);
+      expect(sessionCookies(expired), 'no session cookie is set').toEqual([]);
+      expect(await sessionCount(user.userId), 'no session row remains').toBe(0);
+    }, 60_000);
+
+    it('the user can sign in again after an admin sets a new temporary password', async () => {
+      const user = await newUser();
+      await clearSessions(user.userId);
+      await writeMarker(user.userId, -60 * 1000);
+      expect((await postSignIn(user.email, user.password)).status).toBeGreaterThanOrEqual(400);
+
+      // Better Auth's admin middleware needs a session whose user has the admin role.
+      const adminEmail = `temp-pw-admin-${randomUUID()}@example.test`;
+      const adminApi = auth.api as {
+        createUser(args: {
+          body: { name: string; email: string; password: string; role: 'admin' };
+        }): Promise<unknown>;
+        addMember(args: {
+          body: { userId: string; organizationId: string; role: 'admin' };
+        }): Promise<unknown>;
+        setUserPassword(args: {
+          body: { userId: string; newPassword: string };
+          headers: Headers;
+        }): Promise<unknown>;
+      };
+      const createdAdmin = (await adminApi.createUser({
+        body: {
+          name: 'Temp Password Admin',
+          email: adminEmail,
+          password: TEST_PASSWORD,
+          role: 'admin',
+        },
+      })) as { user: { id: string } };
+      await adminApi.addMember({
+        body: { userId: createdAdmin.user.id, organizationId: user.tenantId, role: 'admin' },
+      });
+      const adminSession = await signInAdminUser(auth, {
+        email: adminEmail,
+        password: TEST_PASSWORD,
+        ip: randomIp(),
+      });
+
+      const newTemporary = generateTemporaryPassword();
+      await adminApi.setUserPassword({
+        body: { userId: user.userId, newPassword: newTemporary },
+        headers: new Headers({ cookie: adminSession.cookie }),
+      });
+      await db.execute(
+        sql`delete from auth.verification where identifier = ${`temp-password:${user.userId}`}`,
+      );
+      await writeMarker(user.userId, 60 * 60 * 1000);
+
+      const signedIn = await postSignIn(user.email, newTemporary);
+      expect(signedIn.status).toBe(200);
+      expect(await sessionCount(user.userId)).toBe(1);
+    }, 60_000);
+  });
 });

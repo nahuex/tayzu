@@ -99,6 +99,7 @@ import { organizationAccess } from './org-access.js';
 import {
   TEMPORARY_PASSWORD_ALLOWED_PATHS,
   hasActiveTemporaryPasswordMarker,
+  hasExpiredTemporaryPasswordMarker,
   temporaryPasswordMarkerIdentifier,
 } from './identity/temporary-password.js';
 import { isIdle } from './session-idle.js';
@@ -1350,6 +1351,14 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           const response = ctx.context.returned as SignInEmailSuccessResponse;
+          // Task 13.5d (Q36, Q97): an expired temporary password fails like a wrong one.
+          // The sign-in already created its session, so delete it and drop its cookie.
+          if (await hasExpiredTemporaryPasswordMarker(ctx.context.adapter, response.user.id)) {
+            await ctx.context.internalAdapter.deleteSession(response.token);
+            ctx.context.responseHeaders?.delete('set-cookie');
+            emitLoginFailed();
+            return wrongPasswordResponse();
+          }
           if (response.user.twoFactorEnabled === true) {
             // Credentials accepted, second factor pending: the two-factor plugin's own
             // after hook (it runs after this one) turns this into a challenge, not a session.

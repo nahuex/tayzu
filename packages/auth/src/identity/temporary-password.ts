@@ -71,3 +71,19 @@ export async function hasActiveTemporaryPasswordMarker(
     new Date(row.expiresAt).getTime() > Date.now()
   );
 }
+
+/** Whether the user holds a temporary-password marker whose expiry has passed. Rejects if the lookup fails. */
+export async function hasExpiredTemporaryPasswordMarker(
+  adapter: MarkerLookupAdapter,
+  userId: string,
+): Promise<boolean> {
+  const row = await adapter.findOne({
+    model: 'verification',
+    where: [{ field: 'identifier', value: temporaryPasswordMarkerIdentifier(userId) }],
+  });
+  return (
+    row !== null &&
+    (row.expiresAt instanceof Date || typeof row.expiresAt === 'string') &&
+    new Date(row.expiresAt).getTime() <= Date.now()
+  );
+}

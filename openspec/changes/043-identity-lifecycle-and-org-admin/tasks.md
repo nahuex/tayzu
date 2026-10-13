@@ -3035,7 +3035,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `invitation-accept.int.test.ts` covers a session of a user with an unexpired
       marker answering the uniform rejection with nothing created, and the same user
       accepting once the marker is cleared.
-- [ ] 13.5d An **expired** temporary-password marker blocks sign-in (Resolved
+- [x] 13.5d An **expired** temporary-password marker blocks sign-in (Resolved
       decision Q36), and it does so with the uniform sign-in failure: the status,
       error code and body equal those of a wrong password (`auth.ts`, the same `hooks.after`
       as 13.4b, after the password was verified, Resolved decision Q97; nothing refuses an
