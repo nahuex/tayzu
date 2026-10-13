@@ -51,7 +51,10 @@ import { connect, createServer } from 'node:net';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { createMachineCredential } from '@tayzu/auth/machine-credentials';
 import { csrfHeaders } from './__fixtures__/csrf.js';
@@ -180,6 +183,7 @@ describe('production app wiring: step-up on high-risk /v1 routes (task 11.15, D4
     const suffix = randomUUID();
     const email = `wiring-${suffix}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Wiring User',
       email,
       password: TEST_PASSWORD,
@@ -361,6 +365,7 @@ describe('production app wiring: machine token exchange (task 11.16, D5)', () =>
   }> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Token Wiring Admin',
       email: `token-wiring-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -544,6 +549,7 @@ describe('production app wiring: Visma Connect SSO and back-channel logout (task
   async function ssoTenant(sid: string): Promise<string> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Wiring SSO',
       email: `wiring-sso-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -722,6 +728,7 @@ describe('production app wiring: rate limits and body limit from the environment
   async function newCookie(): Promise<string> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Limits Wiring',
       email: `limits-wiring-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -913,6 +920,7 @@ describe('production app wiring guard: remaining protections (task 11.19)', () =
   async function newCookie(): Promise<string> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Guard Wiring',
       email: `guard-wiring-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -1145,6 +1153,7 @@ describe('production app wiring: minimal environment keeps every limiter active 
   it('the per-principal limiter is active with no limit variables set', async () => {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Default Limits',
       email: `default-limits-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -1165,6 +1174,7 @@ describe('production app wiring: minimal environment keeps every limiter active 
   it('the body limit is active with no BODY_LIMIT_BYTES set', async () => {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Default Body',
       email: `default-body-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -1256,6 +1266,7 @@ describe('production app wiring: password-check limiter (task 24.12, Q39, Q52)',
   async function signedInCookie(app: App): Promise<string> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Password Check Wiring',
       email: `pwcheck-wiring-${suffix}@example.test`,
       password: TEST_PASSWORD,

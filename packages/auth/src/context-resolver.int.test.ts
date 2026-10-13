@@ -170,6 +170,8 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  seedUserRow,
+  testAppPool,
 } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
@@ -387,6 +389,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // `activeOrganizationId` (task 2.4's own, already-green
     // exactly-one-membership rule).
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -507,6 +510,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // `bootstrapTestTenant`), the same replacement the first scenario in
     // this file uses, so the session under test has an active organization.
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -609,6 +613,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // call, so that session already carries it as its `activeOrganizationId`
     // (task 2.4's exactly-one-membership rule).
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -687,6 +692,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
    */
   it('Expired machine access token is rejected', async () => {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -773,6 +779,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
    */
   it("A fresh machine access token resolves actor.type from the credential's fixed kind", async () => {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -902,6 +909,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
     accessToken: string;
   }> {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -1241,6 +1249,7 @@ describe('resolveContext: principal roles (task 9.5, Q26)', () => {
     await (auth.api as AddMemberApiSurface).addMember({
       body: { userId: created.userId, organizationId, role },
     });
+    await seedUserRow(testAppPool(), { tenantId: organizationId, email, name: TEST_USER_NAME });
     const signedIn = await signInAdminUser(auth, {
       email,
       password: TEST_PASSWORD,
@@ -1256,6 +1265,7 @@ describe('resolveContext: principal roles (task 9.5, Q26)', () => {
 
   async function newTenant(): Promise<{ cookie: string; organizationId: string }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -1400,6 +1410,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
 
   async function newAdmin(): Promise<{ cookie: string; organizationId: string; userId: string }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,

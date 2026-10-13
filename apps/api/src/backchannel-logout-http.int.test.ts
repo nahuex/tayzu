@@ -28,7 +28,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
@@ -204,6 +207,7 @@ describe('back-channel logout over HTTP after a real SSO sign-in (task 23.7, des
     const suffix = randomUUID();
     const email = `bcl-http-${suffix}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Backchannel Http Person',
       email,
       password: TEST_PASSWORD,

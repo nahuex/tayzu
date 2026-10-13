@@ -30,7 +30,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
@@ -178,6 +181,7 @@ describe('apps/api anti-caching default (ASVS V8.2.1, ZAP 10049)', () => {
   it('sends cache-control: no-store on an authenticated /v1 catalog response', async () => {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Cache Header User',
       email: `cache-${suffix}@example.test`,
       password: PASSWORD,

@@ -54,6 +54,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   bootstrapTestTenant,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 // The module under test (task 11.1). Does not exist yet.
 import { csrfHeaders } from './__fixtures__/csrf.js';
@@ -78,6 +79,7 @@ interface Tenant extends BootstrappedTenant {
 async function provisionTenant(app: App): Promise<Tenant> {
   const suffix = randomUUID();
   const tenant = await bootstrapTestTenant(app.auth, {
+    pool: testAppPool(),
     name: 'HTTP Round Trip User',
     email: `http-${suffix}@example.test`,
     password: TEST_PASSWORD,

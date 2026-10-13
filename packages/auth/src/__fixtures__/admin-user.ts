@@ -38,6 +38,11 @@
  * the old self-service "sign up (no membership yet), create org, sign in
  * again (second session)" sequence every migrated fixture used to need.
  */
+import { randomUUID } from 'node:crypto';
+
+import { withTenantTransaction } from '@tayzu/db';
+import { Pool } from 'pg';
+
 import type { AuthInstance } from '../auth.js';
 
 const DEFAULT_AUTH_BASE_URL = 'http://localhost:3000/api/auth';
@@ -155,12 +160,212 @@ interface CreateOrganizationApiSurface {
   }): Promise<{ id: string; slug: string }>;
 }
 
+/** The `_user` blueprint's stored definition, as `@tayzu/catalog` writes it (test data only). */
+const USER_BLUEPRINT_TITLE = { en: 'User' };
+const USER_BLUEPRINT_SCHEMA = {
+  properties: {
+    accountKind: {
+      type: 'string',
+      title: { en: 'Account kind' },
+      enum: ['standard', 'service'],
+      default: 'standard',
+    },
+    status: {
+      type: 'string',
+      title: { en: 'Status' },
+      enum: ['Staged', 'Invited', 'Active', 'Disabled'],
+      default: 'Staged',
+    },
+    portRole: { type: 'string', title: { en: 'Port role' }, enum: ['admin', 'member'] },
+    contactEmail: { type: 'string', title: { en: 'Contact email' } },
+    moderatedBlueprints: {
+      type: 'array',
+      title: { en: 'Moderated blueprints' },
+      items: { type: 'string' },
+      uniqueItems: true,
+    },
+  },
+};
+
+const FIXTURE_ACTOR = { type: 'system', id: 'test-fixture' } as const;
+
+let sharedAppPool: Pool | undefined;
+
+/**
+ * A lazily created `tayzu_app` pool (RLS enforced, `SET ROLE tayzu_app`) on
+ * `DATABASE_URL`, shared by the fixtures of one test file (Vitest isolates
+ * modules per file). It lets a test that has no app pool of its own pass one
+ * to `bootstrapTestTenant` and `seedUserRow`; it never keeps the process alive.
+ */
+export function testAppPool(): Pool {
+  if (sharedAppPool === undefined) {
+    const connectionString = process.env['DATABASE_URL'];
+    if (connectionString === undefined || connectionString.length === 0) {
+      throw new Error('testAppPool: DATABASE_URL is not set');
+    }
+    const pool = new Pool({ connectionString, allowExitOnIdle: true, idleTimeoutMillis: 5_000 });
+    pool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+    sharedAppPool = pool;
+  }
+  return sharedAppPool;
+}
+
+export interface SeedUserRowParams {
+  /** The Better Auth organization id. */
+  readonly tenantId: string;
+  readonly email: string;
+  readonly name: string;
+  /** Defaults to `Active`, the status 11.8's resolver admits. */
+  readonly status?: 'Staged' | 'Invited' | 'Active' | 'Disabled';
+  readonly portRole?: 'admin' | 'member';
+}
+
+/**
+ * Writes the member's `_user` entity (identifier = email) for tests, as test
+ * data only (`043` task 11.0): the entity row, its `created` change event and,
+ * when the tenant has none yet, the tenant's `_user` blueprint row (and its own
+ * `created` event), so the entity, blueprint and history rows stay consistent.
+ * `@tayzu/auth` cannot depend on `@tayzu/catalog` (task 1.4), so this is
+ * parameterized SQL on a `tayzu_app` pool with the tenant set through
+ * `set_config` (`withTenantTransaction`). A row that already exists is left
+ * untouched.
+ */
+export async function seedUserRow(pool: Pool, params: SeedUserRowParams): Promise<void> {
+  const { tenantId, email, name } = params;
+  const status = params.status ?? 'Active';
+  await withTenantTransaction(pool, { tenantId }, async (client) => {
+    const blueprint = await client.query<{ id: string }>(
+      `select id from catalog_blueprint where tenant_id = $1 and identifier = '_user'`,
+      [tenantId],
+    );
+    let blueprintId = blueprint.rows[0]?.id;
+    if (blueprintId === undefined) {
+      blueprintId = randomUUID();
+      const now = new Date();
+      await client.query(
+        `insert into catalog_blueprint
+           (id, tenant_id, identifier, title, description, icon, schema, status_schema, version,
+            created_at, created_by_type, created_by_id, updated_at, updated_by_type, updated_by_id)
+         values ($1, $2, '_user', $3::jsonb, null, null, $4::jsonb, null, 1, $5, $6, $7, $5, $6, $7)`,
+        [
+          blueprintId,
+          tenantId,
+          JSON.stringify(USER_BLUEPRINT_TITLE),
+          JSON.stringify(USER_BLUEPRINT_SCHEMA),
+          now,
+          FIXTURE_ACTOR.type,
+          FIXTURE_ACTOR.id,
+        ],
+      );
+      await appendCreatedEvent(client, {
+        tenantId,
+        kind: 'blueprint',
+        blueprint: '_user',
+        identifier: '_user',
+        snapshot: {
+          identifier: '_user',
+          title: USER_BLUEPRINT_TITLE,
+          schema: USER_BLUEPRINT_SCHEMA,
+          relations: [],
+          version: 1,
+        },
+      });
+    }
+    const existing = await client.query(
+      `select 1 from catalog_entity where tenant_id = $1 and blueprint_id = $2 and identifier = $3`,
+      [tenantId, blueprintId, email],
+    );
+    if (existing.rows.length > 0) return;
+    const spec = {
+      properties: {
+        status,
+        accountKind: 'standard',
+        ...(params.portRole === undefined ? {} : { portRole: params.portRole }),
+      },
+    };
+    const now = new Date();
+    await client.query(
+      `insert into catalog_entity
+         (id, tenant_id, blueprint_id, identifier, title, icon, spec_properties, generation, version,
+          created_at, created_by_type, created_by_id, updated_at, updated_by_type, updated_by_id)
+       values ($1, $2, $3, $4, $5, null, $6::jsonb, 1, 1, $7, $8, $9, $7, $8, $9)`,
+      [
+        randomUUID(),
+        tenantId,
+        blueprintId,
+        email,
+        name,
+        JSON.stringify(spec.properties),
+        now,
+        FIXTURE_ACTOR.type,
+        FIXTURE_ACTOR.id,
+      ],
+    );
+    await appendCreatedEvent(client, {
+      tenantId,
+      kind: 'entity',
+      blueprint: '_user',
+      identifier: email,
+      snapshot: { title: name, spec: { properties: spec.properties, relations: {} }, status: null },
+    });
+  });
+}
+
+async function appendCreatedEvent(
+  client: { query: (text: string, values: unknown[]) => Promise<{ rows: unknown[] }> },
+  event: {
+    readonly tenantId: string;
+    readonly kind: 'blueprint' | 'entity';
+    readonly blueprint: string;
+    readonly identifier: string;
+    readonly snapshot: unknown;
+  },
+): Promise<void> {
+  const sequence = await client.query(
+    `insert into catalog_tenant_sequence (tenant_id, last_seq) values ($1, 1)
+     on conflict (tenant_id) do update set last_seq = catalog_tenant_sequence.last_seq + 1
+     returning last_seq`,
+    [event.tenantId],
+  );
+  const lastSeq = (sequence.rows[0] as { last_seq: string | number | bigint }).last_seq;
+  await client.query(
+    `insert into catalog_change_event
+       (tenant_id, seq, occurred_at, actor_type, actor_id, on_behalf_of_type, on_behalf_of_id,
+        action, resource_kind, blueprint_identifier, resource_identifier, version, changed_fields,
+        snapshot, trace_id)
+     values ($1, $2, $3, $4, $5, null, null, 'created', $6, $7, $8, 1, $9::text[], $10::jsonb, null)`,
+    [
+      event.tenantId,
+      lastSeq,
+      new Date(),
+      FIXTURE_ACTOR.type,
+      FIXTURE_ACTOR.id,
+      event.kind,
+      event.blueprint,
+      event.identifier,
+      event.kind === 'blueprint'
+        ? ['identifier', 'title', 'description', 'icon', 'schema', 'statusSchema', 'relations']
+        : ['title', 'icon', 'spec'],
+      JSON.stringify(event.snapshot),
+    ],
+  );
+}
+
 export interface BootstrapTestTenantParams {
   readonly name: string;
   readonly email: string;
   readonly password: string;
   readonly organizationName: string;
   readonly organizationSlug: string;
+  /** The `tayzu_app` pool the admin's `_user` row is written on (`043` task 11.0). */
+  readonly pool: Pool;
+  /**
+   * `false` leaves the admin without a `_user` row, for the few tests whose
+   * subject is a member with none (for example the display-data refresh).
+   */
+  readonly writeUserRow?: boolean;
   /** A fresh, random `x-forwarded-for` value per call, so the pre-auth rate limiter never interferes. */
   readonly ip: string;
   readonly authBaseUrl?: string;
@@ -193,6 +398,14 @@ export async function bootstrapTestTenant(
       userId: admin.userId,
     },
   });
+  if (params.writeUserRow !== false) {
+    await seedUserRow(params.pool, {
+      tenantId: organization.id,
+      email: admin.email,
+      name: params.name,
+      portRole: 'admin',
+    });
+  }
   const signedIn = await signInAdminUser(auth, {
     email: admin.email,
     password: params.password,

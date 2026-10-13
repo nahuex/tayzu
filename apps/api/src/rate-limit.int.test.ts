@@ -37,6 +37,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   bootstrapTestTenant,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
@@ -60,6 +61,7 @@ describe('apps/api per-principal rate limit (task 11.8)', () => {
   async function provision(label: string): Promise<{ tenant: BootstrappedTenant; cookie: string }> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: `Rate Limit ${label}`,
       email: `rate-limit-${label}-${suffix}@example.test`,
       password: TEST_PASSWORD,

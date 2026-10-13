@@ -2624,7 +2624,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
 
 ## 11. Disable takes effect immediately, ⛔ Checkpoint 3 (migration `0011`)
 
-- [ ] 11.0 _(setup)_ Every existing human-session `/v1` integration test needs a
+- [x] 11.0 _(setup)_ Every existing human-session `/v1` integration test needs a
       `_user` row for its member, because 11.8 makes the resolver reject a member
       with none. No fixture writes one today: `admin-user.ts` and the fixtures under
       `apps/api/src/__fixtures__/` create Better Auth users and memberships only,

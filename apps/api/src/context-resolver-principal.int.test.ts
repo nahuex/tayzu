@@ -65,6 +65,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -219,6 +220,7 @@ describe('resolveContext builds the principal from the `_user` entity (task 23.1
   async function newTenant(): Promise<{ organizationId: string }> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Principal Owner',
       email: `principal-owner-${suffix}@example.test`,
       password: TEST_PASSWORD,

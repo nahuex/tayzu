@@ -106,7 +106,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // imports a telemetry/instruments module that creates its tracer, meter and
 // logger at import time. Same rationale as every other int test file in this
 // package; this file asserts no telemetry itself.
-import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser, testAppPool } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -244,6 +244,7 @@ describe('setActiveOrganization: rejects a non-member organization (task 3.5, de
     // admin-created) creates a second organization (t2) that the user under
     // test never joins.
     const userA = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Active Org Test User A',
       email: randomEmail('active-org-a'),
       password: TEST_PASSWORD,

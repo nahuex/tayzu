@@ -86,6 +86,7 @@ import {
   createAdminUser,
   signInAdminUser,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
@@ -303,6 +304,7 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
   async function newTenant(name: string): Promise<BootstrappedTenant> {
     const suffix = randomUUID();
     return bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name,
       email: `smoke-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -1195,6 +1197,7 @@ describe('otel-smoke-check, 002: forbidden values never reach a signal (task 13.
   function newTenant(name: string) {
     const suffix = randomUUID();
     return bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name,
       email: `leak-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -1495,6 +1498,7 @@ describe('otel-smoke-check, 002: Visma Connect values never reach a signal (task
   function newTenant(name: string) {
     const suffix = randomUUID();
     return bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name,
       email: `sso-leak-${suffix}@example.test`,
       password: TEST_PASSWORD,

@@ -75,7 +75,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { renderInvitationEmail } from '../../../packages/auth/src/identity/email/invitation-email-template.js';
 import { verifyInvitationToken } from '../../../packages/auth/src/identity/invitation-token.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -161,6 +164,7 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
   }> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Invite Admin',
       email: `invite-admin-${id}@example.test`,
       password: TEST_PASSWORD,

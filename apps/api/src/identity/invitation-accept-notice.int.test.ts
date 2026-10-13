@@ -62,6 +62,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import { stepUpVerificationIdentifier } from '../../../../packages/auth/src/step-up.js';
 import {
@@ -180,6 +181,7 @@ describe('the admin-accepted notice (task 8.15, design D4 step 6, Resolved decis
     const id = randomUUID();
     const adminEmail = `notice-owner-${id}@example.test`;
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Notice Owner',
       email: adminEmail,
       password: TEST_PASSWORD,

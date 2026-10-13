@@ -41,6 +41,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   bootstrapTestTenant,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession, freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
@@ -60,6 +61,7 @@ function randomIp(): string {
 async function provisionTenant(app: App): Promise<BootstrappedTenant> {
   const suffix = randomUUID();
   return bootstrapTestTenant(app.auth, {
+    pool: testAppPool(),
     name: 'HTTP Query User',
     email: `query-${suffix}@example.test`,
     password: TEST_PASSWORD,

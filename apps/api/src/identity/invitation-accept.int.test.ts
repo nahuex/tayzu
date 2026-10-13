@@ -43,6 +43,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import {
   TEST_PASSWORD,
@@ -150,6 +151,7 @@ describe('A new person accepts an invitation (task 8.2, design D4, Resolved deci
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -428,6 +430,7 @@ describe('single-use token and the accepted status (task 8.3, Resolved decision 
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -760,6 +763,7 @@ describe('the accept body is an allowlist and the tenant comes from the invitati
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -1046,6 +1050,7 @@ describe('Acceptance does not touch an existing account (task 8.5, Resolved deci
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -1259,6 +1264,7 @@ describe('An existing account accepts with its session (task 8.5b, Resolved deci
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -1553,6 +1559,7 @@ describe('A session of another account cannot accept (task 8.5c, Resolved decisi
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -1836,6 +1843,7 @@ describe('An admin invitation to an existing account needs step-up (task 8.5d, d
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -2165,6 +2173,7 @@ describe('The session of the accept route is checked for idle and banned (task 8
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -2437,6 +2446,7 @@ describe('An invitation does not outlive its inviter’s authority (task 8.5f, R
     const id = randomUUID();
     const adminEmail = `inviter-${id}@example.test`;
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Inviter',
       email: adminEmail,
       password: TEST_PASSWORD,
@@ -2758,6 +2768,7 @@ describe('Acceptance does not link an SSO account by email (task 8.6, Resolved d
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Link Admin',
       email: `link-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -2893,6 +2904,7 @@ describe('Acceptance errors do not reveal which failure occurred (task 8.7, desi
     const id = randomUUID();
     const adminEmail = `matrix-admin-${id}@example.test`;
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Matrix Admin',
       email: adminEmail,
       password: TEST_PASSWORD,
@@ -3216,6 +3228,7 @@ describe('A nonexistent invitation costs the same digest comparison as a wrong t
   it('A nonexistent invitation performs the same digest comparison as a wrong token: one comparison in both cases', async () => {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Compare Admin',
       email: `compare-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -3317,6 +3330,7 @@ describe('Accepting an expired invitation fails (task 8.9, design D4 step 5)', (
   it('Accepting an expired invitation fails: the acceptance fails, the invitation reads as expired, and the user status is unchanged', async () => {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Expiry Admin',
       email: `expiry-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -3427,6 +3441,7 @@ describe('Accepting a cancelled or already-accepted invitation fails, and a wron
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Terminal Admin',
       email: `terminal-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -3692,6 +3707,7 @@ describe('A disabled user is not revived by a pending invitation (task 8.11, des
   it('A disabled user is not revived by a pending invitation: the acceptance fails with the uniform rejection and bob stays Disabled', async () => {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Revive Admin',
       email: `revive-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -3837,6 +3853,7 @@ describe('A password that fails the policy is reported only after the token veri
   async function setup(): Promise<{ tenant: Tenant; email: string; invitation: Invitation }> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Policy Admin',
       email: `policy-admin-${id}@example.test`,
       password: TEST_PASSWORD,
@@ -4069,6 +4086,7 @@ describe('A concurrent account creation yields one user (task 8.14, design D4 st
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Race Admin',
       email: `race-admin-${id}@example.test`,
       password: TEST_PASSWORD,

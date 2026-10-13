@@ -40,7 +40,10 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
@@ -166,6 +169,7 @@ describe('Visma Connect SSO sign-in through Fastify (task 23.6, design Q35)', ()
 
   it('Sign-in with a linked Visma Connect account succeeds: resolves to actor.type user for the linked Tayzu user', async () => {
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Linked Person',
       email: `sso-http-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,
@@ -243,6 +247,7 @@ describe('Visma Connect SSO sign-in through Fastify (task 23.6, design Q35)', ()
 
   it('A body carrying idToken on /sign-in/social is refused with 400 and creates no session (Q60)', async () => {
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'IdToken Person',
       email: `sso-idtoken-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,
@@ -276,6 +281,7 @@ describe('Visma Connect SSO sign-in through Fastify (task 23.6, design Q35)', ()
 
   it('A body carrying idToken on /link-social is refused with 400 and links no account (Q60)', async () => {
     const enrolled = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Link IdToken Person',
       email: `sso-link-idtoken-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

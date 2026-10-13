@@ -54,6 +54,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   bootstrapTestTenant,
   createAdminUser,
+  testAppPool,
 } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import {
   TEST_PASSWORD,
@@ -203,6 +204,7 @@ describe('A link cannot race a join (task 8.5h, Resolved decision Q87)', () => {
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Race Admin',
       email: `race-admin-${id}@example.test`,
       password: TEST_PASSWORD,

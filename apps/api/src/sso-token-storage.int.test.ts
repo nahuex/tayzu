@@ -34,7 +34,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -191,6 +194,7 @@ describe('Visma Connect tokens are encrypted at rest (task 23.19, design Q48 and
 
   it('A real SSO sign-in leaves no plaintext Visma token in auth.account, and the tokens still decrypt for the step-up flow', async () => {
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Token Storage Person',
       email: `sso-token-storage-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

@@ -136,7 +136,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 // `TelemetryTestHarness` bindings are imported here too, alongside the
 // side-effecting registration import every other describe block in this
 // file already relies on.
-import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  createAdminUser,
+  seedUserRow,
+  testAppPool,
+} from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver, type ContextResolver } from './context-resolver.js';
@@ -344,6 +349,7 @@ describe('resolveContext: 12-hour idle timeout (task 3.2, design D3)', () => {
     readonly organizationId: string;
   }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -613,6 +619,11 @@ describe('changePassword revokes other sessions (task 3.3, design D3)', () => {
     const organization = await apiOf(auth).createOrganization({
       body: { name: 'Password Change Test Org', slug, userId: adminUser.userId },
     });
+    await seedUserRow(testAppPool(), {
+      tenantId: organization.id,
+      email,
+      name: TEST_USER_NAME,
+    });
 
     const device1SignIn = await postJson(
       handler,
@@ -714,8 +725,13 @@ describe('POST /change-password over HTTP revokes other sessions (task 23.16, de
       email,
       password: TEST_PASSWORD,
     });
-    await apiOf(auth).createOrganization({
+    const organization = await apiOf(auth).createOrganization({
       body: { name: 'Http Password Change Org', slug: randomSlug(), userId: adminUser.userId },
+    });
+    await seedUserRow(testAppPool(), {
+      tenantId: organization.id,
+      email,
+      name: TEST_USER_NAME,
     });
     const device1SignIn = await postJson(
       handler,
@@ -797,6 +813,7 @@ describe('session.updateAge is one hour (task 26.6, design Q69, Q7)', () => {
     readonly organizationId: string;
   }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -936,6 +953,7 @@ describe('idle check on /api/auth/get-session (task 27.3, design Q75, Q7)', () =
     readonly userId: string;
   }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,

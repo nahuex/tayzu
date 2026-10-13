@@ -59,7 +59,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
@@ -144,6 +147,7 @@ describe('SSO step-up satisfied over HTTP (task 23.8, design Q36 and D25)', () =
   /** An org owner whose current session was established through Visma Connect (`sso_sid` set). */
   async function ssoSessionUser(): Promise<{ cookie: string; sid: string }> {
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Sso Http Step-Up User',
       email: `sso-step-up-http-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,
@@ -387,6 +391,7 @@ describe('SSO step-up callback URL base (task 25.5, design Q64 and Q36)', () => 
   /** The `redirect_uri` the step-up refusal sends to Visma Connect for an SSO-session owner. */
   async function redirectUriSentToVisma(app: App): Promise<string | null> {
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Sso Callback Base User',
       email: `sso-callback-base-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

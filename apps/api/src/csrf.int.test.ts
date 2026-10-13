@@ -36,6 +36,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   bootstrapTestTenant,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { CSRF_HEADERS } from './__fixtures__/csrf.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
@@ -61,6 +62,7 @@ describe('apps/api CSRF protection (task 11.5)', () => {
   async function provisionTenant(): Promise<BootstrappedTenant> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'CSRF User',
       email: `csrf-${suffix}@example.test`,
       password: TEST_PASSWORD,

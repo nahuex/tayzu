@@ -37,7 +37,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing (design D1): the harness registers first.
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from './__fixtures__/oidc-stub.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { TEST_PASSWORD, TEST_SECRET } from './__fixtures__/test-secret.js';
@@ -224,6 +224,7 @@ describe('session.ssoSid population (task 23.5, design Q35/D25)', () => {
     organizationId: string;
   }> {
     return bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Sid Person',
       email: `sid-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

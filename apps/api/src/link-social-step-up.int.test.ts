@@ -77,6 +77,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { enrollTotp, sessionTokenOfCookie, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -229,6 +230,7 @@ describe('POST /api/auth/link-social step-up (task 20.2, design D24 path (a))', 
   }> {
     const email = `link-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Link User',
       email,
       password: TEST_PASSWORD,
@@ -737,6 +739,7 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
   }> {
     const email = `link-mfa-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Link Mfa User',
       email,
       password: TEST_PASSWORD,
@@ -760,6 +763,7 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
   /** A `member` without MFA, signed in with the password alone. */
   async function passwordUser(): Promise<{ userId: string; email: string; cookie: string }> {
     const owner = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Link Owner',
       email: `link-owner-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

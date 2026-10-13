@@ -26,7 +26,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing: the harness registers before `./auth.js`.
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -129,6 +129,7 @@ describe('Better Auth invitation options and the boundary mapper (task 7.2, desi
 
   async function tenant(): Promise<{ cookie: string; organizationId: string }> {
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Invitation Config Admin',
       email: `inv-config-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

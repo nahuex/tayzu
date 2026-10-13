@@ -50,7 +50,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -211,6 +214,7 @@ describe('Visma Connect JIT display-data refresh (task 21.1, design D24)', () =>
   }> {
     const localEmail = `jit-local-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Local Name',
       email: localEmail,
       password: PASSWORD,

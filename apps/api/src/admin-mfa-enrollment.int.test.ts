@@ -52,6 +52,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
@@ -163,6 +164,7 @@ describe('Admin and owner MFA enrollment gate (task 23.15, design Q43 and D4)', 
 
   async function newOwner(): Promise<BootstrappedTenant> {
     return await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Mfa Gate Owner',
       email: `mfa-gate-owner-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

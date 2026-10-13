@@ -115,7 +115,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // (erased at compile time, `verbatimModuleSyntax`), so it carries no runtime
 // ordering weight -- same reasoning as every other int test file in this
 // package.
-import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser, testAppPool } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 5.1): does not exist yet (module doc comment,
@@ -254,6 +254,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
     // the organization's own creator -- holds Better Auth's default "owner"
     // organization role (see this file's own module doc comment).
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -384,6 +385,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
     // Setup: same admin-creation and credential-creation path as the
     // existing test above.
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -511,6 +513,7 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
     created: CreatedMachineCredential;
   }> {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,

@@ -46,7 +46,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAuthRepository } from './identity/auth-repository.js';
@@ -125,6 +128,7 @@ describe('email boundary (task 7.11, Resolved decision Q33)', () => {
   async function freshTenant(): Promise<{ tenantId: string; adminId: string; cookie: string }> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Boundary Admin',
       email: `boundary-admin-${id}@example.test`,
       password: TEST_PASSWORD,

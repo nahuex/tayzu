@@ -202,7 +202,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // admin-user.js`'s own import of `../auth.js` is type-only (erased at compile
 // time, `verbatimModuleSyntax`), so it carries no runtime ordering weight --
 // same reasoning as every other int test file in this package.
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver } from './context-resolver.js';
@@ -329,6 +329,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
   /** Provisions "an organization admin" (requirement text) the same way `machine-credentials.int.test.ts` does. */
   async function bootstrapAdmin(): ReturnType<typeof bootstrapTestTenant> {
     return bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,

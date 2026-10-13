@@ -37,7 +37,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
 
@@ -110,6 +113,7 @@ describe('production cookies and origin check (task 23.12, Q40, D2)', () => {
     const suffix = randomUUID();
     email = `cookies-${suffix}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Cookies User',
       email,
       password: TEST_PASSWORD,

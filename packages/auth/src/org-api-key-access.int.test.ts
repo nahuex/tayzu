@@ -46,6 +46,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
@@ -154,6 +155,7 @@ describe('Org API keys for an admin who is not the owner (task 9.1b, Q29)', () =
     organizationId: string;
   }> {
     const owner = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Org Key Owner',
       email: `org-key-owner-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

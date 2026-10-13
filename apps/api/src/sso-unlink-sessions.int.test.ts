@@ -56,6 +56,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -145,6 +146,7 @@ describe('An admin SSO unlink revokes every session of the user (task 8.5j, Q86)
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Unlink Admin',
       email: `unlink-admin-${id}@example.test`,
       password: TEST_PASSWORD,

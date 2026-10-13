@@ -35,7 +35,10 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
-import { bootstrapTestTenant } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import {
   startOidcStub,
   type OidcStub,
@@ -197,6 +200,8 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
   }> {
     const localEmail = `display-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(bootstrapAuth, {
+      pool: testAppPool(),
+      writeUserRow: false,
       name: 'Local Name',
       email: localEmail,
       password: TEST_PASSWORD,
@@ -263,6 +268,7 @@ describe('JIT display-data refresh never creates a _user row or writes a status 
     // A second membership, in a second organization, keeps the first-sign-in hook from
     // writing anything (Q111, Q133), so only the display refresh can touch the row.
     const secondOrg = await bootstrapTestTenant(bootstrapAuth, {
+      pool: testAppPool(),
       name: 'Second Org Owner',
       email: `display-owner-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

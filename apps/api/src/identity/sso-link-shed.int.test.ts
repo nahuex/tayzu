@@ -85,6 +85,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import {
   startOidcStub,
@@ -247,6 +248,7 @@ describe('An SSO link its user did not make does not survive into a second tenan
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Shed Admin',
       email: `shed-admin-${id}@example.test`,
       password: TEST_PASSWORD,

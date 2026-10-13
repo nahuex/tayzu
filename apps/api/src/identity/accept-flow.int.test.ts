@@ -78,6 +78,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import { stepUpVerificationIdentifier } from '../../../../packages/auth/src/step-up.js';
 import {
@@ -209,6 +210,7 @@ describe('the acceptance as idempotent steps (task 8.1e, design D4, Resolved dec
   async function freshTenant(): Promise<Tenant> {
     const id = randomUUID();
     const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Accept Admin',
       email: `accept-admin-${id}@example.test`,
       password: TEST_PASSWORD,

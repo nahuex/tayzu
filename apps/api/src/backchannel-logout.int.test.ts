@@ -44,7 +44,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 // Import order is load-bearing (design D1): the telemetry harness must register
 // before anything that loads `@tayzu/auth`, so this import stays first.
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -156,6 +159,7 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
   async function ssoSession(sid: string): Promise<string> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Backchannel Logout',
       email: `bcl-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -293,6 +297,7 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
   }> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Backchannel Revocation',
       email: `bcl-rev-${suffix}@example.test`,
       password: TEST_PASSWORD,
