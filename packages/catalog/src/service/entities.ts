@@ -89,8 +89,9 @@ import {
 } from '@tayzu/authz';
 import {
   assertAuthorizedStateUnchanged,
-  loadEntityAuthzAttributes as loadEntityAttributes,
-  newEntityAuthzAttributes,
+  type EntityOwnershipOptions,
+  loadEntityAuthzAttributes,
+  newEntityAuthzAttributes as newAttributes,
 } from './entity-authz-attributes.js';
 import {
   PLAN_AUTHORIZED,
@@ -326,6 +327,8 @@ export interface CreateEntityServiceOptions {
   /** The Cerbos client every operation authorizes through (design Q27). */
   readonly authz: CerbosClient;
   readonly limits?: CatalogLimits;
+  /** Ownership resolution for the attributes sent to Cerbos (Q137); defaults to the direct `ownerTeam` relation. */
+  readonly ownership?: EntityOwnershipOptions;
 }
 
 export interface EntityService {
@@ -882,8 +885,14 @@ async function mayUpdateReferrer(
   client: PoolClient,
   blueprint: string,
   identifier: string,
+  ownership: EntityOwnershipOptions | undefined,
 ): Promise<boolean> {
-  const attributes = await loadEntityAttributes({ ctx, client, input: { blueprint, identifier } });
+  const attributes = await loadEntityAuthzAttributes({
+    ctx,
+    client,
+    input: { blueprint, identifier },
+    ownership,
+  });
   if (attributes === undefined) return false;
   const roles = ctx.principal?.roles ?? [];
   if (roles.length === 0) return false;
@@ -980,6 +989,16 @@ async function bumpReferrerAndAppendEvent(
 export function createEntityService(options: CreateEntityServiceOptions): EntityService {
   const { pool, authz } = options;
   const limits = options.limits ?? defaultCatalogLimits;
+  const { ownership } = options;
+  const loadEntityAttributes = (params: {
+    readonly ctx: CatalogContext;
+    readonly client: PoolClient;
+    readonly input: unknown;
+  }) => loadEntityAuthzAttributes({ ...params, ownership });
+  const newEntityAuthzAttributes = (params: {
+    readonly ctx: CatalogContext;
+    readonly input: unknown;
+  }) => newAttributes({ ...params, ownership });
 
   const create = defineCatalogOperation<CreateEntityInput, EntityOutput>({
     name: 'entity.create',
@@ -1196,6 +1215,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         client,
         input: rawInput,
         authorized: authorizedAttributes,
+        ownership,
       });
 
       if (
@@ -1729,6 +1749,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         client,
         input,
         authorized: authorizedAttributes,
+        ownership,
       });
       if (!row) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
 
@@ -1789,6 +1810,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
               client,
               referrerBlueprint,
               referrer.source_identifier,
+              ownership,
             ))
           ) {
             return throwReferenceViolation(

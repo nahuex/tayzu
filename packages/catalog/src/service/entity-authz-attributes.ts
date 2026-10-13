@@ -7,7 +7,7 @@
  * row-level security hides) yields no attributes: the role-only decision then
  * applies and the handler answers `CATALOG_NOT_FOUND`.
  */
-import { resolveEffectiveOwnerTeam } from '@tayzu/authz';
+import { resolveEffectiveOwnerTeam, type OwnershipConfig } from '@tayzu/authz';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { PoolClient } from 'pg';
@@ -18,6 +18,20 @@ import { inputString } from './pipeline.js';
 
 /** The relation naming an entity's direct owner team. */
 const OWNER_TEAM_RELATION = 'ownerTeam';
+
+/**
+ * Optional ownership resolution (Q137). The default is the `ownerTeam` direct
+ * relation and no inherited chain, so production is unchanged until a chain can be declared.
+ */
+export interface EntityOwnershipOptions {
+  readonly config: OwnershipConfig;
+  readonly readInherited: (chain: readonly string[]) => string | undefined;
+}
+
+const DEFAULT_OWNERSHIP: EntityOwnershipOptions = {
+  config: { directTeamRelation: OWNER_TEAM_RELATION },
+  readInherited: () => undefined,
+};
 
 export type EntityAuthzAttributes = Readonly<Record<string, string | number | boolean>>;
 
@@ -33,15 +47,18 @@ function toAttributes(params: {
   readonly createdBy: string;
   readonly locked: unknown;
   readonly tenantId?: string;
+  readonly ownership: EntityOwnershipOptions | undefined;
 }): EntityAuthzAttributes {
+  const { config, readInherited } = params.ownership ?? DEFAULT_OWNERSHIP;
   const owner = resolveEffectiveOwnerTeam({
-    config: { directTeamRelation: OWNER_TEAM_RELATION },
+    config,
     entity: { relations: { [OWNER_TEAM_RELATION]: params.ownerTeam } },
-    readInherited: () => undefined,
+    readInherited,
   });
   const attributes: Record<string, string | number | boolean> = {
     createdBy: params.createdBy,
-    locked: params.locked === true,
+    // Q37/Q137: an Inherited owner fails closed for non-admins through the locked deny (8.6).
+    locked: params.locked === true || owner.kind === 'Inherited',
   };
   if (params.tenantId !== undefined) attributes['tenantId'] = params.tenantId;
   if (owner.kind !== 'None') attributes['ownerTeam'] = owner.teamId;
@@ -53,8 +70,9 @@ export async function loadEntityAuthzAttributes(params: {
   readonly ctx: CatalogContext;
   readonly client: PoolClient;
   readonly input: unknown;
+  readonly ownership?: EntityOwnershipOptions;
 }): Promise<EntityAuthzAttributes | undefined> {
-  const { ctx, client, input } = params;
+  const { ctx, client, input, ownership } = params;
   const tx = drizzle(client);
   const result = await tx.execute<EntityAuthzRow>(sql`
     select e.tenant_id, e.created_by_id, e.spec_properties -> 'locked' as locked,
@@ -82,6 +100,7 @@ export async function loadEntityAuthzAttributes(params: {
     createdBy: row.created_by_id,
     locked: row.locked,
     tenantId: row.tenant_id,
+    ownership,
   });
 }
 
@@ -96,6 +115,7 @@ export async function assertAuthorizedStateUnchanged(params: {
   readonly client: PoolClient;
   readonly input: unknown;
   readonly authorized: EntityAuthzAttributes | undefined;
+  readonly ownership?: EntityOwnershipOptions;
 }): Promise<void> {
   const current = await loadEntityAuthzAttributes(params);
   const { authorized } = params;
@@ -112,8 +132,9 @@ export async function assertAuthorizedStateUnchanged(params: {
 export function newEntityAuthzAttributes(params: {
   readonly ctx: CatalogContext;
   readonly input: unknown;
+  readonly ownership?: EntityOwnershipOptions;
 }): EntityAuthzAttributes {
-  const { ctx, input } = params;
+  const { ctx, input, ownership } = params;
   const spec = readRecord(input, 'spec');
   const properties = readRecord(spec, 'properties');
   const relations = readRecord(spec, 'relations');
@@ -131,6 +152,7 @@ export function newEntityAuthzAttributes(params: {
         ? properties['locked']
         : false,
     tenantId: ctx.tenantId,
+    ownership,
   });
 }
 

@@ -3061,7 +3061,7 @@ SSO surfaces of M18) are recorded there with their justification.
       ownership (`002` VCDM M15). Verify: `entities-upsert-ownership.int.test.ts`
       covers an owning-team member's `replace` upsert without `ownerTeam` being
       refused or keeping the owner, per `001`'s ownership spec.
-- [ ] 13.6c `Inherited` ownership is unreachable today (`readInherited` returns
+- [x] 13.6c `Inherited` ownership is unreachable today (`readInherited` returns
       nothing); until a chain can be declared, an entity whose ownership is `Inherited`
       is not updatable by a non-admin (fail closed; Resolved decision Q37) and the `002`
       spec correction is recorded for a `002` follow-up (`002` VCDM M15). Per Resolved
