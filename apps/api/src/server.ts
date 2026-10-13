@@ -55,6 +55,7 @@ import { createAuthRepository } from './identity/auth-repository.js';
 import { createDbEmailCapStore } from './identity/email-cap-store.js';
 import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
 import { createWithUserLock } from './identity/user-lock.js';
+import { createNoticeDispatcher } from './identity/notices.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
@@ -258,10 +259,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // Q30: the status adapter every `_user` writer goes through.
   const userSync = createUserSyncAdapter({ userSync: createUserSync({ pool: appPool, authz }) });
 
+  // Q30: the shed core is built once; `createAuth` takes its port, the accept flow the core.
+  const ssoLinkShed = createSsoLinkShed({ authPool: options.authPool });
   const auth = createAuth({
     db: authDb,
     userSync,
-    ssoLinkShed: createSsoLinkShed({ authPool: options.authPool }).port,
+    ssoLinkShed: ssoLinkShed.port,
     secret: options.authSecret,
     ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
     trustedOrigins: options.allowedOrigins,
@@ -274,31 +277,45 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
 
   const { email } = options;
-  const emailGate =
+  // One cap store shared by the invitation gate and the notice dispatcher (Q138).
+  const emailCapStore =
     email === undefined
+      ? undefined
+      : createDbEmailCapStore({
+          store: createRateLimitBucketStore({
+            adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+              .adapter,
+            rules: {
+              invitation_tenant: ruleOf(email.tenantCap),
+              invitation_recipient: ruleOf(email.recipientCap),
+              notice_tenant: ruleOf(email.noticeTenantCap ?? { max: 60, windowSeconds: 3600 }),
+              notice_recipient: ruleOf(
+                email.noticeRecipientCap ?? { max: 3, windowSeconds: 86_400 },
+              ),
+            },
+          }),
+        });
+  const emailGate =
+    email === undefined || emailCapStore === undefined
       ? options.identity?.emailGate
       : createEmailTenantGate({
           disabledTenantIds: email.disabledTenantIds,
-          capStore: createDbEmailCapStore({
-            store: createRateLimitBucketStore({
-              adapter: (
-                (await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] }
-              ).adapter,
-              rules: {
-                invitation_tenant: ruleOf(email.tenantCap),
-                invitation_recipient: ruleOf(email.recipientCap),
-                notice_tenant: ruleOf(email.noticeTenantCap ?? { max: 60, windowSeconds: 3600 }),
-                notice_recipient: ruleOf(
-                  email.noticeRecipientCap ?? { max: 3, windowSeconds: 86_400 },
-                ),
-              },
-            }),
-          }),
+          capStore: emailCapStore,
           sender: email.sender,
           killSwitch: email.killSwitch,
           ...(email.recipientKeySecret === undefined
             ? {}
             : { recipientKeySecret: email.recipientKeySecret }),
+        });
+  const notices =
+    email === undefined || emailCapStore === undefined || email.recipientKeySecret === undefined
+      ? undefined
+      : createNoticeDispatcher({
+          disabledTenantIds: email.disabledTenantIds,
+          capStore: emailCapStore,
+          sender: email.sender,
+          recipientKeySecret: email.recipientKeySecret,
+          killSwitch: email.killSwitch,
         });
   const invitationLinkBaseUrl =
     email === undefined ? options.identity?.invitationLinkBaseUrl : email.invitationLinkBaseUrl;
@@ -822,6 +839,8 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       authRepository: createAuthRepository(options.authPool),
       authPool: options.authPool,
       userSync,
+      ssoLinkShed,
+      ...(notices === undefined ? {} : { notices }),
       stepUp: stepUpGuard,
       ...(reauthorization === undefined ? {} : { reauthorization }),
     });

@@ -31,7 +31,11 @@
  */
 // Load-bearing import order (design D1): the telemetry harness registers before anything
 // that loads `@tayzu/auth` creates its logger (task 14.13 reads log events).
-import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
+import {
+  linkLogEvents,
+  registration,
+  type TelemetryTestHarness,
+} from './__fixtures__/link-telemetry.js';
 import { randomInt, randomUUID } from 'node:crypto';
 
 import type { createRecordingEmailSender } from '@tayzu/auth';
@@ -39,13 +43,22 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
+  createAdminUser,
+  signInAdminUser,
   testAppPool,
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
-import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
+import { enrolledAdminSession, sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
+import {
+  ORIGIN as SSO_ORIGIN,
+  PROVIDER_ID,
+  oidcRoundTrip,
+  type Handler,
+} from './__fixtures__/sso-shed.js';
 
 const state = vi.hoisted(() => ({
   pools: new Map<string, unknown>(),
@@ -399,4 +412,227 @@ describe('identity email gate controls reach production (task 14.13)', () => {
     const logged = await eventsOf(RATE_EVENT, secondAdmin.organizationId);
     expect(JSON.stringify(logged)).not.toContain(email);
   }, 60_000);
+});
+
+/**
+ * Task 14.15 (Resolved decisions Q30, Q39 and Q138; 8.5h, 8.5m, 8.15): "`identity-wiring.int.test.ts`
+ * (14.11) covers an existing account's acceptance over HTTP removing its unmarked SSO link
+ * and the sessions issued through it, with `catalog.security.sso_link_shed` (path
+ * `acceptance`) logged, and an accepted `admin` invitation sending one `AdminAcceptedNotice`
+ * to each other administrator and none to the invitee."
+ *
+ * Built through `createAppFromEnv` (SSO configured against the local OIDC stub,
+ * `BETTER_AUTH_URL` at the origin the stub round trip uses). The acceptance is the real
+ * `POST /v1/auth/invitations/accept`; invitations are made over HTTP and the token is read
+ * from the recording sender the production start selected.
+ *
+ * Production symbols expected: none new; `createApp` (`./server.js`) builds the shed core
+ * (`createSsoLinkShed`) once, passes its `port` to `createAuth` and the core to
+ * `createAcceptFlow` as `ssoLinkShed`, and builds `createNoticeDispatcher` over the shared
+ * store and the sender and passes it to `createAcceptFlow` as `notices`.
+ */
+describe('the accept route runs the shed and sends the admin notice (task 14.15)', () => {
+  const SHED_EVENT = 'catalog.security.sso_link_shed';
+  let harness: TelemetryTestHarness;
+  let pools: HarnessPools;
+  let stub: OidcStub;
+  let app: App;
+  let sender: RecordingSender;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    pools = await harnessPools();
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+    stub = await startOidcStub();
+    const before = state.senders.length;
+    app = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_URL: SSO_ORIGIN,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN},${SSO_ORIGIN}`,
+      INVITATION_LINK_BASE_URL: LINK_ORIGIN,
+      IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
+      MOUNT_IDENTITY_ROUTES: 'true',
+      VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
+      VISMA_CONNECT_CLIENT_ID: stub.clientId,
+      VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
+    });
+    expect(state.senders.length, 'one sender is built for this app').toBe(before + 1);
+    sender = state.senders[before] as RecordingSender;
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+    state.pools.clear();
+  }, 60_000);
+
+  interface AddMemberApi {
+    addMember(args: {
+      body: { userId: string; role: 'member' | 'admin'; organizationId: string };
+    }): Promise<unknown>;
+  }
+
+  async function freshAdmin(): Promise<BootstrappedTenant & { email: string }> {
+    const suffix = randomUUID();
+    const email = `identity-accept-wiring-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Identity Accept Admin',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Identity Accept ${suffix}`,
+      organizationSlug: `identity-accept-${suffix}`,
+      ip: randomIp(),
+    });
+    const session = await enrolledAdminSession(app, tenant, {
+      password: TEST_PASSWORD,
+      origin: ORIGIN,
+    });
+    return { ...session, email };
+  }
+
+  async function addMember(
+    tenantId: string,
+    role: 'member' | 'admin',
+    label: string,
+  ): Promise<{ userId: string; email: string }> {
+    const email = `${label}-${randomUUID()}@example.test`;
+    const created = await createAdminUser(app.auth, {
+      name: label,
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (app.auth.api as AddMemberApi).addMember({
+      body: { userId: created.userId, role, organizationId: tenantId },
+    });
+    return { userId: created.userId, email };
+  }
+
+  async function invite(
+    admin: BootstrappedTenant,
+    email: string,
+    role: 'member' | 'admin',
+  ): Promise<{ invitationId: string; token: string }> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/v1/users/invitations',
+      headers: {
+        cookie: admin.cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify({ email, role }),
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const invitationId = response.json<{ invitationId: string }>().invitationId;
+    const template = sender.sent.find((message) => message.to === email)?.template;
+    if (template?.kind !== 'InvitationEmail') throw new Error('the invitation email was not sent');
+    const token = new URLSearchParams(new URL(template.link).hash.slice(1)).get('token') ?? '';
+    expect(token.length).toBeGreaterThan(0);
+    return { invitationId, token };
+  }
+
+  function accept(body: Record<string, unknown>, cookie?: string) {
+    return app.app.inject({
+      method: 'POST',
+      url: '/v1/auth/invitations/accept',
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+        ...(cookie === undefined ? {} : { cookie }),
+      },
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("an existing account's acceptance over HTTP removes its unmarked SSO link and the sessions issued through it, logging catalog.security.sso_link_shed with path acceptance", async () => {
+    const first = await freshAdmin();
+    const second = await freshAdmin();
+    const person = await addMember(first.organizationId, 'member', 'shed-person');
+    const sub = `wiring-shed-sub-${randomUUID()}`;
+    // A link that pre-dates the marker: no `sso-link:` row, so it is treated as admin-recorded.
+    await pools.authPool.query(
+      `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+       values ($1, $2, $3, $4, now(), now())`,
+      [randomUUID(), sub, PROVIDER_ID, person.userId],
+    );
+    stub.setSubject({
+      sub,
+      email: person.email,
+      name: 'Shed Person',
+      sid: `sid-${randomUUID()}`,
+      claims: { email_verified: true },
+    });
+    const handler = (app.auth as unknown as { handler: Handler }).handler;
+    const sso = await oidcRoundTrip(handler, '/sign-in/social', '');
+    const ssoToken = sessionTokenOfCookie(sso.cookie);
+    const sessionRows = async (token: string): Promise<number> =>
+      (await pools.authPool.query(`select 1 from auth.session where token = $1`, [token])).rows
+        .length;
+    expect(await sessionRows(ssoToken), 'precondition: the SSO session exists').toBe(1);
+    const linkRows = async (): Promise<number> =>
+      (
+        await pools.authPool.query(
+          `select 1 from auth.account where user_id = $1 and provider_id <> 'credential'`,
+          [person.userId],
+        )
+      ).rows.length;
+    expect(await linkRows(), 'precondition: the unmarked link exists').toBe(1);
+    const pending = await invite(second, person.email, 'member');
+    const signedIn = await signInAdminUser(app.auth, {
+      email: person.email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+
+    const answer = await accept(pending, signedIn.cookie);
+
+    expect(answer.statusCode, answer.body).toBe(200);
+    expect(await linkRows(), 'the link is gone').toBe(0);
+    expect(await sessionRows(ssoToken), 'the session issued through the link is gone').toBe(0);
+    const events = (await linkLogEvents(harness, SHED_EVENT)).filter(
+      (record) => record.attributes['tayzu.identity.user.id'] === person.userId,
+    );
+    expect(events, 'the event is logged once').toHaveLength(1);
+    expect(events[0]?.attributes['tayzu.identity.sso_link.path']).toBe('acceptance');
+    expect(events[0]?.attributes['tayzu.tenant.id']).toBe(second.organizationId);
+    expect(JSON.stringify(events[0]?.attributes)).not.toContain(sub);
+  }, 120_000);
+
+  it('an accepted admin invitation sends one AdminAcceptedNotice to each other administrator and none to the invitee', async () => {
+    const owner = await freshAdmin();
+    const otherAdmin = await addMember(owner.organizationId, 'admin', 'notice-admin');
+    const plain = await addMember(owner.organizationId, 'member', 'notice-plain');
+    const invitee = `identity-notice-invitee-${randomUUID()}@example.test`;
+    const pending = await invite(owner, invitee, 'admin');
+
+    const answer = await accept({
+      ...pending,
+      password: 'Café-Mañana-Passäphrase-2026!',
+    });
+
+    expect(answer.statusCode, answer.body).toBe(200);
+    const notices = sender.sent.filter(
+      (message) => message.template.kind === 'AdminAcceptedNotice',
+    );
+    const countFor = (email: string): number =>
+      notices.filter((message) => message.to === email).length;
+    expect(countFor(owner.email), 'the owner').toBe(1);
+    expect(countFor(otherAdmin.email), 'the other administrator').toBe(1);
+    expect(countFor(invitee), 'the invitee').toBe(0);
+    expect(countFor(plain.email), 'a plain member').toBe(0);
+  }, 120_000);
 });

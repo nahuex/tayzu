@@ -3365,7 +3365,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST` refusing a recipient of another domain without
       reaching the provider and logging `catalog.security.email_recipient_blocked` with
       no address, and a recipient of an allowed domain reaching it.
-- [ ] 14.15 The accept route runs the shed and sends the admin notice (Resolved
+- [x] 14.15 The accept route runs the shed and sends the admin notice (Resolved
       decisions Q30, Q39 and Q138; 8.5h, 8.5m, 8.15): `createApp` builds the shed core
       once, passing its port to `createAuth` and the core to `createAcceptFlow`, and
       builds the notice dispatcher of 6.12 over the shared store of 14.12 and the sender
