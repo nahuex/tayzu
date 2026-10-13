@@ -3027,7 +3027,7 @@ SSO surfaces of M18) are recorded there with their justification.
       both cases), the two call sites using the shared generator, and a bootstrap
       password failing the policy being refused; and `zap-seed.test.ts` (4.6b) covers the
       seed using a policy-compliant password.
-- [ ] 13.5c The accept route honors the temporary-password marker (VCDM G6-4). The
+- [x] 13.5c The accept route honors the temporary-password marker (VCDM G6-4). The
       route reads the session directly and bypasses both `resolveContext` and the
       `/api/auth` hook, so a session whose user holds an unexpired marker could
       otherwise gain a membership. It calls the same marker check as 13.5 and

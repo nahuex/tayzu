@@ -14,6 +14,7 @@ import type { CerbosClient } from '@tayzu/authz';
 import {
   AuthStepUpError,
   emitIdentityEvent,
+  hasActiveTemporaryPasswordMarker,
   isIdle,
   toCerbosRole,
   validatePassword,
@@ -181,6 +182,9 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
 } {
   const { authRepository: repository, authPool, userSync } = options;
   const api = options.auth.api as AuthApiSurface;
+  const authContext = options.auth.$context as Promise<{
+    adapter: Parameters<typeof hasActiveTemporaryPasswordMarker>[0];
+  }>;
 
   const step = async (name: Step): Promise<void> => {
     await options.onStep?.(name);
@@ -222,7 +226,8 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
   /**
    * Reads the caller's session like `resolveContext` does (`disableRefresh`, so
    * the read cannot extend a session about to idle out); an idle or banned
-   * session counts as none. `resolveContext` has no banned check until 13.4.
+   * session counts as none, and so does one under an unexpired temporary-password
+   * marker (13.5c); a failed marker lookup fails closed.
    */
   async function readSession(headers: Headers): Promise<AcceptInput['session']> {
     // The `/get-session` before hook refuses an idle session with an error;
@@ -233,6 +238,10 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     if (found === null || isIdle(found.session.updatedAt) || found.user.banned === true) {
       return undefined;
     }
+    const markerHeld = await authContext
+      .then((context) => hasActiveTemporaryPasswordMarker(context.adapter, found.user.id))
+      .catch(() => true);
+    if (markerHeld) return undefined;
     return { userId: found.user.id, sessionId: found.session.id, headers };
   }
 
