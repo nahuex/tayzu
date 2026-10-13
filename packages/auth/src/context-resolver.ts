@@ -372,7 +372,9 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     credentialId: string,
   ): Promise<'allowed' | 'rejected' | 'lookup_failed'> {
     const now = Date.now();
-    const cached = revocationCache.get(credentialId);
+    // Keyed by (tenantId, credentialId); JSON keeps the pair unambiguous.
+    const cacheKey = JSON.stringify([tenantId, credentialId]);
+    const cached = revocationCache.get(cacheKey);
     if (cached !== undefined && cached.expiresAt > now) {
       return cached.revoked ? 'rejected' : 'allowed';
     }
@@ -390,7 +392,7 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       return 'lookup_failed';
     }
 
-    revocationCache.set(credentialId, { revoked, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+    revocationCache.set(cacheKey, { revoked, expiresAt: now + REVOCATION_CACHE_TTL_MS });
     return revoked ? 'rejected' : 'allowed';
   }
 

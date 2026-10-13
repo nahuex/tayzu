@@ -2655,7 +2655,7 @@ resolveTarget }, handler })` in `apps/api/src/identity/define-operation.ts`
       this task. Verify: `revocation-key.int.test.ts` covers that a row for `(t2, c1)`
       neither blocks nor shadows `(t1, c1)`, and that a lookup for `t1` ignores `t2`'s
       row. ⛔ **Stop for Checkpoint 3 approval of the SQL before continuing.**
-- [ ] 11.1b The revocation **cache** in `resolveContext` is keyed by
+- [x] 11.1b The revocation **cache** in `resolveContext` is keyed by
       `(tenantId, credentialId)`, not by `credentialId` alone. Verify:
       `context-resolver.int.test.ts` covers a revocation in one tenant not poisoning
       the cache of another: credential id `c1` revoked in `t2` and cached, then a `t1`

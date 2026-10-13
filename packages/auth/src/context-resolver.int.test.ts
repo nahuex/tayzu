@@ -153,7 +153,7 @@ import { generateKeyPairSync, randomInt, randomUUID, sign } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -1580,5 +1580,109 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
       select id from auth.apikey where reference_id = ${admin.organizationId}
     `);
     expect(rows.rows).toHaveLength(0);
+  });
+});
+
+/**
+ * Task 11.1b (design D13 / Revocation, "keyed by `(tenantId, credentialId)`"):
+ * the revocation cache must not let a revocation in one tenant poison the
+ * same credential id in another.
+ *
+ * ## Production symbols expected
+ *
+ * No new symbols: `createContextResolver` in `./context-resolver.js` keeps its
+ * signature; only its internal revocation cache key changes.
+ *
+ * ## Expected failure
+ *
+ * Assertion failure: today the cache is keyed by `credentialId` alone, so the
+ * `t1` token is rejected with `CATALOG_CONTEXT_REQUIRED` after `t2`'s
+ * revocation of the same id was cached.
+ */
+describe('resolveContext: revocation cache is keyed per tenant (task 11.1b)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  async function tokenFor(tenantId: string, credentialId: string): Promise<Headers> {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const signed = await signJwtOf(auth).signJWT({
+      body: {
+        payload: {
+          exp: nowSeconds + ONE_HOUR_SECONDS,
+          sub: credentialId,
+          tenantId,
+          role: 'member',
+          actor: { type: 'integration', id: credentialId },
+        },
+      },
+    });
+    return new Headers({ authorization: `Bearer ${signed.token}` });
+  }
+
+  async function revokeRow(tenantId: string, credentialId: string): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId }, async (client) => {
+      await client.query(
+        'insert into machine_credential_revocation (tenant_id, credential_id, revoked_at) values ($1, $2, now())',
+        [tenantId, credentialId],
+      );
+    });
+  }
+
+  function resolverOver(): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: appPool });
+  }
+
+  it('A revocation in one tenant does not poison the cache of another', async () => {
+    const t1 = `t1-${randomUUID()}`;
+    const t2 = `t2-${randomUUID()}`;
+    const c1 = `c1-${randomUUID()}`;
+    const resolveContext = resolverOver();
+
+    // GIVEN credential id c1 revoked in t2
+    await revokeRow(t2, c1);
+
+    // AND that revocation cached by a resolve of the t2 principal (rejected)
+    await expectContextRequiredRejection(resolveContext(await tokenFor(t2, c1)));
+
+    // WHEN a t1 principal with the same id is resolved by the same resolver
+    // THEN it is still accepted
+    expect(await resolveContext(await tokenFor(t1, c1))).toMatchObject({
+      tenantId: t1,
+      actor: { type: 'integration', id: c1 },
+    });
+
+    // AND t2's principal is still rejected (the cached "allowed" of t1 does not shadow it)
+    await expectContextRequiredRejection(resolveContext(await tokenFor(t2, c1)));
+  });
+
+  it('A cached allowance in one tenant does not shadow a revocation in another', async () => {
+    const t1 = `t1-${randomUUID()}`;
+    const t2 = `t2-${randomUUID()}`;
+    const c1 = `c1-${randomUUID()}`;
+    const resolveContext = resolverOver();
+
+    await revokeRow(t2, c1);
+
+    // t1 is resolved first, caching "not revoked" for c1
+    expect(await resolveContext(await tokenFor(t1, c1))).toMatchObject({ tenantId: t1 });
+
+    // t2's principal with the same id is still rejected
+    await expectContextRequiredRejection(resolveContext(await tokenFor(t2, c1)));
   });
 });
