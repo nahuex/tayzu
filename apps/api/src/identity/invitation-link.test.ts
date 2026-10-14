@@ -17,6 +17,8 @@
  * origin can only come from the trusted setting. `Config.invitationLinkBaseUrl`
  * is covered in `config.test.ts`.
  */
+import { randomBytes } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../config.js';
@@ -24,7 +26,7 @@ import { buildInvitationLink } from './invitation-link.js';
 
 const BASE_URL = 'https://app.tayzu.test';
 const ID = 'inv_0123456789abcdef';
-const TOKEN = 'tok_Zm9vYmFyLWJheg-_0123456789';
+const TOKEN = `tok_${randomBytes(24).toString('base64url')}`;
 
 function configEnv(): Record<string, string | undefined> {
   return {

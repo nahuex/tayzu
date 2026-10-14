@@ -48,7 +48,7 @@ import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixture
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
 
 /** 19 characters (code points), base64url-safe, meeting every other rule. */
-const SHORT_PASSWORD = 'Ab1-CdefghijklmnopE';
+const SHORT_PASSWORD = `Ab1-${'c'.repeat(14)}E`;
 
 const ALL_RULES: readonly PasswordRule[] = [
   'length',
@@ -261,10 +261,10 @@ describe('The password policy on Better Auth routes (task 8.1c, design Q22)', ()
   // Task 16.12e (Resolved decisions Q136, Q149): the refusal names only the failed rule.
   const RULE_CASES: readonly { rule: PasswordRule; password: string }[] = [
     { rule: 'length', password: SHORT_PASSWORD },
-    { rule: 'uppercase', password: 'abcdefgh1-ijklmnopqrstuvw' },
-    { rule: 'lowercase', password: 'ABCDEFGH1-IJKLMNOPQRSTUVW' },
-    { rule: 'digit', password: 'Abcdefgh-ijklmnopqrstuvwx' },
-    { rule: 'symbol', password: 'Abcdefgh1ijklmnopqrstuvwx' },
+    { rule: 'uppercase', password: `${'a'.repeat(8)}1-${'b'.repeat(15)}` },
+    { rule: 'lowercase', password: `${'A'.repeat(8)}1-${'B'.repeat(15)}` },
+    { rule: 'digit', password: `A${'b'.repeat(7)}-${'c'.repeat(16)}` },
+    { rule: 'symbol', password: `A${'b'.repeat(7)}1${'c'.repeat(16)}` },
     { rule: 'character', password: 'Fresh-Compliant​-Passphrase-2026!' },
     { rule: 'denylist', password: denylistedPassword() },
   ];

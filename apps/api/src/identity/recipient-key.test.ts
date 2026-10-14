@@ -12,15 +12,15 @@
  * export function recipientKey(canonicalEmail: string, secret: string): string;
  * ```
  */
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
 // The module under test. Does not exist yet.
 import { recipientKey } from './recipient-key.js';
 
-const SECRET = 'recipient-key-test-only-secret-0123456789-abcdef';
-const OTHER_SECRET = 'recipient-key-other-test-secret-9876543210-fedcba';
+const SECRET = randomBytes(32).toString('hex');
+const OTHER_SECRET = randomBytes(32).toString('hex');
 const EMAIL = 'alice@example.com';
 
 describe('the per-recipient cap key is an HMAC of the canonical email (task 6.7b, Q93)', () => {

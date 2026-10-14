@@ -14,8 +14,8 @@ import { InvalidRecipientError } from './sender.js';
  * Scenario: "The email provider's failure never leaks".
  */
 
-const CONNECTION_STRING =
-  'endpoint=https://acs-test.communication.azure.com/;accesskey=c2VjcmV0LWtleQ==';
+const ACCESS_KEY = Buffer.from('acs-'.repeat(8)).toString('base64');
+const CONNECTION_STRING = `endpoint=https://acs-test.communication.azure.com/;accesskey=${ACCESS_KEY}`;
 const SENDER = 'DoNotReply@mail.tayzu.example';
 const RECIPIENT = 'marker-recipient@example.com';
 const LINK = 'https://app.example.test/accept-invitation#invitation=abc&token=def';

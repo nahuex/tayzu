@@ -456,8 +456,8 @@ describe('pre-auth password-check limit from the environment (task 24.12, Q39, Q
  * Errors name the variable and never echo its value.
  */
 describe('email provider selection (043 task 6.5, Q28, Q67, Q96, Q99)', () => {
-  const CONNECTION_STRING =
-    'endpoint=https://acs-test.communication.azure.com/;accesskey=c2VjcmV0LWtleQ==';
+  const ACCESS_KEY = Buffer.from('acs-'.repeat(8)).toString('base64');
+  const CONNECTION_STRING = `endpoint=https://acs-test.communication.azure.com/;accesskey=${ACCESS_KEY}`;
   const mail = (
     nodeEnv: string,
     overrides: Record<string, string | undefined> = {},
@@ -521,7 +521,7 @@ describe('email provider selection (043 task 6.5, Q28, Q67, Q96, Q99)', () => {
       const error = thrown(() => loadConfig(attempt));
       expect(error.message).toMatch(/EMAIL_/);
       expect(error.message).not.toContain(CONNECTION_STRING);
-      expect(error.message).not.toContain('c2VjcmV0LWtleQ==');
+      expect(error.message).not.toContain(ACCESS_KEY);
     }
   });
 
