@@ -3733,7 +3733,7 @@ SSO surfaces of M18) are recorded there with their justification.
       reconcile job's and the bootstrap CLI's entries list `TAYZU_OPERATOR_ID`, and
       the crypto
       inventory entry states the exception and links the ticket.
-- [ ] 16.9 `pnpm ci:local` is fully green (lint, typecheck, unit and integration
+- [x] 16.9 `pnpm ci:local` is fully green (lint, typecheck, unit and integration
       tests, contract-check, otel-smoke-check, cerbos compile, audit, gitleaks). The high
       `source-map-js` advisory (GHSA-68fv-2mgg-jv7q) that failed `pnpm audit` on master
       is fixed outside this change by the `pnpm.overrides` entry `source-map-js`
