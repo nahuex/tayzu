@@ -72,3 +72,25 @@ The decision stands. Two facts about the shipped code qualify it:
 - The gRPC link from `apps/api` to Cerbos uses TLS, except when
   `CERBOS_ADDRESS` is `localhost`, `127.0.0.1` or `[::1]` (the sidecar and
   the CI container).
+
+## Update (2026-10-13)
+
+The decision stands. Change
+[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/043-identity-lifecycle-and-org-admin/design.md)
+(design D8, Resolved decisions Q29 and Q94) adds a static access-control set to
+Better Auth's `organization` plugin, and this note records that it does no
+authorization work of Tayzu's:
+
+- `packages/auth/src/org-access.ts` defines the `owner`, `admin` and `member`
+  roles from Better Auth's default statements and adds `apiKey` create, read,
+  update and delete to `admin` and `owner`. Custom roles replace the plugin's
+  defaults, so all three are defined and every default permission is kept.
+- The grant is **neutralized**. It is a permission set that only Better Auth's
+  own organization-permission check reads. That check still runs on the
+  headerless `apiKey` calls with `body.userId`, and it passes for an admin only
+  because of the grant, so it never refuses what Cerbos allowed. Nothing in
+  Tayzu reads it to allow or deny an operation.
+- Cerbos stays the only decision point. `dynamicAccessControl` stays off, and
+  `002` D1 still rejects Better Auth `ac` doing authorization work. Changing what
+  a role may do remains a Cerbos policy change (Checkpoint 3), never an edit of
+  `org-access.ts`.

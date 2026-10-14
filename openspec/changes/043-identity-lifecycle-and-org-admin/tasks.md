@@ -3597,7 +3597,7 @@ SSO surfaces of M18) are recorded there with their justification.
       Consequences, and design D6 links to it.
 - [x] 16.2 Write `docs/adr/0018-credential-rotation-immediate-cutover.md`
       (design D8). Verify: same structure, linked from design D8.
-- [ ] 16.3 Amend `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Resolved
+- [x] 16.3 Amend `docs/adr/0013-cerbos-as-sole-authorization-engine.md` (Resolved
       decision Q94) with a dated note that Better Auth's static `ac` roles of the
       `organization` plugin (9.1b), which grant `admin` the `apiKey` permissions, are
       **neutralized** and do no authorization work of Tayzu's: they are a permission set
