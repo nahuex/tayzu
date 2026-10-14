@@ -3862,7 +3862,7 @@ SSO surfaces of M18) are recorded there with their justification.
       (`userId`) counts as a `created` credential mutation of kind `service_account`
       (Resolved decisions Q145 and Q149). Verify: `otel-smoke-check.int.test.ts` covers
       it.
-- [ ] 16.12l Three spec scenarios that no test covered get their test (Resolved decision
+- [x] 16.12l Three spec scenarios that no test covered get their test (Resolved decision
       Q149): "The reconcile removes an orphan" asserts that a later invitation of that
       email succeeds (`reconcile-users.int.test.ts`), "A banned user's sign-in is
       indistinguishable" compares the SSO path's body with another SSO sign-in failure

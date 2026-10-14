@@ -61,7 +61,14 @@ import {
 } from '../__fixtures__/link-telemetry.js';
 import { randomUUID } from 'node:crypto';
 
-import { createAuth, authSchema, createContextResolver, type AuthInstance } from '@tayzu/auth';
+import { createRouterClient } from '@orpc/server';
+import {
+  createAuth,
+  authSchema,
+  createContextResolver,
+  createRecordingEmailSender,
+  type AuthInstance,
+} from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import {
   createBlueprintService,
@@ -75,6 +82,12 @@ import { Pool, type QueryResultRow } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { main } from '../../scripts/reconcile-users.js';
+import { createIdentityRouter } from '../identity-router.js';
+import { createAuthRepository } from './auth-repository.js';
+import { createEmailTenantGate } from './email-tenant-gate.js';
+import { createInMemoryEmailCapStore } from './invitation-caps.js';
+import { createWithUserLock } from './user-lock.js';
+import { createUserSyncAdapter } from './user-sync-adapter.js';
 import { MARKER_PREFIX } from '../__fixtures__/sso-shed.js';
 import {
   createAdminUser,
@@ -594,6 +607,77 @@ describe('reconcile-users (task 4.2b)', () => {
       'tayzu.identity.reconcile.created': 0,
       'tayzu.identity.reconcile.orphans': 2,
     });
+  }, 120_000);
+
+  /**
+   * Task 16.12l (Resolved decision Q149): the last clause of "The reconcile removes an orphan",
+   * "a later invitation of that email succeeds". The removed orphan's address is invited by the
+   * tenant's owner, whose own row the same run created. Expected to pass on arrival.
+   */
+  it('The reconcile removes an orphan: a later invitation of that email succeeds', async () => {
+    const { tenantId, emails } = await seedOrphanTenant();
+    const ownerRow = await userSync.getUser({ tenantId, email: emails.owner });
+    expect(ownerRow, 'precondition: the owner has an Active row').not.toBeNull();
+
+    await run();
+    expect(await exists(tenantId, emails.orphanOld), 'orphan removed').toBe(false);
+
+    const sender = createRecordingEmailSender();
+    const capStore = createInMemoryEmailCapStore({
+      tenant: { max: 1000, windowSeconds: 3600 },
+      recipient: { max: 1000, windowSeconds: 86_400 },
+    });
+    const client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: createCerbosClient({ address: CERBOS_ADDRESS, tls: false }),
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+        userSync: createUserSyncAdapter({ userSync }),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender,
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
+        }),
+        invitationLinkBaseUrl: 'https://app.tayzu.test',
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+    const ownerUserId = (
+      await authPool.query<{ id: string }>('select id from auth."user" where email = $1', [
+        emails.owner,
+      ])
+    ).rows[0]?.id;
+    if (ownerUserId === undefined) throw new Error('the owner user is missing');
+    const session = await signInAdminUser(auth, {
+      email: emails.owner,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const headers = new Headers({ cookie: session.cookie, 'x-forwarded-for': randomIp() });
+
+    const invited = await client.identity.users.invite(
+      { body: { email: emails.orphanOld, role: 'member' } },
+      {
+        context: {
+          tenantId,
+          actor: { type: 'user', id: ownerUserId },
+          principal: { roles: ['admin'] },
+          __requestHeaders: headers,
+          __stepUpHeaders: headers,
+        },
+      },
+    );
+
+    expect(invited.invitationId.length).toBeGreaterThan(0);
+    const rows = await authPool.query<{ status: string; organization_id: string }>(
+      'select status, organization_id from auth.invitation where id = $1',
+      [invited.invitationId],
+    );
+    expect(rows.rows[0]).toMatchObject({ status: 'pending', organization_id: tenantId });
+    expect(sender.sent.filter((message) => message.to === emails.orphanOld)).toHaveLength(1);
   }, 120_000);
 
   it('The reconcile removes an orphan: a row activated within the hour is kept, and removed by a run made after that hour (clock seam)', async () => {

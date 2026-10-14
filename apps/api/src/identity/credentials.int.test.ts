@@ -3446,3 +3446,167 @@ describe('identity.credentials.rotate under a small pool shared with the user-sy
     expect(keys.rows).toHaveLength(CONCURRENT * 2);
   }, 120_000);
 });
+
+/**
+ * Task 16.12l (Resolved decision Q149). Spec scenario "Delete and rotate see credentials beyond
+ * the viewer's limit": GIVEN a service account whose credential is beyond the viewer's page limit
+ * among the tenant's keys, WHEN an admin rotates or deletes it, THEN the credential is found and
+ * revoked.
+ *
+ * The viewer lists at most 200 non-revoked credentials, oldest first, and reads keys in pages of
+ * 100. The tenant holds 205 unbound keys created BEFORE the two service-account keys, so those
+ * come after the viewer's limit (and after the second page of the reader).
+ *
+ * Production symbols expected: none new. This is expected to pass on arrival (`apiKeyById`
+ * looks the key up directly).
+ */
+describe('delete and rotate see credentials beyond the viewer limit (task 16.12l, Q149)', () => {
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface BeyondClient {
+    identity: {
+      credentials: {
+        list(
+          input: { query: Record<string, never> },
+          options: { context: Record<string, unknown> },
+        ): Promise<ListOutput>;
+        rotate(
+          input: { params: { credential: string } },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+      serviceAccounts: {
+        delete(
+          input: { params: { user: string } },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  function client(): BeyondClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  async function revocationCount(tenantId: string, id: string): Promise<number> {
+    const result = await withTenantTransaction(appPool, { tenantId }, (c) =>
+      c.query<{ n: string }>(
+        `select count(*)::text as n from machine_credential_revocation
+          where credential_id = $1 and tenant_id = $2`,
+        [id, tenantId],
+      ),
+    );
+    return Number(result.rows[0]?.n);
+  }
+
+  async function seedServiceAccount(tenantId: string, identifier: string): Promise<void> {
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      {
+        blueprint: '_user',
+        identifier,
+        title: 'Service account',
+        spec: { properties: { accountKind: 'service', status: 'Active' } },
+      },
+    );
+  }
+
+  it("Delete and rotate see credentials beyond the viewer's limit: a service account's key after 205 older keys is absent from the viewer, yet rotate and delete find and revoke it", async () => {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Beyond Owner',
+      email: `beyond-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Beyond Org', slug: `beyond-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Beyond Admin',
+      email: `beyond-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    const context = {
+      tenantId: org.id,
+      actor: { type: 'user', id: admin.userId },
+      principal: { roles: ['admin'] },
+    };
+    const seedKey = (name: string, userId?: string) =>
+      createMachineCredential(auth, {
+        userId: admin.userId,
+        organizationId: org.id,
+        name,
+        actorKind: 'integration',
+        metadata: { createdBy: admin.userId, ...(userId === undefined ? {} : { userId }) },
+      });
+
+    // 205 older keys, in batches.
+    for (let start = 0; start < 205; start += 20) {
+      const width = Math.min(20, 205 - start);
+      await Promise.all(
+        Array.from({ length: width }, (_, i) => seedKey(`filler-${String(start + i)}`)),
+      );
+    }
+
+    const rotating = `svc-rot-${randomUUID().slice(0, 8)}`;
+    const deleting = `svc-del-${randomUUID().slice(0, 8)}`;
+    await seedServiceAccount(org.id, rotating);
+    await seedServiceAccount(org.id, deleting);
+    const toRotate = await seedKey('Rotate me', rotating);
+    const toDelete = await seedKey('Delete me', deleting);
+
+    // GIVEN both keys are beyond the viewer's limit among the tenant's keys.
+    const listed = await client().identity.credentials.list({ query: {} }, { context });
+    expect(listed.credentials).toHaveLength(200);
+    expect(listed.truncated).toBe(true);
+    const shown = listed.credentials.map((c) => c.id);
+    expect(shown).not.toContain(toRotate.id);
+    expect(shown).not.toContain(toDelete.id);
+
+    // WHEN an admin rotates one and deletes the other, THEN each is found and revoked.
+    const rotated = await client().identity.credentials.rotate(
+      { params: { credential: toRotate.id } },
+      { context },
+    );
+    expect(rotated.id).not.toBe(toRotate.id);
+    expect(await revocationCount(org.id, toRotate.id)).toBe(1);
+    expect(await revocationCount(org.id, rotated.id)).toBe(0);
+
+    await client().identity.serviceAccounts.delete({ params: { user: deleting } }, { context });
+    expect(await revocationCount(org.id, toDelete.id)).toBe(1);
+  }, 300_000);
+});

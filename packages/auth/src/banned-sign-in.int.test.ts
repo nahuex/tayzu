@@ -300,6 +300,51 @@ describe('A banned user is refused at sign-in (task 13.4, D13)', () => {
     expect(await sessionCount(user.userId), 'no new session row').toBe(sessionsBefore);
     expect(bodyText).not.toMatch(/banned/i);
   }, 60_000);
+
+  /**
+   * Task 16.12l (Resolved decision Q149). Spec scenario "A banned user's sign-in is
+   * indistinguishable from a wrong password": the SSO path's response has the same status, error
+   * code and body as another SSO sign-in failure (an unlinked sub). Expected to pass on arrival:
+   * `auth.ts` already turns every callback failure into the one `401 AUTH_SSO_REJECTED`.
+   */
+  it("A banned user's sign-in is indistinguishable: the SSO callback of a banned, linked user has the same status, headers that matter and body as an unlinked SSO sign-in failure", async () => {
+    // Reference failure: a never-linked sub.
+    stub.setSubject({
+      sub: `unlinked-${randomUUID()}`,
+      email: `idp-unlinked-${randomUUID()}@example.test`,
+      name: 'Unlinked Person',
+      sid: `sid-${randomUUID()}`,
+    });
+    const reference = await initiateSignIn(auth, stub);
+    const unlinked = await completeCallback(auth, reference.cookie, reference.params);
+    const unlinkedBody = await unlinked.text();
+
+    const user = await newUser();
+    const sub = `banned-same-${randomUUID()}`;
+    await db.insert(authSchema.account).values({
+      id: randomUUID(),
+      accountId: sub,
+      providerId: PROVIDER_ID,
+      userId: user.userId,
+    });
+    await setBanned(user.userId, true);
+    stub.setSubject({
+      sub,
+      email: `idp-${randomUUID()}@example.test`,
+      name: 'Banned Same Person',
+      sid: `sid-${randomUUID()}`,
+    });
+    const started = await initiateSignIn(auth, stub);
+    const banned = await completeCallback(auth, started.cookie, started.params);
+    const bannedBody = await banned.text();
+
+    expect(unlinked.status).toBe(401);
+    expect(banned.status).toBe(unlinked.status);
+    expect((JSON.parse(bannedBody) as { code?: unknown }).code).toBe('AUTH_SSO_REJECTED');
+    expect(banned.headers.get('content-type')).toBe(unlinked.headers.get('content-type'));
+    expect(bannedBody, 'identical body text').toBe(unlinkedBody);
+    expect(hasSessionCookie(banned)).toBe(false);
+  }, 60_000);
 });
 
 /**
