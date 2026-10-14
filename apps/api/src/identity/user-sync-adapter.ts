@@ -34,6 +34,11 @@ export interface UserSyncAdapter extends UserSyncPort {
    * is absent only for the invitation hook's `created_invited` write, which
    * passes `invitationId` instead (Resolved decisions Q120 and Q126).
    */
+  /** Deletes the `_user` row of the email in the tenant; idempotent when there is none. */
+  readonly deleteUser: (input: {
+    readonly tenantId: string;
+    readonly email: string;
+  }) => Promise<void>;
   readonly writeUserChange: (
     input: UpsertInput & { readonly userId?: string; readonly invitationId?: string },
   ) => Promise<StatusEvent | undefined>;
@@ -203,6 +208,9 @@ export function createUserSyncAdapter(options: CreateUserSyncAdapterOptions): Us
       await writeUserChange(input);
     },
     writeUserChange,
+    async deleteUser(input) {
+      await userSync.deleteUser?.(input);
+    },
     async readStatus(input) {
       return (await userSync.getUser(input))?.status ?? null;
     },

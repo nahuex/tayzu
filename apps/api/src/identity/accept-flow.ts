@@ -334,7 +334,8 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     const digest = stored.rows[0]?.value ?? null;
     if (!verifyInvitationToken(input.token, digest)) throw deny(invitation.id, 'token_mismatch');
     const { organizationId: tenantId, email } = invitation;
-    if ((await userSync.readStatus({ tenantId, email })) === 'Disabled') {
+    const statusBefore = await userSync.readStatus({ tenantId, email });
+    if (statusBefore === 'Disabled') {
       throw deny(invitation.id, 'disabled_user');
     }
     if (!(await inviterMayStillInvite(invitation))) {
@@ -392,6 +393,14 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       if (createdMemberId !== undefined) {
         try {
           await repository.deleteMember(tenantId, createdMemberId);
+        } catch {
+          logCompensationFailure();
+        }
+      }
+      // Only a row this attempt's own `_user` step created: one found by the attempt stays (Q149).
+      if (createdUserId !== undefined && statusBefore === null) {
+        try {
+          await userSync.deleteUser({ tenantId, email });
         } catch {
           logCompensationFailure();
         }

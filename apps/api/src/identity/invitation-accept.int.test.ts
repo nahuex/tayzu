@@ -4487,3 +4487,173 @@ describe('A concurrent account creation yields one user (task 8.14, design D4 st
     expect(await adapter.readStatus({ tenantId: winner.tenant.tenantId, email })).toBe('Active');
   }, 60_000);
 });
+
+/**
+ * Task 16.12h (design D4 step 3; Resolved decision Q149).
+ *
+ * A compensated new-account acceptance also deletes the `_user` row that its own `_user`
+ * step created, and never one that existed before the attempt.
+ *
+ * ## Production symbols expected
+ *
+ * No new symbol: `createAcceptFlow` (`apps/api/src/identity/accept-flow.ts`) compensation
+ * additionally deletes, idempotently and in reverse order (member, `_user`, user), the
+ * `_user` row of the invitee's email in the tenant when this attempt's `_user` step
+ * created it (the row did not exist before the step), through the user-sync port or the
+ * catalog, and leaves a row found by the attempt in place.
+ */
+describe('A compensated new-account acceptance deletes the _user row it created (task 16.12h, design D4 step 3, Resolved decision Q149)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let acceptFlow: ReturnType<typeof createAcceptFlow>;
+  let failAt: string | undefined;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    catalogSync = createUserSync({ pool: pools.appPool, authz: sharedCerbos });
+    const adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    acceptFlow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+      onStep: (step) => {
+        if (step === failAt) throw new Error(`injected failure at ${step}`);
+      },
+    });
+  }, 60_000);
+
+  afterEach(() => {
+    failAt = undefined;
+  });
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Compensation Admin',
+      email: `comp-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Compensation Org',
+      organizationSlug: `comp-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** Removes the `Invited` `_user` row the invitation hook wrote, as the owner with the tenant set. */
+  async function removeUserRow(tenantId: string, email: string): Promise<void> {
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+      await client.query(
+        `delete from catalog_entity
+          where tenant_id = $1 and identifier = $2
+            and blueprint_id = (select id from catalog_blueprint
+                                 where tenant_id = $1 and identifier = '_user')`,
+        [tenantId, email],
+      );
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async function userCount(email: string): Promise<number> {
+    return (
+      (await authPool.query(`select 1 from auth."user" where email = $1`, [email])).rowCount ?? 0
+    );
+  }
+
+  async function memberCount(tenantId: string): Promise<number> {
+    return (
+      (await authPool.query(`select 1 from auth.member where organization_id = $1`, [tenantId]))
+        .rowCount ?? 0
+    );
+  }
+
+  it('A failure after the _user step of a new-account attempt leaves no _user row when that step created it', async () => {
+    const tenant = await freshTenant();
+    const email = `erin-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    // GIVEN no `_user` row exists before the attempt, so its own `_user` step creates it.
+    await removeUserRow(tenant.tenantId, email);
+    expect(await catalogSync.getUser({ tenantId: tenant.tenantId, email })).toBeNull();
+
+    // WHEN the attempt fails after the `_user` step (at the consumption).
+    failAt = 'consume';
+    let failure: { code: string } | undefined;
+    try {
+      await acceptFlow.accept({ ...invitation, password: PASSWORD_NFC });
+    } catch (error) {
+      failure = toOrpcError(error);
+    }
+
+    // THEN the answer is the sanitized generic error...
+    expect(failure?.code).toBe('INTERNAL');
+    // ...and the compensation left no user, no membership and no `_user` row.
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'only the inviting admin is a member').toBe(1);
+    expect(
+      await catalogSync.getUser({ tenantId: tenant.tenantId, email }),
+      'the _user row its own step created is deleted',
+    ).toBeNull();
+  }, 60_000);
+
+  it('A failure after the _user step of a new-account attempt leaves a _user row that existed before the attempt in place', async () => {
+    const tenant = await freshTenant();
+    const email = `frank-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    // GIVEN the invitation hook's `_user` row exists before the attempt.
+    expect(await catalogSync.getUser({ tenantId: tenant.tenantId, email })).not.toBeNull();
+
+    // WHEN the attempt fails after the `_user` step.
+    failAt = 'consume';
+    await expect(acceptFlow.accept({ ...invitation, password: PASSWORD_NFC })).rejects.toThrow();
+
+    // THEN the user and the membership are compensated but the earlier row stays.
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'only the inviting admin is a member').toBe(1);
+    expect(
+      await catalogSync.getUser({ tenantId: tenant.tenantId, email }),
+      'a row that existed before the attempt is never deleted',
+    ).not.toBeNull();
+  }, 60_000);
+});

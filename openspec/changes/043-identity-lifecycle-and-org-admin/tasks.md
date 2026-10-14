@@ -3839,7 +3839,7 @@ SSO surfaces of M18) are recorded there with their justification.
       deleted session row, sessions with no active organization included. Verify:
       `user-status-op.int.test.ts` covers a user with a session in the tenant and one
       with no active organization each producing one event when disabled.
-- [ ] 16.12h A compensated new-account acceptance also deletes the `_user` row that its
+- [x] 16.12h A compensated new-account acceptance also deletes the `_user` row that its
       own `_user` step created, never one that existed before the attempt (design D4
       step 3; Resolved decision Q149). Verify: `invitation-accept.int.test.ts` covers a
       failure after the `_user` step of a new-account attempt leaving no `_user` row, and

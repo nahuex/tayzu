@@ -46,6 +46,8 @@ export interface UserSync {
     readonly tenantId: string;
     readonly email: string;
   }): Promise<UserReadModel | null>;
+  /** Deletes the `_user` entity addressed by `email`; idempotent when there is none. */
+  deleteUser?(input: { readonly tenantId: string; readonly email: string }): Promise<void>;
 }
 
 export interface CreateUserSyncOptions {
@@ -110,6 +112,21 @@ export function createUserSync(options: CreateUserSyncOptions): UserSync {
         };
       } catch (error) {
         if (error instanceof CatalogError && error.code === 'CATALOG_NOT_FOUND') return null;
+        throw error;
+      }
+    },
+    async deleteUser(input) {
+      try {
+        await entities.delete(
+          {
+            tenantId: input.tenantId,
+            actor: SYSTEM_SYNC_ACTOR,
+            principal: { roles: ['admin'] },
+          },
+          { blueprint: '_user', identifier: input.email },
+        );
+      } catch (error) {
+        if (error instanceof CatalogError && error.code === 'CATALOG_NOT_FOUND') return;
         throw error;
       }
     },
