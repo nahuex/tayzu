@@ -7,6 +7,7 @@
  */
 import { EmailClient } from '@azure/communication-email';
 
+import { renderAdminAcceptedNotice } from './admin-accepted-notice-template.js';
 import { renderInvitationEmail } from './invitation-email-template.js';
 import { validateRecipient } from './sender.js';
 import type { EmailSender, EmailTemplate } from './sender.js';
@@ -72,21 +73,12 @@ export type AzureCommunicationEmailSenderOptions = { readonly senderAddress: str
   | { readonly connectionString: string; readonly client?: never }
 );
 
-const ADMIN_ACCEPTED_SUBJECT = 'An invitation to your Tayzu organization was accepted';
-const ADMIN_ACCEPTED_TEXT = 'An invitation you sent for your Tayzu organization was accepted.\n';
-const ADMIN_ACCEPTED_HTML =
-  '<!doctype html><html><body><p>An invitation you sent for your Tayzu organization was accepted.</p></body></html>';
-
 function content(template: EmailTemplate): AcsEmailMessage['content'] {
-  if (template.kind === 'InvitationEmail') {
-    const rendered = renderInvitationEmail(template);
-    return { subject: rendered.subject, plainText: rendered.text, html: rendered.html };
-  }
-  return {
-    subject: ADMIN_ACCEPTED_SUBJECT,
-    plainText: ADMIN_ACCEPTED_TEXT,
-    html: ADMIN_ACCEPTED_HTML,
-  };
+  const rendered =
+    template.kind === 'InvitationEmail'
+      ? renderInvitationEmail(template)
+      : renderAdminAcceptedNotice(template);
+  return { subject: rendered.subject, plainText: rendered.text, html: rendered.html };
 }
 
 /** Wraps the real client; building it opens no connection. */

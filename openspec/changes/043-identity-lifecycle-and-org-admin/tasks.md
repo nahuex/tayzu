@@ -3844,7 +3844,7 @@ SSO surfaces of M18) are recorded there with their justification.
       step 3; Resolved decision Q149). Verify: `invitation-accept.int.test.ts` covers a
       failure after the `_user` step of a new-account attempt leaving no `_user` row, and
       a row that existed before the attempt left in place.
-- [ ] 16.12i The Azure Communication Services sender renders `InvitationEmail` and
+- [x] 16.12i The Azure Communication Services sender renders `InvitationEmail` and
       `AdminAcceptedNotice` through the shared render functions, so each body has one
       definition (6.11; Resolved decision Q149). Verify:
       `azure-communication-email.test.ts` covers the sent body of each template being
