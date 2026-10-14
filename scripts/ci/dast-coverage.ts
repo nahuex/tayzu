@@ -15,20 +15,30 @@ export interface DastCoverage {
 }
 
 const STATUS_LINE = /^HTTP\/\d(?:\.\d)?[ \t]+(\d{3})(?:[ \t]|$)/;
+const REQUEST_LINE = /^[A-Z]+[ \t]+(\S+)[ \t]+HTTP\/\d/;
 
-function records(value: unknown, key: string): Record<string, unknown>[] {
-  if (typeof value !== 'object' || value === null) return [];
-  const list = (value as Record<string, unknown>)[key];
+/**
+ * The report is `api_messages.json`, written by `zap-api-hook.py` from ZAP's
+ * own history (`core.messages`): `{ messages: [{ requestHeader, responseHeader }] }`,
+ * each field holding the first line of the raw header (request or status line).
+ * The `-J` report has no headers, and a 2xx raises no alert, so no ZAP report
+ * template would list it.
+ */
+function messages(report: unknown): Record<string, unknown>[] {
+  if (typeof report !== 'object' || report === null) return [];
+  const list = (report as Record<string, unknown>)['messages'];
   if (!Array.isArray(list)) return [];
   return list.filter(
     (item): item is Record<string, unknown> => typeof item === 'object' && item !== null,
   );
 }
 
-function operationPath(uri: unknown): string | undefined {
-  if (typeof uri !== 'string') return undefined;
+function operationPath(requestHeader: unknown): string | undefined {
+  if (typeof requestHeader !== 'string') return undefined;
+  const target = REQUEST_LINE.exec(requestHeader.split(/\r?\n/, 1)[0] ?? '')?.[1];
+  if (target === undefined) return undefined;
   try {
-    const { pathname } = new URL(uri);
+    const { pathname } = new URL(target);
     return pathname.startsWith('/v1/') ? pathname : undefined;
   } catch {
     return undefined;
@@ -46,21 +56,22 @@ function statusOf(responseHeader: unknown): number | undefined {
 export function measureDastCoverage(report: unknown): DastCoverage {
   let operationResponses = 0;
   let successResponses = 0;
-  for (const site of records(report, 'site')) {
-    for (const alert of records(site, 'alerts')) {
-      for (const instance of records(alert, 'instances')) {
-        if (operationPath(instance['uri']) === undefined) continue;
-        const status = statusOf(instance['responseheader']);
-        if (status === undefined) continue;
-        operationResponses += 1;
-        if (status >= 200 && status < 300) successResponses += 1;
-      }
-    }
+  for (const message of messages(report)) {
+    if (operationPath(message['requestHeader']) === undefined) continue;
+    const status = statusOf(message['responseHeader']);
+    if (status === undefined) continue;
+    operationResponses += 1;
+    if (status >= 200 && status < 300) successResponses += 1;
   }
   return { operationResponses, successResponses };
 }
 
 export function assertDastCoverage(report: unknown): DastCoverage {
+  // Fail closed: a report without any header field is a format change (or a
+  // hook that did not run), never a scan result.
+  if (!messages(report).some((message) => typeof message['responseHeader'] === 'string')) {
+    throw new Error('DAST API scan report has no response header fields');
+  }
   const coverage = measureDastCoverage(report);
   if (coverage.successResponses === 0) {
     throw new Error(
@@ -73,7 +84,7 @@ export function assertDastCoverage(report: unknown): DastCoverage {
 function main(): void {
   const path = process.argv[2];
   if (path === undefined) {
-    console.error('usage: dast-coverage.ts <zap-report.json>');
+    console.error('usage: dast-coverage.ts <api_messages.json>');
     process.exit(2);
   }
   try {

@@ -335,6 +335,43 @@ async function assertCatalogReachable(client: SeedClient, cookie: string): Promi
 }
 
 /**
+ * ZAP's OpenAPI import fills each path parameter with its own name
+ * (`{blueprint}` becomes `blueprint`), so the seed creates, through the real
+ * API as the seeded admin, the blueprint and the entity those names address.
+ * Without them every generated request would answer 404 and the scan could
+ * never reach an operation that succeeds (`002` VCDM M18). Idempotent: a 409
+ * means the resource already exists.
+ */
+const ZAP_BLUEPRINT = 'blueprint';
+const ZAP_ENTITY = 'entity';
+
+async function seedPlaceholderResources(client: SeedClient, cookie: string): Promise<void> {
+  const post = async (path: string, body: unknown): Promise<void> => {
+    const response = await client.fetch(`${client.baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': 'orpc', cookie },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok && response.status !== 409) {
+      const code = await readErrorCode(response);
+      throw new Error(
+        `${path} failed with status ${String(response.status)}${code === undefined ? '' : ` (${code})`}.`,
+      );
+    }
+  };
+  await post('/v1/blueprints', {
+    identifier: ZAP_BLUEPRINT,
+    title: { en: 'ZAP blueprint' },
+    schema: { properties: { note: { type: 'string', title: { en: 'Note' } } } },
+  });
+  await post(`/v1/blueprints/${ZAP_BLUEPRINT}/entities`, {
+    identifier: ZAP_ENTITY,
+    title: 'ZAP entity',
+    spec: { properties: { note: 'seed' } },
+  });
+}
+
+/**
  * Task 28.3 (design Q82): the TOTP secret of the throwaway seed admin is kept
  * in the stack's private state directory (mode 0700, deleted with the stack),
  * so `--refresh` can renew the step-up marker right before the API scan.
@@ -351,9 +388,12 @@ async function main(): Promise<void> {
     password: bootstrapFirstAdmin(config),
   });
   await assertCatalogReachable(client, cookie);
+  await seedPlaceholderResources(client, cookie);
   writeFileSync(secretFile(process.env), secret, { mode: 0o600 });
   publishHeader(process.env, cookie);
-  console.log('ZAP session seeded (MFA-enrolled admin, catalog reachable).');
+  console.log(
+    'ZAP session seeded (MFA-enrolled admin, catalog reachable, placeholder blueprint and entity).',
+  );
 }
 
 /** Renews the seeded session's MFA step-up marker (a fresh TOTP verification). */

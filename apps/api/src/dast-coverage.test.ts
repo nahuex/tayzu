@@ -16,13 +16,16 @@
  *   operationResponses: number; // responses to `/v1/*` operation requests in the report
  *   successResponses: number;   // of those, the ones with a 2xx status
  * }
- * // Reads the ZAP JSON report (`-J`, `site[].alerts[].instances[]`, each
- * // instance carrying `uri`, `method` and the raw `responseheader` whose first
- * // line is the status line). Only instances whose URI path starts with `/v1/`
- * // are operations.
+ * // Reads `api_messages.json`, which scripts/ci/zap-api-hook.py writes from
+ * // ZAP's history (`core.messages`): `{ messages: [{ requestHeader,
+ * // responseHeader }] }`, each the first line of the raw header (the request
+ * // line `GET http://host/v1/x HTTP/1.1`, the status line). The `-J` report
+ * // has no headers and ZAP's alert reports never list a 2xx. Only messages
+ * // whose request path starts with `/v1/` are operations.
  * export function measureDastCoverage(report: unknown): DastCoverage;
  * // Throws an Error when `successResponses` is 0 (including an empty or
- * // malformed report: fail closed). The message carries counts only, never a
+ * // malformed report, or one with no `responseHeader` field at all: fail
+ * // closed). The message carries counts only, never a
  * // URI, header or body.
  * export function assertDastCoverage(report: unknown): DastCoverage;
  * ```
@@ -46,33 +49,28 @@ import { assertDastCoverage, measureDastCoverage } from '../../../scripts/ci/das
 
 const ORIGIN = 'http://localhost:3000';
 
-function instance(
-  method: string,
-  path: string,
-  status: number,
-  reason: string,
-): Record<string, string> {
+function instance(method: string, path: string, status: number, reason: string): Message {
   return {
-    uri: `${ORIGIN}${path}`,
-    method,
-    requestheader: `${method} ${path} HTTP/1.1\r\nhost: localhost:3000\r\n`,
-    responseheader: `HTTP/1.1 ${String(status)} ${reason}\r\ncontent-type: application/json\r\n`,
+    requestHeader: `${method} ${ORIGIN}${path} HTTP/1.1`,
+    responseHeader: `HTTP/1.1 ${String(status)} ${reason}`,
   };
 }
 
-function report(instances: Record<string, string>[]): unknown {
-  return {
-    '@programName': 'ZAP',
-    site: [
-      {
-        '@name': ORIGIN,
-        alerts: [{ pluginid: '10049', name: 'Storable and Cacheable Content', instances }],
-      },
-    ],
-  };
+/** The shape of a trimmed real `api_messages.json` (ZAP 2.17 `core.messages`). */
+type Message = Record<string, string>;
+
+/** A site-tree node ZAP lists without ever having sent it: status `0`. */
+const unsent: Message = {
+  requestHeader: `GET ${ORIGIN}/v1/blueprints HTTP/1.1`,
+  responseHeader: 'HTTP/1.0 0',
+};
+
+function report(messages: Message[]): unknown {
+  return { messages };
 }
 
 const onlyRefusals = report([
+  unsent,
   instance('GET', '/v1/entities', 401, 'Unauthorized'),
   instance('POST', '/v1/entities', 415, 'Unsupported Media Type'),
   instance('DELETE', '/v1/entities/abc', 401, 'Unauthorized'),
@@ -126,12 +124,28 @@ describe('DAST API scan: 2xx coverage check (task 13.13)', () => {
   it('fails closed on a 2xx-looking response that is not a status line', () => {
     const forged = report([
       {
-        uri: `${ORIGIN}/v1/entities`,
-        method: 'GET',
-        responseheader: 'x-note: HTTP/1.1 200 OK\r\n',
+        requestHeader: `GET ${ORIGIN}/v1/entities HTTP/1.1`,
+        responseHeader: 'x-note: HTTP/1.1 200 OK',
       },
     ]);
     expect(() => assertDastCoverage(forged)).toThrow();
+  });
+
+  it('fails closed when the report has no header fields at all', () => {
+    // The shape of ZAP's `-J` report: alert instances without any header.
+    const noHeaders = {
+      site: [
+        {
+          alerts: [
+            { instances: [{ uri: `${ORIGIN}/v1/entities`, method: 'GET', attack: '', param: '' }] },
+          ],
+        },
+      ],
+    };
+    expect(() => assertDastCoverage(noHeaders)).toThrow('no response header fields');
+    expect(() => assertDastCoverage(report([{ uri: `${ORIGIN}/v1/entities` }]))).toThrow(
+      'no response header fields',
+    );
   });
 
   it('the failure message carries counts only, never a URI or header', () => {
@@ -157,9 +171,10 @@ describe('dast.sh api-scan runs the check on its report (task 13.13)', () => {
   const end = script.indexOf('\ndown() {');
   const body = start >= 0 && end > start ? script.slice(start, end) : '';
 
-  it('invokes scripts/ci/dast-coverage.ts on api_report_json.json inside api_scan', () => {
+  it('invokes scripts/ci/dast-coverage.ts on api_messages.json inside api_scan', () => {
     expect(body).not.toBe('');
     expect(body).toContain('scripts/ci/dast-coverage.ts');
-    expect(body).toContain('api_report_json.json');
+    expect(body).toContain('api_messages.json');
+    expect(body).toContain('--hook');
   });
 });
