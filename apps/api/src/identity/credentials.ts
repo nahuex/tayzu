@@ -391,12 +391,12 @@ export async function rotateCredential(args: {
     // A deletion that held the lock first removed the account: nothing may be bound to it again.
     if (
       metadata.userId !== undefined &&
-      !(await serviceAccountExists(args.appPool, args.tenantId, metadata.userId))
+      !(await serviceAccountExistsOn(lockClient, args.tenantId, metadata.userId))
     ) {
       throw new CredentialTargetNotFoundError();
     }
     // The revocation state is read under the lock, so a concurrent rotation is seen.
-    const revoked = await readRevokedIds(args.appPool, args.tenantId);
+    const revoked = await readRevokedIdsOn(lockClient, args.tenantId);
     if (revoked.has(old.id)) {
       // A revoked credential is rotatable only when its service account has no active one.
       if (metadata.userId === undefined) throw new CredentialConflictError();
