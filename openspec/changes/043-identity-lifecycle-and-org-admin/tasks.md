@@ -3604,7 +3604,7 @@ SSO surfaces of M18) are recorded there with their justification.
       that only Better Auth's own check reads, and Cerbos stays the only decision point
       (`002` D1 rejects Better Auth `ac` doing authorization work). Verify: `pnpm lint`
       passes and the ADR carries the note and links design D8.
-- [ ] 16.4 Write `docs/adr/0020-cerbos-gates-invite-and-status-not-origin.md`
+- [x] 16.4 Write `docs/adr/0020-cerbos-gates-invite-and-status-not-origin.md`
       (design D3). Verify: same structure, linked from design D3.
 - [ ] 16.5 Write `docs/security/data-retention.md` (the file `045` later extends with the
       retention policy and the erasure statement of org deletion): the credential

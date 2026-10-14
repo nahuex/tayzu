@@ -1093,7 +1093,7 @@ untouched, D1) do not reactivate an existing membership.
   "forward-only" paragraph to describe emergent behavior — Tayzu encodes the
   invariant once.
 
-### D3. Cerbos, not origin, gates every operation here — ADR-0020
+### D3. Cerbos, not origin, gates every operation here — [ADR-0020](../../../docs/adr/0020-cerbos-gates-invite-and-status-not-origin.md)
 
 Port's docs state "only users with a UI/API origin can invite users and
 change their status" (`r1-port.md` §1.5) — i.e., they gate on _how_ the
