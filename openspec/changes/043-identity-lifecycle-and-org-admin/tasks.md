@@ -3558,7 +3558,7 @@ SSO surfaces of M18) are recorded there with their justification.
       any attribute, and the template matcher covering every route of D10 and
       the three `_user` templates (fifteen templates); and `docs/catalog/catalog-core.md`
       names the three `_user` route templates.
-- [ ] 15.6 Every lifecycle action emits its declared event: user and bootstrap
+- [x] 15.6 Every lifecycle action emits its declared event: user and bootstrap
       creation, status change, service-account creation, disable, enable and deletion,
       invitation resend and every invitation cancellation (each with the tenant and the
       acting admin), credential creation, rotation and revocation, a banned sign-in
