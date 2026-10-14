@@ -3858,7 +3858,7 @@ SSO surfaces of M18) are recorded there with their justification.
       and the user-sync adapter has connections (as in production) all completing within
       the cap with no statement timeout, and `credentials.int.test.ts` the same for
       `credentials.rotate`.
-- [ ] 16.12k A key that `identity.credentials.create` binds to a service account
+- [x] 16.12k A key that `identity.credentials.create` binds to a service account
       (`userId`) counts as a `created` credential mutation of kind `service_account`
       (Resolved decisions Q145 and Q149). Verify: `otel-smoke-check.int.test.ts` covers
       it.

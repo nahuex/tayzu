@@ -547,7 +547,12 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                     'tayzu.identity.credential.kind': kind,
                   },
                 });
-                recordCredentialMutation(rawTenantId(context), kind, 'created');
+                // A key bound to a service account counts as `service_account` (Q145).
+                recordCredentialMutation(
+                  rawTenantId(context),
+                  userId === undefined ? kind : 'service_account',
+                  'created',
+                );
                 return created;
               }),
             ),

@@ -3078,6 +3078,43 @@ describe('otel-smoke-check, 043: every identity operation is driven (task 15.2)'
     ).filter((point) => point['tayzu.identity.credential.kind'] !== 'service_account');
     expect(others).toEqual([]);
   }, 180_000);
+
+  it('credential metric (Q145, Q149): a key that credentials.create binds to a service account counts as created of kind service_account', async () => {
+    const tenant = await newTenant('Bound Credential Kind');
+    const context = adminContext(tenant);
+    const plain = routerWith(gateWith());
+
+    const identifier = `svc-bound-${randomUUID().slice(0, 8)}`;
+    const account = await plain.identity.serviceAccounts.create(
+      { body: { identifier } },
+      { context },
+    );
+    // One active key per service account (Q40): retire the creation key so the bound create is accepted.
+    await plain.identity.credentials.revoke(
+      { params: { credential: account.clientId } },
+      { context },
+    );
+    const bound = await plain.identity.credentials.create(
+      { body: { name: 'Bound key', kind: 'integration', userId: identifier } },
+      { context },
+    );
+    expect(bound.id).toBeTruthy();
+
+    const created = (
+      await tenantPoints('tayzu.identity.credential_mutations', tenant.organizationId)
+    )
+      .filter((point) => point['tayzu.identity.credential.mutation'] === 'created')
+      .map((point) => ({
+        kind: point['tayzu.identity.credential.kind'],
+        value: point['value'] as number,
+      }));
+    const countOf = (kind: string): number =>
+      created.filter((point) => point.kind === kind).reduce((sum, point) => sum + point.value, 0);
+    // The service account's own creation key and the bound key, both of kind service_account.
+    expect(countOf('service_account')).toBe(2);
+    expect(countOf('integration')).toBe(0);
+    expect(countOf('agent')).toBe(0);
+  }, 180_000);
 });
 
 describe('otel-smoke-check, 043: every declared identity signal appears with its declared attributes (task 15.2)', () => {
