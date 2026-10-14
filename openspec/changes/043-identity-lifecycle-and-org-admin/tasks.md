@@ -3758,7 +3758,7 @@ docs/architecture/system-diagram.md -o` produces a png, and each of the three
       which `002`'s code never emitted). Verify: `pnpm lint` passes
       and every resource kind of design D3, every event of the Observability
       contract, the six new scopes and the three reasons are listed.
-- [ ] 16.15 Update the package rules that this change makes stale.
+- [x] 16.15 Update the package rules that this change makes stale.
       `packages/authz/CLAUDE.md` says "Resource kinds are fixed" (four) and "empty
       scaffold... exports nothing yet", while `RESOURCE_KINDS` gains two and the
       package exports the resource kinds and attributes; and `apps/api/CLAUDE.md` says

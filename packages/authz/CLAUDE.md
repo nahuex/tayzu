@@ -3,22 +3,28 @@
 The Cerbos gRPC client wrapper, attribute builders, resource-kind constants,
 and ownership resolution. Global rules are in the root `CLAUDE.md`. The
 design is `openspec/changes/002-auth-and-rbac/design.md` (D7-D11); the
-behavior is `specs/auth-and-rbac/spec.md` in the same change. When code and
-design disagree, stop and ask.
+behavior is `specs/auth-and-rbac/spec.md` in the same change. Change `043`
+(D3) adds two resource kinds. When code and design disagree, stop and ask.
 
-## Scaffolding state
+## Exports
 
-Currently an empty scaffold (task 1.2): `src/index.ts` exports nothing yet,
-and `src/smoke.test.ts` only checks the entry point loads. Group 7 onward
-fills this in, task by task, per `tasks.md`.
+`src/index.ts` exports the Cerbos client (`createCerbosClient`), the
+resource-kind constants (`RESOURCE_KINDS`, `ResourceKind`), the attribute
+builder (`buildAttributes`), ownership resolution
+(`resolveEffectiveOwnerTeam`), the `PlanResources` filter (`planToFilter`) and
+the redaction helper (`redactUnreadable`). The telemetry contract of this
+package lives in `src/telemetry/contract.ts`.
 
 ## Boundaries
 
 - Cerbos is the **only** authorization decision point (D2, D7). This package
   never computes an allow/deny itself; it builds attributes, calls Cerbos,
   and maps the result.
-- Resource kinds are fixed: `catalog_blueprint`, `catalog_entity`, `team`,
-  `user`. `tenantId` is the first attribute of every check, and is a plain
+- Resource kinds are a closed set, declared once in `RESOURCE_KINDS`
+  (`src/resource-kinds.ts`): `catalog_blueprint`, `catalog_entity`, `team`,
+  `user`, plus `service_account` and `credential` from change `043` (design
+  D3). A new kind is a design decision with its own Cerbos policy
+  (Checkpoint 3), never an ad-hoc string. `tenantId` is the first attribute of every check, and is a plain
   attribute, never a Cerbos `scope` (D7) — the `same_tenant` derived role
   (`policies/derived_roles/`) is the defense-in-depth layer on top of
   Postgres RLS, not a replacement for it.
