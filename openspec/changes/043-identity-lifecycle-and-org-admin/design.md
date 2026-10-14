@@ -2185,7 +2185,7 @@ Every one of these reads goes through the single `auth-repository.ts` of D14.
 - _Alternative:_ a denormalized read table Tayzu maintains itself. Rejected:
   Better Auth's `apikey` table is already the source of truth.
 
-### D8. Credential create, rotate and revoke go through the revocation list — ADR-0018
+### D8. Credential create, rotate and revoke go through the revocation list — [ADR-0018](../../../docs/adr/0018-credential-rotation-immediate-cutover.md)
 
 Better Auth's `api-key` plugin has no rotate endpoint: rotation is "create a
 new key, retire the old one", done at the application layer, and **retiring
