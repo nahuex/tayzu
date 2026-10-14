@@ -490,4 +490,57 @@ describe('A temporary password grants only a password change (task 13.5, D13, Q3
       expect(await sessionCount(user.userId), 'no session row remains').toBe(0);
     }, 60_000);
   });
+
+  /**
+   * Task 16.11a (Resolved decisions Q36 and Q146; the security review's LOW-1): a
+   * session created while the marker was active is refused once the marker expires.
+   *
+   * Production symbols expected: the `/api/auth/*` before-hook of `auth.ts` and the
+   * `createContextResolver` of `context-resolver.ts` treat an expired marker
+   * (`hasExpiredTemporaryPasswordMarker`) like an active one for an existing session:
+   * `/v1` rejects with `CATALOG_CONTEXT_REQUIRED`, and every `/api/auth/*` route but
+   * `/sign-out` (`/change-password` included) is refused with a client error.
+   */
+  describe('an expired marker rejects an existing session (task 16.11a, Q36, Q146)', () => {
+    async function expireMarker(userId: string): Promise<void> {
+      await db.execute(
+        sql`update auth.verification set value = ${new Date(Date.now() - 60 * 1000).toISOString()} where identifier = ${`temp-password:${userId}`}`,
+      );
+    }
+
+    it('a session created under an active marker is refused on /v1, /list-sessions and /change-password once the marker expired, and /sign-out still answers', async () => {
+      const user = await newUser();
+      await writeMarker(user.userId, 60 * 60 * 1000);
+      const cookie = await signIn(user);
+
+      await expect(
+        resolveContext(new Headers({ cookie })),
+        'refused under the active marker',
+      ).rejects.toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+
+      await expireMarker(user.userId);
+
+      await expect(resolveContext(new Headers({ cookie }))).rejects.toMatchObject({
+        code: 'CATALOG_CONTEXT_REQUIRED',
+      });
+
+      const listSessions = await authRequest('/list-sessions', cookie, 'GET');
+      expect(listSessions.status, 'list-sessions is refused').toBeGreaterThanOrEqual(400);
+      expect(listSessions.status).toBeLessThan(500);
+
+      const change = await authRequest('/change-password', cookie, 'POST', {
+        currentPassword: user.password,
+        newPassword: generateTemporaryPassword(),
+      });
+      expect(change.status, 'change-password is refused').toBeGreaterThanOrEqual(400);
+      expect(change.status).toBeLessThan(500);
+      expect(await markerCount(user.userId), 'the marker stays').toBe(1);
+
+      const signOut = await authRequest('/sign-out', cookie, 'POST', {});
+      expect(signOut.status, 'sign-out still answers').toBe(200);
+
+      const after = await authRequest('/get-session', cookie, 'GET');
+      expect(await after.json(), 'the session no longer exists').toBeNull();
+    }, 60_000);
+  });
 });

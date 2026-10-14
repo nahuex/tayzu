@@ -2548,10 +2548,55 @@ describe('The accept route honors the temporary-password marker (task 13.5c, VCD
       'the membership exists after the marker is cleared',
     ).toBe(1);
   }, 60_000);
+
+  // Task 16.11a (Resolved decisions Q36 and Q146): a session opened under the marker
+  // that has since expired reads as none on the existing-account acceptance.
+  it('A session opened under a marker that has since expired cannot accept: the uniform rejection, session_required, nothing created', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, '9999-12-31T23:59:59Z')`,
+      [
+        randomUUID(),
+        `temp-password:${carol.userId}`,
+        new Date(Date.now() - 60 * 1000).toISOString(),
+      ],
+    );
+
+    const failure = await failureOf(flowOf().accept({ ...invitation, headers: carol.headers }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['session_required']);
+  }, 60_000);
 });
 
 /**
- * Task 8.5f (spec "Invitation acceptance", scenarios "An invitation does not
+ * Task 8.5f(spec "Invitation acceptance", scenarios "An invitation does not
  * outlive its inviter's authority" and "The inviter re-check is a Cerbos
  * decision"; design D4 step 2; Resolved decisions Q63 and Q108).
  *

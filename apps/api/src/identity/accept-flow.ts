@@ -15,6 +15,7 @@ import {
   AuthStepUpError,
   emitIdentityEvent,
   hasActiveTemporaryPasswordMarker,
+  hasExpiredTemporaryPasswordMarker,
   isIdle,
   recordIdentityMetric,
   toCerbosRole,
@@ -245,7 +246,12 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
       return undefined;
     }
     const markerHeld = await authContext
-      .then((context) => hasActiveTemporaryPasswordMarker(context.adapter, found.user.id))
+      .then(
+        async (context) =>
+          (await hasActiveTemporaryPasswordMarker(context.adapter, found.user.id)) ||
+          // Task 16.11a, Q146: a session opened under a since-expired marker reads as none.
+          (await hasExpiredTemporaryPasswordMarker(context.adapter, found.user.id)),
+      )
       .catch(() => true);
     if (markerHeld) return undefined;
     return { userId: found.user.id, sessionId: found.session.id, headers };

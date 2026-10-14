@@ -81,7 +81,10 @@
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
  */
-import { hasActiveTemporaryPasswordMarker } from './identity/temporary-password.js';
+import {
+  hasActiveTemporaryPasswordMarker,
+  hasExpiredTemporaryPasswordMarker,
+} from './identity/temporary-password.js';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { withTenantTransaction, type createPool } from '@tayzu/db';
 
@@ -652,7 +655,12 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     // Task 13.5, Q36: under a temporary-password marker nothing on `/v1` is reachable.
     // A failed lookup rejects (fail closed).
     const markerHeld = await contextOf(options.auth)
-      .then((context) => hasActiveTemporaryPasswordMarker(context.adapter, result.user.id))
+      .then(
+        async (context) =>
+          (await hasActiveTemporaryPasswordMarker(context.adapter, result.user.id)) ||
+          // Task 16.11a, Q146: an expired marker refuses the existing session too.
+          (await hasExpiredTemporaryPasswordMarker(context.adapter, result.user.id)),
+      )
       .catch(() => true);
     if (markerHeld) {
       rejectMissingContext();

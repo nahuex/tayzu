@@ -3749,7 +3749,7 @@ SSO surfaces of M18) are recorded there with their justification.
       Verify: the report is attached to the PR with zero open blocking gaps.
 - [ ] 16.11 Run `/security-review` on the branch and fix or justify every
       finding. Verify: the review output is attached to the PR.
-- [ ] 16.11a An **expired** temporary-password marker rejects an existing session, not
+- [x] 16.11a An **expired** temporary-password marker rejects an existing session, not
       only a new sign-in (Resolved decisions Q36 and Q146; the security review's LOW-1):
       `/v1` refuses the session as it refuses one under an active marker, the
       `/api/auth/*` before-hook refuses every route except `/sign-out`, `/change-password`

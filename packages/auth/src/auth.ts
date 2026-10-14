@@ -1228,6 +1228,24 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 message: 'PASSWORD_CHANGE_REQUIRED',
               });
             }
+            // Task 16.11a, Q36, Q146: once the marker has expired, a session opened
+            // under it reaches only `/sign-out`; `/change-password` is refused too.
+            if (
+              peek &&
+              ctx.path !== SIGN_OUT_PATH &&
+              (await hasExpiredTemporaryPasswordMarker(ctx.context.adapter, peek.user.id).catch(
+                () => true,
+              )) &&
+              // An unreadable marker counts as both; it keeps the active-marker allowance.
+              !(await hasActiveTemporaryPasswordMarker(ctx.context.adapter, peek.user.id).catch(
+                () => true,
+              ))
+            ) {
+              throw new APIError('FORBIDDEN', {
+                code: 'PASSWORD_CHANGE_REQUIRED',
+                message: 'PASSWORD_CHANGE_REQUIRED',
+              });
+            }
           }
           if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
             // Task 3.5, design D19: snapshot the session's current active
