@@ -18,7 +18,7 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1 and Q4-Q142 in `design.md` (there is no Q2 or
+Tasks follow the Resolved decisions Q1 and Q4-Q147 in `design.md` (there is no Q2 or
 Q3). The ninth amendment's two open questions are Q116 (the invitee is the actor of an
 acceptance, and the bootstrap records the operator's opaque id) and Q117
 (`catalog.audit.user_status_changed` records every status change, with the principal of
@@ -3511,6 +3511,20 @@ SSO surfaces of M18) are recorded there with their justification.
       `tayzu.auth.failure_reason` on `auth.security.login_failed` equal exactly
       `{bad_credentials, mfa_failed, account_disabled}`, and logging the banned sign-in
       as `bad_credentials` in a scratch branch makes it fail.
+- [ ] 15.2b The identity metrics follow Resolved decisions Q143, Q144 and Q145.
+      `tayzu.identity.invitations` counts `expired` once per acceptance attempt refused
+      because the invitation has expired, where `catalog.security.invitation_acceptance_denied`
+      is logged with `denial_reason` `expired`, and never records `rejected`;
+      `tayzu.identity.user_status_changes` carries `tayzu.actor.type` `user` for an
+      admin, a user on first sign-in or an invitee, and `system` for the reconcile, the
+      bootstrap and the ban hook; the key issued by `identity.serviceAccounts.create`
+      counts as a `created` credential mutation of kind `service_account`, and the
+      rotation and revocation of a service account's key carry the same kind. Verify:
+      `otel-smoke-check.int.test.ts` covers an expired invitation's acceptance recording
+      one `expired` data point and no `rejected` one, the actor type of a `setStatus`, a
+      reconcile and a ban-hook status change, and a service account's creation, the
+      rotation and the revocation of its key each recording a credential mutation of
+      kind `service_account`.
 - [x] 15.3 Extend the cardinality guard to `tayzu.identity.*` metrics: no
       attribute key outside the contract's allowed set. Verify: `otel-smoke-check`
       fails when a deliberately added `tayzu.identity.invitation.email` metric
@@ -3735,6 +3749,47 @@ SSO surfaces of M18) are recorded there with their justification.
       Verify: the report is attached to the PR with zero open blocking gaps.
 - [ ] 16.11 Run `/security-review` on the branch and fix or justify every
       finding. Verify: the review output is attached to the PR.
+- [ ] 16.11a An **expired** temporary-password marker rejects an existing session, not
+      only a new sign-in (Resolved decisions Q36 and Q146; the security review's LOW-1):
+      `/v1` refuses the session as it refuses one under an active marker, the
+      `/api/auth/*` before-hook refuses every route except `/sign-out`, `/change-password`
+      included, and the acceptance reads such a session as none. Verify:
+      `temporary-password.int.test.ts` covers a session created while the marker was
+      active being refused on `/v1`, on `/api/auth/list-sessions` and on
+      `/change-password` once the marker has expired, with `/sign-out` still answering,
+      and `invitation-accept.int.test.ts` an existing-account acceptance with such a
+      session answering the uniform rejection.
+- [ ] 16.11b Identity mutations never take a second pooled connection while their
+      transaction holds an advisory lock (Resolved decision Q147; the security review's
+      LOW-2): `createCredential`, `createServiceAccount` and `deleteServiceAccount` run
+      their nested reads (`serviceAccountExists`, `readRevokedIds` and the like) on the
+      client that holds the lock, so concurrent mutations of one tenant cannot exhaust
+      the `tayzu_app` pool and stall every tenant until the statement timeout. Verify:
+      `credentials.int.test.ts` covers more concurrent `credentials.create` calls of one
+      tenant than a pool built for the test with a small `max` has connections all
+      completing within the cap with no statement timeout, and
+      `service-accounts.int.test.ts` the same for `serviceAccounts.create`.
+- [ ] 16.11c The email gate and the token exchange fail closed (Resolved decision Q147;
+      VCDM O-5 and O-8): `recipientKeySecret` becomes a required option of
+      `createEmailTenantGate` (construction throws without it, so the recipient cap is
+      never silently skipped) and, with the mount switch on, `createApp` refuses to start
+      without `IDENTITY_TOKEN_HMAC_SECRET` in every environment (tests that mount the
+      routes provide one); `exchangeMachineToken` refuses, like an invalid credential,
+      a key whose metadata binds a `userId` when no `serviceAccountLookup` port is
+      given. Verify: `email-tenant-gate.test.ts` covers the construction throwing with
+      no or an empty secret, `mount-gate.int.test.ts` the start failing with the switch
+      on and no secret, and `token-exchange.int.test.ts` a service account's key
+      exchanged without the port being refused with no token.
+- [ ] 16.11d _(setup)_ Stale statements found by the VCDM re-run (Resolved decision
+      Q147; O-3, O-13, O-14): `docs/security/attack-surfaces.md` lists the back-channel
+      logout checks in the order the code runs them (the signature last), drops the
+      stale "Pinned image digests: Pending" row now that Dependabot tracks them, and
+      states that step-up runs before the role check on the high-risk routes (O-3); the
+      header comments of `apps/api/src/identity-router.ts` (it still says
+      "in-process only"), `apps/api/src/index.ts` and `packages/authz/src/index.ts` are
+      refreshed; the empty placeholder `apps/api/src/identity/invitations.ts` is deleted;
+      and the SBOM steps of `.github/workflows/ci.yml` lose `continue-on-error`. Verify:
+      `pnpm lint` and `pnpm typecheck` pass and none of the stale statements remains.
 - [ ] 16.12 `openspec validate 043-identity-lifecycle-and-org-admin --strict`
       passes, and design/specs/code agree (update design only if an implementation
       finding forced a change, noted in the PR). Verify: the command output is
@@ -3745,6 +3800,13 @@ SSO surfaces of M18) are recorded there with their justification.
       `apps/api`. Verify: `npx -y @mermaid-js/mermaid-cli -i
 docs/architecture/system-diagram.md -o` produces a png, and each of the three
       additions appears in the Mermaid source.
+- [ ] 16.13b _(setup)_ The system diagram is also rendered as one PNG per trust zone,
+      readable at normal zoom (Resolved decision Q147; VCDM O-12, SSA SEC01): each
+      trust-zone subgraph of the Mermaid source gets its own Mermaid block in
+      `docs/architecture/system-diagram.md` with that zone's nodes and the arrows that
+      cross its boundary (each with its protocol), rendered to
+      `docs/architecture/system-diagram-<zone>.png`, and the full diagram stays the
+      source of truth. Verify: each PNG exists, and the test of 16.7 still passes.
 - [ ] 16.14 Update `docs/catalog/auth-and-rbac.md` (`002` D17): the two new
       resource kinds and their actions in the taxonomy, the new spans, metrics and
       log events in the telemetry reference (with a pointer to the identity contract
