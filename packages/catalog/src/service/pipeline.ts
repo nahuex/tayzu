@@ -53,6 +53,7 @@ import {
   isCatalogError,
   type CatalogErrorCode,
 } from '../domain/errors.js';
+import { USER_ENTITY_IDENTIFIER_PLACEHOLDER } from '../telemetry/contract.js';
 import { pgErrorInfo } from '../persistence/db-errors.js';
 import {
   authzCheckDurationHistogram,
@@ -117,11 +118,19 @@ export interface CatalogOperationResult<Output> {
   readonly audit?: CatalogMutationAudit;
 }
 
+const USER_BLUEPRINT_IDENTIFIER = '_user';
+
 export interface CatalogOperationHandlerParams<Input> {
   readonly ctx: CatalogContext;
   /** From `withTenantTransaction`: `app.tenant_id` and `statement_timeout` are already set. */
   readonly client: PoolClient;
   readonly input: Input;
+  /**
+   * What `loadAttributes` returned for the authorization (task 13.6): `undefined`
+   * when it found no entity or the operation has no `loadAttributes`. A handler
+   * that writes re-verifies it after its own `FOR UPDATE`.
+   */
+  readonly authorizedAttributes: AuthorizationDeclaration['attributes'];
 }
 
 export type CatalogOperationHandler<Input, Output> = (
@@ -288,6 +297,15 @@ function emitInternalErrorLog(operationName: string, sanitized: Attributes): voi
   });
 }
 
+/**
+ * A `_user` entity's identifier is the member's email (or a service account's
+ * id), so telemetry and Cerbos requests carry one fixed placeholder instead
+ * (043 Q107, Q113, Q119). Other blueprints keep their identifier.
+ */
+export function maskUserIdentifier(blueprint: string, identifier: string): string {
+  return blueprint === USER_BLUEPRINT_IDENTIFIER ? USER_ENTITY_IDENTIFIER_PLACEHOLDER : identifier;
+}
+
 /** Design.md, log events table: `catalog.audit.mutation`, emitted after the transaction commits. */
 function emitAuditMutationLog(ctx: CatalogContext, audit: CatalogMutationAudit): void {
   const attributes: Record<string, string | number> = {
@@ -297,7 +315,10 @@ function emitAuditMutationLog(ctx: CatalogContext, audit: CatalogMutationAudit):
     'tayzu.catalog.mutation': audit.mutation,
     'tayzu.catalog.resource.kind': audit.resourceKind,
     'tayzu.catalog.blueprint.identifier': audit.blueprintIdentifier,
-    'tayzu.catalog.resource.identifier': audit.resourceIdentifier,
+    'tayzu.catalog.resource.identifier':
+      audit.resourceKind === 'entity'
+        ? maskUserIdentifier(audit.blueprintIdentifier, audit.resourceIdentifier)
+        : audit.resourceIdentifier,
     'tayzu.catalog.version': audit.version,
     'tayzu.catalog.change_event.seq': Number(audit.changeEventSeq),
   };
@@ -406,6 +427,24 @@ async function authorize(
     [AUTHZ_KIND_ATTRIBUTE]: kind,
   });
 
+  recordAuthzDecision(ctx, kind, action, allowed);
+  if (!allowed) throw new AuthorizationError();
+}
+
+/**
+ * Counts one authorization decision and, on a deny, emits
+ * `catalog.security.authz_denied`. Shared with the identity router (043 task
+ * 5.3), so there is a single instrument. Carries opaque identifiers only.
+ */
+export function recordAuthzDecision(
+  ctx: {
+    readonly tenantId: string;
+    readonly actor: { readonly type: string; readonly id: string };
+  },
+  kind: string,
+  action: string,
+  allowed: boolean,
+): void {
   authzDecisionsCounter.add(1, {
     [TENANT_ATTRIBUTE]: ctx.tenantId,
     [AUTHZ_KIND_ATTRIBUTE]: kind,
@@ -425,7 +464,6 @@ async function authorize(
       [AUTHZ_ACTION_ATTRIBUTE]: action,
     },
   });
-  throw new AuthorizationError();
 }
 
 function elapsedSeconds(startedAtMillis: number): number {
@@ -475,6 +513,7 @@ export function defineCatalogOperation<Input, Output>(
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
+        let authorized: AuthorizationDeclaration['attributes'];
         if (typeof authorization === 'function') {
           const declaration = authorization({ ctx, input });
           const loaded =
@@ -483,6 +522,7 @@ export function defineCatalogOperation<Input, Output>(
               : await withTenantTransaction(pool, ctx, (client) =>
                   loadAttributes({ ctx, client, input }),
                 );
+          authorized = loaded;
           const missing =
             loadAttributes !== undefined &&
             loaded === undefined &&
@@ -504,7 +544,7 @@ export function defineCatalogOperation<Input, Output>(
         const result = await withTenantTransaction(
           pool,
           ctx,
-          (client) => handler({ ctx, client, input }),
+          (client) => handler({ ctx, client, input, authorizedAttributes: authorized }),
           {
             statementTimeoutMs,
           },

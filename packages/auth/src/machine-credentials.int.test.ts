@@ -104,6 +104,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
 
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -115,11 +116,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // (erased at compile time, `verbatimModuleSyntax`), so it carries no runtime
 // ordering weight -- same reasoning as every other int test file in this
 // package.
-import {
-  bootstrapTestTenant,
-  createAdminUser,
-  signInAdminUser,
-} from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser, testAppPool } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 5.1): does not exist yet (module doc comment,
@@ -258,6 +255,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
     // the organization's own creator -- holds Better Auth's default "owner"
     // organization role (see this file's own module doc comment).
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -269,7 +267,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
 
     // WHEN "a machine credential is created".
     const created: CreatedMachineCredential = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'CI pipeline credential',
       actorKind: 'integration',
@@ -388,6 +386,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
     // Setup: same admin-creation and credential-creation path as the
     // existing test above.
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -395,9 +394,8 @@ describe('Machine credentials (task 5.1, design D5)', () => {
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    const headers = new Headers({ cookie: admin.cookie });
     const created: CreatedMachineCredential = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'CI pipeline credential',
       actorKind: 'integration',
@@ -417,7 +415,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
 
     // WHEN "an admin revokes the credential" (task 5.2's own Verify clause).
     await revokeMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       id: created.id,
       pool: appPool,
       tenantId: admin.organizationId,
@@ -511,11 +509,12 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
   }
 
   async function newCredential(): Promise<{
-    headers: Headers;
+    adminUserId: string;
     tenantId: string;
     created: CreatedMachineCredential;
   }> {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -523,25 +522,29 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    const headers = new Headers({ cookie: admin.cookie });
     const created = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'CI pipeline credential',
       actorKind: 'integration',
     });
-    return { headers, tenantId: admin.organizationId, created };
+    return { adminUserId: admin.userId, tenantId: admin.organizationId, created };
   }
 
   it('Revocation is recorded in the revocation list, not only disabled at the apiKey layer', async () => {
-    const { headers, tenantId, created } = await newCredential();
+    const { adminUserId, tenantId, created } = await newCredential();
     expect(
       await revocationRows(tenantId, created.id),
       'no revocation row exists before the credential is revoked',
     ).toHaveLength(0);
 
     // WHEN the admin revokes the credential.
-    await revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId });
+    await revokeMachineCredential(auth, {
+      userId: adminUserId,
+      id: created.id,
+      pool: appPool,
+      tenantId,
+    });
 
     // THEN the apiKey layer no longer verifies it ...
     const verified = await api.verifyApiKey({
@@ -561,22 +564,37 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
   });
 
   it('A repeated revoke does not fail and leaves a single revocation row', async () => {
-    const { headers, tenantId, created } = await newCredential();
-    await revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId });
+    const { adminUserId, tenantId, created } = await newCredential();
+    await revokeMachineCredential(auth, {
+      userId: adminUserId,
+      id: created.id,
+      pool: appPool,
+      tenantId,
+    });
     await expect(
-      revokeMachineCredential(auth, { headers, id: created.id, pool: appPool, tenantId }),
+      revokeMachineCredential(auth, {
+        userId: adminUserId,
+        id: created.id,
+        pool: appPool,
+        tenantId,
+      }),
     ).resolves.toBeUndefined();
     expect(await revocationRows(tenantId, created.id)).toHaveLength(1);
   });
 
   it('Revocation fails closed: a failed revocation write never leaves the apiKey disabled without a row', async () => {
-    const { headers, tenantId, created } = await newCredential();
+    const { adminUserId, tenantId, created } = await newCredential();
     // A pool that can no longer run queries: the revocation insert must fail.
     const brokenPool = connect(databaseUrl()).$client;
     await endQuietly(brokenPool);
 
     await expect(
-      revokeMachineCredential(auth, { headers, id: created.id, pool: brokenPool, tenantId }),
+      revokeMachineCredential(auth, {
+        userId: adminUserId,
+        id: created.id,
+        pool: brokenPool,
+        tenantId,
+      }),
       'the operation rejects when the revocation row cannot be written',
     ).rejects.toThrow();
 
@@ -612,18 +630,12 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
     await (auth.api as AddMemberApiSurface).addMember({
       body: { userId: member.userId, organizationId: tenantId, role: 'member' },
     });
-    const signedIn = await signInAdminUser(auth, {
-      email: memberEmail,
-      password: TEST_PASSWORD,
-      ip: randomIp(),
-    });
-    const memberHeaders = new Headers({ cookie: signedIn.cookie });
 
     // WHEN the member (no apiKey "update" permission) revokes ...
     // THEN it is rejected with Better Auth's own permission error, unchanged.
     await expect(
       revokeMachineCredential(auth, {
-        headers: memberHeaders,
+        userId: member.userId,
         id: created.id,
         pool: appPool,
         tenantId,
@@ -658,5 +670,240 @@ describe('Machine credential revocation list (task 5.6, design D21)', () => {
       // @ts-expect-error `pool` and `tenantId` are required
       revokeMachineCredential(auth, { headers: new Headers(), id: 'x' });
     expect(typeof never).toBe('function');
+  });
+});
+
+/**
+ * `043` task 13.1 (`002` residual risk, M9): create and revoke are gated by
+ * Cerbos (the `credential` policy) in the identity operation; Better Auth's own
+ * organization-permission check still runs headerless with `body.userId` and must
+ * neither refuse a Better Auth `admin` member (not only `owner`) nor admit a plain
+ * `member`. Cerbos itself is covered by the policy suite, not here.
+ */
+describe('Machine credential create and revoke by Better Auth role (task 13.1)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    api = apiOf(auth);
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  async function tenantWithMember(role: 'admin' | 'member'): Promise<{
+    tenantId: string;
+    ownerUserId: string;
+    memberUserId: string;
+  }> {
+    const owner = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_ADMIN_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Machine Credential Role Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    const member = await createAdminUser(auth, {
+      name: `Org ${role}`,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+    });
+    await (auth.api as AddMemberApiSurface).addMember({
+      body: { userId: member.userId, organizationId: owner.organizationId, role },
+    });
+    return {
+      tenantId: owner.organizationId,
+      ownerUserId: owner.userId,
+      memberUserId: member.userId,
+    };
+  }
+
+  async function revocationCount(tenantId: string, id: string): Promise<number> {
+    return withTenantTransaction(appPool, { tenantId }, async (client) => {
+      const result = await client.query(
+        'select 1 from machine_credential_revocation where credential_id = $1',
+        [id],
+      );
+      return result.rows.length;
+    });
+  }
+
+  it('a non-admin member is denied create and writes no key', async () => {
+    const { tenantId, memberUserId } = await tenantWithMember('member');
+
+    await expect(
+      createMachineCredential(auth, {
+        userId: memberUserId,
+        organizationId: tenantId,
+        name: 'Denied credential',
+        actorKind: 'integration',
+      }),
+    ).rejects.toMatchObject({
+      status: 'FORBIDDEN',
+      body: { code: 'INSUFFICIENT_API_KEY_PERMISSIONS' },
+    });
+  });
+
+  it('a non-admin member is denied revoke: no revocation row and the key stays enabled', async () => {
+    const { tenantId, ownerUserId, memberUserId } = await tenantWithMember('member');
+    const created = await createMachineCredential(auth, {
+      userId: ownerUserId,
+      organizationId: tenantId,
+      name: 'Owner credential',
+      actorKind: 'agent',
+    });
+
+    await expect(
+      revokeMachineCredential(auth, {
+        userId: memberUserId,
+        id: created.id,
+        pool: appPool,
+        tenantId,
+      }),
+    ).rejects.toMatchObject({
+      status: 'FORBIDDEN',
+      body: { code: 'INSUFFICIENT_API_KEY_PERMISSIONS' },
+    });
+    expect(await revocationCount(tenantId, created.id)).toBe(0);
+    const verified = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(verified.valid).toBe(true);
+  });
+
+  it('a Better Auth admin member (not only owner) passes the Better Auth check for create and revoke', async () => {
+    const { tenantId, memberUserId } = await tenantWithMember('admin');
+
+    const created = await createMachineCredential(auth, {
+      userId: memberUserId,
+      organizationId: tenantId,
+      name: 'Admin credential',
+      actorKind: 'integration',
+      metadata: { createdBy: 'opaque-admin-id' },
+    });
+    expect(created.organizationId).toBe(tenantId);
+    expect(created.secret.length).toBeGreaterThan(0);
+    expect(
+      (
+        await api.verifyApiKey({
+          body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+        })
+      ).valid,
+    ).toBe(true);
+
+    await revokeMachineCredential(auth, {
+      userId: memberUserId,
+      id: created.id,
+      pool: appPool,
+      tenantId,
+    });
+    expect(await revocationCount(tenantId, created.id)).toBe(1);
+    expect(
+      (
+        await api.verifyApiKey({
+          body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+        })
+      ).valid,
+    ).toBe(false);
+  });
+});
+
+/**
+ * `043` task 13.7 (`002` residual risk; design D8, Resolved decision Q44; task 9.5):
+ * keys created through the machine-credential path get the plugin-level per-key rate
+ * limit (60 per hour by default, configurable) and no stored first characters, with
+ * the headerless call. Verify: "covers the configured limit and an empty stored start
+ * on a created key."
+ *
+ * Expected production symbols: `createAuth({ ..., machineCredentialRateLimit: { max,
+ * timeWindowMs } })` (`./auth.ts`); `createMachineCredential` (headerless, unchanged).
+ */
+describe('Machine credential rate limit and stored start (task 13.7)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let api: AuthApiSurface;
+  const LIMIT = 3;
+  const WINDOW_MS = 3_600_000;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      machineCredentialRateLimit: { max: LIMIT, timeWindowMs: WINDOW_MS },
+    });
+    api = apiOf(auth);
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  async function newCredential(): Promise<CreatedMachineCredential> {
+    const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_ADMIN_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Machine Credential Limit Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'Limited credential',
+      actorKind: 'integration',
+    });
+  }
+
+  it('a created key is limited to the configured number of verifications per window', async () => {
+    const created = await newCredential();
+
+    for (let i = 0; i < LIMIT; i += 1) {
+      const result = await api.verifyApiKey({
+        body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+      });
+      expect(result.valid, `verification ${String(i + 1)} is within the limit`).toBe(true);
+    }
+    const over = await api.verifyApiKey({
+      body: { key: created.secret, configId: MACHINE_CREDENTIAL_CONFIG_ID },
+    });
+    expect(over.valid, 'the verification beyond the configured limit is refused').toBe(false);
+
+    const rows = await db
+      .select()
+      .from(authSchema.apikey)
+      .where(eq(authSchema.apikey.id, created.id));
+    expect(rows[0]?.rateLimitEnabled, 'the limit is enabled on the stored key').toBe(true);
+    expect(rows[0]?.rateLimitMax, 'the configured maximum is copied into the key').toBe(LIMIT);
+    expect(rows[0]?.rateLimitTimeWindow, 'the window is stored in milliseconds').toBe(WINDOW_MS);
+  });
+
+  it('a created key stores no first characters of its secret', async () => {
+    const created = await newCredential();
+
+    const rows = await db
+      .select()
+      .from(authSchema.apikey)
+      .where(eq(authSchema.apikey.id, created.id));
+    expect(rows).toHaveLength(1);
+    const start = rows[0]?.start;
+    expect(start === null || start === '', 'the stored start is empty').toBe(true);
+    expect(rows[0]?.key, 'the stored key is hashed, not the secret').not.toBe(created.secret);
   });
 });

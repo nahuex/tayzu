@@ -28,8 +28,10 @@ flowchart TB
     subgraph productActors["Product actors"]
         direction TB
         user(["End user (human)"])
+        admin(["Administrator (human)<br/>organization administrator role"])
         agent(["AI agent"])
         integ(["Integration<br/>GitHub, Jira Cloud, Azure DevOps, Aikido,<br/>Orca Security, Escape, CodeRabbit"])
+        invitee(["Invitee (human)<br/>with their mailbox"])
     end
 
     subgraph delivery["Development and delivery (outside the product boundary)"]
@@ -38,6 +40,7 @@ flowchart TB
         dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
         gh["GitHub repository<br/>nahuex/tayzu"]
         npm["npm registry"]
+        operator(["Platform operator (human)<br/>starts the identity jobs, not an Administrator"])
     end
 
     subgraph tayzu["Tayzu (product boundary)"]
@@ -52,6 +55,11 @@ flowchart TB
                 ssoApi["Visma Connect sign-in and callback<br/>/api/auth/sign-in/social<br/>/api/auth/callback/visma-connect<br/>/api/auth/link-social · /api/auth/unlink-account"]
                 bclApi["Back-channel logout endpoint<br/>POST /v1/auth/visma-connect/backchannel-logout"]
                 reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+                inviteApi["Invitation routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+                acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+                userApi["User lifecycle routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>PUT /v1/users/{user}/status<br/>POST /v1/users<br/>POST /v1/users/{user}/sso-account<br/>DELETE /v1/users/{user}/sso-account"]
+                saApi["Service account routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/service-accounts<br/>DELETE /v1/service-accounts/{user}"]
+                credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
             end
             authn["Better Auth (002)<br/>in-process library"]
             cerbos["Cerbos PDP sidecar (002)<br/>same ACA revision, loopback only<br/>no external arrow<br/>gRPC uses TLS on any other address"]
@@ -80,7 +88,18 @@ flowchart TB
         llm["LLM API: Anthropic Claude<br/>via DecisionProvider (004/006/014)"]
         toolApis["Integration tool APIs<br/>GitHub, Jira Cloud, Azure DevOps, Aikido, Escape"]
         visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+        emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+        ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
+        pwned(["Pwned Passwords (043)<br/>api.pwnedpasswords.com range API"])
         kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+    end
+
+    subgraph identityJobs["Identity jobs (043), started by the platform operator"]
+        direction TB
+        backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+        cerbosBackfill["Cerbos sidecar of the backfill job<br/>own container, loopback only"]
+        reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+        cerbosReconcile["Cerbos sidecar of the reconcile job<br/>own container, loopback only"]
     end
 
     subgraph legend["Legend"]
@@ -126,6 +145,27 @@ flowchart TB
     dast -->|"HTTP on localhost (ZAP, seeded session cookie):<br/>/healthz, /v1 and /api/auth/*; safe mode for the API scan"| api
     dast -->|"PostgreSQL over verified TLS (per-run CA, sslmode=verify-full):<br/>owner migrates, apps/api runs as tayzu_app and tayzu_auth"| pg
 
+    %% Current interactions (043)
+    admin -->|"HTTPS (browser, session cookie, step-up): invitations"| inviteApi
+    admin -->|"HTTPS (browser, session cookie, step-up): user lifecycle"| userApi
+    agent -->|"HTTPS (Bearer machine access token): service accounts"| saApi
+    admin -->|"HTTPS (browser, session cookie, step-up): credential rotation, revoke, create"| credApi
+    agent -->|"HTTPS (Bearer machine access token): credential rotation, revoke, create"| credApi
+    inviteApi -->|"HTTPS (ACS egress, Communication Services email API): invitation email"| emailProvider
+    emailProvider -->|"SMTP (invitation email delivered to the mailbox)"| invitee
+    invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
+    authn -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>haveIBeenPwned plugin on the BREACH_CHECKED_PATHS"| pwned
+    acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>createUser of the new-account path, through Better Auth"| pwned
+    api -->|"OTLP/HTTP (traces, metrics, logs), only when<br/>OTEL_EXPORTER_OTLP_ENDPOINT is set; collector chosen in 010"| monitor
+    ci -->|"HTTPS (docker pull of the Cerbos and ZAP images by digest)"| ghcr
+    dev -->|"HTTPS (docker pull of the Cerbos image:<br/>compose, start-cerbos.sh, policy:compile)"| ghcr
+    operator -->|"CLI (pnpm tsx, backfill job)"| backfillJob
+    operator -->|"CLI (pnpm tsx, reconcile job)"| reconcileJob
+    backfillJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    reconcileJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    backfillJob -->|"gRPC on a loopback link, no TLS"| cerbosBackfill
+    reconcileJob -->|"gRPC on a loopback link, no TLS"| cerbosReconcile
+
     %% Planned interactions
     agent -.->|"MCP Streamable HTTP over HTTPS"| mcp
     integ -.->|"HTTPS (inbound webhooks)"| intg
@@ -141,6 +181,7 @@ flowchart TB
     acaEnv -.->|"HTTPS (secret references, managed identity,<br/>resolved into environment variables at container start)"| kv
     ci -.->|"HTTPS (deployment pipeline reads and rotates secret versions)"| kv
     acaEnv -.->|"HTTPS (image pull, managed identity)"| acr
+    acaEnv -.->|"HTTPS (image pull of the Cerbos sidecar and the job sidecars)"| ghcr
     ci -.->|"HTTPS (image push)"| acr
     ci -.->|"HTTPS (Azure Resource Manager:<br/>az containerapp update)"| acaEnv
     dev -.->|"HTTPS (Azure portal / CLI, Entra ID)"| azure
@@ -150,17 +191,489 @@ flowchart TB
     classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
     classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
 
-    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,authn,cerbos,lgCurrent,lgStore current
+    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,userApi,saApi,credApi,backfillJob,reconcileJob,cerbosBackfill,cerbosReconcile,authn,cerbos,lgCurrent,lgStore current
     class mcp,workers,intg,redis,monitor,acr,lgPlanned planned
-    class user,agent,integ,visma,kv,dev,ci,dast,system,lgActor actor
-    class gh,npm,llm,toolApis,lgExternal externalSys
+    class user,admin,agent,integ,invitee,operator,visma,kv,dev,ci,dast,system,lgActor actor
+    class gh,npm,ghcr,llm,toolApis,emailProvider,pwned,lgExternal externalSys
 
     style tayzu fill:#fbfdff,stroke:#1f5f99,stroke-width:3px
     style acaEnv fill:#fafafa,stroke:#777777,stroke-dasharray:6 4
     style azure fill:#fafafa,stroke:#777777,stroke-dasharray:6 4
     style apiApp fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+    style identityJobs fill:#f3f8fd,stroke:#1f5f99
     style core fill:#f3f8fd,stroke:#1f5f99
     style legend fill:#ffffff,stroke:#bbbbbb
+```
+
+## Diagrams per trust zone
+
+The full diagram above is the source of truth. It is also rendered once per
+trust zone, so that each PNG stays readable at normal zoom (SSA SEC01, VCDM
+O-12, Resolved decision Q147 of ). Each block below draws the nodes of one
+zone and only the arrows that cross its boundary, each with its protocol.
+Nodes drawn outside the zone box belong to another zone. Arrows between two
+nodes of the same zone appear only in the full diagram. Read the colours and
+arrow styles in the [Legend](#legend). Each block is rendered to
+`docs/architecture/system-diagram-<zone>.png`.
+
+### Product actors
+
+Who reaches Tayzu, and the surfaces they reach. PNG: `system-diagram-product-actors.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Product actors"]
+        direction TB
+        user(["End user (human)"])
+        admin(["Administrator (human)<br/>organization administrator role"])
+        agent(["AI agent"])
+        integ(["Integration<br/>GitHub, Jira Cloud, Azure DevOps, Aikido,<br/>Orca Security, Escape, CodeRabbit"])
+        invitee(["Invitee (human)<br/>with their mailbox"])
+        user ~~~ admin
+        admin ~~~ agent
+        agent ~~~ integ
+        integ ~~~ invitee
+    end
+
+    catalogApi["/v1 catalog API<br/>12 oRPC routes under /v1/blueprints"]
+    authApi["Better Auth allowlisted routes<br/>/api/auth/* (deny by default)<br/>including public GET /api/auth/jwks"]
+    healthApi["GET /healthz<br/>liveness only, unauthenticated"]
+    visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+    tokenApi["POST /v1/auth/token<br/>machine credential exchange"]
+    reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+    inviteApi["Invitation routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+    userApi["User lifecycle routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>PUT /v1/users/{user}/status<br/>POST /v1/users<br/>POST /v1/users/{user}/sso-account<br/>DELETE /v1/users/{user}/sso-account"]
+    saApi["Service account routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/service-accounts<br/>DELETE /v1/service-accounts/{user}"]
+    credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
+    emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+    acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+    mcp["MCP server (013)<br/>MCP endpoint"]
+    intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+
+    user -->|"HTTPS (browser, session cookie)"| catalogApi
+    user -->|"HTTPS (browser, sign-in, session, MFA; anonymous JWKS read)"| authApi
+    user -->|"HTTPS (anonymous liveness probe)"| healthApi
+    user -->|"HTTPS (browser redirect to sign in and back)"| visma
+    agent -->|"HTTPS (Bearer machine access token)"| catalogApi
+    agent -->|"HTTPS (client id and secret)"| tokenApi
+    user -->|"HTTPS (browser redirect back from the step-up re-authorization)"| reauthApi
+    admin -->|"HTTPS (browser, session cookie, step-up): invitations"| inviteApi
+    admin -->|"HTTPS (browser, session cookie, step-up): user lifecycle"| userApi
+    agent -->|"HTTPS (Bearer machine access token): service accounts"| saApi
+    admin -->|"HTTPS (browser, session cookie, step-up): credential rotation, revoke, create"| credApi
+    agent -->|"HTTPS (Bearer machine access token): credential rotation, revoke, create"| credApi
+    emailProvider -->|"SMTP (invitation email delivered to the mailbox)"| invitee
+    invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
+    agent -.->|"MCP Streamable HTTP over HTTPS"| mcp
+    integ -.->|"HTTPS (inbound webhooks)"| intg
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class catalogApi,authApi,healthApi,tokenApi,reauthApi,inviteApi,userApi,saApi,credApi,acceptApi current
+    class mcp,intg planned
+    class user,admin,agent,integ,invitee,visma actor
+    class emailProvider externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Development and delivery (outside the product boundary)
+
+Developers, CI and the platform operator, outside the product boundary. PNG: `system-diagram-delivery.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Development and delivery (outside the product boundary)"]
+        direction TB
+        dev(["Developer<br/>humans and their Claude Code sessions"])
+        ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+        dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
+        gh["GitHub repository<br/>nahuex/tayzu"]
+        npm["npm registry"]
+        operator(["Platform operator (human)<br/>starts the identity jobs, not an Administrator"])
+        dev ~~~ ci
+        ci ~~~ dast
+        dast ~~~ gh
+        gh ~~~ npm
+        npm ~~~ operator
+    end
+
+    catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
+    db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
+    api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+    pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+    ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
+    backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+    reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+    kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+    acr["Azure Container Registry (010)"]
+    acaEnv["Azure Container Apps environment (010)"]
+    azure["Azure platform services (010)"]
+
+    dev -->|"in-process call (local Vitest run)"| catalog
+    ci -->|"in-process call (Vitest test run)"| catalog
+    ci -->|"in-process call (pnpm db:migrate)"| db
+    dast -->|"HTTP on localhost (ZAP, seeded session cookie):<br/>/healthz, /v1 and /api/auth/*; safe mode for the API scan"| api
+    dast -->|"PostgreSQL over verified TLS (per-run CA, sslmode=verify-full):<br/>owner migrates, apps/api runs as tayzu_app and tayzu_auth"| pg
+    ci -->|"HTTPS (docker pull of the Cerbos and ZAP images by digest)"| ghcr
+    dev -->|"HTTPS (docker pull of the Cerbos image:<br/>compose, start-cerbos.sh, policy:compile)"| ghcr
+    operator -->|"CLI (pnpm tsx, backfill job)"| backfillJob
+    operator -->|"CLI (pnpm tsx, reconcile job)"| reconcileJob
+    ci -.->|"HTTPS (deployment pipeline reads and rotates secret versions)"| kv
+    ci -.->|"HTTPS (image push)"| acr
+    ci -.->|"HTTPS (Azure Resource Manager:<br/>az containerapp update)"| acaEnv
+    dev -.->|"HTTPS (Azure portal / CLI, Entra ID)"| azure
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class catalog,db,api,pg,backfillJob,reconcileJob current
+    class acr planned
+    class dev,ci,dast,operator,kv actor
+    class gh,npm,ghcr externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Azure Container Apps environment (010): API and sidecars
+
+`apps/api`, its in-process libraries and its Cerbos sidecar, plus the planned workers, MCP server and integration adapters. Arrows between nodes of this zone are only in the full diagram. PNG: `system-diagram-api-app.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Azure Container Apps environment (010): API and sidecars"]
+        direction TB
+        api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+        catalogApi["/v1 catalog API<br/>12 oRPC routes under /v1/blueprints"]
+        healthApi["GET /healthz<br/>liveness only, unauthenticated"]
+        authApi["Better Auth allowlisted routes<br/>/api/auth/* (deny by default)<br/>including public GET /api/auth/jwks"]
+        tokenApi["POST /v1/auth/token<br/>machine credential exchange"]
+        ssoApi["Visma Connect sign-in and callback<br/>/api/auth/sign-in/social<br/>/api/auth/callback/visma-connect<br/>/api/auth/link-social · /api/auth/unlink-account"]
+        bclApi["Back-channel logout endpoint<br/>POST /v1/auth/visma-connect/backchannel-logout"]
+        reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+        inviteApi["Invitation routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+        acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+        userApi["User lifecycle routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>PUT /v1/users/{user}/status<br/>POST /v1/users<br/>POST /v1/users/{user}/sso-account<br/>DELETE /v1/users/{user}/sso-account"]
+        saApi["Service account routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/service-accounts<br/>DELETE /v1/service-accounts/{user}"]
+        credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
+        authn["Better Auth (002)<br/>in-process library"]
+        cerbos["Cerbos PDP sidecar (002)<br/>same ACA revision, loopback only<br/>no external arrow<br/>gRPC uses TLS on any other address"]
+        mcp["MCP server (013)<br/>MCP endpoint"]
+        workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+        intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+        api ~~~ catalogApi
+        catalogApi ~~~ healthApi
+        healthApi ~~~ authApi
+        authApi ~~~ tokenApi
+        tokenApi ~~~ ssoApi
+        ssoApi ~~~ bclApi
+        bclApi ~~~ reauthApi
+        reauthApi ~~~ inviteApi
+        inviteApi ~~~ acceptApi
+        acceptApi ~~~ userApi
+        userApi ~~~ saApi
+        saApi ~~~ credApi
+        credApi ~~~ authn
+        authn ~~~ cerbos
+        cerbos ~~~ mcp
+        mcp ~~~ workers
+        workers ~~~ intg
+    end
+
+    user(["End user (human)"])
+    agent(["AI agent"])
+    visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+    db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
+    catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
+    dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
+    admin(["Administrator (human)<br/>organization administrator role"])
+    emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+    invitee(["Invitee (human)<br/>with their mailbox"])
+    pwned(["Pwned Passwords (043)<br/>api.pwnedpasswords.com range API"])
+    monitor["Azure Monitor / Application Insights (010)<br/>centralized logging and telemetry"]
+    integ(["Integration<br/>GitHub, Jira Cloud, Azure DevOps, Aikido,<br/>Orca Security, Escape, CodeRabbit"])
+    toolApis["Integration tool APIs<br/>GitHub, Jira Cloud, Azure DevOps, Aikido, Escape"]
+    redis[("Redis (004)<br/>Azure Cache for Redis (010)")]
+    llm["LLM API: Anthropic Claude<br/>via DecisionProvider (004/006/014)"]
+    kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+    acr["Azure Container Registry (010)"]
+    ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+
+    user -->|"HTTPS (browser, session cookie)"| catalogApi
+    user -->|"HTTPS (browser, sign-in, session, MFA; anonymous JWKS read)"| authApi
+    user -->|"HTTPS (anonymous liveness probe)"| healthApi
+    agent -->|"HTTPS (Bearer machine access token)"| catalogApi
+    agent -->|"HTTPS (client id and secret)"| tokenApi
+    ssoApi -->|"outbound HTTPS: discovery, authorize redirect,<br/>token, userinfo, JWKS"| visma
+    visma -->|"inbound HTTPS: callback with code and state<br/>(response_mode form_post via the browser)"| ssoApi
+    user -->|"HTTPS (browser redirect back from the step-up re-authorization)"| reauthApi
+    visma -->|"inbound HTTPS: step-up callback with code and state<br/>(query or form_post via the browser)"| reauthApi
+    reauthApi -->|"outbound HTTPS: one token exchange<br/>(5-second timeout)"| visma
+    visma -->|"inbound-only HTTPS POST: logout_token<br/>(public, no cookie, unauthenticated by design)"| bclApi
+    authn -->|"in-process call (Drizzle adapter, role tayzu_auth)"| db
+    api -->|"in-process call (oRPC OpenAPIHandler)"| catalog
+    dast -->|"HTTP on localhost (ZAP, seeded session cookie):<br/>/healthz, /v1 and /api/auth/*; safe mode for the API scan"| api
+    admin -->|"HTTPS (browser, session cookie, step-up): invitations"| inviteApi
+    admin -->|"HTTPS (browser, session cookie, step-up): user lifecycle"| userApi
+    agent -->|"HTTPS (Bearer machine access token): service accounts"| saApi
+    admin -->|"HTTPS (browser, session cookie, step-up): credential rotation, revoke, create"| credApi
+    agent -->|"HTTPS (Bearer machine access token): credential rotation, revoke, create"| credApi
+    inviteApi -->|"HTTPS (ACS egress, Communication Services email API): invitation email"| emailProvider
+    invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
+    authn -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>haveIBeenPwned plugin on the BREACH_CHECKED_PATHS"| pwned
+    acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>createUser of the new-account path, through Better Auth"| pwned
+    api -->|"OTLP/HTTP (traces, metrics, logs), only when<br/>OTEL_EXPORTER_OTLP_ENDPOINT is set; collector chosen in 010"| monitor
+    agent -.->|"MCP Streamable HTTP over HTTPS"| mcp
+    integ -.->|"HTTPS (inbound webhooks)"| intg
+    intg -.->|"HTTPS (API polling from ACA Jobs)"| toolApis
+    api -.->|"Redis protocol (RESP) over TLS"| redis
+    workers -.->|"Redis protocol (RESP) over TLS"| redis
+    workers -.->|"in-process call"| catalog
+    workers -.->|"HTTPS"| llm
+    intg -.->|"in-process call (status writes)"| catalog
+    zone -.->|"HTTPS (secret references, managed identity,<br/>resolved into environment variables at container start)"| kv
+    zone -.->|"HTTPS (image pull, managed identity)"| acr
+    zone -.->|"HTTPS (image pull of the Cerbos sidecar and the job sidecars)"| ghcr
+    ci -.->|"HTTPS (Azure Resource Manager:<br/>az containerapp update)"| zone
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,userApi,saApi,credApi,authn,cerbos,db,catalog current
+    class mcp,workers,intg,monitor,redis,acr planned
+    class user,agent,visma,dast,admin,invitee,integ,kv,ci actor
+    class emailProvider,pwned,toolApis,llm,ghcr externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Catalog core (001): no network attack surface, in-process only
+
+The catalog libraries and PostgreSQL, in-process only. PNG: `system-diagram-core.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Catalog core (001): no network attack surface, in-process only"]
+        direction TB
+        system(["System<br/>internal actor: Tayzu's own automation"])
+        catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
+        db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
+        obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
+        pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+        system ~~~ catalog
+        catalog ~~~ db
+        db ~~~ obs
+        obs ~~~ pg
+    end
+
+    dev(["Developer<br/>humans and their Claude Code sessions"])
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    authn["Better Auth (002)<br/>in-process library"]
+    api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+    dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
+    backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+    reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+    workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+    intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+    monitor["Azure Monitor / Application Insights (010)<br/>centralized logging and telemetry"]
+
+    dev -->|"in-process call (local Vitest run)"| catalog
+    ci -->|"in-process call (Vitest test run)"| catalog
+    ci -->|"in-process call (pnpm db:migrate)"| db
+    authn -->|"in-process call (Drizzle adapter, role tayzu_auth)"| db
+    api -->|"in-process call (oRPC OpenAPIHandler)"| catalog
+    dast -->|"PostgreSQL over verified TLS (per-run CA, sslmode=verify-full):<br/>owner migrates, apps/api runs as tayzu_app and tayzu_auth"| pg
+    backfillJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    reconcileJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    workers -.->|"in-process call"| catalog
+    intg -.->|"in-process call (status writes)"| catalog
+    obs -.->|"OTLP/HTTPS (OTel SDK exporter in the host apps;<br/>or the Azure Monitor exporter over HTTPS, chosen in 010)"| monitor
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class catalog,db,obs,pg,authn,api,backfillJob,reconcileJob current
+    class workers,intg,monitor planned
+    class system,dev,ci,dast actor
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Azure platform services (010)
+
+Planned Azure services (010). PNG: `system-diagram-azure.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Azure platform services (010)"]
+        direction TB
+        redis[("Redis (004)<br/>Azure Cache for Redis (010)")]
+        monitor["Azure Monitor / Application Insights (010)<br/>centralized logging and telemetry"]
+        acr["Azure Container Registry (010)"]
+        redis ~~~ monitor
+        monitor ~~~ acr
+    end
+
+    api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+    workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+    obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
+    acaEnv["Azure Container Apps environment (010)"]
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    dev(["Developer<br/>humans and their Claude Code sessions"])
+
+    api -->|"OTLP/HTTP (traces, metrics, logs), only when<br/>OTEL_EXPORTER_OTLP_ENDPOINT is set; collector chosen in 010"| monitor
+    api -.->|"Redis protocol (RESP) over TLS"| redis
+    workers -.->|"Redis protocol (RESP) over TLS"| redis
+    obs -.->|"OTLP/HTTPS (OTel SDK exporter in the host apps;<br/>or the Azure Monitor exporter over HTTPS, chosen in 010)"| monitor
+    acaEnv -.->|"HTTPS (image pull, managed identity)"| acr
+    ci -.->|"HTTPS (image push)"| acr
+    dev -.->|"HTTPS (Azure portal / CLI, Entra ID)"| zone
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class api,obs current
+    class redis,monitor,acr,workers planned
+    class ci,dev actor
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Supporting systems (external)
+
+Systems outside Tayzu's responsibility. PNG: `system-diagram-external.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Supporting systems (external)"]
+        direction TB
+        llm["LLM API: Anthropic Claude<br/>via DecisionProvider (004/006/014)"]
+        toolApis["Integration tool APIs<br/>GitHub, Jira Cloud, Azure DevOps, Aikido, Escape"]
+        visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+        emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+        ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
+        pwned(["Pwned Passwords (043)<br/>api.pwnedpasswords.com range API"])
+        kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+        llm ~~~ toolApis
+        toolApis ~~~ visma
+        visma ~~~ emailProvider
+        emailProvider ~~~ ghcr
+        ghcr ~~~ pwned
+        pwned ~~~ kv
+    end
+
+    user(["End user (human)"])
+    ssoApi["Visma Connect sign-in and callback<br/>/api/auth/sign-in/social<br/>/api/auth/callback/visma-connect<br/>/api/auth/link-social · /api/auth/unlink-account"]
+    reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+    bclApi["Back-channel logout endpoint<br/>POST /v1/auth/visma-connect/backchannel-logout"]
+    inviteApi["Invitation routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+    invitee(["Invitee (human)<br/>with their mailbox"])
+    authn["Better Auth (002)<br/>in-process library"]
+    acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    dev(["Developer<br/>humans and their Claude Code sessions"])
+    intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+    workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+    acaEnv["Azure Container Apps environment (010)"]
+
+    user -->|"HTTPS (browser redirect to sign in and back)"| visma
+    ssoApi -->|"outbound HTTPS: discovery, authorize redirect,<br/>token, userinfo, JWKS"| visma
+    visma -->|"inbound HTTPS: callback with code and state<br/>(response_mode form_post via the browser)"| ssoApi
+    visma -->|"inbound HTTPS: step-up callback with code and state<br/>(query or form_post via the browser)"| reauthApi
+    reauthApi -->|"outbound HTTPS: one token exchange<br/>(5-second timeout)"| visma
+    visma -->|"inbound-only HTTPS POST: logout_token<br/>(public, no cookie, unauthenticated by design)"| bclApi
+    inviteApi -->|"HTTPS (ACS egress, Communication Services email API): invitation email"| emailProvider
+    emailProvider -->|"SMTP (invitation email delivered to the mailbox)"| invitee
+    authn -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>haveIBeenPwned plugin on the BREACH_CHECKED_PATHS"| pwned
+    acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>createUser of the new-account path, through Better Auth"| pwned
+    ci -->|"HTTPS (docker pull of the Cerbos and ZAP images by digest)"| ghcr
+    dev -->|"HTTPS (docker pull of the Cerbos image:<br/>compose, start-cerbos.sh, policy:compile)"| ghcr
+    intg -.->|"HTTPS (API polling from ACA Jobs)"| toolApis
+    workers -.->|"HTTPS"| llm
+    acaEnv -.->|"HTTPS (secret references, managed identity,<br/>resolved into environment variables at container start)"| kv
+    ci -.->|"HTTPS (deployment pipeline reads and rotates secret versions)"| kv
+    acaEnv -.->|"HTTPS (image pull of the Cerbos sidecar and the job sidecars)"| ghcr
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class ssoApi,reauthApi,bclApi,inviteApi,authn,acceptApi current
+    class intg,workers planned
+    class visma,kv,user,invitee,ci,dev actor
+    class llm,toolApis,emailProvider,ghcr,pwned externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Identity jobs (043), started by the platform operator
+
+The backfill and reconcile jobs of 043, each with its own loopback Cerbos sidecar. PNG: `system-diagram-identity-jobs.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Identity jobs (043), started by the platform operator"]
+        direction TB
+        backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+        cerbosBackfill["Cerbos sidecar of the backfill job<br/>own container, loopback only"]
+        reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+        cerbosReconcile["Cerbos sidecar of the reconcile job<br/>own container, loopback only"]
+        backfillJob ~~~ cerbosBackfill
+        cerbosBackfill ~~~ reconcileJob
+        reconcileJob ~~~ cerbosReconcile
+    end
+
+    operator(["Platform operator (human)<br/>starts the identity jobs, not an Administrator"])
+    pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+
+    operator -->|"CLI (pnpm tsx, backfill job)"| backfillJob
+    operator -->|"CLI (pnpm tsx, reconcile job)"| reconcileJob
+    backfillJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    reconcileJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class backfillJob,cerbosBackfill,reconcileJob,cerbosReconcile,pg current
+    class operator actor
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
 ```
 
 ## Legend
@@ -179,35 +692,38 @@ flowchart TB
 
 ## Components
 
-| Component                                                                                              | Status                      | Notes                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@tayzu/catalog (library)`                                                                             | Current (001)               | Domain, persistence, the operation pipeline and the oRPC router. Invoked in-process only.                                                                                                                                                                                                                                                                                              |
-| `@tayzu/db`                                                                                            | Current (001)               | Pool (TLS required outside the test harness), `withTenantTransaction`, migrations.                                                                                                                                                                                                                                                                                                     |
-| `@tayzu/observability`                                                                                 | Current (001)               | OTel test harness. The catalog depends on the OTel API only; host apps wire the SDK and exporter.                                                                                                                                                                                                                                                                                      |
-| `PostgreSQL 16`                                                                                        | Current (001)               | The six catalog tables. `catalog_change_event` is protected by an append-only trigger. In 001 it runs only as ephemeral test databases (CI `postgres:16` service container, local sandbox cluster), both bound to localhost.                                                                                                                                                           |
-| `GitHub Actions CI`                                                                                    | Current (001)               | Pipeline-as-Code in `.github/workflows/ci.yml`, with `permissions: contents: read` and actions pinned by SHA. It is Tayzu's component, but GitHub-hosted runners execute it outside the product boundary, so it is drawn as the CI actor.                                                                                                                                              |
-| `Fastify + oRPC API server` (`apps/api`)                                                               | Current (002)               | The first listener. `createApp` mounts Better Auth behind a deny-by-default route allowlist and the catalog `OpenAPIHandler`, and adds CORS, helmet, CSRF, a body limit, rate limits and the back-channel logout route. `main.ts` is the process entry point; nothing runs it outside tests and the DAST job until 010.                                                                |
-| `Better Auth` (`@tayzu/auth`)                                                                          | Current (002)               | In-process library on its own `auth` schema and pool (role `tayzu_auth`). Local email and password, MFA, sessions, machine credentials and Visma Connect through `genericOAuth`.                                                                                                                                                                                                       |
-| `Cerbos PDP` (`policies/`)                                                                             | Current (002)               | The only authorization engine. Sidecar in the same Container Apps revision, reached over gRPC, with TLS unless the address is `localhost`, `127.0.0.1` or `[::1]` (the sidecar case), and with no external arrow. Policies are baked into the deploy artifact.                                                                                                                         |
-| `Visma Connect`                                                                                        | Current (002), external     | Tayzu's primary human identity provider. Outside the boundary. Two interaction kinds: the sign-in and callback round trip that `apps/api` initiates, and an inbound-only back-channel logout POST that Visma Connect initiates.                                                                                                                                                        |
-| `GitHub Actions DAST job` (`dast-zap`)                                                                 | Current (002)               | `.github/workflows/ci.yml` and `scripts/ci/dast.sh`. Per run: a throwaway PostgreSQL 16 behind verified TLS (a per-run CA), migrations as the owner, `apps/api` as the runtime roles `tayzu_app` and `tayzu_auth`. Then an authenticated ZAP baseline scan with one seeded session and a ZAP API scan of the catalog OpenAPI document in safe mode (passive). Any alert fails the job. |
-| `Azure Key Vault`                                                                                      | Planned (002/010), external | Secret store outside the boundary. It feeds the deployment pipeline and, through Container Apps secret references, the running container. The application reads environment variables only and uses no Key Vault SDK.                                                                                                                                                                  |
-| `BullMQ workers`, `Redis`                                                                              | Planned (004)               | Workflow engine and change-event outbox consumer. Redis is Azure Cache for Redis from 010.                                                                                                                                                                                                                                                                                             |
-| `Integration adapters`                                                                                 | Planned (008/009)           | Webhook receivers and pollers that write `status` through the catalog.                                                                                                                                                                                                                                                                                                                 |
-| `MCP server`                                                                                           | Planned (013)               | Exposes the same oRPC procedures as MCP tools, through the same authentication and Cerbos path.                                                                                                                                                                                                                                                                                        |
-| `Azure Container Apps environment`, `Azure Container Registry`, `Azure Monitor / Application Insights` | Planned (010)               | Hosting, image registry, and the centralized logging system.                                                                                                                                                                                                                                                                                                                           |
+| Component                                                                                              | Status                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------ | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@tayzu/catalog (library)`                                                                             | Current (001)               | Domain, persistence, the operation pipeline and the oRPC router. Invoked in-process only.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `@tayzu/db`                                                                                            | Current (001)               | Pool (TLS required outside the test harness), `withTenantTransaction`, migrations.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `@tayzu/observability`                                                                                 | Current (001)               | OTel test harness. The catalog depends on the OTel API only; host apps wire the SDK and exporter.                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `PostgreSQL 16`                                                                                        | Current (001)               | The six catalog tables. `catalog_change_event` is protected by an append-only trigger. In 001 it runs only as ephemeral test databases (CI `postgres:16` service container, local sandbox cluster), both bound to localhost.                                                                                                                                                                                                                                                                                |
+| `GitHub Actions CI`                                                                                    | Current (001)               | Pipeline-as-Code in `.github/workflows/ci.yml`, with `permissions: contents: read` and actions pinned by SHA. It is Tayzu's component, but GitHub-hosted runners execute it outside the product boundary, so it is drawn as the CI actor.                                                                                                                                                                                                                                                                   |
+| `Fastify + oRPC API server` (`apps/api`)                                                               | Current (002)               | The first listener. `createApp` mounts Better Auth behind a deny-by-default route allowlist and the catalog `OpenAPIHandler`, and adds CORS, helmet, CSRF, a body limit, rate limits and the back-channel logout route. `main.ts` is the process entry point; nothing runs it outside tests and the DAST job until 010.                                                                                                                                                                                     |
+| `Better Auth` (`@tayzu/auth`)                                                                          | Current (002)               | In-process library on its own `auth` schema and pool (role `tayzu_auth`). Local email and password, MFA, sessions, machine credentials and Visma Connect through `genericOAuth`.                                                                                                                                                                                                                                                                                                                            |
+| `Cerbos PDP` (`policies/`)                                                                             | Current (002)               | The only authorization engine. Sidecar in the same Container Apps revision, reached over gRPC, with TLS unless the address is `localhost`, `127.0.0.1` or `[::1]` (the sidecar case), and with no external arrow. Policies are baked into the deploy artifact.                                                                                                                                                                                                                                              |
+| `Visma Connect`                                                                                        | Current (002), external     | Tayzu's primary human identity provider. Outside the boundary. Two interaction kinds: the sign-in and callback round trip that `apps/api` initiates, and an inbound-only back-channel logout POST that Visma Connect initiates.                                                                                                                                                                                                                                                                             |
+| `Identity lifecycle surfaces and jobs`                                                                 | Current (043)               | Invitation, accept, user, service-account and credential routes in `apps/api` (mounted only when `MOUNT_IDENTITY_ROUTES=true`, off by default); invitation email through Azure Communication Services over HTTPS; Pwned Passwords range query made by Better Auth (the `haveIBeenPwned` plugin and the `createUser` of the accept path); backfill and reconcile jobs started by the platform operator, each with its own loopback Cerbos sidecar (gRPC, no TLS) and the roles `tayzu_auth` and `tayzu_app`. |
+| `GitHub Actions DAST job` (`dast-zap`)                                                                 | Current (002)               | `.github/workflows/ci.yml` and `scripts/ci/dast.sh`. Per run: a throwaway PostgreSQL 16 behind verified TLS (a per-run CA), migrations as the owner, `apps/api` as the runtime roles `tayzu_app` and `tayzu_auth`. Then an authenticated ZAP baseline scan with one seeded session and a ZAP API scan of the catalog OpenAPI document in safe mode (passive). Any alert fails the job.                                                                                                                      |
+| `Azure Key Vault`                                                                                      | Planned (002/010), external | Secret store outside the boundary. It feeds the deployment pipeline and, through Container Apps secret references, the running container. The application reads environment variables only and uses no Key Vault SDK.                                                                                                                                                                                                                                                                                       |
+| `BullMQ workers`, `Redis`                                                                              | Planned (004)               | Workflow engine and change-event outbox consumer. Redis is Azure Cache for Redis from 010.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `Integration adapters`                                                                                 | Planned (008/009)           | Webhook receivers and pollers that write `status` through the catalog.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `MCP server`                                                                                           | Planned (013)               | Exposes the same oRPC procedures as MCP tools, through the same authentication and Cerbos path.                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `Azure Container Apps environment`, `Azure Container Registry`, `Azure Monitor / Application Insights` | Planned (010)               | Hosting, image registry, and the centralized logging system.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Actors
 
-| Actor         | Catalog actor type | How it reaches Tayzu                                                                                                                                                                                                                             |
-| ------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| End user      | `user`             | Current (002): browser to the `/v1 catalog API` and the Better Auth allowlisted routes with a session cookie, signing in locally or through `Visma Connect`. Planned: the `Web UI` (003).                                                        |
-| AI agent      | `agent`            | Current (002): the `/v1 catalog API` with a machine access token, obtained at `POST /v1/auth/token`. Planned: the `MCP endpoint` (013). Tayzu's own agents (014) run inside the boundary and take the same path.                                 |
-| Integration   | `integration`      | Current (002): the same machine-token path as an agent. Planned: pushes to the `Integration webhook endpoints` (008/009). The adapters' pollers call the `Integration tool APIs` outbound, so polling is not an inbound surface.                 |
-| Visma Connect | none               | External identity provider. Sign-in callback and userinfo round trip with `apps/api`, the step-up re-authorization callback, plus an unauthenticated inbound back-channel logout POST validated by signature, issuer, audience and replay (002). |
-| System        | `system`           | Internal only: Tayzu's own automation (reserved `_` blueprints, schedules, the workflow engine). It is never mapped from an external credential (follow-up T3).                                                                                  |
-| Developer     | none               | Pushes code and reviews pull requests on GitHub, and runs the tests in-process locally. Planned: Azure access with Entra ID (010).                                                                                                               |
-| CI            | none               | Runs tests and migrations against ephemeral databases on the runner. Planned: pushes images and deploys (010).                                                                                                                                   |
+| Actor             | Catalog actor type | How it reaches Tayzu                                                                                                                                                                                                                                                          |
+| ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| End user          | `user`             | Current (002): browser to the `/v1 catalog API` and the Better Auth allowlisted routes with a session cookie, signing in locally or through `Visma Connect`. Planned: the `Web UI` (003).                                                                                     |
+| AI agent          | `agent`            | Current (002): the `/v1 catalog API` with a machine access token, obtained at `POST /v1/auth/token`. Planned: the `MCP endpoint` (013). Tayzu's own agents (014) run inside the boundary and take the same path.                                                              |
+| Integration       | `integration`      | Current (002): the same machine-token path as an agent. Planned: pushes to the `Integration webhook endpoints` (008/009). The adapters' pollers call the `Integration tool APIs` outbound, so polling is not an inbound surface.                                              |
+| Visma Connect     | none               | External identity provider. Sign-in callback and userinfo round trip with `apps/api`, the step-up re-authorization callback, plus an unauthenticated inbound back-channel logout POST validated by signature, issuer, audience and replay (002).                              |
+| System            | `system`           | Internal only: Tayzu's own automation (reserved `_` blueprints, schedules, the workflow engine). It is never mapped from an external credential (follow-up T3).                                                                                                               |
+| Administrator     | `user`             | Current (043, routes mounted only with `MOUNT_IDENTITY_ROUTES=true`, off by default): a human with the organization administrator role, through a browser session with step-up, on the invitation, user lifecycle and credential routes. Distinct from the Platform operator. |
+| Platform operator | none               | Current (043): a human outside the product API who starts the backfill and reconcile jobs from a CLI. Not an Administrator and holds no session on `apps/api`.                                                                                                                |
+| Developer         | none               | Pushes code and reviews pull requests on GitHub, and runs the tests in-process locally. Planned: Azure access with Entra ID (010).                                                                                                                                            |
+| CI                | none               | Runs tests and migrations against ephemeral databases on the runner. Planned: pushes images and deploys (010).                                                                                                                                                                |
 
 ## Attack surfaces
 
@@ -273,6 +789,17 @@ session and a ZAP API scan of every catalog OpenAPI operation in safe mode
   npx -y @mermaid-js/mermaid-cli -i docs/architecture/system-diagram.md -o /tmp/d.svg
   ```
 
+- The SSA (SEC01) asks for a png. Render it with `-o docs/architecture/system-diagram.png`
+  and commit the result. mermaid-cli writes one file per Mermaid block of a
+  Markdown input, numbered in document order: `system-diagram-1.png` is the full
+  diagram, so rename it to `system-diagram.png`. The next blocks are the trust
+  zones, in the order of the "Diagrams per trust zone" section (product-actors,
+  delivery, api-app, core, azure, external, identity-jobs): rename
+  `system-diagram-2.png` to `system-diagram-product-actors.png`, and so on.
+  Render the zones with `--size 2400` so that the text stays readable at normal
+  zoom. Every block that is added or removed shifts the numbers, so check each name.
+- The full diagram must stay the first Mermaid block of this file:
+  `apps/api/src/system-diagram.test.ts` reads the first one.
 - In the cloud sandbox, Puppeteer cannot download Chrome. Pass
   `-p puppeteer.json`, with a config file that sets `executablePath` to the
   preinstalled Chromium under `/opt/pw-browsers` and `args` to

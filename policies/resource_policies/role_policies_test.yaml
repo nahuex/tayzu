@@ -195,6 +195,60 @@ tests:
         resource: team_t1
         actions: *member_no_write
 
+  # Task 5.6 (design D3): role ceilings of the two new kinds. A role-policy allow
+  # does nothing without a resource-policy allow, and those arrive in 9.1 and
+  # 10.2, so the admin-allowed assertions are made there. Here: a member is
+  # denied every action on each new kind, and so is an admin of another tenant.
+  - name: Member is denied every action on a service account
+    input:
+      principals: [member_t1]
+      resources: [service_account_t1]
+      actions: [create, delete]
+    expected:
+      - principal: member_t1
+        resource: service_account_t1
+        actions:
+          create: EFFECT_DENY
+          delete: EFFECT_DENY
+
+  - name: Member is denied every action on a credential
+    input:
+      principals: [member_t1]
+      resources: [credential_t1, credential_list_t1]
+      actions: [list, create, rotate, revoke]
+    expected:
+      - principal: member_t1
+        resource: credential_t1
+        actions: &credential_denied
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          rotate: EFFECT_DENY
+          revoke: EFFECT_DENY
+      - principal: member_t1
+        resource: credential_list_t1
+        actions: *credential_denied
+
+  - name: Admin of another tenant is denied on service accounts and credentials
+    input:
+      principals: [admin_t2]
+      resources: [service_account_t1, credential_t1, credential_list_t1]
+      actions: [list, create, delete, rotate, revoke]
+    expected:
+      - principal: admin_t2
+        resource: service_account_t1
+        actions: &new_kinds_denied
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          delete: EFFECT_DENY
+          rotate: EFFECT_DENY
+          revoke: EFFECT_DENY
+      - principal: admin_t2
+        resource: credential_t1
+        actions: *new_kinds_denied
+      - principal: admin_t2
+        resource: credential_list_t1
+        actions: *new_kinds_denied
+
   - name: Member cannot delete an entity by role alone
     input:
       principals: [member_t1]

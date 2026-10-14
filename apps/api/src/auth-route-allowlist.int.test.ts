@@ -45,6 +45,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   bootstrapTestTenant,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -150,6 +151,7 @@ describe('apps/api /api/auth/* route allowlist (task 11.9)', () => {
     });
     const suffix = randomUUID();
     tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Allowlist User',
       email: `allowlist-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -329,6 +331,7 @@ describe('apps/api /api/auth/* allowlist: Visma Connect routes (task 19.3, desig
     });
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Sso Allowlist User',
       email: `sso-allowlist-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -409,15 +412,15 @@ describe('apps/api /api/auth/* allowlist: Visma Connect routes (task 19.3, desig
 
 describe('apps/api /api/auth/change-password (task 23.16, design Q46 and D18)', () => {
   let app: App;
-  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+  const NEW_PASSWORD = 'A-brand-new-Correct-Horse-Battery-Staple-42!';
 
   beforeAll(async () => {
     const pools = await harnessPools();
     poolState.pools.set('app', pools.appPool);
     poolState.pools.set('auth', pools.authPool);
     app = await createAppFromEnv({
-      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       BETTER_AUTH_SECRET: TEST_SECRET,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ALLOWED_ORIGIN,
@@ -460,6 +463,7 @@ describe('apps/api /api/auth/change-password (task 23.16, design Q46 and D18)', 
   async function newUser(): Promise<{ email: string; cookie: string }> {
     const email = `change-password-${randomUUID()}@example.test`;
     await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Change Password User',
       email,
       password: TEST_PASSWORD,
@@ -539,6 +543,7 @@ describe('apps/api /api/auth/* allowlist hook stops after callNotFound (task 26.
     });
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Callnotfound Owner',
       email: `callnotfound-${suffix}@example.test`,
       password: TEST_PASSWORD,

@@ -28,20 +28,17 @@
  * `createUser` failure alone is enough to short-circuit before ever calling
  * `createOrganization`.
  *
- * The CLI entry point at the bottom of this file is guarded to run only when
- * this file is executed directly, never on import: `../src/bootstrap.int.
- * test.ts` imports `bootstrapAdmin` from this same file and must not trigger
- * a real database connection attempt as a side effect of that import.
+ * The CLI entry point stays in `scripts/bootstrap-admin.ts` until task 4.6b
+ * moves it to `apps/api`.
  */
-import { randomBytes } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
-
-import { createPool } from '@tayzu/db';
 import { isAPIError } from 'better-auth/api';
-import { drizzle } from 'drizzle-orm/node-postgres';
 
-import { createAuth, type AuthInstance, type UserSyncPort } from '../src/auth.js';
-import * as authSchema from '../src/persistence/schema.js';
+import type { AuthInstance } from './auth.js';
+import {
+  generateTemporaryPassword,
+  writeTemporaryPasswordMarker,
+} from './identity/temporary-password.js';
+import { emitIdentityEvent } from './telemetry/identity-telemetry.js';
 
 export interface BootstrapAdminParams {
   readonly organizationName: string;
@@ -68,14 +65,21 @@ export interface BootstrapAdminResult {
 }
 
 export interface BootstrapAdminOptions {
-  /** Task 18.5 (design D22): upserts the first admin's `_user` entity directly. */
-  readonly userSync?: UserSyncPort;
+  /**
+   * The opaque id of the operator running the CLI (Resolved decision Q116),
+   * recorded as `tayzu.identity.operator.id` on the audit event.
+   */
+  readonly operatorId: string;
 }
 
 interface CreateUserApiSurface {
   createUser(args: {
     body: { name: string; email: string; password: string };
   }): Promise<{ user: { id: string; email: string } }>;
+}
+
+interface MarkerContextSurface {
+  readonly internalAdapter: Parameters<typeof writeTemporaryPasswordMarker>[0];
 }
 
 interface CreateOrganizationApiSurface {
@@ -104,15 +108,6 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * A single-use, system-generated temporary password (design D22's "shown
- * once" discipline) -- never persisted anywhere beyond the one Better Auth
- * credential account it seeds, never logged.
- */
-function generateTemporaryPassword(): string {
-  return randomBytes(24).toString('base64url');
-}
-
-/**
  * Creates `params.organizationSlug`'s first organization and its first
  * admin user, both through the same in-process `auth.api.createUser`/
  * `createOrganization` calls Better Auth's own `admin`/`organization`
@@ -124,7 +119,7 @@ function generateTemporaryPassword(): string {
 export async function bootstrapAdmin(
   auth: AuthInstance,
   params: BootstrapAdminParams,
-  options: BootstrapAdminOptions = {},
+  options: BootstrapAdminOptions,
 ): Promise<BootstrapAdminResult> {
   const noOp: BootstrapAdminResult = {
     organizationSlug: params.organizationSlug,
@@ -140,6 +135,11 @@ export async function bootstrapAdmin(
       body: { name: params.adminName, email: params.adminEmail, password: temporaryPassword },
     });
     userId = result.user.id;
+    // Before the organization exists, so the admin never joins a tenant without the marker (Q36).
+    await writeTemporaryPasswordMarker(
+      (await (auth.$context as Promise<MarkerContextSurface>)).internalAdapter,
+      userId,
+    );
   } catch (error) {
     if (errorCode(error) === USER_ALREADY_EXISTS_CODE) {
       return noOp;
@@ -161,61 +161,19 @@ export async function bootstrapAdmin(
     throw error;
   }
 
-  await options.userSync?.upsertUser({
-    tenantId: organizationId,
-    email: params.adminEmail,
-    name: params.adminName,
-    portRole: 'admin',
-    status: 'Active',
+  // The admin's `_user` is written by the membership hook (design D2, Q76),
+  // never here: a second write would throw.
+  emitIdentityEvent({
+    name: 'catalog.audit.user_created',
+    severity: 'INFO',
+    attributes: {
+      'tayzu.tenant.id': organizationId,
+      'tayzu.identity.operator.id': options.operatorId,
+      'tayzu.identity.user.id': userId,
+      'tayzu.identity.user.role': 'admin',
+      'tayzu.identity.user.source': 'bootstrap',
+    },
   });
 
   return { ...noOp, created: true, temporaryPassword };
-}
-
-// --- CLI entry point (never imported for its side effects; see module doc comment) ---
-
-/** Fails closed: an operator running this script without every required variable set gets an explicit error, not a partial bootstrap. */
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (value === undefined || value.trim() === '') {
-    throw new Error(`${name} is not set: bootstrap-admin needs it to run.`);
-  }
-  return value;
-}
-
-async function main(): Promise<void> {
-  const pool = createPool(requireEnv('DATABASE_URL'));
-  try {
-    const auth = createAuth({
-      db: drizzle(pool, { schema: authSchema }),
-      secret: requireEnv('BETTER_AUTH_SECRET'),
-    });
-    const result = await bootstrapAdmin(auth, {
-      organizationName: requireEnv('BOOTSTRAP_ORGANIZATION_NAME'),
-      organizationSlug: requireEnv('BOOTSTRAP_ORGANIZATION_SLUG'),
-      adminName: requireEnv('BOOTSTRAP_ADMIN_NAME'),
-      adminEmail: requireEnv('BOOTSTRAP_ADMIN_EMAIL'),
-    });
-    if (result.created) {
-      // The one and only time this temporary password is ever shown
-      // (design D22): printed directly to the operator's own terminal, never
-      // logged through `@tayzu/observability` or emailed.
-      console.log(
-        `Bootstrapped organization "${result.organizationSlug}". Sign in as ${result.adminEmail} with this one-time temporary password and change it immediately: ${result.temporaryPassword ?? ''}`,
-      );
-    } else {
-      console.log(
-        `Organization "${result.organizationSlug}" is already bootstrapped; nothing to do.`,
-      );
-    }
-  } finally {
-    await pool.end();
-  }
-}
-
-const isDirectlyExecuted =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
-
-if (isDirectlyExecuted) {
-  await main();
 }

@@ -40,6 +40,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   bootstrapTestTenant,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
@@ -117,6 +118,7 @@ describe('apps/api request-target hook (task 27.1, design Q74 and D18)', () => {
     });
     const suffix = randomUUID();
     tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Request Target User',
       email: `request-target-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -270,6 +272,7 @@ describe('apps/api guards still apply with a query string (task 27.2, design Q74
     });
     const suffix: string = randomUUID();
     tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Query Guard User',
       email: `query-guard-${suffix}@example.test`,
       password: TEST_PASSWORD,

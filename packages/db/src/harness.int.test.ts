@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, escapeIdentifier, Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
-import { getOwnerPool, getTestDatabase } from './harness.js';
+import { getAuthTestDatabase, getOwnerPool, getTestDatabase } from './harness.js';
 import { runMigrations } from './index.js';
 
 /**
@@ -577,4 +577,22 @@ describe('a separate test run against a fresh database', () => {
       });
     },
   );
+});
+
+describe('getAuthTestDatabase (043 task 2.0b)', () => {
+  it('hands back a pool whose connections run as tayzu_auth', async () => {
+    const { pool } = await getAuthTestDatabase();
+    const { rows } = await pool.query<{ current_user: string }>('select current_user');
+    expect(rows[0]?.current_user).toBe('tayzu_auth');
+  });
+
+  it('is a distinct pool from the tayzu_app and owner pools', async () => {
+    const [{ pool: auth }, { pool: app }, owner] = await Promise.all([
+      getAuthTestDatabase(),
+      getTestDatabase(),
+      getOwnerPool(),
+    ]);
+    expect(auth).not.toBe(app);
+    expect(auth).not.toBe(owner);
+  });
 });

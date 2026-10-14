@@ -25,6 +25,8 @@ export interface ReauthorizationOptions {
   readonly clientSecret: string;
   /** Absolute URL of the callback route, registered at Visma Connect. */
   readonly redirectUri: string;
+  /** Unexpired `state` rows one session may hold at once (default 5); beyond it `start` inserts none. */
+  readonly maxPendingPerSession?: number;
 }
 
 /** design D25: freshness threshold, the same 5 minutes as local step-up. */
@@ -33,6 +35,7 @@ const ACR_VALUES = 'urn:idp:vismaconnect:mfa';
 const STATE_TTL_SECONDS = 600;
 /** The stored ID token lives as long as it can still pass D25's `auth_time` check. */
 const RESULT_TTL_SECONDS = MAX_AGE_SECONDS + 30;
+const DEFAULT_MAX_PENDING_PER_SESSION = 5;
 const HTTP_TIMEOUT_MS = 5_000;
 
 const STATE_PREFIX = 'sso-reauth-state:';
@@ -101,11 +104,27 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       }
       const state = randomBytes(32).toString('base64url');
       const verifier = randomBytes(32).toString('base64url');
-      await store(
-        `${STATE_PREFIX}${state}`,
-        JSON.stringify({ token, verifier }),
-        STATE_TTL_SECONDS,
+      // One statement: the insert happens only while the session is under its bound (VCDM M13).
+      const inserted = await options.authPool.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         select $1, $2, $3, now() + make_interval(secs => $4)
+         where (
+           select count(*) from auth.verification
+           where identifier like $5 and expires_at > now() and position($6 in value) = 1
+         ) < $7`,
+        [
+          randomUUID(),
+          `${STATE_PREFIX}${state}`,
+          JSON.stringify({ token, verifier }),
+          STATE_TTL_SECONDS,
+          `${STATE_PREFIX}%`,
+          `{"token":${JSON.stringify(token)},`,
+          options.maxPendingPerSession ?? DEFAULT_MAX_PENDING_PER_SESSION,
+        ],
       );
+      if (inserted.rowCount === 0) {
+        return null;
+      }
       const url = new URL(discovery.authorizationEndpoint);
       url.searchParams.set('response_type', 'code');
       url.searchParams.set('client_id', options.clientId);

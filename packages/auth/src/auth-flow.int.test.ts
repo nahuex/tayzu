@@ -104,7 +104,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 // tracer, meter and logger at import time -- exactly the rule
 // `packages/catalog/src/service/pipeline.int.test.ts` documents for its own
 // `./pipeline.js`. None of the imports above construct an OTel instrument.
-import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser, testAppPool } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
@@ -723,6 +723,7 @@ describe('MFA login emits login_succeeded (task 24.5, design Q54)', () => {
     const api = auth.api as TwoFactorApiSurface;
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'MFA Login Telemetry User',
       email,
       password: TEST_PASSWORD,
@@ -911,6 +912,7 @@ describe('Step-up verification is not logged as a login (task 27.5, design Q77)'
     const api = auth.api as TwoFactorApiSurface;
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Step-Up Event User',
       email,
       password: TEST_PASSWORD,
@@ -957,6 +959,7 @@ describe('Step-up verification is not logged as a login (task 27.5, design Q77)'
     const api = auth.api as TwoFactorApiSurface;
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Step-Up Event Login User',
       email,
       password: TEST_PASSWORD,

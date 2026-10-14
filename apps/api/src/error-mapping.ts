@@ -8,6 +8,8 @@
  * response.
  */
 import { ORPCError } from '@orpc/server';
+import type { ResponseHeadersPluginContext } from '@orpc/server/plugins';
+import { AuthRateLimitedError } from '@tayzu/auth';
 import { CATALOG_ERROR_HTTP_STATUS } from '@tayzu/catalog';
 
 /** design D11's full code -> HTTP status table: every `CATALOG_*` plus the `AUTH_*` codes. */
@@ -91,10 +93,20 @@ export function toOrpcError(error: unknown): ORPCError<string, unknown> {
 }
 
 /** The `OpenAPIHandler` `clientInterceptors` entry. */
-export async function errorMappingInterceptor<T>({ next }: { next: () => Promise<T> }): Promise<T> {
+export async function errorMappingInterceptor<T>({
+  next,
+  context,
+}: {
+  next: () => Promise<T>;
+  context: ResponseHeadersPluginContext;
+}): Promise<T> {
   try {
     return await next();
   } catch (error) {
+    // `ORPCError` carries no header: the value goes through `ResponseHeadersPlugin`.
+    if (error instanceof AuthRateLimitedError) {
+      context.resHeaders?.set('Retry-After', String(error.retryAfterSeconds));
+    }
     throw toOrpcError(error);
   }
 }

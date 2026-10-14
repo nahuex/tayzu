@@ -106,11 +106,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // test asserts no telemetry itself -- see the identical comment in
 // `signup-disabled.int.test.ts`/`auth-flow.int.test.ts`.
 import './__fixtures__/registered-harness.js';
-import { createAuth, type AuthInstance } from './auth.js';
+import { createAuth, type AuthInstance, type UserSyncPort } from './auth.js';
 import * as authSchema from './persistence/schema.js';
 // The module under test (task 18.4): does not exist yet (module doc comment,
 // "Why this is expected to fail for the right reason right now").
-import { bootstrapAdmin } from '../scripts/bootstrap-admin.js';
+import { bootstrapAdmin } from './bootstrap-admin.js';
+import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
@@ -139,6 +140,9 @@ async function endQuietly(closeable: {
   });
   await closeable.end();
 }
+
+/** A fixed operator id of the catalog's id shape (task 4.6; Resolved decision Q116). */
+const OPERATOR_ID = 'gh:424242';
 
 function randomEmail(): string {
   return `bootstrap-${randomUUID()}@example.test`;
@@ -195,7 +199,7 @@ describe("Bootstrapping an organization's first admin is idempotent (task 18.4, 
     // GIVEN an organization that has already been bootstrapped with a first
     // admin: the first run must itself succeed, establishing the state the
     // scenario's GIVEN clause requires.
-    await bootstrapAdmin(auth, params);
+    await bootstrapAdmin(auth, params, { operatorId: OPERATOR_ID });
     expect(
       await countOrganizationsBySlug(db, params.organizationSlug),
       'the first bootstrap run creates exactly one organization for this slug',
@@ -209,7 +213,7 @@ describe("Bootstrapping an organization's first admin is idempotent (task 18.4, 
     // script that must be safe to re-run cannot itself fail on the re-run
     // ("idempotent ... a no-op, not a duplicate", design D22).
     await expect(
-      bootstrapAdmin(auth, params),
+      bootstrapAdmin(auth, params, { operatorId: OPERATOR_ID }),
       'running the bootstrap script again for an already-bootstrapped organization does not throw',
     ).resolves.toBeDefined();
 
@@ -224,5 +228,118 @@ describe("Bootstrapping an organization's first admin is idempotent (task 18.4, 
       await countUsersByEmail(db, params.adminEmail),
       'no duplicate user exists for this email after the second run',
     ).toBe(1);
+  });
+});
+
+/**
+ * Task 4.6 of openspec/changes/043-identity-lifecycle-and-org-admin (design D2,
+ * Resolved decisions Q76 and Q116).
+ *
+ * ## Production symbols expected
+ *
+ * - `packages/auth/src/bootstrap-admin.ts` exports `bootstrapAdmin(auth, params,
+ *   options)` with `options: { operatorId: string }` required (the `userSync`
+ *   option is gone); the package index re-exports it.
+ * - `bootstrapAdmin` writes no `_user` itself: the membership hook of
+ *   `createAuth({ userSync })` is the single writer, so a recording
+ *   `UserSyncPort` sees exactly one `membership_added` write for the admin.
+ * - It emits the log event `catalog.audit.user_created` (INFO) with
+ *   `tayzu.identity.user.source` `bootstrap`, `tayzu.identity.operator.id` the
+ *   given operator id, and no `tayzu.actor.id`.
+ */
+type UpsertInput = Parameters<UserSyncPort['upsertUser']>[0];
+
+describe('bootstrapAdmin writes the admin once, through the hook, and audits the operator (task 4.6)', () => {
+  let db: TestDb;
+  let harness: TelemetryTestHarness;
+  const writes: UpsertInput[] = [];
+  let auth: AuthInstance;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    const recording: UserSyncPort = {
+      upsertUser: (input) => {
+        writes.push(input);
+        return Promise.resolve();
+      },
+    };
+    auth = createAuth({ db, secret: TEST_SECRET, userSync: recording });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  function freshParams(): {
+    organizationName: string;
+    organizationSlug: string;
+    adminName: string;
+    adminEmail: string;
+  } {
+    return {
+      organizationName: 'Bootstrap Audit Org',
+      organizationSlug: randomSlug(),
+      adminName: 'Bootstrap Admin',
+      adminEmail: randomEmail(),
+    };
+  }
+
+  it('yields exactly one created_active write for the admin and no second write', async () => {
+    const params = freshParams();
+    const before = writes.length;
+
+    const result = await bootstrapAdmin(auth, params, { operatorId: OPERATOR_ID });
+
+    expect(result.created).toBe(true);
+    const mine = writes.slice(before).filter((write) => write.email === params.adminEmail);
+    expect(mine, 'exactly one write for the admin').toHaveLength(1);
+    expect(mine[0]?.change).toEqual({ intent: 'membership_added', banned: false });
+    expect(mine[0]?.portRole).toBe('admin');
+    expect(writes.slice(before), 'bootstrapAdmin made no second write of its own').toHaveLength(1);
+  });
+
+  it('emits catalog.audit.user_created with source bootstrap, the operator id and no tayzu.actor.id', async () => {
+    const params = freshParams();
+    await harness.reset();
+
+    await bootstrapAdmin(auth, params, { operatorId: OPERATOR_ID });
+    await harness.forceFlush();
+
+    const org = await db.execute<{ readonly id: string }>(sql`
+      select id from auth.organization where slug = ${params.organizationSlug}
+    `);
+    const organizationId = org.rows[0]?.id;
+    const records = harness.logExporter
+      .getFinishedLogRecords()
+      .filter((record) => record.eventName === 'catalog.audit.user_created');
+    expect(records, 'exactly one user_created event').toHaveLength(1);
+    const attributes = records[0]?.attributes ?? {};
+    expect(records[0]?.severityText).toBe('INFO');
+    expect(attributes['tayzu.identity.user.source']).toBe('bootstrap');
+    expect(attributes['tayzu.identity.operator.id']).toBe(OPERATOR_ID);
+    expect(attributes['tayzu.identity.user.role']).toBe('admin');
+    expect(attributes['tayzu.tenant.id']).toBe(organizationId);
+    expect(Object.keys(attributes)).not.toContain('tayzu.actor.id');
+    expect(JSON.stringify(attributes)).not.toContain(params.adminEmail);
+  });
+
+  it('a call without an operator id does not type-check', () => {
+    const params = freshParams();
+    // Never invoked: the assertion is the compile-time `@ts-expect-error`.
+    const withoutOperator = async (): Promise<unknown> =>
+      // @ts-expect-error the `operatorId` option is required
+      await bootstrapAdmin(auth, params);
+    const withEmptyOptions = async (): Promise<unknown> =>
+      // @ts-expect-error the `operatorId` option is required
+      await bootstrapAdmin(auth, params, {});
+    expect(typeof withoutOperator).toBe('function');
+    expect(typeof withEmptyOptions).toBe('function');
   });
 });

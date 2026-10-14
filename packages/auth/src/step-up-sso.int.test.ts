@@ -56,7 +56,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 // Import order is load-bearing (design D1): the harness registers first.
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from './__fixtures__/oidc-stub.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
@@ -144,6 +144,7 @@ describe('Step-up for a Visma-Connect-established session (task 21.3, design D25
     sid: string;
   }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Sso Step-Up User',
       email: `sso-step-up-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

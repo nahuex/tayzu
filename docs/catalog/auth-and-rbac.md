@@ -70,16 +70,30 @@ no second "unauthenticated" code.
 
 ## Resource kinds
 
-Cerbos knows four fixed resource kinds (constants in
+Cerbos knows six fixed resource kinds (constants in
 `packages/authz/src/resource-kinds.ts`). Blueprints do not get a kind each:
-the blueprint is an attribute of the entity resource.
+the blueprint is an attribute of the entity resource. Change
+[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/043-identity-lifecycle-and-org-admin/design.md)
+(D3) added `service_account` and `credential`.
 
-| Kind                | What it stands for                    | Attributes sent to Cerbos                                                                                       |
-| ------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `catalog_blueprint` | A blueprint (a tenant-defined type)   | `tenantId`                                                                                                      |
-| `catalog_entity`    | An entity of any blueprint            | `tenantId`, `blueprintId`, `ownerTeam` (absent when the entity has no owner, never null), `createdBy`, `locked` |
-| `team`              | A team (the `_team` system blueprint) | `tenantId`                                                                                                      |
-| `user`              | A user (the `_user` system blueprint) | `tenantId`                                                                                                      |
+| Kind                | What it stands for                                       | Attributes sent to Cerbos                                                                                                 |
+| ------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `catalog_blueprint` | A blueprint (a tenant-defined type)                      | `tenantId`                                                                                                                |
+| `catalog_entity`    | An entity of any blueprint                               | `tenantId`, `blueprintId`, `ownerTeam` (absent when the entity has no owner, never null), `createdBy`, `locked`           |
+| `team`              | A team (the `_team` system blueprint)                    | `tenantId`                                                                                                                |
+| `user`              | A user (the `_user` system blueprint)                    | `tenantId`. The identity operations also send `accountKind`, and `portRole` and `moderatedBlueprints` when they are known |
+| `service_account`   | A service account (a `_user` of `accountKind` `service`) | `tenantId`, `accountKind` (always `service` for a valid target)                                                           |
+| `credential`        | An organization API credential (a Better Auth `apikey`)  | `tenantId`                                                                                                                |
+
+For the identity kinds the attributes describe the target, resolved on the
+server (D14): `tenantId` is the target's real tenant, never the caller's
+echoed back. The resource id is opaque: the literal `new` for `invite`,
+`users.create`, `serviceAccounts.create` and `credentials.create`, the
+literal `list` for `credentials.list`, the invitation id for cancel and
+resend, the Better Auth user id (or the `svc-…` identifier of a service
+account) for a status change, a service-account deletion and an SSO link or
+unlink, and the `apikey` id for rotate and revoke. An email is never a
+resource id, so it never reaches Cerbos's decision log.
 
 The principal carries `tenantId`, `roles`, `teams` and `moderatedBlueprints`.
 It is filled only by `resolveContext`. A missing or empty principal is a
@@ -119,6 +133,17 @@ scope ([ADR-0015](../adr/0015-cerbos-dynamic-context-not-scoped-policies.md)).
 | `catalog_entity`    | All     | `view`, `list` on every entity of the tenant. `create` and `update` when the entity has no owner team. `delete` only where `createdBy` is the principal. Everything the derived roles below add. |
 | `team`              | All     | `view`, `list`                                                                                                                                                                                   |
 | `user`              | All     | `view`, `list`                                                                                                                                                                                   |
+| `service_account`   | All     | None                                                                                                                                                                                             |
+| `credential`        | All     | None                                                                                                                                                                                             |
+
+The new content of change 043 on `user` is two explicit `EFFECT_DENY` rules
+(an allow cannot narrow the admin's `*`): `updateStatus` is denied when the
+target is the caller (`R.id == P.id`), and every action is denied on a
+service account whose resulting `portRole` is not `member` or whose
+`moderatedBlueprints` is not empty. `service_account` denies every action
+unless the resolved target's `accountKind` is `service`, so a route of that
+kind can never act on a human. Both new policies carry the explicit
+cross-tenant deny of every resource policy.
 
 Derived roles on `catalog_entity`:
 
@@ -141,23 +166,37 @@ with `pnpm policy:compile`, and every policy change is a Checkpoint 3 review.
 
 ### Action each operation asks for
 
-| Operation                                                          | Kind                | Cerbos action                                             |
-| ------------------------------------------------------------------ | ------------------- | --------------------------------------------------------- |
-| `blueprints.create`                                                | `catalog_blueprint` | `create`                                                  |
-| `blueprints.get`                                                   | `catalog_blueprint` | `view`                                                    |
-| `blueprints.list`                                                  | `catalog_blueprint` | `list`                                                    |
-| `blueprints.update`                                                | `catalog_blueprint` | `update`                                                  |
-| `blueprints.delete`                                                | `catalog_blueprint` | `delete`                                                  |
-| `entities.create`                                                  | `catalog_entity`    | `create`                                                  |
-| `entities.get`, `entities.listRelated`                             | `catalog_entity`    | `view`                                                    |
-| `entities.list`                                                    | `catalog_entity`    | `list` (a query plan folded into the tenant-scoped query) |
-| `entities.upsert`, `entities.writeStatus`                          | `catalog_entity`    | `update`                                                  |
-| `entities.delete`                                                  | `catalog_entity`    | `delete`                                                  |
-| `identity.users.create`                                            | `user`              | `create`                                                  |
-| `identity.users.linkSsoAccount`, `identity.users.unlinkSsoAccount` | `user`              | `update`                                                  |
+| Operation                                                            | Kind                | Cerbos action                                             |
+| -------------------------------------------------------------------- | ------------------- | --------------------------------------------------------- |
+| `blueprints.create`                                                  | `catalog_blueprint` | `create`                                                  |
+| `blueprints.get`                                                     | `catalog_blueprint` | `view`                                                    |
+| `blueprints.list`                                                    | `catalog_blueprint` | `list`                                                    |
+| `blueprints.update`                                                  | `catalog_blueprint` | `update`                                                  |
+| `blueprints.delete`                                                  | `catalog_blueprint` | `delete`                                                  |
+| `entities.create`                                                    | `catalog_entity`    | `create`                                                  |
+| `entities.get`, `entities.listRelated`                               | `catalog_entity`    | `view`                                                    |
+| `entities.list`                                                      | `catalog_entity`    | `list` (a query plan folded into the tenant-scoped query) |
+| `entities.upsert`, `entities.writeStatus`                            | `catalog_entity`    | `update`                                                  |
+| `entities.delete`                                                    | `catalog_entity`    | `delete`                                                  |
+| `identity.users.create`                                              | `user`              | `create`                                                  |
+| `identity.users.invite`                                              | `user`              | `invite`                                                  |
+| `identity.users.cancelInvitation`, `identity.users.resendInvitation` | `user`              | `invite`                                                  |
+| `identity.users.setStatus`                                           | `user`              | `updateStatus`                                            |
+| `identity.users.linkSsoAccount`, `identity.users.unlinkSsoAccount`   | `user`              | `update`                                                  |
+| `identity.serviceAccounts.create`                                    | `service_account`   | `create`                                                  |
+| `identity.serviceAccounts.delete`                                    | `service_account`   | `delete`                                                  |
+| `identity.credentials.list`                                          | `credential`        | `list`                                                    |
+| `identity.credentials.create`                                        | `credential`        | `create`                                                  |
+| `identity.credentials.rotate`                                        | `credential`        | `rotate`                                                  |
+| `identity.credentials.revoke`                                        | `credential`        | `revoke`                                                  |
 
-The `identity.*` procedures are called in-process only. No HTTP route mounts
-them. Where an operation names an entity the caller cannot read, the error
+The identity actions are all gated to the `admin` role. The public
+invitation acceptance is not an `identity.*` procedure and has no Cerbos
+check: it authenticates by the invitation token (change 043, D4).
+
+The `identity.*` procedures are called in-process. Their routes are mounted
+over HTTP only when `MOUNT_IDENTITY_ROUTES` is `true` (off by default, 043
+D15). Where an operation names an entity the caller cannot read, the error
 lists only the readable identifiers and rolls the rest into a `+N not
 visible` count.
 
@@ -224,7 +263,8 @@ attributes.
 
 Values of the closed enums: `tayzu.authz.decision` is `allow` or `deny`.
 `tayzu.auth.method` is `local` or `visma_connect`. `tayzu.auth.rate_limit.scope`
-is `sign_in`, `two_factor_verify` or `token_exchange`.
+is `sign_in`, `two_factor_verify` or `token_exchange`, plus the six values
+change 043 adds (see [Amendments by change 043](#amendments-by-change-043)).
 `tayzu.auth.backchannel_logout.outcome` is `revoked`, `replay`, `invalid` or
 `no_match`. `tayzu.auth.link.actor` is `self` or `admin`.
 `tayzu.auth.credential.kind` is `integration` or `agent`.
@@ -254,8 +294,206 @@ is `sign_in`, `two_factor_verify` or `token_exchange`.
 or `sso_token_invalid` on `sso_sign_in_failed`. It is the only place the real
 cause of an SSO rejection is recorded, because the HTTP response never says.
 
+`tayzu.auth.revocation.reason` is `password_change` or `admin_action` as
+`002` declares them, plus `sso_link_shed` (see below).
+
 Every log event above, and the catalog's own `catalog.security.*` events,
 must never be sampled, filtered or dropped by a downstream pipeline.
+
+### Amendments by change 043
+
+Change 043 amends two closed enums that `002` declared. Neither executable
+telemetry contract enumerates the values (the authz contract lists attribute
+keys only), so no contract assertion changes. The values are listed in
+`IDENTITY_ATTRIBUTE_VALUES` of the identity contract module and in the
+`RateLimitScope` union of `packages/auth/src/rate-limit/pre-auth-rate-limit.ts`.
+
+**Rate-limit scope.** `tayzu.auth.rate_limit.scope` was the closed three-value
+enum `sign_in`, `two_factor_verify`, `token_exchange`. It gains six values:
+
+| Scope                      | Limits                                             |
+| -------------------------- | -------------------------------------------------- |
+| `invitation_accept`        | The public invitation acceptance route             |
+| `invitation_tenant`        | Invitations created or resent per tenant           |
+| `invitation_recipient`     | Invitations sent to one recipient                  |
+| `notice_tenant`            | Admin-accepted notices sent per tenant             |
+| `notice_recipient`         | Admin-accepted notices sent to one recipient       |
+| `reauthorization_callback` | The public Visma Connect re-authorization callback |
+
+The generic helper reports a bucket denial on `002`'s existing
+`tayzu.auth.rate_limit.events` metric and `auth.security.rate_limited` log
+event with the new scope as the attribute value. There is no new instrument.
+The invitation caps also log `catalog.security.invitation_rate_limited`
+(below). A bucket key is stored only as a SHA-256 hash, the new `tenant` key
+kind included.
+
+**Session revocation reason.** `auth.security.session_revoked` declared the
+closed two-value reason `password_change` and `admin_action`. It gains
+`sso_link_shed`. `@tayzu/auth` now exports `emitSessionRevoked` with the
+reason as a parameter. `002`'s code only ever emitted `password_change`; since
+change 043 `identity.users.setStatus` emits `admin_action`, and the SSO link
+shed and an admin unlink emit `sso_link_shed`.
+
+### Identity lifecycle signals (change 043)
+
+The names below live in the identity contract module
+`packages/auth/src/telemetry/identity-contract.ts`, not in
+`packages/auth/src/telemetry/contract.ts` (change 043, Resolved decision Q74):
+the older file must equal the authz contract's `auth.*` subset and contain no
+`catalog.` name. `otel-smoke-check` imports both modules. The tracer and meter
+scope is `@tayzu/auth`. `apps/api` creates every span, counter and event
+through helpers that `@tayzu/auth` exports. `catalog.security.authz_denied`
+and `tayzu.authz.decisions` are reused from the tables above, and the identity
+router now emits them on every Cerbos decision.
+
+Forbidden here, as on every signal: invited emails, invitation tokens,
+credential names and secrets, and the SSO `sub`. A `svc-…` identifier is the
+account's opaque id and is allowed in the identity signals.
+
+#### Identity spans
+
+All are `INTERNAL`, one per operation.
+
+| Span                              | When               | Required attributes                                                                                                     |
+| --------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `identity.invitation.create`      | Operation          | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.role`                                                        |
+| `identity.invitation.accept`      | Operation          | `tayzu.identity.invitation.id`                                                                                          |
+| `identity.invitation.cancel`      | Operation          | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason`                                                      |
+| `identity.invitation.resend`      | Operation          | `tayzu.identity.invitation.id`                                                                                          |
+| `identity.user.set_status`        | Operation          | `tayzu.identity.user.status.from`, `tayzu.identity.user.status.to`                                                      |
+| `identity.service_account.create` | Operation          | `tayzu.identity.service_account.id`                                                                                     |
+| `identity.service_account.delete` | Operation          | `tayzu.identity.service_account.id`                                                                                     |
+| `identity.credential.list`        | Operation          | `tayzu.identity.credential.count`                                                                                       |
+| `identity.credential.create`      | Operation          | `tayzu.identity.credential.kind`                                                                                        |
+| `identity.credential.rotate`      | Operation          | `tayzu.identity.credential.kind`                                                                                        |
+| `identity.credential.revoke`      | Operation          | `tayzu.identity.credential.kind`                                                                                        |
+| `identity.user.reconcile`         | Maintenance script | `tayzu.tenant.id`, `tayzu.identity.operator.id`, `tayzu.identity.reconcile.created`, `tayzu.identity.reconcile.orphans` |
+
+`tayzu.identity.invitation.id` is the constant `invalid` on
+`identity.invitation.accept` for an id that fails its shape or length check.
+`tayzu.identity.invitation.path` (`new_account` or `existing_account`) is a
+conditional attribute of `identity.invitation.accept`.
+
+#### Identity metrics
+
+| Metric                                | Instrument, unit        | Allowed attributes                                                                        | Purpose                                 |
+| ------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------- |
+| `tayzu.identity.invitations`          | Counter, `{invitation}` | `tayzu.tenant.id`, `tayzu.identity.invitation.mutation`                                   | Invitation funnel                       |
+| `tayzu.identity.user_status_changes`  | Counter, `{change}`     | `tayzu.tenant.id`, `tayzu.identity.user.status.to`, `tayzu.actor.type`                    | Lifecycle churn                         |
+| `tayzu.identity.service_accounts`     | Counter, `{account}`    | `tayzu.tenant.id`, `tayzu.identity.service_account.mutation`                              | Service-account volume                  |
+| `tayzu.identity.credential_mutations` | Counter, `{mutation}`   | `tayzu.tenant.id`, `tayzu.identity.credential.kind`, `tayzu.identity.credential.mutation` | Credential hygiene signal               |
+| `tayzu.identity.principal_rejections` | Counter, `{rejection}`  | `tayzu.identity.rejection.reason`, `tayzu.actor.type`                                     | Enforcement of "disabled means refused" |
+
+Values of the closed enums, as the implementation settles them:
+
+- `tayzu.identity.invitation.mutation` is `created`, `accepted`, `rejected`,
+  `cancelled`, `expired` or `rate_limited`. `expired` is counted once per
+  refused acceptance of an expired invitation, where
+  `catalog.security.invitation_acceptance_denied` is logged with the denial
+  reason `expired` (Better Auth never stores `expired`; it is derived from
+  `expiresAt`), so one invitation tried three times counts three. `rejected`
+  is declared but **not produced by change 043**: no reject path is reachable
+  (Better Auth's reject endpoint is not on the `/api/auth` allowlist and no
+  procedure calls it) until a later change adds one (Q143).
+- `tayzu.actor.type` of `tayzu.identity.user_status_changes` is `user` when
+  the principal of the status write is an admin, a user on a first sign-in or
+  an invitee on an acceptance, and `system` for the reconcile, the bootstrap
+  (both run as the `system` actor on behalf of the operator) and the ban hook
+  (Q144).
+- `tayzu.identity.service_account.mutation` is `created`, `disabled`,
+  `enabled` or `deleted`.
+- `tayzu.identity.credential.kind` is `service_account`, `integration` or
+  `agent`, and `tayzu.identity.credential.mutation` is `created`, `rotated` or
+  `revoked`. The key that `identity.serviceAccounts.create` issues counts as a
+  `created` mutation of kind `service_account`, and the rotation and
+  revocation of a service account's key carry the same kind. The keys of
+  `identity.credentials.create` keep `integration` or `agent` (Q145).
+- `tayzu.identity.rejection.reason` is `user_disabled` (a human `_user` that
+  is present and not `Active`), `user_banned` (a human whose Better Auth user
+  is `banned`), `service_account_disabled`, `service_account_missing` or
+  `user_missing`.
+
+#### Identity log events
+
+Every event below is exempt from sampling and from any downstream filter or
+drop rule, like the other `catalog.audit.*` and `catalog.security.*` events.
+`tayzu.actor.id` of an audit event of an admin operation is the admin who
+acted, never the `system` actor.
+
+| Event                                                    | Severity | Attributes                                                                                                                                                                                                                                                             | Purpose                                                                    |
+| -------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `catalog.audit.invitation_created`                       | INFO     | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id`, `tayzu.identity.invitation.role`                                                                                                                                              | Audit, the role is logged                                                  |
+| `catalog.audit.invitation_accepted`                      | INFO     | The same, plus `tayzu.identity.user.id` and `tayzu.identity.invitation.path`                                                                                                                                                                                           | Audit. The invitee is the actor: type `user`, id the invitee's user id     |
+| `catalog.audit.invitation_cancelled`                     | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.invitation.id`, `tayzu.identity.invitation.reason`                                                                                                                                                                | Audit                                                                      |
+| `catalog.audit.invitation_resent`                        | INFO     | `tayzu.tenant.id`, `tayzu.actor.type`, `tayzu.actor.id`, `tayzu.identity.invitation.id`                                                                                                                                                                                | Audit                                                                      |
+| `catalog.audit.user_created`                             | INFO     | `tayzu.tenant.id`, `tayzu.actor.id` (for source `bootstrap`, `tayzu.identity.operator.id` in its place), `tayzu.identity.user.id`, `tayzu.identity.user.role`, `tayzu.identity.user.source`                                                                            | Audit of `identity.users.create` and of the bootstrap                      |
+| `catalog.audit.user_status_changed`                      | INFO     | `tayzu.tenant.id`, the principal of the write (see below), the subject id, `tayzu.identity.user.status.from` (absent for a row created with its first status), `tayzu.identity.user.status.to`, `tayzu.identity.user.status.event`, `tayzu.identity.user.account_kind` | Audit of every status change, service accounts included                    |
+| `catalog.audit.service_account_created`                  | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.service_account.id`                                                                                                                                                                                               | Audit                                                                      |
+| `catalog.audit.service_account_deleted`                  | INFO     | The same                                                                                                                                                                                                                                                               | Audit                                                                      |
+| `catalog.audit.credential_created`                       | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id`, `tayzu.identity.credential.kind`                                                                                                                                                                  | Audit                                                                      |
+| `catalog.audit.credential_rotated`                       | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id`                                                                                                                                                            | Audit, opaque ids only                                                     |
+| `catalog.audit.users_reconciled`                         | INFO     | `tayzu.tenant.id`, `tayzu.identity.operator.id`, `tayzu.identity.reconcile.created`, `tayzu.identity.reconcile.orphans`                                                                                                                                                | The reconcile of one tenant, recorded with the operator's opaque id        |
+| `catalog.security.invitation_acceptance_denied`          | WARN     | `tayzu.identity.invitation.id`, `tayzu.identity.invitation.denial_reason`                                                                                                                                                                                              | Misuse of dead or foreign invitations. The reason is never in the response |
+| `catalog.security.invitation_rate_limited`               | WARN     | `tayzu.tenant.id`, `tayzu.identity.invitation.limit_scope`                                                                                                                                                                                                             | Invite and resend volume abuse, no email                                   |
+| `catalog.security.self_status_change_denied`             | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                                                                                                                                                                                    | Self-service status tampering                                              |
+| `catalog.security.principal_rejected`                    | WARN     | `tayzu.identity.rejection.reason`, `tayzu.actor.type`                                                                                                                                                                                                                  | A principal that is not `Active`, or is missing, was refused               |
+| `catalog.security.credential_revoked`                    | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.id`                                                                                                                                                                                                    | A revocation is security-relevant, not routine                             |
+| `catalog.security.credential_rotation_incomplete`        | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.credential.old_id`, `tayzu.identity.credential.new_id`                                                                                                                                                            | A rotation left two usable credentials or none                             |
+| `catalog.security.admin_notice_failed`                   | WARN     | `tayzu.tenant.id`                                                                                                                                                                                                                                                      | The admin-accepted notice could not be sent. The acceptance goes on        |
+| `catalog.security.notice_suppressed`                     | WARN     | `tayzu.tenant.id`, `tayzu.identity.notice.template`, `tayzu.identity.notice.suppression`, `tayzu.identity.notice.dropped`                                                                                                                                              | A notice was suppressed or truncated by a switch or a cap                  |
+| `catalog.security.email_recipient_blocked`               | WARN     | `tayzu.identity.email.template`                                                                                                                                                                                                                                        | The recipient-domain allowlist refused a recipient, no address logged      |
+| `catalog.security.email_tenant_blocked`                  | WARN     | `tayzu.tenant.id`, `tayzu.identity.email.template`                                                                                                                                                                                                                     | An email was suppressed for a tenant on `EMAIL_DISABLED_TENANT_IDS`        |
+| `catalog.security.banned_sign_in_attempt`                | WARN     | `tayzu.identity.user.id`, `tayzu.identity.sign_in.channel`                                                                                                                                                                                                             | A banned user tried to sign in. The response stays uniform                 |
+| `catalog.security.sso_link_shed`                         | WARN     | `tayzu.tenant.id`, `tayzu.identity.user.id`, `tayzu.identity.sso_link.path`                                                                                                                                                                                            | An admin-recorded SSO link was deleted and the user's sessions revoked     |
+| `catalog.security.sso_link_marker_failed`                | WARN     | `tayzu.identity.user.id`                                                                                                                                                                                                                                               | The provenance marker of a user-made link could not be written             |
+| `catalog.security.invitation_accept_compensation_failed` | WARN     | `tayzu.identity.invitation.id`                                                                                                                                                                                                                                         | A failed acceptance could not undo what it had created                     |
+| `catalog.security.accepting_session_revocation_failed`   | WARN     | `tayzu.tenant.id`, `tayzu.identity.invitation.id`, `tayzu.identity.user.id`                                                                                                                                                                                            | The accepting session could not be revoked. An operator revokes it         |
+| `catalog.security.identity_conflict_refused`             | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.conflict.reason`, `tayzu.identity.user.id` when the target account exists                                                                                                                                         | A conflict was refused with one generic answer. The cause lives only here  |
+
+The principal of `catalog.audit.user_status_changed` is the admin as
+`tayzu.actor.id` for `setStatus`, `invite`, `users.create` and
+`serviceAccounts.create`; the operator as `tayzu.identity.operator.id` in its
+place for the reconcile and the bootstrap; the user's own id as
+`tayzu.actor.id` for the first sign-in; the invitee for an acceptance; and
+neither for the ban hook. The subject is `tayzu.identity.user.id`, or
+`tayzu.identity.service_account.id` for a service account, or
+`tayzu.identity.invitation.id` for the `created_invited` write of an
+invitation (the invited email may have no user yet).
+`tayzu.identity.user.status.event` is `created_staged`, `created_invited`,
+`created_active`, `invitation_accepted`, `first_sign_in`, `admin_disable` or
+`admin_enable`, so a self-activation is told apart from an admin action.
+
+Values of the other closed enums:
+
+- `tayzu.identity.invitation.role`: `member` or `admin`.
+- `tayzu.identity.invitation.reason`: `admin_cancel`, `re_invite`,
+  `user_disabled`, `inviter_disabled` or `user_created`.
+- `tayzu.identity.invitation.path`: `new_account` or `existing_account`.
+- `tayzu.identity.invitation.limit_scope`: `tenant`, `recipient` or `global`.
+- `tayzu.identity.invitation.denial_reason`: `malformed_request`, `expired`,
+  `cancelled`, `rejected`, `already_accepted`, `token_mismatch`,
+  `disabled_user`, `not_found`, `session_required`, `email_mismatch`,
+  `account_conflict`, `csrf_rejected`, `origin_rejected`,
+  `inviter_not_active_admin`, `member_limit` or `consume_conflict`.
+- `tayzu.identity.user.role`: `member` or `admin`. `tayzu.identity.user.source`:
+  `admin` or `bootstrap`.
+- `tayzu.identity.notice.template`: `admin_accepted`.
+  `tayzu.identity.notice.suppression`: `global`, `tenant`, `recipient` or
+  `truncated`. `tayzu.identity.email.template`: `invitation` or
+  `admin_accepted`.
+- `tayzu.identity.sign_in.channel`: `local` or `sso`.
+  `tayzu.identity.sso_link.path`: `acceptance`, `membership_hook` or
+  `reconcile`.
+- `tayzu.identity.conflict.reason`: `account_exists`,
+  `target_in_other_tenant`, `sub_already_linked` or `target_is_admin_or_owner`.
+
+`auth.security.login_failed` is reused unchanged: a banned sign-in logs the
+reason `account_disabled` that `002` already declared, so the response is the
+same as for bad credentials and the cause is visible only internally.
+
+Catalog spans and audit events never carry a `_user` identifier (it is a
+member's email): they carry one fixed placeholder instead. That rule is in
+[Catalog core](catalog-core.md#telemetry).
 
 ### Exporting traces (OpenTelemetry SDK)
 

@@ -61,6 +61,8 @@ import {
   signInAdminUser,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 // The module under test (task 18.3): does not exist yet.
 import { createIdentityRouter } from './identity-router.js';
 import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -94,9 +96,17 @@ describe('identity.users.create (task 18.3, design D22)', () => {
       secret: TEST_SECRET,
     });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
-    client = createRouterClient(createIdentityRouter({ auth, authz: cerbos }), {
-      context: (raw: Record<string, unknown>) => raw,
-    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
+      {
+        context: (raw: Record<string, unknown>) => raw,
+      },
+    );
   }, 60_000);
 
   async function freshTenantId(): Promise<string> {
@@ -134,7 +144,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
 
     // GIVEN a caller with the `admin` role; WHEN they create a user.
     const result = await client.identity.users.create(
-      { email, name: 'Created By Admin', role: 'member' },
+      { body: { email, name: 'Created By Admin', role: 'member' } },
       { context: context(tenantId, ['admin']) },
     );
 
@@ -164,7 +174,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     // GIVEN a caller with only the `member` role; WHEN they attempt to create a user.
     const thrown: unknown = await client.identity.users
       .create(
-        { email, name: 'Should Not Exist', role: 'member' },
+        { body: { email, name: 'Should Not Exist', role: 'member' } },
         { context: context(tenantId, ['member']) },
       )
       .then(
@@ -200,7 +210,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     const email = `org-admin-${randomUUID()}@example.test`;
 
     const result = await client.identity.users.create(
-      { email, name: 'Org Admin', role: 'admin' },
+      { body: { email, name: 'Org Admin', role: 'admin' } },
       { context: context(tenantId, ['admin']) },
     );
 
@@ -215,7 +225,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
     const email = `org-member-${randomUUID()}@example.test`;
 
     const result = await client.identity.users.create(
-      { email, name: 'Org Member', role: 'member' },
+      { body: { email, name: 'Org Member', role: 'member' } },
       { context: context(tenantId, ['admin']) },
     );
 
@@ -232,7 +242,10 @@ describe('identity.users.create (task 18.3, design D22)', () => {
       const email = `invalid-role-${randomUUID()}@example.test`;
 
       const thrown: unknown = await client.identity.users
-        .create({ email, name: 'Invalid Role', role }, { context: context(tenantId, ['admin']) })
+        .create(
+          { body: { email, name: 'Invalid Role', role } },
+          { context: context(tenantId, ['admin']) },
+        )
         .then(
           () => undefined,
           (error: unknown) => error,

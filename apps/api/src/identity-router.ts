@@ -1,47 +1,80 @@
 /**
- * The `identity.*` oRPC router (task 18.3; design D22, Resolved decision Q16).
+ * The `identity.*` oRPC router (`043` design D10, Resolved decisions Q16 and Q45):
+ * the thirteen procedures of `identity.users`, `identity.serviceAccounts` and
+ * `identity.credentials`, each built with `defineIdentityOperation`.
  * `identity.users.create` is the only way an org admin creates a user: Better
  * Auth's own `POST /admin/create-user` stays off D18's allowlist, and
- * self sign-up is disabled. Called in-process only, through
- * `createRouterClient(router, { context })`; no HTTP route mounts it.
+ * self sign-up is disabled.
+ *
+ * `createApp` merges this router with the catalog router into the one router
+ * its `OpenAPIHandler` serves under `/v1`, and only when `mountIdentityRoutes`
+ * (the `MOUNT_IDENTITY_ROUTES` switch) is on. It can also be called in
+ * process, through `createRouterClient(router, { context })`.
  *
  * The context is the raw, host-supplied value (`tenantId`, `actor`,
- * `principal.roles`), the same shape the catalog router takes. Cerbos is
- * asked first (`user` / `create`, `user.yaml`); any deny, malformed context
+ * `principal.roles`), the same shape the catalog router takes; it never comes
+ * from the input. Cerbos is asked first (for example `user` / `create`,
+ * `user.yaml`), and again with the resolved target; any deny, malformed context
  * or Cerbos failure fails closed with `AUTH_FORBIDDEN` before anything is
  * created. The system-generated temporary password is returned in the
  * creation response only, never logged or emailed.
  */
-import { randomBytes } from 'node:crypto';
-
-import { os, type Route } from '@orpc/server';
+import type { Route } from '@orpc/server';
+import type { Pool } from 'pg';
 import {
+  digestInvitationToken,
   emitAccountLinkEvent,
+  emitIdentityEvent,
+  emitSessionRevoked,
+  generateInvitationToken,
+  generateTemporaryPassword,
+  nextStatus,
+  recordIdentityMetric,
+  validatePassword,
+  withIdentitySpan,
+  writeTemporaryPasswordMarker,
   wouldLeaveNoSignInMethod,
   type AuthInstance,
-  type UserSyncPort,
 } from '@tayzu/auth';
-import { buildAttributes, RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
+import { RESOURCE_KINDS, type CerbosClient } from '@tayzu/authz';
 
-/** Same code and message as the catalog's `AuthorizationError` (design D11). */
-class IdentityForbiddenError extends Error {
-  readonly code = 'AUTH_FORBIDDEN' as const;
-
-  constructor() {
-    super('Action is not permitted');
-    this.name = 'IdentityForbiddenError';
-  }
-}
-
-/** Same code as the catalog's not-found; a cross-tenant and a nonexistent target are indistinguishable. */
-class IdentityNotFoundError extends Error {
-  readonly code = 'CATALOG_NOT_FOUND' as const;
-
-  constructor() {
-    super('The requested resource was not found');
-    this.name = 'IdentityNotFoundError';
-  }
-}
+import {
+  createServiceAccount,
+  deleteServiceAccount,
+  isValidServiceAccountIdentifier,
+} from './identity/service-accounts.js';
+import { withMutationSlot } from './identity/mutation-semaphore.js';
+import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
+import type { AuthRepository } from './identity/auth-repository.js';
+import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import type { WithUserLock } from './identity/user-lock.js';
+import { canonicalEmail, isValidIdentityEmail } from './identity/email-canonical.js';
+import { buildInvitationLink } from './identity/invitation-link.js';
+import { createDefineIdentityOperation } from './identity/define-operation.js';
+import {
+  createIdentityTargetResolver,
+  type IdentityTargetResolver,
+  type ResolvedIdentityTarget,
+} from './identity/identity-target.js';
+import { readUserAttributes } from './identity/user-attributes.js';
+import { runWithIdentityContext } from './identity/identity-context.js';
+import {
+  parseIdentityInput,
+  type InputSchema,
+  type ParsedIdentityInput,
+} from './identity/parse-input.js';
+import {
+  CREDENTIAL_NAME_PATTERN,
+  DEFAULT_CREDENTIAL_CAP,
+  createCredential,
+  listCredentials,
+  CredentialTargetNotFoundError,
+  credentialKindOf,
+  recordCredentialMutation,
+  revokeCredential,
+  rotateCredential,
+  serviceAccountExists,
+} from './identity/credentials.js';
 
 /** Generic on purpose: never says which user, if any, already holds the subject. */
 class IdentityLinkRejectedError extends Error {
@@ -65,6 +98,16 @@ function isAccountUniqueViolation(error: unknown): boolean {
   return false;
 }
 
+/** Generic on purpose: never says whether the address already has an account, here or elsewhere. */
+class IdentityCreateRejectedError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED' as const;
+
+  constructor() {
+    super('The user could not be created');
+    this.name = 'IdentityCreateRejectedError';
+  }
+}
+
 class IdentityInputError extends Error {
   readonly code = 'CATALOG_VALIDATION_FAILED' as const;
 
@@ -74,14 +117,54 @@ class IdentityInputError extends Error {
   }
 }
 
+/** Better Auth's `APIError` shape, read structurally: its `status` name and `body.code`. */
+function providerError(error: unknown): { status?: unknown; code?: unknown } {
+  if (typeof error !== 'object' || error === null) return {};
+  const { status, body } = error as { status?: unknown; body?: { code?: unknown } | null };
+  return { status, code: body?.code };
+}
+
+/** Provider codes of an invitation refused for an existing member or a full invitation list (task 7.12). */
+const INVITATION_REFUSAL_CODES: readonly unknown[] = [
+  'USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION',
+  'INVITATION_LIMIT_REACHED',
+];
+
+/**
+ * Rethrows the generic rejection when `refused` matches a Better Auth refusal, so no
+ * provider text or membership information reaches the response (task 7.12).
+ */
+async function withGenericRefusal<T>(
+  call: () => Promise<T>,
+  refused: (error: { status?: unknown; code?: unknown }) => boolean,
+): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (refused(providerError(error))) throw new IdentityInputError();
+    throw error;
+  }
+}
+
 export interface CreateIdentityRouterOptions {
   readonly auth: AuthInstance;
   readonly authz: CerbosClient;
-  /**
-   * Task 18.5 (design D22): upserts the created user's `_user` entity through
-   * the `system` actor path, directly and not through a Better Auth hook.
-   */
-  readonly userSync?: UserSyncPort;
+  /** The only reader of the `auth` schema (design D14). */
+  readonly authRepository: AuthRepository;
+  /** The per-user advisory lock `linkSsoAccount` runs its check and link inside (task 8.5i). */
+  readonly withUserLock: WithUserLock;
+  /** The one gate that sends invitation emails (task 6.5c). */
+  readonly emailGate?: EmailTenantGate;
+  /** The trusted `INVITATION_LINK_BASE_URL`; the link's origin comes only from it. */
+  readonly invitationLinkBaseUrl?: string;
+  /** The `tayzu_app` pool the revocation list is read through (task 9.2). */
+  readonly appPool?: Pool;
+  /** The credential cap of task 9.5d; the viewer's page size. Default 200. */
+  readonly credentialCap?: number;
+  /** The most service accounts a tenant holds (task 10.8, Q56). Default 50. */
+  readonly serviceAccountCap?: number;
+  /** The Q30 adapter every `_user` write goes through (service accounts, task 10.3). */
+  readonly userSync?: UserSyncAdapter;
 }
 
 export interface CreateUserInput {
@@ -112,88 +195,140 @@ type AssignableOrgRole = (typeof ASSIGNABLE_ORG_ROLES)[number];
 /** The fixed global Better Auth role every created user gets (design Q37). */
 const GLOBAL_USER_ROLE = 'user';
 
+/** The expiry the invitation email states; matches `invitationExpiresIn` (48 hours). */
+const INVITATION_EXPIRY_TEXT = '48 hours';
+
+/** The host key carrying the request's session headers (Resolved decision Q42). */
+const REQUEST_HEADERS = '__requestHeaders';
+
+interface InviteApiSurface {
+  createInvitation(args: {
+    body: { email: string; role: 'member' | 'admin'; organizationId: string };
+    headers: Headers;
+  }): Promise<{ id: string; expiresAt: Date | string }>;
+}
+
+interface CancelInvitationApiSurface {
+  cancelInvitation(args: { body: { invitationId: string }; headers: Headers }): Promise<unknown>;
+}
+
+interface VerificationAdapterSurface {
+  readonly internalAdapter: {
+    createVerificationValue(data: {
+      identifier: string;
+      value: string;
+      expiresAt: Date;
+    }): Promise<unknown>;
+    updateVerificationByIdentifier(identifier: string, data: { value: string }): Promise<unknown>;
+  };
+}
+
+export interface InviteUserInput {
+  readonly email: string;
+  readonly role: AssignableOrgRole;
+}
+
+/** Never carries the token or the link: only the email does. */
+export interface InviteUserOutput {
+  readonly invitationId: string;
+}
+
 type RawContext = Record<string, unknown>;
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim() !== '';
+/** Canonicalizes an address and rejects one the platform cannot hold (Q33), before any side effect. */
+function holdableEmail(raw: string): string {
+  const canonical = canonicalEmail(raw);
+  if (!isValidIdentityEmail(canonical)) throw new IdentityInputError();
+  return canonical;
 }
 
-function parseInput(raw: unknown): CreateUserInput {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { email, name, role } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(email) || !isNonEmptyString(name) || !isNonEmptyString(role)) {
+const EMAIL_FIELD = { kind: 'string', maxLength: 254 } as const;
+const ROLE_FIELD = { kind: 'string', maxLength: 16 } as const;
+/** A `{user}` path value: an email or a `svc-...` identifier. */
+const USER_PARAM = { user: EMAIL_FIELD } as const;
+const INVITATION_PARAM = { invitation: { kind: 'string', maxLength: 64 } } as const;
+const CREDENTIAL_PARAM = { credential: { kind: 'string', maxLength: 64 } } as const;
+
+/** The detailed input shape of each procedure (design D10 "Input contract"). */
+const SCHEMAS = {
+  createUser: {
+    body: { email: EMAIL_FIELD, name: { kind: 'string', maxLength: 200 }, role: ROLE_FIELD },
+  },
+  invite: { body: { email: EMAIL_FIELD, role: ROLE_FIELD } },
+  invitation: { params: INVITATION_PARAM },
+  setStatus: { params: USER_PARAM, body: { status: { kind: 'string', maxLength: 16 } } },
+  link: { params: USER_PARAM, body: { subject: { kind: 'string', maxLength: 256 } } },
+  user: { params: USER_PARAM },
+  createServiceAccount: {
+    body: {
+      identifier: { kind: 'string', maxLength: 64 },
+      role: { ...ROLE_FIELD, optional: true },
+      moderatedBlueprints: {
+        kind: 'stringList',
+        maxItems: 64,
+        item: { maxLength: 128 },
+        optional: true,
+      },
+    },
+  },
+  createCredential: {
+    body: {
+      name: { kind: 'string', maxLength: 32, pattern: CREDENTIAL_NAME_PATTERN },
+      kind: { kind: 'string', maxLength: 16 },
+      userId: { kind: 'string', maxLength: 64, optional: true },
+    },
+  },
+  listCredentials: { query: {} },
+  credential: { params: CREDENTIAL_PARAM },
+} satisfies Record<string, InputSchema>;
+
+/**
+ * Parses the detailed input of a request. oRPC's `detailed` structure also carries the
+ * request `headers`; no procedure reads them (the session travels in the host context),
+ * so that one transport section is set aside and the rest goes through the strict parser.
+ */
+function parseDetailedInput(schema: InputSchema, raw: unknown): ParsedIdentityInput {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return parseIdentityInput(schema, raw);
+  }
+  const sections: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  delete sections['headers'];
+  return parseIdentityInput(schema, sections);
+}
+
+/**
+ * The `{invitation}` identifier as an invitation target. The input is parsed first, so a hostile or
+ * oversized request is refused before the resolver looks anything up (task 14.10).
+ */
+function invitationTargetOf(raw: unknown): { kind: 'invitation'; id: string } {
+  const { params } = parseDetailedInput(SCHEMAS.invitation, raw);
+  return { kind: 'invitation', id: params['invitation'] as string };
+}
+
+/** The `{credential}` identifier as a credential target, parsed before any lookup (task 14.10). */
+function credentialTargetOf(raw: unknown): { kind: 'credential'; id: string } {
+  const { params } = parseDetailedInput(SCHEMAS.credential, raw);
+  return { kind: 'credential', id: params['credential'] as string };
+}
+
+/** The `{user}` identifier as a user target, parsed with the procedure's schema before any lookup. */
+function userTargetOf(schema: InputSchema): (raw: unknown) => { kind: 'user'; id: string } {
+  return (raw) => {
+    const { params } = parseDetailedInput(schema, raw);
+    return { kind: 'user', id: params['user'] as string };
+  };
+}
+
+/** The role of an invite or a create: exact match (design D4 "Roles"), no trimming or case folding. */
+function assignableRole(role: unknown): AssignableOrgRole {
+  if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role as string)) {
     throw new IdentityInputError();
   }
-  if (!(ASSIGNABLE_ORG_ROLES as readonly string[]).includes(role)) throw new IdentityInputError();
-  return { email, name, role: role as AssignableOrgRole };
-}
-
-/** Cerbos `user` / `<action>` for the host-supplied principal; anything but an explicit allow is a deny. */
-async function assertMayOnUser(
-  authz: CerbosClient,
-  rawContext: RawContext,
-  action: 'create' | 'update',
-  resourceId: string,
-  resourceTenantId?: string,
-): Promise<void> {
-  const { tenantId, actor, principal } = rawContext as {
-    tenantId?: unknown;
-    actor?: { id?: unknown } | null;
-    principal?: { roles?: unknown } | null;
-  };
-  const roles = principal?.roles;
-  if (
-    !isNonEmptyString(tenantId) ||
-    !isNonEmptyString(actor?.id) ||
-    !Array.isArray(roles) ||
-    roles.length === 0 ||
-    !roles.every(isNonEmptyString)
-  ) {
-    throw new IdentityForbiddenError();
-  }
-  let allowed: boolean;
-  try {
-    const checked = await authz.checkResources({
-      principal: { id: actor.id, roles: [...roles], attr: buildAttributes(tenantId, {}) },
-      resources: [
-        {
-          resource: {
-            kind: RESOURCE_KINDS.user,
-            id: resourceId,
-            attr: buildAttributes(resourceTenantId ?? tenantId, {}),
-          },
-          actions: [action],
-        },
-      ],
-    });
-    allowed = checked.results[0]?.isAllowed(action) === true;
-  } catch {
-    allowed = false;
-  }
-  if (!allowed) throw new IdentityForbiddenError();
-}
-
-function parseLinkInputUserId(raw: unknown): string {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { userId } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(userId)) throw new IdentityInputError();
-  return userId;
+  return role as AssignableOrgRole;
 }
 
 /** The Visma Connect provider id of the `account` row (design D23/D24). */
 const SSO_PROVIDER_ID = 'visma-connect';
-
-export interface SsoLinkInput {
-  readonly userId: string;
-  readonly subject: string;
-}
-
-function parseLinkInput(raw: unknown): SsoLinkInput {
-  if (typeof raw !== 'object' || raw === null) throw new IdentityInputError();
-  const { userId, subject } = raw as Record<string, unknown>;
-  if (!isNonEmptyString(userId) || !isNonEmptyString(subject)) throw new IdentityInputError();
-  return { userId, subject };
-}
 
 /** The slice of Better Auth's internal adapter the admin-recorded linking uses (design D24 path (b)). */
 interface AccountAdapterSurface {
@@ -203,21 +338,20 @@ interface AccountAdapterSurface {
       providerId: string;
       accountId: string;
     }): Promise<unknown>;
-    findAccounts(userId: string): Promise<{ id: string; providerId: string }[]>;
-    findAccountByKey(key: { providerId: string; accountId: string }): Promise<unknown>;
     deleteAccount(id: string): Promise<void>;
-  };
-  readonly adapter: {
-    findMany<T>(args: { model: string; where: { field: string; value: string }[] }): Promise<T[]>;
+    listSessions(userId: string): Promise<readonly unknown[]>;
+    deleteUserSessions(userId: string): Promise<unknown>;
+    findUserById(userId: string): Promise<{ name: string } | null>;
+    updateUser(userId: string, data: { banned: boolean }): Promise<unknown>;
   };
 }
 
-/** The tenant of the caller; `assertMayCreateUser` already proved it is a non-empty string. */
+/** The tenant of the caller; the wrapper already proved it is a non-empty string. */
 function rawTenantId(context: RawContext): string {
   return context['tenantId'] as string;
 }
 
-/** Audit signal for an admin-recorded link/unlink (design D24); the context was validated by `authorizeTarget`. */
+/** Audit signal for an admin-recorded link/unlink (design D24); the context was validated by `the wrapper`. */
 function emitAdminLinkEvent(event: 'linked' | 'unlinked', context: RawContext): void {
   emitAccountLinkEvent(event, 'admin', {
     actorId: (context['actor'] as { id: string }).id,
@@ -225,124 +359,826 @@ function emitAdminLinkEvent(event: 'linked' | 'unlinked', context: RawContext): 
   });
 }
 
-/** A single-use, system-generated temporary password (design D22's "shown once" discipline). */
-function generateTemporaryPassword(): string {
-  return randomBytes(24).toString('base64url');
-}
-
 type OperationObject = Parameters<Extract<Route['spec'], (...args: never[]) => unknown>>[0];
 
 /** Q50: `x-tayzu-risk: high`, so the D4 step-up guard applies to the procedure. */
-const HIGH_RISK_ROUTE = {
-  spec: (current: OperationObject): OperationObject => {
-    const marked = { ...current, 'x-tayzu-risk': 'high' };
-    return marked;
-  },
-};
+function markHighRisk(current: OperationObject): OperationObject {
+  const marked = { ...current, 'x-tayzu-risk': 'high' };
+  return marked;
+}
+
+/** A route declaration of design D10; `inputStructure: 'detailed'` on every one. */
+function identityRoute(
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  path: string,
+  options: { readonly highRisk?: true } = {},
+): Route {
+  return {
+    method,
+    path: path as `/${string}`,
+    inputStructure: 'detailed',
+    ...(options.highRisk === true ? { spec: markHighRisk } : {}),
+  };
+}
 
 export function createIdentityRouter(options: CreateIdentityRouterOptions) {
-  const base = os.$context<RawContext>();
   const userApi = options.auth.api as CreateUserApiSurface;
+  const inviteApi = options.auth.api as InviteApiSurface;
+  const cancelApi = options.auth.api as CancelInvitationApiSurface;
+  const verificationContext = (): Promise<VerificationAdapterSurface> =>
+    options.auth.$context as Promise<VerificationAdapterSurface>;
   const authContext = (): Promise<AccountAdapterSurface> =>
     options.auth.$context as Promise<AccountAdapterSurface>;
 
+  const baseResolver = createIdentityTargetResolver({ authRepository: options.authRepository });
   /**
-   * Design D24 / spec "cross-tenant looks like not found": the Cerbos resource
-   * carries the target's real tenant, resolved server-side from its
-   * memberships, never taken from input. The caller-tenant check runs first, so
-   * an unauthorized caller gets the same deny for any target; then, when the
-   * target is not a member of the caller's tenant, the check against the
-   * target's tenant denies and is reported as not-found (as is a nonexistent
-   * target).
+   * Maps the `{user}` identifier to the Better Auth user before the tenant check
+   * (Resolved decision Q31). An identifier with no user is passed on as is, so
+   * the resolver answers it exactly like any other unknown target.
    */
-  async function authorizeTarget(context: RawContext, targetUserId: string): Promise<void> {
-    await assertMayOnUser(options.authz, context, 'update', targetUserId);
-    const callerTenant = rawTenantId(context);
-    const memberships = await (
-      await authContext()
-    ).adapter.findMany<{ organizationId: string }>({
-      model: 'member',
-      where: [{ field: 'userId', value: targetUserId }],
+  const targetResolver: IdentityTargetResolver = {
+    async resolve(context, rawTarget) {
+      const { kind, id: identifier } = rawTarget as { kind?: unknown; id?: unknown };
+      if (kind !== 'user' || typeof identifier !== 'string') {
+        return baseResolver.resolve(context, rawTarget);
+      }
+      // A service account has no Better Auth user: its `_user` is the target (Q62, Q90).
+      if (isValidServiceAccountIdentifier(identifier)) {
+        const attributes =
+          options.appPool === undefined
+            ? undefined
+            : await readUserAttributes(options.appPool, context.tenantId, identifier);
+        if (attributes?.accountKind !== 'service') throw new CredentialTargetNotFoundError();
+        return { kind: 'user', id: identifier, tenantId: context.tenantId, attributes };
+      }
+      const found = await options.authRepository.globalUserByEmail(identifier);
+      const resolved = await baseResolver.resolve(
+        context,
+        found === undefined ? rawTarget : { kind: 'user', id: found.id },
+      );
+      const user = await options.authRepository.userInTenant(context.tenantId, resolved.id);
+      const attributes =
+        options.appPool === undefined || user === undefined
+          ? undefined
+          : await readUserAttributes(options.appPool, context.tenantId, user.email);
+      return attributes === undefined ? resolved : { ...resolved, attributes };
+    },
+  };
+
+  const defineIdentityOperation = createDefineIdentityOperation({
+    authz: options.authz,
+    targetResolver,
+  });
+
+  /** Logs the internal cause of a refused create or link: opaque identifiers and a bounded reason only (Q115). */
+  function emitConflictRefused(
+    context: RawContext,
+    reason: 'account_exists' | 'target_in_other_tenant' | 'sub_already_linked',
+    userId?: string,
+  ): void {
+    emitIdentityEvent({
+      name: 'catalog.security.identity_conflict_refused',
+      severity: 'WARN',
+      attributes: {
+        'tayzu.tenant.id': rawTenantId(context),
+        'tayzu.actor.id': (context['actor'] as { id: string }).id,
+        'tayzu.identity.conflict.reason': reason,
+        ...(userId === undefined ? {} : { 'tayzu.identity.user.id': userId }),
+      },
     });
-    const tenants = memberships.map((m) => m.organizationId);
-    if (tenants.includes(callerTenant)) return;
-    const [targetTenant] = tenants;
-    if (targetTenant === undefined) throw new IdentityNotFoundError();
-    try {
-      await assertMayOnUser(options.authz, context, 'update', targetUserId, targetTenant);
-    } catch {
-      // Denied by the cross-tenant rule (or Cerbos failed): fail closed as not-found.
+  }
+
+  /** `002` VCDM M10: an account with a membership in a second tenant is never linked or unlinked from one tenant. */
+  async function refuseMultiTenantTarget(userId: string, context?: RawContext): Promise<void> {
+    if ((await options.authRepository.globalMembershipTenantsOf(userId)).length > 1) {
+      if (context !== undefined) emitConflictRefused(context, 'target_in_other_tenant', userId);
+      throw new IdentityLinkRejectedError();
     }
-    throw new IdentityNotFoundError();
+  }
+
+  /**
+   * Q88: an admin never records a `sub` on an admin or an owner of the tenant (identity laundering).
+   * The cause is logged with opaque identifiers only (Q115); the caller sees the generic rejection.
+   */
+  async function refuseAdminOrOwnerTarget(context: RawContext, userId: string): Promise<void> {
+    const tenantId = rawTenantId(context);
+    const member = await options.authRepository.memberOf(tenantId, userId);
+    if (member?.role !== 'admin' && member?.role !== 'owner') return;
+    emitIdentityEvent({
+      name: 'catalog.security.identity_conflict_refused',
+      severity: 'WARN',
+      attributes: {
+        'tayzu.tenant.id': tenantId,
+        'tayzu.actor.id': (context['actor'] as { id: string }).id,
+        'tayzu.identity.conflict.reason': 'target_is_admin_or_owner',
+        'tayzu.identity.user.id': userId,
+      },
+    });
+    throw new IdentityLinkRejectedError();
+  }
+
+  /**
+   * One invitation cancellation (design D4, Observability contract): the `identity.invitation.cancel`
+   * span around `cancel`, then the audit event and the funnel counter. `cancel` answering `false`
+   * means another writer got there first, so nothing is recorded.
+   */
+  async function recordInvitationCancel(
+    tenantId: string,
+    adminId: string,
+    invitationId: string,
+    reason: 'admin_cancel' | 're_invite' | 'user_disabled' | 'inviter_disabled' | 'user_created',
+    cancel: () => Promise<unknown> = () => Promise.resolve(),
+  ): Promise<void> {
+    const attributes = {
+      'tayzu.identity.invitation.id': invitationId,
+      'tayzu.identity.invitation.reason': reason,
+    };
+    const result = await withIdentitySpan('identity.invitation.cancel', attributes, cancel);
+    if (result === false) return;
+    emitIdentityEvent({
+      name: 'catalog.audit.invitation_cancelled',
+      severity: 'INFO',
+      attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': adminId, ...attributes },
+    });
+    recordIdentityMetric('tayzu.identity.invitations', 1, {
+      'tayzu.tenant.id': tenantId,
+      'tayzu.identity.invitation.mutation': 'cancelled',
+    });
   }
 
   return {
     identity: {
+      credentials: {
+        // Step-up applies (D4); the key's limits are plugin-level configuration (Q44).
+        create: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'create',
+            resolveTarget: () => undefined,
+          },
+          route: identityRoute('POST', '/v1/credentials', { highRisk: true }),
+          handler: ({ context, input: rawInput }) =>
+            withMutationSlot(() =>
+              withIdentitySpan('identity.credential.create', {}, async (span) => {
+                const { body } = parseDetailedInput(SCHEMAS.createCredential, rawInput);
+                const name = body['name'] as string;
+                const kind = body['kind'];
+                const userId = body['userId'] as string | undefined;
+                if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
+                span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+                const created = await createCredential({
+                  authRepository: options.authRepository,
+                  ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
+                  ...(userId === undefined ? {} : { userId }),
+                  cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+                  auth: options.auth,
+                  tenantId: rawTenantId(context),
+                  adminId: (context['actor'] as { id: string }).id,
+                  name,
+                  kind,
+                });
+                emitIdentityEvent({
+                  name: 'catalog.audit.credential_created',
+                  severity: 'INFO',
+                  attributes: {
+                    'tayzu.tenant.id': rawTenantId(context),
+                    'tayzu.actor.id': (context['actor'] as { id: string }).id,
+                    'tayzu.identity.credential.id': created.id,
+                    'tayzu.identity.credential.kind': kind,
+                  },
+                });
+                // A key bound to a service account counts as `service_account` (Q145).
+                recordCredentialMutation(
+                  rawTenantId(context),
+                  userId === undefined ? kind : 'service_account',
+                  'created',
+                );
+                return created;
+              }),
+            ),
+        }),
+        // Step-up applies (D4); the old key is resolved inside the tenant by the target resolver.
+        rotate: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'rotate',
+            resolveTarget: credentialTargetOf,
+          },
+          route: identityRoute('POST', '/v1/credentials/{credential}/rotate', { highRisk: true }),
+          handler: ({ context, input: rawInput, target }) =>
+            withMutationSlot(() =>
+              withIdentitySpan('identity.credential.rotate', {}, async (span) => {
+                parseDetailedInput(SCHEMAS.credential, rawInput);
+                // Fail closed when the host did not wire the revocation-list pool.
+                if (options.appPool === undefined || target === undefined) {
+                  throw new IdentityInputError();
+                }
+                const tenantId = rawTenantId(context);
+                const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
+                if (kind !== undefined)
+                  span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+                const rotated = await rotateCredential({
+                  auth: options.auth,
+                  authRepository: options.authRepository,
+                  appPool: options.appPool,
+                  tenantId,
+                  adminId: (context['actor'] as { id: string }).id,
+                  credentialId: target.id,
+                  cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+                });
+                if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'rotated');
+                return rotated;
+              }),
+            ),
+        }),
+        // Step-up applies (D4); permanent, and a repeat is a no-op.
+        revoke: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'revoke',
+            resolveTarget: credentialTargetOf,
+          },
+          route: identityRoute('POST', '/v1/credentials/{credential}/revoke', { highRisk: true }),
+          handler: ({ context, input: rawInput, target }) =>
+            withMutationSlot(() =>
+              withIdentitySpan('identity.credential.revoke', {}, async (span) => {
+                parseDetailedInput(SCHEMAS.credential, rawInput);
+                // Fail closed when the host did not wire the revocation-list pool.
+                if (options.appPool === undefined || target === undefined) {
+                  throw new IdentityInputError();
+                }
+                const tenantId = rawTenantId(context);
+                const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
+                if (kind !== undefined)
+                  span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+                await revokeCredential({
+                  auth: options.auth,
+                  appPool: options.appPool,
+                  tenantId,
+                  adminId: (context['actor'] as { id: string }).id,
+                  credentialId: target.id,
+                });
+                if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'revoked');
+              }),
+            ),
+        }),
+        list: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.credential,
+            action: 'list',
+            resolveTarget: () => undefined,
+          },
+          route: identityRoute('GET', '/v1/credentials'),
+          handler: ({ context, input: rawInput }) =>
+            withIdentitySpan('identity.credential.list', {}, async (span) => {
+              parseDetailedInput(SCHEMAS.listCredentials, rawInput);
+              // Fail closed when the host did not wire the revocation-list pool.
+              if (options.appPool === undefined) throw new IdentityInputError();
+              const listed = await listCredentials({
+                authRepository: options.authRepository,
+                appPool: options.appPool,
+                tenantId: rawTenantId(context),
+                cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+              });
+              span.setAttributes({ 'tayzu.identity.credential.count': listed.credentials.length });
+              return listed;
+            }),
+        }),
+      },
+      serviceAccounts: {
+        // Step-up applies (D4); the secret is returned once.
+        create: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.serviceAccount,
+            action: 'create',
+            resolveTarget: () => undefined,
+          },
+          route: identityRoute('POST', '/v1/service-accounts', { highRisk: true }),
+          handler: ({ context, input: rawInput }) =>
+            withMutationSlot(async () => {
+              // Fail closed when the host did not wire the lookups and the writer.
+              if (options.appPool === undefined || options.userSync === undefined) {
+                throw new IdentityInputError();
+              }
+              const { body } = parseDetailedInput(SCHEMAS.createServiceAccount, rawInput);
+              const identifier = body['identifier'] as string;
+              // Ceiling (D6): only `member` and an empty `moderatedBlueprints` list, before anything is written.
+              if (body['role'] !== undefined && body['role'] !== 'member') {
+                throw new IdentityInputError();
+              }
+              const moderated = body['moderatedBlueprints'];
+              if (Array.isArray(moderated) && moderated.length > 0) {
+                throw new IdentityInputError();
+              }
+              return await createServiceAccount({
+                auth: options.auth,
+                authz: options.authz,
+                appPool: options.appPool,
+                authRepository: options.authRepository,
+                userSync: options.userSync,
+                tenantId: rawTenantId(context),
+                adminId: (context['actor'] as { id: string }).id,
+                identifier,
+                credentialCap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+                ...(options.serviceAccountCap === undefined
+                  ? {}
+                  : { cap: options.serviceAccountCap }),
+              });
+            }),
+        }),
+        // Step-up applies (D4); the target is resolved as a service account by the handler (10.7b).
+        delete: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.serviceAccount,
+            action: 'delete',
+            // Only a `svc-…` identifier can name a service account: any other id answers not found.
+            resolveTarget: (raw) => {
+              const target = userTargetOf(SCHEMAS.user)(raw);
+              if (!isValidServiceAccountIdentifier(target.id)) {
+                throw new CredentialTargetNotFoundError();
+              }
+              return target;
+            },
+          },
+          route: identityRoute('DELETE', '/v1/service-accounts/{user}', { highRisk: true }),
+          handler: ({ context, input: rawInput }): Promise<void> =>
+            withMutationSlot(async () => {
+              // Fail closed when the host did not wire the lookups.
+              if (options.appPool === undefined) throw new IdentityInputError();
+              const user = parseDetailedInput(SCHEMAS.user, rawInput).params['user'] as string;
+              await deleteServiceAccount({
+                auth: options.auth,
+                authz: options.authz,
+                appPool: options.appPool,
+                authRepository: options.authRepository,
+                tenantId: rawTenantId(context),
+                adminId: (context['actor'] as { id: string }).id,
+                identifier: user,
+              });
+            }),
+        }),
+      },
       users: {
         // Authorization runs before input parsing: a denied caller learns nothing about validity.
-        create: base.handler(async ({ context, input: rawInput }): Promise<CreateUserOutput> => {
-          await assertMayOnUser(options.authz, context, 'create', 'new');
-          const input = parseInput(rawInput);
-          const temporaryPassword = generateTemporaryPassword();
-          const { user } = await userApi.createUser({
-            body: {
-              name: input.name,
-              email: input.email,
-              password: temporaryPassword,
-              role: GLOBAL_USER_ROLE,
-            },
-          });
-          // Same operation: the org plugin's member hooks keep syncing `_user`.
-          await userApi.addMember({
-            body: { userId: user.id, role: input.role, organizationId: rawTenantId(context) },
-          });
-          await options.userSync?.upsertUser({
-            tenantId: rawTenantId(context),
-            email: user.email,
-            name: input.name,
-            portRole: input.role === 'admin' ? 'admin' : 'member',
-            status: 'Active',
-          });
-          return { userId: user.id, email: user.email, temporaryPassword };
+        create: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'create',
+            resolveTarget: () => undefined,
+          },
+          route: identityRoute('POST', '/v1/users', { highRisk: true }),
+          handler: async ({ context, input: rawInput }): Promise<CreateUserOutput> => {
+            const { body } = parseDetailedInput(SCHEMAS.createUser, rawInput);
+            const input: CreateUserInput = {
+              email: holdableEmail(body['email'] as string),
+              name: body['name'] as string,
+              role: assignableRole(body['role']),
+            };
+            const temporaryPassword = generateTemporaryPassword();
+            // Admin `createUser` enforces only the maximum length: the policy minimum is applied here (Q22).
+            if (!validatePassword(temporaryPassword).ok) throw new IdentityInputError();
+            const adminId = (context['actor'] as { id: string }).id;
+            // One generic answer to every existing-account cause; the cause is only logged (Q115).
+            const existingUser = await options.authRepository.globalUserByEmail(input.email);
+            if (existingUser !== undefined) {
+              const tenants = await options.authRepository.globalMembershipTenantsOf(
+                existingUser.id,
+              );
+              emitConflictRefused(
+                context,
+                tenants.some((tenant) => tenant !== rawTenantId(context))
+                  ? 'target_in_other_tenant'
+                  : 'account_exists',
+                existingUser.id,
+              );
+              throw new IdentityCreateRejectedError();
+            }
+            // The membership hook is the single `_user` writer; it reads the admin from the store (Q76, Q117).
+            const { user } = await runWithIdentityContext({ adminId }, async () => {
+              const created = await userApi.createUser({
+                body: {
+                  name: input.name,
+                  email: input.email,
+                  password: temporaryPassword,
+                  role: GLOBAL_USER_ROLE,
+                },
+              });
+              // The marker precedes the membership: a failed write leaves the user outside the tenant (Q36).
+              await writeTemporaryPasswordMarker(
+                (await verificationContext()).internalAdapter,
+                created.user.id,
+              );
+              // `addMember` answers FORBIDDEN past the membership limit.
+              await withGenericRefusal(
+                () =>
+                  userApi.addMember({
+                    body: {
+                      userId: created.user.id,
+                      role: input.role,
+                      organizationId: rawTenantId(context),
+                    },
+                  }),
+                ({ status }) => status === 'FORBIDDEN',
+              );
+              return created;
+            });
+            // Design D4 (Q110): the user now exists, so a pending invitation of this tenant to the address is moot.
+            const tenantId = rawTenantId(context);
+            const pending = await options.authRepository.pendingInvitationsByEmail(
+              tenantId,
+              input.email,
+            );
+            for (const invitation of pending) {
+              const headers = context[REQUEST_HEADERS];
+              if (!(headers instanceof Headers)) throw new IdentityInputError();
+              await recordInvitationCancel(tenantId, adminId, invitation.id, 'user_created', () =>
+                cancelApi.cancelInvitation({ body: { invitationId: invitation.id }, headers }),
+              );
+            }
+            emitIdentityEvent({
+              name: 'catalog.audit.user_created',
+              severity: 'INFO',
+              attributes: {
+                'tayzu.tenant.id': tenantId,
+                'tayzu.actor.id': adminId,
+                'tayzu.identity.user.id': user.id,
+                'tayzu.identity.user.role': input.role,
+                'tayzu.identity.user.source': 'admin',
+              },
+            });
+            return { userId: user.id, email: user.email, temporaryPassword };
+          },
+        }),
+        // Design D4 (Q42, Q76): the admin's session headers go to Better Auth; its hook writes the `_user`.
+        invite: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'invite',
+            resolveTarget: () => undefined,
+          },
+          route: identityRoute('POST', '/v1/users/invitations', { highRisk: true }),
+          handler: ({ context, input: rawInput }): Promise<InviteUserOutput> =>
+            withIdentitySpan('identity.invitation.create', {}, async (span) => {
+              const { body } = parseDetailedInput(SCHEMAS.invite, rawInput);
+              const input: InviteUserInput = {
+                email: holdableEmail(body['email'] as string),
+                role: assignableRole(body['role']),
+              };
+              span.setAttributes({ 'tayzu.identity.invitation.role': input.role });
+              const { emailGate, invitationLinkBaseUrl } = options;
+              // Fail closed when the host did not wire the email path: nothing is created.
+              if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
+                throw new IdentityInputError();
+              }
+              const headers = context[REQUEST_HEADERS];
+              if (!(headers instanceof Headers)) throw new IdentityInputError();
+              const tenantId = rawTenantId(context);
+              const adminId = (context['actor'] as { id: string }).id;
+              // The caps are consumed before any state is written (Q149); a refusal leaves nothing.
+              const admission = await emailGate.admit({ tenantId, to: input.email });
+              // Better Auth cancels the address's pending invitations inside its create (Q42).
+              const earlier = await options.authRepository.pendingInvitationsByEmail(
+                tenantId,
+                input.email,
+              );
+              const invitation = await runWithIdentityContext({ adminId }, () =>
+                withGenericRefusal(
+                  () =>
+                    inviteApi.createInvitation({
+                      body: { email: input.email, role: input.role, organizationId: tenantId },
+                      headers,
+                    }),
+                  ({ code }) => INVITATION_REFUSAL_CODES.includes(code),
+                ),
+              );
+              span.setAttributes({ 'tayzu.identity.invitation.id': invitation.id });
+              for (const previous of earlier) {
+                const now = await options.authRepository.invitationById(tenantId, previous.id);
+                if (now?.status === 'pending') continue;
+                await recordInvitationCancel(tenantId, adminId, previous.id, 're_invite');
+              }
+              const token = generateInvitationToken();
+              await (
+                await verificationContext()
+              ).internalAdapter.createVerificationValue({
+                identifier: `invitation-accept:${invitation.id}`,
+                value: digestInvitationToken(token),
+                expiresAt: new Date(invitation.expiresAt),
+              });
+              await admission.deliver({
+                kind: 'InvitationEmail',
+                link: buildInvitationLink({
+                  baseUrl: invitationLinkBaseUrl,
+                  invitationId: invitation.id,
+                  token,
+                }),
+                expiryText: INVITATION_EXPIRY_TEXT,
+              });
+              emitIdentityEvent({
+                name: 'catalog.audit.invitation_created',
+                severity: 'INFO',
+                attributes: {
+                  'tayzu.tenant.id': tenantId,
+                  'tayzu.actor.type': (context['actor'] as { type: string }).type,
+                  'tayzu.actor.id': adminId,
+                  'tayzu.identity.invitation.id': invitation.id,
+                  'tayzu.identity.invitation.role': input.role,
+                },
+              });
+              recordIdentityMetric('tayzu.identity.invitations', 1, {
+                'tayzu.tenant.id': tenantId,
+                'tayzu.identity.invitation.mutation': 'created',
+              });
+              return { invitationId: invitation.id };
+            }),
+        }),
+        // Design D4 (Q47): resolved on the server, cancelled with the admin's forwarded session headers.
+        cancelInvitation: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'invite',
+            resolveTarget: invitationTargetOf,
+          },
+          route: identityRoute('POST', '/v1/users/invitations/{invitation}/cancel'),
+          handler: async ({ context, input: rawInput, target }): Promise<void> => {
+            parseDetailedInput(SCHEMAS.invitation, rawInput);
+            const headers = context[REQUEST_HEADERS];
+            if (!(headers instanceof Headers)) throw new IdentityInputError();
+            // Better Auth's cancel ignores the status, so only a `pending` invitation is cancelled (Q123, Q129).
+            const invitation = await options.authRepository.invitationById(
+              rawTenantId(context),
+              (target as ResolvedIdentityTarget).id,
+            );
+            if (invitation?.status !== 'pending') throw new IdentityInputError();
+            await recordInvitationCancel(
+              rawTenantId(context),
+              (context['actor'] as { id: string }).id,
+              invitation.id,
+              'admin_cancel',
+              () =>
+                cancelApi.cancelInvitation({
+                  body: { invitationId: invitation.id },
+                  headers,
+                }),
+            );
+          },
+        }),
+        // Design D4 "Resend": a new token on the same verification row, so the expiry and the invitation stay as they are.
+        resendInvitation: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'invite',
+            resolveTarget: invitationTargetOf,
+          },
+          route: identityRoute('POST', '/v1/users/invitations/{invitation}/resend'),
+          handler: ({ context, input: rawInput, target }): Promise<InviteUserOutput> =>
+            withIdentitySpan(
+              'identity.invitation.resend',
+              { 'tayzu.identity.invitation.id': (target as ResolvedIdentityTarget).id },
+              async () => {
+                parseDetailedInput(SCHEMAS.invitation, rawInput);
+                const { emailGate, invitationLinkBaseUrl } = options;
+                if (emailGate === undefined || invitationLinkBaseUrl === undefined) {
+                  throw new IdentityInputError();
+                }
+                const tenantId = rawTenantId(context);
+                const invitation = await options.authRepository.invitationById(
+                  tenantId,
+                  (target as ResolvedIdentityTarget).id,
+                );
+                // Only a `pending` invitation is resent (Q123).
+                if (invitation?.status !== 'pending') throw new IdentityInputError();
+                // The caps are consumed before the digest is replaced (Q149): a refusal keeps the earlier link.
+                const admission = await emailGate.admit({ tenantId, to: invitation.email });
+                const token = generateInvitationToken();
+                await (
+                  await verificationContext()
+                ).internalAdapter.updateVerificationByIdentifier(
+                  `invitation-accept:${invitation.id}`,
+                  {
+                    value: digestInvitationToken(token),
+                  },
+                );
+                await admission.deliver({
+                  kind: 'InvitationEmail',
+                  link: buildInvitationLink({
+                    baseUrl: invitationLinkBaseUrl,
+                    invitationId: invitation.id,
+                    token,
+                  }),
+                  expiryText: INVITATION_EXPIRY_TEXT,
+                });
+                emitIdentityEvent({
+                  name: 'catalog.audit.invitation_resent',
+                  severity: 'INFO',
+                  attributes: {
+                    'tayzu.tenant.id': tenantId,
+                    'tayzu.actor.type': (context['actor'] as { type: string }).type,
+                    'tayzu.actor.id': (context['actor'] as { id: string }).id,
+                    'tayzu.identity.invitation.id': invitation.id,
+                  },
+                });
+                return { invitationId: invitation.id };
+              },
+            ),
         }),
         // Design D24 path (b): a `sub`-keyed `account` row for a target user, never keyed on email.
-        linkSsoAccount: base
-          .route(HIGH_RISK_ROUTE)
-          .handler(async ({ context, input: rawInput }): Promise<void> => {
-            const input = parseLinkInput(rawInput);
-            await authorizeTarget(context, input.userId);
+        linkSsoAccount: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'update',
+            resolveTarget: userTargetOf(SCHEMAS.link),
+          },
+          route: identityRoute('POST', '/v1/users/{user}/sso-account', { highRisk: true }),
+          handler: async ({ context, input: rawInput, target }): Promise<void> => {
+            const { body } = parseDetailedInput(SCHEMAS.link, rawInput);
+            const input = { subject: body['subject'] as string };
             const adapter = (await authContext()).internalAdapter;
-            const key = { providerId: SSO_PROVIDER_ID, accountId: input.subject };
-            if ((await adapter.findAccountByKey(key)) != null)
-              throw new IdentityLinkRejectedError();
-            try {
-              await adapter.linkAccount({
-                userId: input.userId,
-                providerId: SSO_PROVIDER_ID,
-                accountId: input.subject,
-              });
-            } catch (error) {
-              // A concurrent link of the same `sub` (Q29): same generic rejection.
-              if (isAccountUniqueViolation(error)) throw new IdentityLinkRejectedError();
-              throw error;
-            }
+            const userId = (target as ResolvedIdentityTarget).id;
+            await options.withUserLock(userId, async () => {
+              // The checks run inside the lock (task 8.5i).
+              await refuseMultiTenantTarget(userId, context);
+              await refuseAdminOrOwnerTarget(context, userId);
+              const existing = await options.authRepository.globalAccountByKey(
+                SSO_PROVIDER_ID,
+                input.subject,
+              );
+              if (existing !== undefined) {
+                emitConflictRefused(context, 'sub_already_linked', userId);
+                throw new IdentityLinkRejectedError();
+              }
+              try {
+                await adapter.linkAccount({
+                  userId,
+                  providerId: SSO_PROVIDER_ID,
+                  accountId: input.subject,
+                });
+              } catch (error) {
+                // A concurrent link of the same `sub` (Q29): same generic rejection.
+                if (isAccountUniqueViolation(error)) throw new IdentityLinkRejectedError();
+                throw error;
+              }
+            });
             emitAdminLinkEvent('linked', context);
-          }),
-        unlinkSsoAccount: base
-          .route(HIGH_RISK_ROUTE)
-          .handler(async ({ context, input: rawInput }): Promise<void> => {
-            const userId = parseLinkInputUserId(rawInput);
-            await authorizeTarget(context, userId);
+          },
+        }),
+        // Tenant-scoped (Q25): the tenant's sessions go always; the global ban only for a single membership.
+        setStatus: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'updateStatus',
+            // A service account is the target by its `svc-…` identifier (Q62, Q90, task 16.12a).
+            resolveTarget: userTargetOf(SCHEMAS.setStatus),
+          },
+          route: identityRoute('PUT', '/v1/users/{user}/status', { highRisk: true }),
+          handler: ({ context, input: rawInput, target }): Promise<void> =>
+            withIdentitySpan('identity.user.set_status', {}, async (span): Promise<void> => {
+              // Fail closed when the host did not wire the writer.
+              const { userSync } = options;
+              if (userSync === undefined) throw new IdentityInputError();
+              const parsed = parseDetailedInput(SCHEMAS.setStatus, rawInput);
+              const status = parsed.body['status'];
+              if (status !== 'Active' && status !== 'Disabled') throw new IdentityInputError();
+              span.setAttributes({ 'tayzu.identity.user.status.to': status });
+              const tenantId = rawTenantId(context);
+              const adminId = (context['actor'] as { id: string }).id;
+              const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
+              if (target === undefined) throw new IdentityInputError();
+              if (isValidServiceAccountIdentifier(target.id)) {
+                // Service-account branch: only `_user.status` is written (no Better Auth user).
+                const identifier = parsed.params['user'] as string;
+                if (
+                  options.appPool === undefined ||
+                  !(await serviceAccountExists(options.appPool, tenantId, identifier))
+                ) {
+                  throw new CredentialTargetNotFoundError();
+                }
+                const serviceCurrent = await userSync.readStatus({ tenantId, email: identifier });
+                nextStatus(serviceCurrent, change);
+                if (serviceCurrent !== null) {
+                  span.setAttributes({ 'tayzu.identity.user.status.from': serviceCurrent });
+                }
+                const written = await runWithIdentityContext({ adminId }, () =>
+                  userSync.writeUserChange({
+                    tenantId,
+                    email: identifier,
+                    name: identifier,
+                    change,
+                    userId: identifier,
+                    accountKind: 'service',
+                    principal: { kind: 'admin', id: adminId },
+                    onBehalfOf: { type: 'user', id: adminId },
+                  }),
+                );
+                // A write that changed nothing returns no event and counts for nothing.
+                if (written !== undefined) {
+                  recordIdentityMetric('tayzu.identity.service_accounts', 1, {
+                    'tayzu.tenant.id': tenantId,
+                    'tayzu.identity.service_account.mutation':
+                      status === 'Disabled' ? 'disabled' : 'enabled',
+                  });
+                }
+                return;
+              }
+              const userId = target.id;
+              const adapter = (await authContext()).internalAdapter;
+              const user = await options.authRepository.userInTenant(tenantId, userId);
+              const authUser = await adapter.findUserById(userId);
+              if (user === undefined || authUser === null) throw new IdentityInputError();
+              const current = await userSync.readStatus({ tenantId, email: user.email });
+              nextStatus(current, change);
+              if (current !== null)
+                span.setAttributes({ 'tayzu.identity.user.status.from': current });
+              await runWithIdentityContext({ adminId }, () =>
+                userSync.writeUserChange({
+                  tenantId,
+                  email: user.email,
+                  name: authUser.name,
+                  change,
+                  userId,
+                  principal: { kind: 'admin', id: adminId },
+                  onBehalfOf: { type: 'user', id: adminId },
+                }),
+              );
+              const single =
+                (await options.authRepository.globalMembershipTenantsOf(userId)).length === 1;
+              if (status === 'Active') {
+                if (single) await adapter.updateUser(userId, { banned: false });
+                return;
+              }
+              // Design D13 (Q63, Q123): the pending invitations to the user and those the user created
+              // in this tenant are cancelled; any other status is skipped.
+              const toCancel = [
+                {
+                  reason: 'user_disabled' as const,
+                  invitations: await options.authRepository.pendingInvitationsByEmail(
+                    tenantId,
+                    user.email,
+                  ),
+                },
+                {
+                  reason: 'inviter_disabled' as const,
+                  invitations: await options.authRepository.pendingInvitationsByInviter(
+                    tenantId,
+                    userId,
+                  ),
+                },
+              ];
+              for (const { reason, invitations } of toCancel) {
+                for (const invitation of invitations) {
+                  await recordInvitationCancel(tenantId, adminId, invitation.id, reason, () =>
+                    options.authRepository.markInvitationCancelled(tenantId, invitation.id),
+                  );
+                }
+              }
+              const revoked = await options.authRepository.deleteSessionsOf(tenantId, userId);
+              for (let index = 0; index < revoked; index += 1) {
+                emitSessionRevoked({ actorId: userId, tenantId, reason: 'admin_action' });
+              }
+              if (single) {
+                await adapter.updateUser(userId, { banned: true });
+                // Q149: the sessions the ban deletes beyond the tenant's are announced too.
+                const remaining = await adapter.listSessions(userId);
+                await adapter.deleteUserSessions(userId);
+                for (let index = 0; index < remaining.length; index += 1) {
+                  emitSessionRevoked({ actorId: userId, tenantId, reason: 'admin_action' });
+                }
+              }
+            }),
+        }),
+        unlinkSsoAccount: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'update',
+            resolveTarget: userTargetOf(SCHEMAS.user),
+          },
+          route: identityRoute('DELETE', '/v1/users/{user}/sso-account', { highRisk: true }),
+          handler: async ({ context, input: rawInput, target }): Promise<void> => {
+            parseDetailedInput(SCHEMAS.user, rawInput);
+            const userId = (target as ResolvedIdentityTarget).id;
             const adapter = (await authContext()).internalAdapter;
-            const accounts = await adapter.findAccounts(userId);
+            await refuseMultiTenantTarget(userId);
+            const accounts = await options.authRepository.globalAccountsOf(userId);
             const sso = accounts.filter((a) => a.providerId === SSO_PROVIDER_ID);
             // Design D24: never leave the user with no password and no linked SSO account.
             if (sso.length > 0 && wouldLeaveNoSignInMethod(accounts, sso)) {
               throw new IdentityLinkRejectedError();
             }
             for (const account of sso) await adapter.deleteAccount(account.id);
-            if (sso.length > 0) emitAdminLinkEvent('unlinked', context);
-          }),
+            if (sso.length === 0) return;
+            // Q86: a session issued through the link must not outlive it.
+            const sessions = await adapter.listSessions(userId);
+            await adapter.deleteUserSessions(userId);
+            for (let index = 0; index < sessions.length; index += 1) {
+              emitSessionRevoked({
+                actorId: userId,
+                tenantId: rawTenantId(context),
+                reason: 'sso_link_shed',
+              });
+            }
+            emitAdminLinkEvent('unlinked', context);
+          },
+        }),
       },
     },
   };

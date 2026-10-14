@@ -3,10 +3,28 @@
  */
 export {
   createAuth,
+  emitSessionRevoked,
+  type SessionRevocationReason,
   type AuthInstance,
   type CreateAuthOptions,
+  type MembershipAddedIntent,
+  type UserSyncChange,
   type UserSyncPort,
 } from './auth.js';
+export type { SsoLinkShedPort } from './identity/ports.js';
+export { createAllowlistEmailSender } from './identity/email/email-allowlist.js';
+export { createNonSendingEmailSender } from './identity/email/non-sending-sender.js';
+export {
+  createRecordingEmailSender,
+  type EmailSender,
+  type EmailTemplate,
+} from './identity/email/sender.js';
+export {
+  createAzureCommunicationEmailSender,
+  parseAzureEmailConfig,
+} from './identity/email/azure-communication-email.js';
+export { validatePassword, type PasswordValidation } from './identity/password-policy.js';
+export { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 export {
   createContextResolver,
   type ContextResolver,
@@ -15,12 +33,13 @@ export {
   type ResolvedContext,
 } from './context-resolver.js';
 export * as authSchema from './persistence/schema.js';
-export { AuthContextError, AuthStepUpError } from './errors.js';
+export { AuthContextError, AuthRateLimitedError, AuthStepUpError } from './errors.js';
 export {
   exchangeMachineToken,
   type ExchangeMachineTokenParams,
   type ExchangedMachineToken,
 } from './token-exchange.js';
+export { createServiceAccountLookup } from './service-account-lookup.js';
 export {
   createEnrolledStepUpCheck,
   createStepUpGuard,
@@ -29,6 +48,8 @@ export {
   type StepUpGuardOptions,
 } from './step-up.js';
 export { ALLOWED_AUTH_ROUTES, AUTH_BASE_PATH, isAllowedAuthPath } from './http/allowed-routes.js';
+export { toCerbosRole } from './context-resolver.js';
+export { isIdle } from './session-idle.js';
 export { wouldLeaveNoSignInMethod } from './sign-in-methods.js';
 export { emitAccountLinkEvent, type AccountLinkActor } from './account-link-telemetry.js';
 export { emitInternalError } from './internal-error-telemetry.js';
@@ -42,3 +63,38 @@ export {
   type BackchannelLogoutOutcome,
 } from './backchannel-logout-telemetry.js';
 export { emitRateLimited, type RateLimitScope } from './rate-limit/pre-auth-rate-limit.js';
+export {
+  createRateLimitBucketStore,
+  type RateLimitBucketStore,
+  type RateLimitBucketStoreOptions,
+} from './rate-limit/bucket-store.js';
+export {
+  emitIdentityEvent,
+  recordIdentityMetric,
+  withIdentitySpan,
+  type IdentityAttributes,
+  type IdentitySpanHandle,
+  type IdentitySeverity,
+} from './telemetry/identity-telemetry.js';
+export {
+  IDENTITY_LOG_EVENTS,
+  IDENTITY_METRICS,
+  IDENTITY_SPANS,
+} from './telemetry/identity-contract.js';
+export {
+  bootstrapAdmin,
+  type BootstrapAdminOptions,
+  type BootstrapAdminParams,
+  type BootstrapAdminResult,
+} from './bootstrap-admin.js';
+export {
+  digestInvitationToken,
+  generateInvitationToken,
+  verifyInvitationToken,
+} from './identity/invitation-token.js';
+export {
+  generateTemporaryPassword,
+  hasActiveTemporaryPasswordMarker,
+  hasExpiredTemporaryPasswordMarker,
+  writeTemporaryPasswordMarker,
+} from './identity/temporary-password.js';

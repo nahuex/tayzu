@@ -154,6 +154,13 @@ catalog error code, or to `internal` for unexpected errors.
 Database spans (`pg.*`) come from `@opentelemetry/instrumentation-pg`, with
 `enhancedDatabaseReporting: false`, so bind values are never recorded.
 
+The HTTP server span of the catalog `_user` routes exports the route template as its
+path, never the request path, because the `{entity}` segment is an email address. The
+three templates are `/v1/blueprints/_user/entities/{entity}`,
+`/v1/blueprints/_user/entities/{entity}/status` and
+`/v1/blueprints/_user/entities/{entity}/related`. The routes of every other blueprint
+keep their paths and identifiers.
+
 ### Metrics
 
 Each metric carries only the attributes listed here. Entity identifiers and
@@ -191,6 +198,18 @@ rows store the same `trace_id`, so an audit entry, its trace and its database
 event can be joined. The durable audit record is the append-only
 `catalog_change_event` table; `catalog.audit.mutation` is a best-effort copy
 for centralized logging.
+
+A `_user` identifier is the member's email, so for an entity of the reserved
+`_user` blueprint the placeholder `_user_redacted`
+(`USER_ENTITY_IDENTIFIER_PLACEHOLDER`) replaces the identifier in
+`tayzu.catalog.entity.identifier` on the six entity spans, in
+`tayzu.catalog.resource.identifier` of `catalog.audit.mutation`, and in the
+`resource.id` of the Cerbos `catalog_entity` checks (so it never reaches
+Cerbos's decision log). The attributes stay declared and required; every other
+blueprint keeps its identifier, and the `catalog_change_event` row keeps the
+real identifier (find it by `tayzu.tenant.id` and
+`tayzu.catalog.change_event.seq`). The redaction batch sends each candidate's
+position as its `resource.id` for every blueprint.
 
 These signals must never be sampled or dropped by a downstream pipeline:
 `catalog.audit.mutation`, `catalog.security.context_rejected`, `catalog.security.reserved_identifier_denied`, `tayzu.catalog.context.rejections`, `tayzu.catalog.validation.failures`.

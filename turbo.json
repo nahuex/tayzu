@@ -1,6 +1,11 @@
 {
   "$schema": "https://turborepo.com/schema.json",
-  "globalDependencies": ["tsconfig.base.json", "vitest.shared.ts", "vitest.int.setup.ts"],
+  "globalDependencies": [
+    "tsconfig.base.json",
+    "vitest.shared.ts",
+    "vitest.int.setup.ts",
+    "vitest.int.stub.mjs"
+  ],
   "tasks": {
     "transit": {
       "dependsOn": ["^transit"]

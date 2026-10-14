@@ -52,6 +52,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
@@ -147,8 +148,8 @@ describe('Admin and owner MFA enrollment gate (task 23.15, design Q43 and D4)', 
     state.pools.set('app', pools.appPool);
     state.pools.set('auth', pools.authPool);
     app = await createAppFromEnv({
-      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       BETTER_AUTH_SECRET: TEST_SECRET,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ORIGIN,
@@ -163,6 +164,7 @@ describe('Admin and owner MFA enrollment gate (task 23.15, design Q43 and D4)', 
 
   async function newOwner(): Promise<BootstrappedTenant> {
     return await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Mfa Gate Owner',
       email: `mfa-gate-owner-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,

@@ -53,6 +53,7 @@ vi.mock('../../../packages/catalog/src/domain/blueprint-definition.js', async (i
 import {
   bootstrapTestTenant,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { CSRF_HEADERS } from './__fixtures__/csrf.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
@@ -78,6 +79,7 @@ describe('apps/api body size limit (task 11.7)', () => {
   async function provisionTenant(): Promise<BootstrappedTenant> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Body Limit User',
       email: `body-limit-${suffix}@example.test`,
       password: TEST_PASSWORD,

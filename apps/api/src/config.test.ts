@@ -49,6 +49,7 @@ import { loadConfig, type Config } from './config.js';
 const APP_URL = 'postgres://tayzu_app:app-pw-s3cret@db.invalid:5432/tayzu?sslmode=verify-full';
 const AUTH_URL = 'postgres://tayzu_auth:auth-pw-s3cret@db.invalid:5432/tayzu?sslmode=verify-full';
 const SECRET = 'config-unit-test-only-secret-0123456789-abcdefghij';
+const HMAC_SECRET = 'config-hmac-test-only-secret-0123456789-abcdefgh';
 
 function env(
   overrides: Record<string, string | undefined> = {},
@@ -61,6 +62,8 @@ function env(
     AUTH_SECRET: SECRET,
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
+    INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
+    IDENTITY_TOKEN_HMAC_SECRET: HMAC_SECRET,
     ...overrides,
   };
 }
@@ -251,6 +254,7 @@ describe('VISMA_CONNECT_DISCOVERY_URL must be https outside test (task 23.18, Q4
   const sso = (url: string, nodeEnv: string): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
       BETTER_AUTH_URL: 'https://api.tayzu.test',
       VISMA_CONNECT_DISCOVERY_URL: url,
       VISMA_CONNECT_CLIENT_ID: 'client-id',
@@ -292,6 +296,7 @@ describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.
   const origins = (value: string, nodeEnv: string): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
       BETTER_AUTH_URL: 'https://api.tayzu.test',
       ALLOWED_ORIGINS: value,
     });
@@ -331,6 +336,62 @@ describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.
     expect(loadConfig(origins('http://localhost', 'test')).allowedOrigins).toEqual([
       'http://localhost',
     ]);
+  });
+});
+
+/**
+ * `043` task 6.3 (design D5, Resolved decision Q32): `INVITATION_LINK_BASE_URL`
+ * is `https` outside test and one of `ALLOWED_ORIGINS`. Production symbol:
+ * `Config.invitationLinkBaseUrl?: string` (undefined only in test when unset);
+ * `loadConfig` throws an `Error` naming the variable and never echoing the value.
+ */
+describe('INVITATION_LINK_BASE_URL (043 task 6.3, Q32)', () => {
+  const NAME = 'INVITATION_LINK_BASE_URL';
+  const link = (value: string | undefined, nodeEnv: string): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      [NAME]: value,
+    });
+
+  it('rejects an http value outside test, naming the variable and not echoing it', () => {
+    const value = 'http://app.tayzu.test';
+    const error = thrown(() => loadConfig(link(value, 'production')));
+    expect(error.message).toContain(NAME);
+    expect(error.message).not.toContain(value);
+  });
+
+  it('rejects a value outside ALLOWED_ORIGINS, naming the variable and not echoing it', () => {
+    const value = 'https://elsewhere.tayzu.invalid';
+    const error = thrown(() => loadConfig(link(value, 'production')));
+    expect(error.message).toContain(NAME);
+    expect(error.message).not.toContain(value);
+  });
+
+  it('rejects a missing value outside test', () => {
+    const error = thrown(() => loadConfig(link(undefined, 'production')));
+    expect(error.message).toContain(NAME);
+  });
+
+  it('rejects a malformed value outside test', () => {
+    const error = thrown(() => loadConfig(link('not a url', 'production')));
+    expect(error.message).toContain(NAME);
+  });
+
+  it('accepts an https value on ALLOWED_ORIGINS outside test', () => {
+    const config = loadConfig(link('https://app.tayzu.test', 'production'));
+    expect(config.invitationLinkBaseUrl).toBe('https://app.tayzu.test');
+  });
+
+  it('accepts an http value in test', () => {
+    const config = loadConfig(link('http://localhost:3000', 'test'));
+    expect(config.invitationLinkBaseUrl).toBe('http://localhost:3000');
+  });
+
+  it('is undefined in test when unset', () => {
+    expect(loadConfig(link(undefined, 'test')).invitationLinkBaseUrl).toBeUndefined();
   });
 });
 
@@ -376,6 +437,549 @@ describe('pre-auth password-check limit from the environment (task 24.12, Q39, Q
       ),
     ),
   )('%s=%j (disabled or malformed) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});
+
+/**
+ * `043` task 6.5 (design D5, Resolved decisions Q28, Q67, Q96, Q99): the email
+ * provider is chosen by `EMAIL_PROVIDER` (`acs` or `none`). "Production" is
+ * `NODE_ENV !== 'test'`.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `emailProvider?: 'acs' | 'none'` (undefined only under test when unset);
+ * - `acsConnectionString?: string` (from `ACS_CONNECTION_STRING`);
+ * - `emailRecipientDomainAllowlist: readonly string[]` (from
+ *   `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`, a comma-separated list; `[]` when unset).
+ * `acs` also reads `EMAIL_SENDER_ADDRESS` (6.4); no test here depends on how.
+ * Errors name the variable and never echo its value.
+ */
+describe('email provider selection (043 task 6.5, Q28, Q67, Q96, Q99)', () => {
+  const ACCESS_KEY = Buffer.from('acs-'.repeat(8)).toString('base64');
+  const CONNECTION_STRING = `endpoint=https://acs-test.communication.azure.com/;accesskey=${ACCESS_KEY}`;
+  const mail = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
+      ...overrides,
+    });
+  const field = (config: Config, name: string): unknown =>
+    (config as unknown as Record<string, unknown>)[name];
+
+  it.each(['production', 'staging', 'development'])(
+    'a deployed environment (NODE_ENV=%s) with no EMAIL_PROVIDER fails startup naming the variable',
+    (nodeEnv) => {
+      const error = thrown(() => loadConfig(mail(nodeEnv)));
+      expect(error.message).toContain('EMAIL_PROVIDER');
+    },
+  );
+
+  it.each(['', '   ', 'smtp', 'ACS', 'resend', 'true'])(
+    'a deployed environment with EMAIL_PROVIDER=%j fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(mail('production', { EMAIL_PROVIDER: value })));
+      expect(error.message).toContain('EMAIL_PROVIDER');
+    },
+  );
+
+  it('EMAIL_PROVIDER=none starts in a deployed environment', () => {
+    const config = loadConfig(mail('production', { EMAIL_PROVIDER: 'none' }));
+    expect(field(config, 'emailProvider')).toBe('none');
+  });
+
+  it('EMAIL_PROVIDER=acs starts in a deployed environment and reads the connection string', () => {
+    const config = loadConfig(
+      mail('production', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+    );
+    expect(field(config, 'emailProvider')).toBe('acs');
+    expect(field(config, 'acsConnectionString')).toBe(CONNECTION_STRING);
+  });
+
+  it('EMAIL_PROVIDER=acs without ACS_CONNECTION_STRING fails startup naming the variable', () => {
+    const error = thrown(() => loadConfig(mail('production', { EMAIL_PROVIDER: 'acs' })));
+    expect(error.message).toContain('ACS_CONNECTION_STRING');
+  });
+
+  it('EMAIL_PROVIDER=acs with a blank ACS_CONNECTION_STRING fails startup naming the variable', () => {
+    const error = thrown(() =>
+      loadConfig(mail('production', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: '  ' })),
+    );
+    expect(error.message).toContain('ACS_CONNECTION_STRING');
+  });
+
+  it('no error message echoes the connection string', () => {
+    const failing = [
+      mail('test', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+      mail('production', { EMAIL_PROVIDER: 'smtp', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+    ];
+    for (const attempt of failing) {
+      const error = thrown(() => loadConfig(attempt));
+      expect(error.message).toMatch(/EMAIL_/);
+      expect(error.message).not.toContain(CONNECTION_STRING);
+      expect(error.message).not.toContain(ACCESS_KEY);
+    }
+  });
+
+  it('a real provider under NODE_ENV=test without the allowlist fails startup naming it', () => {
+    const error = thrown(() =>
+      loadConfig(mail('test', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING })),
+    );
+    expect(error.message).toContain('EMAIL_RECIPIENT_DOMAIN_ALLOWLIST');
+  });
+
+  it('a real provider under NODE_ENV=test with an empty allowlist fails startup naming it', () => {
+    const error = thrown(() =>
+      loadConfig(
+        mail('test', {
+          EMAIL_PROVIDER: 'acs',
+          ACS_CONNECTION_STRING: CONNECTION_STRING,
+          EMAIL_RECIPIENT_DOMAIN_ALLOWLIST: ' , ',
+        }),
+      ),
+    );
+    expect(error.message).toContain('EMAIL_RECIPIENT_DOMAIN_ALLOWLIST');
+  });
+
+  it('a real provider under NODE_ENV=test with the allowlist starts and exposes the domains', () => {
+    const config = loadConfig(
+      mail('test', {
+        EMAIL_PROVIDER: 'acs',
+        ACS_CONNECTION_STRING: CONNECTION_STRING,
+        EMAIL_RECIPIENT_DOMAIN_ALLOWLIST: 'example.com, tayzu.test',
+      }),
+    );
+    expect(field(config, 'emailProvider')).toBe('acs');
+    expect(field(config, 'emailRecipientDomainAllowlist')).toEqual(['example.com', 'tayzu.test']);
+  });
+
+  it('the allowlist is read in a deployed environment too (Q99), and is not mandatory there', () => {
+    const withList = loadConfig(
+      mail('production', {
+        EMAIL_PROVIDER: 'acs',
+        ACS_CONNECTION_STRING: CONNECTION_STRING,
+        EMAIL_RECIPIENT_DOMAIN_ALLOWLIST: 'example.com',
+      }),
+    );
+    const without = loadConfig(
+      mail('production', { EMAIL_PROVIDER: 'acs', ACS_CONNECTION_STRING: CONNECTION_STRING }),
+    );
+    expect(field(withList, 'emailRecipientDomainAllowlist')).toEqual(['example.com']);
+    expect(field(without, 'emailRecipientDomainAllowlist')).toEqual([]);
+  });
+
+  it('under NODE_ENV=test no EMAIL_PROVIDER is needed and none starts without an allowlist', () => {
+    expect(field(loadConfig(mail('test')), 'emailProvider')).toBeUndefined();
+    expect(field(loadConfig(mail('test', { EMAIL_PROVIDER: 'none' })), 'emailProvider')).toBe(
+      'none',
+    );
+  });
+});
+
+/**
+ * `043` task 6.5c (design D5, Resolved decision Q80): `EMAIL_DISABLED_TENANT_IDS` is
+ * a comma-separated list of tenant ids, each checked against the catalog's tenant-id
+ * pattern (`^[A-Za-z0-9_-]{1,64}$`) at startup.
+ *
+ * Production symbol expected on `Config` (`apps/api/src/config.ts`):
+ * - `emailDisabledTenantIds: readonly string[]` (entries trimmed; `[]` when unset),
+ *   read in every environment. A malformed entry throws an `Error` naming
+ *   `EMAIL_DISABLED_TENANT_IDS` and never echoing the value.
+ */
+describe('EMAIL_DISABLED_TENANT_IDS (043 task 6.5c, Q80)', () => {
+  const base = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
+      EMAIL_PROVIDER: 'none',
+      ...overrides,
+    });
+  const field = (config: Config, name: string): unknown =>
+    (config as unknown as Record<string, unknown>)[name];
+
+  it.each(['test', 'production'])('is empty when unset (NODE_ENV=%s)', (nodeEnv) => {
+    expect(field(loadConfig(base(nodeEnv)), 'emailDisabledTenantIds')).toEqual([]);
+  });
+
+  it.each(['test', 'production'])(
+    'a well-formed list starts and exposes the ids (NODE_ENV=%s)',
+    (nodeEnv) => {
+      const config = loadConfig(
+        base(nodeEnv, { EMAIL_DISABLED_TENANT_IDS: 'demo-tenant, Demo_2 ,a' }),
+      );
+      expect(field(config, 'emailDisabledTenantIds')).toEqual(['demo-tenant', 'Demo_2', 'a']);
+    },
+  );
+
+  it.each([
+    ['a space inside an id', 'demo-tenant,bad tenant'],
+    ['a slash', 'demo/tenant'],
+    ['a dot', 'demo.tenant'],
+    ['a 65-character id', 'a'.repeat(65)],
+    ['a quote', "demo'tenant"],
+    ['a non-ASCII letter', 'démo'],
+  ])('a malformed tenant id (%s) fails startup naming the variable', (_label, value) => {
+    for (const nodeEnv of ['test', 'production']) {
+      const error = thrown(() => loadConfig(base(nodeEnv, { EMAIL_DISABLED_TENANT_IDS: value })));
+      expect(error.message).toContain('EMAIL_DISABLED_TENANT_IDS');
+      expect(error.message).not.toContain(value);
+    }
+  });
+
+  it('a 64-character id is accepted', () => {
+    const id = 'a'.repeat(64);
+    const config = loadConfig(base('production', { EMAIL_DISABLED_TENANT_IDS: id }));
+    expect(field(config, 'emailDisabledTenantIds')).toEqual([id]);
+  });
+});
+
+/**
+ * `043` task 6.7b (Resolved decision Q93): `IDENTITY_TOKEN_HMAC_SECRET` keys the
+ * per-recipient caps. Required outside `NODE_ENV=test`, at least 32 bytes, never
+ * echoed. Production symbol expected on `Config`: `identityTokenHmacSecret?: string`
+ * (undefined only under test when unset).
+ */
+describe('IDENTITY_TOKEN_HMAC_SECRET (043 task 6.7b, Q93)', () => {
+  const deployed = (
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: 'production',
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      ...overrides,
+    });
+  const field = (config: Config, name: string): unknown =>
+    (config as unknown as Record<string, unknown>)[name];
+
+  it('a deployed environment starts with a 32-byte secret and exposes it', () => {
+    const exactly32 = 'k'.repeat(32);
+    const config = loadConfig(deployed({ IDENTITY_TOKEN_HMAC_SECRET: exactly32 }));
+    expect(field(config, 'identityTokenHmacSecret')).toBe(exactly32);
+  });
+
+  it.each([undefined, '', '   '])(
+    'a deployed environment with the secret %j fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(deployed({ IDENTITY_TOKEN_HMAC_SECRET: value })));
+      expect(error.message).toContain('IDENTITY_TOKEN_HMAC_SECRET');
+    },
+  );
+
+  it('a deployed environment with a secret under 32 bytes fails without echoing it', () => {
+    const short = 'k'.repeat(31);
+    const error = thrown(() => loadConfig(deployed({ IDENTITY_TOKEN_HMAC_SECRET: short })));
+    expect(error.message).toContain('IDENTITY_TOKEN_HMAC_SECRET');
+    expect(error.message).not.toContain(short);
+  });
+
+  it('the test configuration needs no secret', () => {
+    const config = loadConfig(env({ NODE_ENV: 'test', IDENTITY_TOKEN_HMAC_SECRET: undefined }));
+    expect(field(config, 'identityTokenHmacSecret')).toBeUndefined();
+  });
+});
+
+/**
+ * `043` task 6.9 (design D5, Resolved decisions Q15 and `002` Q39): a disabled or zero
+ * invitation cap fails startup. Each cap is a max/window pair that follows the
+ * `limitWithDefaults` positive-integer pattern: the defaults are enabled in code and the
+ * environment only tunes them.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `invitationTenantCap: { max: number; windowSeconds: number }` (exists; 30 per hour),
+ *   from `INVITATION_TENANT_RATE_LIMIT_MAX` and `INVITATION_TENANT_RATE_LIMIT_WINDOW_SECONDS`;
+ * - `invitationRecipientCap: { max: number; windowSeconds: number }` (new; 3 per 24 hours),
+ *   from `INVITATION_RECIPIENT_RATE_LIMIT_MAX` and
+ *   `INVITATION_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS`.
+ * The global kill switch is a boolean, not a cap (6.8), and the notice cap is 6.12's case.
+ */
+describe('a disabled or zero invitation cap fails startup (043 task 6.9, Q15, 002 Q39)', () => {
+  const CAPS = [
+    {
+      key: 'invitationTenantCap',
+      max: 'INVITATION_TENANT_RATE_LIMIT_MAX',
+      window: 'INVITATION_TENANT_RATE_LIMIT_WINDOW_SECONDS',
+      defaults: { max: 30, windowSeconds: 3600 },
+    },
+    {
+      key: 'invitationRecipientCap',
+      max: 'INVITATION_RECIPIENT_RATE_LIMIT_MAX',
+      window: 'INVITATION_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS',
+      defaults: { max: 3, windowSeconds: 86_400 },
+    },
+  ] as const;
+
+  const read = (config: Config, key: string): unknown =>
+    (config as unknown as Record<string, unknown>)[key];
+
+  it.each(CAPS)('$key is enabled by default in code', ({ key, defaults }) => {
+    expect(read(loadConfig(env()), key)).toEqual(defaults);
+  });
+
+  it.each(CAPS)('$key is only tuned by the environment', ({ key, max, window }) => {
+    expect(read(loadConfig(env({ [max]: '7', [window]: '120' })), key)).toEqual({
+      max: 7,
+      windowSeconds: 120,
+    });
+  });
+
+  it.each(
+    CAPS.flatMap(({ max, window }) =>
+      [max, window].flatMap((name) =>
+        ['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'].map(
+          (value) => [name, value] as const,
+        ),
+      ),
+    ),
+  )('%s=%j (disabled or zero) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});
+
+/**
+ * `043` task 6.12 (Resolved decision Q58): the per-tenant notice cap is a max/window pair
+ * with its enabled default (60 per hour) in code; a zero or disabled value fails startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `noticeTenantCap: { max: number; windowSeconds: number }` (60 per hour), from
+ *   `NOTICE_TENANT_RATE_LIMIT_MAX` and `NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS`.
+ */
+describe('a zero notice cap fails startup (043 task 6.12, Q58, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['noticeTenantCap'];
+
+  it('noticeTenantCap is enabled by default in code', () => {
+    expect(read(loadConfig(env()))).toEqual({ max: 60, windowSeconds: 3600 });
+  });
+
+  it('noticeTenantCap is only tuned by the environment', () => {
+    expect(
+      read(
+        loadConfig(
+          env({
+            NOTICE_TENANT_RATE_LIMIT_MAX: '7',
+            NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS: '120',
+          }),
+        ),
+      ),
+    ).toEqual({ max: 7, windowSeconds: 120 });
+  });
+
+  it.each(
+    ['NOTICE_TENANT_RATE_LIMIT_MAX', 'NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS'].flatMap((name) =>
+      ['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'].map(
+        (value) => [name, value] as const,
+      ),
+    ),
+  )('%s=%j (disabled or zero) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});
+
+/**
+ * `043` task 9.5 (Resolved decision Q44): the per-key rate limit of a machine credential is a
+ * max/window pair with its enabled default (60 verifications per hour) in code; a zero or
+ * disabled value fails startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `machineCredentialRateLimit: { max: number; windowSeconds: number }` (60 per 3600 s), from
+ *   `MACHINE_CREDENTIAL_RATE_LIMIT_MAX` and `MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS`,
+ *   through `limitWithDefaults`.
+ */
+describe('a zero machine-credential rate limit fails startup (043 task 9.5, Q44, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['machineCredentialRateLimit'];
+
+  it('machineCredentialRateLimit is enabled by default in code: 60 per hour', () => {
+    expect(read(loadConfig(env()))).toEqual({ max: 60, windowSeconds: 3600 });
+  });
+
+  it('machineCredentialRateLimit is only tuned by the environment', () => {
+    expect(
+      read(
+        loadConfig(
+          env({
+            MACHINE_CREDENTIAL_RATE_LIMIT_MAX: '7',
+            MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS: '120',
+          }),
+        ),
+      ),
+    ).toEqual({ max: 7, windowSeconds: 120 });
+  });
+
+  it.each(
+    ['MACHINE_CREDENTIAL_RATE_LIMIT_MAX', 'MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS'].flatMap(
+      (name) =>
+        ['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'].map(
+          (value) => [name, value] as const,
+        ),
+    ),
+  )('%s=%j (disabled or zero) fails startup naming the variable', (name, value) => {
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+  });
+});
+
+/**
+ * `043` task 9.5d (Resolved decision Q56): a tenant holds at most 200 non-revoked credentials,
+ * a single cap parsed with `optionalPositiveInt`, its default in code; a zero or disabled value
+ * fails startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `credentialCap: number` (200 by default), from `CREDENTIAL_CAP`.
+ */
+describe('a zero or disabled credential cap fails startup (043 task 9.5d, Q56, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['credentialCap'];
+
+  it('credentialCap is 200 by default in code', () => {
+    expect(read(loadConfig(env()))).toBe(200);
+  });
+
+  it('credentialCap is only tuned by the environment', () => {
+    expect(read(loadConfig(env({ CREDENTIAL_CAP: '25' })))).toBe(25);
+  });
+
+  it.each(['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'])(
+    'CREDENTIAL_CAP=%j (disabled or zero) fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ CREDENTIAL_CAP: value })));
+      expect(error.message).toContain('CREDENTIAL_CAP');
+    },
+  );
+});
+
+/**
+ * `043` task 10.8 (Resolved decision Q56): a tenant holds at most 50 service accounts, a single
+ * cap parsed with `optionalPositiveInt`, its default in code; a zero or disabled value fails
+ * startup.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `serviceAccountCap: number` (50 by default), from `SERVICE_ACCOUNT_CAP`.
+ */
+describe('a zero or disabled service-account cap fails startup (043 task 10.8, Q56, 002 Q39)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['serviceAccountCap'];
+
+  it('serviceAccountCap is 50 by default in code', () => {
+    expect(read(loadConfig(env()))).toBe(50);
+  });
+
+  it('serviceAccountCap is only tuned by the environment', () => {
+    expect(read(loadConfig(env({ SERVICE_ACCOUNT_CAP: '7' })))).toBe(7);
+  });
+
+  it.each(['0', '-1', 'false', 'off', 'disabled', 'abc', '', '1.5'])(
+    'SERVICE_ACCOUNT_CAP=%j (disabled or zero) fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ SERVICE_ACCOUNT_CAP: value })));
+      expect(error.message).toContain('SERVICE_ACCOUNT_CAP');
+    },
+  );
+});
+
+describe('MOUNT_IDENTITY_ROUTES parsing (task 14.3, design D15)', () => {
+  it('is off when unset', () => {
+    expect(loadConfig(env()).mountIdentityRoutes).toBe(false);
+  });
+
+  it('is on for the exact value true', () => {
+    expect(loadConfig(env({ MOUNT_IDENTITY_ROUTES: 'true' })).mountIdentityRoutes).toBe(true);
+  });
+
+  it('is off for the exact value false', () => {
+    expect(loadConfig(env({ MOUNT_IDENTITY_ROUTES: 'false' })).mountIdentityRoutes).toBe(false);
+  });
+
+  it.each(['1', 'yes', 'TRUE', 'True', 'on', '', '  '])(
+    'MOUNT_IDENTITY_ROUTES=%j is malformed and fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ MOUNT_IDENTITY_ROUTES: value })));
+      expect(error.message).toContain('MOUNT_IDENTITY_ROUTES');
+    },
+  );
+
+  it('is wired through createAppFromEnv to the accept route: absent by default, registered when true', async () => {
+    const local = {
+      DATABASE_URL: 'postgres://tayzu_app:app-pw-s3cret@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL:
+        'postgres://tayzu_auth:auth-pw-s3cret@127.0.0.1:1/tayzu?sslmode=verify-full',
+      NODE_ENV: 'test',
+    };
+    const closed = await createAppFromEnv(env(local));
+    const open = await createAppFromEnv(env({ ...local, MOUNT_IDENTITY_ROUTES: 'true' }));
+    try {
+      const accept = { method: 'POST', url: '/v1/auth/invitations/accept' } as const;
+      expect(closed.app.hasRoute(accept)).toBe(false);
+      expect(open.app.hasRoute(accept)).toBe(true);
+    } finally {
+      await closed.close();
+      await open.close();
+    }
+  });
+});
+
+/**
+ * `043` task 14.20 (Resolved decisions Q138 and Q140; `002` VCDM M13): the limiters of the
+ * accept route and of the re-authorization callback take their defaults from `config.ts`,
+ * each 10 per 60 seconds through `limitWithDefaults`.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`):
+ * - `invitationAcceptRateLimit: { max: number; windowSeconds: number }`, from
+ *   `INVITATION_ACCEPT_RATE_LIMIT_MAX` and `INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS`;
+ * - `reauthorizationCallbackRateLimit: { max: number; windowSeconds: number }`, from
+ *   `REAUTHORIZATION_CALLBACK_RATE_LIMIT_MAX` and
+ *   `REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS`.
+ */
+describe('accept and re-authorization callback limits (043 task 14.20, Q138, Q140)', () => {
+  const LIMITS = [
+    {
+      key: 'invitationAcceptRateLimit',
+      max: 'INVITATION_ACCEPT_RATE_LIMIT_MAX',
+      window: 'INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS',
+    },
+    {
+      key: 'reauthorizationCallbackRateLimit',
+      max: 'REAUTHORIZATION_CALLBACK_RATE_LIMIT_MAX',
+      window: 'REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS',
+    },
+  ] as const;
+
+  const read = (config: Config, key: string): unknown =>
+    (config as unknown as Record<string, unknown>)[key];
+
+  it.each(LIMITS)('$key defaults to 10 per 60 seconds', ({ key }) => {
+    expect(read(loadConfig(env()), key)).toEqual({ max: 10, windowSeconds: 60 });
+  });
+
+  it.each(LIMITS)('$key is tuned by its two variables', ({ key, max, window }) => {
+    expect(read(loadConfig(env({ [max]: '7', [window]: '120' })), key)).toEqual({
+      max: 7,
+      windowSeconds: 120,
+    });
+  });
+
+  it.each(LIMITS)('$key tunes the maximum alone', ({ key, max }) => {
+    expect(read(loadConfig(env({ [max]: '4' })), key)).toEqual({ max: 4, windowSeconds: 60 });
+  });
+
+  it.each(
+    LIMITS.flatMap(({ max, window }) =>
+      [max, window].flatMap((name) =>
+        ['0', '-1', 'abc', '', '1.5', 'off'].map((value) => [name, value] as const),
+      ),
+    ),
+  )('%s=%j (malformed) fails startup naming the variable', (name, value) => {
     const error = thrown(() => loadConfig(env({ [name]: value })));
     expect(error.message).toContain(name);
   });

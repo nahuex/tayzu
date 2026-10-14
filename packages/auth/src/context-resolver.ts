@@ -81,11 +81,19 @@
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
  */
+import {
+  hasActiveTemporaryPasswordMarker,
+  hasExpiredTemporaryPasswordMarker,
+} from './identity/temporary-password.js';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { withTenantTransaction, type createPool } from '@tayzu/db';
 
 import type { AuthInstance } from './auth.js';
-import { logger, revocationChecksCounter } from './telemetry/instruments.js';
+import {
+  logger,
+  principalRejectionsCounter,
+  revocationChecksCounter,
+} from './telemetry/instruments.js';
 import { AuthContextError } from './errors.js';
 import { isIdle } from './session-idle.js';
 
@@ -134,7 +142,7 @@ interface SessionResult {
     readonly activeOrganizationId?: string | null;
     readonly updatedAt: Date;
   };
-  readonly user: { readonly id: string; readonly email?: string };
+  readonly user: { readonly id: string; readonly email?: string; readonly banned?: boolean | null };
 }
 
 interface AuthApiSurface {
@@ -220,6 +228,40 @@ function parseMachineTokenPayload(payload: Record<string, unknown>): ResolvedCon
 }
 
 /**
+ * Task 11.6, Q90: the service account's `svc-…` identifier, carried by the
+ * token's `userId` claim, or `null` for a token without it.
+ */
+function serviceAccountIdOf(payload: Record<string, unknown>): string | null {
+  const { userId } = payload;
+  return typeof userId === 'string' && userId.length > 0 ? userId : null;
+}
+
+/** Task 11.6, D13: the state of a service account's bound `_user`. */
+type ServiceAccountState = 'active' | 'disabled' | 'missing' | 'lookup_failed';
+
+/** Task 11.6, D13: reads the bound `_user`'s status under the token's tenant. */
+async function readServiceAccountState(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+  userId: string,
+): Promise<Exclude<ServiceAccountState, 'lookup_failed'>> {
+  return withTenantTransaction(pool, { tenantId }, async (client) => {
+    const result = await client.query<{ status: unknown }>(
+      `select e.spec_properties ->> 'status' as status
+         from catalog_entity e
+         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+        where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+      [tenantId, userId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return 'missing';
+    }
+    return row.status === 'Active' ? 'active' : 'disabled';
+  });
+}
+
+/**
  * The slice of Better Auth's own `AuthContext` (`auth.$context`, `./auth.ts`'s
  * own doc comment) this module reads: its low-level model adapter, the same
  * primitive `./auth.ts`'s `databaseHooks` reach via `context.context.adapter`.
@@ -227,9 +269,9 @@ function parseMachineTokenPayload(payload: Record<string, unknown>): ResolvedCon
 interface AuthContextSurface {
   readonly adapter: {
     findOne(data: {
-      readonly model: 'member';
+      readonly model: 'member' | 'verification';
       readonly where: ReadonlyArray<{ readonly field: string; readonly value: string }>;
-    }): Promise<{ readonly role?: unknown } | null>;
+    }): Promise<{ readonly role?: unknown; readonly value?: unknown } | null>;
   };
 }
 
@@ -252,6 +294,16 @@ interface RevocationCacheEntry {
   readonly expiresAt: number;
 }
 
+interface ServiceAccountCacheEntry {
+  readonly state: 'active' | 'disabled' | 'missing';
+  readonly expiresAt: number;
+}
+
+interface HumanStatusCacheEntry {
+  readonly state: 'active' | 'disabled' | 'missing';
+  readonly expiresAt: number;
+}
+
 interface MembershipCacheEntry {
   /** The Better Auth member role, or `null` for a non-member. */
   readonly role: string | null;
@@ -262,9 +314,34 @@ interface MembershipCacheEntry {
  * Better Auth `owner`/`admin` -> Cerbos `admin`; every other role -> `member`
  * (design D11, Q26). Better Auth may store several roles comma-separated.
  */
-function toCerbosRole(memberRole: string): 'admin' | 'member' {
+export function toCerbosRole(memberRole: string): 'admin' | 'member' {
   const roles = memberRole.split(',').map((role) => role.trim());
   return roles.includes('owner') || roles.includes('admin') ? 'admin' : 'member';
+}
+
+/**
+ * Task 11.8, D13, Q105: reads the member's `_user` status under the active
+ * tenant. Any status other than `Active` is `disabled` ("present and not Active").
+ */
+async function readHumanState(
+  pool: ReturnType<typeof createPool>,
+  tenantId: string,
+  email: string,
+): Promise<'active' | 'disabled' | 'missing'> {
+  return withTenantTransaction(pool, { tenantId }, async (client) => {
+    const result = await client.query<{ status: unknown }>(
+      `select e.spec_properties ->> 'status' as status
+         from catalog_entity e
+         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+        where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+      [tenantId, email],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return 'missing';
+    }
+    return row.status === 'Active' ? 'active' : 'disabled';
+  });
 }
 
 /** design Q34, D8: the `_user` entity's teams and moderated blueprints. */
@@ -336,6 +413,8 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   const jwtApi = jwtApiOf(options.auth);
   const membershipCache = new Map<string, MembershipCacheEntry>();
   const revocationCache = new Map<string, RevocationCacheEntry>();
+  const serviceAccountCache = new Map<string, ServiceAccountCacheEntry>();
+  const humanStatusCache = new Map<string, HumanStatusCacheEntry>();
 
   // Task 5.7, design D21: consults `machine_credential_revocation` through
   // an in-process cache keyed by `credential_id` (TTL 5 s). Read under the
@@ -372,7 +451,9 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     credentialId: string,
   ): Promise<'allowed' | 'rejected' | 'lookup_failed'> {
     const now = Date.now();
-    const cached = revocationCache.get(credentialId);
+    // Keyed by (tenantId, credentialId); JSON keeps the pair unambiguous.
+    const cacheKey = JSON.stringify([tenantId, credentialId]);
+    const cached = revocationCache.get(cacheKey);
     if (cached !== undefined && cached.expiresAt > now) {
       return cached.revoked ? 'rejected' : 'allowed';
     }
@@ -390,8 +471,55 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       return 'lookup_failed';
     }
 
-    revocationCache.set(credentialId, { revoked, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+    revocationCache.set(cacheKey, { revoked, expiresAt: now + REVOCATION_CACHE_TTL_MS });
     return revoked ? 'rejected' : 'allowed';
+  }
+
+  // Task 11.6, design D13, Q40: the bound `_user` of a service account must be
+  // `Active`. Cached at most 5 s per (tenant, identifier); a lookup failure is
+  // never cached and is never treated as `Active`.
+  async function serviceAccountState(
+    pool: ReturnType<typeof createPool>,
+    tenantId: string,
+    userId: string,
+  ): Promise<ServiceAccountState> {
+    const now = Date.now();
+    const cacheKey = JSON.stringify([tenantId, userId]);
+    const cached = serviceAccountCache.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.state;
+    }
+    try {
+      const state = await readServiceAccountState(pool, tenantId, userId);
+      serviceAccountCache.set(cacheKey, { state, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+      return state;
+    } catch {
+      return 'lookup_failed';
+    }
+  }
+
+  // Task 11.8, design D13, Q105: a human is admitted only with an `Active`
+  // `_user` in the active tenant. Status only, cached at most 5 s per
+  // (tenant, user); a lookup failure is never cached (`null`).
+  async function humanState(
+    pool: ReturnType<typeof createPool>,
+    tenantId: string,
+    userId: string,
+    email: string,
+  ): Promise<HumanStatusCacheEntry['state'] | null> {
+    const now = Date.now();
+    const cacheKey = JSON.stringify([tenantId, userId]);
+    const cached = humanStatusCache.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.state;
+    }
+    try {
+      const state = await readHumanState(pool, tenantId, email);
+      humanStatusCache.set(cacheKey, { state, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+      return state;
+    } catch {
+      return null;
+    }
   }
 
   // Task 3.6, design D19: the independent membership re-check. A cache hit
@@ -453,6 +581,32 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       ) {
         rejectMissingContext();
       }
+      // Task 11.6: chosen by the credential branch (a bound machine token),
+      // never by comparing `actor.type`.
+      const serviceAccountId = serviceAccountIdOf(verified.payload);
+      if (serviceAccountId !== null) {
+        const state = await serviceAccountState(
+          options.revocationPool,
+          resolved.tenantId,
+          serviceAccountId,
+        );
+        if (state !== 'active') {
+          if (state !== 'lookup_failed') {
+            const attributes = {
+              'tayzu.identity.rejection.reason':
+                state === 'disabled' ? 'service_account_disabled' : 'service_account_missing',
+              'tayzu.actor.type': resolved.actor.type,
+            };
+            principalRejectionsCounter.add(1, attributes);
+            logger.emit({
+              eventName: 'catalog.security.principal_rejected',
+              severityNumber: SeverityNumber.WARN,
+              attributes,
+            });
+          }
+          rejectMissingContext();
+        }
+      }
       return resolved;
     }
 
@@ -482,6 +636,36 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       rejectMissingContext();
     }
 
+    // Task 13.4, Q77: a disabled (`banned`) user is rejected whatever the
+    // `_user` status; the reason goes only to the log and the counter.
+    if (result.user.banned === true) {
+      const attributes = {
+        'tayzu.identity.rejection.reason': 'user_banned',
+        'tayzu.actor.type': 'user',
+      };
+      principalRejectionsCounter.add(1, attributes);
+      logger.emit({
+        eventName: 'catalog.security.principal_rejected',
+        severityNumber: SeverityNumber.WARN,
+        attributes,
+      });
+      rejectMissingContext();
+    }
+
+    // Task 13.5, Q36: under a temporary-password marker nothing on `/v1` is reachable.
+    // A failed lookup rejects (fail closed).
+    const markerHeld = await contextOf(options.auth)
+      .then(
+        async (context) =>
+          (await hasActiveTemporaryPasswordMarker(context.adapter, result.user.id)) ||
+          // Task 16.11a, Q146: an expired marker refuses the existing session too.
+          (await hasExpiredTemporaryPasswordMarker(context.adapter, result.user.id)),
+      )
+      .catch(() => true);
+    if (markerHeld) {
+      rejectMissingContext();
+    }
+
     const tenantId = result.session.activeOrganizationId;
     if (tenantId === null || tenantId === undefined) {
       rejectMissingContext();
@@ -495,14 +679,34 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       rejectMissingContext();
     }
 
-    // Task 23.1, Q34: teams and moderated blueprints come from the caller's
-    // `_user` entity. If it cannot be read the principal is left absent, so
-    // Cerbos denies (fail closed) instead of assuming empty grants.
+    // Task 11.8, Q105: the `_user` of the active tenant must be `Active`.
+    // Without an email the row cannot be looked up, which fails closed.
     const actor = { type: 'user', id: result.user.id } as const;
     const email = result.user.email;
     if (typeof email !== 'string' || email.length === 0) {
-      return { tenantId, actor };
+      rejectMissingContext();
     }
+    const state = await humanState(options.revocationPool, tenantId, result.user.id, email);
+    if (state !== 'active') {
+      if (state !== null) {
+        const attributes = {
+          'tayzu.identity.rejection.reason':
+            state === 'disabled' ? 'user_disabled' : 'user_missing',
+          'tayzu.actor.type': actor.type,
+        };
+        principalRejectionsCounter.add(1, attributes);
+        logger.emit({
+          eventName: 'catalog.security.principal_rejected',
+          severityNumber: SeverityNumber.WARN,
+          attributes,
+        });
+      }
+      rejectMissingContext();
+    }
+
+    // Task 23.1, Q34: teams and moderated blueprints come from the caller's
+    // `_user` entity. If it cannot be read the principal is left absent, so
+    // Cerbos denies (fail closed) instead of assuming empty grants.
     try {
       const grants = await readUserEntityGrants(options.revocationPool, tenantId, email);
       return {

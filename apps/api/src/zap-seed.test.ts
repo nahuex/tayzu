@@ -50,9 +50,12 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { validatePassword } from '../../../packages/auth/src/identity/password-policy.js';
+
 // The module under test. Does not exist yet.
 import {
   buildZapAuthHeader,
+  mfaSessionCookie,
   parseZapSeedConfig,
   signInForSessionCookie,
 } from '../../../scripts/ci/zap-seed.js';
@@ -269,5 +272,181 @@ describe('ZAP baseline workflow pin (Q30)', () => {
       /docker_name:\s*['"]?ghcr\.io\/zaproxy\/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef['"]?/,
     );
     expect(workflow).toContain('ZAP_AUTH_HEADER');
+  });
+});
+
+/**
+ * `043` task 4.6b: the bootstrap CLI moved to `apps/api/scripts/bootstrap-admin.ts`
+ * and needs the `tayzu_app` `DATABASE_URL`, `AUTH_DATABASE_URL`, `CERBOS_ADDRESS`
+ * and the allowed origins, plus the operator's opaque id (`TAYZU_OPERATOR_ID`,
+ * Resolved decision Q116). The new variables are required for the seed run only.
+ *
+ * ## Production symbols expected (scripts/ci/zap-seed.ts)
+ *
+ * ```ts
+ * export interface ZapSeedConfig {
+ *   // ...the existing fields, plus:
+ *   authDatabaseUrl: string;  // AUTH_DATABASE_URL (seed mode)
+ *   cerbosAddress: string;    // CERBOS_ADDRESS (seed mode)
+ *   allowedOrigins: string;   // ALLOWED_ORIGINS (seed mode)
+ *   operatorId: string;       // TAYZU_OPERATOR_ID (seed mode), the catalog id pattern
+ * }
+ * // The existing one-argument call keeps its behavior (it is what `--refresh`
+ * // uses). The seed run passes `{ mode: 'seed' }`, which requires the new variables.
+ * export function parseZapSeedConfig(
+ *   env: Readonly<Record<string, string | undefined>>,
+ *   options?: { readonly mode?: 'seed' | 'refresh' },
+ * ): ZapSeedConfig;
+ * ```
+ */
+describe('ZAP seed script: the moved bootstrap CLI (task 4.6b)', () => {
+  const seedEnv = {
+    ...completeEnv,
+    AUTH_DATABASE_URL: `postgres://tayzu_auth:${DB_MARKER}@localhost:5432/tayzu_ci`,
+    CERBOS_ADDRESS: 'localhost:3593',
+    ALLOWED_ORIGINS: 'https://localhost:3000',
+    TAYZU_OPERATOR_ID: 'ci:zap-seed',
+  } as const;
+
+  it('reads the four variables of the CLI and the operator id in seed mode', () => {
+    const config = parseZapSeedConfig(seedEnv, { mode: 'seed' });
+
+    expect(config.databaseUrl).toBe(seedEnv.DATABASE_URL);
+    expect(config.authDatabaseUrl).toBe(seedEnv.AUTH_DATABASE_URL);
+    expect(config.cerbosAddress).toBe('localhost:3593');
+    expect(config.allowedOrigins).toBe('https://localhost:3000');
+    expect(config.operatorId).toBe('ci:zap-seed');
+  });
+
+  it.each(['AUTH_DATABASE_URL', 'CERBOS_ADDRESS', 'ALLOWED_ORIGINS', 'TAYZU_OPERATOR_ID'] as const)(
+    'seed mode fails fast naming %s when it is missing or blank, without echoing any value',
+    (name) => {
+      for (const bad of [undefined, '', '   ']) {
+        let message = '';
+        try {
+          parseZapSeedConfig({ ...seedEnv, [name]: bad }, { mode: 'seed' });
+        } catch (error) {
+          message = error instanceof Error ? error.message : String(error);
+        }
+        expect(message).toContain(name);
+        expect(message).not.toContain(SECRET_MARKER);
+        expect(message).not.toContain(DB_MARKER);
+      }
+    },
+  );
+
+  it.each(['operator@example.test', 'has space', '', 'a'.repeat(129)])(
+    'seed mode rejects the operator id %j, which is not of the catalog id pattern',
+    (operatorId) => {
+      expect(() =>
+        parseZapSeedConfig({ ...seedEnv, TAYZU_OPERATOR_ID: operatorId }, { mode: 'seed' }),
+      ).toThrow(/TAYZU_OPERATOR_ID/);
+    },
+  );
+
+  it('--refresh still parses with DATABASE_URL=unused and none of the new variables', () => {
+    const refreshEnv = {
+      DATABASE_URL: 'unused',
+      BETTER_AUTH_SECRET: 'unused',
+      ZAP_TARGET_URL: 'http://localhost:3000',
+      ZAP_SEED_ORIGIN: 'https://localhost:3000',
+    };
+
+    expect(() => parseZapSeedConfig(refreshEnv)).not.toThrow();
+    expect(() => parseZapSeedConfig(refreshEnv, { mode: 'refresh' })).not.toThrow();
+    expect(() => parseZapSeedConfig(refreshEnv, { mode: 'seed' })).toThrow();
+  });
+
+  it('the seed runs the moved CLI through @tayzu/api and no longer touches packages/auth', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('../../../scripts/ci/zap-seed.ts', import.meta.url)),
+      'utf8',
+    );
+
+    expect(source).toContain('apps/api/scripts/bootstrap-admin');
+    expect(source).toContain('@tayzu/api');
+    expect(source).not.toContain('packages/auth/scripts/bootstrap-admin');
+    expect(source).not.toContain('@tayzu/auth');
+    for (const name of [
+      'AUTH_DATABASE_URL',
+      'CERBOS_ADDRESS',
+      'ALLOWED_ORIGINS',
+      'TAYZU_OPERATOR_ID',
+    ]) {
+      expect(source, name).toContain(name);
+    }
+  });
+});
+
+/**
+ * `043` task 13.5b: the bootstrap password is temporary, so the first sign-in only
+ * reaches `/change-password` (13.5). The seed changes it to a policy-compliant
+ * password (8.1) before enrolling MFA, and uses the new one afterwards.
+ */
+describe('ZAP seed script: honors the forced password change (task 13.5b)', () => {
+  const TEMPORARY = 'Temp0rary!Bootstrap-Pw#2468';
+  const BASE32_SECRET = 'JBSWY3DPEHPK3PXP';
+
+  it('changes the temporary password to a policy-compliant one before MFA enrollment and uses it afterwards', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      const calls: { path: string; body: Record<string, unknown>; cookie: string | null }[] = [];
+      const fakeFetch = vi.fn<typeof fetch>((input, init) => {
+        const url = new URL(
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        );
+        const headers = new Headers(init?.headers);
+        const body =
+          typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        calls.push({
+          path: url.pathname.replace('/api/auth', ''),
+          body,
+          cookie: headers.get('cookie'),
+        });
+        const path = url.pathname.replace('/api/auth', '');
+        const respond = (json: unknown, cookie: string): Response =>
+          new Response(JSON.stringify(json), {
+            status: 200,
+            headers: { 'set-cookie': `better-auth.session_token=${cookie}; Path=/; HttpOnly` },
+          });
+        if (path === '/two-factor/enable') {
+          return Promise.resolve(
+            respond({ totpURI: `otpauth://totp/Tayzu?secret=${BASE32_SECRET}` }, 'enabled.sig'),
+          );
+        }
+        return Promise.resolve(respond({ ok: true }, `${path.replace(/\W/g, '')}.sig`));
+      });
+
+      const pending = mfaSessionCookie(
+        { baseUrl: 'http://127.0.0.1:3000', origin: 'http://127.0.0.1:3000', fetch: fakeFetch },
+        { email: 'zap-admin@example.test', password: TEMPORARY },
+      );
+      await vi.advanceTimersByTimeAsync(31_000);
+      await pending;
+
+      const paths = calls.map((call) => call.path);
+      const change = paths.indexOf('/change-password');
+      const enable = paths.indexOf('/two-factor/enable');
+      expect(change).toBeGreaterThan(-1);
+      expect(enable).toBeGreaterThan(change);
+      // Only the sign-in precedes the change.
+      expect(paths.slice(0, change)).toEqual(['/sign-in/email']);
+
+      const changeCall = calls[change];
+      expect(changeCall?.cookie).toContain('better-auth.session_token=');
+      expect(changeCall?.body['currentPassword']).toBe(TEMPORARY);
+      const newPassword = changeCall?.body['newPassword'];
+      expect(typeof newPassword).toBe('string');
+      expect(newPassword).not.toBe(TEMPORARY);
+      expect(validatePassword(String(newPassword)).ok).toBe(true);
+
+      // Afterwards the new password is the credential, never the temporary one.
+      expect(calls[enable]?.body['password']).toBe(newPassword);
+      const laterSignIns = calls.slice(change + 1).filter((c) => c.path === '/sign-in/email');
+      expect(laterSignIns.length).toBeGreaterThan(0);
+      for (const signIn of laterSignIns) expect(signIn.body['password']).toBe(newPassword);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

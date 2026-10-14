@@ -42,7 +42,58 @@ function signalUrl(env: Env, signal: 'traces' | 'metrics' | 'logs'): string | un
 
 const URL_ATTRIBUTES = ['url.full', 'http.url', 'http.target', 'url.path'] as const;
 
-/** Removes the URL query (OAuth `code`/`state`, tokens) from one span's attributes. */
+/**
+ * The fifteen route templates whose path carries an identifier (email, invitation id,
+ * credential id): the twelve path templates of the identity routes (design D10) and the
+ * three catalog `_user` routes (D12, Resolved decision Q119). `{x}` matches any non-empty
+ * segment, percent-encoded or not.
+ */
+const ROUTE_TEMPLATES: readonly (readonly string[])[] = [
+  '/v1/users/invitations',
+  '/v1/users/invitations/{invitation}/cancel',
+  '/v1/users/invitations/{invitation}/resend',
+  '/v1/auth/invitations/accept',
+  '/v1/users/{user}/status',
+  '/v1/users',
+  '/v1/users/{user}/sso-account',
+  '/v1/service-accounts',
+  '/v1/service-accounts/{user}',
+  '/v1/credentials',
+  '/v1/credentials/{credential}/rotate',
+  '/v1/credentials/{credential}/revoke',
+  '/v1/blueprints/_user/entities/{entity}',
+  '/v1/blueprints/_user/entities/{entity}/status',
+  '/v1/blueprints/_user/entities/{entity}/related',
+].map((template) => template.split('/'));
+
+/**
+ * Returns the route template of a parsed pathname, or `undefined` when the path is none of
+ * the fifteen templates (the catalog routes of other blueprints keep their paths).
+ */
+export function routeTemplate(pathname: string): string | undefined {
+  const segments = pathname.split('/');
+  const match = ROUTE_TEMPLATES.find(
+    (template) =>
+      template.length === segments.length &&
+      template.every((part, index) => {
+        const segment = segments[index] ?? '';
+        return part.startsWith('{') ? segment !== '' : part === segment;
+      }),
+  );
+  return match?.join('/');
+}
+
+/** The pathname of a request target or absolute URL, without query or fragment. */
+function pathnameOf(value: string): string {
+  const withoutQuery = value.slice(0, value.search(/[?#]|$/));
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\/[^/]*/i.exec(withoutQuery);
+  return scheme === null ? withoutQuery : withoutQuery.slice(scheme[0].length);
+}
+
+/**
+ * Removes the URL query (OAuth `code`/`state`, tokens) from one span's attributes, and
+ * replaces the path of an identifier-carrying route with its template.
+ */
 function stripQuery(span: tracing.ReadableSpan): tracing.ReadableSpan {
   const attributes: Record<string, unknown> = { ...span.attributes };
   delete attributes['url.query'];
@@ -50,7 +101,14 @@ function stripQuery(span: tracing.ReadableSpan): tracing.ReadableSpan {
     const value = attributes[key];
     if (typeof value === 'string') {
       const index = value.search(/[?#]/);
-      if (index !== -1) attributes[key] = value.slice(0, index);
+      const clean = index === -1 ? value : value.slice(0, index);
+      const template = routeTemplate(pathnameOf(clean));
+      if (template === undefined) {
+        attributes[key] = clean;
+      } else {
+        const prefix = clean.slice(0, clean.length - pathnameOf(clean).length);
+        attributes[key] = `${prefix}${template}`;
+      }
     }
   }
   return Object.create(span, {

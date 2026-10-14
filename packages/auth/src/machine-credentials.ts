@@ -33,22 +33,34 @@
  * makes the key fail `auth.api.verifyApiKey` -- the exact call `POST
  * /v1/auth/token` (task 5.3) makes on every request.
  */
+import { API_KEY_ERROR_CODES } from '@better-auth/api-key';
+import { APIError } from 'better-auth/api';
 import { withTenantTransaction, type createPool } from '@tayzu/db';
 
 import type { AuthInstance } from './auth.js';
 import { AuthContextError } from './errors.js';
+import { organizationAccess } from './org-access.js';
 
 /** design D5: the fixed kinds a machine credential can be created with. */
 export type MachineCredentialActorKind = 'integration' | 'agent';
 
 export interface CreateMachineCredentialParams {
-  /** The calling admin's session cookie, forwarded so Better Auth's own admin-only check runs. */
-  readonly headers: Headers;
+  /**
+   * The acting admin's Better Auth user id, forwarded as `body.userId` so
+   * Better Auth's own organization-permission check runs (task 9.1b, Q29).
+   */
+  readonly userId: string;
   readonly organizationId: string;
   readonly name: string;
   readonly actorKind: MachineCredentialActorKind;
   /** Q28: every machine credential is `member`; any other value is rejected. */
   readonly role?: 'member';
+  /** Supplied by the caller: the bound service account's `svc-…` id, the acting admin's opaque id and, for a rotation, its ISO time. */
+  readonly metadata?: {
+    readonly userId?: string;
+    readonly createdBy?: string;
+    readonly rotatedAt?: string;
+  };
 }
 
 export interface CreatedMachineCredential {
@@ -85,26 +97,71 @@ interface CreateApiKeyResult {
 
 interface AuthApiSurface {
   createApiKey(args: {
-    headers: Headers;
     body: {
+      userId: string;
       configId: string;
       name: string;
       organizationId: string;
       metadata: Record<string, unknown>;
     };
   }): Promise<CreateApiKeyResult>;
-  getApiKey(args: {
-    headers: Headers;
-    query: { configId: string; id: string };
-  }): Promise<{ readonly referenceId: string }>;
   updateApiKey(args: {
-    headers: Headers;
     body: {
+      userId: string;
       configId: string;
       keyId: string;
       enabled: boolean;
     };
   }): Promise<unknown>;
+}
+
+interface AdapterSurface {
+  findOne<T>(args: {
+    model: string;
+    where: readonly { field: string; value: string }[];
+  }): Promise<T | null>;
+}
+
+function contextOf(auth: AuthInstance): Promise<{ readonly adapter: AdapterSurface }> {
+  return auth.$context as Promise<{ readonly adapter: AdapterSurface }>;
+}
+
+/** `@better-auth/api-key@1.7.6`'s model name for the `apiKey` table. */
+const API_KEY_TABLE_NAME = 'apikey';
+
+function roleOf(
+  name: string,
+): (typeof organizationAccess.roles)[keyof typeof organizationAccess.roles] | undefined {
+  return Object.hasOwn(organizationAccess.roles, name)
+    ? organizationAccess.roles[name as keyof typeof organizationAccess.roles]
+    : undefined;
+}
+
+/**
+ * Runs the same organization-permission check Better Auth's `updateApiKey`
+ * runs, ahead of the revocation row, so a refused caller writes no row.
+ */
+async function requireApiKeyPermission(
+  auth: AuthInstance,
+  userId: string,
+  organizationId: string,
+  action: 'update',
+): Promise<void> {
+  const { adapter } = await contextOf(auth);
+  const member = await adapter.findOne<{ readonly role: string }>({
+    model: 'member',
+    where: [
+      { field: 'userId', value: userId },
+      { field: 'organizationId', value: organizationId },
+    ],
+  });
+  if (member === null) {
+    throw APIError.from('FORBIDDEN', API_KEY_ERROR_CODES.USER_NOT_MEMBER_OF_ORGANIZATION);
+  }
+  const allowed = roleOf(member.role)?.authorize({ apiKey: [action] }).success === true;
+  if (!allowed) {
+    throw APIError.from('FORBIDDEN', API_KEY_ERROR_CODES.INSUFFICIENT_API_KEY_PERMISSIONS);
+  }
 }
 
 function apiOf(auth: AuthInstance): AuthApiSurface {
@@ -126,12 +183,19 @@ export async function createMachineCredential(
     throw new AuthContextError();
   }
   const created = await apiOf(auth).createApiKey({
-    headers: params.headers,
     body: {
+      userId: params.userId,
       configId: MACHINE_CREDENTIAL_CONFIG_ID,
       name: params.name,
       organizationId: params.organizationId,
       metadata: {
+        ...(params.metadata?.userId === undefined ? {} : { userId: params.metadata.userId }),
+        ...(params.metadata?.createdBy === undefined
+          ? {}
+          : { createdBy: params.metadata.createdBy }),
+        ...(params.metadata?.rotatedAt === undefined
+          ? {}
+          : { rotatedAt: params.metadata.rotatedAt }),
         [ACTOR_KIND_METADATA_KEY]: params.actorKind,
         [ROLE_METADATA_KEY]: MACHINE_CREDENTIAL_ROLE,
       },
@@ -151,8 +215,8 @@ export async function createMachineCredential(
  * credential; there is no in-place rotation, only revoke-and-recreate."
  */
 export interface RevokeMachineCredentialParams {
-  /** The calling admin's session cookie, forwarded so Better Auth's own admin-only check runs. */
-  readonly headers: Headers;
+  /** The acting admin's Better Auth user id, forwarded as `body.userId` (task 9.1b, Q29). */
+  readonly userId: string;
   /** The credential's client id (`CreatedMachineCredential['id']`). */
   readonly id: string;
 }
@@ -182,18 +246,23 @@ export async function revokeMachineCredential(
   auth: AuthInstance,
   params: RevokeMachineCredentialParams & RevocationListTarget,
 ): Promise<void> {
-  // Authorize first: a caller Better Auth rejects must leave no revocation
-  // row (a non-admin could otherwise deny service to any credential).
-  // `getApiKey` runs the organization permission check scoped to the
-  // caller's session and to the credential's own organization, and throws
-  // Better Auth's own error. The credential must belong to the host tenant.
-  const existing = await apiOf(auth).getApiKey({
-    headers: params.headers,
-    query: { configId: MACHINE_CREDENTIAL_CONFIG_ID, id: params.id },
+  // Authorize first: a caller Better Auth would reject must leave no
+  // revocation row (a non-admin could otherwise deny service to any
+  // credential). The key is read at adapter level, filtered by the host
+  // tenant and the config, so a foreign or unknown id is `AuthContextError`.
+  const { adapter } = await contextOf(auth);
+  const existing = await adapter.findOne<{ readonly id: string }>({
+    model: API_KEY_TABLE_NAME,
+    where: [
+      { field: 'id', value: params.id },
+      { field: 'referenceId', value: params.tenantId },
+      { field: 'configId', value: MACHINE_CREDENTIAL_CONFIG_ID },
+    ],
   });
-  if (existing.referenceId !== params.tenantId) {
+  if (existing === null) {
     throw new AuthContextError();
   }
+  await requireApiKeyPermission(auth, params.userId, params.tenantId, 'update');
   // Ordering (design D21): the apiKey row (`auth` schema, `tayzu_auth`) and
   // the revocation row (`public`, `tayzu_app`) live on different roles and
   // cannot share a transaction. The revocation row is written BEFORE the
@@ -208,8 +277,8 @@ export async function revokeMachineCredential(
     );
   });
   await apiOf(auth).updateApiKey({
-    headers: params.headers,
     body: {
+      userId: params.userId,
       configId: MACHINE_CREDENTIAL_CONFIG_ID,
       keyId: params.id,
       enabled: false,

@@ -50,9 +50,13 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { TEST_SECRET, TEST_PASSWORD } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
@@ -176,7 +180,9 @@ describe('Visma Connect JIT display-data refresh (task 21.1, design D24)', () =>
     auth = createAuth({
       db: drizzle(authPool, { schema: authSchema }),
       secret: TEST_SECRET,
-      userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
+      userSync: createUserSyncAdapter({
+        userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
+      }),
       sso: {
         discoveryUrl: stub.discoveryUrl,
         clientId: stub.clientId,
@@ -208,6 +214,7 @@ describe('Visma Connect JIT display-data refresh (task 21.1, design D24)', () =>
   }> {
     const localEmail = `jit-local-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Local Name',
       email: localEmail,
       password: PASSWORD,

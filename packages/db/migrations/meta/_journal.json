@@ -78,6 +78,13 @@
       "when": 1790703061451,
       "tag": "0010_auth_session_sso_sid",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791844703629,
+      "tag": "0011_machine_credential_revocation_tenant_key",
+      "breakpoints": true
     }
   ]
 }

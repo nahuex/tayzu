@@ -16,12 +16,14 @@ import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
 import { ORPCError } from '@orpc/server';
-import { SimpleCsrfProtectionHandlerPlugin } from '@orpc/server/plugins';
+import { ResponseHeadersPlugin, SimpleCsrfProtectionHandlerPlugin } from '@orpc/server/plugins';
 import {
   authSchema,
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  createRateLimitBucketStore,
+  createServiceAccountLookup,
   createStepUpGuard,
   emitInternalError,
   emitRateLimited,
@@ -33,13 +35,30 @@ import {
   type AuthInstance,
   type BackchannelLogoutOutcome,
   type CreateAuthOptions,
+  type EmailSender,
+  type RateLimitBucketStoreOptions,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import type { createPool } from '@tayzu/db';
-import { createBlueprintService, createCatalogRouter, createEntityService } from '@tayzu/catalog';
+import {
+  createBlueprintService,
+  createCatalogRouter,
+  createEntityService,
+  createUserSync,
+} from '@tayzu/catalog';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 
+import { createIdentityRouter } from './identity-router.js';
+import { createAcceptFlow } from './identity/accept-flow.js';
+import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
+import { createAuthRepository } from './identity/auth-repository.js';
+import { createDbEmailCapStore } from './identity/email-cap-store.js';
+import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
+import { createWithUserLock } from './identity/user-lock.js';
+import { createNoticeDispatcher } from './identity/notices.js';
+import { createSsoLinkShed } from './identity/sso-link-shed.js';
+import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
 import { assertDiscoverable } from './sso-discovery.js';
@@ -76,6 +95,7 @@ export interface CreateAppOptions {
    * Budget for `POST /v1/auth/token` (D20), independent of `rateLimit`. The
    * bucket key is the caller's IP plus the body's client id; omitted: no limiter.
    */
+  readonly machineCredentialRateLimit?: CreateAuthOptions['machineCredentialRateLimit'];
   readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
   /** Visma Connect SSO (D23), forwarded to `createAuth`; omitted: SSO is not registered. */
   readonly sso?: CreateAuthOptions['sso'];
@@ -83,6 +103,59 @@ export interface CreateAppOptions {
   readonly preAuthRateLimit?: CreateAuthOptions['rateLimit'];
   /** Back-channel logout budget per source IP per minute (D26, Q32); omitted: 600. */
   readonly backchannelLogoutRateLimitPerMinute?: number;
+  /**
+   * Limit of the public re-authorization callback (043 task 13.9), per caller IP on the
+   * DB-backed store, consumed before the callback's database `delete`. `window` is in
+   * seconds; omitted: no limiter.
+   */
+  readonly reauthorizationMaxPendingPerSession?: number;
+  /** Defaults to 10 per 60 seconds when omitted (043 task 14.20). */
+  readonly reauthorizationCallbackRateLimit?: { readonly max: number; readonly window: number };
+  /** Limit of the public invitation-accept route, per caller IP; `window` is in seconds. */
+  readonly invitationAcceptRateLimit?: { readonly max: number; readonly window: number };
+  /**
+   * The email path of the invitation operations (design D10), built by the host from
+   * configuration; omitted: `invite` and `resendInvitation` fail closed.
+   */
+  readonly identity?: {
+    readonly emailGate?: EmailTenantGate;
+    readonly invitationLinkBaseUrl?: string;
+  };
+  /**
+   * 043 task 14.11 (D5, Q138): the email settings of the production start. With the
+   * identity routes mounted, `createApp` builds the one gate from them and hands the gate
+   * and the link base URL to the identity router.
+   */
+  readonly email?: {
+    readonly sender: EmailSender;
+    readonly invitationLinkBaseUrl?: string;
+    readonly disabledTenantIds: readonly string[];
+    readonly killSwitch: boolean;
+    readonly recipientKeySecret?: string;
+    readonly tenantCap: { readonly max: number; readonly windowSeconds: number };
+    readonly recipientCap: { readonly max: number; readonly windowSeconds: number };
+    /** The notices' buckets (Q101, 6.12b); the defaults are 60 per hour and 3 per 24 hours. */
+    readonly noticeTenantCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly noticeRecipientCap?: { readonly max: number; readonly windowSeconds: number };
+  };
+  /**
+   * 043 task 14.3 (D15): mounts the identity routes (the accept route and the identity
+   * procedures). Omitted: off, and each answers like an unknown `/v1` path.
+   */
+  readonly mountIdentityRoutes?: boolean;
+  /**
+   * `IDENTITY_TOKEN_HMAC_SECRET` (Q147, O-5): the secret of the recipient key. With the
+   * identity routes mounted, `createApp` refuses to start without it (or `email.recipientKeySecret`).
+   */
+  readonly identityTokenHmacSecret?: string;
+  /** 043 task 14.18 (Q138): the credential and service-account caps handed to the identity router. */
+  readonly credentialCap?: number;
+  readonly serviceAccountCap?: number;
+  /**
+   * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
+   * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
+   */
+  readonly configureApp?: (app: FastifyInstance) => void | Promise<void>;
 }
 
 export interface App {
@@ -107,6 +180,8 @@ interface AuthSessionSurface {
 }
 
 const STEP_UP_HEADERS = '__stepUpHeaders';
+/** Resolved decision Q42: the key `identity-router.ts` reads the request's session headers from. */
+const REQUEST_HEADERS = '__requestHeaders';
 
 interface StepUpHandlerContext {
   readonly [STEP_UP_HEADERS]: Headers;
@@ -115,6 +190,10 @@ interface StepUpHandlerContext {
 }
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
+/** Default budget of the public accept route, per caller IP (window in seconds). */
+const DEFAULT_INVITATION_ACCEPT_RATE_LIMIT = { max: 10, window: 60 } as const;
+const DEFAULT_REAUTHORIZATION_CALLBACK_RATE_LIMIT = { max: 10, window: 60 } as const;
 /** Skew added to the token's `exp` for the replay record's lifetime (D26). */
 const LOGOUT_JTI_SKEW_SECONDS = 30;
 /** Generous per-IP floor (D26): high enough not to drop legitimate logout bursts. */
@@ -124,6 +203,11 @@ const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
 
 /** Q74: the path of the request target, without its query. Every guard keys on this. */
+/** A configured cap as the bucket store's rule. */
+function ruleOf(cap: { readonly max: number; readonly windowSeconds: number }) {
+  return { max: cap.max, window: cap.windowSeconds };
+}
+
 function pathnameOf(request: FastifyRequest): string {
   return request.url.split('?', 1)[0] ?? '';
 }
@@ -172,32 +256,110 @@ function toWebRequest(request: FastifyRequest, baseUrl: string | undefined): Req
 
 export async function createApp(options: CreateAppOptions): Promise<App> {
   // Q48, D23: a configured provider that cannot be discovered fails startup.
-  if (options.sso !== undefined) {
-    await assertDiscoverable(options.sso.discoveryUrl);
-  }
+  const ssoIssuer =
+    options.sso === undefined ? undefined : await assertDiscoverable(options.sso.discoveryUrl);
   // The auth handle runs on the host's `tayzu_auth` pool; the catalog and
   // revocation pool run as `tayzu_app` so RLS applies.
   const authDb = drizzle(options.authPool, { schema: authSchema });
   const appPool = options.appPool;
 
+  const authz = createCerbosClient({
+    address: options.cerbosAddress,
+    tls: !CERBOS_TLS_LOOPBACK_ONLY.test(options.cerbosAddress),
+  });
+  // Q30: the status adapter every `_user` writer goes through.
+  const userSync = createUserSyncAdapter({ userSync: createUserSync({ pool: appPool, authz }) });
+
+  // Q30: the shed core is built once; `createAuth` takes its port, the accept flow the core.
+  const ssoLinkShed = createSsoLinkShed({ authPool: options.authPool });
   const auth = createAuth({
     db: authDb,
+    userSync,
+    ssoLinkShed: ssoLinkShed.port,
     secret: options.authSecret,
     ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
     trustedOrigins: options.allowedOrigins,
     ...(options.sso === undefined ? {} : { sso: options.sso }),
     ...(options.preAuthRateLimit === undefined ? {} : { rateLimit: options.preAuthRateLimit }),
+    ...(options.machineCredentialRateLimit === undefined
+      ? {}
+      : { machineCredentialRateLimit: options.machineCredentialRateLimit }),
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+  const serviceAccountLookup = createServiceAccountLookup(appPool);
 
-  const authz = createCerbosClient({
-    address: options.cerbosAddress,
-    tls: !CERBOS_TLS_LOOPBACK_ONLY.test(options.cerbosAddress),
-  });
-  const router = createCatalogRouter({
-    blueprints: createBlueprintService({ pool: appPool, authz }),
-    entities: createEntityService({ pool: appPool, authz }),
-  });
+  const { email } = options;
+  const recipientKeySecret =
+    options.identityTokenHmacSecret === undefined
+      ? email?.recipientKeySecret
+      : options.identityTokenHmacSecret;
+  if (options.mountIdentityRoutes === true && (recipientKeySecret ?? '') === '') {
+    throw new Error('IDENTITY_TOKEN_HMAC_SECRET is required to mount the identity routes.');
+  }
+  // One cap store shared by the invitation gate and the notice dispatcher (Q138).
+  const emailCapStore =
+    email === undefined
+      ? undefined
+      : createDbEmailCapStore({
+          store: createRateLimitBucketStore({
+            adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+              .adapter,
+            rules: {
+              invitation_tenant: ruleOf(email.tenantCap),
+              invitation_recipient: ruleOf(email.recipientCap),
+              notice_tenant: ruleOf(email.noticeTenantCap ?? { max: 60, windowSeconds: 3600 }),
+              notice_recipient: ruleOf(
+                email.noticeRecipientCap ?? { max: 3, windowSeconds: 86_400 },
+              ),
+            },
+          }),
+        });
+  const emailGate =
+    email === undefined || emailCapStore === undefined || recipientKeySecret === undefined
+      ? options.identity?.emailGate
+      : createEmailTenantGate({
+          disabledTenantIds: email.disabledTenantIds,
+          capStore: emailCapStore,
+          sender: email.sender,
+          killSwitch: email.killSwitch,
+          recipientKeySecret,
+        });
+  const notices =
+    email === undefined || emailCapStore === undefined || recipientKeySecret === undefined
+      ? undefined
+      : createNoticeDispatcher({
+          disabledTenantIds: email.disabledTenantIds,
+          capStore: emailCapStore,
+          sender: email.sender,
+          recipientKeySecret,
+          killSwitch: email.killSwitch,
+        });
+  const invitationLinkBaseUrl =
+    email === undefined ? options.identity?.invitationLinkBaseUrl : email.invitationLinkBaseUrl;
+
+  // D10: one router, one handler, one interceptor chain for the catalog and identity routes.
+  const router = {
+    ...createCatalogRouter({
+      blueprints: createBlueprintService({ pool: appPool, authz }),
+      entities: createEntityService({ pool: appPool, authz }),
+    }),
+    ...(options.mountIdentityRoutes === true
+      ? createIdentityRouter({
+          auth,
+          authz,
+          authRepository: createAuthRepository(options.authPool),
+          withUserLock: createWithUserLock(options.authPool),
+          appPool,
+          userSync,
+          ...(emailGate === undefined ? {} : { emailGate }),
+          ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+          ...(options.credentialCap === undefined ? {} : { credentialCap: options.credentialCap }),
+          ...(options.serviceAccountCap === undefined
+            ? {}
+            : { serviceAccountCap: options.serviceAccountCap }),
+        })
+      : {}),
+  };
   // D4: the guard runs after context resolution and before the operation, for
   // every procedure whose route spec carries `x-tayzu-risk: high`. The caller's
   // headers travel in the handler context, under a private key.
@@ -219,6 +381,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           clientId: options.sso.clientId,
           clientSecret: options.sso.clientSecret,
           redirectUri: new URL(REAUTH_CALLBACK_PATH, callbackBase).toString(),
+          ...(options.reauthorizationMaxPendingPerSession === undefined
+            ? {}
+            : { maxPendingPerSession: options.reauthorizationMaxPendingPerSession }),
         });
   const openApiHandler = new OpenAPIHandler(router, {
     clientInterceptors: [
@@ -264,6 +429,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     // D13: custom-header CSRF check (default `x-csrf-token: orpc`) on every
     // mutating route. Fail closed: only an explicit GET/HEAD route is exempt.
     plugins: [
+      new ResponseHeadersPlugin(),
       new SimpleCsrfProtectionHandlerPlugin({
         exclude: ({ procedure }) => {
           const method = procedure['~orpc'].route.method;
@@ -279,6 +445,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
+  await options.configureApp?.(app);
   // Q74, D18: first hook of all. A target that is not origin-form, or whose
   // path (before the query) holds `%`, `//` or a backslash, answers the
   // allowlist's own 404 before any other hook or the router can normalize it.
@@ -462,8 +629,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   async function handleLogoutToken(
     token: string,
     config: NonNullable<CreateAppOptions['sso']>,
+    issuer: string,
   ): Promise<BackchannelLogoutOutcome> {
     const verified = await verifyLogoutToken(token, {
+      issuer,
       discoveryUrl: config.discoveryUrl,
       clientId: config.clientId,
     });
@@ -515,7 +684,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const sso = options.sso;
   // Without SSO configuration the route is disabled: it answers 404.
   await app.register((scope, _opts, done) => {
-    if (sso === undefined) {
+    if (sso === undefined || ssoIssuer === undefined) {
       // Explicit 404, so the `/v1/*` catch-all never answers for it.
       scope.post(BACKCHANNEL_LOGOUT_PATH, (_request, reply) =>
         reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 }),
@@ -558,7 +727,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           if (malformed) {
             return 'invalid';
           }
-          return handleLogoutToken(token, sso);
+          return handleLogoutToken(token, sso, ssoIssuer);
         });
         if (malformed) {
           return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
@@ -571,6 +740,19 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
 
   // Q36: the re-authorization callback (query redirect or `form_post`). The
   // single-use `state` binds it to the session; it answers a bare 200 or 400.
+  // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
+  const reauthorizationCallbackLimit = createAcceptRateLimitPreHandler({
+    scope: 'reauthorization_callback',
+    store: createRateLimitBucketStore({
+      adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+        .adapter,
+      rules: {
+        reauthorization_callback:
+          options.reauthorizationCallbackRateLimit ?? DEFAULT_REAUTHORIZATION_CALLBACK_RATE_LIMIT,
+      },
+    }),
+  });
+  const callbackRoute = { preHandler: reauthorizationCallbackLimit };
   await app.register((scope, _opts, done) => {
     scope.addContentTypeParser(
       'application/x-www-form-urlencoded',
@@ -594,11 +776,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         ? reply.status(200).send({})
         : reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
     };
-    scope.get(REAUTH_CALLBACK_PATH, (request, reply) => {
+    scope.get(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const query = request.query as Record<string, unknown>;
       return handle({ code: query['code'], state: query['state'] }, reply);
     });
-    scope.post(REAUTH_CALLBACK_PATH, (request, reply) => {
+    scope.post(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const body = request.body as Record<string, unknown> | undefined;
       return handle({ code: body?.['code'], state: body?.['state'] }, reply);
     });
@@ -656,16 +838,75 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
     }
     try {
-      const { accessToken } = await exchangeMachineToken(auth, {
-        clientId: body.clientId,
-        clientSecret: body.clientSecret,
-      });
+      const { accessToken } = await exchangeMachineToken(
+        auth,
+        { clientId: body.clientId, clientSecret: body.clientSecret },
+        { serviceAccountLookup },
+      );
       return await reply.status(200).send({ accessToken });
     } catch (error) {
       const mapped = toOrpcError(error);
       return reply.status(mapped.status).send(mapped.toJSON());
     }
   });
+
+  if (options.mountIdentityRoutes === true) {
+    // 043 task 14.1b: the invitation acceptance is a plain public route (no session,
+    // no catch-all), behind its own DB-backed limiter.
+    const acceptFlow = createAcceptFlow({
+      auth,
+      authz,
+      authRepository: createAuthRepository(options.authPool),
+      authPool: options.authPool,
+      userSync,
+      ssoLinkShed,
+      ...(notices === undefined ? {} : { notices }),
+      stepUp: stepUpGuard,
+      ...(reauthorization === undefined ? {} : { reauthorization }),
+    });
+    app.post(
+      INVITATION_ACCEPT_PATH,
+      {
+        preHandler: createAcceptRateLimitPreHandler({
+          store: createRateLimitBucketStore({
+            adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+              .adapter,
+            rules: {
+              invitation_accept:
+                options.invitationAcceptRateLimit ?? DEFAULT_INVITATION_ACCEPT_RATE_LIMIT,
+            },
+          }),
+        }),
+      },
+      async (request, reply) => {
+        try {
+          // Q24, Q38: the session is read only for a request that carries the CSRF
+          // header and an allowed `Origin`; otherwise the flow sees no session, and an
+          // existing account gets the uniform rejection (a new person needs no session).
+          const csrfPresent = request.headers['x-csrf-token'] === 'orpc';
+          const originAllowed =
+            request.headers.origin !== undefined && allowedOrigins.has(request.headers.origin);
+          const crossSiteSafe = csrfPresent && originAllowed;
+          // Only a request that carries a cookie had a session to refuse (design D4 step 5).
+          const crossSiteDenial =
+            crossSiteSafe || request.headers.cookie === undefined
+              ? undefined
+              : csrfPresent
+                ? 'origin_rejected'
+                : 'csrf_rejected';
+          const { userId } = await acceptFlow.acceptRequest({
+            body: request.body,
+            ...(crossSiteSafe && { headers: toWebHeaders(request) }),
+            ...(crossSiteDenial !== undefined && { crossSiteDenial }),
+          });
+          return await reply.status(200).send({ userId });
+        } catch (error) {
+          const mapped = toOrpcError(error);
+          return reply.status(mapped.status).send(mapped.toJSON());
+        }
+      },
+    );
+  }
 
   let v1Config: { rateLimit?: object } = {};
   if (options.rateLimit !== undefined) {
@@ -688,33 +929,44 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     };
   }
 
-  app.all('/v1/*', { config: v1Config }, async (request, reply) => {
-    const resolved = await resolveOnce(request);
-    if ('error' in resolved) {
-      // Same mapping and body shape as any other error, via oRPC's own JSON.
-      const mapped = toOrpcError(resolved.error);
-      return reply.status(mapped.status).send(mapped.toJSON());
-    }
-    const context = resolved.context;
-    // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
-    // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
-    // principals are always `member` (Q28), so only a user can carry `admin` here.
-    if (context.principal?.roles.includes('admin') === true) {
-      const session = await (auth.api as AuthSessionSurface).getSession({
-        headers: toWebHeaders(request),
-      });
-      if (session?.user?.twoFactorEnabled !== true) {
-        const mapped = toOrpcError(new AuthStepUpError());
+  // The methods the merged router routes (Q141); `HEAD` is derived from `GET`.
+  app.route({
+    method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    url: '/v1/*',
+    config: v1Config,
+    handler: async (request, reply) => {
+      const resolved = await resolveOnce(request);
+      if ('error' in resolved) {
+        // Same mapping and body shape as any other error, via oRPC's own JSON.
+        const mapped = toOrpcError(resolved.error);
         return reply.status(mapped.status).send(mapped.toJSON());
       }
-    }
-    const result = await openApiHandler.handle(request, reply, {
-      context: { ...context, [STEP_UP_HEADERS]: toWebHeaders(request) },
-    });
-    if (!result.matched) {
-      return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });
-    }
-    return undefined;
+      const context = resolved.context;
+      // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
+      // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
+      // principals are always `member` (Q28), so only a user can carry `admin` here.
+      if (context.principal?.roles.includes('admin') === true) {
+        const session = await (auth.api as AuthSessionSurface).getSession({
+          headers: toWebHeaders(request),
+        });
+        if (session?.user?.twoFactorEnabled !== true) {
+          const mapped = toOrpcError(new AuthStepUpError());
+          return reply.status(mapped.status).send(mapped.toJSON());
+        }
+      }
+      const result = await openApiHandler.handle(request, reply, {
+        context: {
+          ...context,
+          [STEP_UP_HEADERS]: toWebHeaders(request),
+          // Q42: the session headers `invite` and `cancelInvitation` forward to Better Auth.
+          [REQUEST_HEADERS]: toWebHeaders(request),
+        },
+      });
+      if (!result.matched) {
+        return reply.status(404).send({ defined: false, code: 'NOT_FOUND', status: 404 });
+      }
+      return undefined;
+    },
   });
 
   await app.ready();

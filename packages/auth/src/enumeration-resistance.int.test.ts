@@ -110,7 +110,9 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import { SeverityNumber, type AnyValueMap } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
+import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -125,6 +127,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // graph within the same worker.
 import { createAdminUser } from './__fixtures__/admin-user.js';
 import './__fixtures__/registered-harness.js';
+import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance, type CreateAuthOptions } from './auth.js';
 import * as authSchema from './persistence/schema.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
@@ -308,4 +311,128 @@ describe('Enumeration resistance: sign-in failure status/error-code/body-shape p
       'both failed sign-in attempts return the identical, parsed response body (same error code, same body shape)',
     ).toEqual(unknownAccountBody);
   });
+});
+
+/**
+ * Task 13.4b (design D13, Resolved decisions Q54 and Q97, VCDM G3). Spec
+ * scenario: "A disabled user's sessions stop working" (`specs/
+ * identity-lifecycle-and-org-admin/spec.md`): "a new sign-in (local or SSO) is
+ * refused"; the uniformity is `002`'s "Sign-in failures are identical" rule.
+ *
+ * GIVEN a banned user with the correct password, a user with a wrong password
+ * and an unknown email, WHEN each signs in through `auth.handler`, THEN the
+ * three responses have the same status, error code and body, no session row
+ * exists for the banned user, and `auth.security.login_failed` carries
+ * `account_disabled` for the banned attempt and `bad_credentials` for the wrong
+ * password. The timing is not asserted.
+ *
+ * ## Production symbols expected
+ *
+ * None new: a `hooks.after` on `/sign-in/email` in `auth.ts` that returns a
+ * `Response` equal to the wrong password's, and a login_failed emitter that
+ * accepts the reason `account_disabled`.
+ */
+describe('A banned user signs in exactly like any other failure (task 13.4b, D13, Q54)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      rateLimit: {
+        signIn: { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: SIGN_IN_RATE_LIMIT_MAX },
+      },
+    });
+    if ('error' in registration) {
+      throw new Error('createTelemetryTestHarness() failed while the module graph loaded', {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  async function loginFailedReasons(): Promise<
+    { severity: SeverityNumber | undefined; attributes: AnyValueMap }[]
+  > {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter((record) => record.eventName === 'auth.security.login_failed')
+      .map((record) => ({ severity: record.severityNumber, attributes: record.attributes }));
+  }
+
+  it('A banned user with the correct password, a wrong password and an unknown email get the same status, error code and body, with no session for the banned user', async () => {
+    const handler = handlerOf(auth);
+    const bannedEmail = randomEmail();
+    const wrongEmail = randomEmail();
+    const unknownEmail = randomEmail();
+    const banned = await createAdminUser(auth, {
+      name: 'Banned Enumeration User',
+      email: bannedEmail,
+      password: TEST_PASSWORD,
+    });
+    await createAdminUser(auth, {
+      name: 'Wrong Password Enumeration User',
+      email: wrongEmail,
+      password: TEST_PASSWORD,
+    });
+    await db.execute(sql`update auth."user" set banned = true where id = ${banned.userId}`);
+
+    await harness.reset();
+    const bannedResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: bannedEmail,
+      password: TEST_PASSWORD,
+    });
+    const bannedLogs = await loginFailedReasons();
+
+    await harness.reset();
+    const wrongResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: wrongEmail,
+      password: WRONG_PASSWORD,
+    });
+    const wrongLogs = await loginFailedReasons();
+
+    const unknownResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: unknownEmail,
+      password: TEST_PASSWORD,
+    });
+
+    expect(wrongResponse.status, 'control: a wrong password is a failure').toBeGreaterThanOrEqual(
+      400,
+    );
+    expect(bannedResponse.status, 'the response status itself equals the wrong password').toBe(
+      wrongResponse.status,
+    );
+    expect(unknownResponse.status).toBe(wrongResponse.status);
+
+    const wrongBody = (await wrongResponse.json()) as AuthErrorBody;
+    expect(typeof wrongBody.code).toBe('string');
+    expect(await bannedResponse.json(), 'same error code and body').toEqual(wrongBody);
+    expect(await unknownResponse.json()).toEqual(wrongBody);
+    expect(
+      bannedResponse.headers.getSetCookie().some((c) => c.includes('session_token')),
+      'no session cookie',
+    ).toBe(false);
+
+    const sessions = await db.execute<{ n: string }>(
+      sql`select count(*)::text as n from auth.session where user_id = ${banned.userId}`,
+    );
+    expect(Number(sessions.rows[0]?.n ?? -1), 'no session row for the banned user').toBe(0);
+
+    expect(bannedLogs, 'exactly one login_failed for the banned attempt').toHaveLength(1);
+    expect(bannedLogs[0]?.severity).toBe(SeverityNumber.WARN);
+    expect(bannedLogs[0]?.attributes).toEqual({ 'tayzu.auth.failure_reason': 'account_disabled' });
+    expect(wrongLogs).toHaveLength(1);
+    expect(wrongLogs[0]?.attributes).toEqual({ 'tayzu.auth.failure_reason': 'bad_credentials' });
+  }, 60_000);
 });

@@ -63,8 +63,16 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
 import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
+import { hashPassword, verifyPassword } from 'better-auth/crypto';
 import { decryptOAuthToken, setTokenUtil } from 'better-auth/oauth2';
-import { admin, jwt, organization, twoFactor } from 'better-auth/plugins';
+import {
+  admin,
+  haveIBeenPwned,
+  isPasswordCompromised,
+  jwt,
+  organization,
+  twoFactor,
+} from 'better-auth/plugins';
 
 import {
   preAuthRateLimitPlugin,
@@ -78,11 +86,22 @@ import {
   SSO_CALLBACK_PATH,
 } from './sso/callback-rejection.js';
 import { emitAccountLinkEvent } from './account-link-telemetry.js';
+import { emitIdentityEvent } from './telemetry/identity-telemetry.js';
 import {
   VISMA_CONNECT_PROVIDER_ID,
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import type { SsoLinkShedPort } from './identity/ports.js';
+import { validatePassword } from './identity/password-policy.js';
+import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
+import { organizationAccess } from './org-access.js';
+import {
+  TEMPORARY_PASSWORD_ALLOWED_PATHS,
+  hasActiveTemporaryPasswordMarker,
+  hasExpiredTemporaryPasswordMarker,
+  temporaryPasswordMarkerIdentifier,
+} from './identity/temporary-password.js';
 import { isIdle } from './session-idle.js';
 import { fetchVismaUserInfo } from './sso/userinfo-refresh.js';
 import {
@@ -104,6 +123,17 @@ const SIGN_IN_PATH_PREFIXES: readonly string[] = ['/sign-in/', '/callback/'];
 const SIGN_OUT_PATH = '/sign-out';
 const SIGN_IN_SOCIAL_PATH = '/sign-in/social';
 const CHANGE_PASSWORD_PATH = '/change-password';
+const CREATE_USER_PATH = '/admin/create-user';
+
+/** The paths the `haveIBeenPwned` plugin checks at hash time: its defaults minus `CREATE_USER_PATH`. */
+const BREACH_CHECKED_PATHS: string[] = [
+  '/sign-up/email',
+  CHANGE_PASSWORD_PATH,
+  '/reset-password',
+  '/email-otp/reset-password',
+  '/phone-number/reset-password',
+  '/admin/set-user-password',
+];
 const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 /** design D4: every `two-factor` verify endpoint (`/two-factor/verify-totp`, `-backup-code`, `-otp`). */
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
@@ -202,6 +232,25 @@ interface MembershipRow {
   readonly organizationId: string;
 }
 
+/** The body fields that carry a password (task 8.1d), selected by name, never by path. */
+const PASSWORD_BODY_FIELDS = ['password', 'newPassword', 'currentPassword'] as const;
+
+/** The password fields of `body` that change under NFC (empty when the body has none, or is not an object). */
+function normalizedPasswordFields(body: unknown): Record<string, string> {
+  const changed: Record<string, string> = {};
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return changed;
+  }
+  const record = body as Record<string, unknown>;
+  for (const field of PASSWORD_BODY_FIELDS) {
+    const value = record[field];
+    if (typeof value === 'string' && value !== value.normalize('NFC')) {
+      changed[field] = value.normalize('NFC');
+    }
+  }
+  return changed;
+}
+
 /**
  * Task 3.5, design D19: the session state `hooks.before` snapshots for
  * `/organization/set-active`, restored by `hooks.after` on rejection. Keyed
@@ -295,7 +344,9 @@ function emitStepUpSucceeded(params: {
  * other failure reason is reachable from this route yet (`mfa_failed`,
  * `account_disabled` are later tasks' concern).
  */
-function emitLoginFailed(reason: 'bad_credentials' | 'mfa_failed' = 'bad_credentials'): void {
+function emitLoginFailed(
+  reason: 'bad_credentials' | 'mfa_failed' | 'account_disabled' = 'bad_credentials',
+): void {
   logger.emit({
     eventName: 'auth.security.login_failed',
     severityNumber: SeverityNumber.WARN,
@@ -304,18 +355,47 @@ function emitLoginFailed(reason: 'bad_credentials' | 'mfa_failed' = 'bad_credent
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'login_failed' });
 }
 
+/** Better Auth's own error code for a banned user, thrown by the admin plugin after the password verified. */
+const BANNED_USER_ERROR_CODE = 'BANNED_USER';
+
 /**
- * design.md, Log events table: `auth.security.session_revoked`. Task 3.3
- * only reaches this for the `password_change` reason; `admin_action` is a
- * later task's own hook.
+ * Task 13.4b (design D13, Q54): the response of a wrong password, which a banned user's
+ * sign-in is rewritten into. A returned `Response` keeps its own status and body; a thrown
+ * error would keep the original result's status.
  */
-function emitSessionRevoked(params: {
+function wrongPasswordResponse(): Response {
+  const error = APIError.from('UNAUTHORIZED', {
+    code: 'INVALID_EMAIL_OR_PASSWORD',
+    message: 'Invalid email or password',
+  });
+  return Response.json(error.body, { status: error.statusCode });
+}
+
+/** Task 13.4b: the internal record of a banned attempt, with its channel and the opaque user id. */
+function emitBannedSignInAttempt(userId: string, channel: 'local' | 'sso'): void {
+  emitIdentityEvent({
+    name: 'catalog.security.banned_sign_in_attempt',
+    severity: 'WARN',
+    attributes: { 'tayzu.identity.user.id': userId, 'tayzu.identity.sign_in.channel': channel },
+  });
+}
+
+/** The reasons of `auth.security.session_revoked` (043 Resolved decision Q86). */
+export type SessionRevocationReason = 'password_change' | 'admin_action' | 'sso_link_shed';
+
+/**
+ * design.md, Log events table: `auth.security.session_revoked`. Exported so
+ * that the SSO link shed, the admin unlink and the admin revocation emit the
+ * same event as the `password_change` revocation of this file.
+ */
+export function emitSessionRevoked(params: {
   readonly actorId: string;
   readonly tenantId?: string;
+  readonly reason: SessionRevocationReason;
 }): void {
   const attributes: Record<string, string> = {
     [sharedAttributeKeys.actorId]: params.actorId,
-    [REVOCATION_REASON_ATTRIBUTE]: PASSWORD_CHANGE_REVOCATION_REASON,
+    [REVOCATION_REASON_ATTRIBUTE]: params.reason,
   };
   if (params.tenantId !== undefined) {
     attributes[sharedAttributeKeys.tenantId] = params.tenantId;
@@ -331,13 +411,134 @@ function emitSessionRevoked(params: {
 /** The `providerId` of the Visma Connect SSO account (design D23). */
 const SELF_LINK_PROVIDER_ID = VISMA_CONNECT_PROVIDER_ID;
 
+/** Better Auth's route of the user's own unlink. */
+const UNLINK_ACCOUNT_ROUTE = '/unlink-account';
+
+/** Identifier prefix of the provenance marker of a link the user made (Resolved decision Q87). */
+const SSO_LINK_MARKER_PREFIX = 'sso-link:';
+
+/** Far-future sentinel: Better Auth's cleanup of expired verification rows never reaches the marker. */
+const SSO_LINK_MARKER_EXPIRES_AT = new Date('9999-12-31T23:59:59.000Z');
+
+/** The adapter surface the marker hooks need, from an endpoint context or from `auth.$context`. */
+interface MarkerAdapter {
+  create(args: { model: string; data: Record<string, unknown> }): Promise<unknown>;
+  delete(args: { model: string; where: { field: string; value: string }[] }): Promise<unknown>;
+  deleteMany(args: { model: string; where: { field: string; value: string }[] }): Promise<unknown>;
+}
+
+/**
+ * Task 8.5g (Resolved decision Q87): marks a link made through the callback
+ * route (every `/link-social` or SSO link the user makes) with a verification
+ * row keyed by the `account` row's own id. A failed write deletes the account
+ * row, logs and throws, so the link fails closed.
+ */
+async function writeSsoLinkMarker(
+  account: { readonly id?: unknown; readonly providerId?: unknown; readonly userId?: unknown },
+  context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
+): Promise<void> {
+  if (
+    !context ||
+    context.path !== GENERIC_OAUTH_CALLBACK_ROUTE ||
+    account.providerId === 'credential' ||
+    typeof account.id !== 'string'
+  ) {
+    return;
+  }
+  const adapter = context.context.adapter as unknown as MarkerAdapter;
+  try {
+    await adapter.create({
+      model: 'verification',
+      data: {
+        identifier: `${SSO_LINK_MARKER_PREFIX}${account.id}`,
+        value: 'self',
+        expiresAt: SSO_LINK_MARKER_EXPIRES_AT,
+      },
+    });
+  } catch {
+    await adapter
+      .delete({ model: 'account', where: [{ field: 'id', value: account.id }] })
+      .catch(() => undefined);
+    emitIdentityEvent({
+      name: 'catalog.security.sso_link_marker_failed',
+      severity: 'WARN',
+      attributes:
+        typeof account.userId === 'string' ? { 'tayzu.identity.user.id': account.userId } : {},
+    });
+    throw new Error('sso link marker write failed');
+  }
+}
+
+/** Deletes the marker of a deleted account row, on every deletion path that goes through Better Auth. */
+async function deleteSsoLinkMarker(
+  account: { readonly id?: unknown },
+  context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
+  fallback: () => Promise<MarkerAdapter>,
+): Promise<void> {
+  if (typeof account.id !== 'string') {
+    return;
+  }
+  const adapter =
+    (context?.context.adapter as unknown as MarkerAdapter | undefined) ?? (await fallback());
+  await adapter.deleteMany({
+    model: 'verification',
+    where: [{ field: 'identifier', value: `${SSO_LINK_MARKER_PREFIX}${account.id}` }],
+  });
+}
+
+/**
+ * Task 8.5k (Resolved decisions Q106, Q115): the `account` row id that the callback of a
+ * request signed in through, stashed by `account.update.after` (Better Auth refreshes the
+ * linked account before it creates the session). Keyed by the per-request `ctx.context`.
+ */
+const callbackAccountIds = new WeakMap<object, string>();
+
+/**
+ * Whether a callback may create its session through the account it signed in through:
+ * the account must still exist and, for a user of two or more tenants, carry a marker.
+ * Fails closed when no account id was stashed for the request.
+ */
+async function callbackAccountMayCreateSession(
+  context: Parameters<typeof getSessionFromCtx>[0],
+): Promise<boolean> {
+  const accountId = callbackAccountIds.get(context.context);
+  if (accountId === undefined) {
+    return false;
+  }
+  const { adapter } = context.context;
+  const account = await adapter.findOne<{ userId: string }>({
+    model: 'account',
+    where: [{ field: 'id', value: accountId }],
+  });
+  if (account === null) {
+    return false;
+  }
+  const memberships = await adapter.findMany<MembershipRow>({
+    model: 'member',
+    where: [{ field: 'userId', value: account.userId }],
+    limit: 2,
+  });
+  if (memberships.length < 2) {
+    return true;
+  }
+  const marker = await adapter.findOne({
+    model: 'verification',
+    where: [{ field: 'identifier', value: `${SSO_LINK_MARKER_PREFIX}${accountId}` }],
+  });
+  return marker !== null;
+}
+
 /** Emits the D24 audit signals for a self-service link/unlink; skips non-SSO accounts and direct adapter calls. */
 async function emitSelfLink(
   event: 'linked' | 'unlinked',
   account: { readonly providerId?: unknown; readonly userId?: unknown },
   context: Parameters<typeof getSessionFromCtx>[0] | null | undefined,
 ): Promise<void> {
-  if (!context || account.providerId !== SELF_LINK_PROVIDER_ID) {
+  // The context is ambient: an account written inside another endpoint handler
+  // (for example `addMember`) inherits that handler's context, so only the
+  // route of the link or unlink itself counts (Resolved decision Q87).
+  const route = event === 'linked' ? GENERIC_OAUTH_CALLBACK_ROUTE : UNLINK_ACCOUNT_ROUTE;
+  if (!context || context.path !== route || account.providerId !== SELF_LINK_PROVIDER_ID) {
     return;
   }
   if (typeof account.userId !== 'string') {
@@ -368,6 +569,44 @@ async function encryptIdToken<T extends { readonly idToken?: unknown }>(
     return { data: account };
   }
   return { data: { ...account, idToken: await setTokenUtil(account.idToken, context.context) } };
+}
+
+function isBannedUserError(error: unknown): boolean {
+  return (
+    isAPIError(error) &&
+    (error.body as { code?: unknown } | undefined)?.code === BANNED_USER_ERROR_CODE
+  );
+}
+
+/**
+ * Task 13.4b (design D13): logs a banned user's sign-in attempt on its channel. Runs before
+ * the admin plugin's own `session.create.before`, which then refuses the session; the ban
+ * test mirrors that plugin's (an elapsed `banExpires` is no ban).
+ */
+async function recordBannedAttempt(
+  userId: string,
+  context: Parameters<typeof getSessionFromCtx>[0],
+): Promise<void> {
+  const channel =
+    context.path === GENERIC_OAUTH_CALLBACK_ROUTE
+      ? 'sso'
+      : context.path === SIGN_IN_EMAIL_PATH
+        ? 'local'
+        : undefined;
+  if (channel === undefined) {
+    return;
+  }
+  const user = (await context.context.internalAdapter.findUserById(userId)) as {
+    banned?: boolean | null;
+    banExpires?: Date | string | null;
+  } | null;
+  if (user?.banned !== true) {
+    return;
+  }
+  if (user.banExpires && new Date(user.banExpires).getTime() < Date.now()) {
+    return;
+  }
+  emitBannedSignInAttempt(userId, channel);
 }
 
 /**
@@ -456,12 +695,52 @@ async function refreshDisplayData(
         tenantId: membership.organizationId,
         email: user.email,
         name: info.name ?? user.name,
+        userId: account.userId,
         ...(info.email === undefined ? {} : { contactEmail: info.email }),
       });
     }
   } catch {
     // Display data is best-effort; never block or fail the sign-in.
   }
+}
+
+/**
+ * Task 4.4 (design D2, Resolved decision Q111): the first-sign-in hook. Writes
+ * `first_sign_in` to the `_user` of the user's membership only when the user
+ * holds exactly one; with two or more it writes nothing, so a second tenant's
+ * `Invited`/`Staged` row stays rejected by the resolver. The user is the
+ * principal of their own write (Resolved decision Q117).
+ */
+async function activateOnFirstSignIn(
+  options: CreateAuthOptions,
+  userId: string,
+  context: Parameters<typeof getSessionFromCtx>[0],
+): Promise<void> {
+  if (options.userSync === undefined) {
+    return;
+  }
+  const memberships = await context.context.adapter.findMany<MembershipRow>({
+    model: 'member',
+    where: [{ field: 'userId', value: userId }],
+    limit: 2,
+  });
+  const [only] = memberships;
+  if (memberships.length !== 1 || only === undefined) {
+    return;
+  }
+  const user = await context.context.internalAdapter.findUserById(userId);
+  if (user === null) {
+    return;
+  }
+  await options.userSync.upsertUser({
+    tenantId: only.organizationId,
+    email: user.email,
+    name: user.name,
+    userId,
+    change: 'first_sign_in',
+    principal: { kind: 'user', id: userId },
+    onBehalfOf: { type: 'user', id: userId },
+  });
 }
 
 export interface CreateAuthOptions {
@@ -495,14 +774,30 @@ export interface CreateAuthOptions {
    */
   readonly userSync?: UserSyncPort;
   /**
+   * Task 8.5h (043 design D4 step 7, Q114): sheds the SSO links a user did not
+   * make when they join a second tenant. `afterAddMember` calls it before its
+   * `_user` write. Typed structurally; the host passes its shed core's port.
+   */
+  readonly ssoLinkShed?: SsoLinkShedPort;
+  /**
    * Task 19.2 (design D23, Q17): Visma Connect SSO. When set, registers the
    * `genericOAuth` provider; otherwise no SSO plugin exists.
    */
   readonly sso?: VismaConnectOptions;
+  /**
+   * Task 9.5 (043 Q44): the per-key verification limit of a machine credential, copied into
+   * each key at creation. Defaults to 60 per hour.
+   */
+  readonly machineCredentialRateLimit?: { readonly max: number; readonly timeWindowMs: number };
 }
 
 /** The structural slice of `@tayzu/catalog`'s `UserSync` this package calls. */
 export interface UserSyncPort {
+  /** The current `_user` status of the email in the tenant; `null` when there is no row. */
+  readStatus?(input: {
+    readonly tenantId: string;
+    readonly email: string;
+  }): Promise<UserStatus | null>;
   upsertUser(input: {
     readonly tenantId: string;
     readonly email: string;
@@ -510,9 +805,42 @@ export interface UserSyncPort {
     /** Display-only Visma Connect email (design D24); never an identity key. */
     readonly contactEmail?: string;
     readonly portRole?: 'admin' | 'member';
-    readonly status?: 'Active' | 'Disabled';
+    /**
+     * The status change (design D2): a `StatusEvent`, or the `membership_added`
+     * intent, from which the adapter derives the event. Absent for a write of
+     * display data only.
+     */
+    readonly change?: UserSyncChange;
+    /** The Better Auth user id of the write's subject; absent for `created_invited`. */
+    readonly userId?: string;
+    /** The `invitation.id` of a `created_invited` write (Resolved decision Q126). */
+    readonly invitationId?: string;
+    /**
+     * The principal the writer hands the adapter with its kind, for the status
+     * audit event (Resolved decision Q117); absent for the ban hook.
+     */
+    readonly principal?: {
+      readonly kind: 'admin' | 'user' | 'operator';
+      readonly id: string;
+    };
+    /** `service` for a service account, whose `userId` is its `svc-…` identifier. */
+    readonly accountKind?: 'standard' | 'service';
+    /** The principal an admin-initiated write is attributed to (Resolved decision Q10). */
+    readonly onBehalfOf?: {
+      readonly type: 'user' | 'agent' | 'integration' | 'system';
+      readonly id: string;
+    };
   }): Promise<void>;
 }
+
+/** The intent the membership hook passes; the adapter derives the event from the stored status. */
+export interface MembershipAddedIntent {
+  readonly intent: 'membership_added';
+  /** Whether the member's Better Auth user is banned. */
+  readonly banned: boolean;
+}
+
+export type UserSyncChange = StatusEvent | MembershipAddedIntent;
 
 /** The `auth.user` columns the `_user` sync reads. */
 interface SyncUserRow {
@@ -611,9 +939,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       encryptOAuthTokens: true,
       accountLinking: { disableImplicitLinking: true },
     },
-    // Email/password sign-up and sign-in (task 2.3). No `minPasswordLength`
-    // override: Better Auth's own default (8 characters) is the policy this
-    // change fixes; a stricter policy is not named anywhere in the design.
+    // Email/password sign-in (task 2.3). Task 8.1c (design Q22): Better Auth counts
+    // UTF-16 units of the raw string and 128 code points can take 256 units, so its
+    // maximum must never reject a compliant password; the exact bounds in code
+    // points are the password policy module's.
     // `disableSignUp: true` (task 18.1/18.2, design D22): public self
     // sign-up is disabled under every circumstance -- users are created only
     // through the admin-creation path (`identity.users.create`, task 18.3)
@@ -623,6 +952,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
     emailAndPassword: {
       enabled: true,
       disableSignUp: true,
+      minPasswordLength: 20,
+      maxPasswordLength: 256,
+      // Task 8.1d (design Q22, Q132), layer 1: both functions NFC-normalize first, so
+      // every verifying path is covered without a list of paths.
+      password: {
+        hash: (password) => hashPassword(password.normalize('NFC')),
+        verify: ({ hash, password }) =>
+          verifyPassword({ hash, password: password.normalize('NFC') }),
+      },
     },
     // `enabled: false` (task 2.5, design D20): Better Auth's own built-in
     // database-backed rate limiter can only key by IP+path and its blocked
@@ -642,19 +980,80 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // organization adapter writes members below `databaseHooks`, so the
       // plugin's own `organizationHooks` is the hook point.
       organization({
+        // Task 9.1b (Q29): all three roles, with the `apiKey` grant on `admin`/`owner`.
+        ...organizationAccess,
+        // Task 7.2 (design D4): 48-hour invitations; a re-invite cancels the
+        // previous pending one.
+        invitationExpiresIn: 48 * 60 * 60,
+        cancelPendingInvitationsOnReInvite: true,
         organizationHooks: {
+          // Task 16.12c (Q149): a `Disabled` address is refused before Better Auth
+          // creates the invitation, so no `pending` row is left. The same transition
+          // check as the `afterCreateInvitation` backstop throws; a failed read fails closed.
+          beforeCreateInvitation: async ({ invitation, organization }) => {
+            if (options.userSync?.readStatus === undefined) return;
+            const current = await options.userSync.readStatus({
+              tenantId: organization.id,
+              email: invitation.email,
+            });
+            nextStatus(current, 'created_invited');
+          },
+          // Task 7.3 (design D4 "Hooks"): the invited email starts as `Invited`,
+          // keyed by the invitation (the email may have no Better Auth user yet).
+          afterCreateInvitation: async ({ invitation }) => {
+            await options.userSync?.upsertUser({
+              tenantId: invitation.organizationId,
+              email: invitation.email,
+              name: invitation.email,
+              change: 'created_invited',
+              invitationId: invitation.id,
+            });
+          },
           afterAddMember: async ({ member, user }) => {
+            // Q112: shed first, so a shed that fails leaves the new row unwritten.
+            await options.ssoLinkShed?.shed({
+              tenantId: member.organizationId,
+              userId: user.id,
+            });
             await options.userSync?.upsertUser({
               tenantId: member.organizationId,
               email: user.email,
               name: user.name,
               portRole: portRoleFor(member.role),
-              status: (user as { banned?: boolean | null }).banned === true ? 'Disabled' : 'Active',
+              userId: user.id,
+              change: {
+                intent: 'membership_added',
+                banned: (user as { banned?: boolean | null }).banned === true,
+              },
             });
           },
         },
       }),
+      // Task 13.4b (design D13): plugin database hooks run in plugin order, so this one must
+      // precede `admin()`, whose `session.create.before` refuses a banned user.
+      {
+        id: 'banned-sign-in-attempt-log',
+        init: () => ({
+          options: {
+            databaseHooks: {
+              session: {
+                create: {
+                  before: async (session, context) => {
+                    if (context) {
+                      await recordBannedAttempt(session.userId, context);
+                    }
+                  },
+                },
+              },
+            },
+          },
+        }),
+      },
       admin(),
+      // Task 8.1b (design Q23): k-anonymity breach check; fails closed with a 500
+      // when the range service is unreachable. `/admin/create-user` is checked by
+      // the `before` hook instead (see `CREATE_USER_PATH`), so it is not listed.
+      haveIBeenPwned({ paths: BREACH_CHECKED_PATHS }),
       twoFactor(),
       // Task 5.4 fix (this file's own `MACHINE_TOKEN_ISSUER`/`_AUDIENCE` doc
       // comment): a fixed, non-empty `iss`/`aud` default, required for
@@ -677,6 +1076,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         references: 'organization',
         defaultPrefix: 'tayzu_mc_',
         enableMetadata: true,
+        // Task 9.5 (Q44): plugin-level, because `createApiKey` rejects per-key `rateLimit*`
+        // properties on a headerless-or-not call; the window is in milliseconds.
+        rateLimit: {
+          enabled: true,
+          maxRequests: options.machineCredentialRateLimit?.max ?? 60,
+          timeWindow: options.machineCredentialRateLimit?.timeWindowMs ?? 3_600_000,
+        },
+        // No first characters of a secret are stored (D7).
+        startingCharactersConfig: { shouldStore: false },
       }),
       preAuthRateLimitPlugin(options),
       ...(options.sso === undefined ? [] : [vismaConnect(options.sso)]),
@@ -690,11 +1098,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         create: {
           before: (account, context) => encryptIdToken(account, context),
           after: async (account, context) => {
+            await writeSsoLinkMarker(account, context);
             await emitSelfLink('linked', account, context);
           },
         },
         delete: {
           after: async (account, context) => {
+            await deleteSsoLinkMarker(account, context, async () => (await auth.$context).adapter);
             await emitSelfLink('unlinked', account, context);
           },
         },
@@ -704,11 +1114,17 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         update: {
           before: (account, context) => encryptIdToken(account, context),
           after: async (account, context) => {
+            const { id } = account as { id?: unknown };
+            if (context?.path === GENERIC_OAUTH_CALLBACK_ROUTE && typeof id === 'string') {
+              callbackAccountIds.set(context.context, id);
+            }
             await refreshDisplayData(options, account, context);
           },
         },
       },
-      // Ban/unban: mirror `banned` onto every membership's `_user` entity.
+      // Ban: mirror `banned: true` onto every membership's `_user` entity. It only ever
+      // disables: an update with `banned: false` writes nothing, because re-enabling
+      // goes through `setStatus` only (design D2, Resolved decision Q102).
       user: {
         update: {
           after: async (user, context) => {
@@ -716,7 +1132,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               return;
             }
             const row = user as unknown as SyncUserRow;
-            if (typeof row.banned !== 'boolean') {
+            if (row.banned !== true) {
               return;
             }
             const memberships = await context.context.adapter.findMany<MembershipRow>({
@@ -728,7 +1144,8 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 tenantId: membership.organizationId,
                 email: row.email,
                 name: row.name,
-                status: row.banned ? 'Disabled' : 'Active',
+                userId: row.id,
+                change: 'admin_disable',
               });
             }
           },
@@ -739,6 +1156,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           before: async (session, context) => {
             if (!context) {
               return;
+            }
+            // Q106, Q115: a callback never creates a session through a shed or unmarked link.
+            if (
+              context.path === GENERIC_OAUTH_CALLBACK_ROUTE &&
+              !(await callbackAccountMayCreateSession(context))
+            ) {
+              return false;
             }
             const ssoSid = await ssoSidForSignIn(session.userId, context);
             const rows = await context.context.adapter.findMany<MembershipRow>({
@@ -763,7 +1187,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           },
           // Task 24.5, design Q54: a Visma Connect callback sign-in creates its
           // session here (a `form_post` redirect hop creates none).
-          after: (session, context) => {
+          after: async (session, context) => {
             if (context?.path === GENERIC_OAUTH_CALLBACK_ROUTE) {
               const row = session as { userId: string; activeOrganizationId?: string | null };
               emitLoginSucceeded({
@@ -771,7 +1195,9 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 tenantId: row.activeOrganizationId ?? undefined,
               });
             }
-            return Promise.resolve();
+            if (context) {
+              await activateOnFirstSignIn(options, session.userId, context);
+            }
           },
         },
       },
@@ -785,81 +1211,158 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // Better Auth's own `dispatchAuthEndpoint`, both verified against the
       // installed source), leaving `currentPassword`/`newPassword` untouched.
       before: createAuthMiddleware(async (ctx) => {
-        // Task 27.3, design Q75, Q7: the 12-hour idle check on every
-        // session-bearing route except sign-in, so a stale cookie cannot
-        // reach Better Auth's refresh-on-read and reset the idle clock.
-        if (!SIGN_IN_PATH_PREFIXES.some((prefix) => ctx.path.startsWith(prefix))) {
-          const peek = await getSessionFromCtx(ctx, { disableRefresh: true }).catch(() => null);
-          // Drop the cached peek so the endpoint reads (and refreshes) normally.
-          ctx.context.session = null;
-          if (peek && isIdle(peek.session.updatedAt)) {
-            throw new APIError('UNAUTHORIZED', {
-              code: 'UNAUTHORIZED',
-              message: 'UNAUTHORIZED',
+        // Task 8.1d (design Q22, Q132), layer 2: NFC-normalize the password-bearing body
+        // fields by name, ahead of every plugin, so the breach check sees the NFC form.
+        const normalizedFields = normalizedPasswordFields(ctx.body);
+        ctx.body = { ...(ctx.body as object), ...normalizedFields };
+        const checked = await (async () => {
+          // Task 27.3, design Q75, Q7: the 12-hour idle check on every
+          // session-bearing route except sign-in, so a stale cookie cannot
+          // reach Better Auth's refresh-on-read and reset the idle clock.
+          if (!SIGN_IN_PATH_PREFIXES.some((prefix) => ctx.path.startsWith(prefix))) {
+            const peek = await getSessionFromCtx(ctx, { disableRefresh: true }).catch(() => null);
+            // Drop the cached peek so the endpoint reads (and refreshes) normally.
+            ctx.context.session = null;
+            if (peek && isIdle(peek.session.updatedAt)) {
+              throw new APIError('UNAUTHORIZED', {
+                code: 'UNAUTHORIZED',
+                message: 'UNAUTHORIZED',
+              });
+            }
+            // Task 13.5, Q36: a session under a temporary-password marker reaches only
+            // the change-password route, `/sign-out` and `/get-session`. A failed
+            // lookup refuses (fail closed).
+            if (
+              peek &&
+              !TEMPORARY_PASSWORD_ALLOWED_PATHS.includes(ctx.path) &&
+              (await hasActiveTemporaryPasswordMarker(ctx.context.adapter, peek.user.id).catch(
+                () => true,
+              ))
+            ) {
+              throw new APIError('FORBIDDEN', {
+                code: 'PASSWORD_CHANGE_REQUIRED',
+                message: 'PASSWORD_CHANGE_REQUIRED',
+              });
+            }
+            // Task 16.11a, Q36, Q146: once the marker has expired, a session opened
+            // under it reaches only `/sign-out`; `/change-password` is refused too.
+            if (
+              peek &&
+              ctx.path !== SIGN_OUT_PATH &&
+              (await hasExpiredTemporaryPasswordMarker(ctx.context.adapter, peek.user.id).catch(
+                () => true,
+              )) &&
+              // An unreadable marker counts as both; it keeps the active-marker allowance.
+              !(await hasActiveTemporaryPasswordMarker(ctx.context.adapter, peek.user.id).catch(
+                () => true,
+              ))
+            ) {
+              throw new APIError('FORBIDDEN', {
+                code: 'PASSWORD_CHANGE_REQUIRED',
+                message: 'PASSWORD_CHANGE_REQUIRED',
+              });
+            }
+          }
+          if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
+            // Task 3.5, design D19: snapshot the session's current active
+            // organization before Better Auth's own route runs, so
+            // `hooks.after` can restore it if the membership check rejects the
+            // attempt (see this file's own doc comment). `getSessionFromCtx`
+            // is the same helper Better Auth's own `sessionMiddleware` calls,
+            // so this caches the read rather than adding a second one.
+            const session = await getSessionFromCtx(ctx).catch(() => null);
+            if (session) {
+              activeOrganizationBeforeAttempt.set(ctx.context, {
+                sessionToken: session.session.token,
+                previousActiveOrganizationId:
+                  (session.session.activeOrganizationId as string | null | undefined) ?? null,
+              });
+            }
+            return undefined;
+          }
+          if (ctx.path === GENERATE_BACKUP_CODES_PATH) {
+            // Q52, D18: regenerating backup codes needs a fresh `mfa` marker; a
+            // password alone (even the correct one) never suffices (Q51).
+            const session = await getSessionFromCtx(ctx).catch(() => null);
+            const factor = session
+              ? await currentFreshFactor(ctx.context.internalAdapter, session.session.token)
+              : null;
+            if (factor !== 'mfa') {
+              throw new APIError('FORBIDDEN', {
+                code: 'AUTH_STEP_UP_REQUIRED',
+                message: 'AUTH_STEP_UP_REQUIRED',
+              });
+            }
+            return undefined;
+          }
+          if (VERIFY_TWO_FACTOR_PATHS.includes(ctx.path)) {
+            // Q61, Q43: refuse `trustDevice: true` so every sign-in of an enrolled
+            // user is MFA-checked; nothing is verified and no cookie is set.
+            const body = ctx.body as { trustDevice?: unknown } | null | undefined;
+            if (body?.trustDevice === true) {
+              throw new APIError('BAD_REQUEST', {
+                code: 'TRUST_DEVICE_NOT_SUPPORTED',
+                message: 'TRUST_DEVICE_NOT_SUPPORTED',
+              });
+            }
+            return undefined;
+          }
+          if (ctx.path === CREATE_USER_PATH) {
+            // Task 8.1b: `/admin/create-user` inserts the user before it hashes the
+            // password, so the plugin's hash-time check would leave an orphan user
+            // behind. Checking here refuses the password before anything is written.
+            const body = ctx.body as { password?: unknown } | null | undefined;
+            if (typeof body?.password === 'string') {
+              if (await isPasswordCompromised(body.password)) {
+                throw new APIError('BAD_REQUEST', {
+                  code: 'PASSWORD_COMPROMISED',
+                  message: 'PASSWORD_COMPROMISED',
+                });
+              }
+            }
+            return undefined;
+          }
+          if (ctx.path !== CHANGE_PASSWORD_PATH) {
+            return undefined;
+          }
+          // Task 8.1c (design Q22): the new password must meet the policy before anything is written.
+          const newPassword = (ctx.body as { newPassword?: unknown } | null | undefined)
+            ?.newPassword;
+          const verdict =
+            typeof newPassword === 'string' ? validatePassword(newPassword) : undefined;
+          if (verdict && !verdict.ok) {
+            // Q136, Q149: the refusal names only the failed rule, never the password.
+            throw new APIError('BAD_REQUEST', {
+              code: 'PASSWORD_POLICY_VIOLATION',
+              message: 'PASSWORD_POLICY_VIOLATION',
+              rule: verdict.rule,
             });
           }
-        }
-        if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
-          // Task 3.5, design D19: snapshot the session's current active
-          // organization before Better Auth's own route runs, so
-          // `hooks.after` can restore it if the membership check rejects the
-          // attempt (see this file's own doc comment). `getSessionFromCtx`
-          // is the same helper Better Auth's own `sessionMiddleware` calls,
-          // so this caches the read rather than adding a second one.
+          // Q70, Q51: a user with an enrolled MFA factor needs a fresh `mfa`
+          // marker. Without a session, Better Auth's own route answers 401.
           const session = await getSessionFromCtx(ctx).catch(() => null);
-          if (session) {
-            activeOrganizationBeforeAttempt.set(ctx.context, {
-              sessionToken: session.session.token,
-              previousActiveOrganizationId:
-                (session.session.activeOrganizationId as string | null | undefined) ?? null,
-            });
-          }
-          return undefined;
-        }
-        if (ctx.path === GENERATE_BACKUP_CODES_PATH) {
-          // Q52, D18: regenerating backup codes needs a fresh `mfa` marker; a
-          // password alone (even the correct one) never suffices (Q51).
-          const session = await getSessionFromCtx(ctx).catch(() => null);
-          const factor = session
-            ? await currentFreshFactor(ctx.context.internalAdapter, session.session.token)
-            : null;
-          if (factor !== 'mfa') {
+          if (
+            session &&
+            (session.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true &&
+            (await currentFreshFactor(ctx.context.internalAdapter, session.session.token)) !== 'mfa'
+          ) {
             throw new APIError('FORBIDDEN', {
               code: 'AUTH_STEP_UP_REQUIRED',
               message: 'AUTH_STEP_UP_REQUIRED',
             });
           }
-          return undefined;
+          return { context: { body: { revokeOtherSessions: true } } };
+        })();
+        if (Object.keys(normalizedFields).length === 0) {
+          return checked;
         }
-        if (VERIFY_TWO_FACTOR_PATHS.includes(ctx.path)) {
-          // Q61, Q43: refuse `trustDevice: true` so every sign-in of an enrolled
-          // user is MFA-checked; nothing is verified and no cookie is set.
-          const body = ctx.body as { trustDevice?: unknown } | null | undefined;
-          if (body?.trustDevice === true) {
-            throw new APIError('BAD_REQUEST', {
-              code: 'TRUST_DEVICE_NOT_SUPPORTED',
-              message: 'TRUST_DEVICE_NOT_SUPPORTED',
-            });
-          }
-          return undefined;
-        }
-        if (ctx.path !== CHANGE_PASSWORD_PATH) {
-          return undefined;
-        }
-        // Q70, Q51: a user with an enrolled MFA factor needs a fresh `mfa`
-        // marker. Without a session, Better Auth's own route answers 401.
-        const session = await getSessionFromCtx(ctx).catch(() => null);
-        if (
-          session &&
-          (session.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true &&
-          (await currentFreshFactor(ctx.context.internalAdapter, session.session.token)) !== 'mfa'
-        ) {
-          throw new APIError('FORBIDDEN', {
-            code: 'AUTH_STEP_UP_REQUIRED',
-            message: 'AUTH_STEP_UP_REQUIRED',
-          });
-        }
-        return { context: { body: { revokeOtherSessions: true } } };
+        // The returned body deep-merges onto the endpoint's own, so the normalized fields
+        // reach the plugins and the endpoint itself.
+        return {
+          context: {
+            body: { ...normalizedFields, ...(checked?.context.body as object | undefined) },
+          },
+        };
       }),
       after: createAuthMiddleware(async (ctx) => {
         if (ctx.path === SET_ACTIVE_ORGANIZATION_PATH) {
@@ -874,19 +1377,31 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               activeOrganizationId: snapshot.previousActiveOrganizationId,
             });
           }
-          return;
+          return undefined;
         }
         if (ctx.path === SIGN_IN_EMAIL_PATH) {
           if (isAPIError(ctx.context.returned)) {
+            if (isBannedUserError(ctx.context.returned)) {
+              emitLoginFailed('account_disabled');
+              return wrongPasswordResponse();
+            }
             emitLoginFailed();
-            return;
+            return undefined;
           }
           const response = ctx.context.returned as SignInEmailSuccessResponse;
+          // Task 13.5d (Q36, Q97): an expired temporary password fails like a wrong one.
+          // The sign-in already created its session, so delete it and drop its cookie.
+          if (await hasExpiredTemporaryPasswordMarker(ctx.context.adapter, response.user.id)) {
+            await ctx.context.internalAdapter.deleteSession(response.token);
+            ctx.context.responseHeaders?.delete('set-cookie');
+            emitLoginFailed();
+            return wrongPasswordResponse();
+          }
           if (response.user.twoFactorEnabled === true) {
             // Credentials accepted, second factor pending: the two-factor plugin's own
             // after hook (it runs after this one) turns this into a challenge, not a session.
             mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'challenge_issued' });
-            return;
+            return undefined;
           }
           const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
             model: 'session',
@@ -896,26 +1411,35 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
           });
-          return;
+          return undefined;
         }
         if (ctx.path === SIGN_OUT_PATH) {
           if (!isAPIError(ctx.context.returned)) {
             sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'logout' });
           }
-          return;
+          return undefined;
         }
         if (ctx.path === SIGN_IN_SOCIAL_PATH) {
           const body = ctx.body as { provider?: unknown } | null | undefined;
           if (!isAPIError(ctx.context.returned) && body?.provider === SELF_LINK_PROVIDER_ID) {
             ssoEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'sso_initiated' });
           }
-          return;
+          return undefined;
         }
         if (ctx.path === CHANGE_PASSWORD_PATH) {
           if (isAPIError(ctx.context.returned)) {
-            return;
+            return undefined;
           }
           const response = ctx.context.returned as ChangePasswordSuccessResponse;
+          await ctx.context.adapter.deleteMany({
+            model: 'verification',
+            where: [
+              {
+                field: 'identifier',
+                value: temporaryPasswordMarkerIdentifier(response.user.id),
+              },
+            ],
+          });
           const sessionRow = await ctx.context.adapter.findOne<ActiveOrganizationRow>({
             model: 'session',
             where: [{ field: 'token', value: response.token }],
@@ -923,14 +1447,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           emitSessionRevoked({
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
+            reason: PASSWORD_CHANGE_REVOCATION_REASON,
           });
-          return;
+          return undefined;
         }
         if (ctx.path === VERIFY_PASSWORD_PATH) {
           // Q49: same marker and 5-minute window as an MFA verification, keyed
           // by the current session's token.
           if (isAPIError(ctx.context.returned)) {
-            return;
+            return undefined;
           }
           const session = await getSessionFromCtx(ctx).catch(() => null);
           // Q51: never shadow a still-fresh `mfa` marker with a weaker `password` one.
@@ -944,7 +1469,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               expiresAt: new Date(Date.now() + STEP_UP_FRESHNESS_MS),
             });
           }
-          return;
+          return undefined;
         }
         if (ctx.path.startsWith(TWO_FACTOR_VERIFY_PATH_PREFIX)) {
           // Task 4.2, design D4: record the freshness marker `./step-up.ts`'s
@@ -956,12 +1481,12 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           if (isAPIError(ctx.context.returned)) {
             mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'failed' });
             emitLoginFailed('mfa_failed');
-            return;
+            return undefined;
           }
           mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'verified' });
           const response = ctx.context.returned as TwoFactorVerifySuccessResponse;
           if (response.token === undefined || response.token === null) {
-            return;
+            return undefined;
           }
           await ctx.context.internalAdapter.createVerificationValue({
             identifier: stepUpVerificationIdentifier(response.token),
@@ -991,6 +1516,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             });
           }
         }
+        return undefined;
       }),
     },
   });

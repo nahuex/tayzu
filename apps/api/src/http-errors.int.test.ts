@@ -81,6 +81,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { AuthInvalidCredentialsError, AuthStepUpError } from '../../../packages/auth/src/errors.js';
 import { AuthorizationError } from '../../../packages/catalog/src/domain/errors.js';
@@ -104,6 +105,7 @@ function randomIp(): string {
 async function provisionTenant(app: App): Promise<BootstrappedTenant> {
   const suffix = randomUUID();
   return bootstrapTestTenant(app.auth, {
+    pool: testAppPool(),
     name: 'HTTP Errors User',
     email: `errors-${suffix}@example.test`,
     password: TEST_PASSWORD,

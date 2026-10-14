@@ -8,7 +8,7 @@ the SSA.
 
 ## Automated updates
 
-Dependabot opens weekly pull requests for two ecosystems
+Dependabot opens weekly pull requests for three ecosystems
 (`.github/dependabot.yml`):
 
 - **npm**, root directory. Minor and patch updates are grouped into a single
@@ -16,6 +16,20 @@ Dependabot opens weekly pull requests for two ecosystems
   still opens its own pull request for review.
 - **github-actions**, root directory. Every action pinned in `ci.yml` and the
   composite action under `.github/actions/setup/` is covered.
+- **docker**, directories `/` and `/scripts/ci`. It reads `compose.yaml` and
+  `scripts/ci/Dockerfile.images`, so the pinned image digests below are
+  bumped by pull request (task 13.12).
+
+### Pinned image digests
+
+| Image                     | Pinned in                                                                            | Tracking mechanism                                                | Owner    |
+| ------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- | -------- |
+| `postgres:16`             | `scripts/ci/Dockerfile.images` (read by `dast.sh`), `ci.yml` services                | Dependabot `docker`, `/scripts/ci`; `ci.yml` copy updated by hand | Platform |
+| `ghcr.io/cerbos/cerbos`   | `compose.yaml`, `ci.yml`, `scripts/dev/start-cerbos.sh`, `scripts/policy-compile.sh` | Dependabot `docker`, `/`; the other copies updated by hand        | Platform |
+| `ghcr.io/zaproxy/zaproxy` | `scripts/ci/Dockerfile.images` (read by `dast.sh`), `ci.yml` `docker_name`           | Dependabot `docker`, `/scripts/ci`; `ci.yml` copy updated by hand | Platform |
+
+`apps/api/src/dependabot-config.test.ts` fails when a digest is pinned only
+where no `docker` entry reads it.
 
 Runtime-coupled versions are held on purpose. `@types/node` stays on the
 major version of the Node runtime (22), so Dependabot ignores its major
@@ -46,9 +60,10 @@ are fixed opportunistically or with the next Dependabot update.
   is never used: it requires a Semgrep login and sends telemetry that this
   project does not want in CI.
 - **Syft** (`sbom` job) generates an SPDX JSON SBOM of the pnpm dependency
-  tree on every run and uploads it as the `sbom-spdx` workflow artifact. This
-  step is **non-blocking** (`continue-on-error: true`): a SBOM generation
-  failure is visible in the job log but never fails the pipeline.
+  tree on every run and uploads it as the `sbom-spdx` workflow artifact. The
+  steps are **blocking**, with no `continue-on-error`: a SBOM generation
+  failure fails the job. Only an unsupported platform or an unreachable
+  download is a skip, as for the other pinned tools.
 
 `RA-AZ` L426-L430 documents code analysis integrated into the CI pipeline as
 the standard placement for SAST; `VULN` L190-L196 argues for risk-based
@@ -98,6 +113,23 @@ SSPL move, MongoDB's AGPL-to-SSPL move, HashiCorp's BSL) as a real and
 accelerating trend, not a hypothetical: the practical conclusion it draws is
 that licenses must be audited before adoption and monitored for later changes,
 which is the rule above.
+
+## Overrides
+
+`pnpm.overrides` in the root `package.json` forces a patched version of a
+transitive dependency when the direct dependency has not picked it up yet. It
+is preferred over a waiver because it removes the vulnerable code instead of
+accepting it. Each override is listed here and removed once every path in the
+graph resolves to a patched version on its own.
+
+| Override                                    | Advisory            | Path                                                    | Added      |
+| ------------------------------------------- | ------------------- | ------------------------------------------------------- | ---------- |
+| `@esbuild-kit/core-utils>esbuild` `^0.25.0` | GHSA-67mh-4wv8-2f99 | `drizzle-kit > @esbuild-kit/esm-loader > core-utils`    | 2026-09-28 |
+| `source-map-js` `^1.2.2`                    | GHSA-68fv-2mgg-jv7q | `better-auth > vitest > vite > postcss > source-map-js` | 2026-10-08 |
+
+The `source-map-js` path enters through `vitest`, an optional peer of Better
+Auth that is test tooling and is not loaded at runtime; the override still
+fixes it so the `dependency-audit` job stays green without a waiver.
 
 ## Audited waiver path for `pnpm audit`
 
@@ -186,3 +218,76 @@ only for low-entropy secrets such as user passwords. Conditions:
 `disableKeyHashing` stays `false`, `customKeyGenerator` is not used to shorten
 the key, and `defaultKeyLength` is not lowered. Re-verify on every upgrade of
 this package.
+
+## Email delivery SDK (`@azure/communication-email`)
+
+Adopted by `043-identity-lifecycle-and-org-admin` (task 1.3, design D5) for
+invitation and notice email through Azure Communication Services. It is pinned
+exactly to `1.1.0` (published 2025-10-08) in `packages/auth/package.json`.
+Reviewed on 2026-10-09:
+
+- **License**: MIT, on the allowlist. The 16 transitive packages it adds to the
+  lockfile are MIT too (checked in each installed `package.json`; the SBOM
+  records them as `NOASSERTION` because Syft reads the lockfile):
+
+  | Package                       | Version | License |
+  | ----------------------------- | ------- | ------- |
+  | `@azure-rest/core-client`     | 2.9.0   | MIT     |
+  | `@azure/abort-controller`     | 2.2.0   | MIT     |
+  | `@azure/communication-common` | 2.5.0   | MIT     |
+  | `@azure/core-auth`            | 1.11.0  | MIT     |
+  | `@azure/core-client`          | 1.11.1  | MIT     |
+  | `@azure/core-lro`             | 2.7.2   | MIT     |
+  | `@azure/core-rest-pipeline`   | 1.25.0  | MIT     |
+  | `@azure/core-tracing`         | 1.4.0   | MIT     |
+  | `@azure/core-util`            | 1.14.0  | MIT     |
+  | `@azure/logger`               | 1.4.0   | MIT     |
+  | `@typespec/ts-http-runtime`   | 0.3.9   | MIT     |
+  | `agent-base`                  | 7.1.4   | MIT     |
+  | `events`                      | 3.3.0   | MIT     |
+  | `http-proxy-agent`            | 7.0.2   | MIT     |
+  | `https-proxy-agent`           | 7.0.6   | MIT     |
+  | `jwt-decode`                  | 4.0.0   | MIT     |
+
+- **Install scripts (`allowBuilds`)**: none of the 17 packages declares a
+  `preinstall`, `install` or `postinstall` script. `jwt-decode` declares only
+  `prepare` (`husky install`), which pnpm never runs for a registry tarball.
+  `allowBuilds` in `pnpm-workspace.yaml` is unchanged.
+- **SBOM review**: the SPDX SBOM of `scripts/ci/syft.sh` lists all 17
+  packages at the versions above.
+- **Advisories**: `pnpm audit --prod --audit-level=high` reports no known
+  vulnerabilities.
+- **Runtime notes**: the SDK sends to the endpoint named in
+  `ACS_CONNECTION_STRING`, a Key Vault secret ([Secrets](secrets.md)) for a
+  dedicated send-only resource (design Q28). `@azure/core-rest-pipeline`
+  honors the standard `HTTPS_PROXY` and `NO_PROXY` variables, which is where
+  `http-proxy-agent` and `https-proxy-agent` come from. No deployed
+  environment sets them.
+
+## Bundled data: common-password denylist
+
+The password policy (`043` task 8.1, design Resolved decisions Q22 and Q132)
+refuses passwords on a bundled common-password denylist, with no external
+call and no new dependency. The list is data, not a dependency, so its
+provenance is recorded here.
+
+- **File**: `packages/auth/src/identity/common-passwords.ts`, 502 entries.
+  It is generated once, never edited by hand, and changed only by a reviewed
+  pull request that updates its header and this section.
+- **Source**: SecLists,
+  `Passwords/Common-Credentials/Pwdb_top-1000000.txt` at commit
+  `27c08068f849227f2fc1c8f7f00afae365957b96` (file SHA-256
+  `e9a88f67aafe65496682dc374559ee714e978bee50314767494c3e37a18c9fc8`).
+- **License**: MIT (Copyright (c) 2018 Daniel Miessler). The copyright and
+  permission notice are reproduced in the file header, as the license
+  requires.
+- **Derivation**:
+  1. Decode hashcat `$HEX[...]` entries as UTF-8.
+  2. NFC-normalize every entry.
+  3. Keep only entries of 20 to 128 code points made solely of printable ASCII
+     (U+0020-U+007E). Shorter entries are already refused by the length rule;
+     the few non-ASCII entries are mis-encoded text.
+  4. Lower-case, de-duplicate and sort.
+- **Matching**: exact, against the candidate after NFC normalization and
+  lower-casing. The breached-password check (Q23) remains the main control;
+  this list is the offline layer.

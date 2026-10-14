@@ -75,3 +75,9 @@ export const backchannelLogoutEventsCounter = meter.createCounter(
   'tayzu.auth.backchannel_logout.events',
   { unit: '{event}' },
 );
+
+/** 043 design.md, Metrics table: "Enforcement of D13 is visible and alertable". */
+export const principalRejectionsCounter = meter.createCounter(
+  'tayzu.identity.principal_rejections',
+  { unit: '{rejection}' },
+);

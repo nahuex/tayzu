@@ -198,7 +198,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 // which imports a telemetry/instruments module that creates its tracer,
 // meter and logger at import time. Same rationale as every other int test
 // file in this package.
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 // The module under test (task 4.2): does not exist yet (see this file's own
@@ -485,6 +485,7 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
     readonly organizationId: string;
   }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -523,6 +524,7 @@ describe('Step-up guard for high-risk operations (task 4.2, design D4)', () => {
     // above for why `bootstrapTestTenant`'s single sign-in already carries
     // an `activeOrganizationId`.
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email,
       password: TEST_PASSWORD,
@@ -833,6 +835,7 @@ describe('Step-up factor for MFA-enrolled users (task 24.1, design Q51)', () => 
     const handler = handlerOf(auth);
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email,
       password: TEST_PASSWORD,
@@ -909,6 +912,7 @@ describe('Step-up factor for MFA-enrolled users (task 24.1, design Q51)', () => 
 
   it('A user without MFA still passes step-up with a fresh password re-entry', async () => {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -984,6 +988,7 @@ describe('Backup-code regeneration requires a fresh MFA step-up (task 24.3, desi
     const handler = handlerOf(auth);
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email,
       password: TEST_PASSWORD,
@@ -1096,7 +1101,7 @@ describe('/change-password requires a fresh MFA step-up for enrolled users (task
   let auth: AuthInstance;
   let api: AuthApiSurface;
 
-  const NEW_PASSWORD = 'a brand new correct horse battery staple';
+  const NEW_PASSWORD = 'A-brand-new-Correct-Horse-Battery-Staple-42!';
 
   beforeAll(async () => {
     db = connect(databaseUrl());
@@ -1161,6 +1166,7 @@ describe('/change-password requires a fresh MFA step-up for enrolled users (task
     const handler = handlerOf(auth);
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email,
       password: TEST_PASSWORD,
@@ -1256,6 +1262,7 @@ describe('/change-password requires a fresh MFA step-up for enrolled users (task
   it('A user without MFA is unaffected: /change-password still works with the current password alone', async () => {
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email,
       password: TEST_PASSWORD,
@@ -1337,6 +1344,7 @@ describe('A step-up verification emits step_up_succeeded, a login emits login_su
   }> {
     const email = randomEmail();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email,
       password: TEST_PASSWORD,

@@ -6,8 +6,8 @@
  */
 const DISCOVERY_TIMEOUT_MS = 10_000;
 
-/** Resolves the discovery document once and checks the fields the flow needs. */
-export async function assertDiscoverable(discoveryUrl: string): Promise<void> {
+/** Resolves the discovery document once, checks the fields the flow needs and returns its issuer. */
+export async function assertDiscoverable(discoveryUrl: string): Promise<string> {
   let document: unknown;
   try {
     const response = await fetch(discoveryUrl, {
@@ -29,4 +29,5 @@ export async function assertDiscoverable(discoveryUrl: string): Promise<void> {
   ) {
     throw new Error('Visma Connect discovery document is invalid');
   }
+  return fields['issuer'];
 }

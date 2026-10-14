@@ -1,0 +1,4659 @@
+/**
+ * Task 8.2 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * "Invitation acceptance"; design D4 steps 1 to 5 and the Observability
+ * contract; Resolved decisions Q112 and Q116).
+ *
+ * Scenarios (from the spec, "Invitation acceptance"):
+ * - "A new person accepts and can then sign in": the account has a verified
+ *   email, a membership with the invited role and status `Active`, no session
+ *   exists, and the invitee then signs in through the normal route, also with
+ *   the password in its NFD form (8.1d). The `accepted` invitation status and
+ *   the single use of the token are 8.3's.
+ * - "A failed `_user` write undoes the acceptance": with a `userSync` that
+ *   throws, no user, no member, the `_user` still `Invited`, the token still
+ *   verifies, the sanitized `INTERNAL` answer, and a retry with the same token
+ *   succeeds.
+ * - A successful acceptance emits `catalog.audit.invitation_accepted` with
+ *   `tayzu.actor.type` `user` and `tayzu.actor.id` the new user's Better Auth
+ *   user id, the same value as `tayzu.identity.user.id` (Q116).
+ *
+ * ## Production symbols expected
+ *
+ * `apps/api/src/identity/accept-flow.ts` (exists since 8.1e): `createAcceptFlow`
+ * whose `accept({ invitationId, token, password })` emits, once the new-account
+ * acceptance has committed, `catalog.audit.invitation_accepted` through
+ * `emitIdentityEvent` with `tayzu.tenant.id`, `tayzu.identity.invitation.id`,
+ * `tayzu.actor.type` `user`, `tayzu.actor.id` and `tayzu.identity.user.id` (both
+ * the new user's id). It emits nothing for a failed attempt.
+ */
+// Load-bearing import order (design D1): the telemetry harness registers
+// before anything that loads `@tayzu/auth` creates its logger.
+import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
+import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+
+import { authSchema, createAuth, createStepUpGuard, type AuthInstance } from '@tayzu/auth';
+import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
+import { createUserSync, type UserSync } from '@tayzu/catalog';
+import { runMigrations } from '@tayzu/db';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { Pool } from 'pg';
+
+import {
+  bootstrapTestTenant,
+  createAdminUser,
+  signInAdminUser,
+  testAppPool,
+} from '../../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  TEST_PASSWORD,
+  TEST_SECRET,
+} from '../../../../packages/auth/src/__fixtures__/test-secret.js';
+import {
+  digestInvitationToken,
+  generateInvitationToken,
+  verifyInvitationToken,
+} from '../../../../packages/auth/src/identity/invitation-token.js';
+import {
+  startOidcStub,
+  type OidcStub,
+} from '../../../../packages/auth/src/__fixtures__/oidc-stub.js';
+import { stepUpVerificationIdentifier } from '../../../../packages/auth/src/step-up.js';
+import { harnessPools } from '../__fixtures__/pools.js';
+import { toOrpcError } from '../error-mapping.js';
+import { createReauthorization, type Reauthorization } from '../reauthorization.js';
+import { createAcceptFlow } from './accept-flow.js';
+import { createAuthRepository, type AuthRepository } from './auth-repository.js';
+import { runWithIdentityContext } from './identity-context.js';
+import { createUserSyncAdapter } from './user-sync-adapter.js';
+
+/** Wraps (never replaces) the constant-time comparison so that task 8.8 can count its calls. */
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return { ...actual, timingSafeEqual: vi.fn(actual.timingSafeEqual) };
+});
+
+/** The Cerbos client the flow asks about the inviter (8.5f); the real one, lazily connected. */
+const sharedCerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+
+const ACCEPTED_EVENT = 'catalog.audit.invitation_accepted';
+const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
+
+/** Compliant, NFC (precomposed é, ñ, ä), so that its NFD form differs. */
+const PASSWORD_NFC = 'Café-Mañana-Passäphrase-2026!';
+const PASSWORD_NFD = PASSWORD_NFC.normalize('NFD');
+
+function randomIp(): string {
+  const octet = (): string => randomInt(1, 255).toString(10);
+  return `10.${octet()}.${octet()}.${octet()}`;
+}
+
+interface Tenant {
+  readonly tenantId: string;
+  readonly adminId: string;
+  readonly cookie: string;
+}
+
+interface Invitation {
+  readonly invitationId: string;
+  readonly token: string;
+}
+
+interface InviteApiSurface {
+  createInvitation(args: {
+    body: { email: string; role: 'member' | 'admin'; organizationId: string };
+    headers: Headers;
+  }): Promise<{ id: string; expiresAt: Date | string }>;
+}
+
+describe('A new person accepts an invitation (task 8.2, design D4, Resolved decisions Q112 and Q116)', () => {
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let acceptFlow: ReturnType<typeof createAcceptFlow>;
+  const failingUserWrites = new Set<string>();
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const base = createUserSync({ pool: pools.appPool, authz: cerbos });
+    catalogSync = {
+      getUser: (input) => base.getUser(input),
+      upsertUser: async (input) => {
+        if (failingUserWrites.has(input.tenantId)) throw new Error('user sync unavailable');
+        await base.upsertUser(input);
+      },
+    };
+    const adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    acceptFlow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  /** What `identity.users.invite` leaves: the invitation (its hook writes the `Invited` `_user`) and the token digest. */
+  async function invite(
+    tenant: Tenant,
+    email: string,
+    role: 'member' | 'admin' = 'member',
+  ): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role, organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function tokenRows(invitationId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ value: string }>(
+      `select value from auth.verification where identifier = $1`,
+      [`invitation-accept:${invitationId}`],
+    );
+    return result.rows.map((row) => row.value);
+  }
+
+  async function tokenStillVerifies(invitation: Invitation): Promise<boolean> {
+    const rows = await tokenRows(invitation.invitationId);
+    return rows.length === 1 && verifyInvitationToken(invitation.token, rows[0] ?? null);
+  }
+
+  async function userByEmail(
+    email: string,
+  ): Promise<{ id: string; emailVerified: boolean; role: string | null } | undefined> {
+    const result = await authPool.query<{
+      id: string;
+      email_verified: boolean;
+      role: string | null;
+    }>(`select id, email_verified, role from auth."user" where email = $1`, [email]);
+    const row = result.rows[0];
+    return row === undefined
+      ? undefined
+      : { id: row.id, emailVerified: row.email_verified, role: row.role };
+  }
+
+  async function members(
+    tenantId: string,
+    userId: string,
+  ): Promise<readonly { id: string; role: string }[]> {
+    const result = await authPool.query<{ id: string; role: string }>(
+      `select id, role from auth.member where organization_id = $1 and user_id = $2`,
+      [tenantId, userId],
+    );
+    return result.rows;
+  }
+
+  async function sessionCount(userId: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth.session where user_id = $1`, [userId]);
+    return result.rowCount ?? 0;
+  }
+
+  async function userStatus(tenantId: string, email: string): Promise<string | undefined> {
+    return (await catalogSync.getUser({ tenantId, email }))?.status;
+  }
+
+  async function signIn(email: string, password: string): Promise<Response> {
+    return (auth as unknown as { handler: (r: Request) => Promise<Response> }).handler(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: 'http://localhost:3000',
+        },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+  }
+
+  async function acceptedEvents(invitationId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === ACCEPTED_EVENT &&
+        record.attributes['tayzu.identity.invitation.id'] === invitationId,
+    );
+  }
+
+  it('A new person accepts and can then sign in: verified email, global role user, membership with the invited role, Active _user and no session', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email, 'admin');
+
+    // GIVEN a pending invitation to a person with no account.
+    expect(await userByEmail(email)).toBeUndefined();
+
+    // WHEN they present the invitation id, the token and a policy-compliant password.
+    const { userId } = await acceptFlow.accept({ ...invitation, password: PASSWORD_NFC });
+
+    // THEN they have an account with a verified email and the global role `user`...
+    const user = await userByEmail(email);
+    expect(user?.id).toBe(userId);
+    expect(user?.emailVerified).toBe(true);
+    expect(user?.role).toBe('user');
+    // ...a membership with the invited role and the status `Active`...
+    const memberships = await members(tenant.tenantId, userId);
+    expect(memberships).toHaveLength(1);
+    expect(memberships[0]?.role).toBe('admin');
+    expect(await userStatus(tenant.tenantId, email)).toBe('Active');
+    // ...and no session exists.
+    expect(await sessionCount(userId), 'the acceptance creates no session').toBe(0);
+  }, 60_000);
+
+  it('A new person accepts and can then sign in: sign-in through the normal route succeeds afterward, also with the password in its NFD form', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+    const { userId } = await acceptFlow.accept({ ...invitation, password: PASSWORD_NFC });
+    expect(PASSWORD_NFD).not.toBe(PASSWORD_NFC);
+
+    const nfc = await signIn(email, PASSWORD_NFC);
+    const nfd = await signIn(email, PASSWORD_NFD);
+
+    expect(nfc.status, 'sign-in with the password as supplied').toBe(200);
+    expect(nfd.status, 'sign-in with the NFD form of the password').toBe(200);
+    expect(await sessionCount(userId), 'only the sign-ins created sessions').toBe(2);
+  }, 60_000);
+
+  it('A failed `_user` write undoes the acceptance: no user, no member, the _user still Invited, the token still verifies, the sanitized INTERNAL answer, and a retry with the same token succeeds', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    // GIVEN a `_user` write that fails.
+    failingUserWrites.add(tenant.tenantId);
+    let failure: { code: string } | undefined;
+    try {
+      await acceptFlow.accept({ ...invitation, password: PASSWORD_NFC });
+    } catch (error) {
+      failure = toOrpcError(error);
+    }
+
+    // THEN the answer is the sanitized generic server error...
+    expect(failure?.code).toBe('INTERNAL');
+    // ...no user and no membership exist, the `_user` keeps `Invited`, and the token still verifies...
+    expect(await userByEmail(email), 'no user').toBeUndefined();
+    const count = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      tenant.tenantId,
+    ]);
+    expect(count.rowCount, 'only the inviting admin is a member').toBe(1);
+    expect(await userStatus(tenant.tenantId, email)).toBe('Invited');
+    expect(await tokenStillVerifies(invitation)).toBe(true);
+    expect(
+      await acceptedEvents(invitation.invitationId),
+      'a failed attempt is no audit event',
+    ).toHaveLength(0);
+
+    // AND a retry with the same token succeeds.
+    failingUserWrites.delete(tenant.tenantId);
+    const result = await acceptFlow.accept({ ...invitation, password: PASSWORD_NFC });
+    expect((await userByEmail(email))?.id).toBe(result.userId);
+    expect(await members(tenant.tenantId, result.userId)).toHaveLength(1);
+    expect(await userStatus(tenant.tenantId, email)).toBe('Active');
+  }, 60_000);
+
+  it('A successful acceptance emits catalog.audit.invitation_accepted with tayzu.actor.type user and tayzu.actor.id the new user id, the same value as tayzu.identity.user.id (Q116)', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    const { userId } = await acceptFlow.accept({ ...invitation, password: PASSWORD_NFC });
+
+    const logged = await acceptedEvents(invitation.invitationId);
+    expect(logged, 'one audit event').toHaveLength(1);
+    const attributes = logged[0]?.attributes;
+    expect(attributes?.['tayzu.actor.type']).toBe('user');
+    expect(attributes?.['tayzu.actor.id']).toBe(userId);
+    expect(attributes?.['tayzu.identity.user.id']).toBe(userId);
+    expect(attributes?.['tayzu.tenant.id']).toBe(tenant.tenantId);
+  }, 60_000);
+});
+
+/**
+ * Task 8.3 (spec "Invitation acceptance"; design D4 steps 1, 4 and 5; Resolved
+ * decisions Q89 and Q123).
+ *
+ * Scenarios:
+ * - "A new person accepts and can then sign in" (its AND clause): the invitation
+ *   is `accepted` and the token cannot be used a second time.
+ * - "A replayed acceptance is recorded as already accepted".
+ * - The requirement's single use: two concurrent attempts, exactly one succeeds
+ *   and the loser answers the uniform rejection with `consume_conflict`; the
+ *   `accepted` status is written in the same transaction as the token delete; an
+ *   `accepted` write that changes no row fails as a lost race.
+ *
+ * ## Production symbols expected
+ *
+ * - `apps/api/src/identity/auth-repository.ts`: `AuthRepository.markInvitationAccepted(
+ *   tenantId: string, invitationId: string): Promise<boolean>`, the third tenant-keyed
+ *   write of 5.1b. It requires a `tenantId` (throws without one), filters by
+ *   `organization_id` and the invitation id, updates only while the status is
+ *   `pending`, and resolves true when a row changed.
+ * - `apps/api/src/identity/accept-flow.ts`: the token delete conditioned on its digest
+ *   and the `accepted` write run in one short `authPool` transaction. A new `onStep`
+ *   name, `consume_in_transaction`, is awaited inside that transaction after the token
+ *   delete and before the commit; a throw rolls the transaction back.
+ * - A replay (the invitation's status is `accepted`) logs
+ *   `catalog.security.invitation_acceptance_denied` with
+ *   `tayzu.identity.invitation.denial_reason` `already_accepted` and answers
+ *   `CATALOG_NOT_FOUND`.
+ */
+describe('single-use token and the accepted status (task 8.3, Resolved decision Q123)', () => {
+  const DENIED_EVENT = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let repository: AuthRepository;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  type StepSeam = (step: string) => void | Promise<void>;
+
+  function flowWith(onStep?: StepSeam) {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+      ...(onStep === undefined ? {} : { onStep }),
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function existingAccount(email: string): Promise<{ userId: string; sessionId: string }> {
+    const created = await createAdminUser(auth, {
+      name: 'Existing Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    return { userId: created.userId, sessionId: randomUUID() };
+  }
+
+  async function tokenRowCount(invitationId: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth.verification where identifier = $1`, [
+      `invitation-accept:${invitationId}`,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function statusOf(invitationId: string): Promise<string | undefined> {
+    const result = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitationId],
+    );
+    return result.rows[0]?.status;
+  }
+
+  async function memberCount(tenantId: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      tenantId,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED_EVENT &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  it('A new person accepts and can then sign in: the invitation is accepted and the token cannot be used a second time', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+
+    await flowWith().accept({ ...invitation, password: PASSWORD_NFC });
+
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await tokenRowCount(invitation.invitationId), 'the token row is consumed').toBe(0);
+    const second = await failureOf(flowWith().accept({ ...invitation, password: PASSWORD_NFC }));
+    expect(second?.code, 'the second use of the token fails').toBe('CATALOG_NOT_FOUND');
+  }, 60_000);
+
+  it('A replayed acceptance is recorded as already accepted: the uniform rejection, the reason already_accepted (not token_mismatch) and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+    const { userId } = await flowWith().accept({ ...invitation, password: PASSWORD_NFC });
+    const members = await memberCount(tenant.tenantId);
+
+    // WHEN the same acceptance request is sent again.
+    const replay = await failureOf(flowWith().accept({ ...invitation, password: PASSWORD_NFC }));
+
+    // THEN the uniform rejection, recorded as `already_accepted`, with nothing changed.
+    expect(replay?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['already_accepted']);
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await memberCount(tenant.tenantId)).toBe(members);
+    const users = await authPool.query(`select 1 from auth."user" where email = $1`, [email]);
+    expect(users.rowCount).toBe(1);
+    const rows = await authPool.query(`select 1 from auth.member where user_id = $1`, [userId]);
+    expect(rows.rowCount).toBe(1);
+  }, 60_000);
+
+  it('two concurrent attempts: exactly one succeeds and the loser, held before its consumption until the winner committed, answers the uniform rejection with consume_conflict', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await existingAccount(email);
+    const invitation = await invite(tenant, email);
+
+    // GIVEN the loser reaches its consumption first and is held there.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached: () => void = () => undefined;
+    const loserAtConsume = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const loser = failureOf(
+      flowWith(async (step) => {
+        if (step !== 'consume') return;
+        reached();
+        await held;
+      }).accept({ ...invitation, session: carol }),
+    );
+    await loserAtConsume;
+
+    // WHEN the winner runs to completion and the loser is released.
+    const winner = await failureOf(flowWith().accept({ ...invitation, session: carol }));
+    release();
+    const lost = await loser;
+
+    // THEN exactly one succeeded and the loser answered the uniform rejection.
+    expect(winner, 'the winner succeeds').toBeUndefined();
+    expect(lost?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['consume_conflict']);
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await tokenRowCount(invitation.invitationId)).toBe(0);
+  }, 60_000);
+
+  it('the accepted status is written in the same transaction as the token delete: a failure after the delete leaves the token row in place and the invitation pending', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await existingAccount(email);
+    const invitation = await invite(tenant, email);
+
+    const failure = await failureOf(
+      flowWith((step) => {
+        if (step === 'consume_in_transaction') throw new Error('injected failure');
+      }).accept({ ...invitation, session: carol }),
+    );
+
+    expect(failure, 'the attempt fails').toBeDefined();
+    expect(await tokenRowCount(invitation.invitationId), 'the delete was rolled back').toBe(1);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+  }, 60_000);
+
+  it('a consumption whose accepted write changes no row (the invitation cancelled after the token verified) leaves the token row and the cancelled status untouched and fails as a lost race', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await existingAccount(email);
+    const invitation = await invite(tenant, email);
+
+    // GIVEN a cancellation that commits after the token verified.
+    const failure = await failureOf(
+      flowWith(async (step) => {
+        if (step !== 'add_member') return;
+        await authPool.query(`update auth.invitation set status = 'canceled' where id = $1`, [
+          invitation.invitationId,
+        ]);
+      }).accept({ ...invitation, session: carol }),
+    );
+
+    // THEN the same answer and reason as a lost race, and the consumption changed nothing.
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['consume_conflict']);
+    expect(await tokenRowCount(invitation.invitationId), 'the token row stays').toBe(1);
+    expect(await statusOf(invitation.invitationId)).toBe('canceled');
+  }, 60_000);
+
+  describe('the repository write markInvitationAccepted', () => {
+    async function seedInvitation(tenantId: string, status = 'pending'): Promise<string> {
+      const inviterId = `usr-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth."user" (id, name, email, email_verified, created_at, updated_at)
+         values ($1, 'Inviter', $2, true, now(), now())`,
+        [inviterId, `inviter-${randomUUID()}@example.test`],
+      );
+      const id = `inv-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
+         values ($1, $2, $3, 'member', $4, now() + interval '1 day', now(), $5)`,
+        [id, tenantId, `invitee-${randomUUID()}@example.test`, status, inviterId],
+      );
+      return id;
+    }
+
+    async function seedTenant(): Promise<string> {
+      const id = `org-${randomUUID()}`;
+      await authPool.query(
+        'insert into auth.organization (id, name, slug, created_at) values ($1, $2, $3, now())',
+        [id, 'Org', `slug-${id}`],
+      );
+      return id;
+    }
+
+    it('sets pending to accepted once, and only while the status is still pending', async () => {
+      const tenantId = await seedTenant();
+      const pending = await seedInvitation(tenantId);
+      const cancelled = await seedInvitation(tenantId, 'canceled');
+
+      expect(await repository.markInvitationAccepted(tenantId, pending)).toBe(true);
+      expect(await statusOf(pending)).toBe('accepted');
+      expect(await repository.markInvitationAccepted(tenantId, pending), 'a second write').toBe(
+        false,
+      );
+      expect(await repository.markInvitationAccepted(tenantId, cancelled)).toBe(false);
+      expect(await statusOf(cancelled)).toBe('canceled');
+    });
+
+    it('changes no invitation of another tenant', async () => {
+      const tenantId = await seedTenant();
+      const otherTenantId = await seedTenant();
+      const invitationId = await seedInvitation(otherTenantId);
+
+      expect(await repository.markInvitationAccepted(tenantId, invitationId)).toBe(false);
+      expect(await statusOf(invitationId)).toBe('pending');
+    });
+
+    it('refuses a call without a tenantId', async () => {
+      const tenantId = await seedTenant();
+      const invitationId = await seedInvitation(tenantId);
+      const call = (...args: unknown[]): Promise<unknown> =>
+        Promise.resolve().then(() =>
+          (repository.markInvitationAccepted as (...a: unknown[]) => unknown)(...args),
+        );
+
+      for (const bad of ['', undefined, null]) {
+        await expect(call(bad, invitationId)).rejects.toThrow('a tenantId is required');
+      }
+      expect(await statusOf(invitationId)).toBe('pending');
+    });
+  });
+});
+
+/**
+ * Task 8.4 (spec "Invitation acceptance", scenario "The tenant comes from the
+ * invitation"; design D4 "Acceptance", Observability contract).
+ *
+ * Scenarios:
+ * - "The tenant comes from the invitation": a body that carries `tenantId` or
+ *   `actor` (and `role`, `email`, `organizationId`, `userId`, or a forbidden
+ *   `__proto__`, `constructor`, `prototype` key) is rejected with
+ *   `CATALOG_VALIDATION_FAILED`, nothing is created, and
+ *   `catalog.security.invitation_acceptance_denied` is logged with the reason
+ *   `malformed_request`. A valid body acts on the invitation's own tenant.
+ * - An over-long or malformed invitation id is never logged as its value: the
+ *   `tayzu.identity.invitation.id` of the `identity.invitation.accept` span and of
+ *   the denied event is the constant `invalid`.
+ *
+ * ## Production symbols expected
+ *
+ * `apps/api/src/identity/accept-flow.ts`: `createAcceptFlow(...)` also returns
+ * `acceptRequest(request: { body: unknown; session?: { userId: string;
+ * sessionId: string } }): Promise<{ userId: string }>`, the service function behind
+ * the public route. It parses `request.body` (the raw JSON value) as an allowlist of
+ * exactly `invitationId`, `token` and, optionally, `password`, into null-prototype
+ * objects, through the shared parser of `parse-input.ts` (`parseIdentityInput` with a
+ * `body` section), checking shape and length of the id before any lookup or logging,
+ * and then runs `accept`. A rejected body or id shape throws the
+ * `CATALOG_VALIDATION_FAILED` input error, emits the denied event with
+ * `tayzu.identity.invitation.denial_reason` `malformed_request` and
+ * `tayzu.identity.invitation.id` `invalid`, and runs inside a span
+ * `identity.invitation.accept` whose `tayzu.identity.invitation.id` is `invalid` in
+ * that case (and the real id otherwise).
+ */
+describe('the accept body is an allowlist and the tenant comes from the invitation (task 8.4)', () => {
+  const DENIED_EVENT = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const ACCEPT_SPAN = 'identity.invitation.accept';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let flow: ReturnType<typeof createAcceptFlow>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    const adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function count(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedRecords() {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === DENIED_EVENT,
+    );
+  }
+
+  async function malformedCount(): Promise<number> {
+    return (await deniedRecords()).filter(
+      (record) => record.attributes[REASON] === 'malformed_request',
+    ).length;
+  }
+
+  async function acceptSpans() {
+    await harness.forceFlush();
+    return harness.spanExporter.getFinishedSpans().filter((span) => span.name === ACCEPT_SPAN);
+  }
+
+  async function everythingEmitted(): Promise<string> {
+    await harness.forceFlush();
+    const logs = [...harness.logExporter.getFinishedLogRecords()].map((record) => ({
+      eventName: record.eventName,
+      body: record.body,
+      attributes: record.attributes,
+    }));
+    const spans = harness.spanExporter.getFinishedSpans().map((span) => ({
+      name: span.name,
+      attributes: span.attributes,
+      events: span.events.map((event) => ({ name: event.name, attributes: event.attributes })),
+    }));
+    return JSON.stringify({ logs, spans });
+  }
+
+  it('The tenant comes from the invitation: a valid body (id, token, password only) joins the invitation’s own tenant and no other', async () => {
+    const tenant = await freshTenant();
+    const other = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    const { userId } = await flow.acceptRequest({
+      body: { ...invitation, password: PASSWORD_NFC },
+    });
+
+    const inTenant = await count(
+      `select 1 from auth.member where organization_id = $1 and user_id = $2`,
+      [tenant.tenantId, userId],
+    );
+    const inOther = await count(
+      `select 1 from auth.member where organization_id = $1 and user_id = $2`,
+      [other.tenantId, userId],
+    );
+    expect(inTenant, 'a member of the invitation’s tenant').toBe(1);
+    expect(inOther, 'no member of any other tenant').toBe(0);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Active',
+    );
+  }, 60_000);
+
+  const extraFields: readonly (readonly [string, unknown])[] = [
+    ['tenantId', 'any-tenant'],
+    ['actor', { type: 'user', id: 'someone' }],
+    ['role', 'admin'],
+    ['email', 'someone-else@example.test'],
+    ['organizationId', 'any-organization'],
+    ['userId', 'any-user'],
+  ];
+
+  it.each(extraFields)(
+    'The tenant comes from the invitation: a body carrying %s is rejected with CATALOG_VALIDATION_FAILED, nothing is created and malformed_request is logged',
+    async (field, value) => {
+      const tenant = await freshTenant();
+      const email = `bob-${randomUUID()}@example.test`;
+      const invitation = await invite(tenant, email);
+      const members = await count(`select 1 from auth.member where organization_id = $1`, [
+        tenant.tenantId,
+      ]);
+      const before = await malformedCount();
+
+      const failure = await failureOf(
+        flow.acceptRequest({ body: { ...invitation, password: PASSWORD_NFC, [field]: value } }),
+      );
+
+      expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+      expect(await count(`select 1 from auth."user" where email = $1`, [email]), 'no user').toBe(0);
+      expect(
+        await count(`select 1 from auth.member where organization_id = $1`, [tenant.tenantId]),
+        'no member',
+      ).toBe(members);
+      expect(
+        await count(`select 1 from auth.verification where identifier = $1`, [
+          `invitation-accept:${invitation.invitationId}`,
+        ]),
+        'the token row stays',
+      ).toBe(1);
+      expect(
+        await count(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+          invitation.invitationId,
+        ]),
+        'the invitation stays pending',
+      ).toBe(1);
+      expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+        'Invited',
+      );
+      expect(await malformedCount(), 'one malformed_request denial').toBe(before + 1);
+    },
+    60_000,
+  );
+
+  it.each(['__proto__', 'constructor', 'prototype'])(
+    'The tenant comes from the invitation: a %s key, at the top level or nested, is rejected with CATALOG_VALIDATION_FAILED and nothing is created',
+    async (key) => {
+      const tenant = await freshTenant();
+      const email = `bob-${randomUUID()}@example.test`;
+      const invitation = await invite(tenant, email);
+      const before = await malformedCount();
+      const json = JSON.stringify({ ...invitation, password: PASSWORD_NFC });
+      // JSON.parse creates an own `__proto__` key, as a request body would.
+      const top = JSON.parse(`${json.slice(0, -1)},${JSON.stringify(key)}:{"a":1}}`) as unknown;
+      const nested = JSON.parse(
+        `${json.slice(0, -1)},"token2":{"x":{${JSON.stringify(key)}:{}}}}`,
+      ) as unknown;
+      const nestedInField = JSON.parse(
+        JSON.stringify({ ...invitation }).slice(0, -1) +
+          `,"password":{"x":{${JSON.stringify(key)}:{}}}}`,
+      ) as unknown;
+
+      for (const body of [top, nested, nestedInField]) {
+        const failure = await failureOf(flow.acceptRequest({ body }));
+        expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+      }
+
+      expect(await count(`select 1 from auth."user" where email = $1`, [email])).toBe(0);
+      expect(
+        await count(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+          invitation.invitationId,
+        ]),
+      ).toBe(1);
+      expect(await malformedCount()).toBe(before + 3);
+    },
+    60_000,
+  );
+
+  it('The tenant comes from the invitation: a body that is not an object, or that lacks the id or the token, is rejected with CATALOG_VALIDATION_FAILED', async () => {
+    const tenant = await freshTenant();
+    const invitation = await invite(tenant, `bob-${randomUUID()}@example.test`);
+
+    for (const body of [
+      null,
+      'text',
+      [invitation],
+      { token: invitation.token },
+      { invitationId: invitation.invitationId },
+    ]) {
+      const failure = await failureOf(flow.acceptRequest({ body }));
+      expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+    }
+  }, 60_000);
+
+  it('an over-long or malformed invitation id never appears in a log record or span, the id attribute being invalid', async () => {
+    const marker = `evil-${randomUUID()}`;
+    const ids = [
+      `${marker}${'x'.repeat(10_000)}`,
+      `${marker}/../../etc/passwd;drop table "user"; --`,
+      `${marker} <script>alert(1)</script>\n`,
+    ];
+    const spansBefore = (await acceptSpans()).length;
+    const deniedBefore = (await deniedRecords()).length;
+
+    for (const invitationId of ids) {
+      const failure = await failureOf(
+        flow.acceptRequest({
+          body: { invitationId, token: generateInvitationToken(), password: PASSWORD_NFC },
+        }),
+      );
+      expect(failure?.code).toBe('CATALOG_VALIDATION_FAILED');
+    }
+
+    // THEN the value is nowhere in what was emitted...
+    expect(await everythingEmitted()).not.toContain(marker);
+    // ...the denied events carry the reason malformed_request and the constant id...
+    const denied = (await deniedRecords()).slice(deniedBefore);
+    expect(denied).toHaveLength(ids.length);
+    for (const record of denied) {
+      expect(record.attributes[REASON]).toBe('malformed_request');
+      expect(record.attributes['tayzu.identity.invitation.id']).toBe('invalid');
+    }
+    // ...and so do the spans.
+    const spans = (await acceptSpans()).slice(spansBefore);
+    expect(spans).toHaveLength(ids.length);
+    for (const span of spans) {
+      expect(span.attributes['tayzu.identity.invitation.id']).toBe('invalid');
+    }
+  }, 60_000);
+});
+
+/**
+ * Task 8.5 (spec "Invitation acceptance", scenario "Acceptance does not touch an
+ * existing account"; Resolved decisions Q18 and Q24).
+ *
+ * - GIVEN a pending invitation to an email that already has an account, WHEN it is
+ *   accepted with its valid token and a password, without a session, THEN the
+ *   existing account's password is unchanged, no password is set, and the answer is
+ *   the uniform rejection (`CATALOG_NOT_FOUND`). A `password` in the body is ignored.
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createAcceptFlow(...).accept` and `.acceptRequest` of
+ * `apps/api/src/identity/accept-flow.ts`. Without a session of the existing account
+ * they answer the uniform rejection and write nothing.
+ */
+describe('Acceptance does not touch an existing account (task 8.5, Resolved decisions Q18 and Q24)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let flow: ReturnType<typeof createAcceptFlow>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    const adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function count(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function accounts(userId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ provider_id: string; password: string | null }>(
+      `select provider_id, password from auth.account where user_id = $1 order by id`,
+      [userId],
+    );
+    return result.rows.map((row) => `${row.provider_id}:${row.password ?? ''}`);
+  }
+
+  async function signIn(email: string, password: string): Promise<number> {
+    const response = await (
+      auth as unknown as { handler: (r: Request) => Promise<Response> }
+    ).handler(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: 'http://localhost:3000',
+        },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+    return response.status;
+  }
+
+  const NEW_PASSWORD = 'Another-Passphrase-For-Mallory-2026!';
+
+  async function scenario() {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const existing = await createAdminUser(auth, {
+      name: 'Existing Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const invitation = await invite(tenant, email);
+    return { tenant, email, userId: existing.userId, invitation };
+  }
+
+  async function expectUntouched(
+    s: Awaited<ReturnType<typeof scenario>>,
+    before: readonly string[],
+  ) {
+    expect(await accounts(s.userId), 'the accounts and the password hash are unchanged').toEqual(
+      before,
+    );
+    expect(await signIn(s.email, TEST_PASSWORD), 'the old password still signs in').toBe(200);
+    expect(await signIn(s.email, NEW_PASSWORD), 'the body password was not set').not.toBe(200);
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        s.tenant.tenantId,
+        s.userId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await count(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${s.invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await count(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        s.invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect(
+      (await catalogSync.getUser({ tenantId: s.tenant.tenantId, email: s.email }))?.status,
+    ).toBe('Invited');
+  }
+
+  it('Acceptance does not touch an existing account: with the valid token and a password, without a session, the account is unchanged and the answer is the uniform rejection', async () => {
+    const s = await scenario();
+    const before = await accounts(s.userId);
+    expect(before).toHaveLength(1);
+
+    const failure = await failureOf(flow.accept({ ...s.invitation, password: NEW_PASSWORD }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectUntouched(s, before);
+  }, 60_000);
+
+  it('Acceptance does not touch an existing account: a password in the request body is ignored and the answer is the uniform rejection', async () => {
+    const s = await scenario();
+    const before = await accounts(s.userId);
+
+    const failure = await failureOf(
+      flow.acceptRequest({ body: { ...s.invitation, password: NEW_PASSWORD } }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectUntouched(s, before);
+  }, 60_000);
+
+  it('Acceptance does not touch an existing account: without a password either, the answer is the same uniform rejection', async () => {
+    const s = await scenario();
+    const before = await accounts(s.userId);
+
+    const failure = await failureOf(flow.acceptRequest({ body: { ...s.invitation } }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectUntouched(s, before);
+  }, 60_000);
+});
+
+/**
+ * Task 8.5b (spec "Invitation acceptance", scenario "An existing account accepts
+ * with its session"; Resolved decisions Q38, Q112, Q116 and Q120).
+ *
+ * - GIVEN a pending invitation to `carol`, who has an account, a session and no
+ *   SSO link she did not make, WHEN she presents the token with her session, THEN
+ *   she gains the membership with the invited role and her `_user` becomes
+ *   `Active`, her email is marked verified (it was not), her password, session,
+ *   active organization and linked accounts are unchanged, and the response has
+ *   the same status and shape as a new person's acceptance.
+ * - The `_user` of the tenant is written once, by the acceptance's own `_user` step
+ *   and after the shed step (a recording of the two steps and of the write).
+ * - `catalog.audit.invitation_accepted` names the invitee on this path too
+ *   (`tayzu.actor.type` `user`, `tayzu.actor.id` her Better Auth user id, Q116).
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createAcceptFlow(...).accept` of `apps/api/src/identity/accept-flow.ts`
+ * emits `catalog.audit.invitation_accepted` also on the existing-account path (with
+ * the same attributes as the new-account path, the actor being the invitee).
+ */
+describe('An existing account accepts with its session (task 8.5b, Resolved decisions Q38, Q112 and Q116)', () => {
+  const ACCEPTED = 'catalog.audit.invitation_accepted';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  const log: string[] = [];
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const base = createUserSync({ pool: pools.appPool, authz: cerbos });
+    catalogSync = {
+      getUser: (input) => base.getUser(input),
+      upsertUser: async (input) => {
+        await base.upsertUser(input);
+        log.push(`write:${input.tenantId}:${input.email}:${String(input.status)}`);
+      },
+    };
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(
+    tenant: Tenant,
+    email: string,
+    role: 'member' | 'admin' = 'member',
+  ): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role, organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** Carol: an account that is a member of her `home` tenant, with a real session whose active organization is `home`. */
+  async function carolWithSession(home: Tenant, email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (
+      auth.api as {
+        addMember(args: {
+          body: { userId: string; role: 'member'; organizationId: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({
+      body: { userId: created.userId, role: 'member', organizationId: home.tenantId },
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      `select id from auth.session where token = $1`,
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    return {
+      userId: created.userId,
+      sessionId,
+      token: signedIn.token,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
+  }
+
+  async function snapshot(userId: string, sessionId: string) {
+    const accounts = await authPool.query<{ id: string; provider_id: string; password: string }>(
+      `select id, provider_id, password from auth.account where user_id = $1 order by id`,
+      [userId],
+    );
+    const sessions = await authPool.query<{
+      id: string;
+      token: string;
+      active_organization_id: string | null;
+      expires_at: Date;
+    }>(
+      `select id, token, active_organization_id, expires_at from auth.session where user_id = $1 order by id`,
+      [userId],
+    );
+    const session = sessions.rows.find((row) => row.id === sessionId);
+    return { accounts: accounts.rows, sessions: sessions.rows, session };
+  }
+
+  async function emailVerified(userId: string): Promise<boolean | undefined> {
+    const result = await authPool.query<{ email_verified: boolean }>(
+      `select email_verified from auth."user" where id = $1`,
+      [userId],
+    );
+    return result.rows[0]?.email_verified;
+  }
+
+  async function acceptedEvents(invitationId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === ACCEPTED &&
+        record.attributes['tayzu.identity.invitation.id'] === invitationId,
+    );
+  }
+
+  it('An existing account accepts with its session: membership with the invited role, Active _user, verified email, and password, session, active organization and accounts unchanged', async () => {
+    const home = await freshTenant();
+    const target = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await carolWithSession(home, email);
+    const invitation = await invite(target, email, 'admin');
+    const before = await snapshot(carol.userId, carol.sessionId);
+    expect(before.session?.active_organization_id, 'precondition').toBe(home.tenantId);
+    expect(before.accounts, 'precondition: one credential account').toHaveLength(1);
+    expect(await emailVerified(carol.userId), 'precondition: not verified').toBe(false);
+
+    // Wiring only (task 8.5d): this is an `admin` invitation, so the acceptance
+    // needs the step-up guard and a fresh marker on her session.
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, 'password', now() + interval '4 minutes')`,
+      [randomUUID(), stepUpVerificationIdentifier(carol.token)],
+    );
+    const flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+      stepUp: createStepUpGuard({ auth }),
+    });
+    const result = await flow.accept({ ...invitation, session: carol });
+
+    // THEN she gains the membership with the invited role and her `_user` is Active...
+    expect(result.userId).toBe(carol.userId);
+    const member = await authPool.query<{ role: string }>(
+      `select role from auth.member where organization_id = $1 and user_id = $2`,
+      [target.tenantId, carol.userId],
+    );
+    expect(member.rows.map((row) => row.role)).toEqual(['admin']);
+    expect((await catalogSync.getUser({ tenantId: target.tenantId, email }))?.status).toBe(
+      'Active',
+    );
+    // ...her email is now marked verified...
+    expect(await emailVerified(carol.userId)).toBe(true);
+    // ...and her password, session, active organization and linked accounts are unchanged.
+    const after = await snapshot(carol.userId, carol.sessionId);
+    expect(after.accounts).toEqual(before.accounts);
+    expect(after.sessions).toEqual(before.sessions);
+    expect(after.session?.active_organization_id).toBe(home.tenantId);
+  }, 60_000);
+
+  it('An existing account accepts with its session: the response has the same shape as a new person’s acceptance', async () => {
+    const target = await freshTenant();
+    const home = await freshTenant();
+    const flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+    const newEmail = `bob-${randomUUID()}@example.test`;
+    const created = await flow.accept({
+      ...(await invite(target, newEmail)),
+      password: PASSWORD_NFC,
+    });
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await carolWithSession(home, email);
+
+    const joined = await flow.acceptRequest({
+      body: { ...(await invite(target, email)) },
+      session: carol,
+    });
+
+    expect(Object.keys(joined).sort()).toEqual(Object.keys(created).sort());
+    expect(joined.userId).toBe(carol.userId);
+  }, 60_000);
+
+  it('An existing account accepts with its session: the _user is written once, by the acceptance’s _user step, after the shed step', async () => {
+    const home = await freshTenant();
+    const target = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await carolWithSession(home, email);
+    const invitation = await invite(target, email);
+
+    const start = log.length;
+    const prefix = `write:${target.tenantId}:${email}:`;
+    const flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+      onStep: (step) => {
+        if (step === 'shed' || step === 'user_step') log.push(`step:${step}`);
+      },
+    });
+    await flow.accept({ ...invitation, session: carol });
+
+    // One write of the tenant's `_user`, to `Active`, and it follows the two steps in order.
+    const recorded = log
+      .slice(start)
+      .filter((entry) => entry.startsWith('step:') || entry.startsWith(prefix));
+    expect(recorded).toEqual(['step:shed', 'step:user_step', `${prefix}Active`]);
+  }, 60_000);
+
+  it('An existing account accepts with its session: catalog.audit.invitation_accepted names the invitee as the actor (type user, her Better Auth user id)', async () => {
+    const home = await freshTenant();
+    const target = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await carolWithSession(home, email);
+    const invitation = await invite(target, email);
+    const flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+
+    await flow.accept({ ...invitation, session: carol });
+
+    const logged = await acceptedEvents(invitation.invitationId);
+    expect(logged, 'one audit event').toHaveLength(1);
+    const attributes = logged[0]?.attributes;
+    expect(attributes?.['tayzu.actor.type']).toBe('user');
+    expect(attributes?.['tayzu.actor.id']).toBe(carol.userId);
+    expect(attributes?.['tayzu.identity.user.id']).toBe(carol.userId);
+    expect(attributes?.['tayzu.tenant.id']).toBe(target.tenantId);
+  }, 60_000);
+});
+
+/**
+ * Task 8.5c (spec "Invitation acceptance", scenario "A session of another account
+ * cannot accept"; Resolved decision Q38).
+ *
+ * - GIVEN a pending invitation to `carol`, WHEN it is accepted with the valid token
+ *   and a session of another user, THEN the answer is the uniform rejection and
+ *   nothing changes; `catalog.security.invitation_acceptance_denied` records
+ *   `tayzu.identity.invitation.denial_reason` `email_mismatch` or `session_required`.
+ * - The match is on the email only: an existing account whose email was never
+ *   verified accepts successfully (Q38).
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createAcceptFlow(...).accept` of `apps/api/src/identity/accept-flow.ts`
+ * emits the denied event with the reason `email_mismatch` (a session of another
+ * user) or `session_required` (no session) before it answers the uniform rejection.
+ */
+describe('A session of another account cannot accept (task 8.5c, Resolved decision Q38)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flowOf() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** An account with a real session; its email is never verified. */
+  async function accountWithSession(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      `select id from auth.session where token = $1`,
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    return { userId: created.userId, sessionId };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function rows(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function expectNothingChanged(
+    tenant: Tenant,
+    invitation: Invitation,
+    email: string,
+    carolId: string,
+  ) {
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carolId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth."user" where id = $1 and email_verified = false`, [carolId]),
+      'her email is still unverified',
+    ).toBe(1);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+  }
+
+  it('A session of another account cannot accept: a different user’s session gets the uniform rejection, a denial reason and no change', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const mallory = await accountWithSession(`mallory-${randomUUID()}@example.test`);
+    const invitation = await invite(tenant, email);
+
+    const failure = await failureOf(flowOf().accept({ ...invitation, session: mallory }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, invitation, email, carol.userId);
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        mallory.userId,
+      ]),
+      'the other user gains no membership either',
+    ).toBe(0);
+    const reasons = await deniedReasons(invitation.invitationId);
+    expect(reasons).toHaveLength(1);
+    expect(['email_mismatch', 'session_required']).toContain(reasons[0]);
+  }, 60_000);
+
+  it('A session of another account cannot accept: through the request path too, the answer is the same uniform rejection', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const mallory = await accountWithSession(`mallory-${randomUUID()}@example.test`);
+    const invitation = await invite(tenant, email);
+
+    const failure = await failureOf(
+      flowOf().acceptRequest({ body: { ...invitation }, session: mallory }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, invitation, email, carol.userId);
+    expect(['email_mismatch', 'session_required']).toContain(
+      (await deniedReasons(invitation.invitationId))[0],
+    );
+  }, 60_000);
+
+  it('An existing account whose email was never verified accepts successfully with its own session', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    expect(
+      await rows(`select 1 from auth."user" where id = $1 and email_verified = false`, [
+        carol.userId,
+      ]),
+      'precondition: not verified',
+    ).toBe(1);
+
+    const result = await flowOf().accept({ ...invitation, session: carol });
+
+    expect(result.userId).toBe(carol.userId);
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+    ).toBe(1);
+    expect(await deniedReasons(invitation.invitationId)).toEqual([]);
+  }, 60_000);
+});
+
+/**
+ * Task 8.5d (spec "Invitation acceptance", scenario "An admin invitation to an
+ * existing account needs step-up"; design D4 step 4 (e)).
+ *
+ * Scenario clauses:
+ * - GIVEN a pending `admin` invitation and her matching session, WHEN she presents
+ *   the valid token without a fresh step-up verification, THEN it fails with
+ *   `AUTH_STEP_UP_REQUIRED` and nothing changes (and with a fresh marker it succeeds).
+ * - AND a caller with a wrong token gets the uniform rejection, not
+ *   `AUTH_STEP_UP_REQUIRED` (also a session of another account).
+ * - AND a session of the identity provider is sent to its re-authorization instead
+ *   of a local verification, and completes after it.
+ * - The guard applies to an `admin` invitation only.
+ *
+ * ## Production symbols expected
+ *
+ * `apps/api/src/identity/accept-flow.ts`:
+ * - `AcceptFlowOptions.stepUp?: StepUpGuard` (`@tayzu/auth`) and
+ *   `AcceptFlowOptions.reauthorization?: Reauthorization` (`../reauthorization.js`).
+ *   Without `stepUp`, an `admin` acceptance by an existing account fails closed with
+ *   `AUTH_STEP_UP_REQUIRED`.
+ * - `AcceptInput.session.headers?: Headers`: the request's headers, handed to the
+ *   guard and to `reauthorization.lookup` / `.start`.
+ * - Only after the session, the email and the token passed, for an `admin` invite on
+ *   the existing-account path, the flow calls `reauthorization.lookup(headers)`, then
+ *   the guard (`route: { riskLevel: 'high' }`, `reauthorization` when found); on an
+ *   `AuthStepUpError` it calls `reauthorization.start(headers)` and, when that gives a
+ *   URL, throws an `ORPCError('AUTH_STEP_UP_REQUIRED')` with
+ *   `data: { reauthorizationUrl }` (as `server.ts` does), else rethrows the guard error.
+ */
+describe('An admin invitation to an existing account needs step-up (task 8.5d, design D4 (e))', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REDIRECT_URI = 'http://localhost:3000/v1/auth/sso/reauthorize-callback';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let stub: OidcStub;
+  let reauthorization: Reauthorization;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    stub = await startOidcStub();
+    reauthorization = createReauthorization({
+      auth,
+      authPool,
+      discoveryUrl: stub.discoveryUrl,
+      clientId: stub.clientId,
+      clientSecret: stub.clientSecret,
+      redirectUri: REDIRECT_URI,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await stub.close();
+  });
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+      stepUp: createStepUpGuard({
+        auth,
+        sso: {
+          discoveryUrl: stub.discoveryUrl,
+          clientId: stub.clientId,
+          clientSecret: stub.clientSecret,
+        },
+      }),
+      reauthorization,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(
+    tenant: Tenant,
+    email: string,
+    role: 'member' | 'admin',
+  ): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role, organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** An account with a real session; its cookie travels as the request headers. */
+  async function accountWithSession(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      `select id from auth.session where token = $1`,
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    return {
+      userId: created.userId,
+      sessionId,
+      token: signedIn.token,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
+  }
+
+  async function markFresh(sessionToken: string): Promise<void> {
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, 'password', now() + interval '4 minutes')`,
+      [randomUUID(), stepUpVerificationIdentifier(sessionToken)],
+    );
+  }
+
+  async function failureOf(
+    attempt: Promise<unknown>,
+  ): Promise<{ code: string; data?: unknown } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function count(sql: string, params: unknown[]): Promise<number> {
+    return (await authPool.query(sql, params)).rowCount ?? 0;
+  }
+
+  async function expectNothingChanged(
+    tenant: Tenant,
+    userId: string,
+    email: string,
+    invitation: Invitation,
+  ): Promise<void> {
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        userId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+    expect(
+      await count(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token is not consumed',
+    ).toBe(1);
+    const status = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitation.invitationId],
+    );
+    expect(status.rows[0]?.status).toBe('pending');
+    const user = await authPool.query<{ email_verified: boolean }>(
+      `select email_verified from auth."user" where id = $1`,
+      [userId],
+    );
+    expect(user.rows[0]?.email_verified, 'email not marked verified').toBe(false);
+  }
+
+  it('An admin invitation to an existing account needs step-up: the valid token and her matching session without a fresh marker fail with AUTH_STEP_UP_REQUIRED and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'admin');
+
+    const failure = await failureOf(flow().accept({ ...invitation, session: carol }));
+
+    expect(failure?.code).toBe('AUTH_STEP_UP_REQUIRED');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: with a fresh marker on her session the acceptance succeeds', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'admin');
+    await markFresh(carol.token);
+
+    const result = await flow().accept({ ...invitation, session: carol });
+
+    expect(result.userId).toBe(carol.userId);
+    const member = await authPool.query<{ role: string }>(
+      `select role from auth.member where organization_id = $1 and user_id = $2`,
+      [tenant.tenantId, carol.userId],
+    );
+    expect(member.rows.map((row) => row.role)).toEqual(['admin']);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Active',
+    );
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: a wrong token with no marker gets the uniform rejection, not AUTH_STEP_UP_REQUIRED', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'admin');
+
+    const failure = await failureOf(
+      flow().accept({
+        invitationId: invitation.invitationId,
+        token: generateInvitationToken(),
+        session: carol,
+      }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: a session of another account with no marker gets the uniform rejection, not AUTH_STEP_UP_REQUIRED', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const mallory = await accountWithSession(`mallory-${randomUUID()}@example.test`);
+    const invitation = await invite(tenant, email, 'admin');
+
+    const failure = await failureOf(flow().accept({ ...invitation, session: mallory }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+    const reasons = (
+      await (async () => {
+        await harness.forceFlush();
+        return [...harness.logExporter.getFinishedLogRecords()];
+      })()
+    )
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitation.invitationId,
+      )
+      .map((record) => record.attributes['tayzu.identity.invitation.denial_reason']);
+    expect(reasons).toEqual(['email_mismatch']);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: the guard applies to an admin invitation only, a member invitation needs no marker', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email, 'member');
+
+    const result = await flow().accept({ ...invitation, session: carol });
+
+    expect(result.userId).toBe(carol.userId);
+  }, 60_000);
+
+  it('An admin invitation to an existing account needs step-up: a session of the identity provider is sent to its re-authorization instead of a local verification, and completes after it', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const sid = `sid-${randomUUID()}`;
+    await authPool.query('update auth.session set sso_sid = $1 where id = $2', [
+      sid,
+      carol.sessionId,
+    ]);
+    // A local marker must not satisfy an identity-provider session (D25).
+    await markFresh(carol.token);
+    const invitation = await invite(tenant, email, 'admin');
+
+    // WHEN she presents the valid token: she is sent to the re-authorization.
+    const refused = await failureOf(flow().accept({ ...invitation, session: carol }));
+    expect(refused?.code).toBe('AUTH_STEP_UP_REQUIRED');
+    const raw = (refused?.data as { reauthorizationUrl?: unknown } | undefined)?.reauthorizationUrl;
+    if (typeof raw !== 'string') {
+      throw new Error('the refusal must carry data.reauthorizationUrl');
+    }
+    const url = new URL(raw);
+    expect(url.origin, 'the URL points at the (stub) identity provider').toBe(stub.issuer);
+    expect(url.searchParams.get('max_age')).toBe('300');
+    expect(url.searchParams.get('prompt')).toBe('login');
+    expect(url.searchParams.get('acr_values')).toBe('urn:idp:vismaconnect:mfa');
+    await expectNothingChanged(tenant, carol.userId, email, invitation);
+
+    // AND the re-authorization completes with a qualifying fresh MFA claim.
+    stub.setSubject({
+      sub: `sso-sub-${randomUUID()}`,
+      sid,
+      claims: { auth_time: Math.floor(Date.now() / 1000) - 10, acr: 3, amr: ['pwd', 'otp'] },
+    });
+    const approval = await fetch(url, { redirect: 'manual' });
+    const location = approval.headers.get('location');
+    if (location === null) throw new Error('the OIDC stub must redirect with the code');
+    const callback = new URL(location, REDIRECT_URI);
+    expect(
+      await reauthorization.complete({
+        code: callback.searchParams.get('code'),
+        state: callback.searchParams.get('state'),
+      }),
+      'the callback stored the result',
+    ).toBe(true);
+
+    // THEN the acceptance now completes.
+    const result = await flow().accept({ ...invitation, session: carol });
+    expect(result.userId).toBe(carol.userId);
+    const member = await authPool.query<{ role: string }>(
+      `select role from auth.member where organization_id = $1 and user_id = $2`,
+      [tenant.tenantId, carol.userId],
+    );
+    expect(member.rows.map((row) => row.role)).toEqual(['admin']);
+  }, 60_000);
+});
+
+/**
+ * Task 8.5e (spec "Invitation acceptance", scenario "A banned, idle or
+ * temporary-password session cannot accept" (banned and idle parts only; the
+ * temporary-password marker is 13.5c); design D4 step 4 (a)).
+ *
+ * - GIVEN a pending invitation to `carol`, WHEN it is accepted with the valid token
+ *   and a session of `carol` that is banned or past its idle timeout, THEN the answer
+ *   is the uniform rejection, `denial_reason` `session_required`, and nothing is
+ *   created.
+ * - The session is read with `disableRefresh: true`: a successful acceptance of a
+ *   `member` invitation leaves the session's `updatedAt` unchanged.
+ *
+ * ## Production symbols expected
+ *
+ * - `packages/auth/src/index.ts` exports `isIdle` (already defined in
+ *   `session-idle.ts`).
+ * - `apps/api/src/identity/accept-flow.ts`: `AcceptInput.headers?: Headers` (also
+ *   accepted by `acceptRequest`). When `headers` is given and `session` is not, the
+ *   flow reads the session itself with `auth.api.getSession({ headers, query: {
+ *   disableRefresh: true } })`, treats a missing, idle (`isIdle(session.updatedAt)`)
+ *   or banned (`user.banned`) session as no session (reason `session_required`), and
+ *   otherwise continues as with a validated `session` of that user, handing `headers`
+ *   on to the step-up guard.
+ */
+describe('The session of the accept route is checked for idle and banned (task 8.5e, design D4 (a))', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flowOf() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** An account with a real session; its email is never verified. */
+  async function accountWithSession(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    return {
+      userId: created.userId,
+      token: signedIn.token,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function rows(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function expectNothingCreated(
+    tenant: Tenant,
+    invitation: Invitation,
+    email: string,
+    carolId: string,
+  ) {
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carolId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+  }
+
+  it('A banned session cannot accept: the uniform rejection with session_required and nothing created', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    await authPool.query(`update auth."user" set banned = true where id = $1`, [carol.userId]);
+
+    const failure = await failureOf(flowOf().accept({ ...invitation, headers: carol.headers }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingCreated(tenant, invitation, email, carol.userId);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['session_required']);
+  }, 60_000);
+
+  it('An idle-expired session cannot accept: the uniform rejection with session_required and nothing created', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    await authPool.query(
+      `update auth.session set updated_at = now() - interval '13 hours' where token = $1`,
+      [carol.token],
+    );
+
+    const failure = await failureOf(
+      flowOf().acceptRequest({ body: { ...invitation }, headers: carol.headers }),
+    );
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    await expectNothingCreated(tenant, invitation, email, carol.userId);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['session_required']);
+  }, 60_000);
+
+  it('A successful acceptance of a member invitation leaves the session’s updatedAt unchanged', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    // Used an hour ago, and old enough in its rolling expiry that a plain
+    // `getSession` would refresh `updatedAt` (updateAge is one day).
+    await authPool.query(
+      `update auth.session
+          set updated_at = now() - interval '1 hour',
+              expires_at = now() + interval '5 days'
+        where token = $1`,
+      [carol.token],
+    );
+    const before = await authPool.query<{ updated_at: Date }>(
+      `select updated_at from auth.session where token = $1`,
+      [carol.token],
+    );
+
+    const result = await flowOf().accept({ ...invitation, headers: carol.headers });
+
+    expect(result.userId).toBe(carol.userId);
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+      'the acceptance succeeded',
+    ).toBe(1);
+    const after = await authPool.query<{ updated_at: Date }>(
+      `select updated_at from auth.session where token = $1`,
+      [carol.token],
+    );
+    expect(after.rows[0]?.updated_at.getTime()).toBe(before.rows[0]?.updated_at.getTime());
+    expect(await deniedReasons(invitation.invitationId)).toEqual([]);
+  }, 60_000);
+});
+
+/**
+ * Task 13.5c (spec "Invitation acceptance", scenario "A banned, idle or
+ * temporary-password session cannot accept", temporary-password part; VCDM G6-4).
+ *
+ * - GIVEN a pending invitation to `carol` and a session of `carol` whose user holds
+ *   an unexpired temporary-password marker (`auth.verification`, identifier
+ *   `temp-password:<userId>`), WHEN it is accepted with the valid token, THEN the
+ *   answer is the uniform rejection, `denial_reason` `session_required`, and nothing
+ *   is created.
+ * - Once the marker is cleared, the same user accepts with the same token.
+ *
+ * ## Production symbols expected
+ *
+ * - `apps/api/src/identity/accept-flow.ts`: when the flow reads the session itself
+ *   (`headers` given), it calls `hasActiveTemporaryPasswordMarker` (already in
+ *   `packages/auth/src/identity/temporary-password.ts`) for the session's user and
+ *   treats an unexpired marker as no session (reason `session_required`).
+ */
+describe('The accept route honors the temporary-password marker (task 13.5c, VCDM G6-4)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    catalogSync = createUserSync({ pool: pools.appPool, authz: cerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flowOf() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Accept Org',
+      organizationSlug: `accept-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function accountWithSession(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Carol',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    return {
+      userId: created.userId,
+      headers: new Headers({ cookie: signedIn.cookie, 'x-forwarded-for': randomIp() }),
+    };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function rows(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function writeMarker(userId: string): Promise<void> {
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, '9999-12-31T23:59:59Z')`,
+      [
+        randomUUID(),
+        `temp-password:${userId}`,
+        new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      ],
+    );
+  }
+
+  it('A session under an unexpired marker cannot accept, and the same user accepts once the marker is cleared', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    await writeMarker(carol.userId);
+
+    const failure = await failureOf(flowOf().accept({ ...invitation, headers: carol.headers }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['session_required']);
+
+    await authPool.query(`delete from auth.verification where identifier = $1`, [
+      `temp-password:${carol.userId}`,
+    ]);
+
+    const result = await flowOf().accept({ ...invitation, headers: carol.headers });
+
+    expect(result.userId).toBe(carol.userId);
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+      'the membership exists after the marker is cleared',
+    ).toBe(1);
+  }, 60_000);
+
+  // Task 16.11a (Resolved decisions Q36 and Q146): a session opened under the marker
+  // that has since expired reads as none on the existing-account acceptance.
+  it('A session opened under a marker that has since expired cannot accept: the uniform rejection, session_required, nothing created', async () => {
+    const tenant = await freshTenant();
+    const email = `carol-${randomUUID()}@example.test`;
+    const carol = await accountWithSession(email);
+    const invitation = await invite(tenant, email);
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, '9999-12-31T23:59:59Z')`,
+      [
+        randomUUID(),
+        `temp-password:${carol.userId}`,
+        new Date(Date.now() - 60 * 1000).toISOString(),
+      ],
+    );
+
+    const failure = await failureOf(flowOf().accept({ ...invitation, headers: carol.headers }));
+
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(
+      await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        tenant.tenantId,
+        carol.userId,
+      ]),
+      'no membership',
+    ).toBe(0);
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['session_required']);
+  }, 60_000);
+});
+
+/**
+ * Task 8.5f(spec "Invitation acceptance", scenarios "An invitation does not
+ * outlive its inviter's authority" and "The inviter re-check is a Cerbos
+ * decision"; design D4 step 2; Resolved decisions Q63 and Q108).
+ *
+ * ## Production symbols expected
+ *
+ * - `apps/api/src/identity/accept-flow.ts`: `AcceptFlowOptions.authz: CerbosClient`
+ *   (new, required: the flow fails closed, so a missing client cannot be optional).
+ *   After the token has verified and before the consumption, on both paths, the
+ *   flow reads the inviter's member row (`tayzu_auth`), the inviter's Better Auth
+ *   `banned` flag and the inviter's `_user` status (`tayzu_app`, through the
+ *   `userSync` port it already has), and calls `authz.checkResources` once with
+ *   the principal `{ id: inviterUserId, roles: [toCerbosRole(memberRole)], attr:
+ *   { tenantId: organizationId } }` and one resource `{ kind: 'user', id: 'new',
+ *   attr: { tenantId: organizationId } }` for the action `invite`. A missing member
+ *   row, a banned or non-`Active` inviter, a deny and a thrown error each emit
+ *   `catalog.security.invitation_acceptance_denied` with the reason
+ *   `inviter_not_active_admin`, throw the uniform rejection and leave the token.
+ * - `packages/auth/src/context-resolver.ts` exports `toCerbosRole`, and
+ *   `packages/auth/src/index.ts` re-exports it (the flow uses it; not asserted
+ *   directly here beyond the roles of the recorded principal).
+ */
+describe('An invitation does not outlive its inviter’s authority (task 8.5f, Resolved decisions Q63 and Q108)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  type CheckRequest = Parameters<CerbosClient['checkResources']>[0];
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    catalogSync = createUserSync({ pool: pools.appPool, authz: sharedCerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function flowFor(authz: CerbosClient = sharedCerbos) {
+    return createAcceptFlow({
+      auth,
+      authz,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  /** Records every Cerbos request, then answers like `behavior`. */
+  function recordingCerbos(behavior: 'real' | 'deny' | 'throw' = 'real'): {
+    client: CerbosClient;
+    requests: CheckRequest[];
+  } {
+    const requests: CheckRequest[] = [];
+    const client = Object.create(sharedCerbos) as CerbosClient;
+    client.checkResources = (request: CheckRequest) => {
+      requests.push(request);
+      if (behavior === 'throw') return Promise.reject(new Error('cerbos unavailable'));
+      if (behavior === 'deny') {
+        return Promise.resolve({
+          results: [{ isAllowed: () => false }],
+        } as unknown as Awaited<ReturnType<CerbosClient['checkResources']>>);
+      }
+      return sharedCerbos.checkResources(request);
+    };
+    return { client, requests };
+  }
+
+  interface InviterTenant extends Tenant {
+    readonly adminEmail: string;
+  }
+
+  /** A tenant whose creator is its `owner` and, through the hooks, an `Active` `_user`. */
+  async function freshTenant(): Promise<InviterTenant> {
+    const id = randomUUID();
+    const adminEmail = `inviter-${id}@example.test`;
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Inviter',
+      email: adminEmail,
+      password: TEST_PASSWORD,
+      organizationName: 'Inviter Org',
+      organizationSlug: `inviter-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie, adminEmail };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string } | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+  }
+
+  async function rows(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  const inviterChanges: readonly (readonly [string, (tenant: InviterTenant) => Promise<void>])[] = [
+    [
+      'disabled',
+      async (tenant) => {
+        await catalogSync.upsertUser({
+          tenantId: tenant.tenantId,
+          email: tenant.adminEmail,
+          name: 'Inviter',
+          status: 'Disabled',
+        });
+      },
+    ],
+    [
+      'banned',
+      async (tenant) => {
+        await authPool.query(`update auth."user" set banned = true where id = $1`, [
+          tenant.adminId,
+        ]);
+      },
+    ],
+    [
+      'demoted to member',
+      async (tenant) => {
+        await authPool.query(
+          `update auth.member set role = 'member' where organization_id = $1 and user_id = $2`,
+          [tenant.tenantId, tenant.adminId],
+        );
+      },
+    ],
+    [
+      'no longer a member (a direct write)',
+      async (tenant) => {
+        await authPool.query(
+          `delete from auth.member where organization_id = $1 and user_id = $2`,
+          [tenant.tenantId, tenant.adminId],
+        );
+      },
+    ],
+  ];
+
+  type Path = 'new account' | 'existing account';
+
+  /** The invitation, and the attempt on the given path with the valid token. */
+  async function prepare(path: Path, tenant: Tenant, wrongToken = false) {
+    const email = `invitee-${randomUUID()}@example.test`;
+    const existing =
+      path === 'existing account'
+        ? await createAdminUser(auth, { name: 'Existing', email, password: TEST_PASSWORD })
+        : undefined;
+    const invitation = await invite(tenant, email);
+    const token = wrongToken ? generateInvitationToken() : invitation.token;
+    const attempt = (flow: ReturnType<typeof flowFor>) =>
+      existing === undefined
+        ? flow.accept({ invitationId: invitation.invitationId, token, password: PASSWORD_NFC })
+        : flow.accept({
+            invitationId: invitation.invitationId,
+            token,
+            session: { userId: existing.userId, sessionId: randomUUID() },
+          });
+    return { email, invitation, existingUserId: existing?.userId, attempt };
+  }
+
+  async function expectNothingAccepted(
+    tenant: Tenant,
+    prepared: Awaited<ReturnType<typeof prepare>>,
+  ) {
+    const { email, invitation, existingUserId } = prepared;
+    expect(
+      await rows(`select 1 from auth.verification where identifier = $1`, [
+        `invitation-accept:${invitation.invitationId}`,
+      ]),
+      'the token row stays, so the token is still valid',
+    ).toBe(1);
+    expect(
+      await rows(`select 1 from auth.invitation where id = $1 and status = 'pending'`, [
+        invitation.invitationId,
+      ]),
+      'the invitation stays pending',
+    ).toBe(1);
+    if (existingUserId === undefined) {
+      expect(await rows(`select 1 from auth."user" where email = $1`, [email]), 'no user').toBe(0);
+    } else {
+      expect(
+        await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+          tenant.tenantId,
+          existingUserId,
+        ]),
+        'no membership',
+      ).toBe(0);
+    }
+    expect((await catalogSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe(
+      'Invited',
+    );
+  }
+
+  const paths: readonly Path[] = ['new account', 'existing account'];
+
+  describe.each(inviterChanges)('the inviter is %s', (_label, change) => {
+    it.each(paths)(
+      'An invitation does not outlive its inviter’s authority: accepted on the %s path, the uniform rejection with inviter_not_active_admin and the token still valid',
+      async (path) => {
+        const tenant = await freshTenant();
+        const prepared = await prepare(path, tenant);
+        await change(tenant);
+
+        const failure = await failureOf(prepared.attempt(flowFor()));
+
+        expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+        expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([
+          'inviter_not_active_admin',
+        ]);
+        await expectNothingAccepted(tenant, prepared);
+      },
+      60_000,
+    );
+  });
+
+  it.each(paths)(
+    'An invitation does not outlive its inviter’s authority: an invitation whose inviter is still an active owner is accepted on the %s path',
+    async (path) => {
+      const tenant = await freshTenant();
+      expect(
+        (await catalogSync.getUser({ tenantId: tenant.tenantId, email: tenant.adminEmail }))
+          ?.status,
+      ).toBe('Active');
+      const prepared = await prepare(path, tenant);
+
+      const result = await prepared.attempt(flowFor());
+
+      expect(
+        await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+          tenant.tenantId,
+          result.userId,
+        ]),
+      ).toBe(1);
+      expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([]);
+      expect(
+        await rows(`select 1 from auth.invitation where id = $1 and status = 'accepted'`, [
+          prepared.invitation.invitationId,
+        ]),
+      ).toBe(1);
+    },
+    60_000,
+  );
+
+  it.each(paths)(
+    'An invitation does not outlive its inviter’s authority: an invitation whose inviter is an active admin (not owner) is accepted on the %s path',
+    async (path) => {
+      const tenant = await freshTenant();
+      await authPool.query(
+        `update auth.member set role = 'admin' where organization_id = $1 and user_id = $2`,
+        [tenant.tenantId, tenant.adminId],
+      );
+      const prepared = await prepare(path, tenant);
+
+      const result = await prepared.attempt(flowFor());
+
+      expect(
+        await rows(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+          tenant.tenantId,
+          result.userId,
+        ]),
+      ).toBe(1);
+      expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([]);
+    },
+    60_000,
+  );
+
+  it.each(paths)(
+    'An invitation does not outlive its inviter’s authority: a wrong token with a disabled inviter answers the same uniform rejection on the %s path, and the inviter is not what is recorded',
+    async (path) => {
+      const tenant = await freshTenant();
+      const prepared = await prepare(path, tenant, true);
+      await catalogSync.upsertUser({
+        tenantId: tenant.tenantId,
+        email: tenant.adminEmail,
+        name: 'Inviter',
+        status: 'Disabled',
+      });
+
+      const failure = await failureOf(prepared.attempt(flowFor()));
+
+      expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+      expect(await deniedReasons(prepared.invitation.invitationId)).not.toContain(
+        'inviter_not_active_admin',
+      );
+      await expectNothingAccepted(tenant, prepared);
+    },
+    60_000,
+  );
+
+  it.each(paths)(
+    'The inviter re-check is a Cerbos decision: one user/invite check with the inviter as the principal and the invitation’s tenant as the principal’s and the resource’s tenant, on the %s path',
+    async (path) => {
+      const tenant = await freshTenant();
+      const prepared = await prepare(path, tenant);
+      const { client, requests } = recordingCerbos();
+
+      await prepared.attempt(flowFor(client));
+
+      const checks = requests.filter((request) => request.principal.id === tenant.adminId);
+      expect(checks, 'one check for the inviter').toHaveLength(1);
+      const [check] = checks;
+      expect(check?.principal.roles).toEqual(['admin']);
+      expect(check?.principal.attr?.['tenantId']).toBe(tenant.tenantId);
+      expect(check?.resources).toHaveLength(1);
+      const target = check?.resources[0];
+      expect(target?.resource.kind).toBe('user');
+      expect(target?.resource.id).toBe('new');
+      expect(target?.resource.attr?.['tenantId']).toBe(tenant.tenantId);
+      expect(target?.actions).toEqual(['invite']);
+    },
+    60_000,
+  );
+
+  describe.each([['denies'], ['throws']] as const)('Cerbos %s', (behavior) => {
+    it.each(paths)(
+      'The inviter re-check is a Cerbos decision: for an otherwise active admin inviter the uniform rejection, inviter_not_active_admin and the token still valid on the %s path',
+      async (path) => {
+        const tenant = await freshTenant();
+        const prepared = await prepare(path, tenant);
+        const { client, requests } = recordingCerbos(behavior === 'denies' ? 'deny' : 'throw');
+
+        const failure = await failureOf(prepared.attempt(flowFor(client)));
+
+        expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+        expect(
+          requests.filter((request) => request.principal.id === tenant.adminId),
+          'the check was made with the inviter as the principal',
+        ).toHaveLength(1);
+        expect(await deniedReasons(prepared.invitation.invitationId)).toEqual([
+          'inviter_not_active_admin',
+        ]);
+        await expectNothingAccepted(tenant, prepared);
+      },
+      60_000,
+    );
+  });
+});
+
+describe('Acceptance does not link an SSO account by email (task 8.6, Resolved decision Q18)', () => {
+  const SSO_PROVIDER = 'visma-connect';
+
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Link Admin',
+      email: `link-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Link Org',
+      organizationSlug: `link-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function providers(userId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ provider_id: string }>(
+      `select provider_id from auth.account where user_id = $1 order by provider_id`,
+      [userId],
+    );
+    return result.rows.map((row) => row.provider_id);
+  }
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  it('Acceptance does not link an SSO account by email: a new person ends with a credential account only and no visma-connect account', async () => {
+    const tenant = await freshTenant();
+    const email = `new-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    const result = await flow().accept({ ...invitation, password: PASSWORD_NFC });
+
+    expect(await providers(result.userId)).toEqual(['credential']);
+    const sso = await authPool.query(
+      `select 1 from auth.account where user_id = $1 and provider_id = $2`,
+      [result.userId, SSO_PROVIDER],
+    );
+    expect(sso.rowCount).toBe(0);
+  }, 60_000);
+
+  it('Acceptance does not link an SSO account by email: an existing account accepting with its session gains no visma-connect account and its accounts are unchanged', async () => {
+    const tenant = await freshTenant();
+    const email = `existing-${randomUUID()}@example.test`;
+    const existing = await createAdminUser(auth, {
+      name: 'Existing',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const invitation = await invite(tenant, email);
+    const before = await providers(existing.userId);
+
+    const result = await flow().accept({
+      ...invitation,
+      session: { userId: existing.userId, sessionId: randomUUID() },
+    });
+
+    expect(result.userId).toBe(existing.userId);
+    const after = await providers(existing.userId);
+    expect(after).toEqual(before);
+    expect(after).not.toContain(SSO_PROVIDER);
+  }, 60_000);
+});
+
+describe('Acceptance errors do not reveal which failure occurred (task 8.7, design D4 step 5)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    catalogSync = createUserSync({ pool: pools.appPool, authz: sharedCerbos });
+    adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  interface InviterTenant extends Tenant {
+    readonly adminEmail: string;
+  }
+
+  async function freshTenant(): Promise<InviterTenant> {
+    const id = randomUUID();
+    const adminEmail = `matrix-admin-${id}@example.test`;
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Matrix Admin',
+      email: adminEmail,
+      password: TEST_PASSWORD,
+      organizationName: 'Matrix Org',
+      organizationSlug: `matrix-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie, adminEmail };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** What the caller of the route would see: status, code, message and body. */
+  interface Answer {
+    readonly status: number;
+    readonly code: string;
+    readonly body: string;
+  }
+
+  async function answerOf(attempt: Promise<unknown>): Promise<Answer | undefined> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return {
+        status: mapped.status,
+        code: mapped.code,
+        body: JSON.stringify(mapped.toJSON()),
+      };
+    }
+  }
+
+  async function deniedCount(): Promise<number> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === DENIED,
+    ).length;
+  }
+
+  /** The reasons of the denial events emitted after the first `before` ones. */
+  async function reasonsSince(before: number): Promise<unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter((record) => record.eventName === DENIED)
+      .slice(before)
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function sessionOf(email: string) {
+    const created = await createAdminUser(auth, {
+      name: 'Account',
+      email,
+      password: TEST_PASSWORD,
+    });
+    const signedIn = await signInAdminUser(auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const row = await authPool.query<{ id: string }>(
+      `select id from auth.session where token = $1`,
+      [signedIn.token],
+    );
+    const sessionId = row.rows[0]?.id;
+    if (sessionId === undefined) throw new Error('the session row is missing');
+    return { userId: created.userId, sessionId };
+  }
+
+  interface Case {
+    readonly label: string;
+    readonly reason: string;
+    /** Sets the case up and returns the attempt. */
+    readonly run: () => Promise<Answer | undefined>;
+  }
+
+  const newEmail = (): string => `matrix-${randomUUID()}@example.test`;
+
+  const cases: readonly Case[] = [
+    {
+      label: 'a nonexistent invitation',
+      reason: 'not_found',
+      run: () =>
+        answerOf(
+          flow().accept({
+            invitationId: randomUUID(),
+            token: generateInvitationToken(),
+            password: PASSWORD_NFC,
+          }),
+        ),
+    },
+    {
+      label: 'an expired invitation',
+      reason: 'expired',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await authPool.query(
+          `update auth.invitation set expires_at = now() - interval '1 hour' where id = $1`,
+          [invitation.invitationId],
+        );
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a cancelled invitation',
+      reason: 'cancelled',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await authPool.query(`update auth.invitation set status = 'canceled' where id = $1`, [
+          invitation.invitationId,
+        ]);
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a rejected invitation',
+      reason: 'rejected',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await authPool.query(`update auth.invitation set status = 'rejected' where id = $1`, [
+          invitation.invitationId,
+        ]);
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'an already accepted invitation',
+      reason: 'already_accepted',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await flow().accept({ ...invitation, password: PASSWORD_NFC });
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a wrong token',
+      reason: 'token_mismatch',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        return answerOf(
+          flow().accept({
+            invitationId: invitation.invitationId,
+            token: generateInvitationToken(),
+            password: PASSWORD_NFC,
+          }),
+        );
+      },
+    },
+    {
+      label: 'a Disabled user',
+      reason: 'disabled_user',
+      run: async () => {
+        const tenant = await freshTenant();
+        const email = newEmail();
+        const invitation = await invite(tenant, email);
+        await catalogSync.upsertUser({
+          tenantId: tenant.tenantId,
+          email,
+          name: email,
+          status: 'Disabled',
+        });
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'an inviter who is no longer an active admin',
+      reason: 'inviter_not_active_admin',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        await catalogSync.upsertUser({
+          tenantId: tenant.tenantId,
+          email: tenant.adminEmail,
+          name: 'Matrix Admin',
+          status: 'Disabled',
+        });
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'a tenant at its 100-member limit',
+      reason: 'member_limit',
+      run: async () => {
+        const tenant = await freshTenant();
+        const invitation = await invite(tenant, newEmail());
+        // The creator is the first member; 99 more reach the plugin's default limit of 100.
+        const filler = randomUUID();
+        await authPool.query(
+          `insert into auth."user" (id, name, email)
+           select $1 || '-' || n, 'Filler', $1 || '-' || n || '@example.test'
+           from generate_series(1, 99) as n`,
+          [filler],
+        );
+        await authPool.query(
+          `insert into auth.member (id, organization_id, user_id, role, created_at)
+           select $1 || '-m-' || n, $2, $1 || '-' || n, 'member', now()
+           from generate_series(1, 99) as n`,
+          [filler, tenant.tenantId],
+        );
+        return answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+      },
+    },
+    {
+      label: 'no session for an existing account',
+      reason: 'session_required',
+      run: async () => {
+        const tenant = await freshTenant();
+        const email = newEmail();
+        await createAdminUser(auth, { name: 'Existing', email, password: TEST_PASSWORD });
+        const invitation = await invite(tenant, email);
+        return answerOf(flow().accept({ ...invitation }));
+      },
+    },
+    {
+      label: 'a session of another account for an existing account',
+      reason: 'email_mismatch',
+      run: async () => {
+        const tenant = await freshTenant();
+        const email = newEmail();
+        await createAdminUser(auth, { name: 'Existing', email, password: TEST_PASSWORD });
+        const other = await sessionOf(newEmail());
+        const invitation = await invite(tenant, email);
+        return answerOf(flow().accept({ ...invitation, session: other }));
+      },
+    },
+  ];
+
+  it('Acceptance errors do not reveal which failure occurred: every rejection records its own denial_reason', async () => {
+    const recorded: Record<string, unknown[]> = {};
+    const expected: Record<string, unknown[]> = {};
+    for (const testCase of cases) {
+      const before = await deniedCount();
+      await testCase.run();
+      recorded[testCase.label] = await reasonsSince(before);
+      expected[testCase.label] = [testCase.reason];
+    }
+    expect(recorded).toEqual(expected);
+  }, 180_000);
+
+  it('Acceptance errors do not reveal which failure occurred: all fail with the same status, error code and body shape', async () => {
+    const answers: Record<string, Answer | undefined> = {};
+    for (const testCase of cases) {
+      answers[testCase.label] = await testCase.run();
+    }
+    const seen: Record<string, string> = {};
+    for (const [label, answer] of Object.entries(answers)) {
+      seen[label] = answer === undefined ? 'accepted' : answer.code;
+    }
+    expect(seen).toEqual(
+      Object.fromEntries(cases.map((testCase) => [testCase.label, 'CATALOG_NOT_FOUND'])),
+    );
+    const statuses = new Set(Object.values(answers).map((answer) => answer?.status));
+    expect([...statuses], 'one status for every failure').toEqual([404]);
+    const bodies = new Set(Object.values(answers).map((answer) => answer?.body));
+    expect([...bodies], 'one body for every failure').toHaveLength(1);
+  }, 180_000);
+});
+
+describe('A nonexistent invitation costs the same digest comparison as a wrong token (task 8.8, design D4 step 5)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  /** Runs one acceptance and returns how many times the comparison ran during it. */
+  async function comparisonsDuring(attempt: () => Promise<unknown>): Promise<number> {
+    const spy = vi.mocked(timingSafeEqual);
+    spy.mockClear();
+    await attempt().catch(() => undefined);
+    return spy.mock.calls.length;
+  }
+
+  it('A nonexistent invitation performs the same digest comparison as a wrong token: one comparison in both cases', async () => {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Compare Admin',
+      email: `compare-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Compare Org',
+      organizationSlug: `compare-${id}`,
+      ip: randomIp(),
+    });
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: t.userId }, () =>
+      api.createInvitation({
+        body: {
+          email: `compare-${id}@example.test`,
+          role: 'member',
+          organizationId: t.organizationId,
+        },
+        headers: new Headers({ cookie: t.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(generateInvitationToken()),
+        new Date(invitation.expiresAt),
+      ],
+    );
+
+    const wrongToken = await comparisonsDuring(() =>
+      flow().accept({ invitationId: invitation.id, token: generateInvitationToken() }),
+    );
+    const nonexistent = await comparisonsDuring(() =>
+      flow().accept({ invitationId: randomUUID(), token: generateInvitationToken() }),
+    );
+
+    expect(wrongToken, 'a wrong token').toBe(1);
+    expect(nonexistent, 'a nonexistent invitation').toBe(1);
+  }, 60_000);
+});
+
+describe('Accepting an expired invitation fails (task 8.9, design D4 step 5)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const HOUR_MS = 60 * 60 * 1000;
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  it('Accepting an expired invitation fails: the acceptance fails, the invitation reads as expired, and the user status is unchanged', async () => {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Expiry Admin',
+      email: `expiry-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Expiry Org',
+      organizationSlug: `expiry-${id}`,
+      ip: randomIp(),
+    });
+    const email = `bob-${id}@example.test`;
+    const api = auth.api as InviteApiSurface;
+    const created = await runWithIdentityContext({ adminId: t.userId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: t.organizationId },
+        headers: new Headers({ cookie: t.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${created.id}`,
+        digestInvitationToken(token),
+        new Date(created.expiresAt),
+      ],
+    );
+    const statusBefore = await adapter.readStatus({ tenantId: t.organizationId, email });
+    expect(statusBefore, 'GIVEN the invited person starts as Invited').toBe('Invited');
+
+    // GIVEN the invitation is past its 48-hour expiry (a clock seam: only `Date` is faked).
+    const issuedAt = new Date(created.expiresAt).getTime() - 48 * HOUR_MS;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(issuedAt + 48 * HOUR_MS + HOUR_MS);
+
+    // WHEN it is accepted with its token...
+    let failure: { code: string; status: number } | undefined;
+    try {
+      await flow().accept({ invitationId: created.id, token, password: PASSWORD_NFC });
+    } catch (error) {
+      failure = toOrpcError(error);
+    }
+
+    // THEN the acceptance fails with the uniform rejection, for the reason `expired`...
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(created.id)).toEqual(['expired']);
+
+    // ...the invitation reads as expired (derived from `expiresAt`, never stored as accepted)...
+    const read = await repository.invitationById(t.organizationId, created.id);
+    expect(read?.status, 'an expired invitation is never marked accepted').toBe('pending');
+    expect(read?.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    // ...nothing was created and the token was not consumed...
+    const users = await authPool.query(`select 1 from auth."user" where lower(email) = $1`, [
+      email,
+    ]);
+    expect(users.rowCount, 'no user').toBe(0);
+    const tokens = await authPool.query(`select 1 from auth.verification where identifier = $1`, [
+      `invitation-accept:${created.id}`,
+    ]);
+    expect(tokens.rowCount, 'the token row stays').toBe(1);
+
+    // AND the user's status is unchanged.
+    expect(await adapter.readStatus({ tenantId: t.organizationId, email })).toBe(statusBefore);
+  }, 60_000);
+});
+
+describe('Accepting a cancelled or already-accepted invitation fails, and a wrong token fails (task 8.10, design D4 steps 1 and 5, Resolved decision Q123)', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Terminal Admin',
+      email: `terminal-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Terminal Org',
+      organizationSlug: `terminal-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  /** What `identity.users.invite` leaves: the invitation (its hook writes the `Invited` `_user`) and the token digest. */
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  interface CancelApiSurface {
+    cancelInvitation(args: { body: { invitationId: string }; headers: Headers }): Promise<unknown>;
+  }
+
+  async function explicitCancel(tenant: Tenant, invitationId: string): Promise<void> {
+    await (auth.api as CancelApiSurface).cancelInvitation({
+      body: { invitationId },
+      headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+    });
+  }
+
+  async function statusOf(invitationId: string): Promise<string | undefined> {
+    const result = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitationId],
+    );
+    return result.rows[0]?.status;
+  }
+
+  async function tokenRows(invitationId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ value: string }>(
+      `select value from auth.verification where identifier = $1`,
+      [`invitation-accept:${invitationId}`],
+    );
+    return result.rows.map((row) => row.value);
+  }
+
+  async function userCount(email: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth."user" where lower(email) = $1`, [
+      email,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function memberCount(tenantId: string): Promise<number> {
+    const result = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      tenantId,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function failureOf(attempt: Promise<unknown>): Promise<{ code: string; status: number }> {
+    try {
+      await attempt;
+    } catch (error) {
+      return toOrpcError(error);
+    }
+    throw new Error('the acceptance was expected to fail');
+  }
+
+  it('Accepting a cancelled or already-accepted invitation fails: an invitation cancelled by re-invite answers the uniform rejection (reason cancelled) and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `reinvite-${randomUUID()}@example.test`;
+    // GIVEN an invitation cancelled by re-invite.
+    const first = await invite(tenant, email);
+    const second = await invite(tenant, email);
+    expect(await statusOf(first.invitationId)).toBe('canceled');
+    expect(await statusOf(second.invitationId)).toBe('pending');
+    const tokenBefore = await tokenRows(first.invitationId);
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    const membersBefore = await memberCount(tenant.tenantId);
+
+    // WHEN it is accepted with its token.
+    const failure = await failureOf(flow().accept({ ...first, password: PASSWORD_NFC }));
+
+    // THEN it fails with the uniform rejection and no status change occurs.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(first.invitationId)).toEqual(['cancelled']);
+    expect(await statusOf(first.invitationId)).toBe('canceled');
+    expect(await statusOf(second.invitationId)).toBe('pending');
+    expect(await tokenRows(first.invitationId)).toEqual(tokenBefore);
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'no member').toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+  }, 60_000);
+
+  it('Accepting a cancelled or already-accepted invitation fails: an invitation cancelled by an explicit cancel answers the uniform rejection (reason cancelled) and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `cancelled-${randomUUID()}@example.test`;
+    // GIVEN an invitation cancelled by an explicit cancel.
+    const invitation = await invite(tenant, email);
+    await explicitCancel(tenant, invitation.invitationId);
+    expect(await statusOf(invitation.invitationId)).toBe('canceled');
+    const tokenBefore = await tokenRows(invitation.invitationId);
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    const membersBefore = await memberCount(tenant.tenantId);
+
+    // WHEN it is accepted with its token.
+    const failure = await failureOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+
+    // THEN it fails with the uniform rejection and no status change occurs.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['cancelled']);
+    expect(await statusOf(invitation.invitationId)).toBe('canceled');
+    expect(await tokenRows(invitation.invitationId)).toEqual(tokenBefore);
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'no member').toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+  }, 60_000);
+
+  it('Accepting a cancelled or already-accepted invitation fails: an already-accepted invitation answers the uniform rejection with the reason already_accepted and nothing changes', async () => {
+    const tenant = await freshTenant();
+    const email = `accepted-${randomUUID()}@example.test`;
+    // GIVEN an invitation that was accepted.
+    const invitation = await invite(tenant, email);
+    await flow().accept({ ...invitation, password: PASSWORD_NFC });
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    const tokenBefore = await tokenRows(invitation.invitationId);
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    const membersBefore = await memberCount(tenant.tenantId);
+    const usersBefore = await userCount(email);
+    expect(usersBefore).toBe(1);
+
+    // WHEN it is accepted again with its token.
+    const failure = await failureOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+
+    // THEN it fails with the uniform rejection, denied as already_accepted, and no status change occurs.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['already_accepted']);
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+    expect(await tokenRows(invitation.invitationId)).toEqual(tokenBefore);
+    expect(await userCount(email)).toBe(usersBefore);
+    expect(await memberCount(tenant.tenantId)).toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+  }, 60_000);
+
+  it('A wrong token fails: the uniform rejection (reason token_mismatch), the invitation stays pending, the issued token still verifies and nothing is created', async () => {
+    const tenant = await freshTenant();
+    const email = `wrongtoken-${randomUUID()}@example.test`;
+    // GIVEN a pending invitation to `bob@example.com`.
+    const invitation = await invite(tenant, email);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+    const statusBefore = await adapter.readStatus({ tenantId: tenant.tenantId, email });
+    expect(statusBefore).toBe('Invited');
+    const membersBefore = await memberCount(tenant.tenantId);
+
+    // WHEN it is accepted with a token that is not the issued one.
+    const failure = await failureOf(
+      flow().accept({
+        invitationId: invitation.invitationId,
+        token: generateInvitationToken(),
+        password: PASSWORD_NFC,
+      }),
+    );
+
+    // THEN the acceptance fails and the invitation stays pending.
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(await deniedReasons(invitation.invitationId)).toEqual(['token_mismatch']);
+    expect(await statusOf(invitation.invitationId)).toBe('pending');
+    const stored = await tokenRows(invitation.invitationId);
+    expect(stored, 'the issued token row stays').toHaveLength(1);
+    expect(verifyInvitationToken(invitation.token, stored[0] ?? null)).toBe(true);
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'no member').toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: tenant.tenantId, email })).toBe(statusBefore);
+
+    // ...and the issued token still works.
+    await flow().accept({ ...invitation, password: PASSWORD_NFC });
+    expect(await statusOf(invitation.invitationId)).toBe('accepted');
+  }, 60_000);
+});
+
+describe('A disabled user is not revived by a pending invitation (task 8.11, design D4 step 5, spec "Invitation acceptance")', () => {
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  it('A disabled user is not revived by a pending invitation: the acceptance fails with the uniform rejection and bob stays Disabled', async () => {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Revive Admin',
+      email: `revive-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Revive Org',
+      organizationSlug: `revive-${id}`,
+      ip: randomIp(),
+    });
+    // GIVEN a pending invitation to bob...
+    const email = `bob-${id}@example.test`;
+    const created = await runWithIdentityContext({ adminId: t.userId }, () =>
+      (auth.api as InviteApiSurface).createInvitation({
+        body: { email, role: 'member', organizationId: t.organizationId },
+        headers: new Headers({ cookie: t.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${created.id}`,
+        digestInvitationToken(token),
+        new Date(created.expiresAt),
+      ],
+    );
+    // ...and bob is then disabled (the status event an admin's disable writes).
+    await adapter.writeUserChange({
+      tenantId: t.organizationId,
+      email,
+      name: 'Bob',
+      change: 'admin_disable',
+    });
+    expect(await adapter.readStatus({ tenantId: t.organizationId, email })).toBe('Disabled');
+    const members = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      t.organizationId,
+    ]);
+
+    // WHEN the invitation is accepted with its valid token.
+    let failure: { code: string; status: number } | undefined;
+    try {
+      await flow().accept({ invitationId: created.id, token, password: PASSWORD_NFC });
+    } catch (error) {
+      failure = toOrpcError(error);
+    }
+
+    // THEN the acceptance fails like any other rejected acceptance...
+    expect(failure?.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure?.status).toBe(404);
+    expect(await deniedReasons(created.id)).toEqual(['disabled_user']);
+    // ...and bob stays Disabled, with no account or membership created.
+    expect(await adapter.readStatus({ tenantId: t.organizationId, email })).toBe('Disabled');
+    const users = await authPool.query(`select 1 from auth."user" where lower(email) = $1`, [
+      email,
+    ]);
+    expect(users.rowCount, 'no user').toBe(0);
+    const after = await authPool.query(`select 1 from auth.member where organization_id = $1`, [
+      t.organizationId,
+    ]);
+    expect(after.rowCount, 'no member').toBe(members.rowCount);
+  }, 60_000);
+});
+
+/**
+ * Task 8.12 (design D4 step 5, spec "Password policy", scenarios "A short password is
+ * refused" and "A breached password is refused").
+ *
+ * ## Production symbols expected
+ *
+ * - `createAcceptFlow(...).accept` (`./accept-flow.js`, existing) checks the password
+ *   policy only after the token has verified (and the other uniform-rejection checks have
+ *   passed): a wrong token with a bad password answers the uniform rejection
+ *   (`CATALOG_NOT_FOUND`, reason `token_mismatch`) and never a policy error.
+ * - A policy failure with a valid token (the policy module of 8.1c, or the breach plugin's
+ *   `PASSWORD_COMPROMISED` through `auth.api.createUser`) is thrown as a `CatalogError`
+ *   with code `CATALOG_VALIDATION_FAILED` (HTTP 400 through `toOrpcError`) whose message
+ *   or issues name only the failed rule (`length`, `breached`), never the password. It
+ *   creates no user, member or `_user` change, and does not consume the token or touch the
+ *   invitation (still `pending`), so a retry with a compliant password succeeds.
+ */
+describe('A password that fails the policy is reported only after the token verified (task 8.12, design D4 step 5)', () => {
+  const SHORT_PASSWORD = 'Abcdefghijklmnop-1!';
+  const BREACHED_PASSWORD = 'Correct-Horse-Battery-Staple-2026!';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function flow() {
+    return createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+    });
+  }
+
+  /** Over the shared stub of 8.1a, only inside a test: the given password is "breached". */
+  function stubBreached(password: string): { prefixes: string[] } {
+    const seen: { prefixes: string[] } = { prefixes: [] };
+    const hash = createHash('sha1').update(password).digest('hex').toUpperCase();
+    vi.stubGlobal('fetch', (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const prefix = new URL(url).pathname.split('/').pop() ?? '';
+      seen.prefixes.push(prefix);
+      const lines = ['0000000000000000000000000000000000A:3'];
+      if (hash.startsWith(prefix)) lines.push(`${hash.slice(5)}:42`);
+      return Promise.resolve(new Response(lines.join('\r\n'), { status: 200 }));
+    });
+    return seen;
+  }
+
+  async function setup(): Promise<{ tenant: Tenant; email: string; invitation: Invitation }> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Policy Admin',
+      email: `policy-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Policy Org',
+      organizationSlug: `policy-${id}`,
+      ip: randomIp(),
+    });
+    const tenant: Tenant = { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+    const email = `policy-${id}@example.test`;
+    const created = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      (auth.api as InviteApiSurface).createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${created.id}`,
+        digestInvitationToken(token),
+        new Date(created.expiresAt),
+      ],
+    );
+    return { tenant, email, invitation: { invitationId: created.id, token } };
+  }
+
+  async function statusOf(invitationId: string): Promise<string | undefined> {
+    const result = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [invitationId],
+    );
+    return result.rows[0]?.status;
+  }
+
+  async function tokenRows(invitationId: string): Promise<readonly string[]> {
+    const result = await authPool.query<{ value: string }>(
+      `select value from auth.verification where identifier = $1`,
+      [`invitation-accept:${invitationId}`],
+    );
+    return result.rows.map((row) => row.value);
+  }
+
+  async function count(query: string, param: string): Promise<number> {
+    return (await authPool.query(query, [param])).rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function failureOf(
+    attempt: Promise<unknown>,
+  ): Promise<{ code: string; status: number; text: string }> {
+    try {
+      await attempt;
+    } catch (error) {
+      const mapped = toOrpcError(error);
+      return {
+        code: mapped.code,
+        status: mapped.status,
+        text: `${mapped.message} ${JSON.stringify(mapped.data)}`,
+      };
+    }
+    throw new Error('the acceptance was expected to fail');
+  }
+
+  async function expectNothingCreated(
+    s: { tenant: Tenant; email: string; invitation: Invitation },
+    membersBefore: number,
+    tokenBefore: readonly string[],
+  ): Promise<void> {
+    expect(
+      await count(`select 1 from auth."user" where lower(email) = $1`, s.email),
+      'no user',
+    ).toBe(0);
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1`, s.tenant.tenantId),
+      'no member',
+    ).toBe(membersBefore);
+    expect(await adapter.readStatus({ tenantId: s.tenant.tenantId, email: s.email })).toBe(
+      'Invited',
+    );
+    expect(await statusOf(s.invitation.invitationId), 'invitation still pending').toBe('pending');
+    expect(await tokenRows(s.invitation.invitationId), 'token not consumed').toEqual(tokenBefore);
+  }
+
+  it('A password that fails the policy is reported only after the token verified: a bad password with a wrong token answers the generic rejection', async () => {
+    const s = await setup();
+    const tokenBefore = await tokenRows(s.invitation.invitationId);
+    const membersBefore = await count(
+      `select 1 from auth.member where organization_id = $1`,
+      s.tenant.tenantId,
+    );
+
+    const failure = await failureOf(
+      flow().accept({
+        invitationId: s.invitation.invitationId,
+        token: generateInvitationToken(),
+        password: SHORT_PASSWORD,
+      }),
+    );
+
+    expect(failure.code).toBe('CATALOG_NOT_FOUND');
+    expect(failure.status).toBe(404);
+    expect(failure.text).not.toContain(SHORT_PASSWORD);
+    expect(await deniedReasons(s.invitation.invitationId)).toEqual(['token_mismatch']);
+    await expectNothingCreated(s, membersBefore, tokenBefore);
+  }, 60_000);
+
+  it('A password that fails the policy is reported only after the token verified: a bad password with a valid token answers CATALOG_VALIDATION_FAILED without consuming the token, and a compliant retry with the same token succeeds', async () => {
+    const s = await setup();
+    const tokenBefore = await tokenRows(s.invitation.invitationId);
+    expect(tokenBefore).toHaveLength(1);
+    const membersBefore = await count(
+      `select 1 from auth.member where organization_id = $1`,
+      s.tenant.tenantId,
+    );
+
+    const failure = await failureOf(flow().accept({ ...s.invitation, password: SHORT_PASSWORD }));
+
+    expect(failure.code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(failure.status).toBe(400);
+    expect(failure.text).toMatch(/length/i);
+    expect(failure.text).not.toContain(SHORT_PASSWORD);
+    await expectNothingCreated(s, membersBefore, tokenBefore);
+
+    // A second attempt with a compliant password and the same token succeeds.
+    const { userId } = await flow().accept({ ...s.invitation, password: PASSWORD_NFC });
+    expect(userId).toEqual(expect.any(String));
+    expect(await statusOf(s.invitation.invitationId)).toBe('accepted');
+    expect(await tokenRows(s.invitation.invitationId)).toEqual([]);
+    expect(await count(`select 1 from auth."user" where lower(email) = $1`, s.email)).toBe(1);
+  }, 60_000);
+
+  it('A breached password is refused: with a valid token the acceptance names the breached-password rule, creates nothing and leaves the token unconsumed', async () => {
+    const s = await setup();
+    const tokenBefore = await tokenRows(s.invitation.invitationId);
+    const membersBefore = await count(
+      `select 1 from auth.member where organization_id = $1`,
+      s.tenant.tenantId,
+    );
+    // Installed after the tenant setup, so that the setup passwords never meet it.
+    const seen = stubBreached(BREACHED_PASSWORD);
+
+    const failure = await failureOf(
+      flow().accept({ ...s.invitation, password: BREACHED_PASSWORD }),
+    );
+
+    expect(seen.prefixes.length, 'the range service was asked').toBeGreaterThan(0);
+    for (const prefix of seen.prefixes) expect(prefix).toHaveLength(5);
+    expect(failure.code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(failure.status).toBe(400);
+    expect(failure.text).toMatch(/breach/i);
+    expect(failure.text).not.toContain(BREACHED_PASSWORD);
+    await expectNothingCreated(s, membersBefore, tokenBefore);
+
+    // The token was not consumed: a clean password with it still succeeds.
+    vi.unstubAllGlobals();
+    await flow().accept({ ...s.invitation, password: PASSWORD_NFC });
+    expect(await statusOf(s.invitation.invitationId)).toBe('accepted');
+  }, 60_000);
+});
+
+/**
+ * Task 8.14 (spec "Invitation acceptance", scenario "A concurrent account creation
+ * yields one user"; design D4 step 5, the uniform rejection).
+ *
+ * - GIVEN two pending invitations to the same new email from two tenants, WHEN both are
+ *   accepted at the same time (both held at `create_user` until both arrived), THEN
+ *   exactly one user is created, and the other attempt gets the uniform rejection
+ *   (`CATALOG_NOT_FOUND`) with the reason `account_conflict`, its `createUser` having
+ *   failed on the unique email; it created nothing and so compensates nothing (no member
+ *   deleted, no user deleted, no compensation-failed event) and its token is not consumed.
+ *
+ * ## Production symbols expected
+ *
+ * `apps/api/src/identity/accept-flow.ts` (existing): when `createUser` of the new-account
+ * path fails because the email is already taken (the concurrent winner created it), the
+ * flow logs `catalog.security.invitation_acceptance_denied` with
+ * `tayzu.identity.invitation.denial_reason` `account_conflict`, compensates nothing and
+ * throws the uniform rejection (`CATALOG_NOT_FOUND`) instead of the generic failure.
+ */
+describe('A concurrent account creation yields one user (task 8.14, design D4 step 5)', () => {
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+  const DENIED = 'catalog.security.invitation_acceptance_denied';
+  const COMPENSATION_FAILED = 'catalog.security.invitation_accept_compensation_failed';
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+  let repository: AuthRepository;
+  let deleteMember: ReturnType<typeof vi.fn>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    const base = createAuthRepository(authPool);
+    deleteMember = vi.fn((tenantId: string, memberId: string) =>
+      base.deleteMember(tenantId, memberId),
+    );
+    repository = { ...base, deleteMember } as AuthRepository;
+  }, 60_000);
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Race Admin',
+      email: `race-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Race Org',
+      organizationSlug: `race-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  async function count(query: string, params: readonly unknown[]): Promise<number> {
+    return (await authPool.query(query, [...params])).rowCount ?? 0;
+  }
+
+  async function deniedReasons(invitationId: string): Promise<readonly unknown[]> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter(
+        (record) =>
+          record.eventName === DENIED &&
+          record.attributes['tayzu.identity.invitation.id'] === invitationId,
+      )
+      .map((record) => record.attributes[REASON]);
+  }
+
+  async function compensationFailures(invitationId: string): Promise<number> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === COMPENSATION_FAILED &&
+        record.attributes['tayzu.identity.invitation.id'] === invitationId,
+    ).length;
+  }
+
+  it('A concurrent account creation yields one user: exactly one user, and the loser answers the uniform rejection (account_conflict) with nothing created, nothing compensated and its token unconsumed', async () => {
+    const tenantA = await freshTenant();
+    const tenantB = await freshTenant();
+    const email = `dave-${randomUUID()}@example.test`;
+    const invitationA = await invite(tenantA, email);
+    const invitationB = await invite(tenantB, email);
+    expect(await count(`select 1 from auth."user" where email = $1`, [email])).toBe(0);
+    const deletesBefore = deleteMember.mock.calls.length;
+
+    // GIVEN both attempts are held at `create_user` until both arrived.
+    let arrived = 0;
+    let open: () => void = () => undefined;
+    const bothArrived = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const flow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+      onStep: async (step) => {
+        if (step !== 'create_user') return;
+        arrived += 1;
+        if (arrived === 2) open();
+        await bothArrived;
+      },
+    });
+
+    // WHEN both are accepted at the same time.
+    const [resultA, resultB] = await Promise.allSettled([
+      flow.accept({ ...invitationA, password: PASSWORD_NFC }),
+      flow.accept({ ...invitationB, password: PASSWORD_NFC }),
+    ]);
+
+    // THEN exactly one user exists and exactly one attempt succeeded.
+    expect(await count(`select 1 from auth."user" where email = $1`, [email])).toBe(1);
+    const fulfilled = [resultA, resultB].filter((r) => r.status === 'fulfilled');
+    expect(fulfilled, 'exactly one attempt succeeds').toHaveLength(1);
+    const aWon = resultA.status === 'fulfilled';
+    const winner = {
+      tenant: aWon ? tenantA : tenantB,
+      invitation: aWon ? invitationA : invitationB,
+    };
+    const loser = {
+      tenant: aWon ? tenantB : tenantA,
+      invitation: aWon ? invitationB : invitationA,
+    };
+    const lost = aWon ? resultB : resultA;
+    if (lost.status !== 'rejected') throw new Error('the loser was expected to fail');
+
+    // AND the loser answers the uniform rejection, recorded as `account_conflict`.
+    expect(toOrpcError(lost.reason).code).toBe('CATALOG_NOT_FOUND');
+    expect(await deniedReasons(loser.invitation.invitationId)).toEqual(['account_conflict']);
+
+    // AND it created nothing and so compensated nothing.
+    const user = await authPool.query<{ id: string }>(
+      `select id from auth."user" where email = $1`,
+      [email],
+    );
+    const userId = user.rows[0]?.id ?? '';
+    expect(userId, 'the winner’s user survives').not.toBe('');
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        loser.tenant.tenantId,
+        userId,
+      ]),
+      'the loser added no member',
+    ).toBe(0);
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1`, [loser.tenant.tenantId]),
+      'only the loser’s admin is a member',
+    ).toBe(1);
+    expect(deleteMember.mock.calls.length, 'no membership was deleted').toBe(deletesBefore);
+    expect(await compensationFailures(loser.invitation.invitationId)).toBe(0);
+    expect(await adapter.readStatus({ tenantId: loser.tenant.tenantId, email })).toBe('Invited');
+
+    // AND its token is not consumed and its invitation stays pending.
+    const rows = await authPool.query<{ value: string }>(
+      `select value from auth.verification where identifier = $1`,
+      [`invitation-accept:${loser.invitation.invitationId}`],
+    );
+    expect(rows.rows, 'the loser’s token row stays').toHaveLength(1);
+    expect(verifyInvitationToken(loser.invitation.token, rows.rows[0]?.value ?? null)).toBe(true);
+    const status = await authPool.query<{ status: string }>(
+      `select status from auth.invitation where id = $1`,
+      [loser.invitation.invitationId],
+    );
+    expect(status.rows[0]?.status).toBe('pending');
+
+    // AND the winner joined its own tenant.
+    expect(
+      await count(`select 1 from auth.member where organization_id = $1 and user_id = $2`, [
+        winner.tenant.tenantId,
+        userId,
+      ]),
+    ).toBe(1);
+    expect(await adapter.readStatus({ tenantId: winner.tenant.tenantId, email })).toBe('Active');
+  }, 60_000);
+});
+
+/**
+ * Task 16.12h (design D4 step 3; Resolved decision Q149).
+ *
+ * A compensated new-account acceptance also deletes the `_user` row that its own `_user`
+ * step created, and never one that existed before the attempt.
+ *
+ * ## Production symbols expected
+ *
+ * No new symbol: `createAcceptFlow` (`apps/api/src/identity/accept-flow.ts`) compensation
+ * additionally deletes, idempotently and in reverse order (member, `_user`, user), the
+ * `_user` row of the invitee's email in the tenant when this attempt's `_user` step
+ * created it (the row did not exist before the step), through the user-sync port or the
+ * catalog, and leaves a row found by the attempt in place.
+ */
+describe('A compensated new-account acceptance deletes the _user row it created (task 16.12h, design D4 step 3, Resolved decision Q149)', () => {
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let catalogSync: UserSync;
+  let acceptFlow: ReturnType<typeof createAcceptFlow>;
+  let failAt: string | undefined;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    catalogSync = createUserSync({ pool: pools.appPool, authz: sharedCerbos });
+    const adapter = createUserSyncAdapter({ userSync: catalogSync });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    acceptFlow = createAcceptFlow({
+      auth,
+      authz: sharedCerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+      onStep: (step) => {
+        if (step === failAt) throw new Error(`injected failure at ${step}`);
+      },
+    });
+  }, 60_000);
+
+  afterEach(() => {
+    failAt = undefined;
+  });
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Compensation Admin',
+      email: `comp-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Compensation Org',
+      organizationSlug: `comp-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** Removes the `Invited` `_user` row the invitation hook wrote, as the owner with the tenant set. */
+  async function removeUserRow(tenantId: string, email: string): Promise<void> {
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      await client.query("select set_config('app.tenant_id', $1, true)", [tenantId]);
+      await client.query(
+        `delete from catalog_entity
+          where tenant_id = $1 and identifier = $2
+            and blueprint_id = (select id from catalog_blueprint
+                                 where tenant_id = $1 and identifier = '_user')`,
+        [tenantId, email],
+      );
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async function userCount(email: string): Promise<number> {
+    return (
+      (await authPool.query(`select 1 from auth."user" where email = $1`, [email])).rowCount ?? 0
+    );
+  }
+
+  async function memberCount(tenantId: string): Promise<number> {
+    return (
+      (await authPool.query(`select 1 from auth.member where organization_id = $1`, [tenantId]))
+        .rowCount ?? 0
+    );
+  }
+
+  it('A failure after the _user step of a new-account attempt leaves no _user row when that step created it', async () => {
+    const tenant = await freshTenant();
+    const email = `erin-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    // GIVEN no `_user` row exists before the attempt, so its own `_user` step creates it.
+    await removeUserRow(tenant.tenantId, email);
+    expect(await catalogSync.getUser({ tenantId: tenant.tenantId, email })).toBeNull();
+
+    // WHEN the attempt fails after the `_user` step (at the consumption).
+    failAt = 'consume';
+    let failure: { code: string } | undefined;
+    try {
+      await acceptFlow.accept({ ...invitation, password: PASSWORD_NFC });
+    } catch (error) {
+      failure = toOrpcError(error);
+    }
+
+    // THEN the answer is the sanitized generic error...
+    expect(failure?.code).toBe('INTERNAL');
+    // ...and the compensation left no user, no membership and no `_user` row.
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'only the inviting admin is a member').toBe(1);
+    expect(
+      await catalogSync.getUser({ tenantId: tenant.tenantId, email }),
+      'the _user row its own step created is deleted',
+    ).toBeNull();
+  }, 60_000);
+
+  it('A failure after the _user step of a new-account attempt leaves a _user row that existed before the attempt in place', async () => {
+    const tenant = await freshTenant();
+    const email = `frank-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+
+    // GIVEN the invitation hook's `_user` row exists before the attempt.
+    expect(await catalogSync.getUser({ tenantId: tenant.tenantId, email })).not.toBeNull();
+
+    // WHEN the attempt fails after the `_user` step.
+    failAt = 'consume';
+    await expect(acceptFlow.accept({ ...invitation, password: PASSWORD_NFC })).rejects.toThrow();
+
+    // THEN the user and the membership are compensated but the earlier row stays.
+    expect(await userCount(email), 'no user').toBe(0);
+    expect(await memberCount(tenant.tenantId), 'only the inviting admin is a member').toBe(1);
+    expect(
+      await catalogSync.getUser({ tenantId: tenant.tenantId, email }),
+      'a row that existed before the attempt is never deleted',
+    ).not.toBeNull();
+  }, 60_000);
+});

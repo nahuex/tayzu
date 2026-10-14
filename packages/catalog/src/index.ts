@@ -10,6 +10,10 @@ export { CATALOG_ERROR_HTTP_STATUS } from './api/errors.js';
 export {
   createUserSync,
   type CreateUserSyncOptions,
+  type UserReadModel,
   type UserSync,
   type UserSyncInput,
 } from './service/user-sync.js';
+export { USER_BLUEPRINT, buildUserBlueprintInput } from './service/system-blueprints.js';
+export { ENTITY_IDENTIFIER_PATTERN } from './domain/identifiers.js';
+export { recordAuthzDecision } from './service/pipeline.js';

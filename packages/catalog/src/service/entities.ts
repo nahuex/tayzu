@@ -26,7 +26,7 @@ import type { ParsedPropertySchema } from '../domain/blueprint-definition.js';
 import { areCanonicallyEqual } from '../domain/canonical.js';
 import type { ActorType, CatalogContext, Principal } from '../domain/context.js';
 import { assertEntitySpecSize, assertEntityStatusSize } from '../domain/entity-limits.js';
-import { CatalogError, isCatalogError } from '../domain/errors.js';
+import { AuthorizationError, CatalogError, isCatalogError } from '../domain/errors.js';
 import { parseEntityIdentifier } from '../domain/identifiers.js';
 import { defaultCatalogLimits, type CatalogLimits } from '../domain/limits.js';
 import { assertCursorLength, decodeCursor, encodeCursor } from '../domain/pagination.js';
@@ -88,10 +88,17 @@ import {
   type PlanFilter,
 } from '@tayzu/authz';
 import {
-  loadEntityAuthzAttributes as loadEntityAttributes,
-  newEntityAuthzAttributes,
+  assertAuthorizedStateUnchanged,
+  type EntityOwnershipOptions,
+  loadEntityAuthzAttributes,
+  newEntityAuthzAttributes as newAttributes,
 } from './entity-authz-attributes.js';
-import { PLAN_AUTHORIZED, defineCatalogOperation, inputString } from './pipeline.js';
+import {
+  PLAN_AUTHORIZED,
+  defineCatalogOperation,
+  inputString,
+  maskUserIdentifier,
+} from './pipeline.js';
 import { getCachedSpecValidator, getCachedStatusValidator } from './schema-validator-cache.js';
 
 export interface EntitySpecWriteInput {
@@ -320,6 +327,8 @@ export interface CreateEntityServiceOptions {
   /** The Cerbos client every operation authorizes through (design Q27). */
   readonly authz: CerbosClient;
   readonly limits?: CatalogLimits;
+  /** Ownership resolution for the attributes sent to Cerbos (Q137); defaults to the direct `ownerTeam` relation. */
+  readonly ownership?: EntityOwnershipOptions;
 }
 
 export interface EntityService {
@@ -876,8 +885,14 @@ async function mayUpdateReferrer(
   client: PoolClient,
   blueprint: string,
   identifier: string,
+  ownership: EntityOwnershipOptions | undefined,
 ): Promise<boolean> {
-  const attributes = await loadEntityAttributes({ ctx, client, input: { blueprint, identifier } });
+  const attributes = await loadEntityAuthzAttributes({
+    ctx,
+    client,
+    input: { blueprint, identifier },
+    ownership,
+  });
   if (attributes === undefined) return false;
   const roles = ctx.principal?.roles ?? [];
   if (roles.length === 0) return false;
@@ -894,7 +909,7 @@ async function mayUpdateReferrer(
       {
         resource: {
           kind: RESOURCE_KINDS.catalogEntity,
-          id: identifier,
+          id: maskUserIdentifier(blueprint, identifier),
           attr: buildAttributes(ctx.tenantId, { blueprintId: blueprint, ...attributes }),
         },
         actions: ['update'],
@@ -974,6 +989,16 @@ async function bumpReferrerAndAppendEvent(
 export function createEntityService(options: CreateEntityServiceOptions): EntityService {
   const { pool, authz } = options;
   const limits = options.limits ?? defaultCatalogLimits;
+  const { ownership } = options;
+  const loadEntityAttributes = (params: {
+    readonly ctx: CatalogContext;
+    readonly client: PoolClient;
+    readonly input: unknown;
+  }) => loadEntityAuthzAttributes({ ...params, ownership });
+  const newEntityAuthzAttributes = (params: {
+    readonly ctx: CatalogContext;
+    readonly input: unknown;
+  }) => newAttributes({ ...params, ownership });
 
   const create = defineCatalogOperation<CreateEntityInput, EntityOutput>({
     name: 'entity.create',
@@ -983,7 +1008,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'create',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input: rawInput }) => {
@@ -991,7 +1019,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, identifier),
+        );
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
       const blueprintRow = await selectBlueprintRow(tx, ctx.tenantId, input.blueprint, {
@@ -1115,7 +1148,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorizationWhenMissing: ({ ctx, input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'create',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: {
         blueprintId: inputString(input, 'blueprint'),
         ...newEntityAuthzAttributes({ ctx, input }),
@@ -1125,27 +1161,43 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     additionalAuthorization: ({ ctx, input, stored }) => {
       const next = newEntityAuthzAttributes({ ctx, input });
       const replaces = (input as { mode?: unknown }).mode === 'replace';
+      // Task 13.6b (002 VCDM M15): a replace that omits `ownerTeam` would silently release
+      // ownership, so it is refused; naming a team (or `merge`) is the way to change it.
+      if (replaces && stored['ownerTeam'] !== undefined && next['ownerTeam'] === undefined) {
+        throw new AuthorizationError();
+      }
       if (next['ownerTeam'] === undefined && !replaces) return undefined;
       if (next['ownerTeam'] === stored['ownerTeam']) return undefined;
       return {
         kind: RESOURCE_KINDS.catalogEntity,
         action: 'create',
-        resourceId: inputString(input, 'identifier'),
+        resourceId: maskUserIdentifier(
+          inputString(input, 'blueprint'),
+          inputString(input, 'identifier'),
+        ),
         attributes: { blueprintId: inputString(input, 'blueprint'), ...next },
       };
     },
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
-    handler: async ({ ctx, client, input: rawInput }) => {
+    handler: async ({ ctx, client, input: rawInput, authorizedAttributes }) => {
       const input = parseSafeEntityInput(rawInput, limits) as UpsertEntityInput;
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, identifier),
+        );
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.upsert.mode', input.mode);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
 
@@ -1157,6 +1209,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintRow.id);
       const currentRow = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, identifier, {
         forUpdate: true,
+      });
+      await assertAuthorizedStateUnchanged({
+        ctx,
+        client,
+        input: rawInput,
+        authorized: authorizedAttributes,
+        ownership,
       });
 
       if (
@@ -1396,7 +1455,10 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'update',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input: rawInput }) => {
@@ -1404,7 +1466,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
       const identifier = parseEntityIdentifier(input.identifier, '/identifier');
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, identifier),
+        );
       const source = parseStatusSource(input.source, limits);
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.status.source', source);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
@@ -1555,12 +1622,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'view',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, input.identifier),
+        );
       const tx = drizzle(client);
 
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);
@@ -1642,13 +1717,21 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'delete',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
-    handler: async ({ ctx, client, input }) => {
+    handler: async ({ ctx, client, input, authorizedAttributes }) => {
       const tx = drizzle(client);
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, input.identifier),
+        );
       const detachReferences = input.detachReferences ?? false;
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.detach_references', detachReferences);
       denyIfReserved(ctx, input.blueprint, 'entity_write');
@@ -1660,6 +1743,13 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
 
       const row = await selectEntityRow(tx, ctx.tenantId, blueprintRow.id, input.identifier, {
         forUpdate: true,
+      });
+      await assertAuthorizedStateUnchanged({
+        ctx,
+        client,
+        input,
+        authorized: authorizedAttributes,
+        ownership,
       });
       if (!row) throw new CatalogError('CATALOG_NOT_FOUND', 'Entity not found');
 
@@ -1720,6 +1810,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
               client,
               referrerBlueprint,
               referrer.source_identifier,
+              ownership,
             ))
           ) {
             return throwReferenceViolation(
@@ -1802,12 +1893,20 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authorization: ({ input }) => ({
       kind: RESOURCE_KINDS.catalogEntity,
       action: 'view',
-      resourceId: inputString(input, 'identifier'),
+      resourceId: maskUserIdentifier(
+        inputString(input, 'blueprint'),
+        inputString(input, 'identifier'),
+      ),
       attributes: { blueprintId: inputString(input, 'blueprint') },
     }),
     handler: async ({ ctx, client, input }) => {
       trace.getActiveSpan()?.setAttribute(BLUEPRINT_IDENTIFIER_ATTRIBUTE, input.blueprint);
-      trace.getActiveSpan()?.setAttribute(ENTITY_IDENTIFIER_ATTRIBUTE, input.identifier);
+      trace
+        .getActiveSpan()
+        ?.setAttribute(
+          ENTITY_IDENTIFIER_ATTRIBUTE,
+          maskUserIdentifier(input.blueprint, input.identifier),
+        );
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.related.direction', input.direction);
       const scopeFilter = input.scope ?? 'both';
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.related.scope', scopeFilter);

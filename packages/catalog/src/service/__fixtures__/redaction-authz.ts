@@ -3,13 +3,17 @@
  * entities the caller cannot read are redacted" and the blueprint-deletion
  * equivalent).
  *
- * Wraps the real Cerbos client. Every request passes through untouched (the
- * pipeline's own `CheckResources` for the operation itself keeps hitting the
- * real policies), except a batch `checkResources` whose resources are all of
- * kind `catalog_entity`: that is the D12 redaction batch, and it is answered
- * from `readable` (an id is allowed iff it is in the set, for any action).
- * The wiring is the unit under test, not Cerbos policy content: the current
- * policies have no rule that hides some entities from an admin.
+ * Wraps the real Cerbos client. Every batch `checkResources` whose resources
+ * are all of kind `catalog_entity` is answered from `readable` by the
+ * `resource.id` it receives (an id is allowed iff it is in the set, for any
+ * action): by identifier (the fixed placeholder for a `_user` entity, Q119)
+ * for an entity operation's own check (`pipeline.ts:372`) and for
+ * `mayUpdateReferrer`'s check (`entities.ts:884`), and by position for the
+ * D12 redaction batch. A blueprint operation's own check (`catalog_blueprint`)
+ * still reaches the real policies, like every request that is not all
+ * `catalog_entity`. The wiring is the unit under test, not Cerbos policy
+ * content: the current policies have no rule that hides some entities from an
+ * admin.
  */
 import type { CerbosClient } from '@tayzu/authz';
 

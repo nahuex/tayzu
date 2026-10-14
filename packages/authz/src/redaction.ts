@@ -32,7 +32,9 @@ export interface RedactionResult {
 }
 
 /**
- * One batch `CheckResources(view)` over the candidates (D12). Unreadable
+ * One batch `CheckResources(view)` over the candidates (D12). Each candidate is
+ * sent as its position, never its identifier (043 Q119: Cerbos's decision log
+ * must not receive a `_user` email); decisions map back in process. Unreadable
  * identifiers are never named: they only contribute to `notVisible`. A
  * candidate missing from the Cerbos response counts as unreadable (fail closed).
  */
@@ -48,10 +50,10 @@ export async function redactUnreadable(input: RedactUnreadableInput): Promise<Re
         moderatedBlueprints: [...input.principal.moderatedBlueprints],
       }),
     },
-    resources: input.candidates.map((candidate) => ({
+    resources: input.candidates.map((candidate, position) => ({
       resource: {
         kind: input.kind,
-        id: candidate.id,
+        id: String(position),
         attr: buildAttributes<Record<string, RedactionAttribute>>(
           input.tenantId,
           candidate.attributes,
@@ -65,6 +67,8 @@ export async function redactUnreadable(input: RedactUnreadableInput): Promise<Re
   for (const result of response.results) {
     if (result.isAllowed('view') === true) allowed.add(result.resource.id);
   }
-  const readable = input.candidates.map((c) => c.id).filter((id) => allowed.has(id));
+  const readable = input.candidates
+    .filter((_candidate, position) => allowed.has(String(position)))
+    .map((candidate) => candidate.id);
   return { readable, notVisible: input.candidates.length - readable.length };
 }

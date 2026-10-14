@@ -55,3 +55,17 @@ export class AuthInvalidCredentialsError extends Error {
     this.name = 'AuthInvalidCredentialsError';
   }
 }
+
+/**
+ * Thrown by every limiter of the identity-lifecycle change (043, design D4).
+ * `retryAfterSeconds` feeds the `Retry-After` header of the 429 answer; the
+ * `apps/api` error mapping sets it.
+ */
+export class AuthRateLimitedError extends Error {
+  readonly code = 'AUTH_RATE_LIMITED';
+
+  constructor(readonly retryAfterSeconds: number) {
+    super('Too many requests');
+    this.name = 'AuthRateLimitedError';
+  }
+}

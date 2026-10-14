@@ -37,7 +37,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
 
@@ -75,12 +78,13 @@ const AUTH_URL = 'https://api.tayzu.test';
 const TEST_PASSWORD = 'correct horse battery staple';
 
 const ENV: Record<string, string> = {
-  DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-  AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+  DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+  AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
   BETTER_AUTH_SECRET: TEST_SECRET,
   CERBOS_ADDRESS: 'localhost:3593',
   ALLOWED_ORIGINS: ALLOWED_ORIGIN,
   BETTER_AUTH_URL: AUTH_URL,
+  IDENTITY_TOKEN_HMAC_SECRET: 'cookies-hmac-test-only-secret-0123456789-abcde',
 };
 
 function randomIp(): string {
@@ -109,6 +113,7 @@ describe('production cookies and origin check (task 23.12, Q40, D2)', () => {
     const suffix = randomUUID();
     email = `cookies-${suffix}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Cookies User',
       email,
       password: TEST_PASSWORD,
@@ -233,7 +238,11 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
     );
     vi.stubEnv('NODE_ENV', 'production');
 
-    const outcome = await startupOutcome({ ...withoutUrl, NODE_ENV: 'production' });
+    const outcome = await startupOutcome({
+      ...withoutUrl,
+      NODE_ENV: 'production',
+      EMAIL_PROVIDER: 'none',
+    });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');
     expect(outcome).toContain('BETTER_AUTH_URL');
@@ -246,6 +255,7 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
       ...ENV,
       BETTER_AUTH_URL: 'http://api.tayzu.test',
       NODE_ENV: 'production',
+      EMAIL_PROVIDER: 'none',
     });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');

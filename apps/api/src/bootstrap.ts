@@ -8,6 +8,7 @@
 import { createPool } from '@tayzu/db';
 
 import { loadConfig } from './config.js';
+import { createEmailSender } from './email-sender.js';
 import { createApp, type App } from './server.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -15,14 +16,16 @@ type Env = Readonly<Record<string, string | undefined>>;
 /**
  * Startup assertion on a runtime database role (design Q62, D6): the role in
  * effect must not be a superuser, must not have BYPASSRLS and must own no
- * catalog table. Judges `current_user`, and throws a fixed message so nothing
+ * catalog table nor `machine_credential_revocation`, which the `catalog\_%`
+ * pattern does not match (Q109). Judges `current_user`, and throws a fixed message so nothing
  * from the connection (host, password, role name) reaches the error.
  */
 async function assertRuntimeRole(pool: ReturnType<typeof createPool>): Promise<void> {
   const result = await pool.query<{ privileged: boolean }>(
     `select (r.rolsuper or r.rolbypassrls or exists (
        select 1 from pg_class c
-       where c.relowner = r.oid and c.relkind in ('r', 'p') and c.relname like 'catalog\\_%'
+       where c.relowner = r.oid and c.relkind in ('r', 'p')
+         and (c.relname like 'catalog\\_%' or c.relname = 'machine_credential_revocation')
      )) as privileged
      from pg_roles r where r.rolname = current_user`,
   );
@@ -31,18 +34,36 @@ async function assertRuntimeRole(pool: ReturnType<typeof createPool>): Promise<v
   }
 }
 
+const LOCAL_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Fails closed: an unparsable URL counts as non-local. Never reads the credentials. */
+function isLocalHost(url: string): boolean {
+  try {
+    return LOCAL_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 export async function createAppFromEnv(env: Env): Promise<App> {
   const config = loadConfig(env);
+  const isTestEnv = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  // NODE_ENV=test relaxes the https checks, the role assertion and the OTLP requirement
+  // (002 VCDM M12, Q98), so it is never allowed against a remote database.
+  if (isTestEnv && !(isLocalHost(config.appDatabaseUrl) && isLocalHost(config.authDatabaseUrl))) {
+    throw new Error('NODE_ENV=test requires a local database host: startup aborted');
+  }
   const appUrl = config.appDatabaseUrl;
   const authUrl = config.authDatabaseUrl;
   const authSecret = config.betterAuthSecret;
   const { cerbosAddress, allowedOrigins } = config;
 
+  const emailSender = createEmailSender(config);
   const appPool = createPool(appUrl);
   let authPool: ReturnType<typeof createPool> | undefined;
   try {
     authPool = createPool(authUrl);
-    if ((env['NODE_ENV'] ?? process.env['NODE_ENV']) !== 'test') {
+    if (!isTestEnv) {
       await assertRuntimeRole(appPool);
       await assertRuntimeRole(authPool);
     }
@@ -66,7 +87,36 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       },
       rateLimit: config.rateLimit,
       tokenExchangeRateLimit: config.tokenExchangeRateLimit,
+      machineCredentialRateLimit: {
+        max: config.machineCredentialRateLimit.max,
+        timeWindowMs: config.machineCredentialRateLimit.windowSeconds * 1000,
+      },
+      invitationAcceptRateLimit: {
+        max: config.invitationAcceptRateLimit.max,
+        window: config.invitationAcceptRateLimit.windowSeconds,
+      },
+      reauthorizationCallbackRateLimit: {
+        max: config.reauthorizationCallbackRateLimit.max,
+        window: config.reauthorizationCallbackRateLimit.windowSeconds,
+      },
       bodyLimit: config.bodyLimit,
+      mountIdentityRoutes: config.mountIdentityRoutes,
+      credentialCap: config.credentialCap,
+      serviceAccountCap: config.serviceAccountCap,
+      email: {
+        sender: emailSender,
+        ...(config.invitationLinkBaseUrl === undefined
+          ? {}
+          : { invitationLinkBaseUrl: config.invitationLinkBaseUrl }),
+        disabledTenantIds: config.emailDisabledTenantIds,
+        killSwitch: config.invitationEmailKillSwitch,
+        ...(config.identityTokenHmacSecret === undefined
+          ? {}
+          : { recipientKeySecret: config.identityTokenHmacSecret }),
+        tenantCap: config.invitationTenantCap,
+        recipientCap: config.invitationRecipientCap,
+        noticeTenantCap: config.noticeTenantCap,
+      },
     });
     const ownedAuthPool = authPool;
     return {

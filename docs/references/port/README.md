@@ -6,6 +6,8 @@ of Port (`openspec/project.md` §23).
 | File                                                         | What it is                                                                                                                                                                                                    |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [port-capability-inventory.md](port-capability-inventory.md) | Every capability in Port's documentation (`docs.port.io/llms.txt`, 2026-09-28), grouped by Port pillar, each assigned to a Tayzu change. Appendices: native integrations and out-of-scope items with reasons. |
+| [ui-parity-matrix.md](ui-parity-matrix.md)                   | Functional UI parity matrix for 003 and the later UI changes: each Port UI capability with its public doc, open-source evidence, a demo checklist, an empty observation cell and its Tayzu change (ADR-0022). |
+| [demo-observation-template.md](demo-observation-template.md) | Template the human copies once per demo session to record manual observations, with ADR-0022's forbidden list as a reminder.                                                                                  |
 | [roadmap-analysis.md](roadmap-analysis.md)                   | Per change: scope, the Port capabilities it covers, dependencies and the Port docs to read. Also the old-to-new ID mapping, the coverage check and the decision analysis (D1-D8).                             |
 
 - **Before proposing a change**, read its section in `roadmap-analysis.md`

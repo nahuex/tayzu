@@ -1,23 +1,39 @@
 # @tayzu/api
 
 Tayzu's first application: the Fastify bootstrap mounting Better Auth's
-handler and the catalog's oRPC handler. Global rules are in the root
+handler and one oRPC handler over the catalog and identity routers. Global rules are in the root
 `CLAUDE.md`. The design is `openspec/changes/002-auth-and-rbac/design.md`
 (D13, D18-D21); the behavior is `specs/auth-and-rbac/spec.md` in the same
-change. When code and design disagree, stop and ask.
+change. Change `043` (design D10, Resolved decision Q30) adds the identity
+orchestration described below. When code and design disagree, stop and ask.
 
-## Scaffolding state
+## Layout
 
-Currently an empty scaffold (task 1.2): `src/index.ts` exports nothing yet,
-and `src/smoke.test.ts` only checks the entry point loads. Group 11 fills
-this in, task by task, per `tasks.md`.
+- `src/server.ts` (`createApp`) and `src/main.ts` (process entry point) are
+  the Fastify bootstrap; `src/index.ts` is still the empty entry point.
+- `src/identity/` holds the identity orchestration of change `043`
+  (invitations, acceptance, service accounts, credentials, the SSO link shed,
+  the user-sync adapter, `defineIdentityOperation`).
+- `src/identity-router.ts` is the `identity.*` router. `createApp` merges it
+  with the catalog router into **one** router handed to the one
+  `OpenAPIHandler`, so the interceptor chain (step-up, error mapping) reaches
+  both (D10).
+- `scripts/` holds the `tsx` scripts (`bootstrap-admin.ts`,
+  `backfill-user-blueprint.ts`, `reconcile-users.ts`, the identity contract
+  generate and check scripts). Vitest includes only `src/**`, so a script has
+  no test beside it: its tests live in `src/` and import `../scripts/<name>.js`.
 
 ## Boundaries
 
-- This app owns nothing domain-specific: it is bootstrap glue (Fastify
-  server, route mounting, process lifecycle) over `@tayzu/auth`,
-  `@tayzu/authz` and `@tayzu/catalog` (D1). Domain logic belongs in those
-  packages, not here.
+- Catalog domain logic belongs in `@tayzu/catalog`, and the pure identity
+  parts (status machine, invitation token, password policy, email port and
+  the structural ports) in `packages/auth/src/identity/`. This app is
+  bootstrap glue (Fastify server, route mounting, process lifecycle) plus,
+  since change `043`, the identity orchestration and router: `@tayzu/auth`
+  has no `@orpc/server` or `@tayzu/catalog` dependency, so the code that needs
+  them lives here, behind the structural ports of `@tayzu/auth` (the
+  `UserSyncPort` pattern; Resolved decision Q30). `002` D1 said this app owns
+  nothing domain-specific; `043` amends that.
 - Better Auth's native organization-management and `apiKey` management
   routes are **not reachable** through this app: a deny-by-default allowlist
   at the Fastify routing layer returns `404` for them (D18). Every membership

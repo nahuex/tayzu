@@ -77,9 +77,12 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   type BootstrappedTenant,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { enrollTotp, sessionTokenOfCookie, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createAuthRepository } from './identity/auth-repository.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createAppFromEnv } from './bootstrap.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
@@ -227,6 +230,7 @@ describe('POST /api/auth/link-social step-up (task 20.2, design D24 path (a))', 
   }> {
     const email = `link-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Link User',
       email,
       password: TEST_PASSWORD,
@@ -670,8 +674,8 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
     poolState.pools.set('auth', pools.authPool);
     stub = await startOidcStub();
     app = await createAppFromEnv({
-      DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       BETTER_AUTH_SECRET: TEST_SECRET,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ENV_ORIGIN,
@@ -735,6 +739,7 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
   }> {
     const email = `link-mfa-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Link Mfa User',
       email,
       password: TEST_PASSWORD,
@@ -758,6 +763,7 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
   /** A `member` without MFA, signed in with the password alone. */
   async function passwordUser(): Promise<{ userId: string; email: string; cookie: string }> {
     const owner = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Link Owner',
       email: `link-owner-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,
@@ -1066,8 +1072,11 @@ describe('self-service link and unlink step-up (task 23.14, design Q43, Q49, Q50
     expect(await linkedAccountCount(user.userId), 'the account is still linked').toBe(1);
   }, 60_000);
 
-  it('identity.users.linkSsoAccount and unlinkSsoAccount are marked x-tayzu-risk: high (step-up applies)', () => {
+  it('identity.users.linkSsoAccount and unlinkSsoAccount are marked x-tayzu-risk: high (step-up applies)', async () => {
+    const { authPool } = await harnessPools();
     const router = createIdentityRouter({
+      authRepository: createAuthRepository(authPool),
+      withUserLock: createWithUserLock(authPool),
       auth: app.auth,
       authz: createCerbosClient({ address: 'localhost:3593', tls: false }),
     });

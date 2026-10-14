@@ -43,7 +43,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { bootstrapTestTenant } from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -80,6 +83,7 @@ describe('apps/api POST /v1/auth/token rate limit (task 11.13)', () => {
   async function signInCookie(): Promise<string> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Token Rate Limit',
       email: `token-rate-limit-${suffix}@example.test`,
       password: TEST_PASSWORD,

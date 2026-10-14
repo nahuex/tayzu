@@ -65,6 +65,7 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
@@ -126,8 +127,8 @@ const ORIGIN = 'https://app.tayzu.test';
 const TEST_PASSWORD = 'correct horse battery staple';
 
 const ENV: Record<string, string> = {
-  DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-  AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
+  DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+  AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
   BETTER_AUTH_SECRET: TEST_SECRET,
   CERBOS_ADDRESS: 'localhost:3593',
   ALLOWED_ORIGINS: ORIGIN,
@@ -219,6 +220,7 @@ describe('resolveContext builds the principal from the `_user` entity (task 23.1
   async function newTenant(): Promise<{ organizationId: string }> {
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
       name: 'Principal Owner',
       email: `principal-owner-${suffix}@example.test`,
       password: TEST_PASSWORD,
@@ -361,28 +363,38 @@ describe('resolveContext builds the principal from the `_user` entity (task 23.1
     }
   }, 120_000);
 
-  it('An unreadable `_user` entity fails closed with AUTH_FORBIDDEN on the next operation', async () => {
-    // GIVEN a member with a `_user` entity, whose session is valid and who can
-    // perform an operation while the entity is readable
+  // Task 11.8 (Resolved decision Q77) REWRITES this case. It used to assert the
+  // principal-less context and 403 AUTH_FORBIDDEN for a failed `_user` lookup;
+  // the resolver now fails closed like every other rejection: 401
+  // CATALOG_CONTEXT_REQUIRED, the reason only in the log, and a failed lookup is
+  // never cached.
+  it('An unreadable `_user` entity fails closed with CATALOG_CONTEXT_REQUIRED on the next operation', async () => {
+    // GIVEN a member with a `_user` entity and a valid session, who has not been
+    // resolved yet (so no status is cached for them); another member of the same
+    // tenant shows the entity is served while readable
     const { organizationId } = await newTenant();
     await prepareUserBlueprint(organizationId);
     await createTeam(organizationId, 'team-a');
     const member = await newMember(organizationId, { teams: ['team-a'] });
-    expect((await nextOperation(member.cookie)).statusCode, 'precondition').toBe(200);
+    const bystander = await newMember(organizationId, { teams: ['team-a'] });
+    expect((await nextOperation(bystander.cookie)).statusCode, 'precondition').toBe(200);
 
     // WHEN the `_user` entity (or its relations) cannot be read
     state.failEntityReads = true;
     state.recorded.length = 0;
     const response = await nextOperation(member.cookie);
 
-    // THEN the principal is absent, so the operation is denied: AUTH_FORBIDDEN
-    expect(response.statusCode).toBe(403);
-    expect(response.json<{ code?: unknown }>().code).toBe('AUTH_FORBIDDEN');
+    // THEN the call is rejected like a missing context: 401
+    // CATALOG_CONTEXT_REQUIRED, with no reason in the body
+    expect(response.statusCode).toBe(401);
+    const body = response.json<{ code?: unknown }>();
+    expect(body.code).toBe('CATALOG_CONTEXT_REQUIRED');
+    expect(response.body).not.toMatch(/user_disabled|user_missing|user_banned|lookup/i);
     // AND no Cerbos check carried a principal for this caller
     expect(principalsOf(member.userId)).toEqual([]);
 
-    // AND once the entity is readable again the caller is served (the failure
-    // is not remembered)
+    // AND once the entity is readable again the caller is served at once: the
+    // failure is not remembered and the next request looks again
     state.failEntityReads = false;
     expect((await nextOperation(member.cookie)).statusCode).toBe(200);
   }, 120_000);

@@ -5,13 +5,12 @@
  * before any expensive work (schema compilation or database writes).
  */
 import { CatalogError } from './errors.js';
+import { ENTITY_IDENTIFIER_PATTERN } from './identifiers.js';
 
 const KIB = 1024;
 
 /** Blueprint, property and relation identifiers (spec Conventions). */
 const IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-/** Entity identifiers (spec Conventions). */
-const ENTITY_IDENTIFIER_PATTERN = /^[A-Za-z0-9@_.:/=-]{1,256}$/;
 
 export interface CatalogLimits {
   identifier: { pattern: RegExp };

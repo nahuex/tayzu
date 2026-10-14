@@ -5,3 +5,17 @@
 # these entries cover only the historical commits that still contain it.
 06d1891360da5b9563b16a1145913814b6e50a09:apps/api/src/sso-jit-refresh.int.test.ts:generic-api-key:60
 c2e94f55011ca699bdc7f69c74bac39905b8a462:packages/auth/src/sso-sign-in.int.test.ts:generic-api-key:425
+
+# 043 (task 16.9): test fixtures of change 043 that held high-entropy literals
+# (a password per policy rule, HMAC test secrets, a sample invitation token and a
+# dummy ACS access key), never real credentials. The literals were replaced by
+# values generated or built at run time; these entries cover only the historical
+# commits that still contain them.
+29f7826bcf79e87cda070911e568cf1e9489c4b5:apps/api/src/password-policy.int.test.ts:generic-api-key:264
+29f7826bcf79e87cda070911e568cf1e9489c4b5:apps/api/src/password-policy.int.test.ts:generic-api-key:265
+29f7826bcf79e87cda070911e568cf1e9489c4b5:apps/api/src/password-policy.int.test.ts:generic-api-key:267
+2421a0dcb9d264670cac43ab872d233ea1dab900:apps/api/src/password-policy.int.test.ts:generic-api-key:47
+491974e3cfa831b4ac6c5b9dea3d02118719e364:apps/api/src/identity/recipient-key.test.ts:generic-api-key:23
+21a2a9ef05d49dae3b098a4a44c70b05a0c5c412:apps/api/src/config.test.ts:generic-api-key:458
+e918b15d3872594c9e60ba035a5561d5b75476ed:packages/auth/src/identity/email/azure-email-sender.test.ts:generic-api-key:18
+41ebf13d82a5e10bbf29b1d97ebbdaafc0086bf7:apps/api/src/identity/invitation-link.test.ts:generic-api-key:27

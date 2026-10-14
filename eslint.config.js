@@ -3,6 +3,18 @@ import js from '@eslint/js';
 import { defineConfig, globalIgnores } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
+import {
+  IDENTITY_FILES,
+  IDENTITY_REPOSITORY_FILES,
+  IDENTITY_ROUTER_FILES,
+  MACHINE_CREDENTIAL_EXEMPT_FILES,
+  MACHINE_CREDENTIAL_FILES,
+  identityImportRestrictions,
+  identityRouterImportRestrictions,
+  machineCredentialImportRestrictions,
+  identitySyntaxRestrictions,
+} from './eslint/identity-restrictions.js';
+
 /**
  * Security guard (design D3, SEC06): SQL is always parameterized, so any
  * access to drizzle's `sql.raw` escape hatch is banned.
@@ -95,6 +107,38 @@ export default defineConfig(
     files: ACTOR_TYPE_ALLOWLIST,
     rules: {
       'no-restricted-syntax': ['error', ...sqlRawRestrictions],
+    },
+  },
+  {
+    // 043 5.1c: adapter access only through the auth repository. Spreads the global
+    // selectors because a later block replaces the rule's array.
+    files: IDENTITY_FILES,
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...sqlRawRestrictions,
+        ...actorTypeRestrictions,
+        ...identitySyntaxRestrictions,
+      ],
+      'no-restricted-imports': ['error', identityImportRestrictions],
+    },
+  },
+  {
+    // 043 9.1c (Q78): machine-credential functions only from apps/api/src/identity/**.
+    files: MACHINE_CREDENTIAL_FILES,
+    ignores: MACHINE_CREDENTIAL_EXEMPT_FILES,
+    rules: { 'no-restricted-imports': ['error', machineCredentialImportRestrictions] },
+  },
+  {
+    // identity-router.ts matches both the 5.1c and the 9.1c rule: merge, not replace.
+    files: IDENTITY_ROUTER_FILES,
+    rules: { 'no-restricted-imports': ['error', identityRouterImportRestrictions] },
+  },
+  {
+    files: IDENTITY_REPOSITORY_FILES,
+    rules: {
+      'no-restricted-syntax': ['error', ...sqlRawRestrictions, ...actorTypeRestrictions],
+      'no-restricted-imports': 'off',
     },
   },
   {

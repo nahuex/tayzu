@@ -127,7 +127,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance, type CreateAuthOptions } from './auth.js';
 import * as authSchema from './persistence/schema.js';
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, testAppPool } from './__fixtures__/admin-user.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
@@ -643,6 +643,7 @@ describe('Password-checking routes are rate-limited per user and per IP (task 24
 
   async function signedInCookie(): Promise<string> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Password Check Test User',
       email: randomEmail(),
       password: CORRECT_PASSWORD,
@@ -774,6 +775,7 @@ describe('Step-up TOTP verification is limited per session user (task 28.1, desi
 
   async function signedInCookie(): Promise<string> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Step-up Limit Test User',
       email: randomEmail(),
       password: CORRECT_PASSWORD,

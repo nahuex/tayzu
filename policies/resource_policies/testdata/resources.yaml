@@ -17,6 +17,187 @@ resources:
     id: someone
     attr:
       tenantId: t1
+  # Task 5.4: the resource id is the opaque user id (design D3). These targets
+  # carry the id of a test principal, so `R.id == P.id` is a self-target.
+  user_admin_t1:
+    kind: user
+    id: admin_t1
+    attr:
+      tenantId: t1
+  user_member_t1:
+    kind: user
+    id: member_t1
+    attr:
+      tenantId: t1
+  user_admin_t2:
+    kind: user
+    id: admin_t2
+    attr:
+      tenantId: t2
+  # Invitation targets (cancel, resend) and `new` for invite: opaque ids.
+  user_new_t1:
+    kind: user
+    id: new
+    attr:
+      tenantId: t1
+  # Task 5.5 (design D3 ceiling): `user` resources carrying the resulting
+  # accountKind, portRole and moderatedBlueprints. Opaque ids, never an admin's.
+  # Compliant service account: member role, no moderation.
+  user_svc_member_t1:
+    kind: user
+    id: svc-ok
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: member
+      moderatedBlueprints: []
+  # Service account whose resulting role is admin.
+  user_svc_admin_t1:
+    kind: user
+    id: svc-admin
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: admin
+      moderatedBlueprints: []
+  # Service account holding a Moderator grant.
+  user_svc_moderator_t1:
+    kind: user
+    id: svc-moderator
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: member
+      moderatedBlueprints: [service]
+  # Service account elevated on both axes.
+  user_svc_admin_moderator_t1:
+    kind: user
+    id: svc-admin-moderator
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: admin
+      moderatedBlueprints: [service]
+  # Service account with only the moderation list (no portRole key).
+  user_svc_moderator_only_t1:
+    kind: user
+    id: svc-moderator-only
+    attr:
+      tenantId: t1
+      accountKind: service
+      moderatedBlueprints: [service]
+  # Service account with only the role key, elevated (no moderation key).
+  user_svc_admin_only_t1:
+    kind: user
+    id: svc-admin-only
+    attr:
+      tenantId: t1
+      accountKind: service
+      portRole: admin
+  # Service account with only accountKind: nothing elevated is stated.
+  user_svc_bare_t1:
+    kind: user
+    id: svc-bare
+    attr:
+      tenantId: t1
+      accountKind: service
+  # Equivalent standard accounts: the same elevated values, but not a service.
+  user_standard_admin_t1:
+    kind: user
+    id: human-admin
+    attr:
+      tenantId: t1
+      accountKind: standard
+      portRole: admin
+      moderatedBlueprints: [service]
+  user_standard_moderator_t1:
+    kind: user
+    id: human-moderator
+    attr:
+      tenantId: t1
+      accountKind: standard
+      portRole: member
+      moderatedBlueprints: [service]
+  # Elevated values without accountKind: absent means standard (design D1).
+  user_no_kind_elevated_t1:
+    kind: user
+    id: legacy-elevated
+    attr:
+      tenantId: t1
+      portRole: admin
+      moderatedBlueprints: [service]
+  # Elevated service account of another tenant.
+  user_svc_admin_t2:
+    kind: user
+    id: svc-admin-t2
+    attr:
+      tenantId: t2
+      accountKind: service
+      portRole: admin
+      moderatedBlueprints: []
+  # Task 5.6 (design D3): the two new kinds. Opaque ids only: the `svc-...`
+  # identifier of a service account, the `apikey` id of a credential, and the
+  # fixed literal `list` for credentials.list (it has no target).
+  service_account_t1:
+    kind: service_account
+    id: svc-ok
+    attr:
+      tenantId: t1
+      accountKind: service
+  # Task 10.2: `create` has no target yet and sends the literal `new` with
+  # `accountKind: service` (the account being created).
+  service_account_new_t1:
+    kind: service_account
+    id: new
+    attr:
+      tenantId: t1
+      accountKind: service
+  # A resolved target that is a human `_user` (explicit `standard`), and one with
+  # no `accountKind` key at all (absent means standard, Q62).
+  service_account_standard_t1:
+    kind: service_account
+    id: human-1
+    attr:
+      tenantId: t1
+      accountKind: standard
+  service_account_no_kind_t1:
+    kind: service_account
+    id: legacy-1
+    attr:
+      tenantId: t1
+  service_account_t2:
+    kind: service_account
+    id: svc-other
+    attr:
+      tenantId: t2
+      accountKind: service
+  credential_t1:
+    kind: credential
+    id: apikey-1
+    attr:
+      tenantId: t1
+  credential_list_t1:
+    kind: credential
+    id: list
+    attr:
+      tenantId: t1
+  # Task 9.1: `create` has no resource yet and sends the literal `new`; a
+  # credential of another tenant, addressed by its opaque `apikey` id.
+  credential_new_t1:
+    kind: credential
+    id: new
+    attr:
+      tenantId: t1
+  credential_t2:
+    kind: credential
+    id: apikey-2
+    attr:
+      tenantId: t2
+  credential_list_t2:
+    kind: credential
+    id: list
+    attr:
+      tenantId: t2
   # No ownership configured.
   entity_service_unowned_t1:
     kind: catalog_entity

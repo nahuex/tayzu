@@ -191,7 +191,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -202,9 +202,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // admin-user.js`'s own import of `../auth.js` is type-only (erased at compile
 // time, `verbatimModuleSyntax`), so it carries no runtime ordering weight --
 // same reasoning as every other int test file in this package.
-import { bootstrapTestTenant } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, seedUserRow, testAppPool } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
+import { createContextResolver } from './context-resolver.js';
+import { AuthInvalidCredentialsError } from './errors.js';
 import { createMachineCredential, revokeMachineCredential } from './machine-credentials.js';
 import type { CreatedMachineCredential } from './machine-credentials.js';
 import * as authSchema from './persistence/schema.js';
@@ -328,6 +330,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
   /** Provisions "an organization admin" (requirement text) the same way `machine-credentials.int.test.ts` does. */
   async function bootstrapAdmin(): ReturnType<typeof bootstrapTestTenant> {
     return bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_ADMIN_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -342,7 +345,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     admin: Awaited<ReturnType<typeof bootstrapTestTenant>>,
   ): Promise<CreatedMachineCredential> {
     return createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Token exchange test credential',
       actorKind: 'integration',
@@ -595,7 +598,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
     const admin = await bootstrapAdmin();
     const created = await createIntegrationCredential(admin);
     await revokeMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       id: created.id,
       pool: appPool,
       tenantId: admin.organizationId,
@@ -646,5 +649,369 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
 
     // Never the credential's client id or its client secret.
     expectNoSecretsInTelemetry(harness, [created.id, created.secret]);
+  });
+
+  /**
+   * Task 10.6 (design D6, Resolved decision Q12), quoted from the 043 spec:
+   *
+   * #### Scenario: A tampered `_user` row does not raise the principal
+   * - GIVEN a service account whose `_user` entity has been given the `admin`
+   *   role by a direct write
+   * - WHEN it exchanges its credential and calls an operation
+   * - THEN its principal is `member` with no teams and no moderated blueprints
+   *
+   * Production symbols expected (module `./token-exchange.ts`):
+   * `exchangeMachineToken(auth, params, ports?)` gains a third argument,
+   * `ports.serviceAccountLookup(target)`, called with `{ tenantId, userId }`
+   * (the credential's `referenceId` and its `metadata.userId`) and resolving to
+   * the service account's `_user` row as `{ status: string; properties:
+   * Record<string, unknown> } | null` (`045` adds the deletion-marker lookup).
+   * The signed payload gains a `userId` attribution claim and nothing else:
+   * the role stays the credential's fixed `member` claim, and no role, team or
+   * moderated-blueprint claim is ever copied from the row.
+   *
+   * The "direct write" is modelled by a lookup port that returns the tampered
+   * row, so the test needs no catalog schema; the port is the only way the row
+   * could reach the exchange.
+   */
+  it('A tampered `_user` row does not raise the principal', async () => {
+    const admin = await bootstrapAdmin();
+    const serviceAccountId = 'svc-tampered-ci';
+    const created = await createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'Service account credential',
+      actorKind: 'integration',
+      metadata: { userId: serviceAccountId, createdBy: admin.userId },
+    });
+
+    // GIVEN the service account's `_user` entity was given the `admin` role by
+    // a direct write (plus elevated grants).
+    const lookups: { tenantId: string; userId: string }[] = [];
+    const tamperedRow = {
+      status: 'Active',
+      properties: {
+        accountKind: 'service',
+        portRole: 'admin',
+        role: 'admin',
+        roles: ['admin'],
+        teams: ['platform'],
+        moderatedBlueprints: ['service'],
+      },
+    };
+
+    // The real `_user` entity exists in the catalog (the resolver requires it
+    // `Active`), then is tampered by a direct write of the same properties.
+    await seedUserRow(testAppPool(), {
+      tenantId: admin.organizationId,
+      email: serviceAccountId,
+      name: serviceAccountId,
+      status: 'Active',
+    });
+    await withTenantTransaction(
+      testAppPool(),
+      { tenantId: admin.organizationId },
+      async (client) => {
+        const written = await client.query(
+          `update catalog_entity set spec_properties = $3::jsonb
+            where tenant_id = $1 and identifier = $2`,
+          [
+            admin.organizationId,
+            serviceAccountId,
+            JSON.stringify({ status: tamperedRow.status, ...tamperedRow.properties }),
+          ],
+        );
+        expect(written.rowCount, 'sanity: the service account _user row exists').toBe(1);
+      },
+    );
+
+    // WHEN it exchanges its credential ...
+    const exchanged = await exchangeMachineToken(
+      auth,
+      { clientId: created.id, clientSecret: created.secret },
+      {
+        serviceAccountLookup: (target: { tenantId: string; userId: string }) => {
+          lookups.push(target);
+          return Promise.resolve(tamperedRow);
+        },
+      },
+    );
+
+    // The port is the `_user` lookup, called for this tenant and identifier.
+    expect(lookups, 'the exchange looked up the bound _user through the port').toEqual([
+      { tenantId: admin.organizationId, userId: serviceAccountId },
+    ]);
+
+    // `userId` is an attribution claim; no authority is copied from the row.
+    const claims = JSON.parse(
+      Buffer.from(exchanged.accessToken.split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(claims['userId'], 'userId is added as an attribution claim').toBe(serviceAccountId);
+    expect(claims['role']).toBe('member');
+    expect(claims).not.toHaveProperty('teams');
+    expect(claims).not.toHaveProperty('moderatedBlueprints');
+    expect(claims).not.toHaveProperty('roles');
+
+    // ... and calls an operation (the resolver is the context of every call).
+    const resolveContext = createContextResolver({ auth, revocationPool: appPool });
+    const resolved = await resolveContext(
+      new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    );
+
+    // THEN "its principal is `member` with no teams and no moderated blueprints".
+    expect(resolved).toEqual({
+      tenantId: admin.organizationId,
+      actor: { type: 'integration', id: created.id },
+      principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
+    });
+  });
+
+  /**
+   * Task 11.7 (design D13, Q40, Q90). Scenarios (spec.md):
+   *
+   * #### Scenario: Disabling a service account takes effect within seconds
+   * - THEN ... a new exchange is refused
+   *
+   * #### Scenario: Re-enabling restores access without a new credential
+   * - GIVEN a `Disabled` service account
+   * - WHEN an admin re-enables it
+   * - THEN its status becomes `Active` and the same credential exchanges a token again
+   *
+   * Requirement: "no token MUST be issued for [a service account whose bound
+   * `_user` is absent or not `Active`], so a surviving credential of a deleted
+   * service account never resolves."
+   *
+   * Production symbols expected: `exchangeMachineToken` (`./token-exchange.ts`)
+   * rejects with `AuthInvalidCredentialsError` (`./errors.ts`) when the
+   * `ports.serviceAccountLookup` port resolves to `null` or to a row whose
+   * `status` is not `Active`; it signs nothing in that case. A rejected lookup
+   * also rejects (fail closed). The port here reads the real `_user` entity
+   * through a `tayzu_app` tenant transaction.
+   */
+  describe('service account state (task 11.7)', () => {
+    async function createServiceAccountCredential(
+      admin: Awaited<ReturnType<typeof bootstrapTestTenant>>,
+      serviceAccountId: string,
+    ): Promise<CreatedMachineCredential> {
+      return createMachineCredential(auth, {
+        userId: admin.userId,
+        organizationId: admin.organizationId,
+        name: 'Service account credential',
+        actorKind: 'integration',
+        metadata: { userId: serviceAccountId, createdBy: admin.userId },
+      });
+    }
+
+    /** The `_user` lookup port, reading the real catalog row (absent row is `null`). */
+    function realLookup(target: { tenantId: string; userId: string }): Promise<{
+      status: string;
+      properties: Record<string, unknown>;
+    } | null> {
+      return withTenantTransaction(testAppPool(), { tenantId: target.tenantId }, async (client) => {
+        const result = await client.query<{ properties: Record<string, unknown> }>(
+          `select e.spec_properties as properties
+               from catalog_entity e
+               join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+              where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2`,
+          [target.tenantId, target.userId],
+        );
+        const row = result.rows[0];
+        if (row === undefined) return null;
+        const status = row.properties['status'];
+        return { status: typeof status === 'string' ? status : '', properties: row.properties };
+      });
+    }
+
+    async function setStatus(
+      tenantId: string,
+      identifier: string,
+      status: 'Active' | 'Disabled',
+    ): Promise<void> {
+      await withTenantTransaction(testAppPool(), { tenantId }, async (client) => {
+        const written = await client.query(
+          `update catalog_entity
+              set spec_properties = jsonb_set(spec_properties, '{status}', to_jsonb($3::text))
+            where tenant_id = $1 and identifier = $2`,
+          [tenantId, identifier, status],
+        );
+        expect(written.rowCount, 'sanity: the _user row exists').toBe(1);
+      });
+    }
+
+    it('A disabled service account is refused a new token', async () => {
+      const admin = await bootstrapAdmin();
+      const serviceAccountId = `svc-disabled-${randomUUID().slice(0, 8)}`;
+      const created = await createServiceAccountCredential(admin, serviceAccountId);
+      await seedUserRow(testAppPool(), {
+        tenantId: admin.organizationId,
+        email: serviceAccountId,
+        name: serviceAccountId,
+        status: 'Disabled',
+      });
+
+      await expect(
+        exchangeMachineToken(
+          auth,
+          { clientId: created.id, clientSecret: created.secret },
+          { serviceAccountLookup: realLookup },
+        ),
+      ).rejects.toBeInstanceOf(AuthInvalidCredentialsError);
+    });
+
+    it('A deleted service account is refused a new token', async () => {
+      const admin = await bootstrapAdmin();
+      const serviceAccountId = `svc-deleted-${randomUUID().slice(0, 8)}`;
+      const created = await createServiceAccountCredential(admin, serviceAccountId);
+      await seedUserRow(testAppPool(), {
+        tenantId: admin.organizationId,
+        email: serviceAccountId,
+        name: serviceAccountId,
+        status: 'Active',
+      });
+      // Sanity: while the `_user` exists and is Active, the credential exchanges.
+      await exchangeMachineToken(
+        auth,
+        { clientId: created.id, clientSecret: created.secret },
+        { serviceAccountLookup: realLookup },
+      );
+
+      // The delete removes the `_user`; the credential survives (not revoked).
+      await withTenantTransaction(
+        testAppPool(),
+        { tenantId: admin.organizationId },
+        async (client) => {
+          const removed = await client.query(
+            `delete from catalog_entity where tenant_id = $1 and identifier = $2`,
+            [admin.organizationId, serviceAccountId],
+          );
+          expect(removed.rowCount, 'sanity: the _user row was removed').toBe(1);
+        },
+      );
+
+      await expect(
+        exchangeMachineToken(
+          auth,
+          { clientId: created.id, clientSecret: created.secret },
+          { serviceAccountLookup: realLookup },
+        ),
+      ).rejects.toBeInstanceOf(AuthInvalidCredentialsError);
+    });
+
+    it('A surviving key bound to an identifier with no _user is refused a token', async () => {
+      const admin = await bootstrapAdmin();
+      // Seeded as in 10.3: a non-revoked key bound to an identifier with no `_user`.
+      const created = await createServiceAccountCredential(
+        admin,
+        `svc-orphan-${randomUUID().slice(0, 8)}`,
+      );
+
+      await expect(
+        exchangeMachineToken(
+          auth,
+          { clientId: created.id, clientSecret: created.secret },
+          { serviceAccountLookup: realLookup },
+        ),
+      ).rejects.toBeInstanceOf(AuthInvalidCredentialsError);
+    });
+
+    it('A failing _user lookup refuses the token (fail closed)', async () => {
+      const admin = await bootstrapAdmin();
+      const created = await createServiceAccountCredential(
+        admin,
+        `svc-lookup-${randomUUID().slice(0, 8)}`,
+      );
+
+      await expect(
+        exchangeMachineToken(
+          auth,
+          { clientId: created.id, clientSecret: created.secret },
+          { serviceAccountLookup: () => Promise.reject(new Error('lookup unavailable')) },
+        ),
+      ).rejects.toBeDefined();
+    });
+
+    it('Re-enabling restores access without a new credential', async () => {
+      const admin = await bootstrapAdmin();
+      const serviceAccountId = `svc-reenable-${randomUUID().slice(0, 8)}`;
+      const created = await createServiceAccountCredential(admin, serviceAccountId);
+      await seedUserRow(testAppPool(), {
+        tenantId: admin.organizationId,
+        email: serviceAccountId,
+        name: serviceAccountId,
+        status: 'Disabled',
+      });
+      const params = { clientId: created.id, clientSecret: created.secret };
+      const ports = { serviceAccountLookup: realLookup };
+
+      // GIVEN a Disabled service account: the exchange is refused.
+      await expect(exchangeMachineToken(auth, params, ports)).rejects.toBeInstanceOf(
+        AuthInvalidCredentialsError,
+      );
+
+      // WHEN an admin re-enables it.
+      await setStatus(admin.organizationId, serviceAccountId, 'Active');
+
+      // THEN the SAME credential exchanges a token again.
+      const exchanged = await exchangeMachineToken(auth, params, ports);
+      const claims = JSON.parse(
+        Buffer.from(exchanged.accessToken.split('.')[1] ?? '', 'base64url').toString('utf8'),
+      ) as Record<string, unknown>;
+      expect(claims['userId']).toBe(serviceAccountId);
+      expect(claims['tenantId']).toBe(admin.organizationId);
+    });
+  });
+
+  /**
+   * Task 16.11c (Resolved decision Q147; VCDM O-8): the exchange fails closed.
+   *
+   * Production behavior expected (`./token-exchange.ts`): `exchangeMachineToken`
+   * rejects with `AuthInvalidCredentialsError`, like an invalid credential and
+   * signing no token, when the key's metadata binds a `userId` and no
+   * `ports.serviceAccountLookup` is given (today it signs a token, skipping the
+   * `_user` status check of task 11.7).
+   */
+  describe('a service account key without the lookup port (task 16.11c)', () => {
+    it("A service account's key exchanged without the lookup port is refused with no token", async () => {
+      const admin = await bootstrapAdmin();
+      const serviceAccountId = `svc-noport-${randomUUID().slice(0, 8)}`;
+      const created = await createMachineCredential(auth, {
+        userId: admin.userId,
+        organizationId: admin.organizationId,
+        name: 'Service account credential',
+        actorKind: 'integration',
+        metadata: { userId: serviceAccountId, createdBy: admin.userId },
+      });
+      await seedUserRow(testAppPool(), {
+        tenantId: admin.organizationId,
+        email: serviceAccountId,
+        name: serviceAccountId,
+        status: 'Active',
+      });
+      const params = { clientId: created.id, clientSecret: created.secret };
+
+      // Without the ports argument at all, and with an empty one.
+      await expect(exchangeMachineToken(auth, params)).rejects.toBeInstanceOf(
+        AuthInvalidCredentialsError,
+      );
+      await expect(exchangeMachineToken(auth, params, {})).rejects.toBeInstanceOf(
+        AuthInvalidCredentialsError,
+      );
+    });
+
+    it('A key with no bound userId still exchanges without the lookup port', async () => {
+      const admin = await bootstrapAdmin();
+      const created = await createMachineCredential(auth, {
+        userId: admin.userId,
+        organizationId: admin.organizationId,
+        name: 'Plain integration credential',
+        actorKind: 'integration',
+      });
+
+      const exchanged = await exchangeMachineToken(auth, {
+        clientId: created.id,
+        clientSecret: created.secret,
+      });
+      expect(exchanged.accessToken).toEqual(expect.any(String));
+    });
   });
 });

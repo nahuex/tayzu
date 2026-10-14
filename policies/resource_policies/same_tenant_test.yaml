@@ -14,7 +14,11 @@ tests:
         - entity_service_platform_t1
         - team_t1
         - user_t1
-      actions: [view, list, create, update, delete]
+        - credential_t1
+        - credential_list_t1
+        - service_account_t1
+        - service_account_new_t1
+      actions: [view, list, create, update, delete, rotate, revoke]
     expected:
       - principal: admin_t2
         resource: blueprint_t1
@@ -24,6 +28,8 @@ tests:
           create: EFFECT_DENY
           update: EFFECT_DENY
           delete: EFFECT_DENY
+          rotate: EFFECT_DENY
+          revoke: EFFECT_DENY
       - principal: admin_t2
         resource: entity_service_unowned_t1
         actions: *all_denied
@@ -35,6 +41,18 @@ tests:
         actions: *all_denied
       - principal: admin_t2
         resource: user_t1
+        actions: *all_denied
+      - principal: admin_t2
+        resource: credential_t1
+        actions: *all_denied
+      - principal: admin_t2
+        resource: credential_list_t1
+        actions: *all_denied
+      - principal: admin_t2
+        resource: service_account_t1
+        actions: *all_denied
+      - principal: admin_t2
+        resource: service_account_new_t1
         actions: *all_denied
 
   - name: Member of the owning team's name in another tenant is denied

@@ -54,7 +54,7 @@ import { registration, type TelemetryTestHarness } from './__fixtures__/register
 import { startOidcStub, type OidcStub } from './__fixtures__/oidc-stub.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import { createContextResolver } from './context-resolver.js';
-import { bootstrapTestTenant, createAdminUser } from './__fixtures__/admin-user.js';
+import { bootstrapTestTenant, createAdminUser, testAppPool } from './__fixtures__/admin-user.js';
 import * as authSchema from './persistence/schema.js';
 import { TEST_SECRET, TEST_PASSWORD } from './__fixtures__/test-secret.js';
 
@@ -420,6 +420,7 @@ describe('Visma Connect linked sign-in (task 19.5, design D23/D24)', () => {
   it('Sign-in with a linked Visma Connect account succeeds: resolves to actor.type user for the linked Tayzu user, with span and counter', async () => {
     const harness = registeredHarness();
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'Linked Person',
       email: `linked-${randomUUID()}@example.test`,
       password: TEST_PASSWORD,
@@ -637,6 +638,7 @@ describe('Visma Connect login emits login_succeeded (task 24.5, design Q54)', ()
     const harness = registeredHarness();
     const email = `sso-login-${randomUUID()}@example.test`;
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: 'SSO Login Telemetry User',
       email,
       password: TEST_PASSWORD,

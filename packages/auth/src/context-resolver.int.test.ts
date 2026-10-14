@@ -153,7 +153,7 @@ import { generateKeyPairSync, randomInt, randomUUID, sign } from 'node:crypto';
 
 import type { Attributes } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -170,6 +170,8 @@ import {
   bootstrapTestTenant,
   createAdminUser,
   signInAdminUser,
+  seedUserRow,
+  testAppPool,
 } from './__fixtures__/admin-user.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
@@ -387,6 +389,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // `activeOrganizationId` (task 2.4's own, already-green
     // exactly-one-membership rule).
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -507,6 +510,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // `bootstrapTestTenant`), the same replacement the first scenario in
     // this file uses, so the session under test has an active organization.
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -609,6 +613,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // call, so that session already carries it as its `activeOrganizationId`
     // (task 2.4's exactly-one-membership rule).
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -687,6 +692,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
    */
   it('Expired machine access token is rejected', async () => {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -702,7 +708,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // own doc comment for why this is built this way rather than waiting a
     // real hour or faking the system clock).
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Expired token test credential',
       actorKind: 'integration',
@@ -773,6 +779,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
    */
   it("A fresh machine access token resolves actor.type from the credential's fixed kind", async () => {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -784,7 +791,7 @@ describe('resolveContext: session-cookie branch (task 3.1, design D3, D19)', () 
     // GIVEN "an active `agent`-kind machine credential" (see this test's own
     // doc comment for why `agent`, not `integration`).
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Fresh token test credential',
       actorKind: 'agent',
@@ -896,12 +903,13 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
   });
 
   async function issueToken(): Promise<{
-    headers: Headers;
+    adminUserId: string;
     tenantId: string;
     credential: CreatedMachineCredential;
     accessToken: string;
   }> {
     const admin = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -909,9 +917,8 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    const headers = new Headers({ cookie: admin.cookie });
     const credential = await createMachineCredential(auth, {
-      headers,
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Revocation test credential',
       actorKind: 'integration',
@@ -921,7 +928,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
       clientSecret: credential.secret,
     });
     return {
-      headers,
+      adminUserId: admin.userId,
       tenantId: admin.organizationId,
       credential,
       accessToken: exchanged.accessToken,
@@ -929,7 +936,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
   }
 
   it('A token issued before revocation is rejected within the revocation TTL', async () => {
-    const { headers, tenantId, credential, accessToken } = await issueToken();
+    const { adminUserId, tenantId, credential, accessToken } = await issueToken();
     const resolveContext = resolverWith(appPool);
     const bearer = new Headers({ authorization: `Bearer ${accessToken}` });
 
@@ -943,7 +950,7 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
 
     // WHEN an admin revokes the credential ...
     await revokeMachineCredential(auth, {
-      headers,
+      userId: adminUserId,
       id: credential.id,
       pool: appPool,
       tenantId,
@@ -1065,9 +1072,9 @@ describe('resolveContext: machine-token revocation list (task 5.7, design D21)',
 
   it('A revoked token rejection increments the revocation-check counter and logs revoked_token_rejected', async () => {
     const harness = registeredHarness();
-    const { headers, tenantId, credential, accessToken } = await issueToken();
+    const { adminUserId, tenantId, credential, accessToken } = await issueToken();
     await revokeMachineCredential(auth, {
-      headers,
+      userId: adminUserId,
       id: credential.id,
       pool: appPool,
       tenantId,
@@ -1242,6 +1249,7 @@ describe('resolveContext: principal roles (task 9.5, Q26)', () => {
     await (auth.api as AddMemberApiSurface).addMember({
       body: { userId: created.userId, organizationId, role },
     });
+    await seedUserRow(testAppPool(), { tenantId: organizationId, email, name: TEST_USER_NAME });
     const signedIn = await signInAdminUser(auth, {
       email,
       password: TEST_PASSWORD,
@@ -1257,6 +1265,7 @@ describe('resolveContext: principal roles (task 9.5, Q26)', () => {
 
   async function newTenant(): Promise<{ cookie: string; organizationId: string }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -1399,8 +1408,9 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
     await endQuietly(db.$client);
   });
 
-  async function newAdmin(): Promise<{ cookie: string; organizationId: string }> {
+  async function newAdmin(): Promise<{ cookie: string; organizationId: string; userId: string }> {
     const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
       name: TEST_USER_NAME,
       email: randomEmail(),
       password: TEST_PASSWORD,
@@ -1408,7 +1418,11 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
       organizationSlug: randomSlug(),
       ip: randomIp(),
     });
-    return { cookie: tenant.cookie, organizationId: tenant.organizationId };
+    return {
+      cookie: tenant.cookie,
+      organizationId: tenant.organizationId,
+      userId: tenant.userId,
+    };
   }
 
   /** A validly signed token (the instance's own jwt key) with caller-chosen claims. */
@@ -1448,7 +1462,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
       // GIVEN an active machine credential of each kind, created without any
       // role choice, and its exchanged access token
       const credential = await createMachineCredential(auth, {
-        headers: new Headers({ cookie: admin.cookie }),
+        userId: admin.userId,
         organizationId: admin.organizationId,
         name: `Principal ${actorKind} credential`,
         actorKind,
@@ -1475,7 +1489,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
   it('The role is stored on the credential metadata next to actorKind', async () => {
     const admin = await newAdmin();
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Metadata role credential',
       actorKind: 'integration',
@@ -1493,7 +1507,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
   it('A token claim cannot be escalated to admin', async () => {
     const admin = await newAdmin();
     const credential = await createMachineCredential(auth, {
-      headers: new Headers({ cookie: admin.cookie }),
+      userId: admin.userId,
       organizationId: admin.organizationId,
       name: 'Escalation credential',
       actorKind: 'integration',
@@ -1542,7 +1556,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
     type CreateWithRole = (
       auth: AuthInstance,
       params: {
-        readonly headers: Headers;
+        readonly userId: string;
         readonly organizationId: string;
         readonly name: string;
         readonly actorKind: 'integration' | 'agent';
@@ -1553,7 +1567,7 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
     // WHEN an org admin asks for a credential with the admin role
     await expect(
       (createMachineCredential as unknown as CreateWithRole)(auth, {
-        headers: new Headers({ cookie: admin.cookie }),
+        userId: admin.userId,
         organizationId: admin.organizationId,
         name: 'Admin role credential',
         actorKind: 'integration',
@@ -1568,3 +1582,1249 @@ describe('resolveContext: machine-token principal (task 9.5, Q28)', () => {
     expect(rows.rows).toHaveLength(0);
   });
 });
+
+/**
+ * Task 11.1b (design D13 / Revocation, "keyed by `(tenantId, credentialId)`"):
+ * the revocation cache must not let a revocation in one tenant poison the
+ * same credential id in another.
+ *
+ * ## Production symbols expected
+ *
+ * No new symbols: `createContextResolver` in `./context-resolver.js` keeps its
+ * signature; only its internal revocation cache key changes.
+ *
+ * ## Expected failure
+ *
+ * Assertion failure: today the cache is keyed by `credentialId` alone, so the
+ * `t1` token is rejected with `CATALOG_CONTEXT_REQUIRED` after `t2`'s
+ * revocation of the same id was cached.
+ */
+describe('resolveContext: revocation cache is keyed per tenant (task 11.1b)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  async function tokenFor(tenantId: string, credentialId: string): Promise<Headers> {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const signed = await signJwtOf(auth).signJWT({
+      body: {
+        payload: {
+          exp: nowSeconds + ONE_HOUR_SECONDS,
+          sub: credentialId,
+          tenantId,
+          role: 'member',
+          actor: { type: 'integration', id: credentialId },
+        },
+      },
+    });
+    return new Headers({ authorization: `Bearer ${signed.token}` });
+  }
+
+  async function revokeRow(tenantId: string, credentialId: string): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId }, async (client) => {
+      await client.query(
+        'insert into machine_credential_revocation (tenant_id, credential_id, revoked_at) values ($1, $2, now())',
+        [tenantId, credentialId],
+      );
+    });
+  }
+
+  function resolverOver(): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: appPool });
+  }
+
+  it('A revocation in one tenant does not poison the cache of another', async () => {
+    const t1 = `t1-${randomUUID()}`;
+    const t2 = `t2-${randomUUID()}`;
+    const c1 = `c1-${randomUUID()}`;
+    const resolveContext = resolverOver();
+
+    // GIVEN credential id c1 revoked in t2
+    await revokeRow(t2, c1);
+
+    // AND that revocation cached by a resolve of the t2 principal (rejected)
+    await expectContextRequiredRejection(resolveContext(await tokenFor(t2, c1)));
+
+    // WHEN a t1 principal with the same id is resolved by the same resolver
+    // THEN it is still accepted
+    expect(await resolveContext(await tokenFor(t1, c1))).toMatchObject({
+      tenantId: t1,
+      actor: { type: 'integration', id: c1 },
+    });
+
+    // AND t2's principal is still rejected (the cached "allowed" of t1 does not shadow it)
+    await expectContextRequiredRejection(resolveContext(await tokenFor(t2, c1)));
+  });
+
+  it('A cached allowance in one tenant does not shadow a revocation in another', async () => {
+    const t1 = `t1-${randomUUID()}`;
+    const t2 = `t2-${randomUUID()}`;
+    const c1 = `c1-${randomUUID()}`;
+    const resolveContext = resolverOver();
+
+    await revokeRow(t2, c1);
+
+    // t1 is resolved first, caching "not revoked" for c1
+    expect(await resolveContext(await tokenFor(t1, c1))).toMatchObject({ tenantId: t1 });
+
+    // t2's principal with the same id is still rejected
+    await expectContextRequiredRejection(resolveContext(await tokenFor(t2, c1)));
+  });
+});
+
+/**
+ * Task 11.6 (design D13 "Principal checks", Resolved decisions Q40, Q90;
+ * `specs/identity-lifecycle-and-org-admin/spec.md`, "Service accounts"):
+ *
+ * #### Scenario: Disabling a service account takes effect within seconds
+ * - GIVEN service account `svc-ci-github` is `Active`, with an access token already issued
+ * - WHEN an admin disables it
+ * - THEN its status becomes `Disabled`, the issued token is rejected within the cache window, and a new exchange is refused
+ *
+ * #### Scenario: Re-enabling restores access without a new credential
+ * - GIVEN a `Disabled` service account
+ * - WHEN an admin re-enables it
+ * - THEN its status becomes `Active` and the same credential exchanges a token again
+ *
+ * #### Scenario: A token for a deleted service account is rejected
+ * - GIVEN a service account that was deleted while a credential and an issued token survive
+ * - WHEN the token is used, or the credential is exchanged
+ * - THEN the call is rejected and no token is issued
+ *
+ * Also named by the task: a non-revoked key bound to an identifier that has no
+ * `_user` (seeded as in 10.3) does not resolve; a lookup failure rejects; a
+ * token without the `userId` claim is unaffected; each rejection logs
+ * `catalog.security.principal_rejected` (reason `service_account_disabled` or
+ * `service_account_missing`) and increments `tayzu.identity.principal_rejections`.
+ * (The exchange half of each scenario is task 11.7's, in `token-exchange.int.test.ts`.)
+ *
+ * ## Production symbols expected
+ *
+ * No new exports: `createContextResolver` in `./context-resolver.js` keeps its
+ * signature. Its bearer branch reads the token's `userId` claim, looks up the
+ * `_user` entity with that identifier in the token's tenant through
+ * `revocationPool` (cached at most 5 s on `Date.now()`), and rejects with
+ * `CATALOG_CONTEXT_REQUIRED` unless `spec_properties.status` is `Active`.
+ * Telemetry in `./telemetry/instruments.js`: log event
+ * `catalog.security.principal_rejected` (WARN; attributes
+ * `tayzu.identity.rejection.reason`, `tayzu.actor.type`) and counter
+ * `tayzu.identity.principal_rejections` (same two attributes).
+ *
+ * ## Expected failure
+ *
+ * Assertion failures: today the bearer branch never reads the claim, so a
+ * token of a disabled, deleted or never-created service account still resolves.
+ */
+describe('resolveContext: service-account principal check (task 11.6, D13, Q40)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  function resolverOver(pool: TestDb['$client']): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: pool });
+  }
+
+  /** Cache window (5 s) plus margin; only `Date` is faked. */
+  const PAST_CACHE_WINDOW_MS = 10_000;
+
+  function advanceClock(offsetMs: number): void {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + offsetMs });
+  }
+
+  interface ServiceAccountFixture {
+    readonly tenantId: string;
+    readonly serviceAccountId: string;
+    readonly credential: CreatedMachineCredential;
+    readonly bearer: Headers;
+  }
+
+  async function newTenantAdmin(): Promise<{ organizationId: string; userId: string }> {
+    const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Service Account Principal Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return { organizationId: tenant.organizationId, userId: tenant.userId };
+  }
+
+  /** A credential bound (metadata `userId`) to `serviceAccountId`, and an already-issued token for it. */
+  async function issueBoundToken(
+    admin: { organizationId: string; userId: string },
+    serviceAccountId: string,
+  ): Promise<ServiceAccountFixture> {
+    const credential = await createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'SA principal credential',
+      actorKind: 'integration',
+      metadata: { userId: serviceAccountId, createdBy: admin.userId },
+    });
+    const exchanged = await exchangeMachineToken(
+      auth,
+      { clientId: credential.id, clientSecret: credential.secret },
+      // The exchange's own `_user` gate (11.7) is not under test here: the port reports the
+      // seeded `Active` state so every resolver check below stays what this suite exercises.
+      { serviceAccountLookup: () => Promise.resolve({ status: 'Active', properties: {} }) },
+    );
+    return {
+      tenantId: admin.organizationId,
+      serviceAccountId,
+      credential,
+      bearer: new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    };
+  }
+
+  function newServiceAccountId(): string {
+    return `svc-${randomUUID()}`;
+  }
+
+  /** An `Active` service account `_user` plus a bound credential and an issued token. */
+  async function activeServiceAccount(): Promise<ServiceAccountFixture> {
+    const admin = await newTenantAdmin();
+    const serviceAccountId = newServiceAccountId();
+    await seedUserRow(testAppPool(), {
+      tenantId: admin.organizationId,
+      email: serviceAccountId,
+      name: serviceAccountId,
+      status: 'Active',
+    });
+    return issueBoundToken(admin, serviceAccountId);
+  }
+
+  /** Writes the `_user` status directly, standing in for the admin operation. */
+  async function setStatus(
+    fixture: ServiceAccountFixture,
+    status: 'Active' | 'Disabled',
+  ): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId: fixture.tenantId }, async (client) => {
+      const result = await client.query(
+        `update catalog_entity
+            set spec_properties = jsonb_set(spec_properties, '{status}', to_jsonb($3::text))
+          where tenant_id = $1 and identifier = $2`,
+        [fixture.tenantId, fixture.serviceAccountId, status],
+      );
+      expect(result.rowCount, 'sanity: the service account _user row exists').toBe(1);
+    });
+  }
+
+  /** Removes the `_user` entity, standing in for a delete or a tamper. */
+  async function removeUser(fixture: ServiceAccountFixture): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId: fixture.tenantId }, async (client) => {
+      const result = await client.query(
+        'delete from catalog_entity where tenant_id = $1 and identifier = $2',
+        [fixture.tenantId, fixture.serviceAccountId],
+      );
+      expect(result.rowCount, 'sanity: the service account _user row existed').toBe(1);
+    });
+  }
+
+  function expectResolved(resolved: unknown, fixture: ServiceAccountFixture): void {
+    expect(resolved).toMatchObject({
+      tenantId: fixture.tenantId,
+      actor: { type: 'integration', id: fixture.credential.id },
+      principal: { roles: ['member'] },
+    });
+  }
+
+  it('Disabling a service account takes effect within seconds', async () => {
+    // GIVEN `Active` with an access token already issued: it resolves, which
+    // also warms the cache with "Active".
+    const fixture = await activeServiceAccount();
+    const resolveContext = resolverOver(appPool);
+    expectResolved(await resolveContext(fixture.bearer), fixture);
+
+    // WHEN an admin disables it ...
+    await setStatus(fixture, 'Disabled');
+
+    // THEN the already-issued token is rejected once the cache window passed.
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await expectContextRequiredRejection(resolveContext(fixture.bearer));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Re-enabling restores access without a new credential', async () => {
+    const fixture = await activeServiceAccount();
+    const resolveContext = resolverOver(appPool);
+    await setStatus(fixture, 'Disabled');
+
+    // GIVEN a `Disabled` service account: the token is rejected.
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await expectContextRequiredRejection(resolveContext(fixture.bearer));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // WHEN an admin re-enables it ...
+    await setStatus(fixture, 'Active');
+
+    // THEN the very same token (same credential, nothing new issued) resolves
+    // again after the cache window.
+    advanceClock(2 * PAST_CACHE_WINDOW_MS);
+    try {
+      expectResolved(await resolveContext(fixture.bearer), fixture);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('A token for a deleted service account is rejected', async () => {
+    // GIVEN an `Active` service account whose credential (never revoked) and
+    // issued token survive the removal of its `_user`.
+    const fixture = await activeServiceAccount();
+    const resolveContext = resolverOver(appPool);
+    expectResolved(await resolveContext(fixture.bearer), fixture);
+    await removeUser(fixture);
+
+    // WHEN the token is used after the cache window THEN it is rejected.
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await expectContextRequiredRejection(resolveContext(fixture.bearer));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('A non-revoked key bound to an identifier with no _user does not resolve', async () => {
+    // GIVEN a non-revoked credential bound to `svc-…` with no `_user` at all
+    // (seeded directly, as in 10.3), and a token minted from it.
+    const admin = await newTenantAdmin();
+    const fixture = await issueBoundToken(admin, newServiceAccountId());
+
+    // WHEN the token is used THEN it does not resolve (fresh resolver: no cache).
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+  });
+
+  it('A lookup failure of the service account _user rejects', async () => {
+    const fixture = await activeServiceAccount();
+
+    // Control: with a reachable lookup the same token resolves, so the
+    // rejection below can only come from the failing `_user` lookup.
+    expectResolved(await resolverOver(appPool)(fixture.bearer), fixture);
+
+    // GIVEN a pool on which only the catalog entity read fails (the revocation
+    // list stays reachable, so the revocation check is not what rejects).
+    const failing = poolFailingOnEntityReads(appPool);
+
+    // THEN the unreachable check is never treated as `Active`.
+    await expectContextRequiredRejection(resolverOver(failing)(fixture.bearer));
+  });
+
+  it('A token without the userId claim is unaffected', async () => {
+    // GIVEN an integration credential bound to no service account, in a
+    // tenant with no service account `_user` at all.
+    const admin = await newTenantAdmin();
+    const credential = await createMachineCredential(auth, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      name: 'Unbound credential',
+      actorKind: 'integration',
+    });
+    const exchanged = await exchangeMachineToken(auth, {
+      clientId: credential.id,
+      clientSecret: credential.secret,
+    });
+    const harness = registeredHarness();
+    await harness.reset();
+
+    // WHEN the token is used THEN it resolves as before ...
+    const resolved = await resolverOver(appPool)(
+      new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    );
+    expect(resolved).toEqual({
+      tenantId: admin.organizationId,
+      actor: { type: 'integration', id: credential.id },
+      principal: { roles: ['member'], teams: [], moderatedBlueprints: [] },
+    });
+
+    // ... and no principal rejection is logged or counted.
+    await harness.forceFlush();
+    expect(principalRejectedLogs(harness)).toHaveLength(0);
+    expect(rejectionPoints(harness)).toHaveLength(0);
+  });
+
+  it('A disabled service account logs principal_rejected and counts the rejection', async () => {
+    const fixture = await activeServiceAccount();
+    await setStatus(fixture, 'Disabled');
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+    await harness.forceFlush();
+
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_disabled',
+      'tayzu.actor.type': 'integration',
+    });
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_disabled',
+      'tayzu.actor.type': 'integration',
+    });
+  });
+
+  it('A deleted service account logs principal_rejected with reason service_account_missing', async () => {
+    const fixture = await activeServiceAccount();
+    await removeUser(fixture);
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+    await harness.forceFlush();
+
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_missing',
+      'tayzu.actor.type': 'integration',
+    });
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_missing',
+      'tayzu.actor.type': 'integration',
+    });
+  });
+
+  it('A key bound to an identifier with no _user counts service_account_missing', async () => {
+    const admin = await newTenantAdmin();
+    const fixture = await issueBoundToken(admin, newServiceAccountId());
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolverOver(appPool)(fixture.bearer));
+    await harness.forceFlush();
+
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.attributes).toEqual({
+      'tayzu.identity.rejection.reason': 'service_account_missing',
+      'tayzu.actor.type': 'integration',
+    });
+  });
+
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  function principalRejectedLogs(
+    harness: TelemetryTestHarness,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']>[number][] {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'catalog.security.principal_rejected',
+    );
+  }
+
+  // `@opentelemetry/sdk-metrics`'s `DataPointType.SUM`, inlined like above.
+  const SUM_DATA_POINT_TYPE = 3;
+
+  function rejectionPoints(harness: TelemetryTestHarness): {
+    attributes: Attributes;
+    value: number;
+  }[] {
+    const points: { attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === 'tayzu.identity.principal_rejections' &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === SUM_DATA_POINT_TYPE
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+});
+
+/**
+ * Task 11.8 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * decision Q105 part 3, which amends the "`Disabled` only" rule of Q25; Q46,
+ * Q50, Q77; design D13). Spec scenarios, quoted from
+ * `specs/identity-lifecycle-and-org-admin/spec.md`:
+ *
+ * #### Scenario: An `Invited` member is rejected by the resolver
+ * - GIVEN a member of `t1` whose `_user` in `t1` is `Invited`, as a failed
+ *   acceptance can leave it, or `Staged`
+ * - WHEN the member calls any `/v1` route in `t1`
+ * - THEN the call is rejected with `CATALOG_CONTEXT_REQUIRED` (401) and no
+ *   reason in the body, `catalog.security.principal_rejected` is logged, and
+ *   the same user is accepted in a tenant where their `_user` is `Active`
+ *
+ * #### Scenario: A member of two tenants is disabled in one only
+ * - GIVEN an `Active` user who belongs to `t1` and `t2`, with a session in each
+ * - WHEN the admin of `t1` disables the user
+ * - THEN the user's `t1` session is rejected and their `_user` status in `t1`
+ *   is `Disabled`
+ * - AND their `t2` session, `_user` status and global account are unchanged,
+ *   and re-enabling in `t1` restores only `t1`
+ *
+ * Also from the requirement "Every member has a `_user` row": a human member
+ * with no `_user` row in the active tenant is rejected (reason `user_missing`).
+ *
+ * ## Production symbols expected
+ *
+ * No new symbol: `createContextResolver` (`./context-resolver.ts`) gains, in its
+ * session-cookie branch, a read of the member's `_user` status in the active
+ * tenant through `revocationPool` (cached 5 s per `(tenantId, userId)`, status
+ * only; the grants read stays uncached). Any status other than `Active` rejects
+ * with the reason `user_disabled`, an absent row with `user_missing`, and a
+ * failed lookup rejects too and is never cached. A rejection throws the same
+ * `AuthContextError` as a missing session (no reason in the error), logs
+ * `catalog.security.principal_rejected` (`tayzu.identity.rejection.reason`,
+ * `tayzu.actor.type` `user`) and increments
+ * `tayzu.identity.principal_rejections` with the same attributes.
+ *
+ * ## Why these fail right now
+ *
+ * The resolver reads the `_user` row only for its grants, admits any status
+ * (assertion failures: the promise resolves instead of rejecting), returns a
+ * principal-less context on a failed lookup, and never logs a rejection.
+ */
+describe('resolveContext: a human is admitted only with an Active _user (task 11.8, D13, Q105)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  type UserStatus = 'Staged' | 'Invited' | 'Active' | 'Disabled';
+
+  interface AddMemberSurface {
+    addMember(args: {
+      body: { userId: string; organizationId: string; role: string };
+    }): Promise<unknown>;
+  }
+
+  interface Placement {
+    readonly tenantId: string;
+    /** The member's `_user` status in that tenant, or `null` for no row at all. */
+    readonly status: UserStatus | null;
+  }
+
+  interface Member {
+    readonly userId: string;
+    readonly email: string;
+    /** One live session cookie per placement, active on that placement's tenant. */
+    readonly cookies: readonly string[];
+  }
+
+  interface PoolProbe {
+    fail: boolean;
+    entityQueries: number;
+  }
+
+  /** Cache window (5 s) plus margin; only `Date` is faked. */
+  const PAST_CACHE_WINDOW_MS = 10_000;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  function resolverOver(pool: TestDb['$client']): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: pool });
+  }
+
+  function advanceClock(offsetMs: number): void {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + offsetMs });
+  }
+
+  /** A pool whose clients count (and, while `probe.fail`, fail) every `catalog_entity` query. */
+  function probedPool(pool: TestDb['$client'], probe: PoolProbe): TestDb['$client'] {
+    const bound = (target: object, property: string | symbol): unknown => {
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+    };
+    return new Proxy(pool, {
+      get(target, property) {
+        if (property !== 'connect') {
+          return bound(target, property);
+        }
+        return async (): Promise<unknown> => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(clientTarget, clientProperty) {
+              if (clientProperty !== 'query') {
+                return bound(clientTarget, clientProperty);
+              }
+              return (...args: unknown[]): Promise<unknown> => {
+                const text: unknown = args[0];
+                if (typeof text === 'string' && text.includes('catalog_entity')) {
+                  probe.entityQueries += 1;
+                  if (probe.fail) {
+                    return Promise.reject(new Error('simulated _user lookup failure'));
+                  }
+                }
+                return (clientTarget.query as unknown as QueryFunction).apply(clientTarget, args);
+              };
+            },
+          });
+        };
+      },
+    });
+  }
+
+  async function newTenant(): Promise<string> {
+    const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_USER_NAME,
+      email: randomEmail(),
+      password: TEST_PASSWORD,
+      organizationName: 'Human Status Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return tenant.organizationId;
+  }
+
+  /**
+   * A user who belongs to every placement's tenant, with the `_user` row each
+   * placement names (seeded directly) and one session per placement made active
+   * on that tenant (the session row is updated directly, as the membership
+   * re-check of 3.6 does for a switched tenant).
+   */
+  async function newMember(placements: readonly Placement[]): Promise<Member> {
+    const email = randomEmail();
+    const created = await createAdminUser(auth, {
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+    });
+    for (const placement of placements) {
+      await (auth.api as AddMemberSurface).addMember({
+        body: { userId: created.userId, organizationId: placement.tenantId, role: 'member' },
+      });
+      if (placement.status !== null) {
+        await seedUserRow(testAppPool(), {
+          tenantId: placement.tenantId,
+          email,
+          name: TEST_USER_NAME,
+          status: placement.status,
+        });
+      }
+    }
+    const cookies: string[] = [];
+    for (const placement of placements) {
+      const signedIn = await signInAdminUser(auth, {
+        email,
+        password: TEST_PASSWORD,
+        ip: randomIp(),
+      });
+      await db.execute(sql`
+        update auth.session set active_organization_id = ${placement.tenantId}
+        where token = ${signedIn.token}
+      `);
+      cookies.push(signedIn.cookie);
+    }
+    return { userId: created.userId, email, cookies };
+  }
+
+  /** Writes the `_user` status directly, standing in for the admin operation. */
+  async function setStatus(tenantId: string, email: string, status: UserStatus): Promise<void> {
+    await withTenantTransaction(appPool, { tenantId }, async (client) => {
+      const result = await client.query(
+        `update catalog_entity
+            set spec_properties = jsonb_set(spec_properties, '{status}', to_jsonb($3::text))
+          where tenant_id = $1 and identifier = $2`,
+        [tenantId, email, status],
+      );
+      expect(result.rowCount, 'sanity: the _user row exists').toBe(1);
+    });
+  }
+
+  async function userStatusOf(tenantId: string, email: string): Promise<unknown> {
+    return withTenantTransaction(appPool, { tenantId }, async (client) => {
+      const result = await client.query<{ status: unknown }>(
+        `select spec_properties ->> 'status' as status
+           from catalog_entity where tenant_id = $1 and identifier = $2`,
+        [tenantId, email],
+      );
+      return result.rows[0]?.status;
+    });
+  }
+
+  function cookieHeaders(cookie: string | undefined): Headers {
+    if (cookie === undefined) {
+      throw new Error('fixture: the member has no session for this placement');
+    }
+    return new Headers({ cookie });
+  }
+
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  function principalRejectedLogs(
+    harness: TelemetryTestHarness,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']>[number][] {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'catalog.security.principal_rejected',
+    );
+  }
+
+  // `@opentelemetry/sdk-metrics`'s `DataPointType.SUM`, inlined like above.
+  const SUM_DATA_POINT_TYPE = 3;
+
+  function rejectionPoints(harness: TelemetryTestHarness): {
+    attributes: Attributes;
+    value: number;
+  }[] {
+    const points: { attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === 'tayzu.identity.principal_rejections' &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === SUM_DATA_POINT_TYPE
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  /** Rejects `cookie` and checks the log record and the counter name exactly `reason`. */
+  async function expectRejectedWithReason(
+    resolveContext: (headers: Headers) => Promise<unknown>,
+    cookie: string | undefined,
+    reason: string,
+  ): Promise<void> {
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolveContext(cookieHeaders(cookie)));
+    await harness.forceFlush();
+
+    const expected = { 'tayzu.identity.rejection.reason': reason, 'tayzu.actor.type': 'user' };
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual(expected);
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual(expected);
+  }
+
+  it('A member of two tenants is disabled in one only', async () => {
+    // GIVEN a user of t1 and t2 with a session in each; their `_user` is
+    // `Disabled` in t1 and `Active` in t2 (seeded directly).
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    const member = await newMember([
+      { tenantId: t1, status: 'Disabled' },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    // THEN the t1 session is rejected, with the reason `user_disabled` in the log.
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_disabled');
+    expect(await userStatusOf(t1, member.email)).toBe('Disabled');
+
+    // AND the t2 session, `_user` status and global account are unchanged.
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+      actor: { type: 'user', id: member.userId },
+      principal: { roles: ['member'] },
+    });
+    expect(await userStatusOf(t2, member.email)).toBe('Active');
+    const account = await db.execute<{ banned: boolean | null }>(sql`
+      select banned from auth."user" where id = ${member.userId}
+    `);
+    expect(account.rows[0]?.banned ?? false, 'the global account is not banned').toBe(false);
+
+    // AND re-enabling in t1 restores only t1: t1 resolves again after the
+    // cache window, and t2 is still served.
+    await setStatus(t1, member.email, 'Active');
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      expect(await resolveContext(cookieHeaders(member.cookies[0]))).toMatchObject({
+        tenantId: t1,
+        actor: { type: 'user', id: member.userId },
+      });
+      expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+        tenantId: t2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await userStatusOf(t2, member.email)).toBe('Active');
+  }, 60_000);
+
+  it('An Invited member is rejected by the resolver: a member whose _user is Invited', async () => {
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    // GIVEN a member of t1 whose `_user` in t1 is `Invited`, as a failed
+    // acceptance leaves it, and an `Active` one in t2.
+    const member = await newMember([
+      { tenantId: t1, status: 'Invited' },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    // THEN the call is rejected and logged with `user_disabled` ("present and not Active") ...
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_disabled');
+
+    // ... and the same user is accepted in the tenant where the row is `Active`.
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+      actor: { type: 'user', id: member.userId },
+    });
+  }, 60_000);
+
+  it('An Invited member is rejected by the resolver: a member whose _user is Staged', async () => {
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    const member = await newMember([
+      { tenantId: t1, status: 'Staged' },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_disabled');
+
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+      actor: { type: 'user', id: member.userId },
+    });
+  }, 60_000);
+
+  it('A member with no _user row in the active tenant is rejected with user_missing', async () => {
+    const t1 = await newTenant();
+    const t2 = await newTenant();
+    // GIVEN a member of t1 with no `_user` row there (a member that predates
+    // 043, or whose row was removed by hand) and an `Active` row in t2.
+    const member = await newMember([
+      { tenantId: t1, status: null },
+      { tenantId: t2, status: 'Active' },
+    ]);
+    const resolveContext = resolverOver(appPool);
+
+    await expectRejectedWithReason(resolveContext, member.cookies[0], 'user_missing');
+
+    expect(await resolveContext(cookieHeaders(member.cookies[1]))).toMatchObject({
+      tenantId: t2,
+    });
+  }, 60_000);
+
+  it('Every rejection answers CATALOG_CONTEXT_REQUIRED with no reason in the body', async () => {
+    const tenant = await newTenant();
+    const missingCredential = await resolverOver(appPool)(new Headers()).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(missingCredential, 'control: a missing credential rejects').toBeInstanceOf(Error);
+    const controlMessage = (missingCredential as Error).message;
+
+    for (const status of ['Disabled', 'Invited', 'Staged', null] as const) {
+      const member = await newMember([{ tenantId: tenant, status }]);
+      const rejection = await resolverOver(appPool)(cookieHeaders(member.cookies[0])).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      expect(rejection, `status ${String(status)} is rejected`).toMatchObject({
+        code: 'CATALOG_CONTEXT_REQUIRED',
+      });
+      // The message (the body the HTTP layer answers with) is the one of a
+      // missing credential, and neither it nor the serialized error names a reason.
+      expect((rejection as Error).message).toBe(controlMessage);
+      const serialized = JSON.stringify(rejection) + (rejection as Error).message;
+      expect(serialized).not.toMatch(
+        /user_disabled|user_missing|user_banned|disabled|missing_row/i,
+      );
+    }
+  }, 120_000);
+
+  it('A second request within 5 seconds does not repeat the status lookup', async () => {
+    const tenant = await newTenant();
+    const member = await newMember([{ tenantId: tenant, status: 'Active' }]);
+    const probe: PoolProbe = { fail: false, entityQueries: 0 };
+    const resolveContext = resolverOver(probedPool(appPool, probe));
+
+    // WHEN the member is resolved: the status read and the grants read both query.
+    await resolveContext(cookieHeaders(member.cookies[0]));
+    const firstRequest = probe.entityQueries;
+    expect(firstRequest, 'sanity: the first request queried the catalog').toBeGreaterThan(0);
+
+    // THEN a second request within the window skips the status read (the
+    // grants read stays uncached, so it still queries).
+    probe.entityQueries = 0;
+    await resolveContext(cookieHeaders(member.cookies[0]));
+    expect(probe.entityQueries, 'the status lookup is not repeated').toBeLessThan(firstRequest);
+
+    // AND after the 5-second window the lookup is made again.
+    probe.entityQueries = 0;
+    advanceClock(PAST_CACHE_WINDOW_MS);
+    try {
+      await resolveContext(cookieHeaders(member.cookies[0]));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(probe.entityQueries, 'the cache expired after 5 seconds').toBe(firstRequest);
+  }, 60_000);
+
+  it('A lookup failure rejects and is not cached', async () => {
+    const tenant = await newTenant();
+    const member = await newMember([{ tenantId: tenant, status: 'Active' }]);
+    const probe: PoolProbe = { fail: true, entityQueries: 0 };
+    const resolveContext = resolverOver(probedPool(appPool, probe));
+
+    // GIVEN the `_user` lookup is unreachable, THEN the member is rejected
+    // (fail closed), not resolved without a principal.
+    await expectContextRequiredRejection(resolveContext(cookieHeaders(member.cookies[0])));
+
+    // AND the failure was not cached: once the lookup works, the next request
+    // (inside the 5-second window) looks again and is admitted.
+    probe.fail = false;
+    expect(await resolveContext(cookieHeaders(member.cookies[0]))).toMatchObject({
+      tenantId: tenant,
+      actor: { type: 'user', id: member.userId },
+      principal: { roles: ['member'] },
+    });
+  }, 60_000);
+});
+
+/**
+ * Task 13.4 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * decision Q77; design D13). Spec scenario, quoted from
+ * `specs/identity-lifecycle-and-org-admin/spec.md`:
+ *
+ * #### Scenario: A disabled user's sessions stop working
+ * - GIVEN an `Active` user with a single membership and a live session
+ * - WHEN an admin disables the user
+ * - THEN the next request on that session is rejected with
+ *   `CATALOG_CONTEXT_REQUIRED` (401) and no reason in the body, a new sign-in
+ *   (local or SSO) is refused, and a session of that user that the deletion did
+ *   not reach (seeded directly) is rejected with
+ *   `catalog.security.principal_rejected` and the reason `user_banned`
+ *
+ * The admin operation (`setStatus`) is a later task; the ban it makes is
+ * standing in here as a direct write of `auth."user".banned`, and the session
+ * "the deletion did not reach" is simply a session row left in place. The
+ * deletion-reached half (a deleted session row) is covered too. The refused
+ * sign-ins are in `banned-sign-in.int.test.ts`.
+ *
+ * ## Production symbols expected
+ *
+ * No new symbol: `createContextResolver` (`./context-resolver.ts`) rejects, in
+ * its session-cookie branch, a session whose Better Auth user is `banned`, with
+ * the same `AuthContextError` as a missing session (no reason in the error),
+ * logs `catalog.security.principal_rejected` (WARN; `tayzu.identity.rejection.
+ * reason` `user_banned`, `tayzu.actor.type` `user`) and increments
+ * `tayzu.identity.principal_rejections` with the same attributes. The ban is
+ * checked from the session read, whatever the `_user` status.
+ */
+describe('resolveContext: a banned user is rejected (task 13.4, D13, Q77)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+  let appPool: TestDb['$client'];
+
+  const SUM_DATA_POINT_TYPE = 3;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({ db, secret: TEST_SECRET });
+    appPool = connect(databaseUrl()).$client;
+    appPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app');
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(appPool);
+    await endQuietly(db.$client);
+  });
+
+  function registeredHarness(): TelemetryTestHarness {
+    if ('error' in registration) {
+      throw new Error(
+        `createTelemetryTestHarness() failed while the test module graph loaded: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    return registration.harness;
+  }
+
+  function resolver(): (headers: Headers) => Promise<unknown> {
+    return (createContextResolver as ContextResolverFactory)({ auth, revocationPool: appPool });
+  }
+
+  async function newTenant(): Promise<{
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly email: string;
+    readonly cookie: string;
+  }> {
+    const email = randomEmail();
+    const tenant = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: TEST_USER_NAME,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: 'Banned Resolver Test Org',
+      organizationSlug: randomSlug(),
+      ip: randomIp(),
+    });
+    return {
+      tenantId: tenant.organizationId,
+      userId: tenant.userId,
+      email,
+      cookie: tenant.cookie,
+    };
+  }
+
+  async function setBanned(userId: string, banned: boolean): Promise<void> {
+    await db.execute(sql`update auth."user" set banned = ${banned} where id = ${userId}`);
+  }
+
+  function principalRejectedLogs(
+    harness: TelemetryTestHarness,
+  ): ReturnType<TelemetryTestHarness['logExporter']['getFinishedLogRecords']>[number][] {
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === 'catalog.security.principal_rejected',
+    );
+  }
+
+  function rejectionPoints(
+    harness: TelemetryTestHarness,
+  ): { attributes: Attributes; value: number }[] {
+    const points: { attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (
+            metric.descriptor.name === 'tayzu.identity.principal_rejections' &&
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+            metric.dataPointType === SUM_DATA_POINT_TYPE
+          ) {
+            for (const dataPoint of metric.dataPoints) {
+              points.push({ attributes: dataPoint.attributes, value: dataPoint.value });
+            }
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  async function expectBannedRejection(
+    resolveContext: (headers: Headers) => Promise<unknown>,
+    cookie: string,
+  ): Promise<void> {
+    const harness = registeredHarness();
+    await harness.reset();
+
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie })));
+    await harness.forceFlush();
+
+    const expected = {
+      'tayzu.identity.rejection.reason': 'user_banned',
+      'tayzu.actor.type': 'user',
+    };
+    const logs = principalRejectedLogs(harness);
+    expect(logs, 'exactly one principal_rejected log record').toHaveLength(1);
+    expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+    expect(logs[0]?.attributes).toEqual(expected);
+    const points = rejectionPoints(harness);
+    expect(points, 'exactly one rejection counted').toHaveLength(1);
+    expect(points[0]?.value).toBe(1);
+    expect(points[0]?.attributes).toEqual(expected);
+  }
+
+  it("A disabled user's sessions stop working: a session the deletion did not reach is rejected with user_banned and a deleted session is rejected without a reason", async () => {
+    // GIVEN an `Active` user with a single membership and two live sessions.
+    const member = await newTenant();
+    const second = await signInAdminUser(auth, {
+      email: member.email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    const resolveContext = resolver();
+    expect(await resolveContext(new Headers({ cookie: member.cookie })), 'control').toMatchObject({
+      tenantId: member.tenantId,
+      actor: { type: 'user', id: member.userId },
+    });
+
+    // WHEN the user is disabled: banned, and one session deleted; the other
+    // session row is left in place (seeded directly).
+    await setBanned(member.userId, true);
+    await db.execute(sql`delete from auth.session where token = ${second.token}`);
+
+    // THEN the deleted session is rejected with CATALOG_CONTEXT_REQUIRED and no
+    // principal_rejected record (it never resolves to a user) ...
+    const harness = registeredHarness();
+    await harness.reset();
+    await expectContextRequiredRejection(resolveContext(new Headers({ cookie: second.cookie })));
+    await harness.forceFlush();
+    expect(principalRejectedLogs(harness)).toHaveLength(0);
+
+    // ... and the session the deletion did not reach is rejected with the reason `user_banned`.
+    await expectBannedRejection(resolveContext, member.cookie);
+
+    // AND the rejection carries no reason in its message or serialization.
+    const rejection = await resolveContext(new Headers({ cookie: member.cookie })).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const control = await resolveContext(new Headers()).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(rejection).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+    expect((rejection as Error).message).toBe((control as Error).message);
+    expect(JSON.stringify(rejection) + (rejection as Error).message).not.toMatch(
+      /user_banned|banned/i,
+    );
+
+    // AND re-enabling (clearing the ban) admits the session again.
+    await setBanned(member.userId, false);
+    expect(await resolveContext(new Headers({ cookie: member.cookie }))).toMatchObject({
+      tenantId: member.tenantId,
+      actor: { type: 'user', id: member.userId },
+    });
+  }, 60_000);
+
+  it('A banned user whose _user is still Active is rejected with the reason user_banned', async () => {
+    const member = await newTenant();
+    const other = await newTenant();
+    const status = await withTenantTransaction(
+      appPool,
+      { tenantId: member.tenantId },
+      async (client) => {
+        const result = await client.query<{ status: unknown }>(
+          `select spec_properties ->> 'status' as status
+           from catalog_entity where tenant_id = $1 and identifier = $2`,
+          [member.tenantId, member.email],
+        );
+        return result.rows[0]?.status;
+      },
+    );
+    expect(status, 'sanity: the _user is Active').toBe('Active');
+    const resolveContext = resolver();
+
+    await setBanned(member.userId, true);
+
+    await expectBannedRejection(resolveContext, member.cookie);
+    // AND another user (not banned) is unaffected.
+    expect(await resolveContext(new Headers({ cookie: other.cookie }))).toMatchObject({
+      tenantId: other.tenantId,
+      actor: { type: 'user', id: other.userId },
+    });
+  }, 60_000);
+});
+
+type QueryFunction = (...args: unknown[]) => Promise<unknown>;
+
+/**
+ * A view of `pool` whose clients fail every query that reads `catalog_entity`
+ * and delegate everything else, so only the `_user` lookup is unreachable.
+ */
+function poolFailingOnEntityReads(pool: TestDb['$client']): TestDb['$client'] {
+  const bound = (target: object, property: string | symbol): unknown => {
+    const value: unknown = Reflect.get(target, property);
+    return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+  };
+  return new Proxy(pool, {
+    get(target, property) {
+      if (property !== 'connect') {
+        return bound(target, property);
+      }
+      return async (): Promise<unknown> => {
+        const client = await target.connect();
+        return new Proxy(client, {
+          get(clientTarget, clientProperty) {
+            if (clientProperty !== 'query') {
+              return bound(clientTarget, clientProperty);
+            }
+            return (...args: unknown[]): Promise<unknown> => {
+              const text: unknown = args[0];
+              if (typeof text === 'string' && text.includes('catalog_entity')) {
+                return Promise.reject(new Error('simulated _user lookup failure'));
+              }
+              return (clientTarget.query as unknown as QueryFunction).apply(clientTarget, args);
+            };
+          },
+        });
+      };
+    },
+  });
+}

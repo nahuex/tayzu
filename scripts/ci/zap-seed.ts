@@ -1,7 +1,7 @@
 /**
  * CI seed for the OWASP ZAP baseline job (task 15.1, design D16, resolved
  * decision Q30). Creates one organization and its first admin through
- * `packages/auth/scripts/bootstrap-admin.ts`, signs in over HTTP against the
+ * `apps/api/scripts/bootstrap-admin.ts`, signs in over HTTP against the
  * already-running `apps/api` (started by the workflow with `main.ts`) and
  * writes the session cookie header ZAP replays (`ZAP_AUTH_HEADER`). It never
  * prints the one-time password, the secret or the cookie.
@@ -10,6 +10,8 @@ import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { generateTemporaryPassword } from '../../packages/auth/src/identity/temporary-password.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -24,7 +26,15 @@ export interface ZapSeedConfig {
   organizationSlug: string;
   adminName: string;
   adminEmail: string;
+  /** Seed mode only (the moved bootstrap CLI, task 4.6b): the `tayzu_auth` URL. */
+  authDatabaseUrl: string;
+  cerbosAddress: string;
+  allowedOrigins: string;
+  /** The operator's opaque id (Resolved decision Q116): the catalog id pattern, never an email. */
+  operatorId: string;
 }
+
+const OPERATOR_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** Fails closed naming the variable only, never its value. */
 function required(env: Env, name: string): string {
@@ -53,8 +63,24 @@ function parseTargetUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, '');
 }
 
-export function parseZapSeedConfig(env: Env): ZapSeedConfig {
+/**
+ * `refresh` (the default) only renews tokens, so the variables of the
+ * bootstrap CLI are required in `seed` mode only.
+ */
+export function parseZapSeedConfig(
+  env: Env,
+  options: { readonly mode?: 'seed' | 'refresh' } = {},
+): ZapSeedConfig {
+  const seed = options.mode === 'seed';
+  const operatorId = seed ? required(env, 'TAYZU_OPERATOR_ID') : '';
+  if (seed && !OPERATOR_ID_PATTERN.test(operatorId)) {
+    throw new Error('TAYZU_OPERATOR_ID is malformed (1 to 128 of A-Z a-z 0-9 _ . : -).');
+  }
   return {
+    authDatabaseUrl: seed ? required(env, 'AUTH_DATABASE_URL') : '',
+    cerbosAddress: seed ? required(env, 'CERBOS_ADDRESS') : '',
+    allowedOrigins: seed ? required(env, 'ALLOWED_ORIGINS') : '',
+    operatorId,
     databaseUrl: required(env, 'DATABASE_URL'),
     betterAuthSecret: required(env, 'BETTER_AUTH_SECRET'),
     baseUrl: parseTargetUrl(required(env, 'ZAP_TARGET_URL')),
@@ -136,20 +162,24 @@ function publishHeader(env: Env, cookie: string): void {
 }
 
 /**
- * Runs `packages/auth/scripts/bootstrap-admin.ts` as the operator would (it
+ * Runs `apps/api/scripts/bootstrap-admin.ts` through `@tayzu/api` as the operator would (it
  * resolves its own workspace dependencies) and reads the one-time password
  * from its output. The output is never echoed.
  */
 function bootstrapFirstAdmin(config: ZapSeedConfig): string {
   const script = fileURLToPath(
-    new URL('../../packages/auth/scripts/bootstrap-admin.ts', import.meta.url),
+    new URL('../../apps/api/scripts/bootstrap-admin.ts', import.meta.url),
   );
-  const output = execFileSync('pnpm', ['--filter', '@tayzu/auth', 'exec', 'tsx', script], {
+  const output = execFileSync('pnpm', ['--filter', '@tayzu/api', 'exec', 'tsx', script], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
     env: {
       ...process.env,
       DATABASE_URL: config.databaseUrl,
+      AUTH_DATABASE_URL: config.authDatabaseUrl,
+      CERBOS_ADDRESS: config.cerbosAddress,
+      ALLOWED_ORIGINS: config.allowedOrigins,
+      TAYZU_OPERATOR_ID: config.operatorId,
       BETTER_AUTH_SECRET: config.betterAuthSecret,
       BOOTSTRAP_ORGANIZATION_NAME: config.organizationName,
       BOOTSTRAP_ORGANIZATION_SLUG: config.organizationSlug,
@@ -250,13 +280,18 @@ export async function mfaSessionCookie(
   client: SeedClient,
   credentials: { readonly email: string; readonly password: string },
 ): Promise<{ readonly cookie: string; readonly secret: string }> {
-  const enrollment = await signInForSessionCookie({ ...client, ...credentials });
-  const enabled = await postAuth(
+  const temporarySession = await signInForSessionCookie({ ...client, ...credentials });
+  // The bootstrap password is temporary (043 task 13.5): until it is changed the
+  // session reaches only `/change-password`. The new one satisfies the password policy.
+  const password = generateTemporaryPassword();
+  const changed = await postAuth(
     client,
-    '/two-factor/enable',
-    { password: credentials.password },
-    enrollment,
+    '/change-password',
+    { currentPassword: credentials.password, newPassword: password },
+    temporarySession,
   );
+  const enrollment = cookiesOf(changed, temporarySession);
+  const enabled = await postAuth(client, '/two-factor/enable', { password }, enrollment);
   const { totpURI } = (await enabled.json()) as { totpURI?: unknown };
   const secret = typeof totpURI === 'string' ? new URL(totpURI).searchParams.get('secret') : null;
   if (secret === null) {
@@ -269,7 +304,12 @@ export async function mfaSessionCookie(
     cookiesOf(enabled, enrollment),
   );
 
-  const challenge = await postAuth(client, '/sign-in/email', credentials, undefined);
+  const challenge = await postAuth(
+    client,
+    '/sign-in/email',
+    { email: credentials.email, password },
+    undefined,
+  );
   // A fresh time step, so the sign-in code is never the enrollment code.
   const now = await waitForNextTotpStep();
   const verified = await postAuth(
@@ -295,6 +335,43 @@ async function assertCatalogReachable(client: SeedClient, cookie: string): Promi
 }
 
 /**
+ * ZAP's OpenAPI import fills each path parameter with its own name
+ * (`{blueprint}` becomes `blueprint`), so the seed creates, through the real
+ * API as the seeded admin, the blueprint and the entity those names address.
+ * Without them every generated request would answer 404 and the scan could
+ * never reach an operation that succeeds (`002` VCDM M18). Idempotent: a 409
+ * means the resource already exists.
+ */
+const ZAP_BLUEPRINT = 'blueprint';
+const ZAP_ENTITY = 'entity';
+
+async function seedPlaceholderResources(client: SeedClient, cookie: string): Promise<void> {
+  const post = async (path: string, body: unknown): Promise<void> => {
+    const response = await client.fetch(`${client.baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': 'orpc', cookie },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok && response.status !== 409) {
+      const code = await readErrorCode(response);
+      throw new Error(
+        `${path} failed with status ${String(response.status)}${code === undefined ? '' : ` (${code})`}.`,
+      );
+    }
+  };
+  await post('/v1/blueprints', {
+    identifier: ZAP_BLUEPRINT,
+    title: { en: 'ZAP blueprint' },
+    schema: { properties: { note: { type: 'string', title: { en: 'Note' } } } },
+  });
+  await post(`/v1/blueprints/${ZAP_BLUEPRINT}/entities`, {
+    identifier: ZAP_ENTITY,
+    title: 'ZAP entity',
+    spec: { properties: { note: 'seed' } },
+  });
+}
+
+/**
  * Task 28.3 (design Q82): the TOTP secret of the throwaway seed admin is kept
  * in the stack's private state directory (mode 0700, deleted with the stack),
  * so `--refresh` can renew the step-up marker right before the API scan.
@@ -304,16 +381,19 @@ function secretFile(env: Env): string {
 }
 
 async function main(): Promise<void> {
-  const config = parseZapSeedConfig(process.env);
+  const config = parseZapSeedConfig(process.env, { mode: 'seed' });
   const client: SeedClient = { baseUrl: config.baseUrl, origin: config.origin, fetch };
   const { cookie, secret } = await mfaSessionCookie(client, {
     email: config.adminEmail,
     password: bootstrapFirstAdmin(config),
   });
   await assertCatalogReachable(client, cookie);
+  await seedPlaceholderResources(client, cookie);
   writeFileSync(secretFile(process.env), secret, { mode: 0o600 });
   publishHeader(process.env, cookie);
-  console.log('ZAP session seeded (MFA-enrolled admin, catalog reachable).');
+  console.log(
+    'ZAP session seeded (MFA-enrolled admin, catalog reachable, placeholder blueprint and entity).',
+  );
 }
 
 /** Renews the seeded session's MFA step-up marker (a fresh TOTP verification). */

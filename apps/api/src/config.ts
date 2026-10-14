@@ -14,6 +14,20 @@ export interface Config {
   readonly allowedOrigins: readonly string[];
   /** Public base URL of the API (Q40): `https` outside test; undefined only in test. */
   readonly betterAuthUrl?: string;
+  /** Origin of invitation links (Q32): `https` and in `allowedOrigins` outside test; undefined only in test. */
+  readonly invitationLinkBaseUrl?: string;
+  /** Key of the per-recipient caps (Q93): at least 32 bytes outside test; undefined only in test when unset. */
+  readonly identityTokenHmacSecret?: string;
+  /** Email provider (Q96): required outside test; undefined only under test when unset. */
+  readonly emailProvider?: 'acs' | 'none';
+  /** Communication Services connection string (Q28); set only for `acs`. */
+  readonly acsConnectionString?: string;
+  /** Sender address of the `acs` provider; set only for `acs`. */
+  readonly emailSenderAddress?: string;
+  /** Recipient domains a real sender may reach (Q67, Q99); empty when unset. */
+  readonly emailRecipientDomainAllowlist: readonly string[];
+  /** Tenants whose emails are suppressed (Q80); empty when unset. */
+  readonly emailDisabledTenantIds: readonly string[];
   /** Visma Connect SSO (D23); undefined when none of its variables is set. */
   readonly sso?: {
     readonly discoveryUrl: string;
@@ -28,12 +42,35 @@ export interface Config {
   readonly rateLimit: RateLimit;
   /** `POST /v1/auth/token` limit (D20). */
   readonly tokenExchangeRateLimit: RateLimit;
+  /** Invitation emails per tenant, shared by invite and resend (Q15); window in seconds. */
+  readonly invitationTenantCap: { readonly max: number; readonly windowSeconds: number };
+  /** Invitation emails per recipient (Q15); window in seconds. */
+  readonly invitationRecipientCap: { readonly max: number; readonly windowSeconds: number };
+  /** Notice emails per tenant (Q58); window in seconds. */
+  readonly noticeTenantCap: { readonly max: number; readonly windowSeconds: number };
+  /** Per-key verification limit of a machine credential (043 Q44); copied into each key at creation. */
+  readonly machineCredentialRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Public invitation-accept route, per caller IP (Q138); window in seconds. */
+  readonly invitationAcceptRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Re-authorization callback, per caller IP (Q140); window in seconds. */
+  readonly reauthorizationCallbackRateLimit: {
+    readonly max: number;
+    readonly windowSeconds: number;
+  };
+  /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
+  readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
   readonly bodyLimit: number;
+  /** The most non-revoked credentials a tenant holds (043 Q56). */
+  readonly credentialCap: number;
+  /** The most service accounts a tenant holds (043 Q56). */
+  readonly serviceAccountCap: number;
   /** Back-channel logout budget per source IP per minute (D26, Q32). */
   readonly backchannelLogoutRateLimitPerMinute: number;
   /** Explicit opt-out of telemetry (Q41); only the exact `true` enables it. */
   readonly telemetryDisabled: boolean;
+  /** `MOUNT_IDENTITY_ROUTES` (043 task 14.3, D15); off by default. */
+  readonly mountIdentityRoutes: boolean;
 }
 
 interface RateLimit {
@@ -41,6 +78,8 @@ interface RateLimit {
   readonly timeWindowMs: number;
 }
 
+/** The accept route and the re-authorization callback: 10 per 60 seconds per IP (Q138, Q140). */
+const DEFAULT_PUBLIC_ROUTE_LIMIT = { max: 10, windowSeconds: 60 } as const;
 const DEFAULT_BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE = 600;
 
 // Enabled defaults (Q39); the environment only tunes them.
@@ -48,7 +87,13 @@ const DEFAULT_SIGN_IN_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PASSWORD_CHECK_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
 const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
+const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
+const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
+const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
+const DEFAULT_MACHINE_CREDENTIAL_LIMIT = { max: 60, windowSeconds: 3600 };
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
+const DEFAULT_CREDENTIAL_CAP = 200;
+const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
 
 const MIN_SECRET_LENGTH = 32;
 
@@ -142,6 +187,54 @@ function loadBetterAuthUrl(env: Env): string | undefined {
   return value;
 }
 
+/** `INVITATION_LINK_BASE_URL` (Q32): outside test it is required, `https` and one of `ALLOWED_ORIGINS`. */
+function loadInvitationLinkBaseUrl(
+  env: Env,
+  allowedOrigins: readonly string[],
+): string | undefined {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest && env['INVITATION_LINK_BASE_URL'] === undefined) {
+    return undefined;
+  }
+  const value = required(env, 'INVITATION_LINK_BASE_URL').trim();
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('INVITATION_LINK_BASE_URL is malformed (an absolute URL is required).');
+  }
+  if (isTest) {
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+    }
+    return value;
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+  }
+  if (!allowedOrigins.includes(url.origin)) {
+    throw new Error('INVITATION_LINK_BASE_URL is malformed (it must be one of ALLOWED_ORIGINS).');
+  }
+  return value;
+}
+
+const MIN_HMAC_SECRET_BYTES = 32;
+
+/** `IDENTITY_TOKEN_HMAC_SECRET` (Q93): required outside test, 32 bytes minimum, never echoed. */
+function loadIdentityTokenHmacSecret(env: Env): string | undefined {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest && env['IDENTITY_TOKEN_HMAC_SECRET'] === undefined) {
+    return undefined;
+  }
+  const value = required(env, 'IDENTITY_TOKEN_HMAC_SECRET');
+  if (Buffer.byteLength(value, 'utf8') < MIN_HMAC_SECRET_BYTES) {
+    throw new Error(
+      `IDENTITY_TOKEN_HMAC_SECRET is malformed (at least ${String(MIN_HMAC_SECRET_BYTES)} bytes).`,
+    );
+  }
+  return value;
+}
+
 /** `ALLOWED_ORIGINS` (Q56, Q40): `https` and wildcard-free outside test; origins are never echoed. */
 function validateAllowedOrigins(env: Env, origins: readonly string[]): void {
   const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
@@ -161,12 +254,79 @@ function validateAllowedOrigins(env: Env, origins: readonly string[]): void {
   }
 }
 
+interface EmailSettings {
+  readonly emailProvider?: 'acs' | 'none';
+  readonly acsConnectionString?: string;
+  readonly emailSenderAddress?: string;
+  readonly emailRecipientDomainAllowlist: readonly string[];
+}
+
+/** `EMAIL_PROVIDER` (Q96, Q67, Q99): unset fails closed outside test; values are never echoed. */
+function loadEmail(env: Env): EmailSettings {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  const allowlist = (env['EMAIL_RECIPIENT_DOMAIN_ALLOWLIST'] ?? '')
+    .split(',')
+    .map((domain) => domain.trim())
+    .filter((domain) => domain !== '');
+  const provider = env['EMAIL_PROVIDER'];
+  if (provider === undefined && isTest) {
+    return { emailRecipientDomainAllowlist: allowlist };
+  }
+  if (provider === 'none') {
+    return { emailProvider: 'none', emailRecipientDomainAllowlist: allowlist };
+  }
+  if (provider !== 'acs') {
+    throw new Error('EMAIL_PROVIDER is required and must be acs or none.');
+  }
+  const acsConnectionString = required(env, 'ACS_CONNECTION_STRING');
+  const emailSenderAddress = required(env, 'EMAIL_SENDER_ADDRESS');
+  if (isTest && allowlist.length === 0) {
+    throw new Error('EMAIL_RECIPIENT_DOMAIN_ALLOWLIST is required for a real email provider.');
+  }
+  return {
+    emailProvider: 'acs',
+    acsConnectionString,
+    emailSenderAddress,
+    emailRecipientDomainAllowlist: allowlist,
+  };
+}
+
+const TENANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** `EMAIL_DISABLED_TENANT_IDS` (Q80): each entry matches the catalog's tenant-id pattern; values are never echoed. */
+function loadEmailDisabledTenantIds(env: Env): readonly string[] {
+  const ids = (env['EMAIL_DISABLED_TENANT_IDS'] ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '');
+  if (!ids.every((id) => TENANT_ID_PATTERN.test(id))) {
+    throw new Error('EMAIL_DISABLED_TENANT_IDS is malformed (tenant ids are required).');
+  }
+  return ids;
+}
+
 /** `TAYZU_TELEMETRY_DISABLED`: unset or `false` is off, `true` is on, anything else fails. */
 function loadTelemetryDisabled(env: Env): boolean {
   const value = env['TAYZU_TELEMETRY_DISABLED'];
   if (value === undefined || value === 'false') return false;
   if (value === 'true') return true;
   throw new Error('TAYZU_TELEMETRY_DISABLED is malformed (true or false is required).');
+}
+
+/** `INVITATION_EMAIL_KILL_SWITCH`: unset or `false` is off, `true` is on, anything else fails. */
+function loadInvitationEmailKillSwitch(env: Env): boolean {
+  const value = env['INVITATION_EMAIL_KILL_SWITCH'];
+  if (value === undefined || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error('INVITATION_EMAIL_KILL_SWITCH is malformed (true or false is required).');
+}
+
+/** `MOUNT_IDENTITY_ROUTES`: unset or `false` is off, `true` is on, anything else fails. */
+function loadMountIdentityRoutes(env: Env): boolean {
+  const value = env['MOUNT_IDENTITY_ROUTES'];
+  if (value === undefined || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error('MOUNT_IDENTITY_ROUTES is malformed (true or false is required).');
 }
 
 export function loadConfig(env: Env): Config {
@@ -185,6 +345,9 @@ export function loadConfig(env: Env): Config {
     .filter((origin) => origin !== '');
   validateAllowedOrigins(env, allowedOrigins);
   const betterAuthUrl = loadBetterAuthUrl(env);
+  const invitationLinkBaseUrl = loadInvitationLinkBaseUrl(env, allowedOrigins);
+  const identityTokenHmacSecret = loadIdentityTokenHmacSecret(env);
+  const email = loadEmail(env);
   const sso = loadSso(env);
   const signIn = limitWithDefaults(
     env,
@@ -210,7 +373,46 @@ export function loadConfig(env: Env): Config {
     'TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_TOKEN_EXCHANGE_LIMIT,
   );
+  const invitationTenantCap = limitWithDefaults(
+    env,
+    'INVITATION_TENANT_RATE_LIMIT_MAX',
+    'INVITATION_TENANT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_INVITATION_TENANT_LIMIT,
+  );
+  const invitationRecipientCap = limitWithDefaults(
+    env,
+    'INVITATION_RECIPIENT_RATE_LIMIT_MAX',
+    'INVITATION_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_INVITATION_RECIPIENT_LIMIT,
+  );
+  const noticeTenantCap = limitWithDefaults(
+    env,
+    'NOTICE_TENANT_RATE_LIMIT_MAX',
+    'NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_NOTICE_TENANT_LIMIT,
+  );
+  const machineCredentialRateLimit = limitWithDefaults(
+    env,
+    'MACHINE_CREDENTIAL_RATE_LIMIT_MAX',
+    'MACHINE_CREDENTIAL_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_MACHINE_CREDENTIAL_LIMIT,
+  );
+  const invitationAcceptRateLimit = limitWithDefaults(
+    env,
+    'INVITATION_ACCEPT_RATE_LIMIT_MAX',
+    'INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_PUBLIC_ROUTE_LIMIT,
+  );
+  const reauthorizationCallbackRateLimit = limitWithDefaults(
+    env,
+    'REAUTHORIZATION_CALLBACK_RATE_LIMIT_MAX',
+    'REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_PUBLIC_ROUTE_LIMIT,
+  );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
+  const credentialCap = optionalPositiveInt(env, 'CREDENTIAL_CAP') ?? DEFAULT_CREDENTIAL_CAP;
+  const serviceAccountCap =
+    optionalPositiveInt(env, 'SERVICE_ACCOUNT_CAP') ?? DEFAULT_SERVICE_ACCOUNT_CAP;
   const backchannelLogoutRateLimitPerMinute =
     optionalPositiveInt(env, 'BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE') ??
     DEFAULT_BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE;
@@ -221,13 +423,27 @@ export function loadConfig(env: Env): Config {
     cerbosAddress,
     allowedOrigins,
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
+    ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+    ...(identityTokenHmacSecret === undefined ? {} : { identityTokenHmacSecret }),
     backchannelLogoutRateLimitPerMinute,
+    ...email,
+    emailDisabledTenantIds: loadEmailDisabledTenantIds(env),
     ...(sso === undefined ? {} : { sso }),
     preAuthSignInRateLimit: { max: signIn.max, window: signIn.windowSeconds },
     preAuthPasswordCheckRateLimit: { max: passwordCheck.max, window: passwordCheck.windowSeconds },
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
+    invitationTenantCap,
+    invitationRecipientCap,
+    noticeTenantCap,
+    machineCredentialRateLimit,
+    invitationAcceptRateLimit,
+    reauthorizationCallbackRateLimit,
+    invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
+    credentialCap,
+    serviceAccountCap,
     telemetryDisabled: loadTelemetryDisabled(env),
+    mountIdentityRoutes: loadMountIdentityRoutes(env),
   };
 }
