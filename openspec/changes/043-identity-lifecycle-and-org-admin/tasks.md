@@ -3665,7 +3665,7 @@ SSO surfaces of M18) are recorded there with their justification.
       of an unshed pre-dating SSO link, and states the reconcile's orphan rule by
       `updatedAt` and that an existing-account attempt that failed after its `_user` step
       needs no operator step.
-- [ ] 16.6 Update `docs/security/attack-surfaces.md`: the fourteen routes with
+- [x] 16.6 Update `docs/security/attack-surfaces.md`: the fourteen routes with
       actor, authentication and Cerbos check, the public accept route with its session
       binding, CSRF header and origin check, the inert invitation link until `003`
       (Resolved decision Q32), the egress to `api.pwnedpasswords.com`, the SEC11 answers

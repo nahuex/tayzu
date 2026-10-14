@@ -1,7 +1,8 @@
 # Attack surfaces
 
 SSA section SEC02, for `002-auth-and-rbac` (VCDM pre-assessment, ticket 6;
-design D13, D18, D22-D26). It lists every route the API application
+design D13, D18, D22-D26) and `043-identity-lifecycle-and-org-admin` (design
+D10, D15). It lists every route the API application
 (`apps/api`) exposes, with the actor category that reaches it, how the caller
 is authenticated, and which authorization check applies. The system diagram
 in [`docs/architecture/system-diagram.md`](../architecture/system-diagram.md)
@@ -13,7 +14,9 @@ From the code, not from the design. The routes are those that
 `createApp` in `apps/api/src/server.ts` registers, plus the two route lists
 they read from: `ALLOWED_AUTH_ROUTES` in
 `packages/auth/src/http/allowed-routes.ts` and the catalog contract in
-`packages/catalog/src/api/contract.ts`. The authorization column is read from
+`packages/catalog/src/api/contract.ts`. The identity routes come from
+`apps/api/src/identity-router.ts` and the accept route from `createApp`. The
+authorization column is read from
 `policies/` and from each operation's `authorization` declaration. Where the
 code and the design differ, this page follows the code and the difference is
 listed under [Where the code differs from the design](#where-the-code-differs-from-the-design).
@@ -26,15 +29,22 @@ listed under [Where the code differs from the design](#where-the-code-differs-fr
 4. `GET` and `POST /v1/auth/visma-connect/reauthorize/callback`, the SSO
    step-up re-authorization callback.
 5. `POST /v1/auth/token`, the machine credential exchange.
-6. `ALL /v1/*`, which is the catalog `OpenAPIHandler`.
-7. Fastify's own `404` for every other path.
+6. `POST /v1/auth/invitations/accept`, the public invitation acceptance. It is
+   registered only when `MOUNT_IDENTITY_ROUTES` is `true`, see
+   [Mount gate](#mount-gate).
+7. `ALL /v1/*`, which is the `OpenAPIHandler` of the one router that merges the
+   catalog router with the identity router. The identity procedures are behind
+   the same switch.
+8. Fastify's own `404` for every other path.
 
-The `404` in item 7 is verified against the code, with one nuance. A path under
+The `404` in item 8 is verified against the code, with one nuance. A path under
 `/api/auth` that is not allowlisted, any path outside the groups above and any
 request target the request-target rule below refuses all get Fastify's own
-`404`. A path under `/v1` that no catalog route matches is not Fastify's `404`:
-the `/v1/*` catch-all answers `401` without a valid credential and the oRPC
-`404` with one (see [Catalog routes](#catalog-routes-v1)).
+`404`. A path under `/v1` that no route of the merged router matches is not Fastify's
+`404`: the `/v1/*` catch-all answers `401` without a valid credential and the
+oRPC `404` with one (see [Catalog routes](#catalog-routes-v1)). The catch-all
+accepts only the methods the router routes (`GET`, `POST`, `PUT`, `PATCH` and
+`DELETE`), so `QUERY` and any other method answer Fastify's own `404` (Q141).
 
 There is no readiness, metrics, documentation or OpenAPI-serving route.
 `apps/api/src/main.ts` is the process entry point: it starts the OpenTelemetry
@@ -166,6 +176,113 @@ is configured, the error carries `data.reauthorizationUrl`, built on
 in test), never on a request header (Q64). A marker is keyed by the
 session token, so it never carries over to another session.
 
+## Identity routes (`/v1`, behind the mount gate)
+
+Thirteen oRPC procedures of `identity-router.ts` (design D10), served by the
+same `ALL /v1/*` handler as the catalog routes, so the context resolution, the
+error mapping, the CSRF check and the per-principal limit of the catalog routes
+apply to them. They are registered only when the mount gate is on, see
+[Mount gate](#mount-gate). Every one is reachable only with a Better Auth
+session cookie or a machine access token, and is allowed for an `admin` of the
+caller's own tenant alone: a `member`, a machine `member` token included, gets
+`403 AUTH_FORBIDDEN`. Every procedure is built with `defineIdentityOperation`
+(Q45, Q57), which asks Cerbos first with the caller's tenant and no target, then
+parses the input, resolves the target on the server inside the caller's tenant
+(D14) and asks Cerbos again with the target's real tenant and attributes before
+the handler runs. It fails closed. A cross-tenant or unknown target is
+`404 CATALOG_NOT_FOUND`. `tenantId` and `actor` are never read from the input.
+The Cerbos policies are `policies/resource_policies/user.yaml`,
+`service_account.yaml` and `credential.yaml`, and the gating by action rather
+than by the origin of the account is in
+[ADR 0020](../adr/0020-cerbos-gates-invite-and-status-not-origin.md).
+
+| Route                                            | Operation                | Cerbos kind and action      | CSRF header | Step-up                                            |
+| ------------------------------------------------ | ------------------------ | --------------------------- | ----------- | -------------------------------------------------- |
+| `POST /v1/users/invitations`                     | `users.invite`           | `user`, `invite`            | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `POST /v1/users/invitations/{invitation}/cancel` | `users.cancelInvitation` | `user`, `invite`            | Yes         | No                                                 |
+| `POST /v1/users/invitations/{invitation}/resend` | `users.resendInvitation` | `user`, `invite`            | Yes         | No                                                 |
+| `PUT /v1/users/{user}/status`                    | `users.setStatus`        | `user`, `updateStatus`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `POST /v1/users`                                 | `users.create`           | `user`, `create`            | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `POST /v1/users/{user}/sso-account`              | `users.linkSsoAccount`   | `user`, `update`            | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `DELETE /v1/users/{user}/sso-account`            | `users.unlinkSsoAccount` | `user`, `update`            | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `POST /v1/service-accounts`                      | `serviceAccounts.create` | `service_account`, `create` | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `DELETE /v1/service-accounts/{user}`             | `serviceAccounts.delete` | `service_account`, `delete` | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `GET /v1/credentials`                            | `credentials.list`       | `credential`, `list`        | No          | No                                                 |
+| `POST /v1/credentials`                           | `credentials.create`     | `credential`, `create`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `POST /v1/credentials/{credential}/rotate`       | `credentials.rotate`     | `credential`, `rotate`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `POST /v1/credentials/{credential}/revoke`       | `credentials.revoke`     | `credential`, `revoke`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+
+`{user}` is the `_user` identifier (an email, or `svc-…`), sent unencoded, and a
+path holding `%` is Fastify's `404` (`002` Q74). Such identifiers never reach
+telemetry (D16). Every procedure parses its input with one shared parser that
+builds null-prototype objects, rejects `__proto__`, `constructor` and
+`prototype` at every depth, rejects an undeclared field and checks length
+limits before any lookup.
+
+The fourteenth route is the public acceptance below, so the change exposes
+fourteen routes in all (`045` adds `identity.organization.delete`).
+
+### Public accept route
+
+`POST /v1/auth/invitations/accept` is the first unauthenticated route that
+changes data. It is a plain Fastify route, outside the tenant pipeline and not
+in any OpenAPI document, and it is on the public-route allowlist of
+`apps/api/src/public-routes.ts`. The invitation token is the credential. The
+route derives the tenant from the invitation, never from the request, and
+validates its body as an allowlist.
+
+- **Rate limit.** A database-backed bucket per caller IP, default 10 requests
+  per 60 seconds (`INVITATION_ACCEPT_RATE_LIMIT_MAX` and
+  `INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS`, Q138, Q140). The limiter is
+  never off.
+- **Session binding.** A new person needs no session. An existing account is
+  accepted only with a valid session cookie (read without refreshing it, and
+  passing the idle timeout, the banned check and the temporary-password check)
+  whose user email equals the invitation email, so the session proves control of
+  the account and the token proves the mailbox (Q38). The acceptance never sets
+  or changes a password for an existing account.
+- **CSRF header and origin check.** The session is read only when the request
+  carries the custom header `x-csrf-token: orpc` and an `Origin` header that is
+  present and exact-matches `ALLOWED_ORIGINS` (Q24, Q38, Q47). `/v1` has only
+  the custom header and Better Auth's origin check covers only `/api/auth/*`,
+  so the route performs its own check. A request that fails it is treated as
+  having no session, and an existing account gets the uniform rejection.
+- **Step-up.** Only when the invited role is `admin`, and evaluated after the
+  token verifies: the same guard as the catalog operations, with the
+  Visma Connect re-authorization for an SSO session.
+- **Failure shape.** One uniform rejection that never reveals why the
+  acceptance failed.
+
+### Inert invitation link
+
+The email carries a link built from `INVITATION_LINK_BASE_URL` (outside test it
+is required, `https` and one of `ALLOWED_ORIGINS`, Q32) and the fixed path
+`/accept-invitation`. The invitation identifier and token travel in the URL
+fragment, which browsers never send to a server. No page serves that path until
+`003` builds one, so the link is inert today: following it reaches nothing that
+accepts the invitation. The accept route is called by that future page.
+
+### Mount gate
+
+`MOUNT_IDENTITY_ROUTES` (`mountIdentityRoutes`) is **off by default** (D15). With
+it off, none of the fourteen routes is registered, and each answers like an
+unknown `/v1` path: `401 CATALOG_CONTEXT_REQUIRED` without a valid credential
+and the oRPC `404` with one. State today: the switch is off, `identity.*` is not
+mounted over HTTP, and the routes are exercised in process and by tests only. The
+hard rule (`002` Q73) is that they are not mounted before the hand-offs from
+`002` (group 13 of `043`) are done. Turning the switch on in a deployment is a
+first-deployment gate for `010`.
+
+### Identity OpenAPI document
+
+`openapi/identity.openapi.json` lists the thirteen oRPC routes (not the accept
+route) with paths, methods, path parameters and `x-tayzu-risk` only, with no
+request or response schemas (Q52): the router hand-parses its input and the
+change adds no schema dependency. A DAST scan of that document therefore
+exercises route reachability and status codes, not the shape of any body, and
+its value is limited until schemas exist. Extending the DAST scan to it stays a
+first-deployment gate.
+
 ## Health, machine credential, back-channel and re-authorization routes
 
 | Route                                         | Method        | Actor category                              | Authentication                                                                                                                                                                                         | Authorization check                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -195,21 +312,38 @@ named.
 
 | Capability                                                                                        | How it is reached                                                                                                                                                                                                                   |
 | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `identity.users.create`, `identity.users.linkSsoAccount`, `identity.users.unlinkSsoAccount`       | In-process only, through `createRouterClient`. Cerbos-gated on the `user` kind. `createApp` does not mount the identity router.                                                                                                     |
-| Machine credential creation and revocation (`createMachineCredential`, `revokeMachineCredential`) | In-process only. No HTTP route mounts them yet.                                                                                                                                                                                     |
-| Hard rule (Q73)                                                                                   | `identity.*` and the machine-credential routes are not mounted over HTTP before group 14 of `043` (hand-offs from `002`) is done.                                                                                                   |
+| Every `identity.*` procedure                                                                      | In-process through `createRouterClient`. Over HTTP only when `MOUNT_IDENTITY_ROUTES` is `true`, which is off by default, see [Mount gate](#mount-gate). Cerbos-gated on the `user`, `service_account` or `credential` kind.         |
+| Machine credential creation and revocation (`createMachineCredential`, `revokeMachineCredential`) | In-process only. The only HTTP path is `identity.credentials.*` and `identity.serviceAccounts.*`, behind the same switch.                                                                                                           |
+| Hard rule (Q73)                                                                                   | `identity.*` and the machine-credential routes are not mounted over HTTP before group 13 of `043` (hand-offs from `002`) is done.                                                                                                   |
 | First-admin bootstrap script                                                                      | Run out of band by an operator. Calls the same `auth.api.createUser` path. Idempotent.                                                                                                                                              |
 | Cerbos PDP                                                                                        | gRPC from `apps/api`, with TLS unless `CERBOS_ADDRESS` is `localhost`, `127.0.0.1` or `[::1]` (the sidecar case, no TLS). Nothing outside the boundary can reach a loopback sidecar.                                                |
 | PostgreSQL                                                                                        | Outbound from `apps/api` over TLS with `sslmode=verify-full` (`createPool` refuses anything else), as `tayzu_app` for the catalog and `tayzu_auth` for Better Auth. Outside test, startup asserts neither role is privileged (Q62). |
 
 ## Outbound calls to an external system
 
-| Destination    | Calls                                                                                                                                                                                                                                                                                                                                                                                                       |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Visma Connect  | HTTPS (`https` is required outside test). Discovery at startup, which fails startup when the provider cannot be discovered, then the authorize redirect, the token exchange, the JWKS and userinfo. A failure at sign-in time is a rejected sign-in and never a partial one, and a userinfo failure does not block a sign-in. The step-up re-authorization adds one token exchange with a 5-second timeout. |
-| OTLP collector | OpenTelemetry export of traces, metrics and logs to the `OTEL_EXPORTER_OTLP_*` endpoints. Outside test, startup fails without an endpoint unless `TAYZU_TELEMETRY_DISABLED=true`.                                                                                                                                                                                                                           |
+| Destination                  | Calls                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Visma Connect                | HTTPS (`https` is required outside test). Discovery at startup, which fails startup when the provider cannot be discovered, then the authorize redirect, the token exchange, the JWKS and userinfo. A failure at sign-in time is a rejected sign-in and never a partial one, and a userinfo failure does not block a sign-in. The step-up re-authorization adds one token exchange with a 5-second timeout.                                                                                                   |
+| Pwned Passwords              | HTTPS to `api.pwnedpasswords.com`, the range query of Better Auth's `haveIBeenPwned` plugin (Q23). Only the first five hex characters of the password's SHA-1 leave the system (k-anonymity), see [Cryptography inventory](crypto-inventory.md). It runs wherever a password is set: the invitation acceptance, `identity.users.create`, the bootstrap script and a password change. It fails closed: when the service is unreachable the password is not set and the caller gets the generic `500 INTERNAL`. |
+| Azure Communication Services | HTTPS, from the `EmailSender` adapter that sends the invitation email (D5), when `EMAIL_PROVIDER` is `acs`. The recipient is validated and gated first (kill switch, disabled tenants, caps and the recipient-domain allowlist). The template is fixed and carries no attachment.                                                                                                                                                                                                                             |
+| OTLP collector               | OpenTelemetry export of traces, metrics and logs to the `OTEL_EXPORTER_OTLP_*` endpoints. Outside test, startup fails without an endpoint unless `TAYZU_TELEMETRY_DISABLED=true`.                                                                                                                                                                                                                                                                                                                             |
 
-No other outbound call exists in this change.
+No other outbound call exists in this change. The two rows above are `043`'s.
+
+## Email and phishing (SEC11)
+
+The answers of Resolved decision Q34 for the invitation email, the only email
+the platform sends:
+
+1. The platform sends email: yes.
+2. The email holds one clickable link, the invitation-accept link. It is
+   unavoidable for an invitee who has no account yet. It is mitigated by the
+   token in the URL fragment, single use, a 48-hour expiry and a configured
+   origin (`INVITATION_LINK_BASE_URL`).
+3. The content is the same for every recipient: only the recipient address
+   varies.
+4. There are no attachments.
+5. The template is fixed and the recipient is validated.
 
 ## Pending
 
