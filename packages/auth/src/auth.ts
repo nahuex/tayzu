@@ -1328,10 +1328,14 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           // Task 8.1c (design Q22): the new password must meet the policy before anything is written.
           const newPassword = (ctx.body as { newPassword?: unknown } | null | undefined)
             ?.newPassword;
-          if (typeof newPassword === 'string' && !validatePassword(newPassword).ok) {
+          const verdict =
+            typeof newPassword === 'string' ? validatePassword(newPassword) : undefined;
+          if (verdict && !verdict.ok) {
+            // Q136, Q149: the refusal names only the failed rule, never the password.
             throw new APIError('BAD_REQUEST', {
               code: 'PASSWORD_POLICY_VIOLATION',
               message: 'PASSWORD_POLICY_VIOLATION',
+              rule: verdict.rule,
             });
           }
           // Q70, Q51: a user with an enrolled MFA factor needs a fresh `mfa`

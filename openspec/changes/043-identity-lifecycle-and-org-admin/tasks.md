@@ -3826,7 +3826,7 @@ SSO surfaces of M18) are recorded there with their justification.
       and Q149; 9.5d). Verify: `credentials.int.test.ts` covers a tenant at the cap
       refusing the rotation of a revoked credential with `CATALOG_VALIDATION_FAILED` and
       nothing created.
-- [ ] 16.12e The refusal of `/change-password` for a policy violation names only the
+- [x] 16.12e The refusal of `/change-password` for a policy violation names only the
       failed rule, as the acceptance does (Resolved decisions Q136 and Q149). Verify:
       `password-policy.int.test.ts` covers the refusal for each rule naming that rule
       and never echoing the password.

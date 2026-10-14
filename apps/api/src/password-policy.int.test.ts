@@ -39,13 +39,26 @@ import { createWithUserLock } from './identity/user-lock.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createAdminUser } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { COMMON_PASSWORD_DENYLIST } from '../../../packages/auth/src/identity/common-passwords.js';
-import { validatePassword } from '../../../packages/auth/src/identity/password-policy.js';
+import {
+  validatePassword,
+  type PasswordRule,
+} from '../../../packages/auth/src/identity/password-policy.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
 
 /** 19 characters (code points), base64url-safe, meeting every other rule. */
 const SHORT_PASSWORD = 'Ab1-CdefghijklmnopE';
+
+const ALL_RULES: readonly PasswordRule[] = [
+  'length',
+  'uppercase',
+  'lowercase',
+  'digit',
+  'symbol',
+  'character',
+  'denylist',
+];
 
 const state: { forced: string | undefined } = { forced: undefined };
 
@@ -244,6 +257,44 @@ describe('The password policy on Better Auth routes (task 8.1c, design Q22)', ()
     expect(response.status, "Better Auth's own bounds never reject a compliant password").toBe(200);
     expect(await canSignIn(email, ASTRAL_128), 'the new password is set').toBe(true);
   });
+
+  // Task 16.12e (Resolved decisions Q136, Q149): the refusal names only the failed rule.
+  const RULE_CASES: readonly { rule: PasswordRule; password: string }[] = [
+    { rule: 'length', password: SHORT_PASSWORD },
+    { rule: 'uppercase', password: 'abcdefgh1-ijklmnopqrstuvw' },
+    { rule: 'lowercase', password: 'ABCDEFGH1-IJKLMNOPQRSTUVW' },
+    { rule: 'digit', password: 'Abcdefgh-ijklmnopqrstuvwx' },
+    { rule: 'symbol', password: 'Abcdefgh1ijklmnopqrstuvwx' },
+    { rule: 'character', password: 'Fresh-Compliant​-Passphrase-2026!' },
+    { rule: 'denylist', password: denylistedPassword() },
+  ];
+
+  it.each(RULE_CASES)(
+    '/change-password refusal for the $rule rule names that rule and never echoes the password',
+    async ({ rule, password }) => {
+      const { email, cookie } = await signedInUser();
+      expect(validatePassword(password), 'the fixture fails exactly this rule').toEqual({
+        ok: false,
+        rule,
+      });
+
+      const response = await post(
+        '/change-password',
+        { currentPassword: TEST_PASSWORD, newPassword: password },
+        cookie,
+      );
+      const text = await response.text();
+
+      expect(response.status).toBe(400);
+      expect(text).toContain('PASSWORD_POLICY_VIOLATION');
+      expect(text, 'the failed rule is named').toContain(rule);
+      for (const other of ALL_RULES.filter((candidate) => candidate !== rule)) {
+        expect(text, `the passing rule ${other} is not named`).not.toContain(other);
+      }
+      expect(text).not.toContain(password);
+      expect(await canSignIn(email, TEST_PASSWORD), 'the old password still works').toBe(true);
+    },
+  );
 
   it('identity.users.create refuses a 19-character password and creates no user', async () => {
     const tenantId = await freshTenantId();
