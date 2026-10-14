@@ -3834,7 +3834,7 @@ SSO surfaces of M18) are recorded there with their justification.
       too (9.11, design D8; Resolved decision Q149), so a key of another configuration in
       the same tenant is not found. Verify: `credentials.int.test.ts` covers such a key
       answering `CATALOG_NOT_FOUND` on rotate and on revoke.
-- [ ] 16.12g A ban announces every session it deletes (design D13; Resolved decision
+- [x] 16.12g A ban announces every session it deletes (design D13; Resolved decision
       Q149): one `auth.security.session_revoked` with the reason `admin_action` per
       deleted session row, sessions with no active organization included. Verify:
       `user-status-op.int.test.ts` covers a user with a session in the tenant and one

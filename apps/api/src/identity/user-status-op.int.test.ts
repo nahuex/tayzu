@@ -1026,6 +1026,57 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
   }, 120_000);
 
   /**
+   * Task 16.12g (design D13; Resolved decision Q149). A ban announces every session it deletes:
+   * one `auth.security.session_revoked` with the reason `admin_action` per deleted session row,
+   * sessions with no active organization included.
+   *
+   * Production behavior expected: when `identity.users.setStatus` bans a single-membership user,
+   * the sessions the ban deletes beyond the tenant's (here one with no active organization) are
+   * each announced too, with the admin's tenant as `tayzu.tenant.id`.
+   */
+  it('A ban announces every session it deletes: a session in the tenant and one with no active organization each produce one session_revoked with the reason admin_action when the user is disabled', async () => {
+    const fixture = await freshFixture();
+    // GIVEN a single-membership user with two live sessions, one of which has no active organization.
+    await authPool.query(
+      `update auth.session set active_organization_id = null
+        where id = (select id from auth.session where user_id = $1 order by id limit 1)`,
+      [fixture.targetId],
+    );
+    const inTenant = await authPool.query<{ n: string }>(
+      'select count(*)::text as n from auth.session where user_id = $1 and active_organization_id = $2',
+      [fixture.targetId, fixture.tenantId],
+    );
+    const withoutOrg = await authPool.query<{ n: string }>(
+      'select count(*)::text as n from auth.session where user_id = $1 and active_organization_id is null',
+      [fixture.targetId],
+    );
+    expect(inTenant.rows[0]?.n, 'precondition: one session in the tenant').toBe('1');
+    expect(withoutOrg.rows[0]?.n, 'precondition: one session with no organization').toBe('1');
+    const revokedBefore = (await logRecords(REVOKED_EVENT)).filter(
+      (record) => record.attributes['tayzu.actor.id'] === fixture.targetId,
+    ).length;
+
+    // WHEN an admin disables the user.
+    await statusClient().identity.users.setStatus(
+      { params: { user: fixture.targetEmail }, body: { status: 'Disabled' } },
+      { context: context(fixture) },
+    );
+
+    // THEN every session row is gone and the user is banned.
+    expect(await sessionCount(fixture.targetId)).toBe(0);
+    expect(await isBanned(fixture.targetId)).toBe(true);
+    // AND one `session_revoked` with the reason `admin_action` was emitted per deleted session.
+    const revoked = (await logRecords(REVOKED_EVENT)).filter(
+      (record) => record.attributes['tayzu.actor.id'] === fixture.targetId,
+    );
+    expect(revoked).toHaveLength(revokedBefore + 2);
+    for (const record of revoked.slice(revokedBefore)) {
+      expect(record.attributes['tayzu.auth.revocation.reason']).toBe('admin_action');
+      expect(record.attributes['tayzu.tenant.id']).toBe(fixture.tenantId);
+    }
+  }, 120_000);
+
+  /**
    * Task 11.2b. Scenarios (verbatim from the spec):
    * - "A member of two tenants is disabled in one only": GIVEN an `Active` user who belongs to
    *   `t1` and `t2`, with a session in each, WHEN the admin of `t1` disables the user, THEN the

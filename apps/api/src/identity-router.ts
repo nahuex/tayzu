@@ -1123,7 +1123,12 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               }
               if (single) {
                 await adapter.updateUser(userId, { banned: true });
+                // Q149: the sessions the ban deletes beyond the tenant's are announced too.
+                const remaining = await adapter.listSessions(userId);
                 await adapter.deleteUserSessions(userId);
+                for (let index = 0; index < remaining.length; index += 1) {
+                  emitSessionRevoked({ actorId: userId, tenantId, reason: 'admin_action' });
+                }
               }
             }),
         }),
