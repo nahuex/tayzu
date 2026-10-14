@@ -3743,11 +3743,11 @@ SSO surfaces of M18) are recorded there with their justification.
       the design's ticket TK11-1, outside this change, and do not block it either, because
       the audit step runs with `--prod`.
       Verify: attach the command output to the PR description.
-- [ ] 16.10 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
+- [x] 16.10 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
       implemented code, and resolve or explicitly defer every blocking gap (the thirteen
       passes folded into this change before implementation are listed in 1.2).
       Verify: the report is attached to the PR with zero open blocking gaps.
-- [ ] 16.11 Run `/security-review` on the branch and fix or justify every
+- [x] 16.11 Run `/security-review` on the branch and fix or justify every
       finding. Verify: the review output is attached to the PR.
 - [x] 16.11a An **expired** temporary-password marker rejects an existing session, not
       only a new sign-in (Resolved decisions Q36 and Q146; the security review's LOW-1):
@@ -3790,7 +3790,7 @@ SSO surfaces of M18) are recorded there with their justification.
       refreshed; the empty placeholder `apps/api/src/identity/invitations.ts` is deleted;
       and the SBOM steps of `.github/workflows/ci.yml` lose `continue-on-error`. Verify:
       `pnpm lint` and `pnpm typecheck` pass and none of the stale statements remains.
-- [ ] 16.12 `openspec validate 043-identity-lifecycle-and-org-admin --strict`
+- [x] 16.12 `openspec validate 043-identity-lifecycle-and-org-admin --strict`
       passes, and design/specs/code agree (update design only if an implementation
       finding forced a change, noted in the PR). Verify: the command output is
       attached to the PR.
