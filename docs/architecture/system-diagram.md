@@ -30,6 +30,7 @@ flowchart TB
         user(["End user (human)"])
         agent(["AI agent"])
         integ(["Integration<br/>GitHub, Jira Cloud, Azure DevOps, Aikido,<br/>Orca Security, Escape, CodeRabbit"])
+        invitee(["Invitee (human)<br/>with their mailbox"])
     end
 
     subgraph delivery["Development and delivery (outside the product boundary)"]
@@ -38,6 +39,7 @@ flowchart TB
         dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
         gh["GitHub repository<br/>nahuex/tayzu"]
         npm["npm registry"]
+        operator(["Platform operator (human)<br/>starts the identity jobs"])
     end
 
     subgraph tayzu["Tayzu (product boundary)"]
@@ -52,6 +54,11 @@ flowchart TB
                 ssoApi["Visma Connect sign-in and callback<br/>/api/auth/sign-in/social<br/>/api/auth/callback/visma-connect<br/>/api/auth/link-social · /api/auth/unlink-account"]
                 bclApi["Back-channel logout endpoint<br/>POST /v1/auth/visma-connect/backchannel-logout"]
                 reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+                inviteApi["Invitation routes (043)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+                acceptApi["Public accept route (043)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+                userApi["User lifecycle routes (043)<br/>PUT /v1/users/{user}/status<br/>POST /v1/users<br/>POST /v1/users/{user}/sso-account<br/>DELETE /v1/users/{user}/sso-account"]
+                saApi["Service account routes (043)<br/>POST /v1/service-accounts<br/>DELETE /v1/service-accounts/{user}"]
+                credApi["Credential routes (043)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
             end
             authn["Better Auth (002)<br/>in-process library"]
             cerbos["Cerbos PDP sidecar (002)<br/>same ACA revision, loopback only<br/>no external arrow<br/>gRPC uses TLS on any other address"]
@@ -80,7 +87,17 @@ flowchart TB
         llm["LLM API: Anthropic Claude<br/>via DecisionProvider (004/006/014)"]
         toolApis["Integration tool APIs<br/>GitHub, Jira Cloud, Azure DevOps, Aikido, Escape"]
         visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+        emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+        pwned(["Pwned Passwords (043)<br/>api.pwnedpasswords.com range API"])
         kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+    end
+
+    subgraph identityJobs["Identity jobs (043), started by the platform operator"]
+        direction TB
+        backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+        cerbosBackfill["Cerbos sidecar of the backfill job<br/>own container, loopback only"]
+        reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+        cerbosReconcile["Cerbos sidecar of the reconcile job<br/>own container, loopback only"]
     end
 
     subgraph legend["Legend"]
@@ -126,6 +143,23 @@ flowchart TB
     dast -->|"HTTP on localhost (ZAP, seeded session cookie):<br/>/healthz, /v1 and /api/auth/*; safe mode for the API scan"| api
     dast -->|"PostgreSQL over verified TLS (per-run CA, sslmode=verify-full):<br/>owner migrates, apps/api runs as tayzu_app and tayzu_auth"| pg
 
+    %% Current interactions (043)
+    user -->|"HTTPS (browser, session cookie, step-up): invitations"| inviteApi
+    user -->|"HTTPS (browser, session cookie, step-up): user lifecycle"| userApi
+    agent -->|"HTTPS (Bearer machine access token): service accounts"| saApi
+    user -->|"HTTPS (browser, session cookie, step-up): credential rotation, revoke, create"| credApi
+    agent -->|"HTTPS (Bearer machine access token): credential rotation, revoke, create"| credApi
+    inviteApi -->|"HTTPS (ACS egress, Communication Services email API): invitation email"| emailProvider
+    emailProvider -->|"SMTP (invitation email delivered to the mailbox)"| invitee
+    invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
+    acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only)"| pwned
+    operator -->|"CLI (pnpm tsx, backfill job)"| backfillJob
+    operator -->|"CLI (pnpm tsx, reconcile job)"| reconcileJob
+    backfillJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    reconcileJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    backfillJob -->|"gRPC on a loopback link, no TLS"| cerbosBackfill
+    reconcileJob -->|"gRPC on a loopback link, no TLS"| cerbosReconcile
+
     %% Planned interactions
     agent -.->|"MCP Streamable HTTP over HTTPS"| mcp
     integ -.->|"HTTPS (inbound webhooks)"| intg
@@ -150,15 +184,16 @@ flowchart TB
     classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
     classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
 
-    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,authn,cerbos,lgCurrent,lgStore current
+    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,userApi,saApi,credApi,backfillJob,reconcileJob,cerbosBackfill,cerbosReconcile,authn,cerbos,lgCurrent,lgStore current
     class mcp,workers,intg,redis,monitor,acr,lgPlanned planned
-    class user,agent,integ,visma,kv,dev,ci,dast,system,lgActor actor
-    class gh,npm,llm,toolApis,lgExternal externalSys
+    class user,agent,integ,invitee,operator,visma,kv,dev,ci,dast,system,lgActor actor
+    class gh,npm,llm,toolApis,emailProvider,pwned,lgExternal externalSys
 
     style tayzu fill:#fbfdff,stroke:#1f5f99,stroke-width:3px
     style acaEnv fill:#fafafa,stroke:#777777,stroke-dasharray:6 4
     style azure fill:#fafafa,stroke:#777777,stroke-dasharray:6 4
     style apiApp fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+    style identityJobs fill:#f3f8fd,stroke:#1f5f99
     style core fill:#f3f8fd,stroke:#1f5f99
     style legend fill:#ffffff,stroke:#bbbbbb
 ```
@@ -190,6 +225,7 @@ flowchart TB
 | `Better Auth` (`@tayzu/auth`)                                                                          | Current (002)               | In-process library on its own `auth` schema and pool (role `tayzu_auth`). Local email and password, MFA, sessions, machine credentials and Visma Connect through `genericOAuth`.                                                                                                                                                                                                       |
 | `Cerbos PDP` (`policies/`)                                                                             | Current (002)               | The only authorization engine. Sidecar in the same Container Apps revision, reached over gRPC, with TLS unless the address is `localhost`, `127.0.0.1` or `[::1]` (the sidecar case), and with no external arrow. Policies are baked into the deploy artifact.                                                                                                                         |
 | `Visma Connect`                                                                                        | Current (002), external     | Tayzu's primary human identity provider. Outside the boundary. Two interaction kinds: the sign-in and callback round trip that `apps/api` initiates, and an inbound-only back-channel logout POST that Visma Connect initiates.                                                                                                                                                        |
+| `Identity lifecycle surfaces and jobs`                                                                 | Current (043)               | Invitation, accept, user, service-account and credential routes in `apps/api`; invitation email through Azure Communication Services over HTTPS; Pwned Passwords range query; backfill and reconcile jobs started by the platform operator, each with its own loopback Cerbos sidecar (gRPC, no TLS) and the roles `tayzu_auth` and `tayzu_app`.                                       |
 | `GitHub Actions DAST job` (`dast-zap`)                                                                 | Current (002)               | `.github/workflows/ci.yml` and `scripts/ci/dast.sh`. Per run: a throwaway PostgreSQL 16 behind verified TLS (a per-run CA), migrations as the owner, `apps/api` as the runtime roles `tayzu_app` and `tayzu_auth`. Then an authenticated ZAP baseline scan with one seeded session and a ZAP API scan of the catalog OpenAPI document in safe mode (passive). Any alert fails the job. |
 | `Azure Key Vault`                                                                                      | Planned (002/010), external | Secret store outside the boundary. It feeds the deployment pipeline and, through Container Apps secret references, the running container. The application reads environment variables only and uses no Key Vault SDK.                                                                                                                                                                  |
 | `BullMQ workers`, `Redis`                                                                              | Planned (004)               | Workflow engine and change-event outbox consumer. Redis is Azure Cache for Redis from 010.                                                                                                                                                                                                                                                                                             |

@@ -3677,7 +3677,7 @@ SSO surfaces of M18) are recorded there with their justification.
       12 out the hand-offs are group 13. Verify: `pnpm lint` passes, every route of design
       D10 has a row, and the file names the hand-offs group 13 of `043` and no longer says
       "group 14 of `043`".
-- [ ] 16.7 Update `docs/architecture/system-diagram.md`: the email provider, the
+- [x] 16.7 Update `docs/architecture/system-diagram.md`: the email provider, the
       invitee with their mailbox and the platform operator as actors, and arrows for
       invite → email, the public accept route, ACS egress over HTTPS, the Pwned
       Passwords range query, credential rotation, and the backfill and reconcile jobs
