@@ -3759,7 +3759,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `/change-password` once the marker has expired, with `/sign-out` still answering,
       and `invitation-accept.int.test.ts` an existing-account acceptance with such a
       session answering the uniform rejection.
-- [ ] 16.11b Identity mutations never take a second pooled connection while their
+- [x] 16.11b Identity mutations never take a second pooled connection while their
       transaction holds an advisory lock (Resolved decision Q147; the security review's
       LOW-2): `createCredential`, `createServiceAccount` and `deleteServiceAccount` run
       their nested reads (`serviceAccountExists`, `readRevokedIds` and the like) on the

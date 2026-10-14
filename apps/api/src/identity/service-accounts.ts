@@ -23,9 +23,9 @@ import {
   DEFAULT_CREDENTIAL_CAP,
   readAllApiKeys,
   readApiKeyMetadata,
-  readRevokedIds,
+  readRevokedIdsOn,
+  serviceAccountExistsOn,
   recordCredentialMutation,
-  serviceAccountExists,
 } from './credentials.js';
 import type { UserSyncAdapter } from './user-sync-adapter.js';
 
@@ -71,9 +71,12 @@ export async function createServiceAccount(args: {
   if (!isValidServiceAccountIdentifier(identifier)) throw new CredentialConflictError();
   return await withIdentitySpan(
     'identity.service_account.create',
-    { 'tayzu.identity.service_account.id': identifier },
-    () =>
-      withTenantTransaction(args.appPool, { tenantId }, async (lockClient) => {
+    {
+      'tayzu.identity.service_account.id': identifier,
+    },
+    async () => {
+      const entities = createEntityService({ pool: args.appPool, authz: args.authz });
+      const key = await withTenantTransaction(args.appPool, { tenantId }, async (lockClient) => {
         await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
           `service-account:${tenantId}:${identifier}`,
         ]);
@@ -98,7 +101,7 @@ export async function createServiceAccount(args: {
         ]);
         const [keys, revoked] = await Promise.all([
           readAllApiKeys(args.authRepository, tenantId),
-          readRevokedIds(args.appPool, tenantId),
+          readRevokedIdsOn(lockClient, tenantId),
         ]);
         if (
           keys.filter((key) => !revoked.has(key.id)).length >=
@@ -125,7 +128,6 @@ export async function createServiceAccount(args: {
           principal: { kind: 'admin', id: adminId },
           onBehalfOf: { type: 'user', id: adminId },
         });
-        const entities = createEntityService({ pool: args.appPool, authz: args.authz });
         let key: Awaited<ReturnType<typeof createMachineCredential>>;
         try {
           key = await createMachineCredential(args.auth, {
@@ -148,10 +150,6 @@ export async function createServiceAccount(args: {
           );
           throw error;
         }
-        const user = await entities.get(
-          { tenantId, actor: SYSTEM_READER, principal: { roles: ['admin'] } },
-          { blueprint: '_user', identifier },
-        );
         emitIdentityEvent({
           name: 'catalog.audit.service_account_created',
           severity: 'INFO',
@@ -166,8 +164,15 @@ export async function createServiceAccount(args: {
           'tayzu.identity.service_account.mutation': 'created',
         });
         recordCredentialMutation(tenantId, 'service_account', 'created');
-        return { user, clientId: key.id, clientSecret: key.secret };
-      }),
+        return key;
+      });
+      // Read after the lock is released: the read takes its own pooled connection.
+      const user = await entities.get(
+        { tenantId, actor: SYSTEM_READER, principal: { roles: ['admin'] } },
+        { blueprint: '_user', identifier },
+      );
+      return { user, clientId: key.id, clientSecret: key.secret };
+    },
   );
 }
 
@@ -186,10 +191,6 @@ export async function deleteServiceAccount(args: {
   readonly identifier: string;
 }): Promise<void> {
   const { tenantId, adminId, identifier } = args;
-  // A human, an unknown id and another tenant's account look alike (Q62).
-  if (!(await serviceAccountExists(args.appPool, tenantId, identifier))) {
-    throw new CredentialTargetNotFoundError();
-  }
   await withIdentitySpan(
     'identity.service_account.delete',
     { 'tayzu.identity.service_account.id': identifier },
@@ -198,9 +199,13 @@ export async function deleteServiceAccount(args: {
         await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
           `service-account:${tenantId}:${identifier}`,
         ]);
+        // A human, an unknown id and another tenant's account look alike (Q62).
+        if (!(await serviceAccountExistsOn(lockClient, tenantId, identifier))) {
+          throw new CredentialTargetNotFoundError();
+        }
         const [keys, revoked] = await Promise.all([
           readAllApiKeys(args.authRepository, tenantId),
-          readRevokedIds(args.appPool, tenantId),
+          readRevokedIdsOn(lockClient, tenantId),
         ]);
         for (const key of keys) {
           if (revoked.has(key.id) || readApiKeyMetadata(key.metadata).userId !== identifier) {

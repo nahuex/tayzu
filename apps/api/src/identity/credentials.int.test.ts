@@ -66,7 +66,7 @@ import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createEntityService, createUserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 import type * as MachineCredentialsModule from '@tayzu/auth/machine-credentials';
 
@@ -2834,4 +2834,127 @@ describe('a foreign or unknown credential id answers CATALOG_NOT_FOUND (task 9.1
     expect(ids).toContain(own.id);
     expect(ids).not.toContain(foreign.id);
   }, 120_000);
+});
+
+/**
+ * Task 16.11b of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q147;
+ * the security review's LOW-2): `identity.credentials.create` never takes a second pooled
+ * connection while its transaction holds an advisory lock.
+ *
+ * Scenario: GIVEN a `tayzu_app` pool built for the test with a small `max`, WHEN more concurrent
+ * `identity.credentials.create` calls of one tenant than the pool has connections are made, THEN
+ * all of them complete within the cap, none with a statement timeout or a pool timeout.
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createCredential` (`./credentials.js`) runs `serviceAccountExists` and
+ * `readRevokedIds` on the client that holds the lock instead of on `appPool`.
+ *
+ * ## Why this fails right now
+ *
+ * Each in-flight create holds one pooled connection for its lock and the one that holds the cap
+ * lock asks the pool for a second one for `readRevokedIds`; with every connection held by a
+ * waiter, nobody progresses until the pool's checkout timeout rejects the calls.
+ */
+describe('identity.credentials.create under a small pool (task 16.11b)', () => {
+  const POOL_MAX = 3;
+  const CONCURRENT = 8;
+  let smallPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({
+        userSync: createUserSync({ pool: pools.appPool, authz: cerbos }),
+      }),
+    });
+    const { Pool: PoolConstructor } = await import('pg');
+    smallPool = new PoolConstructor({
+      connectionString: process.env['DATABASE_URL'],
+      max: POOL_MAX,
+      // A stalled checkout rejects instead of hanging the file.
+      connectionTimeoutMillis: 15_000,
+    });
+    smallPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app').catch(() => undefined);
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await smallPool.end();
+  }, 60_000);
+
+  it('more concurrent credentials.create calls of one tenant than the pool has connections all complete with no statement timeout', async () => {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Pool Owner',
+      email: `pool-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Pool Org', slug: `pool-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Pool Admin',
+      email: `pool-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+
+    const client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        appPool: smallPool,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    ) as unknown as {
+      identity: {
+        credentials: {
+          create(
+            input: { body: { name: string; kind: string } },
+            options: { context: Record<string, unknown> },
+          ): Promise<{ id: string; secret: string }>;
+        };
+      };
+    };
+    const context = {
+      tenantId: org.id,
+      actor: { type: 'user', id: admin.userId },
+      principal: { roles: ['admin'] },
+    };
+
+    const started = Date.now();
+    const outcomes = await Promise.allSettled(
+      Array.from({ length: CONCURRENT }, (_, i) =>
+        client.identity.credentials.create(
+          { body: { name: `Pool key ${String(i)}`, kind: 'integration' } },
+          { context },
+        ),
+      ),
+    );
+    const elapsedMs = Date.now() - started;
+
+    const failures = outcomes.flatMap((o) =>
+      o.status === 'rejected' ? [(o.reason as Error).message] : [],
+    );
+    expect(failures).toEqual([]);
+    expect(outcomes.every((o) => o.status === 'fulfilled')).toBe(true);
+    expect(elapsedMs).toBeLessThan(10_000);
+    const keys = await authPool.query('select id from auth.apikey where reference_id = $1', [
+      org.id,
+    ]);
+    expect(keys.rows).toHaveLength(CONCURRENT);
+  }, 90_000);
 });

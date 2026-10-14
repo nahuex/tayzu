@@ -6,7 +6,7 @@
 import { emitIdentityEvent, recordIdentityMetric, type AuthInstance } from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { withTenantTransaction } from '@tayzu/db';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 
 import type { ApiKeyRead, AuthRepository } from './auth-repository.js';
 
@@ -102,15 +102,25 @@ export async function readAllApiKeys(
   return keys;
 }
 
+/** A tenant-scoped client already inside a transaction, such as the one that holds an advisory lock. */
+export type TenantClient = Pick<PoolClient, 'query'>;
+
+/** Reads the revoked credential ids on `client`, which the caller scoped to the tenant. */
+export async function readRevokedIdsOn(
+  client: TenantClient,
+  tenantId: string,
+): Promise<Set<string>> {
+  const result = await client.query<{ credential_id: string }>(
+    'select credential_id from machine_credential_revocation where tenant_id = $1',
+    [tenantId],
+  );
+  return new Set(result.rows.map((r) => r.credential_id));
+}
+
 export async function readRevokedIds(appPool: Pool, tenantId: string): Promise<Set<string>> {
-  const rows = await withTenantTransaction(appPool, { tenantId }, async (client) => {
-    const result = await client.query<{ credential_id: string }>(
-      'select credential_id from machine_credential_revocation where tenant_id = $1',
-      [tenantId],
-    );
-    return result.rows;
-  });
-  return new Set(rows.map((r) => r.credential_id));
+  return withTenantTransaction(appPool, { tenantId }, (client) =>
+    readRevokedIdsOn(client, tenantId),
+  );
 }
 
 /** The identifiers, among `identifiers`, of the tenant's `_user` entities whose status is `Disabled`. */
@@ -218,17 +228,26 @@ export async function serviceAccountExists(
   identifier: string,
 ): Promise<boolean> {
   if (!identifier.startsWith(SERVICE_ACCOUNT_PREFIX)) return false;
-  const rows = await withTenantTransaction(appPool, { tenantId }, async (client) => {
-    const result = await client.query<{ one: number }>(
-      `select 1 as one from catalog_entity e
-         join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
-        where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2
-          and e.spec_properties ->> 'accountKind' = 'service'`,
-      [tenantId, identifier],
-    );
-    return result.rows;
-  });
-  return rows.length > 0;
+  return withTenantTransaction(appPool, { tenantId }, (client) =>
+    serviceAccountExistsOn(client, tenantId, identifier),
+  );
+}
+
+/** Same check as `serviceAccountExists`, on a client the caller scoped to the tenant. */
+export async function serviceAccountExistsOn(
+  client: TenantClient,
+  tenantId: string,
+  identifier: string,
+): Promise<boolean> {
+  if (!identifier.startsWith(SERVICE_ACCOUNT_PREFIX)) return false;
+  const result = await client.query<{ one: number }>(
+    `select 1 as one from catalog_entity e
+       join catalog_blueprint b on b.tenant_id = e.tenant_id and b.id = e.blueprint_id
+      where e.tenant_id = $1 and b.identifier = '_user' and e.identifier = $2
+        and e.spec_properties ->> 'accountKind' = 'service'`,
+    [tenantId, identifier],
+  );
+  return result.rows.length > 0;
 }
 
 /** The kind of an existing credential; a key bound to a service account is `service_account` (Q145). */
@@ -291,7 +310,7 @@ export async function createCredential(args: {
       await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
         `service-account:${args.tenantId}:${userId}`,
       ]);
-      if (!(await serviceAccountExists(appPool, args.tenantId, userId))) {
+      if (!(await serviceAccountExistsOn(lockClient, args.tenantId, userId))) {
         throw new CredentialTargetNotFoundError();
       }
     }
@@ -301,7 +320,7 @@ export async function createCredential(args: {
     ]);
     const [keys, revoked] = await Promise.all([
       readAllApiKeys(authRepository, args.tenantId),
-      readRevokedIds(appPool, args.tenantId),
+      readRevokedIdsOn(lockClient, args.tenantId),
     ]);
     const active = keys.filter((key) => !revoked.has(key.id));
     if (active.length >= cap) throw new CredentialConflictError();
