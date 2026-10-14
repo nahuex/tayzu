@@ -205,6 +205,477 @@ flowchart TB
     style legend fill:#ffffff,stroke:#bbbbbb
 ```
 
+## Diagrams per trust zone
+
+The full diagram above is the source of truth. It is also rendered once per
+trust zone, so that each PNG stays readable at normal zoom (SSA SEC01, VCDM
+O-12, Resolved decision Q147 of ). Each block below draws the nodes of one
+zone and only the arrows that cross its boundary, each with its protocol.
+Nodes drawn outside the zone box belong to another zone. Arrows between two
+nodes of the same zone appear only in the full diagram. Read the colours and
+arrow styles in the [Legend](#legend). Each block is rendered to
+`docs/architecture/system-diagram-<zone>.png`.
+
+### Product actors
+
+Who reaches Tayzu, and the surfaces they reach. PNG: `system-diagram-product-actors.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Product actors"]
+        direction TB
+        user(["End user (human)"])
+        admin(["Administrator (human)<br/>organization administrator role"])
+        agent(["AI agent"])
+        integ(["Integration<br/>GitHub, Jira Cloud, Azure DevOps, Aikido,<br/>Orca Security, Escape, CodeRabbit"])
+        invitee(["Invitee (human)<br/>with their mailbox"])
+        user ~~~ admin
+        admin ~~~ agent
+        agent ~~~ integ
+        integ ~~~ invitee
+    end
+
+    catalogApi["/v1 catalog API<br/>12 oRPC routes under /v1/blueprints"]
+    authApi["Better Auth allowlisted routes<br/>/api/auth/* (deny by default)<br/>including public GET /api/auth/jwks"]
+    healthApi["GET /healthz<br/>liveness only, unauthenticated"]
+    visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+    tokenApi["POST /v1/auth/token<br/>machine credential exchange"]
+    reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+    inviteApi["Invitation routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+    userApi["User lifecycle routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>PUT /v1/users/{user}/status<br/>POST /v1/users<br/>POST /v1/users/{user}/sso-account<br/>DELETE /v1/users/{user}/sso-account"]
+    saApi["Service account routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/service-accounts<br/>DELETE /v1/service-accounts/{user}"]
+    credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
+    emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+    acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+    mcp["MCP server (013)<br/>MCP endpoint"]
+    intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+
+    user -->|"HTTPS (browser, session cookie)"| catalogApi
+    user -->|"HTTPS (browser, sign-in, session, MFA; anonymous JWKS read)"| authApi
+    user -->|"HTTPS (anonymous liveness probe)"| healthApi
+    user -->|"HTTPS (browser redirect to sign in and back)"| visma
+    agent -->|"HTTPS (Bearer machine access token)"| catalogApi
+    agent -->|"HTTPS (client id and secret)"| tokenApi
+    user -->|"HTTPS (browser redirect back from the step-up re-authorization)"| reauthApi
+    admin -->|"HTTPS (browser, session cookie, step-up): invitations"| inviteApi
+    admin -->|"HTTPS (browser, session cookie, step-up): user lifecycle"| userApi
+    agent -->|"HTTPS (Bearer machine access token): service accounts"| saApi
+    admin -->|"HTTPS (browser, session cookie, step-up): credential rotation, revoke, create"| credApi
+    agent -->|"HTTPS (Bearer machine access token): credential rotation, revoke, create"| credApi
+    emailProvider -->|"SMTP (invitation email delivered to the mailbox)"| invitee
+    invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
+    agent -.->|"MCP Streamable HTTP over HTTPS"| mcp
+    integ -.->|"HTTPS (inbound webhooks)"| intg
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class catalogApi,authApi,healthApi,tokenApi,reauthApi,inviteApi,userApi,saApi,credApi,acceptApi current
+    class mcp,intg planned
+    class user,admin,agent,integ,invitee,visma actor
+    class emailProvider externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Development and delivery (outside the product boundary)
+
+Developers, CI and the platform operator, outside the product boundary. PNG: `system-diagram-delivery.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Development and delivery (outside the product boundary)"]
+        direction TB
+        dev(["Developer<br/>humans and their Claude Code sessions"])
+        ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+        dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
+        gh["GitHub repository<br/>nahuex/tayzu"]
+        npm["npm registry"]
+        operator(["Platform operator (human)<br/>starts the identity jobs, not an Administrator"])
+        dev ~~~ ci
+        ci ~~~ dast
+        dast ~~~ gh
+        gh ~~~ npm
+        npm ~~~ operator
+    end
+
+    catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
+    db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
+    api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+    pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+    ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
+    backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+    reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+    kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+    acr["Azure Container Registry (010)"]
+    acaEnv["Azure Container Apps environment (010)"]
+    azure["Azure platform services (010)"]
+
+    dev -->|"in-process call (local Vitest run)"| catalog
+    ci -->|"in-process call (Vitest test run)"| catalog
+    ci -->|"in-process call (pnpm db:migrate)"| db
+    dast -->|"HTTP on localhost (ZAP, seeded session cookie):<br/>/healthz, /v1 and /api/auth/*; safe mode for the API scan"| api
+    dast -->|"PostgreSQL over verified TLS (per-run CA, sslmode=verify-full):<br/>owner migrates, apps/api runs as tayzu_app and tayzu_auth"| pg
+    ci -->|"HTTPS (docker pull of the Cerbos and ZAP images by digest)"| ghcr
+    dev -->|"HTTPS (docker pull of the Cerbos image:<br/>compose, start-cerbos.sh, policy:compile)"| ghcr
+    operator -->|"CLI (pnpm tsx, backfill job)"| backfillJob
+    operator -->|"CLI (pnpm tsx, reconcile job)"| reconcileJob
+    ci -.->|"HTTPS (deployment pipeline reads and rotates secret versions)"| kv
+    ci -.->|"HTTPS (image push)"| acr
+    ci -.->|"HTTPS (Azure Resource Manager:<br/>az containerapp update)"| acaEnv
+    dev -.->|"HTTPS (Azure portal / CLI, Entra ID)"| azure
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class catalog,db,api,pg,backfillJob,reconcileJob current
+    class acr planned
+    class dev,ci,dast,operator,kv actor
+    class gh,npm,ghcr externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Azure Container Apps environment (010): API and sidecars
+
+`apps/api`, its in-process libraries and its Cerbos sidecar, plus the planned workers, MCP server and integration adapters. Arrows between nodes of this zone are only in the full diagram. PNG: `system-diagram-api-app.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Azure Container Apps environment (010): API and sidecars"]
+        direction TB
+        api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+        catalogApi["/v1 catalog API<br/>12 oRPC routes under /v1/blueprints"]
+        healthApi["GET /healthz<br/>liveness only, unauthenticated"]
+        authApi["Better Auth allowlisted routes<br/>/api/auth/* (deny by default)<br/>including public GET /api/auth/jwks"]
+        tokenApi["POST /v1/auth/token<br/>machine credential exchange"]
+        ssoApi["Visma Connect sign-in and callback<br/>/api/auth/sign-in/social<br/>/api/auth/callback/visma-connect<br/>/api/auth/link-social · /api/auth/unlink-account"]
+        bclApi["Back-channel logout endpoint<br/>POST /v1/auth/visma-connect/backchannel-logout"]
+        reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+        inviteApi["Invitation routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+        acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+        userApi["User lifecycle routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>PUT /v1/users/{user}/status<br/>POST /v1/users<br/>POST /v1/users/{user}/sso-account<br/>DELETE /v1/users/{user}/sso-account"]
+        saApi["Service account routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/service-accounts<br/>DELETE /v1/service-accounts/{user}"]
+        credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
+        authn["Better Auth (002)<br/>in-process library"]
+        cerbos["Cerbos PDP sidecar (002)<br/>same ACA revision, loopback only<br/>no external arrow<br/>gRPC uses TLS on any other address"]
+        mcp["MCP server (013)<br/>MCP endpoint"]
+        workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+        intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+        api ~~~ catalogApi
+        catalogApi ~~~ healthApi
+        healthApi ~~~ authApi
+        authApi ~~~ tokenApi
+        tokenApi ~~~ ssoApi
+        ssoApi ~~~ bclApi
+        bclApi ~~~ reauthApi
+        reauthApi ~~~ inviteApi
+        inviteApi ~~~ acceptApi
+        acceptApi ~~~ userApi
+        userApi ~~~ saApi
+        saApi ~~~ credApi
+        credApi ~~~ authn
+        authn ~~~ cerbos
+        cerbos ~~~ mcp
+        mcp ~~~ workers
+        workers ~~~ intg
+    end
+
+    user(["End user (human)"])
+    agent(["AI agent"])
+    visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+    db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
+    catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
+    dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
+    admin(["Administrator (human)<br/>organization administrator role"])
+    emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+    invitee(["Invitee (human)<br/>with their mailbox"])
+    pwned(["Pwned Passwords (043)<br/>api.pwnedpasswords.com range API"])
+    monitor["Azure Monitor / Application Insights (010)<br/>centralized logging and telemetry"]
+    integ(["Integration<br/>GitHub, Jira Cloud, Azure DevOps, Aikido,<br/>Orca Security, Escape, CodeRabbit"])
+    toolApis["Integration tool APIs<br/>GitHub, Jira Cloud, Azure DevOps, Aikido, Escape"]
+    redis[("Redis (004)<br/>Azure Cache for Redis (010)")]
+    llm["LLM API: Anthropic Claude<br/>via DecisionProvider (004/006/014)"]
+    kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+    acr["Azure Container Registry (010)"]
+    ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+
+    user -->|"HTTPS (browser, session cookie)"| catalogApi
+    user -->|"HTTPS (browser, sign-in, session, MFA; anonymous JWKS read)"| authApi
+    user -->|"HTTPS (anonymous liveness probe)"| healthApi
+    agent -->|"HTTPS (Bearer machine access token)"| catalogApi
+    agent -->|"HTTPS (client id and secret)"| tokenApi
+    ssoApi -->|"outbound HTTPS: discovery, authorize redirect,<br/>token, userinfo, JWKS"| visma
+    visma -->|"inbound HTTPS: callback with code and state<br/>(response_mode form_post via the browser)"| ssoApi
+    user -->|"HTTPS (browser redirect back from the step-up re-authorization)"| reauthApi
+    visma -->|"inbound HTTPS: step-up callback with code and state<br/>(query or form_post via the browser)"| reauthApi
+    reauthApi -->|"outbound HTTPS: one token exchange<br/>(5-second timeout)"| visma
+    visma -->|"inbound-only HTTPS POST: logout_token<br/>(public, no cookie, unauthenticated by design)"| bclApi
+    authn -->|"in-process call (Drizzle adapter, role tayzu_auth)"| db
+    api -->|"in-process call (oRPC OpenAPIHandler)"| catalog
+    dast -->|"HTTP on localhost (ZAP, seeded session cookie):<br/>/healthz, /v1 and /api/auth/*; safe mode for the API scan"| api
+    admin -->|"HTTPS (browser, session cookie, step-up): invitations"| inviteApi
+    admin -->|"HTTPS (browser, session cookie, step-up): user lifecycle"| userApi
+    agent -->|"HTTPS (Bearer machine access token): service accounts"| saApi
+    admin -->|"HTTPS (browser, session cookie, step-up): credential rotation, revoke, create"| credApi
+    agent -->|"HTTPS (Bearer machine access token): credential rotation, revoke, create"| credApi
+    inviteApi -->|"HTTPS (ACS egress, Communication Services email API): invitation email"| emailProvider
+    invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
+    authn -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>haveIBeenPwned plugin on the BREACH_CHECKED_PATHS"| pwned
+    acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>createUser of the new-account path, through Better Auth"| pwned
+    api -->|"OTLP/HTTP (traces, metrics, logs), only when<br/>OTEL_EXPORTER_OTLP_ENDPOINT is set; collector chosen in 010"| monitor
+    agent -.->|"MCP Streamable HTTP over HTTPS"| mcp
+    integ -.->|"HTTPS (inbound webhooks)"| intg
+    intg -.->|"HTTPS (API polling from ACA Jobs)"| toolApis
+    api -.->|"Redis protocol (RESP) over TLS"| redis
+    workers -.->|"Redis protocol (RESP) over TLS"| redis
+    workers -.->|"in-process call"| catalog
+    workers -.->|"HTTPS"| llm
+    intg -.->|"in-process call (status writes)"| catalog
+    zone -.->|"HTTPS (secret references, managed identity,<br/>resolved into environment variables at container start)"| kv
+    zone -.->|"HTTPS (image pull, managed identity)"| acr
+    zone -.->|"HTTPS (image pull of the Cerbos sidecar and the job sidecars)"| ghcr
+    ci -.->|"HTTPS (Azure Resource Manager:<br/>az containerapp update)"| zone
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,userApi,saApi,credApi,authn,cerbos,db,catalog current
+    class mcp,workers,intg,monitor,redis,acr planned
+    class user,agent,visma,dast,admin,invitee,integ,kv,ci actor
+    class emailProvider,pwned,toolApis,llm,ghcr externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Catalog core (001): no network attack surface, in-process only
+
+The catalog libraries and PostgreSQL, in-process only. PNG: `system-diagram-core.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Catalog core (001): no network attack surface, in-process only"]
+        direction TB
+        system(["System<br/>internal actor: Tayzu's own automation"])
+        catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
+        db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
+        obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
+        pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+        system ~~~ catalog
+        catalog ~~~ db
+        db ~~~ obs
+        obs ~~~ pg
+    end
+
+    dev(["Developer<br/>humans and their Claude Code sessions"])
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    authn["Better Auth (002)<br/>in-process library"]
+    api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+    dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
+    backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+    reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+    workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+    intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+    monitor["Azure Monitor / Application Insights (010)<br/>centralized logging and telemetry"]
+
+    dev -->|"in-process call (local Vitest run)"| catalog
+    ci -->|"in-process call (Vitest test run)"| catalog
+    ci -->|"in-process call (pnpm db:migrate)"| db
+    authn -->|"in-process call (Drizzle adapter, role tayzu_auth)"| db
+    api -->|"in-process call (oRPC OpenAPIHandler)"| catalog
+    dast -->|"PostgreSQL over verified TLS (per-run CA, sslmode=verify-full):<br/>owner migrates, apps/api runs as tayzu_app and tayzu_auth"| pg
+    backfillJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    reconcileJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    workers -.->|"in-process call"| catalog
+    intg -.->|"in-process call (status writes)"| catalog
+    obs -.->|"OTLP/HTTPS (OTel SDK exporter in the host apps;<br/>or the Azure Monitor exporter over HTTPS, chosen in 010)"| monitor
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class catalog,db,obs,pg,authn,api,backfillJob,reconcileJob current
+    class workers,intg,monitor planned
+    class system,dev,ci,dast actor
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Azure platform services (010)
+
+Planned Azure services (010). PNG: `system-diagram-azure.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Azure platform services (010)"]
+        direction TB
+        redis[("Redis (004)<br/>Azure Cache for Redis (010)")]
+        monitor["Azure Monitor / Application Insights (010)<br/>centralized logging and telemetry"]
+        acr["Azure Container Registry (010)"]
+        redis ~~~ monitor
+        monitor ~~~ acr
+    end
+
+    api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
+    workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+    obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
+    acaEnv["Azure Container Apps environment (010)"]
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    dev(["Developer<br/>humans and their Claude Code sessions"])
+
+    api -->|"OTLP/HTTP (traces, metrics, logs), only when<br/>OTEL_EXPORTER_OTLP_ENDPOINT is set; collector chosen in 010"| monitor
+    api -.->|"Redis protocol (RESP) over TLS"| redis
+    workers -.->|"Redis protocol (RESP) over TLS"| redis
+    obs -.->|"OTLP/HTTPS (OTel SDK exporter in the host apps;<br/>or the Azure Monitor exporter over HTTPS, chosen in 010)"| monitor
+    acaEnv -.->|"HTTPS (image pull, managed identity)"| acr
+    ci -.->|"HTTPS (image push)"| acr
+    dev -.->|"HTTPS (Azure portal / CLI, Entra ID)"| zone
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class api,obs current
+    class redis,monitor,acr,workers planned
+    class ci,dev actor
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Supporting systems (external)
+
+Systems outside Tayzu's responsibility. PNG: `system-diagram-external.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Supporting systems (external)"]
+        direction TB
+        llm["LLM API: Anthropic Claude<br/>via DecisionProvider (004/006/014)"]
+        toolApis["Integration tool APIs<br/>GitHub, Jira Cloud, Azure DevOps, Aikido, Escape"]
+        visma(["Visma Connect (002)<br/>external OIDC identity provider<br/>connect.visma.com"])
+        emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
+        ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
+        pwned(["Pwned Passwords (043)<br/>api.pwnedpasswords.com range API"])
+        kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
+        llm ~~~ toolApis
+        toolApis ~~~ visma
+        visma ~~~ emailProvider
+        emailProvider ~~~ ghcr
+        ghcr ~~~ pwned
+        pwned ~~~ kv
+    end
+
+    user(["End user (human)"])
+    ssoApi["Visma Connect sign-in and callback<br/>/api/auth/sign-in/social<br/>/api/auth/callback/visma-connect<br/>/api/auth/link-social · /api/auth/unlink-account"]
+    reauthApi["SSO step-up callback<br/>GET and POST /v1/auth/visma-connect/reauthorize/callback<br/>URL built on BETTER_AUTH_URL"]
+    bclApi["Back-channel logout endpoint<br/>POST /v1/auth/visma-connect/backchannel-logout"]
+    inviteApi["Invitation routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/users/invitations<br/>POST /v1/users/invitations/{invitation}/cancel<br/>POST /v1/users/invitations/{invitation}/resend"]
+    invitee(["Invitee (human)<br/>with their mailbox"])
+    authn["Better Auth (002)<br/>in-process library"]
+    acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    dev(["Developer<br/>humans and their Claude Code sessions"])
+    intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
+    workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
+    acaEnv["Azure Container Apps environment (010)"]
+
+    user -->|"HTTPS (browser redirect to sign in and back)"| visma
+    ssoApi -->|"outbound HTTPS: discovery, authorize redirect,<br/>token, userinfo, JWKS"| visma
+    visma -->|"inbound HTTPS: callback with code and state<br/>(response_mode form_post via the browser)"| ssoApi
+    visma -->|"inbound HTTPS: step-up callback with code and state<br/>(query or form_post via the browser)"| reauthApi
+    reauthApi -->|"outbound HTTPS: one token exchange<br/>(5-second timeout)"| visma
+    visma -->|"inbound-only HTTPS POST: logout_token<br/>(public, no cookie, unauthenticated by design)"| bclApi
+    inviteApi -->|"HTTPS (ACS egress, Communication Services email API): invitation email"| emailProvider
+    emailProvider -->|"SMTP (invitation email delivered to the mailbox)"| invitee
+    authn -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>haveIBeenPwned plugin on the BREACH_CHECKED_PATHS"| pwned
+    acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>createUser of the new-account path, through Better Auth"| pwned
+    ci -->|"HTTPS (docker pull of the Cerbos and ZAP images by digest)"| ghcr
+    dev -->|"HTTPS (docker pull of the Cerbos image:<br/>compose, start-cerbos.sh, policy:compile)"| ghcr
+    intg -.->|"HTTPS (API polling from ACA Jobs)"| toolApis
+    workers -.->|"HTTPS"| llm
+    acaEnv -.->|"HTTPS (secret references, managed identity,<br/>resolved into environment variables at container start)"| kv
+    ci -.->|"HTTPS (deployment pipeline reads and rotates secret versions)"| kv
+    acaEnv -.->|"HTTPS (image pull of the Cerbos sidecar and the job sidecars)"| ghcr
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class ssoApi,reauthApi,bclApi,inviteApi,authn,acceptApi current
+    class intg,workers planned
+    class visma,kv,user,invitee,ci,dev actor
+    class llm,toolApis,emailProvider,ghcr,pwned externalSys
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
+### Identity jobs (043), started by the platform operator
+
+The backfill and reconcile jobs of 043, each with its own loopback Cerbos sidecar. PNG: `system-diagram-identity-jobs.png`.
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+---
+flowchart TB
+    subgraph zone["Identity jobs (043), started by the platform operator"]
+        direction TB
+        backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
+        cerbosBackfill["Cerbos sidecar of the backfill job<br/>own container, loopback only"]
+        reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
+        cerbosReconcile["Cerbos sidecar of the reconcile job<br/>own container, loopback only"]
+        backfillJob ~~~ cerbosBackfill
+        cerbosBackfill ~~~ reconcileJob
+        reconcileJob ~~~ cerbosReconcile
+    end
+
+    operator(["Platform operator (human)<br/>starts the identity jobs, not an Administrator"])
+    pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+
+    operator -->|"CLI (pnpm tsx, backfill job)"| backfillJob
+    operator -->|"CLI (pnpm tsx, reconcile job)"| reconcileJob
+    backfillJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+    reconcileJob -->|"PostgreSQL wire protocol over TLS (roles tayzu_auth and tayzu_app)"| pg
+
+    classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
+    classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
+    classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
+    classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
+    class backfillJob,cerbosBackfill,reconcileJob,cerbosReconcile,pg current
+    class operator actor
+    style zone fill:#f3f8fd,stroke:#1f5f99,stroke-width:2px
+```
+
 ## Legend
 
 | Element                    | Meaning                                                                                                                           |
@@ -319,8 +790,16 @@ session and a ZAP API scan of every catalog OpenAPI operation in safe mode
   ```
 
 - The SSA (SEC01) asks for a png. Render it with `-o docs/architecture/system-diagram.png`
-  and commit the result; mermaid-cli writes the chart of a Markdown input as
-  `system-diagram-1.png`, so rename it to `system-diagram.png`.
+  and commit the result. mermaid-cli writes one file per Mermaid block of a
+  Markdown input, numbered in document order: `system-diagram-1.png` is the full
+  diagram, so rename it to `system-diagram.png`. The next blocks are the trust
+  zones, in the order of the "Diagrams per trust zone" section (product-actors,
+  delivery, api-app, core, azure, external, identity-jobs): rename
+  `system-diagram-2.png` to `system-diagram-product-actors.png`, and so on.
+  Render the zones with `--size 2400` so that the text stays readable at normal
+  zoom. Every block that is added or removed shifts the numbers, so check each name.
+- The full diagram must stay the first Mermaid block of this file:
+  `apps/api/src/system-diagram.test.ts` reads the first one.
 - In the cloud sandbox, Puppeteer cannot download Chrome. Pass
   `-p puppeteer.json`, with a config file that sets `executablePath` to the
   preinstalled Chromium under `/opt/pw-browsers` and `args` to

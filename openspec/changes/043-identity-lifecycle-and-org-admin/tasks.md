@@ -3800,7 +3800,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `apps/api`. Verify: `npx -y @mermaid-js/mermaid-cli -i
 docs/architecture/system-diagram.md -o` produces a png, and each of the three
       additions appears in the Mermaid source.
-- [ ] 16.13b _(setup)_ The system diagram is also rendered as one PNG per trust zone,
+- [x] 16.13b _(setup)_ The system diagram is also rendered as one PNG per trust zone,
       readable at normal zoom (Resolved decision Q147; VCDM O-12, SSA SEC01): each
       trust-zone subgraph of the Mermaid source gets its own Mermaid block in
       `docs/architecture/system-diagram.md` with that zone's nodes and the arrows that
