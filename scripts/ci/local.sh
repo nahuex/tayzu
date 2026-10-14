@@ -5,8 +5,7 @@
 # time; if a tool truly cannot run here (no network, unsupported platform),
 # its step prints an explicit SKIP and is not counted as a failure. The DAST
 # step (scripts/ci/dast.sh) needs Docker and skips the same way without it.
-# Every other step failure is fatal. Syft is non-blocking, matching its
-# `continue-on-error: true` step in CI.
+# Every other step failure is fatal, Syft included, as in CI.
 
 set -uo pipefail
 
@@ -46,15 +45,7 @@ step "gitleaks" bash "$SCRIPT_DIR/gitleaks.sh"
 step "semgrep" bash "$SCRIPT_DIR/semgrep.sh"
 step "dast (OWASP ZAP baseline)" bash "$SCRIPT_DIR/dast.sh" all
 
-echo
-echo "== syft (SBOM, non-blocking) =="
-bash "$SCRIPT_DIR/syft.sh"
-syft_code=$?
-if [ "$syft_code" -eq "$SKIP_EXIT_CODE" ]; then
-  echo "SKIPPED: syft"
-elif [ "$syft_code" -ne 0 ]; then
-  echo "syft failed (non-blocking, matches CI's continue-on-error: true)"
-fi
+step "syft (SBOM)" bash "$SCRIPT_DIR/syft.sh"
 
 echo
 if [ "$FAILED" -ne 0 ]; then

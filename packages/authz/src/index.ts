@@ -1,6 +1,8 @@
 /**
- * @tayzu/authz: Cerbos client, attribute builders and resource-kind
- * constants (openspec/changes/002-auth-and-rbac, D7).
+ * @tayzu/authz: the Cerbos gRPC client, the resource-kind constants (the four
+ * of `002` plus `service_account` and `credential` from `043` D3), the
+ * attribute builders, ownership resolution, the `PlanResources` filter and the
+ * redaction helper (openspec/changes/002-auth-and-rbac, D7-D11).
  */
 export { createCerbosClient } from './client.js';
 export type { CerbosClient, CerbosClientOptions } from './client.js';

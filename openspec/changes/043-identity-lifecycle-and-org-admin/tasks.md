@@ -3780,7 +3780,7 @@ SSO surfaces of M18) are recorded there with their justification.
       no or an empty secret, `mount-gate.int.test.ts` the start failing with the switch
       on and no secret, and `token-exchange.int.test.ts` a service account's key
       exchanged without the port being refused with no token.
-- [ ] 16.11d _(setup)_ Stale statements found by the VCDM re-run (Resolved decision
+- [x] 16.11d _(setup)_ Stale statements found by the VCDM re-run (Resolved decision
       Q147; O-3, O-13, O-14): `docs/security/attack-surfaces.md` lists the back-channel
       logout checks in the order the code runs them (the signature last), drops the
       stale "Pinned image digests: Pending" row now that Dependabot tracks them, and

@@ -1,13 +1,20 @@
 /**
- * The `identity.*` oRPC router (task 18.3; design D22, Resolved decision Q16).
+ * The `identity.*` oRPC router (`043` design D10, Resolved decisions Q16 and Q45):
+ * the thirteen procedures of `identity.users`, `identity.serviceAccounts` and
+ * `identity.credentials`, each built with `defineIdentityOperation`.
  * `identity.users.create` is the only way an org admin creates a user: Better
  * Auth's own `POST /admin/create-user` stays off D18's allowlist, and
- * self sign-up is disabled. Called in-process only, through
- * `createRouterClient(router, { context })`; no HTTP route mounts it.
+ * self sign-up is disabled.
+ *
+ * `createApp` merges this router with the catalog router into the one router
+ * its `OpenAPIHandler` serves under `/v1`, and only when `mountIdentityRoutes`
+ * (the `MOUNT_IDENTITY_ROUTES` switch) is on. It can also be called in
+ * process, through `createRouterClient(router, { context })`.
  *
  * The context is the raw, host-supplied value (`tenantId`, `actor`,
- * `principal.roles`), the same shape the catalog router takes. Cerbos is
- * asked first (`user` / `create`, `user.yaml`); any deny, malformed context
+ * `principal.roles`), the same shape the catalog router takes; it never comes
+ * from the input. Cerbos is asked first (for example `user` / `create`,
+ * `user.yaml`), and again with the resolved target; any deny, malformed context
  * or Cerbos failure fails closed with `AUTH_FORBIDDEN` before anything is
  * created. The system-generated temporary password is returned in the
  * creation response only, never logged or emailed.

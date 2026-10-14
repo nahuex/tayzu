@@ -60,9 +60,10 @@ are fixed opportunistically or with the next Dependabot update.
   is never used: it requires a Semgrep login and sends telemetry that this
   project does not want in CI.
 - **Syft** (`sbom` job) generates an SPDX JSON SBOM of the pnpm dependency
-  tree on every run and uploads it as the `sbom-spdx` workflow artifact. This
-  step is **non-blocking** (`continue-on-error: true`): a SBOM generation
-  failure is visible in the job log but never fails the pipeline.
+  tree on every run and uploads it as the `sbom-spdx` workflow artifact. The
+  steps are **blocking**, with no `continue-on-error`: a SBOM generation
+  failure fails the job. Only an unsupported platform or an unreachable
+  download is a skip, as for the other pinned tools.
 
 `RA-AZ` L426-L430 documents code analysis integrated into the CI pipeline as
 the standard placement for SAST; `VULN` L190-L196 argues for risk-based

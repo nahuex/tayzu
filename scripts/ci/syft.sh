@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Generates an SPDX JSON SBOM of the pnpm dependency tree with Syft, from a
 # pinned release binary downloaded once into CI_TOOLS_CACHE and verified by
-# sha256. Non-blocking (R14): a failure here must never fail the caller.
+# sha256. A scan failure fails the caller; only an unsupported platform or an
+# unreachable download is a SKIP.
 # Usage: syft.sh [output-path]. Defaults to a path outside the repo so a
 # local run never leaves an untracked file in the working tree.
 
