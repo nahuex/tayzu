@@ -20,6 +20,14 @@ export interface EmailCapStore {
 }
 
 export interface EmailTenantGate {
+  /**
+   * Consumes the caps (or suppresses, for a disabled tenant) before the caller writes any
+   * state, and returns the delivery of the email. A refusal throws here, before any write.
+   */
+  admit(input: {
+    readonly tenantId: string;
+    readonly to: string;
+  }): Promise<{ deliver(template: EmailTemplate): Promise<void> }>;
   send(input: {
     readonly tenantId: string;
     readonly to: string;
@@ -79,26 +87,36 @@ export function createEmailTenantGate(deps: {
       throw error;
     }
   }
+  async function admit({ tenantId, to }: { readonly tenantId: string; readonly to: string }) {
+    if (disabled.has(tenantId)) {
+      return {
+        deliver(template: EmailTemplate): Promise<void> {
+          emitIdentityEvent({
+            name: 'catalog.security.email_tenant_blocked',
+            severity: 'WARN',
+            attributes: {
+              'tayzu.tenant.id': tenantId,
+              'tayzu.identity.email.template': TEMPLATE_NAMES[template.kind],
+            },
+          });
+          return Promise.resolve();
+        },
+      };
+    }
+    if (deps.killSwitch === true) {
+      emitLimited('global', tenantId);
+      throw new AuthRateLimitedError(INVITATION_RETRY_AFTER_SECONDS);
+    }
+    await consumeCap('tenant', tenantId, tenantId);
+    await consumeCap('recipient', recipientKey(to, recipientKeySecret), tenantId);
+    return {
+      deliver: (template: EmailTemplate): Promise<void> => deps.sender.send(to, template),
+    };
+  }
   return {
+    admit,
     async send({ tenantId, to, template }) {
-      if (disabled.has(tenantId)) {
-        emitIdentityEvent({
-          name: 'catalog.security.email_tenant_blocked',
-          severity: 'WARN',
-          attributes: {
-            'tayzu.tenant.id': tenantId,
-            'tayzu.identity.email.template': TEMPLATE_NAMES[template.kind],
-          },
-        });
-        return;
-      }
-      if (deps.killSwitch === true) {
-        emitLimited('global', tenantId);
-        throw new AuthRateLimitedError(INVITATION_RETRY_AFTER_SECONDS);
-      }
-      await consumeCap('tenant', tenantId, tenantId);
-      await consumeCap('recipient', recipientKey(to, recipientKeySecret), tenantId);
-      await deps.sender.send(to, template);
+      await (await admit({ tenantId, to })).deliver(template);
     },
   };
 }

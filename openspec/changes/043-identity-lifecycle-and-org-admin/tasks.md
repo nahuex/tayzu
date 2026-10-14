@@ -3807,7 +3807,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `setStatus` on a human and on a service account, of `serviceAccounts.delete` and
       of `credentials.rotate` each carrying the target's id, tenant and attributes, and
       `credentials.list` sending `list`.
-- [ ] 16.12b `invite` and `resendInvitation` consume the email caps before writing any
+- [x] 16.12b `invite` and `resendInvitation` consume the email caps before writing any
       state (spec "Invitation email is fixed and capped"; Resolved decision Q149): the
       disabled-tenant suppression still runs first and consumes nothing, a refused invite
       creates no invitation and cancels none, a refused resend leaves the stored token

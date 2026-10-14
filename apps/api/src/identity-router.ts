@@ -819,6 +819,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               if (!(headers instanceof Headers)) throw new IdentityInputError();
               const tenantId = rawTenantId(context);
               const adminId = (context['actor'] as { id: string }).id;
+              // The caps are consumed before any state is written (Q149); a refusal leaves nothing.
+              const admission = await emailGate.admit({ tenantId, to: input.email });
               // Better Auth cancels the address's pending invitations inside its create (Q42).
               const earlier = await options.authRepository.pendingInvitationsByEmail(
                 tenantId,
@@ -848,18 +850,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 value: digestInvitationToken(token),
                 expiresAt: new Date(invitation.expiresAt),
               });
-              await emailGate.send({
-                tenantId,
-                to: input.email,
-                template: {
-                  kind: 'InvitationEmail',
-                  link: buildInvitationLink({
-                    baseUrl: invitationLinkBaseUrl,
-                    invitationId: invitation.id,
-                    token,
-                  }),
-                  expiryText: INVITATION_EXPIRY_TEXT,
-                },
+              await admission.deliver({
+                kind: 'InvitationEmail',
+                link: buildInvitationLink({
+                  baseUrl: invitationLinkBaseUrl,
+                  invitationId: invitation.id,
+                  token,
+                }),
+                expiryText: INVITATION_EXPIRY_TEXT,
               });
               emitIdentityEvent({
                 name: 'catalog.audit.invitation_created',
@@ -935,6 +933,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 );
                 // Only a `pending` invitation is resent (Q123).
                 if (invitation?.status !== 'pending') throw new IdentityInputError();
+                // The caps are consumed before the digest is replaced (Q149): a refusal keeps the earlier link.
+                const admission = await emailGate.admit({ tenantId, to: invitation.email });
                 const token = generateInvitationToken();
                 await (
                   await verificationContext()
@@ -944,18 +944,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                     value: digestInvitationToken(token),
                   },
                 );
-                await emailGate.send({
-                  tenantId,
-                  to: invitation.email,
-                  template: {
-                    kind: 'InvitationEmail',
-                    link: buildInvitationLink({
-                      baseUrl: invitationLinkBaseUrl,
-                      invitationId: invitation.id,
-                      token,
-                    }),
-                    expiryText: INVITATION_EXPIRY_TEXT,
-                  },
+                await admission.deliver({
+                  kind: 'InvitationEmail',
+                  link: buildInvitationLink({
+                    baseUrl: invitationLinkBaseUrl,
+                    invitationId: invitation.id,
+                    token,
+                  }),
+                  expiryText: INVITATION_EXPIRY_TEXT,
                 });
                 emitIdentityEvent({
                   name: 'catalog.audit.invitation_resent',
