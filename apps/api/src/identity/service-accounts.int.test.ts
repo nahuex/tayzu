@@ -65,6 +65,7 @@ import {
   createRecordingEmailSender,
   exchangeMachineToken,
   type AuthInstance,
+  createServiceAccountLookup,
 } from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
@@ -222,7 +223,12 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
         authz: cerbos,
         authRepository: createAuthRepository(authPool),
         withUserLock: createWithUserLock(authPool),
-        emailGate: createEmailTenantGate({ disabledTenantIds: [], capStore, sender }),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender,
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
+        }),
         appPool,
         userSync,
       }),
@@ -654,10 +660,14 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     const tenant = await freshTenant();
     const identifier = `svc-del-${randomUUID().slice(0, 8)}`;
     const created = await createAccount(tenant, identifier);
-    const issued = await exchangeMachineToken(auth, {
-      clientId: created.clientId,
-      clientSecret: created.clientSecret,
-    });
+    const issued = await exchangeMachineToken(
+      auth,
+      {
+        clientId: created.clientId,
+        clientSecret: created.clientSecret,
+      },
+      { serviceAccountLookup: createServiceAccountLookup(appPool) },
+    );
 
     await deleter().identity.serviceAccounts.delete(
       { params: { user: identifier } },
@@ -677,10 +687,14 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
     expect(await revocationCount(tenant.tenantId, created.clientId)).toBe(1);
     expect(await nonRevokedBound(tenant.tenantId, identifier)).toEqual([]);
     await expect(
-      exchangeMachineToken(auth, {
-        clientId: created.clientId,
-        clientSecret: created.clientSecret,
-      }),
+      exchangeMachineToken(
+        auth,
+        {
+          clientId: created.clientId,
+          clientSecret: created.clientSecret,
+        },
+        { serviceAccountLookup: createServiceAccountLookup(appPool) },
+      ),
     ).rejects.toThrow();
     expect(await rejectedWithinWindow(issued.accessToken)).toBe(true);
   }, 120_000);
@@ -701,7 +715,11 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
       [
         { clientId: first.clientId, clientSecret: first.clientSecret },
         { clientId: second.id, clientSecret: second.secret },
-      ].map((credentials) => exchangeMachineToken(auth, credentials)),
+      ].map((credentials) =>
+        exchangeMachineToken(auth, credentials, {
+          serviceAccountLookup: createServiceAccountLookup(appPool),
+        }),
+      ),
     );
     expect(await nonRevokedBound(tenant.tenantId, identifier)).toHaveLength(2);
 
@@ -1121,6 +1139,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
             recipient: { max: 1000, windowSeconds: 86_400 },
           }),
           sender,
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
         }),
         appPool,
         userSync: createUserSyncAdapter({

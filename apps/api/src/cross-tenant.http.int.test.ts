@@ -79,6 +79,7 @@ describe('cross-tenant requests over HTTP, called by the admin of t1 (task 14.8)
       allowedOrigins: [ORIGIN],
       ...{
         mountIdentityRoutes: true,
+        ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
         identity: {
           emailGate: createEmailTenantGate({
             disabledTenantIds: [],

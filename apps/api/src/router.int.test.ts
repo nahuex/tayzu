@@ -149,7 +149,12 @@ describe('identity router: each procedure on its happy path (task 14.1, design D
         authz: cerbos,
         authRepository: createAuthRepository(authPool),
         withUserLock: createWithUserLock(authPool),
-        emailGate: createEmailTenantGate({ disabledTenantIds: [], capStore, sender }),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender,
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
+        }),
         invitationLinkBaseUrl: LINK_BASE_URL,
         appPool,
         userSync: adapter,

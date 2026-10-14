@@ -143,6 +143,11 @@ export interface CreateAppOptions {
    * procedures). Omitted: off, and each answers like an unknown `/v1` path.
    */
   readonly mountIdentityRoutes?: boolean;
+  /**
+   * `IDENTITY_TOKEN_HMAC_SECRET` (Q147, O-5): the secret of the recipient key. With the
+   * identity routes mounted, `createApp` refuses to start without it (or `email.recipientKeySecret`).
+   */
+  readonly identityTokenHmacSecret?: string;
   /** 043 task 14.18 (Q138): the credential and service-account caps handed to the identity router. */
   readonly credentialCap?: number;
   readonly serviceAccountCap?: number;
@@ -284,6 +289,13 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   const serviceAccountLookup = createServiceAccountLookup(appPool);
 
   const { email } = options;
+  const recipientKeySecret =
+    options.identityTokenHmacSecret === undefined
+      ? email?.recipientKeySecret
+      : options.identityTokenHmacSecret;
+  if (options.mountIdentityRoutes === true && (recipientKeySecret ?? '') === '') {
+    throw new Error('IDENTITY_TOKEN_HMAC_SECRET is required to mount the identity routes.');
+  }
   // One cap store shared by the invitation gate and the notice dispatcher (Q138).
   const emailCapStore =
     email === undefined
@@ -303,25 +315,23 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           }),
         });
   const emailGate =
-    email === undefined || emailCapStore === undefined
+    email === undefined || emailCapStore === undefined || recipientKeySecret === undefined
       ? options.identity?.emailGate
       : createEmailTenantGate({
           disabledTenantIds: email.disabledTenantIds,
           capStore: emailCapStore,
           sender: email.sender,
           killSwitch: email.killSwitch,
-          ...(email.recipientKeySecret === undefined
-            ? {}
-            : { recipientKeySecret: email.recipientKeySecret }),
+          recipientKeySecret,
         });
   const notices =
-    email === undefined || emailCapStore === undefined || email.recipientKeySecret === undefined
+    email === undefined || emailCapStore === undefined || recipientKeySecret === undefined
       ? undefined
       : createNoticeDispatcher({
           disabledTenantIds: email.disabledTenantIds,
           capStore: emailCapStore,
           sender: email.sender,
-          recipientKeySecret: email.recipientKeySecret,
+          recipientKeySecret,
           killSwitch: email.killSwitch,
         });
   const invitationLinkBaseUrl =

@@ -106,9 +106,11 @@ describe('the identity router is merged with the catalog router into one handler
       ...{
         // Task 14.3: the identity routes are off by default; this file exercises them.
         mountIdentityRoutes: true,
+        ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
         identity: {
           emailGate: createEmailTenantGate({
             disabledTenantIds: [],
+            recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
             capStore,
             sender: createRecordingEmailSender(),
           }),

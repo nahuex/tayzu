@@ -39,11 +39,19 @@ export function createEmailTenantGate(deps: {
   readonly disabledTenantIds: readonly string[];
   readonly capStore: EmailCapStore;
   readonly sender: EmailSender;
-  /** The HMAC secret of the recipient key (6.7b); the recipient cap runs only when set. */
-  readonly recipientKeySecret?: string;
+  /** The HMAC secret of the recipient key (6.7b); required, so the recipient cap never skips. */
+  readonly recipientKeySecret: string;
   /** `INVITATION_EMAIL_KILL_SWITCH` (6.8): when on, every send is refused before any cap. */
   readonly killSwitch?: boolean;
 }): EmailTenantGate {
+  // Q147 (O-5): fail closed at construction; the type cannot rule out `undefined` at runtime.
+  if (
+    (deps.recipientKeySecret as string | undefined) === undefined ||
+    deps.recipientKeySecret === ''
+  ) {
+    throw new Error('The email tenant gate requires a recipient key secret.');
+  }
+  const recipientKeySecret = deps.recipientKeySecret;
   const disabled = new Set(deps.disabledTenantIds);
   function emitLimited(scope: 'tenant' | 'recipient' | 'global', tenantId: string) {
     emitIdentityEvent({
@@ -89,9 +97,7 @@ export function createEmailTenantGate(deps: {
         throw new AuthRateLimitedError(INVITATION_RETRY_AFTER_SECONDS);
       }
       await consumeCap('tenant', tenantId, tenantId);
-      if (deps.recipientKeySecret !== undefined) {
-        await consumeCap('recipient', recipientKey(to, deps.recipientKeySecret), tenantId);
-      }
+      await consumeCap('recipient', recipientKey(to, recipientKeySecret), tenantId);
       await deps.sender.send(to, template);
     },
   };

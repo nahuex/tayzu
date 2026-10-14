@@ -108,7 +108,10 @@ describe('Existing-account acceptance over HTTP (task 14.7, design D4 step 4, Q2
       authSecret: TEST_SECRET,
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ORIGIN],
-      ...{ mountIdentityRoutes: true },
+      ...{
+        mountIdentityRoutes: true,
+        identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef',
+      },
     });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
     userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
@@ -121,6 +124,7 @@ describe('Existing-account acceptance over HTTP (task 14.7, design D4 step 4, Q2
         withUserLock: createWithUserLock(pools.authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
           capStore: createInMemoryEmailCapStore({
             tenant: { max: 1000, windowSeconds: 3600 },
             recipient: { max: 1000, windowSeconds: 86_400 },

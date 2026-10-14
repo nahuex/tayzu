@@ -960,4 +960,58 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
       expect(claims['tenantId']).toBe(admin.organizationId);
     });
   });
+
+  /**
+   * Task 16.11c (Resolved decision Q147; VCDM O-8): the exchange fails closed.
+   *
+   * Production behavior expected (`./token-exchange.ts`): `exchangeMachineToken`
+   * rejects with `AuthInvalidCredentialsError`, like an invalid credential and
+   * signing no token, when the key's metadata binds a `userId` and no
+   * `ports.serviceAccountLookup` is given (today it signs a token, skipping the
+   * `_user` status check of task 11.7).
+   */
+  describe('a service account key without the lookup port (task 16.11c)', () => {
+    it("A service account's key exchanged without the lookup port is refused with no token", async () => {
+      const admin = await bootstrapAdmin();
+      const serviceAccountId = `svc-noport-${randomUUID().slice(0, 8)}`;
+      const created = await createMachineCredential(auth, {
+        userId: admin.userId,
+        organizationId: admin.organizationId,
+        name: 'Service account credential',
+        actorKind: 'integration',
+        metadata: { userId: serviceAccountId, createdBy: admin.userId },
+      });
+      await seedUserRow(testAppPool(), {
+        tenantId: admin.organizationId,
+        email: serviceAccountId,
+        name: serviceAccountId,
+        status: 'Active',
+      });
+      const params = { clientId: created.id, clientSecret: created.secret };
+
+      // Without the ports argument at all, and with an empty one.
+      await expect(exchangeMachineToken(auth, params)).rejects.toBeInstanceOf(
+        AuthInvalidCredentialsError,
+      );
+      await expect(exchangeMachineToken(auth, params, {})).rejects.toBeInstanceOf(
+        AuthInvalidCredentialsError,
+      );
+    });
+
+    it('A key with no bound userId still exchanges without the lookup port', async () => {
+      const admin = await bootstrapAdmin();
+      const created = await createMachineCredential(auth, {
+        userId: admin.userId,
+        organizationId: admin.organizationId,
+        name: 'Plain integration credential',
+        actorKind: 'integration',
+      });
+
+      const exchanged = await exchangeMachineToken(auth, {
+        clientId: created.id,
+        clientSecret: created.secret,
+      });
+      expect(exchanged.accessToken).toEqual(expect.any(String));
+    });
+  });
 });

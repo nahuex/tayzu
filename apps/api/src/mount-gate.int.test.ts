@@ -52,6 +52,7 @@ import { createApp, type App } from './server.js';
 
 const ORIGIN = 'https://app.tayzu.test';
 const TEST_PASSWORD = 'correct horse battery staple';
+const HMAC_SECRET = 'mount-gate-hmac-test-only-secret-0123456789-abcdef';
 const ACCEPT_PATH = '/v1/auth/invitations/accept';
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
@@ -105,7 +106,10 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
     // The switch is not passed at all: off is the default.
     off = await createApp(base);
     // Spread so this file type-checks before `CreateAppOptions.mountIdentityRoutes` exists.
-    on = await createApp({ ...base, ...{ mountIdentityRoutes: true } });
+    on = await createApp({
+      ...base,
+      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
+    });
     routes = await fourteenRoutes();
 
     const suffix = randomUUID();
@@ -218,4 +222,67 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
       });
     }
   }, 120_000);
+});
+
+/**
+ * Task 16.11c (Resolved decision Q147; VCDM O-5): with the mount switch on, `createApp`
+ * refuses to start without `IDENTITY_TOKEN_HMAC_SECRET`, in every environment (the test
+ * harness included), so the recipient cap and the notices are never silently skipped.
+ *
+ * Production symbol expected (`./server.js`): `CreateAppOptions.identityTokenHmacSecret?:
+ * string`, the secret of the recipient key. With `mountIdentityRoutes: true`, `createApp`
+ * rejects when neither it nor `email.recipientKeySecret` is set (or the one given is
+ * empty). With the switch off, the secret stays optional. (Passed through a spread so
+ * this file type-checks before the option exists.)
+ */
+describe('createApp refuses to mount the identity routes without a secret (task 16.11c, Q147)', () => {
+  async function base() {
+    const pools = await harnessPools();
+    return {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+  }
+
+  /** The error `createApp` rejects with, or `undefined` when it started (the app is closed). */
+  async function startError(options: Parameters<typeof createApp>[0]): Promise<unknown> {
+    try {
+      await (await createApp(options)).close();
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  it('the start fails with the switch on and no IDENTITY_TOKEN_HMAC_SECRET', async () => {
+    const options = { ...(await base()), ...{ mountIdentityRoutes: true } };
+    const error = await startError(options);
+    expect(error, 'createApp must refuse to start').toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('IDENTITY_TOKEN_HMAC_SECRET');
+  }, 60_000);
+
+  it('the start fails with the switch on and an empty IDENTITY_TOKEN_HMAC_SECRET', async () => {
+    const options = {
+      ...(await base()),
+      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: '' },
+    };
+    const error = await startError(options);
+    expect(error, 'createApp must refuse to start').toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('IDENTITY_TOKEN_HMAC_SECRET');
+  }, 60_000);
+
+  it('the start succeeds with the switch on and a secret', async () => {
+    const app = await createApp({
+      ...(await base()),
+      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
+    });
+    await app.close();
+  }, 60_000);
+
+  it('the start succeeds with the switch off and no secret', async () => {
+    const app = await createApp(await base());
+    await app.close();
+  }, 60_000);
 });

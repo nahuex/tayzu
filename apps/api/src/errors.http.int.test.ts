@@ -87,6 +87,7 @@ describe('error mapping over HTTP with the identity routes mounted (task 14.5)',
       allowedOrigins: [ORIGIN],
       ...{
         mountIdentityRoutes: true,
+        ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
         invitationAcceptRateLimit: { max: ACCEPT_LIMIT, window: 60 },
         identity: {
           emailGate: createEmailTenantGate({

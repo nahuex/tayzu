@@ -72,6 +72,7 @@ describe('the DELETE identity routes read their target from the path (task 14.6b
       allowedOrigins: [ORIGIN],
       ...{
         mountIdentityRoutes: true,
+        ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
         identity: {
           emailGate: createEmailTenantGate({
             disabledTenantIds: [],

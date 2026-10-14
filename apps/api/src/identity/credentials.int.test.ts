@@ -56,6 +56,7 @@ import {
   createContextResolver,
   exchangeMachineToken,
   type AuthInstance,
+  createServiceAccountLookup,
 } from '@tayzu/auth';
 import {
   createMachineCredential,
@@ -1525,10 +1526,14 @@ describe('identity.credentials.rotate (task 9.6)', () => {
       metadata: { userId: identifier, createdBy: org.adminId },
     });
     const resolveContext = createContextResolver({ auth, revocationPool: appPool });
-    const issued = await exchangeMachineToken(auth, {
-      clientId: c1.id,
-      clientSecret: c1.secret,
-    });
+    const issued = await exchangeMachineToken(
+      auth,
+      {
+        clientId: c1.id,
+        clientSecret: c1.secret,
+      },
+      { serviceAccountLookup: createServiceAccountLookup(appPool) },
+    );
     // The token is usable before the rotation (this also warms the revocation cache).
     await expect(
       resolveContext(new Headers({ authorization: `Bearer ${issued.accessToken}` })),
@@ -1561,14 +1566,22 @@ describe('identity.credentials.rotate (task 9.6)', () => {
     expect(await rejectedWithinWindow(resolveContext, issued.accessToken)).toBe(true);
     // AND any new exchange with c1 is rejected.
     await expect(
-      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+      exchangeMachineToken(
+        auth,
+        { clientId: c1.id, clientSecret: c1.secret },
+        { serviceAccountLookup: createServiceAccountLookup(appPool) },
+      ),
     ).rejects.toThrow();
 
     // AND c2 is the usable credential.
-    const fresh = await exchangeMachineToken(auth, {
-      clientId: rotated.id,
-      clientSecret: rotated.secret,
-    });
+    const fresh = await exchangeMachineToken(
+      auth,
+      {
+        clientId: rotated.id,
+        clientSecret: rotated.secret,
+      },
+      { serviceAccountLookup: createServiceAccountLookup(appPool) },
+    );
     await expect(
       resolveContext(new Headers({ authorization: `Bearer ${fresh.accessToken}` })),
     ).resolves.toMatchObject({ tenantId: org.tenantId, actor: { id: rotated.id } });
@@ -1627,12 +1640,20 @@ describe('identity.credentials.rotate (task 9.6)', () => {
     expect(typeof metadata.rotatedAt).toBe('string');
     expect(await revocationRows(org, c1.id)).toBe(1);
     await expect(
-      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+      exchangeMachineToken(
+        auth,
+        { clientId: c1.id, clientSecret: c1.secret },
+        { serviceAccountLookup: createServiceAccountLookup(appPool) },
+      ),
     ).rejects.toThrow();
-    const token = await exchangeMachineToken(auth, {
-      clientId: rotated.id,
-      clientSecret: rotated.secret,
-    });
+    const token = await exchangeMachineToken(
+      auth,
+      {
+        clientId: rotated.id,
+        clientSecret: rotated.secret,
+      },
+      { serviceAccountLookup: createServiceAccountLookup(appPool) },
+    );
     expect(token.accessToken.length).toBeGreaterThan(0);
   }, 180_000);
 });
@@ -2345,7 +2366,11 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     const org = await freshOrg();
     const c1 = await seed(org, 'To revoke');
     const untouched = await seed(org, 'Untouched');
-    const issued = await exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret });
+    const issued = await exchangeMachineToken(
+      auth,
+      { clientId: c1.id, clientSecret: c1.secret },
+      { serviceAccountLookup: createServiceAccountLookup(appPool) },
+    );
     expect(issued.accessToken.length).toBeGreaterThan(0);
     expect(await revocationCount(org, c1.id)).toBe(0);
 
@@ -2357,7 +2382,11 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     expect(await revocationCount(org, c1.id)).toBe(1);
     expect(await keyEnabled(c1.id)).toBe(false);
     await expect(
-      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+      exchangeMachineToken(
+        auth,
+        { clientId: c1.id, clientSecret: c1.secret },
+        { serviceAccountLookup: createServiceAccountLookup(appPool) },
+      ),
     ).rejects.toThrow();
     // Only the revoked credential is affected.
     expect(await revocationCount(org, untouched.id)).toBe(0);
@@ -2373,7 +2402,11 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     expect(await revocationCount(org, c1.id)).toBe(1);
     expect(await keyEnabled(c1.id)).toBe(false);
     await expect(
-      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+      exchangeMachineToken(
+        auth,
+        { clientId: c1.id, clientSecret: c1.secret },
+        { serviceAccountLookup: createServiceAccountLookup(appPool) },
+      ),
     ).rejects.toThrow();
 
     const listed = await client().identity.credentials.list(
@@ -2402,16 +2435,24 @@ describe('identity.credentials.revoke (task 9.9)', () => {
     );
 
     expect(rotated.id).not.toBe(c1.id);
-    const fresh = await exchangeMachineToken(auth, {
-      clientId: rotated.id,
-      clientSecret: rotated.secret,
-    });
+    const fresh = await exchangeMachineToken(
+      auth,
+      {
+        clientId: rotated.id,
+        clientSecret: rotated.secret,
+      },
+      { serviceAccountLookup: createServiceAccountLookup(appPool) },
+    );
     expect(fresh.accessToken.length).toBeGreaterThan(0);
     // c1 itself is still revoked and unusable.
     expect(await revocationCount(org, c1.id)).toBe(1);
     expect(await keyEnabled(c1.id)).toBe(false);
     await expect(
-      exchangeMachineToken(auth, { clientId: c1.id, clientSecret: c1.secret }),
+      exchangeMachineToken(
+        auth,
+        { clientId: c1.id, clientSecret: c1.secret },
+        { serviceAccountLookup: createServiceAccountLookup(appPool) },
+      ),
     ).rejects.toThrow();
   }, 120_000);
 
@@ -2814,10 +2855,14 @@ describe('a foreign or unknown credential id answers CATALOG_NOT_FOUND (task 9.1
       [foreign.id],
     );
     expect(stored.rows[0]?.enabled).toBe(true);
-    const exchange = await exchangeMachineToken(auth, {
-      clientId: foreign.id,
-      clientSecret: foreign.secret,
-    });
+    const exchange = await exchangeMachineToken(
+      auth,
+      {
+        clientId: foreign.id,
+        clientSecret: foreign.secret,
+      },
+      { serviceAccountLookup: createServiceAccountLookup(appPool) },
+    );
     expect(exchange.accessToken.length).toBeGreaterThan(0);
   }, 120_000);
 

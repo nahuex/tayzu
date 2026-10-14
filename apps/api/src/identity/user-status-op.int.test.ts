@@ -184,6 +184,7 @@ describe('identity.users.setStatus for a human (task 11.2)', () => {
         withUserLock: createWithUserLock(authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
           capStore,
           sender: createRecordingEmailSender(),
         }),

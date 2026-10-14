@@ -33,6 +33,7 @@ import {
   createRecordingEmailSender,
   exchangeMachineToken,
   type AuthInstance,
+  createServiceAccountLookup,
 } from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
@@ -114,7 +115,12 @@ describe('cross-tenant matrix (tasks 12.x)', () => {
         authz: cerbos,
         authRepository: createAuthRepository(authPool),
         withUserLock: createWithUserLock(authPool),
-        emailGate: createEmailTenantGate({ disabledTenantIds: [], capStore, sender }),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender,
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
+        }),
         invitationLinkBaseUrl: LINK_BASE_URL,
       }),
       { context: (raw: Record<string, unknown>) => raw },
@@ -495,6 +501,7 @@ describe('cross-tenant matrix: setStatus (task 12.4)', () => {
         withUserLock: createWithUserLock(authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
           capStore,
           sender: createRecordingEmailSender(),
         }),
@@ -740,6 +747,7 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
         withUserLock: createWithUserLock(authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
           capStore,
           sender: createRecordingEmailSender(),
         }),
@@ -879,10 +887,14 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
     expect(await keysOf(t2.tenantId), 'the credential row is intact').toEqual(keysBefore);
     expect(await revocations(t2.tenantId), 'nothing was revoked').toBe(0);
     await expect(
-      exchangeMachineToken(auth, {
-        clientId: created.clientId,
-        clientSecret: created.clientSecret,
-      }),
+      exchangeMachineToken(
+        auth,
+        {
+          clientId: created.clientId,
+          clientSecret: created.clientSecret,
+        },
+        { serviceAccountLookup: createServiceAccountLookup((await harnessPools()).appPool) },
+      ),
       'the credential still exchanges',
     ).resolves.toBeDefined();
   }, 90_000);
@@ -1268,7 +1280,11 @@ describe('cross-tenant matrix: credentials rotate and revoke (task 12.7)', () =>
       expect(await revocations(t2.tenantId), 'no revocation in t2').toBe(t2Revocations);
       expect(await revocations(t1.tenantId), 'no revocation in t1').toBe(t1Revocations);
       await expect(
-        exchangeMachineToken(auth, { clientId: foreign.id, clientSecret: foreign.secret }),
+        exchangeMachineToken(
+          auth,
+          { clientId: foreign.id, clientSecret: foreign.secret },
+          { serviceAccountLookup: createServiceAccountLookup((await harnessPools()).appPool) },
+        ),
         'the credential still exchanges',
       ).resolves.toBeDefined();
     }, 120_000);
@@ -1351,6 +1367,7 @@ describe("cross-tenant matrix: Cerbos receives the target's real tenant (task 12
         withUserLock: createWithUserLock(authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
           capStore,
           sender: createRecordingEmailSender(),
         }),
@@ -1570,6 +1587,7 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
         withUserLock: createWithUserLock(authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
           capStore,
           sender: createRecordingEmailSender(),
         }),

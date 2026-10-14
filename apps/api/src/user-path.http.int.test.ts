@@ -71,6 +71,7 @@ describe('the {user} path segment over HTTP (task 14.6)', () => {
       allowedOrigins: [ORIGIN],
       ...{
         mountIdentityRoutes: true,
+        ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
         identity: {
           emailGate: createEmailTenantGate({
             disabledTenantIds: [],

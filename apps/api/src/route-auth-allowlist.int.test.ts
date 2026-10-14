@@ -166,6 +166,7 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ORIGIN],
       mountIdentityRoutes: true,
+      ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
     };
     // Spread so this file type-checks before `CreateAppOptions.configureApp` exists.
     app = await createApp({ ...base, ...{ configureApp: real.install } });

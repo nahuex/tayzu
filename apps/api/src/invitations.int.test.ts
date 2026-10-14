@@ -149,7 +149,12 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
         authz: cerbos,
         authRepository: createAuthRepository(authPool),
         withUserLock: createWithUserLock(authPool),
-        emailGate: createEmailTenantGate({ disabledTenantIds: [], capStore, sender }),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          capStore,
+          sender,
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
+        }),
         invitationLinkBaseUrl: LINK_BASE_URL,
       }),
       { context: (raw: Record<string, unknown>) => raw },

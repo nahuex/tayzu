@@ -324,7 +324,12 @@ export async function exchangeMachineToken(
   // Task 10.6: `userId` is an attribution claim only, never an authority.
   const boundUserId = key.metadata?.[USER_ID_METADATA_KEY];
   const userId = typeof boundUserId === 'string' ? boundUserId : undefined;
-  if (userId !== undefined && ports.serviceAccountLookup !== undefined) {
+  if (userId !== undefined) {
+    // Q147 (O-8): a key bound to a `userId` without the lookup port is refused.
+    if (ports.serviceAccountLookup === undefined) {
+      recordFailedExchange(actorKind);
+      throw new AuthInvalidCredentialsError();
+    }
     // Task 11.7: an absent or non-`Active` `_user` never gets a token; a
     // rejected lookup propagates, so the exchange fails closed.
     const row = await ports.serviceAccountLookup({ tenantId: key.referenceId, userId });

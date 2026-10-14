@@ -90,6 +90,7 @@ describe('the /v1/* catch-all accepts only the methods the merged router routes 
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ORIGIN],
       mountIdentityRoutes: true,
+      ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
       ...{
         configureApp: (instance: FastifyInstance): void => {
           instance.addHook('onRoute', (route) => {

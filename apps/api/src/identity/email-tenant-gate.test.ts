@@ -43,6 +43,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createEmailTenantGate, type EmailCapStore } from './email-tenant-gate.js';
 
+const HMAC_SECRET = 'email-gate-test-only-secret-0123456789-abcdefghij';
 const EVENT = 'catalog.security.email_tenant_blocked';
 const RECIPIENT_LOCAL = 'marker-recipient';
 const RECIPIENT = `${RECIPIENT_LOCAL}@example.test`;
@@ -98,6 +99,7 @@ describe('the email tenant gate (043 task 6.5c, Q80)', () => {
       disabledTenantIds: [tenantId(), listed],
       capStore,
       sender,
+      recipientKeySecret: HMAC_SECRET,
     });
 
     await gate.send({ tenantId: listed, to: RECIPIENT, template: INVITATION });
@@ -112,6 +114,7 @@ describe('the email tenant gate (043 task 6.5c, Q80)', () => {
       disabledTenantIds: [tenantId()],
       capStore: recordingCapStore(),
       sender,
+      recipientKeySecret: HMAC_SECRET,
     });
     const unlisted = tenantId();
 
@@ -127,6 +130,7 @@ describe('the email tenant gate (043 task 6.5c, Q80)', () => {
       disabledTenantIds: [],
       capStore: recordingCapStore(),
       sender,
+      recipientKeySecret: HMAC_SECRET,
     });
 
     await gate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION });
@@ -141,6 +145,7 @@ describe('the email tenant gate (043 task 6.5c, Q80)', () => {
       disabledTenantIds: [listed],
       capStore: recordingCapStore(),
       sender,
+      recipientKeySecret: HMAC_SECRET,
     });
 
     await gate.send({ tenantId: `${listed}-2`, to: RECIPIENT, template: INVITATION });
@@ -155,6 +160,7 @@ describe('the email tenant gate (043 task 6.5c, Q80)', () => {
       disabledTenantIds: [listed],
       capStore: recordingCapStore(),
       sender: createRecordingEmailSender(),
+      recipientKeySecret: HMAC_SECRET,
     });
 
     await gate.send({ tenantId: listed, to: RECIPIENT, template: INVITATION });
@@ -177,10 +183,49 @@ describe('the email tenant gate (043 task 6.5c, Q80)', () => {
       disabledTenantIds: [listed],
       capStore: recordingCapStore(),
       sender: createRecordingEmailSender(),
+      recipientKeySecret: HMAC_SECRET,
     });
 
     await expect(
       gate.send({ tenantId: listed, to: RECIPIENT, template: INVITATION }),
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * Task 16.11c (Resolved decision Q147; VCDM O-5): `recipientKeySecret` is a required
+ * option of `createEmailTenantGate`. Construction throws without it (or with an empty
+ * one), so the recipient cap is never silently skipped. Production symbol expected
+ * (`./email-tenant-gate.ts`): `recipientKeySecret: string` (required), checked at
+ * construction for `undefined` and `''`.
+ */
+describe('the email tenant gate fails closed without a recipient key secret (task 16.11c, Q147)', () => {
+  const base = {
+    disabledTenantIds: [],
+    capStore: recordingCapStore(),
+    sender: createRecordingEmailSender(),
+  };
+
+  it('construction throws when no recipientKeySecret is given', () => {
+    const construct = createEmailTenantGate as unknown as (deps: object) => unknown;
+    expect(() => construct(base)).toThrow();
+  });
+
+  it('construction throws when the recipientKeySecret is undefined', () => {
+    const construct = createEmailTenantGate as unknown as (deps: object) => unknown;
+    expect(() => construct({ ...base, recipientKeySecret: undefined })).toThrow();
+  });
+
+  it('construction throws when the recipientKeySecret is empty', () => {
+    expect(() => createEmailTenantGate({ ...base, recipientKeySecret: '' })).toThrow();
+  });
+
+  it('the recipient cap is consumed on every send when a secret is given', async () => {
+    const capStore = recordingCapStore();
+    const gate = createEmailTenantGate({ ...base, capStore, recipientKeySecret: HMAC_SECRET });
+
+    await gate.send({ tenantId: tenantId(), to: RECIPIENT, template: INVITATION });
+
+    expect(capStore.consumed.map((entry) => entry.scope)).toEqual(['tenant', 'recipient']);
   });
 });

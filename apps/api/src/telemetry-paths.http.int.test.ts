@@ -185,6 +185,7 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
         allowedOrigins: [ORIGIN],
         ...{
           mountIdentityRoutes: true,
+          ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
           identity: {
             emailGate: createEmailTenantGate({
               disabledTenantIds: [],

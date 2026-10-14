@@ -3769,7 +3769,7 @@ SSO surfaces of M18) are recorded there with their justification.
       tenant than a pool built for the test with a small `max` has connections all
       completing within the cap with no statement timeout, and
       `service-accounts.int.test.ts` the same for `serviceAccounts.create`.
-- [ ] 16.11c The email gate and the token exchange fail closed (Resolved decision Q147;
+- [x] 16.11c The email gate and the token exchange fail closed (Resolved decision Q147;
       VCDM O-5 and O-8): `recipientKeySecret` becomes a required option of
       `createEmailTenantGate` (construction throws without it, so the recipient cap is
       never silently skipped) and, with the mount switch on, `createApp` refuses to start

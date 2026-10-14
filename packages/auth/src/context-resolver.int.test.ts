@@ -1794,10 +1794,13 @@ describe('resolveContext: service-account principal check (task 11.6, D13, Q40)'
       actorKind: 'integration',
       metadata: { userId: serviceAccountId, createdBy: admin.userId },
     });
-    const exchanged = await exchangeMachineToken(auth, {
-      clientId: credential.id,
-      clientSecret: credential.secret,
-    });
+    const exchanged = await exchangeMachineToken(
+      auth,
+      { clientId: credential.id, clientSecret: credential.secret },
+      // The exchange's own `_user` gate (11.7) is not under test here: the port reports the
+      // seeded `Active` state so every resolver check below stays what this suite exercises.
+      { serviceAccountLookup: () => Promise.resolve({ status: 'Active', properties: {} }) },
+    );
     return {
       tenantId: admin.organizationId,
       serviceAccountId,

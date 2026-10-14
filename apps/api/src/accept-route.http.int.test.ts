@@ -86,7 +86,10 @@ describe('POST /v1/auth/invitations/accept over HTTP (task 14.1b, design D4, Q8,
       cerbosAddress: 'localhost:3593',
       allowedOrigins: [ORIGIN],
       // Task 14.3: the routes are off by default; this file exercises the accept route.
-      ...{ mountIdentityRoutes: true },
+      ...{
+        mountIdentityRoutes: true,
+        identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef',
+      },
     });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
     userSync = createUserSync({ pool: pools.appPool, authz: cerbos });
@@ -99,6 +102,7 @@ describe('POST /v1/auth/invitations/accept over HTTP (task 14.1b, design D4, Q8,
         withUserLock: createWithUserLock(pools.authPool),
         emailGate: createEmailTenantGate({
           disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
           capStore: createInMemoryEmailCapStore({
             tenant: { max: 1000, windowSeconds: 3600 },
             recipient: { max: 1000, windowSeconds: 86_400 },
