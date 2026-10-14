@@ -103,8 +103,8 @@ describe('identity target resolution', () => {
   async function seedApiKey(tenantId: string): Promise<string> {
     const id = `key-${randomUUID()}`;
     await authPool.query(
-      `insert into auth.apikey (id, name, reference_id, key, created_at, updated_at)
-       values ($1, 'k', $2, 'hashed', now(), now())`,
+      `insert into auth.apikey (id, name, reference_id, key, config_id, created_at, updated_at)
+       values ($1, 'k', $2, 'hashed', 'machine-credential', now(), now())`,
       [id, tenantId],
     );
     return id;

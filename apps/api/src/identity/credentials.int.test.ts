@@ -2879,6 +2879,75 @@ describe('a foreign or unknown credential id answers CATALOG_NOT_FOUND (task 9.1
     expect(ids).toContain(own.id);
     expect(ids).not.toContain(foreign.id);
   }, 120_000);
+
+  /**
+   * Task 16.12f (design D8, task 9.11; Resolved decision Q149): the lookup also filters by the
+   * machine-credential `configId`, so a key of another configuration in the SAME tenant is not
+   * found by rotate or revoke.
+   *
+   * Production symbols expected: none new; `authRepository.apiKeyById` (`./auth-repository.js`)
+   * restricts to `config_id = 'machine-credential'`, however the implementer shapes its signature.
+   */
+  it('A key of another configuration in the same tenant answers CATALOG_NOT_FOUND on rotate and on revoke, identical to an unknown id, and stays untouched (task 16.12f)', async () => {
+    const t1 = await freshOrg();
+    const other = await seed(t1, 'Other configuration');
+    const own = await seed(t1, 'Own machine credential');
+    await authPool.query("update auth.apikey set config_id = 'other-config' where id = $1", [
+      other.id,
+    ]);
+    const unknownId = randomUUID();
+
+    const revokeOther = await failureOf(() =>
+      client().identity.credentials.revoke(
+        { params: { credential: other.id } },
+        { context: contextOf(t1) },
+      ),
+    );
+    const revokeUnknown = await failureOf(() =>
+      client().identity.credentials.revoke(
+        { params: { credential: unknownId } },
+        { context: contextOf(t1) },
+      ),
+    );
+    const rotateOther = await failureOf(() =>
+      client().identity.credentials.rotate(
+        { params: { credential: other.id } },
+        { context: contextOf(t1) },
+      ),
+    );
+    const rotateUnknown = await failureOf(() =>
+      client().identity.credentials.rotate(
+        { params: { credential: unknownId } },
+        { context: contextOf(t1) },
+      ),
+    );
+
+    expect(revokeOther['code']).toBe('CATALOG_NOT_FOUND');
+    expect(rotateOther['code']).toBe('CATALOG_NOT_FOUND');
+    expect(revokeOther).toEqual(revokeUnknown);
+    expect(rotateOther).toEqual(rotateUnknown);
+
+    // Nothing changed: no revocation row, the key is still enabled and in its configuration.
+    expect(await revocationCount(t1, other.id)).toBe(0);
+    const stored = await authPool.query<{ enabled: boolean; config_id: string }>(
+      'select enabled, config_id from auth.apikey where id = $1',
+      [other.id],
+    );
+    expect(stored.rows[0]?.enabled).toBe(true);
+    expect(stored.rows[0]?.config_id).toBe('other-config');
+    const count = await authPool.query<{ n: string }>(
+      'select count(*)::text as n from auth.apikey where reference_id = $1',
+      [t1.tenantId],
+    );
+    expect(Number(count.rows[0]?.n)).toBe(2);
+
+    // The tenant's own machine credential is still found by the same operations.
+    const rotated = await client().identity.credentials.rotate(
+      { params: { credential: own.id } },
+      { context: contextOf(t1) },
+    );
+    expect(rotated.id.length).toBeGreaterThan(0);
+  }, 120_000);
 });
 
 /**

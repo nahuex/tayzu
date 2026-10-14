@@ -121,8 +121,8 @@ describe('auth-repository', () => {
   async function seedApiKey(tenantId: string, name: string): Promise<string> {
     const id = `key-${randomUUID()}`;
     await authPool.query(
-      `insert into auth.apikey (id, name, reference_id, key, created_at, updated_at)
-       values ($1, $2, $3, $4, now(), now())`,
+      `insert into auth.apikey (id, name, reference_id, key, config_id, created_at, updated_at)
+       values ($1, $2, $3, $4, 'machine-credential', now(), now())`,
       [id, name, tenantId, HASHED_KEY],
     );
     return id;

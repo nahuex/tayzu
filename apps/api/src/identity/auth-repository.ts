@@ -9,6 +9,9 @@
  */
 import type { Pool } from 'pg';
 
+/** The only API-key configuration identity manages (design D8). */
+const MACHINE_CREDENTIAL_CONFIG_ID = 'machine-credential';
+
 export interface ApiKeyRead {
   readonly id: string;
   readonly name: string | null;
@@ -213,8 +216,9 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
     async apiKeyById(tenantId, keyId) {
       requireTenant(tenantId);
       const result = await authPool.query<ApiKeyRow>(
-        `select ${API_KEY_COLUMNS} from auth.apikey where reference_id = $1 and id = $2`,
-        [tenantId, keyId],
+        `select ${API_KEY_COLUMNS} from auth.apikey
+         where reference_id = $1 and id = $2 and config_id = $3`,
+        [tenantId, keyId, MACHINE_CREDENTIAL_CONFIG_ID],
       );
       const row = result.rows[0];
       return row === undefined ? undefined : toApiKey(row);
