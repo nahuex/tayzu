@@ -3739,7 +3739,7 @@ SSO surfaces of M18) are recorded there with their justification.
       passes, and design/specs/code agree (update design only if an implementation
       finding forced a change, noted in the PR). Verify: the command output is
       attached to the PR.
-- [ ] 16.13 Render the system diagram to an image for the SSA (SEC01 asks for a
+- [x] 16.13 Render the system diagram to an image for the SSA (SEC01 asks for a
       png or jpg, `002` VCDM M19) and make the diagram show distinct Administrator and
       Platform operator actors, the `ghcr.io` image pulls and the OTLP export from
       `apps/api`. Verify: `npx -y @mermaid-js/mermaid-cli -i
