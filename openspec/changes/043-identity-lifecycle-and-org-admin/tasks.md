@@ -3511,7 +3511,7 @@ SSO surfaces of M18) are recorded there with their justification.
       `tayzu.auth.failure_reason` on `auth.security.login_failed` equal exactly
       `{bad_credentials, mfa_failed, account_disabled}`, and logging the banned sign-in
       as `bad_credentials` in a scratch branch makes it fail.
-- [ ] 15.2b The identity metrics follow Resolved decisions Q143, Q144 and Q145.
+- [x] 15.2b The identity metrics follow Resolved decisions Q143, Q144 and Q145.
       `tayzu.identity.invitations` counts `expired` once per acceptance attempt refused
       because the invitation has expired, where `catalog.security.invitation_acceptance_denied`
       is logged with `denial_reason` `expired`, and never records `rejected`;

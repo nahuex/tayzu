@@ -313,7 +313,14 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     if (invitation.status === 'accepted') throw deny(invitation.id, 'already_accepted');
     if (invitation.status === 'canceled') throw deny(invitation.id, 'cancelled');
     if (invitation.status === 'rejected') throw deny(invitation.id, 'rejected');
-    if (invitation.expiresAt.getTime() <= Date.now()) throw deny(invitation.id, 'expired');
+    if (invitation.expiresAt.getTime() <= Date.now()) {
+      // Q143: `expired` is counted once per refused attempt, where the denial is logged.
+      recordIdentityMetric('tayzu.identity.invitations', 1, {
+        'tayzu.tenant.id': invitation.organizationId,
+        'tayzu.identity.invitation.mutation': 'expired',
+      });
+      throw deny(invitation.id, 'expired');
+    }
     const stored = await authPool.query<{ value: string }>(
       'select value from auth.verification where identifier = $1',
       [tokenIdentifier(invitation.id)],

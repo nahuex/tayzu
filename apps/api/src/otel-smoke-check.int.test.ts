@@ -2849,6 +2849,235 @@ describe('otel-smoke-check, 043: every identity operation is driven (task 15.2)'
     const trip = await oidcRoundTrip(handlerOf(failing), '/link-social', linker.cookie);
     expect(trip.response.status, 'the callback fails').toBeGreaterThanOrEqual(400);
   }, 180_000);
+
+  // Task 15.2b (Resolved decisions Q143, Q144, Q145). Every identity data point carries the
+  // tenant, which is unique per test, so the points below are exactly what each test caused.
+  // The harness collects with delta temporality: the values of the points of one tenant add up.
+  async function tenantPoints(
+    metric: string,
+    tenantId: string,
+  ): Promise<Readonly<Record<string, unknown>>[]> {
+    const harness = registeredHarness();
+    await harness.forceFlush();
+    const points: Readonly<Record<string, unknown>>[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const candidate of scopeMetrics.metrics) {
+          if (candidate.descriptor.name !== metric) continue;
+          for (const point of candidate.dataPoints) {
+            if (point.attributes['tayzu.tenant.id'] !== tenantId) continue;
+            const value = typeof point.value === 'number' ? point.value : Number.NaN;
+            points.push({ ...point.attributes, value });
+          }
+        }
+      }
+    }
+    return points;
+  }
+
+  const total = (points: readonly Readonly<Record<string, unknown>>[]): number =>
+    points.reduce((sum, point) => sum + (point['value'] as number), 0);
+
+  it('invitation metric (Q143): an expired invitation’s acceptance records one expired data point and no rejected one', async () => {
+    const tenant = await newTenant('Expired Metric');
+    const plain = routerWith(gateWith());
+    const expired = await invite(plain, tenant, emailOf('expired-metric'));
+    await pools.authPool.query(
+      "update auth.invitation set expires_at = now() - interval '1 hour' where id = $1",
+      [expired.invitationId],
+    );
+
+    const response = await acceptHttp({
+      invitationId: expired.invitationId,
+      token: expired.token,
+      password: IDENTITY_ACCEPT_PASSWORD,
+    });
+    expect(response.statusCode).toBe(404);
+
+    const mutations = (await tenantPoints('tayzu.identity.invitations', tenant.organizationId)).map(
+      (point) => ({
+        mutation: point['tayzu.identity.invitation.mutation'],
+        value: point['value'],
+      }),
+    );
+    expect(mutations.filter((point) => point.mutation === 'expired')).toEqual([
+      { mutation: 'expired', value: 1 },
+    ]);
+    expect(mutations.some((point) => point.mutation === 'rejected')).toBe(false);
+  }, 120_000);
+
+  it('status-change metric (Q144): a setStatus by an admin carries tayzu.actor.type user', async () => {
+    const tenant = await newTenant('Status Actor');
+    const plain = routerWith(gateWith());
+    const member = await plain.identity.users.create(
+      { body: { email: emailOf('status-actor'), name: 'Status Actor', role: 'member' } },
+      { context: adminContext(tenant) },
+    );
+    await plain.identity.users.setStatus(
+      { params: { user: member.email }, body: { status: 'Disabled' } },
+      { context: adminContext(tenant) },
+    );
+
+    const disabled = (
+      await tenantPoints('tayzu.identity.user_status_changes', tenant.organizationId)
+    ).filter((point) => point['tayzu.identity.user.status.to'] === 'Disabled');
+    expect(disabled.length).toBeGreaterThan(0);
+    expect(new Set(disabled.map((point) => point['tayzu.actor.type']))).toEqual(new Set(['user']));
+    expect(total(disabled)).toBe(1);
+  }, 120_000);
+
+  it('status-change metric (Q144): the ban hook’s status change carries tayzu.actor.type system', async () => {
+    const tenant = await newTenant('Ban Actor');
+    const target = await createAdminUser(app.auth, {
+      name: 'Ban Actor Target',
+      email: emailOf('ban-actor'),
+      password: TEST_PASSWORD,
+    });
+    await (app.auth.api as MemberAdminApi).addMember({
+      body: { userId: target.userId, organizationId: tenant.organizationId, role: 'member' },
+    });
+    // The hook runs on Better Auth's `banUser`, which needs an authenticated platform admin.
+    const platformEmail = emailOf('ban-platform-admin');
+    const platformApi = app.auth.api as {
+      createUser(args: {
+        body: { name: string; email: string; password: string; role: string };
+      }): Promise<unknown>;
+      banUser(args: { body: { userId: string }; headers: Headers }): Promise<unknown>;
+    };
+    await platformApi.createUser({
+      body: {
+        name: 'Ban Platform Admin',
+        email: platformEmail,
+        password: TEST_PASSWORD,
+        role: 'admin',
+      },
+    });
+    const platformSession = await signInAdminUser(app.auth, {
+      email: platformEmail,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    await platformApi.banUser({
+      body: { userId: target.userId },
+      headers: new Headers({ cookie: platformSession.cookie }),
+    });
+
+    await vi.waitFor(
+      async () => {
+        const disabled = (
+          await tenantPoints('tayzu.identity.user_status_changes', tenant.organizationId)
+        ).filter((point) => point['tayzu.identity.user.status.to'] === 'Disabled');
+        expect(disabled.length).toBeGreaterThan(0);
+        expect(new Set(disabled.map((point) => point['tayzu.actor.type']))).toEqual(
+          new Set(['system']),
+        );
+      },
+      { timeout: 10_000, interval: 250 },
+    );
+  }, 120_000);
+
+  it('status-change metric (Q144): a reconcile’s status changes carry tayzu.actor.type system (private scratch database)', async () => {
+    const name = `tayzu_api_smoke_actor_${randomUUID().replaceAll('-', '')}`;
+    const adminPool = new Pool({ connectionString: ownerDatabaseUrl(), max: 1 });
+    await adminPool.query(`create database ${name}`);
+    const ownerScratch = new Pool({ connectionString: databaseUrlFor(name) });
+    const scratchApp = identityPoolAs(databaseUrlFor(name), 'tayzu_app');
+    const scratchAuthPool = identityPoolAs(databaseUrlFor(name), 'tayzu_auth');
+    try {
+      await runMigrations(ownerScratch);
+      // No `userSync`: the memberships below write no `_user` row, which the reconcile repairs.
+      const scratchAuth = createAuth({
+        db: drizzle(scratchAuthPool, { schema: authSchema }),
+        secret: TEST_SECRET,
+      });
+      const api = scratchAuth.api as ScratchAuthApi;
+      const owner = await createAdminUser(scratchAuth, {
+        name: 'Actor Owner',
+        email: emailOf('actor-owner'),
+        password: TEST_PASSWORD,
+      });
+      const org = await api.createOrganization({
+        body: { name: 'Actor Org', slug: `actor-${randomUUID()}`, userId: owner.userId },
+      });
+      const member = await createAdminUser(scratchAuth, {
+        name: 'Actor Member',
+        email: emailOf('actor-member'),
+        password: TEST_PASSWORD,
+      });
+      await api.addMember({
+        body: { userId: member.userId, organizationId: org.id, role: 'member' },
+      });
+
+      await reconcileUsersMain({
+        env: {
+          NODE_ENV: 'test',
+          DATABASE_URL: databaseUrlFor(name),
+          AUTH_DATABASE_URL: databaseUrlFor(name),
+          CERBOS_ADDRESS: IDENTITY_CERBOS,
+          TAYZU_OPERATOR_ID: IDENTITY_OPERATOR_ID,
+        },
+        appPool: scratchApp,
+        authPool: scratchAuthPool,
+      });
+
+      const points = await tenantPoints('tayzu.identity.user_status_changes', org.id);
+      expect(points.length).toBeGreaterThan(0);
+      expect(new Set(points.map((point) => point['tayzu.actor.type']))).toEqual(
+        new Set(['system']),
+      );
+    } finally {
+      await endQuietly(scratchApp);
+      await endQuietly(scratchAuthPool);
+      await endQuietly(ownerScratch);
+      await adminPool.query(`drop database if exists ${name} with (force)`);
+      await endQuietly(adminPool);
+    }
+  }, 240_000);
+
+  it('credential metric (Q145): a service account’s creation, key rotation and key revocation each record kind service_account', async () => {
+    const tenant = await newTenant('Service Credential Kind');
+    const context = adminContext(tenant);
+    const plain = routerWith(gateWith());
+
+    const rotating = await plain.identity.serviceAccounts.create(
+      { body: { identifier: `svc-kind-${randomUUID().slice(0, 8)}` } },
+      { context },
+    );
+    const revoking = await plain.identity.serviceAccounts.create(
+      { body: { identifier: `svc-kind-${randomUUID().slice(0, 8)}` } },
+      { context },
+    );
+    await plain.identity.credentials.rotate(
+      { params: { credential: rotating.clientId } },
+      { context },
+    );
+    await plain.identity.credentials.revoke(
+      { params: { credential: revoking.clientId } },
+      { context },
+    );
+
+    const points = (
+      await tenantPoints('tayzu.identity.credential_mutations', tenant.organizationId)
+    )
+      .filter((point) => point['tayzu.identity.credential.kind'] === 'service_account')
+      .map((point) => ({
+        mutation: point['tayzu.identity.credential.mutation'],
+        value: point['value'],
+      }));
+    const countOf = (mutation: string): number =>
+      points
+        .filter((point) => point.mutation === mutation)
+        .reduce((sum, point) => sum + (point.value as number), 0);
+    expect(countOf('created')).toBe(2);
+    expect(countOf('rotated')).toBe(1);
+    expect(countOf('revoked')).toBe(1);
+
+    // No service account key is counted under another kind.
+    const others = (
+      await tenantPoints('tayzu.identity.credential_mutations', tenant.organizationId)
+    ).filter((point) => point['tayzu.identity.credential.kind'] !== 'service_account');
+    expect(others).toEqual([]);
+  }, 180_000);
 });
 
 describe('otel-smoke-check, 043: every declared identity signal appears with its declared attributes (task 15.2)', () => {

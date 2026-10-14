@@ -24,6 +24,7 @@ import {
   readAllApiKeys,
   readApiKeyMetadata,
   readRevokedIds,
+  recordCredentialMutation,
   serviceAccountExists,
 } from './credentials.js';
 import type { UserSyncAdapter } from './user-sync-adapter.js';
@@ -164,6 +165,7 @@ export async function createServiceAccount(args: {
           'tayzu.tenant.id': tenantId,
           'tayzu.identity.service_account.mutation': 'created',
         });
+        recordCredentialMutation(tenantId, 'service_account', 'created');
         return { user, clientId: key.id, clientSecret: key.secret };
       }),
   );

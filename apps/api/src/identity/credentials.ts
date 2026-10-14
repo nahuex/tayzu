@@ -231,21 +231,25 @@ export async function serviceAccountExists(
   return rows.length > 0;
 }
 
-/** The kind of an existing credential (`integration` or `agent`), `undefined` when it is neither. */
+/** The kind of an existing credential; a key bound to a service account is `service_account` (Q145). */
 export async function credentialKindOf(
   authRepository: AuthRepository,
   tenantId: string,
   credentialId: string,
-): Promise<'integration' | 'agent' | undefined> {
+): Promise<'service_account' | 'integration' | 'agent' | undefined> {
   const key = await authRepository.apiKeyById(tenantId, credentialId);
-  const kind = key === undefined ? undefined : readApiKeyMetadata(key.metadata).actorKind;
-  return kind === 'integration' || kind === 'agent' ? kind : undefined;
+  if (key === undefined) return undefined;
+  const metadata = readApiKeyMetadata(key.metadata);
+  if (metadata.userId !== undefined) return 'service_account';
+  return metadata.actorKind === 'integration' || metadata.actorKind === 'agent'
+    ? metadata.actorKind
+    : undefined;
 }
 
 /** Counts one credential mutation (`tayzu.identity.credential_mutations`). */
 export function recordCredentialMutation(
   tenantId: string,
-  kind: 'integration' | 'agent',
+  kind: 'service_account' | 'integration' | 'agent',
   mutation: 'created' | 'rotated' | 'revoked',
 ): void {
   recordIdentityMetric('tayzu.identity.credential_mutations', 1, {
