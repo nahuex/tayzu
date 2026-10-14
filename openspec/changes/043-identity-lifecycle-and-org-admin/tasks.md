@@ -3688,7 +3688,7 @@ SSO surfaces of M18) are recorded there with their justification.
       from design D10 appears, each of the two jobs appears with its own Cerbos sidecar,
       and every new arrow carries its protocol (SEC01), asserted by a test that reads
       the Mermaid source.
-- [ ] 16.8 Update `docs/security/secrets.md` (the Communication Services secret
+- [x] 16.8 Update `docs/security/secrets.md` (the Communication Services secret
       `ACS_CONNECTION_STRING` on a dedicated send-only resource and its change
       procedure, `IDENTITY_TOKEN_HMAC_SECRET` (Resolved decision Q93) with its owner and
       rotation (a rotation resets the recipient buckets), the out-of-band run of the
