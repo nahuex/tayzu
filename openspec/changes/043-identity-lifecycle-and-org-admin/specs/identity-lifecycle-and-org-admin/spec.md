@@ -1543,7 +1543,8 @@ echo the password.
 
 - **GIVEN** a user created with a temporary password
 - **WHEN** they sign in with it
-- **THEN** the session reaches only the change-password route until they set a policy-compliant password, and the temporary password expires if not changed
+- **THEN** the session reaches only `/change-password`, `/sign-out` and `/get-session` until they set a policy-compliant password, and the temporary password expires if not changed
+- **AND** once it has expired, a session opened under it reaches only `/sign-out` (`/change-password` is refused too), and `/v1` refuses it (Resolved decision Q146)
 
 #### Scenario: A short password is refused
 

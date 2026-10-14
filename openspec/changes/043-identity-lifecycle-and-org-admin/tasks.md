@@ -3869,7 +3869,7 @@ SSO surfaces of M18) are recorded there with their justification.
       (`banned-sign-in.int.test.ts`), and "Delete and rotate see credentials beyond the
       viewer's limit" uses more keys than one page of the viewer
       (`credentials.int.test.ts`). Verify: those tests.
-- [ ] 16.12m _(setup)_ The artifacts follow the code where the code governs (Resolved
+- [x] 16.12m _(setup)_ The artifacts follow the code where the code governs (Resolved
       decision Q149): the design and spec edits that Q149 lists. Verify: `openspec
       validate 043-identity-lifecycle-and-org-admin --strict` and `pnpm lint` pass, and
       none of the stale statements Q149 lists remains.

@@ -917,8 +917,10 @@ rewritten to build `auth` with `userSync`: the two direct-write cases of
 `apps/api/src/user-sync.int.test.ts`, its first `describe` (which passes
 `createUserSync` to `createAuth` and to `bootstrapAdmin`) and
 `sso-jit-refresh.int.test.ts` (which passes it too). The `userSync` option of
-`createIdentityRouter` and of `BootstrapAdminOptions` is removed, since nothing
-writes through it. The acceptance and the reconcile (D1) are the exceptions. Inside the
+`BootstrapAdminOptions` is removed, since nothing writes through it. `createIdentityRouter`
+keeps its `userSync` option, which is the `apps/api` adapter (not the catalog's
+`createUserSync`) that `serviceAccounts.create` and the service-account branch of
+`setStatus` write through and `setStatus` reads the status through (tasks 10.3 and 11.5). The acceptance and the reconcile (D1) are the exceptions. Inside the
 acceptance's shared context (below, D4 step 7; Resolved decision Q112) the hook makes
 **no** `_user` write for the acceptance's own member (Q120, below), and the acceptance's
 own `_user` step writes it through the same
@@ -946,9 +948,8 @@ call with the acceptance's `(tenantId, userId)` (Q120, below) nor name the subje
 hook write as `tayzu.identity.user.id` (Q117, below). It is the Better Auth user id of a
 human, which the membership hook takes from `afterAddMember({ member, user })`'s `user`,
 the ban hook from the row it receives (`SyncUserRow.id`), the first-sign-in hook from
-the user who signed in and `refreshDisplayData` (`auth.ts:419-462`, the caller of the
-port in `auth.ts` beside the hooks, its call at `:455`) from its `account.userId`
-(`:434`, `:446`, `:452`), while the `apps/api` writers pass the id they already hold (the
+the user who signed in and `refreshDisplayData` (the caller of the port in `auth.ts`
+beside the hooks) from its `account.userId`, while the `apps/api` writers pass the id they already hold (the
 target of `setStatus`, the member of the reconcile, the invitee of the acceptance); it
 is the `svc-…` identifier of a service account (Q90); and it is absent only for the
 invitation hook's `created_invited` write, whose subject is the invitation (Resolved
@@ -958,10 +959,11 @@ the `invitation.id` that `afterCreateInvitation` receives, which the adapter emi
 it the adapter would hold no invitation id to name). The
 hook receives only `{ member, user, organization }` (`afterAddMember`), so the
 identity operation hands the acting admin to it through an `AsyncLocalStorage`
-(`node:async_hooks`, no dependency; one store in
-`apps/api/src/identity/identity-context.ts`, which also carries the acceptance's shared
-context of D4 step 7, and the principal of the bootstrap, Resolved decision Q116) that it
-runs around its in-process `auth.api` call, and the adapter reads it. The hook itself lives in `packages/auth/src/auth.ts` and cannot import `apps/api`,
+(`node:async_hooks`, no dependency; two stores in
+`apps/api/src/identity/identity-context.ts`: one carries the admin, the other the
+acceptance's shared context of D4 step 7) that it runs around its in-process `auth.api`
+call, and the adapter reads it. The operator of the bootstrap and of the reconcile is in no
+store: it travels through the port as the `principal` of the write (Resolved decision Q116). The hook itself lives in `packages/auth/src/auth.ts` and cannot import `apps/api`,
 so it never reads the store: the `apps/api` implementations of its ports (the
 `UserSyncPort` adapter here and the shed port of D4 step 7, whose implementation is the
 shed core that works on the `tayzu_auth` pool alone and needs no Better Auth instance,
@@ -975,7 +977,7 @@ directly, and the adapter's entry point that the acceptance's `_user` step calls
 or `created_active` means that this attempt's `_user` step activated the row, which is
 what the existing-account admin notice turns on (D4 step 6, Resolved decision Q122). The
 hook-facing `UserSyncPort.upsertUser` stays `Promise<void>`
-(`packages/auth/src/auth.ts:505-515`), because no hook needs the result (a consistency
+(in `packages/auth/src/auth.ts`), because no hook needs the result (a consistency
 fix within Q122, no new decision). Nor can a Better Auth hook tell from its own `context`
 argument which operation started it: the hook context is ambient
 (`tryGetCurrentAuthEndpointContext()` in Better Auth's `with-hooks.mjs`), every endpoint
@@ -1403,7 +1405,12 @@ or id shape is `malformed_request` (Observability contract).
    (Q100).
 4. _Existing account (Q18, Q24)._ For an email that already has an account,
    acceptance **never sets or changes the password** (an account takeover
-   vector). It succeeds only when **all** of these hold, checked in this order:
+   vector). It succeeds only when **all** of these hold. The checks the code runs before them,
+   in this order, are the invitation's state (`accepted`, cancelled, `rejected` and expired
+   each refuse), the token, the `Disabled` `_user` (denial reason `disabled_user`) and the
+   inviter's authority (step 2), and only then the session checks, in the order the list
+   gives them (the route reads the session before any of them, but only for a request with
+   the CSRF header and an allowed `Origin`):
    (a) the request carries a valid session cookie, read with Better Auth's
    `getSession` on the request headers with `disableRefresh: true`, as the resolver
    reads it (a plain `getSession` can refresh the session's `updatedAt` and so extend
@@ -1525,7 +1532,10 @@ or id shape is `malformed_request` (Observability contract).
    the policy is reported only after the token has verified, so it reveals
    nothing to a caller who does not hold a valid token. The denial reasons
    include `csrf_rejected`, `origin_rejected`, `inviter_not_active_admin`,
-   `member_limit` and `consume_conflict`.
+   `member_limit` and `consume_conflict`. A request that carries a cookie without the CSRF
+   header (`csrf_rejected`) or without an allowed `Origin` (`origin_rejected`) logs that
+   reason even on the new-account path, which needs no session and then proceeds without
+   one; a request with no cookie logs neither.
 6. _Admin notice (Resolved decision Q39)._ A new-account `admin` invitation is
    protected only by mailbox control at acceptance (a mistyped or hijacked
    address would yield a tenant admin who then enrols their own factor), a
@@ -2178,8 +2188,10 @@ and never reuses the viewer's limit, or a key beyond the limit would be skipped.
 `apikey.metadata` is a `text` column in SQL (`persistence/schema.ts`), but the
 adapter returns an object because of the plugin's `transform.output` (a raw SQL read
 returns text), so the `metadata.userId` and `actorKind` filters are an
-application-side filter over those pages, not a query on a JSON column; the reader
-accepts both shapes and the viewer test pins that the adapter returns an object.
+application-side filter over those pages, not a query on a JSON column; the viewer reads
+the metadata through a hand-written reader (`readApiKeyMetadata`, Resolved decision Q69)
+that accepts both shapes, the adapter's object and a JSON string, and returns an empty
+metadata for anything else, and the viewer test pins that the adapter returns an object.
 Every one of these reads goes through the single `auth-repository.ts` of D14.
 
 - _Alternative:_ a denormalized read table Tayzu maintains itself. Rejected:
@@ -2278,7 +2290,9 @@ A credential that belongs to another tenant is reported as `CATALOG_NOT_FOUND`
   revoke the old one, leaving two active credentials. The second one finds the old
   credential revoked and an active one present, and fails with
   `CATALOG_VALIDATION_FAILED`. A revoked credential may be rotated only when its
-  service account has no active credential (Resolved decision Q40).
+  service account has no active credential (Resolved decision Q40); a revoked credential
+  bound to no service account (an integration or agent credential) cannot be restored, and
+  its rotation fails with `CATALOG_VALIDATION_FAILED`.
 - **Revoke**: permanent; already-issued tokens are rejected within seconds
   because `resolveContext` consults the revocation list through a cache of at
   most 5 seconds, failing closed (`002` D21). The revocation lookup and its
@@ -2286,8 +2300,9 @@ A credential that belongs to another tenant is reported as `CATALOG_NOT_FOUND`
   by the credential id alone.
 - `rotatedAt` lives in the new key's `metadata`; the viewer computes `rotationDueAt`
   from it, or from `createdAt` for a key never rotated (D7), against a Tayzu-chosen
-  default interval (90 days,
-  configurable, in `docs/security/data-retention.md`). It is a documented
+  default interval (90 days, the code constant `DEFAULT_ROTATION_INTERVAL_DAYS` of
+  `apps/api/src/identity/credentials.ts`, not configurable, and documented in
+  `docs/security/data-retention.md`). It is a documented
   policy default, not a hard-enforced expiry: no credential is force-disabled
   solely for being overdue (Resolved decision Q20).
 - Because the revocation row is a permanent insert, "disable then re-enable" is
@@ -2746,7 +2761,9 @@ with its channel (local or SSO) and the opaque user id and no email, as
   machine principal `actor.id` is the API key id.
 
 Each rejection emits `catalog.security.principal_rejected` and increments
-`tayzu.identity.principal_rejections`. A disabled user's session would emit the
+`tayzu.identity.principal_rejections`, except a failed lookup (of the revocation list, of the
+service account or of the human `_user` status), which rejects the request without either: it is an infrastructure
+failure that fails closed, not a rejection of a principal. A disabled user's session would emit the
 log on every request, so aggregating or rate-limiting that log (keeping the
 counter) is a ticket (Risks). There is no last-active-admin guard in
 this change (two admins can disable each other); it is a ticket (Risks).
@@ -2795,11 +2812,14 @@ So the tenant boundary for these routes is code, and it is stated as a rule:
   in every tenant (the other-tenant refusal of `linkSsoAccount` and `unlinkSsoAccount`
   below, the single-membership test of the disable, D13, and the
   `target_in_other_tenant` cause of `identity.users.create`). The module is not
-  read-only: it also holds three tenant-keyed writes. A **tenant-keyed `invitation`
+  read-only: it also holds four tenant-keyed writes. A **tenant-keyed `invitation`
   status write** (it requires a `tenantId`, filters by `organizationId` and the
   invitation id, and sets `accepted` only while the status is still `pending`) runs in
   the same `tayzu_auth` transaction as the digest-conditioned delete of the acceptance
-  token, the last step of the acceptance (D4 step 1, Resolved decision Q123). A **tenant-keyed `member` delete**
+  token, the last step of the acceptance (D4 step 1, Resolved decision Q123); a second, **`markInvitationCancelled`**
+  (it requires a `tenantId`, filters by `organizationId` and the invitation id, and sets
+  `canceled` only while the status is still `pending`), is the cancellation of the pending
+  invitations of a user whom the disable cancels (D13, Resolved decisions Q63 and Q123). A **tenant-keyed `member` delete**
   (it requires a `tenantId` and filters by `organizationId`) is the write that both
   compensations of the acceptance need (D4 step 4, Resolved decisions Q89 and Q105
   part 1), because Better Auth's `removeMember` needs a session; and a **tenant-keyed
@@ -2939,9 +2959,10 @@ identity module as well, so the new names are enforced. `apps/api` has no
 `@opentelemetry/api-logs` dependency. `catalog.security.authz_denied` and
 `tayzu.authz.decisions` already live in `@tayzu/catalog` (`pipeline.ts`,
 `telemetry/instruments.ts`), which `apps/api` already depends on, so the identity
-router emits the event and records every decision (the counter takes allow and deny
-through its `decision` attribute) through a helper exported by `@tayzu/catalog` (no
-duplicate instrument under the `@tayzu/auth` scope); every other log event, **every span and
+router emits the event and records the decisions it makes (the counter takes allow and deny
+through its `decision` attribute): the caller check, allowed or denied, and a **denied**
+target check, never an allowed one, which the caller check already counted, through a helper
+exported by `@tayzu/catalog` (no duplicate instrument under the `@tayzu/auth` scope); every other log event, **every span and
 every counter** of the identity operations is created through helpers exported by
 `@tayzu/auth` (like `emitAccountLinkEvent`: an event emitter, a span helper and a
 metric recorder over the `@tayzu/auth` tracer and meter, which task 2.0c builds, with
