@@ -104,14 +104,14 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 1. Setup and coordination with `002`
 
-- [ ] 1.1 _(setup)_ The drift-check against the merged `002` was run on
+- [x] 1.1 _(setup)_ The drift-check against the merged `002` was run on
       2026-10-01 and its mechanical fixes are in `design.md` (Context); the second to fourteenth drift-checks and the second to thirteenth VCDM passes (2026-10-01, 2026-10-07, 2026-10-08 and 2026-10-09) are folded in too. At
       implementation time this task is a last drift-check of the files the design
       names (`user-sync.ts`, `identity-router.ts`, `context-resolver.ts`,
       `token-exchange.ts`, `server.ts`, `policies/`) and adjusts import paths and
       attribute names only if drift is found, with no scope change. Verify: a short
       note in the PR description states what, if anything, was adjusted.
-- [ ] 1.2 _(setup)_ The `vcdm-ssa-validator` pre-assessment in Mode A against the
+- [x] 1.2 _(setup)_ The `vcdm-ssa-validator` pre-assessment in Mode A against the
       merged `002` was run on 2026-10-01 and its eleven blocking gaps (B1-B11) are
       folded into `design.md`, the spec and these tasks, together with the five gaps
       (NB1-NB5) of the second pass, resolved by Q24-Q27, the two gaps and four
