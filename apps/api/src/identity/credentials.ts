@@ -369,7 +369,10 @@ export async function rotateCredential(args: {
   readonly adminId: string;
   /** The id of the credential to rotate, already resolved inside the tenant. */
   readonly credentialId: string;
+  /** The most non-revoked credentials the tenant may hold; rotating a revoked one counts (Q56). */
+  readonly cap?: number;
 }): Promise<{ readonly id: string; readonly secret: string }> {
+  const cap = args.cap ?? DEFAULT_CREDENTIAL_CAP;
   const old = await args.authRepository.apiKeyById(args.tenantId, args.credentialId);
   if (old === undefined) throw new CredentialTargetNotFoundError();
   const metadata = readApiKeyMetadata(old.metadata);
@@ -397,10 +400,19 @@ export async function rotateCredential(args: {
     if (revoked.has(old.id)) {
       // A revoked credential is rotatable only when its service account has no active one.
       if (metadata.userId === undefined) throw new CredentialConflictError();
-      const keys = await readAllApiKeys(args.authRepository, args.tenantId);
+      // Restoring a non-revoked credential counts like a creation (Q56, Q149): same cap lock.
+      await lockClient.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `credential-cap:${args.tenantId}`,
+      ]);
+      const [keys, revokedNow] = await Promise.all([
+        readAllApiKeys(args.authRepository, args.tenantId),
+        readRevokedIdsOn(lockClient, args.tenantId),
+      ]);
+      const active = keys.filter((k) => !revokedNow.has(k.id));
       const accountId = metadata.userId;
       if (
-        keys.some((k) => !revoked.has(k.id) && readApiKeyMetadata(k.metadata).userId === accountId)
+        active.length >= cap ||
+        active.some((k) => readApiKeyMetadata(k.metadata).userId === accountId)
       ) {
         throw new CredentialConflictError();
       }

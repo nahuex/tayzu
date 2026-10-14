@@ -3003,3 +3003,224 @@ describe('identity.credentials.create under a small pool (task 16.11b)', () => {
     expect(keys.rows).toHaveLength(CONCURRENT);
   }, 90_000);
 });
+
+/**
+ * Task 16.12d of openspec/changes/043-identity-lifecycle-and-org-admin
+ * (rotating a revoked credential counts like a creation; Resolved decisions Q56 and Q149; 9.5d).
+ *
+ * Rotating a revoked credential restores a non-revoked one, so it takes the
+ * `credential-cap:<tenant>` advisory lock and is refused beyond the cap with
+ * `CATALOG_VALIDATION_FAILED`, creating nothing.
+ *
+ * ## Production symbols expected
+ *
+ * - `rotateCredential` (`./credentials.js`), reached through `identity.credentials.rotate`:
+ *   when the credential being rotated is revoked, it counts the tenant's non-revoked keys
+ *   (`options.credentialCap` of `createIdentityRouter`) under the per-tenant cap lock and
+ *   refuses with `CATALOG_VALIDATION_FAILED` before creating anything when the cap is reached.
+ */
+describe('rotating a revoked credential counts against the cap (task 16.12d, Q56, Q149)', () => {
+  const CAP = 3;
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let authRepository: AuthRepository;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const userSync = createUserSync({ pool: appPool, authz: cerbos });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: createUserSyncAdapter({ userSync }),
+    });
+    authRepository = createAuthRepository(authPool);
+  }, 60_000);
+
+  interface CapRotateClient {
+    identity: {
+      credentials: {
+        rotate(
+          input: { params: { credential: string } },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+        create(
+          input: { body: { name: string; kind: string } },
+          options: { context: Record<string, unknown> },
+        ): Promise<{ id: string; secret: string }>;
+      };
+    };
+  }
+
+  function client(): CapRotateClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository,
+        withUserLock: createWithUserLock(authPool),
+        appPool,
+        credentialCap: CAP,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  interface Org {
+    readonly tenantId: string;
+    readonly adminId: string;
+  }
+
+  async function freshOrg(): Promise<Org> {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'CapRot Owner',
+      email: `caprot-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'CapRot Org', slug: `caprot-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'CapRot Admin',
+      email: `caprot-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+    return { tenantId: org.id, adminId: admin.userId };
+  }
+
+  function contextOf(org: Org): Record<string, unknown> {
+    return {
+      tenantId: org.tenantId,
+      actor: { type: 'user', id: org.adminId },
+      principal: { roles: ['admin'] },
+    };
+  }
+
+  async function seed(org: Org, count: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const c = await createMachineCredential(auth, {
+        userId: org.adminId,
+        organizationId: org.tenantId,
+        name: `seed-${String(i)}`,
+        actorKind: 'integration',
+        metadata: { createdBy: org.adminId },
+      });
+      ids.push(c.id);
+    }
+    return ids;
+  }
+
+  async function revoke(org: Org, id: string): Promise<void> {
+    await revokeMachineCredential(auth, {
+      userId: org.adminId,
+      id,
+      pool: appPool,
+      tenantId: org.tenantId,
+    });
+  }
+
+  /** A revoked key bound to a fresh service account that has no other active credential. */
+  async function revokedServiceKey(org: Org): Promise<string> {
+    const identifier = `svc-cap-${randomUUID().slice(0, 8)}`;
+    await createEntityService({ pool: appPool, authz: cerbos }).create(
+      {
+        tenantId: org.tenantId,
+        actor: { type: 'system', id: 'credentials-test-seed' },
+        principal: { roles: ['admin'] },
+      },
+      {
+        blueprint: '_user',
+        identifier,
+        title: 'Service account',
+        spec: { properties: { accountKind: 'service', status: 'Active' } },
+      },
+    );
+    const c = await createMachineCredential(auth, {
+      userId: org.adminId,
+      organizationId: org.tenantId,
+      name: 'Revoked bound',
+      actorKind: 'integration',
+      metadata: { userId: identifier, createdBy: org.adminId },
+    });
+    await revoke(org, c.id);
+    return c.id;
+  }
+
+  async function keyIds(org: Org): Promise<string[]> {
+    const rows = await authPool.query<{ id: string }>(
+      'select id from auth.apikey where reference_id = $1',
+      [org.tenantId],
+    );
+    return rows.rows.map((r) => r.id);
+  }
+
+  it('A tenant at the cap refuses the rotation of a revoked credential with CATALOG_VALIDATION_FAILED and creates nothing', async () => {
+    const org = await freshOrg();
+    // CAP non-revoked credentials plus one revoked one.
+    await seed(org, CAP);
+    const revokedId = await revokedServiceKey(org);
+    const before = (await keyIds(org)).sort();
+    expect(before).toHaveLength(CAP + 1);
+
+    await expect(
+      client().identity.credentials.rotate(
+        { params: { credential: revokedId } },
+        { context: contextOf(org) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+
+    expect((await keyIds(org)).sort()).toEqual(before);
+  }, 120_000);
+
+  it('Rotating a revoked credential counts like a creation: one place below the cap it succeeds, and the tenant is then full', async () => {
+    const org = await freshOrg();
+    await seed(org, CAP - 1);
+    const revokedId = await revokedServiceKey(org); // CAP - 1 non-revoked
+
+    const rotated = await client().identity.credentials.rotate(
+      { params: { credential: revokedId } },
+      { context: contextOf(org) },
+    );
+    expect(rotated.id).not.toBe(revokedId);
+    expect(await keyIds(org)).toHaveLength(CAP + 1); // CAP - 1 + revoked + the new one
+
+    await expect(
+      client().identity.credentials.create(
+        { body: { name: 'One too many', kind: 'integration' } },
+        { context: contextOf(org) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+  }, 120_000);
+
+  it('Two concurrent rotations of revoked credentials one below the cap yield exactly one success under the cap lock', async () => {
+    const org = await freshOrg();
+    await seed(org, CAP - 1); // CAP - 1 non-revoked: one place left
+    const a = await revokedServiceKey(org);
+    const b = await revokedServiceKey(org);
+
+    const results = await Promise.allSettled([
+      client().identity.credentials.rotate(
+        { params: { credential: a } },
+        { context: contextOf(org) },
+      ),
+      client().identity.credentials.rotate(
+        { params: { credential: b } },
+        { context: contextOf(org) },
+      ),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+  }, 120_000);
+});

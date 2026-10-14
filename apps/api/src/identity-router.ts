@@ -575,6 +575,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 tenantId,
                 adminId: (context['actor'] as { id: string }).id,
                 credentialId: target.id,
+                cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
               });
               if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'rotated');
               return rotated;

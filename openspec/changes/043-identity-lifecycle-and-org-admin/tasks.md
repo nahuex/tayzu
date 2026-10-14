@@ -3821,7 +3821,7 @@ SSO surfaces of M18) are recorded there with their justification.
       invited"; Resolved decision Q149), so no `pending` row is left; the invitation
       hook's check stays as the backstop. Verify: `invitations.int.test.ts` covers the
       refusal leaving no invitation row for the address.
-- [ ] 16.12d Rotating a revoked credential, which restores a non-revoked one, takes the
+- [x] 16.12d Rotating a revoked credential, which restores a non-revoked one, takes the
       `credential-cap:<tenant>` lock and counts like a creation (Resolved decisions Q56
       and Q149; 9.5d). Verify: `credentials.int.test.ts` covers a tenant at the cap
       refusing the rotation of a revoked credential with `CATALOG_VALIDATION_FAILED` and
