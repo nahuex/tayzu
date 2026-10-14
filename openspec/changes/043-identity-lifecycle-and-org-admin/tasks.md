@@ -18,7 +18,7 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions Q1 and Q4-Q147 in `design.md` (there is no Q2 or
+Tasks follow the Resolved decisions Q1 and Q4-Q149 in `design.md` (there is no Q2 or
 Q3). The ninth amendment's two open questions are Q116 (the invitee is the actor of an
 acceptance, and the bootstrap records the operator's opaque id) and Q117
 (`catalog.audit.user_status_changed` records every status change, with the principal of
@@ -3794,6 +3794,85 @@ SSO surfaces of M18) are recorded there with their justification.
       passes, and design/specs/code agree (update design only if an implementation
       finding forced a change, noted in the PR). Verify: the command output is
       attached to the PR.
+- [ ] 16.12a The target check of the identity wrapper sends the resolved target's real
+      resource (design D3, D10 step 3; Resolved decisions Q62, Q90 and Q149):
+      `defineIdentityOperation` builds it with `buildIdentityResource` from the resolved
+      record (its tenant, its Better Auth user id or `svc-…` identifier, and the
+      `accountKind`, `portRole` and `moderatedBlueprints` of its `_user`), the procedures
+      whose target is a service account (`serviceAccounts.delete` and the
+      service-account branch of `setStatus`) declare that target instead of none, and
+      the targetless check of `credentials.list` sends the resource id `list`. No policy
+      changes. Verify: `identity-target-check.int.test.ts` (in `apps/api/src/`, a
+      recording Cerbos client around the real one) covers the target check of
+      `setStatus` on a human and on a service account, of `serviceAccounts.delete` and
+      of `credentials.rotate` each carrying the target's id, tenant and attributes, and
+      `credentials.list` sending `list`.
+- [ ] 16.12b `invite` and `resendInvitation` consume the email caps before writing any
+      state (spec "Invitation email is fixed and capped"; Resolved decision Q149): the
+      disabled-tenant suppression still runs first and consumes nothing, a refused invite
+      creates no invitation and cancels none, a refused resend leaves the stored token
+      digest unchanged so the earlier email's link still works, and a cap consumed by an
+      operation that then fails is not refunded. Verify: `invitation-caps.int.test.ts`
+      (in `apps/api/src/`) covers a capped invite leaving no new invitation and every
+      earlier pending one still pending, and a capped resend leaving the earlier link
+      acceptable.
+- [ ] 16.12c Inviting an address whose `_user` in the tenant is `Disabled` is refused
+      before Better Auth creates the invitation (spec "A disabled user cannot be
+      invited"; Resolved decision Q149), so no `pending` row is left; the invitation
+      hook's check stays as the backstop. Verify: `invitations.int.test.ts` covers the
+      refusal leaving no invitation row for the address.
+- [ ] 16.12d Rotating a revoked credential, which restores a non-revoked one, takes the
+      `credential-cap:<tenant>` lock and counts like a creation (Resolved decisions Q56
+      and Q149; 9.5d). Verify: `credentials.int.test.ts` covers a tenant at the cap
+      refusing the rotation of a revoked credential with `CATALOG_VALIDATION_FAILED` and
+      nothing created.
+- [ ] 16.12e The refusal of `/change-password` for a policy violation names only the
+      failed rule, as the acceptance does (Resolved decisions Q136 and Q149). Verify:
+      `password-policy.int.test.ts` covers the refusal for each rule naming that rule
+      and never echoing the password.
+- [ ] 16.12f `authRepository.apiKeyById` filters by the machine-credential `configId`
+      too (9.11, design D8; Resolved decision Q149), so a key of another configuration in
+      the same tenant is not found. Verify: `credentials.int.test.ts` covers such a key
+      answering `CATALOG_NOT_FOUND` on rotate and on revoke.
+- [ ] 16.12g A ban announces every session it deletes (design D13; Resolved decision
+      Q149): one `auth.security.session_revoked` with the reason `admin_action` per
+      deleted session row, sessions with no active organization included. Verify:
+      `user-status-op.int.test.ts` covers a user with a session in the tenant and one
+      with no active organization each producing one event when disabled.
+- [ ] 16.12h A compensated new-account acceptance also deletes the `_user` row that its
+      own `_user` step created, never one that existed before the attempt (design D4
+      step 3; Resolved decision Q149). Verify: `invitation-accept.int.test.ts` covers a
+      failure after the `_user` step of a new-account attempt leaving no `_user` row, and
+      a row that existed before the attempt left in place.
+- [ ] 16.12i The Azure Communication Services sender renders `InvitationEmail` and
+      `AdminAcceptedNotice` through the shared render functions, so each body has one
+      definition (6.11; Resolved decision Q149). Verify:
+      `azure-communication-email.test.ts` covers the sent body of each template being
+      the output of its render function.
+- [ ] 16.12j Identity mutations that take an advisory lock are bounded per process
+      (Resolved decision Q148): a process-wide in-memory semaphore of 2 admits
+      `credentials.create`, `credentials.rotate`, `credentials.revoke`,
+      `serviceAccounts.create` and `serviceAccounts.delete` before they take a pooled
+      connection. Verify: `service-accounts.int.test.ts` covers more concurrent
+      `serviceAccounts.create` calls of one tenant than a small pool shared by the router
+      and the user-sync adapter has connections (as in production) all completing within
+      the cap with no statement timeout, and `credentials.int.test.ts` the same for
+      `credentials.rotate`.
+- [ ] 16.12k A key that `identity.credentials.create` binds to a service account
+      (`userId`) counts as a `created` credential mutation of kind `service_account`
+      (Resolved decisions Q145 and Q149). Verify: `otel-smoke-check.int.test.ts` covers
+      it.
+- [ ] 16.12l Three spec scenarios that no test covered get their test (Resolved decision
+      Q149): "The reconcile removes an orphan" asserts that a later invitation of that
+      email succeeds (`reconcile-users.int.test.ts`), "A banned user's sign-in is
+      indistinguishable" compares the SSO path's body with another SSO sign-in failure
+      (`banned-sign-in.int.test.ts`), and "Delete and rotate see credentials beyond the
+      viewer's limit" uses more keys than one page of the viewer
+      (`credentials.int.test.ts`). Verify: those tests.
+- [ ] 16.12m _(setup)_ The artifacts follow the code where the code governs (Resolved
+      decision Q149): the design and spec edits that Q149 lists. Verify: `openspec
+      validate 043-identity-lifecycle-and-org-admin --strict` and `pnpm lint` pass, and
+      none of the stale statements Q149 lists remains.
 - [x] 16.13 Render the system diagram to an image for the SSA (SEC01 asks for a
       png or jpg, `002` VCDM M19) and make the diagram show distinct Administrator and
       Platform operator actors, the `ghcr.io` image pulls and the OTLP export from
