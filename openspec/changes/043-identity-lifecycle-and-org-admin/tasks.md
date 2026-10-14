@@ -3807,7 +3807,7 @@ docs/architecture/system-diagram.md -o` produces a png, and each of the three
       cross its boundary (each with its protocol), rendered to
       `docs/architecture/system-diagram-<zone>.png`, and the full diagram stays the
       source of truth. Verify: each PNG exists, and the test of 16.7 still passes.
-- [ ] 16.14 Update `docs/catalog/auth-and-rbac.md` (`002` D17): the two new
+- [x] 16.14 Update `docs/catalog/auth-and-rbac.md` (`002` D17): the two new
       resource kinds and their actions in the taxonomy, the new spans, metrics and
       log events in the telemetry reference (with a pointer to the identity contract
       module, Resolved decision Q74), the amendment of the closed rate-limit
