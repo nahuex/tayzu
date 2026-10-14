@@ -3816,7 +3816,7 @@ SSO surfaces of M18) are recorded there with their justification.
       (in `apps/api/src/`) covers a capped invite leaving no new invitation and every
       earlier pending one still pending, and a capped resend leaving the earlier link
       acceptable.
-- [ ] 16.12c Inviting an address whose `_user` in the tenant is `Disabled` is refused
+- [x] 16.12c Inviting an address whose `_user` in the tenant is `Disabled` is refused
       before Better Auth creates the invitation (spec "A disabled user cannot be
       invited"; Resolved decision Q149), so no `pending` row is left; the invitation
       hook's check stays as the backstop. Verify: `invitations.int.test.ts` covers the

@@ -94,7 +94,7 @@ import {
 } from './sso/visma-connect.js';
 import type { SsoLinkShedPort } from './identity/ports.js';
 import { validatePassword } from './identity/password-policy.js';
-import type { StatusEvent } from './identity/user-status.js';
+import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 import { organizationAccess } from './org-access.js';
 import {
   TEMPORARY_PASSWORD_ALLOWED_PATHS,
@@ -793,6 +793,11 @@ export interface CreateAuthOptions {
 
 /** The structural slice of `@tayzu/catalog`'s `UserSync` this package calls. */
 export interface UserSyncPort {
+  /** The current `_user` status of the email in the tenant; `null` when there is no row. */
+  readStatus?(input: {
+    readonly tenantId: string;
+    readonly email: string;
+  }): Promise<UserStatus | null>;
   upsertUser(input: {
     readonly tenantId: string;
     readonly email: string;
@@ -982,6 +987,17 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
         invitationExpiresIn: 48 * 60 * 60,
         cancelPendingInvitationsOnReInvite: true,
         organizationHooks: {
+          // Task 16.12c (Q149): a `Disabled` address is refused before Better Auth
+          // creates the invitation, so no `pending` row is left. The same transition
+          // check as the `afterCreateInvitation` backstop throws; a failed read fails closed.
+          beforeCreateInvitation: async ({ invitation, organization }) => {
+            if (options.userSync?.readStatus === undefined) return;
+            const current = await options.userSync.readStatus({
+              tenantId: organization.id,
+              email: invitation.email,
+            });
+            nextStatus(current, 'created_invited');
+          },
           // Task 7.3 (design D4 "Hooks"): the invited email starts as `Invited`,
           // keyed by the invitation (the email may have no Better Auth user yet).
           afterCreateInvitation: async ({ invitation }) => {

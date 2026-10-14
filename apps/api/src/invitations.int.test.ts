@@ -658,6 +658,35 @@ describe('identity.users.invite (task 7.3, design D4, Resolved decisions Q42, Q7
     expect((await userSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe('Disabled');
   }, 60_000);
 
+  // Task 16.12c (spec "A disabled user cannot be invited"; Resolved decision
+  // Q149). The refusal happens before Better Auth creates the invitation, so
+  // no `pending` (or any) row is left for the address.
+  it('A disabled user cannot be invited: the refusal leaves no invitation row for the address', async () => {
+    const tenant = await freshTenant();
+    const email = `bob-${randomUUID()}@example.test`;
+
+    // GIVEN a `Disabled` user `bob@example.com`.
+    const adapter = createUserSyncAdapter({ userSync });
+    const base = { tenantId: tenant.tenantId, email, name: 'Bob' };
+    await adapter.writeUserChange({ ...base, change: 'created_active' });
+    await adapter.writeUserChange({ ...base, change: 'admin_disable' });
+    expect((await userSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe('Disabled');
+
+    // WHEN an admin invites `bob@example.com`.
+    const thrown: unknown = await client.identity.users
+      .invite({ body: { email, role: 'member' } }, { context: sessionContext(tenant) })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    // THEN the operation fails and no invitation row exists for the address.
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    expect(await invitationsOf(tenant.tenantId, email), 'no invitation row').toEqual([]);
+    expect(emailsTo(email), 'no email').toEqual([]);
+    expect((await userSync.getUser({ tenantId: tenant.tenantId, email }))?.status).toBe('Disabled');
+  }, 60_000);
+
   // Task 7.9 (spec "Only an admin may invite a user or change another user's
   // status"; design D4, Cerbos `user` / `invite`). Scenario "Non-admin cannot
   // invite": WHEN an actor without the invite grant attempts to invite a user,
