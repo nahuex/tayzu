@@ -1366,3 +1366,131 @@ describe('identity.serviceAccounts.create under a small pool (task 16.11b)', () 
     expect(keys.rows).toHaveLength(CONCURRENT);
   }, 90_000);
 });
+
+/**
+ * Task 16.12j of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q148):
+ * identity mutations that take an advisory lock are bounded per process by an in-memory semaphore
+ * of 2, taken before a pooled connection.
+ *
+ * Scenario: GIVEN one small `tayzu_app` pool shared by the router and the user-sync adapter (as in
+ * production), WHEN more concurrent `identity.serviceAccounts.create` calls of one tenant than the
+ * pool has connections are made, THEN all of them complete within the cap, none with a statement
+ * timeout or a pool timeout.
+ *
+ * ## Production symbols expected
+ *
+ * None new in the public surface: a process-wide semaphore of 2 (for example
+ * `./mutation-semaphore.js`) wraps `credentials.create`, `rotate`, `revoke` and
+ * `serviceAccounts.create`, `delete` in `createIdentityRouter`, before `appPool` is asked for a
+ * connection.
+ *
+ * ## Why this fails right now
+ *
+ * Every in-flight creation holds a pooled connection waiting for the cap lock, and the holder
+ * needs another one from the same pool for the `_user` write, so nobody progresses until the
+ * checkout timeout rejects the calls.
+ */
+describe('identity.serviceAccounts.create under a small pool shared with the user-sync adapter (task 16.12j, Q148)', () => {
+  const POOL_MAX = 3;
+  const CONCURRENT = 8;
+  let sharedPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let userSync: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const { Pool: PoolConstructor } = await import('pg');
+    sharedPool = new PoolConstructor({
+      connectionString: process.env['DATABASE_URL'],
+      max: POOL_MAX,
+      connectionTimeoutMillis: 15_000,
+    });
+    sharedPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app').catch(() => undefined);
+    });
+    userSync = createUserSyncAdapter({
+      userSync: createUserSync({ pool: sharedPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await sharedPool.end();
+  }, 60_000);
+
+  it('more concurrent serviceAccounts.create calls of one tenant than the shared pool has connections all complete with no statement timeout', async () => {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Bound Owner',
+      email: `sa-bound-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Bound Org', slug: `sa-bound-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Bound Admin',
+      email: `sa-bound-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+
+    const client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        appPool: sharedPool,
+        userSync,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    ) as unknown as {
+      identity: {
+        serviceAccounts: {
+          create(
+            input: { body: { identifier: string } },
+            options: { context: Record<string, unknown> },
+          ): Promise<CreatedServiceAccount>;
+        };
+      };
+    };
+    const context = {
+      tenantId: org.id,
+      actor: { type: 'user', id: admin.userId },
+      principal: { roles: ['admin'] },
+    };
+
+    const started = Date.now();
+    const outcomes = await Promise.allSettled(
+      Array.from({ length: CONCURRENT }, (_, i) =>
+        client.identity.serviceAccounts.create(
+          { body: { identifier: `svc-bound-${String(i)}` } },
+          { context },
+        ),
+      ),
+    );
+    const elapsedMs = Date.now() - started;
+
+    const failures = outcomes.flatMap((o) =>
+      o.status === 'rejected' ? [(o.reason as Error).message] : [],
+    );
+    expect(failures).toEqual([]);
+    expect(outcomes.every((o) => o.status === 'fulfilled')).toBe(true);
+    expect(elapsedMs).toBeLessThan(10_000);
+    const keys = await authPool.query('select id from auth.apikey where reference_id = $1', [
+      org.id,
+    ]);
+    expect(keys.rows).toHaveLength(CONCURRENT);
+  }, 90_000);
+});

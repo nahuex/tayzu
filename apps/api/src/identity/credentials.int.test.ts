@@ -3293,3 +3293,156 @@ describe('rotating a revoked credential counts against the cap (task 16.12d, Q56
     expect(rejected[0]?.reason).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
   }, 120_000);
 });
+
+/**
+ * Task 16.12j of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q148):
+ * identity mutations that take an advisory lock are bounded per process by an in-memory semaphore
+ * of 2, taken before a pooled connection.
+ *
+ * Scenario: GIVEN one small `tayzu_app` pool shared by the router and the user-sync adapter (as in
+ * production), WHEN more concurrent `identity.credentials.rotate` calls of one tenant than the
+ * pool has connections are made, THEN all of them complete within the cap, none with a statement
+ * timeout or a pool timeout.
+ *
+ * ## Production symbols expected
+ *
+ * None new in the public surface: a process-wide semaphore of 2 (for example
+ * `./mutation-semaphore.js`) wraps the five lock-taking identity mutations in
+ * `createIdentityRouter`, before `appPool` is asked for a connection.
+ *
+ * ## Why this fails right now
+ *
+ * Every in-flight rotation holds a pooled connection waiting for its lock and the holder needs
+ * another one from the same pool to revoke the old key, so nobody progresses until the checkout
+ * timeout rejects the calls.
+ */
+describe('identity.credentials.rotate under a small pool shared with the user-sync adapter (task 16.12j, Q148)', () => {
+  const POOL_MAX = 3;
+  const CONCURRENT = 8;
+  let sharedPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  let cerbos: CerbosClient;
+  let userSync: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const { Pool: PoolConstructor } = await import('pg');
+    sharedPool = new PoolConstructor({
+      connectionString: process.env['DATABASE_URL'],
+      max: POOL_MAX,
+      connectionTimeoutMillis: 15_000,
+    });
+    sharedPool.on('connect', (client) => {
+      void client.query('SET ROLE tayzu_app').catch(() => undefined);
+    });
+    userSync = createUserSyncAdapter({
+      userSync: createUserSync({ pool: sharedPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await sharedPool.end();
+  }, 60_000);
+
+  it('more concurrent credentials.rotate calls of one tenant than the shared pool has connections all complete with no statement timeout', async () => {
+    const id = randomUUID();
+    const api = auth.api as OrganizationSurface;
+    const owner = await createAdminUser(auth, {
+      name: 'Rotate Pool Owner',
+      email: `rot-pool-owner-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    const org = await api.createOrganization({
+      body: { name: 'Rotate Pool Org', slug: `rot-pool-${id}`, userId: owner.userId },
+    });
+    const admin = await createAdminUser(auth, {
+      name: 'Rotate Pool Admin',
+      email: `rot-pool-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await api.addMember({ body: { userId: admin.userId, organizationId: org.id, role: 'admin' } });
+
+    // One service account and one key bound to it per rotation, so the calls hold different
+    // per-service-account locks and only the pool limits them.
+    const entities = createEntityService({ pool: sharedPool, authz: cerbos });
+    const keyIds: string[] = [];
+    for (let i = 0; i < CONCURRENT; i += 1) {
+      const identifier = `svc-rotpool-${String(i)}`;
+      await entities.create(
+        {
+          tenantId: org.id,
+          actor: { type: 'system', id: 'credentials-test-seed' },
+          principal: { roles: ['admin'] },
+        },
+        {
+          blueprint: '_user',
+          identifier,
+          title: 'Service account',
+          spec: { properties: { accountKind: 'service', status: 'Active' } },
+        },
+      );
+      const key = await createMachineCredential(auth, {
+        userId: admin.userId,
+        organizationId: org.id,
+        name: `Rotate pool key ${String(i)}`,
+        actorKind: 'integration',
+        metadata: { userId: identifier, createdBy: admin.userId },
+      });
+      keyIds.push(key.id);
+    }
+
+    const client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+        appPool: sharedPool,
+        userSync,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    ) as unknown as {
+      identity: {
+        credentials: {
+          rotate(
+            input: { params: { credential: string } },
+            options: { context: Record<string, unknown> },
+          ): Promise<{ id: string; secret: string }>;
+        };
+      };
+    };
+    const context = {
+      tenantId: org.id,
+      actor: { type: 'user', id: admin.userId },
+      principal: { roles: ['admin'] },
+    };
+
+    const started = Date.now();
+    const outcomes = await Promise.allSettled(
+      keyIds.map((credential) =>
+        client.identity.credentials.rotate({ params: { credential } }, { context }),
+      ),
+    );
+    const elapsedMs = Date.now() - started;
+
+    const failures = outcomes.flatMap((o) =>
+      o.status === 'rejected' ? [(o.reason as Error).message] : [],
+    );
+    expect(failures).toEqual([]);
+    expect(outcomes.every((o) => o.status === 'fulfilled')).toBe(true);
+    expect(elapsedMs).toBeLessThan(10_000);
+    const keys = await authPool.query('select id from auth.apikey where reference_id = $1', [
+      org.id,
+    ]);
+    expect(keys.rows).toHaveLength(CONCURRENT * 2);
+  }, 120_000);
+});

@@ -3849,7 +3849,7 @@ SSO surfaces of M18) are recorded there with their justification.
       definition (6.11; Resolved decision Q149). Verify:
       `azure-communication-email.test.ts` covers the sent body of each template being
       the output of its render function.
-- [ ] 16.12j Identity mutations that take an advisory lock are bounded per process
+- [x] 16.12j Identity mutations that take an advisory lock are bounded per process
       (Resolved decision Q148): a process-wide in-memory semaphore of 2 admits
       `credentials.create`, `credentials.rotate`, `credentials.revoke`,
       `serviceAccounts.create` and `serviceAccounts.delete` before they take a pooled

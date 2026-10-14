@@ -43,6 +43,7 @@ import {
   deleteServiceAccount,
   isValidServiceAccountIdentifier,
 } from './identity/service-accounts.js';
+import { withMutationSlot } from './identity/mutation-semaphore.js';
 import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
@@ -517,37 +518,39 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           },
           route: identityRoute('POST', '/v1/credentials', { highRisk: true }),
           handler: ({ context, input: rawInput }) =>
-            withIdentitySpan('identity.credential.create', {}, async (span) => {
-              const { body } = parseDetailedInput(SCHEMAS.createCredential, rawInput);
-              const name = body['name'] as string;
-              const kind = body['kind'];
-              const userId = body['userId'] as string | undefined;
-              if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
-              span.setAttributes({ 'tayzu.identity.credential.kind': kind });
-              const created = await createCredential({
-                authRepository: options.authRepository,
-                ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
-                ...(userId === undefined ? {} : { userId }),
-                cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
-                auth: options.auth,
-                tenantId: rawTenantId(context),
-                adminId: (context['actor'] as { id: string }).id,
-                name,
-                kind,
-              });
-              emitIdentityEvent({
-                name: 'catalog.audit.credential_created',
-                severity: 'INFO',
-                attributes: {
-                  'tayzu.tenant.id': rawTenantId(context),
-                  'tayzu.actor.id': (context['actor'] as { id: string }).id,
-                  'tayzu.identity.credential.id': created.id,
-                  'tayzu.identity.credential.kind': kind,
-                },
-              });
-              recordCredentialMutation(rawTenantId(context), kind, 'created');
-              return created;
-            }),
+            withMutationSlot(() =>
+              withIdentitySpan('identity.credential.create', {}, async (span) => {
+                const { body } = parseDetailedInput(SCHEMAS.createCredential, rawInput);
+                const name = body['name'] as string;
+                const kind = body['kind'];
+                const userId = body['userId'] as string | undefined;
+                if (kind !== 'integration' && kind !== 'agent') throw new IdentityInputError();
+                span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+                const created = await createCredential({
+                  authRepository: options.authRepository,
+                  ...(options.appPool === undefined ? {} : { appPool: options.appPool }),
+                  ...(userId === undefined ? {} : { userId }),
+                  cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+                  auth: options.auth,
+                  tenantId: rawTenantId(context),
+                  adminId: (context['actor'] as { id: string }).id,
+                  name,
+                  kind,
+                });
+                emitIdentityEvent({
+                  name: 'catalog.audit.credential_created',
+                  severity: 'INFO',
+                  attributes: {
+                    'tayzu.tenant.id': rawTenantId(context),
+                    'tayzu.actor.id': (context['actor'] as { id: string }).id,
+                    'tayzu.identity.credential.id': created.id,
+                    'tayzu.identity.credential.kind': kind,
+                  },
+                });
+                recordCredentialMutation(rawTenantId(context), kind, 'created');
+                return created;
+              }),
+            ),
         }),
         // Step-up applies (D4); the old key is resolved inside the tenant by the target resolver.
         rotate: defineIdentityOperation({
@@ -558,28 +561,30 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           },
           route: identityRoute('POST', '/v1/credentials/{credential}/rotate', { highRisk: true }),
           handler: ({ context, input: rawInput, target }) =>
-            withIdentitySpan('identity.credential.rotate', {}, async (span) => {
-              parseDetailedInput(SCHEMAS.credential, rawInput);
-              // Fail closed when the host did not wire the revocation-list pool.
-              if (options.appPool === undefined || target === undefined) {
-                throw new IdentityInputError();
-              }
-              const tenantId = rawTenantId(context);
-              const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
-              if (kind !== undefined)
-                span.setAttributes({ 'tayzu.identity.credential.kind': kind });
-              const rotated = await rotateCredential({
-                auth: options.auth,
-                authRepository: options.authRepository,
-                appPool: options.appPool,
-                tenantId,
-                adminId: (context['actor'] as { id: string }).id,
-                credentialId: target.id,
-                cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
-              });
-              if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'rotated');
-              return rotated;
-            }),
+            withMutationSlot(() =>
+              withIdentitySpan('identity.credential.rotate', {}, async (span) => {
+                parseDetailedInput(SCHEMAS.credential, rawInput);
+                // Fail closed when the host did not wire the revocation-list pool.
+                if (options.appPool === undefined || target === undefined) {
+                  throw new IdentityInputError();
+                }
+                const tenantId = rawTenantId(context);
+                const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
+                if (kind !== undefined)
+                  span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+                const rotated = await rotateCredential({
+                  auth: options.auth,
+                  authRepository: options.authRepository,
+                  appPool: options.appPool,
+                  tenantId,
+                  adminId: (context['actor'] as { id: string }).id,
+                  credentialId: target.id,
+                  cap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+                });
+                if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'rotated');
+                return rotated;
+              }),
+            ),
         }),
         // Step-up applies (D4); permanent, and a repeat is a no-op.
         revoke: defineIdentityOperation({
@@ -590,25 +595,27 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           },
           route: identityRoute('POST', '/v1/credentials/{credential}/revoke', { highRisk: true }),
           handler: ({ context, input: rawInput, target }) =>
-            withIdentitySpan('identity.credential.revoke', {}, async (span) => {
-              parseDetailedInput(SCHEMAS.credential, rawInput);
-              // Fail closed when the host did not wire the revocation-list pool.
-              if (options.appPool === undefined || target === undefined) {
-                throw new IdentityInputError();
-              }
-              const tenantId = rawTenantId(context);
-              const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
-              if (kind !== undefined)
-                span.setAttributes({ 'tayzu.identity.credential.kind': kind });
-              await revokeCredential({
-                auth: options.auth,
-                appPool: options.appPool,
-                tenantId,
-                adminId: (context['actor'] as { id: string }).id,
-                credentialId: target.id,
-              });
-              if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'revoked');
-            }),
+            withMutationSlot(() =>
+              withIdentitySpan('identity.credential.revoke', {}, async (span) => {
+                parseDetailedInput(SCHEMAS.credential, rawInput);
+                // Fail closed when the host did not wire the revocation-list pool.
+                if (options.appPool === undefined || target === undefined) {
+                  throw new IdentityInputError();
+                }
+                const tenantId = rawTenantId(context);
+                const kind = await credentialKindOf(options.authRepository, tenantId, target.id);
+                if (kind !== undefined)
+                  span.setAttributes({ 'tayzu.identity.credential.kind': kind });
+                await revokeCredential({
+                  auth: options.auth,
+                  appPool: options.appPool,
+                  tenantId,
+                  adminId: (context['actor'] as { id: string }).id,
+                  credentialId: target.id,
+                });
+                if (kind !== undefined) recordCredentialMutation(tenantId, kind, 'revoked');
+              }),
+            ),
         }),
         list: defineIdentityOperation({
           authorization: {
@@ -642,36 +649,37 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             resolveTarget: () => undefined,
           },
           route: identityRoute('POST', '/v1/service-accounts', { highRisk: true }),
-          handler: async ({ context, input: rawInput }) => {
-            // Fail closed when the host did not wire the lookups and the writer.
-            if (options.appPool === undefined || options.userSync === undefined) {
-              throw new IdentityInputError();
-            }
-            const { body } = parseDetailedInput(SCHEMAS.createServiceAccount, rawInput);
-            const identifier = body['identifier'] as string;
-            // Ceiling (D6): only `member` and an empty `moderatedBlueprints` list, before anything is written.
-            if (body['role'] !== undefined && body['role'] !== 'member') {
-              throw new IdentityInputError();
-            }
-            const moderated = body['moderatedBlueprints'];
-            if (Array.isArray(moderated) && moderated.length > 0) {
-              throw new IdentityInputError();
-            }
-            return await createServiceAccount({
-              auth: options.auth,
-              authz: options.authz,
-              appPool: options.appPool,
-              authRepository: options.authRepository,
-              userSync: options.userSync,
-              tenantId: rawTenantId(context),
-              adminId: (context['actor'] as { id: string }).id,
-              identifier,
-              credentialCap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
-              ...(options.serviceAccountCap === undefined
-                ? {}
-                : { cap: options.serviceAccountCap }),
-            });
-          },
+          handler: ({ context, input: rawInput }) =>
+            withMutationSlot(async () => {
+              // Fail closed when the host did not wire the lookups and the writer.
+              if (options.appPool === undefined || options.userSync === undefined) {
+                throw new IdentityInputError();
+              }
+              const { body } = parseDetailedInput(SCHEMAS.createServiceAccount, rawInput);
+              const identifier = body['identifier'] as string;
+              // Ceiling (D6): only `member` and an empty `moderatedBlueprints` list, before anything is written.
+              if (body['role'] !== undefined && body['role'] !== 'member') {
+                throw new IdentityInputError();
+              }
+              const moderated = body['moderatedBlueprints'];
+              if (Array.isArray(moderated) && moderated.length > 0) {
+                throw new IdentityInputError();
+              }
+              return await createServiceAccount({
+                auth: options.auth,
+                authz: options.authz,
+                appPool: options.appPool,
+                authRepository: options.authRepository,
+                userSync: options.userSync,
+                tenantId: rawTenantId(context),
+                adminId: (context['actor'] as { id: string }).id,
+                identifier,
+                credentialCap: options.credentialCap ?? DEFAULT_CREDENTIAL_CAP,
+                ...(options.serviceAccountCap === undefined
+                  ? {}
+                  : { cap: options.serviceAccountCap }),
+              });
+            }),
         }),
         // Step-up applies (D4); the target is resolved as a service account by the handler (10.7b).
         delete: defineIdentityOperation({
@@ -688,20 +696,21 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             },
           },
           route: identityRoute('DELETE', '/v1/service-accounts/{user}', { highRisk: true }),
-          handler: async ({ context, input: rawInput }): Promise<void> => {
-            // Fail closed when the host did not wire the lookups.
-            if (options.appPool === undefined) throw new IdentityInputError();
-            const user = parseDetailedInput(SCHEMAS.user, rawInput).params['user'] as string;
-            await deleteServiceAccount({
-              auth: options.auth,
-              authz: options.authz,
-              appPool: options.appPool,
-              authRepository: options.authRepository,
-              tenantId: rawTenantId(context),
-              adminId: (context['actor'] as { id: string }).id,
-              identifier: user,
-            });
-          },
+          handler: ({ context, input: rawInput }): Promise<void> =>
+            withMutationSlot(async () => {
+              // Fail closed when the host did not wire the lookups.
+              if (options.appPool === undefined) throw new IdentityInputError();
+              const user = parseDetailedInput(SCHEMAS.user, rawInput).params['user'] as string;
+              await deleteServiceAccount({
+                auth: options.auth,
+                authz: options.authz,
+                appPool: options.appPool,
+                authRepository: options.authRepository,
+                tenantId: rawTenantId(context),
+                adminId: (context['actor'] as { id: string }).id,
+                identifier: user,
+              });
+            }),
         }),
       },
       users: {
