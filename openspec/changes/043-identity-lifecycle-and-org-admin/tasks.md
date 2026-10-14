@@ -3794,7 +3794,7 @@ SSO surfaces of M18) are recorded there with their justification.
       passes, and design/specs/code agree (update design only if an implementation
       finding forced a change, noted in the PR). Verify: the command output is
       attached to the PR.
-- [ ] 16.12a The target check of the identity wrapper sends the resolved target's real
+- [x] 16.12a The target check of the identity wrapper sends the resolved target's real
       resource (design D3, D10 step 3; Resolved decisions Q62, Q90 and Q149):
       `defineIdentityOperation` builds it with `buildIdentityResource` from the resolved
       record (its tenant, its Better Auth user id or `svc-…` identifier, and the

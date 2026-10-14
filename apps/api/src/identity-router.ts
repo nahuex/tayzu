@@ -55,6 +55,7 @@ import {
   type IdentityTargetResolver,
   type ResolvedIdentityTarget,
 } from './identity/identity-target.js';
+import { readUserAttributes } from './identity/user-attributes.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
 import {
   parseIdentityInput,
@@ -396,13 +397,30 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
    */
   const targetResolver: IdentityTargetResolver = {
     async resolve(context, rawTarget) {
-      const identifier = (rawTarget as { id?: unknown }).id;
-      if (typeof identifier === 'string') {
-        const found = await options.authRepository.globalUserByEmail(identifier);
-        if (found !== undefined)
-          return baseResolver.resolve(context, { kind: 'user', id: found.id });
+      const { kind, id: identifier } = rawTarget as { kind?: unknown; id?: unknown };
+      if (kind !== 'user' || typeof identifier !== 'string') {
+        return baseResolver.resolve(context, rawTarget);
       }
-      return baseResolver.resolve(context, rawTarget);
+      // A service account has no Better Auth user: its `_user` is the target (Q62, Q90).
+      if (isValidServiceAccountIdentifier(identifier)) {
+        const attributes =
+          options.appPool === undefined
+            ? undefined
+            : await readUserAttributes(options.appPool, context.tenantId, identifier);
+        if (attributes?.accountKind !== 'service') throw new CredentialTargetNotFoundError();
+        return { kind: 'user', id: identifier, tenantId: context.tenantId, attributes };
+      }
+      const found = await options.authRepository.globalUserByEmail(identifier);
+      const resolved = await baseResolver.resolve(
+        context,
+        found === undefined ? rawTarget : { kind: 'user', id: found.id },
+      );
+      const user = await options.authRepository.userInTenant(context.tenantId, resolved.id);
+      const attributes =
+        options.appPool === undefined || user === undefined
+          ? undefined
+          : await readUserAttributes(options.appPool, context.tenantId, user.email);
+      return attributes === undefined ? resolved : { ...resolved, attributes };
     },
   };
 
@@ -659,7 +677,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           authorization: {
             kind: RESOURCE_KINDS.serviceAccount,
             action: 'delete',
-            resolveTarget: () => undefined,
+            // Only a `svc-…` identifier can name a service account: any other id answers not found.
+            resolveTarget: (raw) => {
+              const target = userTargetOf(SCHEMAS.user)(raw);
+              if (!isValidServiceAccountIdentifier(target.id)) {
+                throw new CredentialTargetNotFoundError();
+              }
+              return target;
+            },
           },
           route: identityRoute('DELETE', '/v1/service-accounts/{user}', { highRisk: true }),
           handler: async ({ context, input: rawInput }): Promise<void> => {
@@ -991,14 +1016,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
           authorization: {
             kind: RESOURCE_KINDS.user,
             action: 'updateStatus',
-            // A service account has no Better Auth user to resolve: an identifier of its shape
-            // skips the user lookup, and the handler resolves its `accountKind` (Q62, task 11.5).
-            resolveTarget: (raw) => {
-              const target = userTargetOf(SCHEMAS.setStatus)(raw);
-              return typeof target.id === 'string' && isValidServiceAccountIdentifier(target.id)
-                ? undefined
-                : target;
-            },
+            // A service account is the target by its `svc-…` identifier (Q62, Q90, task 16.12a).
+            resolveTarget: userTargetOf(SCHEMAS.setStatus),
           },
           route: identityRoute('PUT', '/v1/users/{user}/status', { highRisk: true }),
           handler: ({ context, input: rawInput, target }): Promise<void> =>
@@ -1013,7 +1032,8 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               const tenantId = rawTenantId(context);
               const adminId = (context['actor'] as { id: string }).id;
               const change = status === 'Disabled' ? 'admin_disable' : 'admin_enable';
-              if (target === undefined) {
+              if (target === undefined) throw new IdentityInputError();
+              if (isValidServiceAccountIdentifier(target.id)) {
                 // Service-account branch: only `_user.status` is written (no Better Auth user).
                 const identifier = parsed.params['user'] as string;
                 if (

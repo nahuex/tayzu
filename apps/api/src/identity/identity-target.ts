@@ -8,11 +8,20 @@ import type { AuthRepository } from './auth-repository.js';
 
 export type IdentityTargetKind = 'invitation' | 'credential' | 'user';
 
+/** The attributes of the target's `_user` entity that the policies read (design D3). */
+export interface ResolvedIdentityAttributes {
+  readonly accountKind?: string;
+  readonly portRole?: string;
+  readonly moderatedBlueprints?: readonly string[];
+}
+
 export interface ResolvedIdentityTarget {
   readonly kind: IdentityTargetKind;
   readonly id: string;
   /** The target's real tenant: the host tenant once resolved. */
   readonly tenantId: string;
+  /** The `_user` attributes, when the resolver read them (a user target). */
+  readonly attributes?: ResolvedIdentityAttributes;
 }
 
 export interface IdentityTargetResolver {

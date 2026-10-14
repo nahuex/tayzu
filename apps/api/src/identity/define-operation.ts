@@ -16,6 +16,7 @@ import {
 import { emitIdentityEvent } from '@tayzu/auth';
 import { recordAuthzDecision } from '@tayzu/catalog';
 
+import { buildIdentityResource, type IdentityOperation } from './identity-attributes.js';
 import type {
   IdentityTargetKind,
   IdentityTargetResolver,
@@ -35,10 +36,21 @@ class IdentityForbiddenError extends Error {
 /** The Cerbos action whose self-target deny is a security signal (design D3). */
 const STATUS_ACTION = 'updateStatus';
 
+/** Any operation of the kind with a resolved target: it only picks the resource kind (design D3). */
+const TARGET_OPERATION: Record<ResourceKind, IdentityOperation> = {
+  [RESOURCE_KINDS.user]: 'users.setStatus',
+  [RESOURCE_KINDS.serviceAccount]: 'serviceAccounts.delete',
+  [RESOURCE_KINDS.credential]: 'credentials.rotate',
+} as Record<ResourceKind, IdentityOperation>;
+
 export interface IdentityOperationDeps {
   readonly authz: CerbosClient;
   readonly targetResolver: IdentityTargetResolver;
 }
+
+type ResourceAttributes = NonNullable<
+  Parameters<CerbosClient['checkResources']>[0]['resources'][number]['resource']['attr']
+>;
 
 type RawContext = Record<string, unknown>;
 
@@ -131,9 +143,7 @@ export function createDefineIdentityOperation(
     caller: CallerContext,
     kind: ResourceKind,
     action: string,
-    resourceId: string,
-    resourceTenantId: string,
-    extra: Record<string, string>,
+    resource: { readonly id: string; readonly attr: ResourceAttributes },
   ): Promise<boolean> {
     try {
       const checked = await deps.authz.checkResources({
@@ -144,11 +154,7 @@ export function createDefineIdentityOperation(
         },
         resources: [
           {
-            resource: {
-              kind,
-              id: resourceId,
-              attr: buildAttributes(resourceTenantId, extra),
-            },
+            resource: { kind, id: resource.id, attr: resource.attr },
             actions: [action],
           },
         ],
@@ -164,17 +170,15 @@ export function createDefineIdentityOperation(
     // The service-account policy denies every action on any other `accountKind` (design D3).
     const callerExtra: Record<string, string> =
       kind === RESOURCE_KINDS.serviceAccount ? { accountKind: 'service' } : {};
+    // The targetless check of a listing names the fixed id `list`; every other one names `new`.
+    const callerResourceId = action === 'list' ? 'list' : 'new';
     const procedure = makeProcedure(options.route, async ({ context, input }) => {
       const caller = parseCaller(context);
 
-      const callerAllowed = await isAllowed(
-        caller,
-        kind,
-        action,
-        'new',
-        caller.tenantId,
-        callerExtra,
-      );
+      const callerAllowed = await isAllowed(caller, kind, action, {
+        id: callerResourceId,
+        attr: buildAttributes(caller.tenantId, callerExtra),
+      });
       recordAuthzDecision(
         { tenantId: caller.tenantId, actor: caller.actor },
         kind,
@@ -190,14 +194,28 @@ export function createDefineIdentityOperation(
           : await deps.targetResolver.resolve({ tenantId: caller.tenantId }, declared);
 
       if (target !== undefined) {
-        const targetAllowed = await isAllowed(
-          caller,
-          kind,
-          action,
-          target.id,
-          target.tenantId,
-          callerExtra,
-        );
+        const targetAllowed = await isAllowed(caller, kind, action, {
+          id: target.id,
+          attr: buildIdentityResource({
+            operation: TARGET_OPERATION[kind],
+            targetId: target.id,
+            tenantId: target.tenantId,
+            // A resolver that read no `_user` leaves the kind's default (design D3).
+            entity: {
+              spec: {
+                properties: {
+                  accountKind: target.attributes?.accountKind ?? callerExtra['accountKind'],
+                },
+              },
+            },
+            ...(target.attributes?.portRole === undefined
+              ? {}
+              : { portRole: target.attributes.portRole }),
+            ...(target.attributes?.moderatedBlueprints === undefined
+              ? {}
+              : { moderatedBlueprints: target.attributes.moderatedBlueprints }),
+          }).attr as ResourceAttributes,
+        });
         if (!targetAllowed) {
           recordAuthzDecision(
             { tenantId: caller.tenantId, actor: caller.actor },
