@@ -3592,7 +3592,7 @@ SSO surfaces of M18) are recorded there with their justification.
 
 ## 16. Docs, ADRs, diagram, and integration checks (Checkpoint 2 readiness)
 
-- [ ] 16.1 Write `docs/adr/0017-service-account-identifier-convention.md`
+- [x] 16.1 Write `docs/adr/0017-service-account-identifier-convention.md`
       (design D6). Verify: the file exists with Context/Decision/Alternatives/
       Consequences, and design D6 links to it.
 - [ ] 16.2 Write `docs/adr/0018-credential-rotation-immediate-cutover.md`

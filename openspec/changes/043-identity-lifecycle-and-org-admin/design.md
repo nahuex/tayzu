@@ -2025,7 +2025,7 @@ recipient address varies; there are no attachments.
   the provider needs `@azure/identity`, an unplanned dependency, so it is a
   first-deployment gate with its own design amendment (Resolved decision Q28).
 
-### D6. Service accounts: `_user` sub-kind + org-owned machine credential — ADR-0017
+### D6. Service accounts: `_user` sub-kind + org-owned machine credential — [ADR-0017](../../../docs/adr/0017-service-account-identifier-convention.md)
 
 A service account is a `_user` entity with `accountKind: "service"`, created
 through one orchestrated operation (in `apps/api`, Resolved decision Q30): (1)
