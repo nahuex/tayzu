@@ -121,6 +121,11 @@ export interface AuthRepository {
     row: { id: string; value: string; ttlSeconds: number },
     db: Pick<Pool, 'query'>,
   ) => Promise<void>;
+  /** Reads `password-reset:<id>`; `expired` is decided by the database clock. */
+  findResetToken: (
+    id: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<{ value: string; expired: boolean } | undefined>;
 }
 
 interface ApiKeyRow {
@@ -448,6 +453,15 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
          values ($1, $2, $3, now() + make_interval(secs => $4), now(), now())`,
         [randomUUID(), `password-reset:${row.id}`, row.value, row.ttlSeconds],
       );
+    },
+
+    async findResetToken(id, db) {
+      const result = await db.query<{ value: string; expired: boolean }>(
+        `select value, expires_at <= now() as expired
+         from auth.verification where identifier = $1`,
+        [`password-reset:${id}`],
+      );
+      return result.rows[0];
     },
   };
 }

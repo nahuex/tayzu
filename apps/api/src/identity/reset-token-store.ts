@@ -4,10 +4,14 @@
  */
 import type { Pool } from 'pg';
 
-import { formatResetTokenValue } from '../../../../packages/auth/src/identity/reset-token-value.js';
+import {
+  formatResetTokenValue,
+  parseResetTokenValue,
+} from '../../../../packages/auth/src/identity/reset-token-value.js';
 import {
   digestResetToken,
   generateResetToken,
+  verifyResetToken,
 } from '../../../../packages/auth/src/identity/reset-token.js';
 import { createAuthRepository } from './auth-repository.js';
 import type { WithUserLock } from './user-lock.js';
@@ -15,12 +19,22 @@ import type { WithUserLock } from './user-lock.js';
 /** A reset link lives 30 minutes (Q3, Q23); not configurable. */
 const RESET_TOKEN_TTL_SECONDS = 30 * 60;
 
+/** The reason is for internal use only; callers answer every non-`found` status alike. */
+export type ResetTokenLookup =
+  | { status: 'found'; userId: string; failures: number }
+  | { status: 'not_found' | 'expired' | 'token_mismatch' };
+
 export interface ResetTokenStore {
   /**
    * Under the per-user lock, deletes the user's earlier rows and every expired row, then
    * inserts the new one. Returns the id and the raw token; only the digest is stored.
    */
   issue: (userId: string) => Promise<{ id: string; token: string }>;
+  /**
+   * Reads the row by id and checks the digest in constant time. `db` is the lock's
+   * connection when the completion re-reads the row; without it the read uses the pool.
+   */
+  lookup: (id: string, token: string, db?: Pick<Pool, 'query'>) => Promise<ResetTokenLookup>;
 }
 
 export function createResetTokenStore(options: {
@@ -29,6 +43,15 @@ export function createResetTokenStore(options: {
 }): ResetTokenStore {
   const repository = createAuthRepository(options.authPool);
   return {
+    async lookup(id, token, db = options.authPool) {
+      const row = await repository.findResetToken(id, db);
+      if (row === undefined) return { status: 'not_found' };
+      const parsed = parseResetTokenValue(row.value);
+      const matches = verifyResetToken(token, parsed?.digest ?? null);
+      if (row.expired) return { status: 'expired' };
+      if (parsed === null || !matches) return { status: 'token_mismatch' };
+      return { status: 'found', userId: parsed.userId, failures: parsed.failures };
+    },
     issue: (userId) =>
       options.withUserLock(userId, async (tx) => {
         await repository.deleteResetTokensOf(userId, tx);

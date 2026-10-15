@@ -143,3 +143,92 @@ describe('reset token store: issue (task 2.3)', () => {
     expect(await rowById(strangerLive)).toBeDefined();
   });
 });
+
+/**
+ * Task 2.4 (design D3, D7 step 1; precedent `markInvitationAccepted(..., db?)`).
+ *
+ * ## Production symbols expected
+ *
+ * ```ts
+ * // apps/api/src/identity/reset-token-store.ts, added to ResetTokenStore
+ * export type ResetTokenLookup =
+ *   | { status: 'found'; userId: string; failures: number }
+ *   | { status: 'not_found' | 'expired' | 'token_mismatch' };
+ * lookup: (id: string, token: string, db?: Pick<Pool, 'query'>) => Promise<ResetTokenLookup>;
+ * ```
+ *
+ * Without `db` the read runs on the pool; with `db` it runs on that client.
+ */
+describe('reset token store: lookup (task 2.4)', () => {
+  let authPool: Pool;
+  let store: ResetTokenStore;
+
+  beforeAll(async () => {
+    ({ authPool } = await harnessPools());
+    await runMigrations(authPool);
+    store = createResetTokenStore({ authPool, withUserLock: createWithUserLock(authPool) });
+  }, 60_000);
+
+  async function insertWithDigest(
+    db: Pick<Pool, 'query'>,
+    id: string,
+    token: string,
+    userId: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await db.query(
+      `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+       values ($1, $2, $3, $4, now(), now())`,
+      [randomUUID(), `${PREFIX}${id}`, `v1:${digestResetToken(token)}:${userId}:0`, expiresAt],
+    );
+  }
+
+  it('a live token with the right secret is found, with its user and failure count', async () => {
+    const userId = randomUUID();
+    const { id, token } = await store.issue(userId);
+
+    expect(await store.lookup(id, token)).toEqual({ status: 'found', userId, failures: 0 });
+  });
+
+  it('A token expires after 30 minutes: one issued 30 minutes and one second ago is expired', async () => {
+    const id = randomUUID();
+    const token = randomUUID();
+    await insertWithDigest(authPool, id, token, randomUUID(), new Date(Date.now() - 1000));
+
+    expect(await store.lookup(id, token)).toEqual({ status: 'expired' });
+  });
+
+  it('an unknown id is not_found', async () => {
+    const { token } = await store.issue(randomUUID());
+
+    expect(await store.lookup(randomUUID(), token)).toEqual({ status: 'not_found' });
+  });
+
+  it('a wrong token for a live id is token_mismatch', async () => {
+    const { id } = await store.issue(randomUUID());
+
+    expect(await store.lookup(id, 'not-the-token')).toEqual({ status: 'token_mismatch' });
+  });
+
+  it('with a db argument the statement runs on that client and not on the pool', async () => {
+    const id = randomUUID();
+    const token = randomUUID();
+    const userId = randomUUID();
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      // Uncommitted: visible to this client only.
+      await insertWithDigest(client, id, token, userId, new Date(Date.now() + 60_000));
+
+      expect(await store.lookup(id, token, client)).toEqual({
+        status: 'found',
+        userId,
+        failures: 0,
+      });
+      expect(await store.lookup(id, token)).toEqual({ status: 'not_found' });
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+  });
+});
