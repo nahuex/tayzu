@@ -17,7 +17,7 @@
  * `admin`, `two-factor` (all bundled in `better-auth@1.7.6`), `jwt` (bundled),
  * and `apiKey` (the separate `@better-auth/api-key@1.7.6` package), backed by
  * `drizzleAdapter(options.db, { schemaName: 'auth' })`
- * (`openspec/changes/002-auth-and-rbac/design.md` D2).
+ * (`openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md` D2).
  *
  * D2 also requires that neither the `organization` plugin's `teams`
  * sub-option nor its `dynamicAccessControl` sub-option is turned on: Better

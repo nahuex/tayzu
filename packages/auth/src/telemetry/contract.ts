@@ -1,5 +1,5 @@
 /**
- * Task 2.4 (openspec/changes/002-auth-and-rbac/design.md, "Observability
+ * Task 2.4 (openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md, "Observability
  * contract"): the executable mirror of the design's auth-related spans,
  * metrics and log events, following the same pattern
  * `packages/catalog/src/telemetry/contract.ts` established for 001. Only the

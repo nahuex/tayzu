@@ -1,5 +1,5 @@
 /**
- * `otel-smoke-check`, 002 extension (task 13.2, openspec/changes/002-auth-and-rbac;
+ * `otel-smoke-check`, 002 extension (task 13.2, openspec/changes/archive/2026-10-15-002-auth-and-rbac;
  * design.md "Observability contract"; Resolved decisions Q16-Q21 and Q26-Q29).
  *
  * "Extend `otel-smoke-check` to run every new auth/authz operation once on

@@ -1,5 +1,5 @@
 /**
- * Integration test for task 26.4 (openspec/changes/002-auth-and-rbac; design Q67):
+ * Integration test for task 26.4 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design Q67):
  * HTTP telemetry drops `url.query` and the query part of `url.full`.
  *
  * Lives in its own file (not in `otel-export.int.test.ts`) because the OTel

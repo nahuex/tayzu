@@ -1,5 +1,5 @@
 /**
- * Task 13.1 (openspec/changes/002-auth-and-rbac/tasks.md): `contract.ts` is
+ * Task 13.1 (openspec/changes/archive/2026-10-15-002-auth-and-rbac/tasks.md): `contract.ts` is
  * the executable mirror of design.md's "Observability contract" section
  * (spans, metrics, log events, sampling exemption, forbidden attributes).
  * This test transcribes every row of those tables and asserts `contract.ts`

@@ -1,5 +1,5 @@
 /**
- * Integration test for task 13.4 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 13.4 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * D14, resolved decision Q31).
  *
  * Task 13.4: "Wire the OTel SDK and an OTLP exporter in `apps/api`, plus

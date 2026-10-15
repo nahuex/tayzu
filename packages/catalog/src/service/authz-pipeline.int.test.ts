@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 9.1 (openspec/changes/002-auth-and-rbac, design
+ * Integration tests for task 9.1 (openspec/changes/archive/2026-10-15-002-auth-and-rbac, design
  * D7, D10, D14 and Resolved decisions Q26/Q27; spec auth-and-rbac,
  * "Authorization is decided by Cerbos and fails closed").
  *

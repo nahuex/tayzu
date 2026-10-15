@@ -1,5 +1,5 @@
 /**
- * Integration test for task 23.1 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 23.1 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * Q34, D8, D9; `specs/auth-and-rbac/spec.md`, requirements "Three-tier role
  * baseline" and "Ownership resolution").
  *

@@ -2,7 +2,7 @@
 
 Better Auth instance, its own Postgres schema, and the `resolveContext`
 context resolver. Global rules are in the root `CLAUDE.md`. The design is
-`openspec/changes/002-auth-and-rbac/design.md` (D1-D6, D18-D21); the behavior
+`openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md` (D1-D6, D18-D21); the behavior
 is `specs/auth-and-rbac/spec.md` in the same change. When code and design
 disagree, stop and ask.
 

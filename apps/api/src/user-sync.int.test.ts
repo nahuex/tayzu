@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 12.2 (openspec/changes/002-auth-and-rbac; spec
+ * Integration tests for task 12.2 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; spec
  * auth-and-rbac, "User and Team system blueprints"; design D22, Resolved
  * decisions Q16 and Q26).
  *

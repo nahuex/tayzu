@@ -280,7 +280,10 @@ properties, spec and status relations, and relation cardinality and
 requiredness (requiredness applies to spec relations only). If any entity would
 become invalid, the update MUST fail with `CATALOG_SCHEMA_INCOMPATIBLE`, list up
 to 10 offending entity identifiers with their issues, and leave the blueprint
-unchanged. Changing an existing relation's `target` MUST be rejected with
+unchanged. An offending entity the caller cannot read (per the
+auth-and-rbac capability's authorization check) MUST be redacted from that
+list and counted instead, as "+N not visible". Changing an existing relation's
+`target` MUST be rejected with
 `CATALOG_SCHEMA_INCOMPATIBLE` while any entity has a spec or status value for that relation.
 Clients SHOULD send `expectedVersion`. When provided and different from the
 current version, the update MUST fail with `CATALOG_VERSION_CONFLICT`.
@@ -306,6 +309,11 @@ current version, the update MUST fail with `CATALOG_VERSION_CONFLICT`.
 - **GIVEN** blueprint `service` is at version 3
 - **WHEN** it is updated with `expectedVersion` 2
 - **THEN** it fails with `CATALOG_VERSION_CONFLICT`
+
+#### Scenario: Incompatible entities the caller cannot read are redacted
+- **GIVEN** blueprint `service` has 2 incompatible entities the caller can read and 3 incompatible entities owned by a team the caller cannot read
+- **WHEN** the caller updates blueprint `service` with an incompatible schema change
+- **THEN** it fails with `CATALOG_SCHEMA_INCOMPATIBLE`, naming the 2 readable entities and reporting "+3 not visible"
 
 ### Requirement: Blueprint deletion
 Deleting a blueprint MUST fail with `CATALOG_REFERENCE_VIOLATION` if the
@@ -533,7 +541,10 @@ blueprints or tenants.
 Deleting an entity that is the target of any **spec** relation MUST fail with
 `CATALOG_REFERENCE_VIOLATION`, listing up to 10 referring entities, unless the
 request sets `detachReferences: true` (at most 1000 referrers; more fails with
-`CATALOG_LIMIT_EXCEEDED`). In that case, the entity is removed from
+`CATALOG_LIMIT_EXCEEDED`). A referring entity the caller cannot read (per the
+auth-and-rbac capability's authorization check) MUST be redacted from that
+list and counted instead, as "+N not visible", in both the blocking-error case
+and the `detachReferences` case. In that case, the entity is removed from
 every optional relation that references it, in the same transaction, and each
 modified referrer gets a new `version` and `generation`. The delete MUST still
 fail if any referrer holds it in a `required` relation. Observed (**status**)
@@ -565,6 +576,11 @@ transaction, and each affected referrer gets a new `version` (not
 - **GIVEN** required relation `owner` on `payments` = `team-a`
 - **WHEN** `team-a` is deleted with `detachReferences: true`
 - **THEN** it fails with `CATALOG_REFERENCE_VIOLATION` and nothing is changed
+
+#### Scenario: Delete-blocking referrers the caller cannot read are redacted to a count
+- **GIVEN** entity `team-a` is referenced by 1 entity the caller can read and 4 entities owned by a team the caller cannot read
+- **WHEN** `team-a` is deleted without `detachReferences`
+- **THEN** it fails with `CATALOG_REFERENCE_VIOLATION`, naming the 1 readable referrer and reporting "+4 not visible"
 
 ### Requirement: Actor attribution and change events
 Every successful mutation MUST do the following.
@@ -664,6 +680,13 @@ document contains one. A blueprint's read output, without its server-managed
 fields, MUST be valid input to blueprint create and update, so definitions
 can be exported from one instance and applied to another.
 
+Once the catalog is served over HTTP, every stable error code MUST map to the
+same fixed HTTP status code the committed document declares, for every
+procedure, not only in-process callers. A non-`GET` procedure whose document
+declares a field as `in: query` (for example `entities.delete`'s
+`detachReferences`) MUST read that field from the request's query string at
+runtime, matching the document, not from the request body.
+
 #### Scenario: Blueprint definitions round-trip
 - **GIVEN** a non-reserved blueprint read with the get operation
 - **WHEN** its output, without the server-managed fields (`version`, `createdAt`, `createdBy`, `updatedAt`, `updatedBy`), is sent to the create operation in another tenant and to the update operation in the same tenant
@@ -682,6 +705,14 @@ can be exported from one instance and applied to another.
 - **WHEN** an unexpected database error occurs during an operation
 - **THEN** the caller receives a generic internal error with no SQL text or stack trace
 - **AND** the operation's span records the error type and SQLSTATE, but not the database message
+
+#### Scenario: HTTP error status matches the declared code
+- **WHEN** a catalog operation fails with `CATALOG_NOT_FOUND` and is called over HTTP
+- **THEN** the HTTP response status is 404 and the body's `code` is `CATALOG_NOT_FOUND`
+
+#### Scenario: Query-string input on a non-GET route is read from the query string
+- **WHEN** `DELETE .../entities/{entity}?detachReferences=true` is called over HTTP
+- **THEN** the operation runs with `detachReferences` true, without reading the request body for it
 
 ### Requirement: Telemetry contract
 Every catalog operation MUST emit the spans, metrics, and security log events

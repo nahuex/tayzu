@@ -1,5 +1,5 @@
 /**
- * Integration test for task 21.1 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 21.1 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * D24 "JIT refresh (display data only, never identity)", Resolved decisions
  * Q16-Q21 and Q26-Q29; `specs/auth-and-rbac/spec.md`, requirement "Display
  * data from Visma Connect is refreshed just-in-time and never used as an

@@ -1,5 +1,5 @@
 /**
- * Integration test for task 18.3 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 18.3 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * D22, Resolved decision Q16; `specs/auth-and-rbac/spec.md`, "Public self
  * sign-up is not available").
  *

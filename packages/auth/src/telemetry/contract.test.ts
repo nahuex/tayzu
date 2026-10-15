@@ -1,5 +1,5 @@
 /**
- * Task 13.6 (openspec/changes/002-auth-and-rbac/tasks.md): reconcile
+ * Task 13.6 (openspec/changes/archive/2026-10-15-002-auth-and-rbac/tasks.md): reconcile
  * `@tayzu/auth`'s telemetry contract with `@tayzu/authz`'s (task 13.1, already
  * verified against design.md's "Observability contract" tables) and with the
  * design itself.

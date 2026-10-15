@@ -2,7 +2,7 @@
 
 Authentication (`@tayzu/auth`, Better Auth) and authorization (`@tayzu/authz`,
 Cerbos) are OpenSpec change
-[`002-auth-and-rbac`](../../openspec/changes/002-auth-and-rbac/design.md). They
+[`002-auth-and-rbac`](../../openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md). They
 sit in front of the catalog described in [Catalog core](catalog-core.md).
 Every catalog operation, whether it comes from a human, an agent or an
 integration, passes through exactly one authentication resolver

@@ -2,7 +2,7 @@
 
 The Cerbos gRPC client wrapper, attribute builders, resource-kind constants,
 and ownership resolution. Global rules are in the root `CLAUDE.md`. The
-design is `openspec/changes/002-auth-and-rbac/design.md` (D7-D11); the
+design is `openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md` (D7-D11); the
 behavior is `specs/auth-and-rbac/spec.md` in the same change. Change `043`
 (D3) adds two resource kinds. When code and design disagree, stop and ask.
 

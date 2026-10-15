@@ -1,5 +1,5 @@
 /**
- * Integration test for task 23.7 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 23.7 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * Resolved decision Q35 and D26; `specs/auth-and-rbac/spec.md`, requirement
  * "Back-channel logout from Visma Connect revokes the matching sessions").
  *

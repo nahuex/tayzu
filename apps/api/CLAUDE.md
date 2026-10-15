@@ -2,7 +2,7 @@
 
 Tayzu's first application: the Fastify bootstrap mounting Better Auth's
 handler and one oRPC handler over the catalog and identity routers. Global rules are in the root
-`CLAUDE.md`. The design is `openspec/changes/002-auth-and-rbac/design.md`
+`CLAUDE.md`. The design is `openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md`
 (D13, D18-D21); the behavior is `specs/auth-and-rbac/spec.md` in the same
 change. Change `043` (design D10, Resolved decision Q30) adds the identity
 orchestration described below. When code and design disagree, stop and ask.

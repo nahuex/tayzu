@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 12.1 (openspec/changes/002-auth-and-rbac; spec
+ * Integration tests for task 12.1 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; spec
  * auth-and-rbac, "User and Team system blueprints"; catalog-core reserved
  * identifier rule, design D3).
  *
