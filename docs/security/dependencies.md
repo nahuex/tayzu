@@ -264,6 +264,26 @@ Reviewed on 2026-10-09:
   `http-proxy-agent` and `https-proxy-agent` come from. No deployed
   environment sets them.
 
+## TOTP check of the reset confirmation (`@better-auth/utils`)
+
+Adopted by `044-password-reset-and-account-recovery` (task 1.2, design D6,
+resolved decision Q18) as a direct dependency of `@tayzu/auth`, pinned exactly
+to `0.4.2`. Reason: "TOTP check of the reset confirmation (044 D6)". The
+confirm route verifies a TOTP code with `createOTP` from
+`@better-auth/utils/otp`, the same call the installed Better Auth two-factor
+plugin makes, instead of a hand-written RFC 6238 implementation.
+
+- **Already locked**: `0.4.2` is the version Better Auth 1.7.6 and its
+  adapters already resolve. Making it direct adds one importer entry to
+  `pnpm-lock.yaml` and no new package.
+- **License**: MIT, on the allowlist.
+- **Install scripts (`allowBuilds`)**: none; `allowBuilds` in
+  `pnpm-workspace.yaml` is unchanged.
+- **Advisories**: `pnpm audit --prod --audit-level=high` reports none.
+- **Upgrades**: a drift test (044 design D6) compares this verifier with the
+  installed Better Auth endpoint, so a Better Auth upgrade cannot silently
+  change one side. Keep this pin in step with the version Better Auth locks.
+
 ## Bundled data: common-password denylist
 
 The password policy (`043` task 8.1, design Resolved decisions Q22 and Q132)
