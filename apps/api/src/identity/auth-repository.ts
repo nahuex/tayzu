@@ -7,6 +7,8 @@
  * their readers, and the two global reads of tenant-keyed models, are named `global…`.
  * All SQL is parameterized and no read selects the hashed `key` column.
  */
+import { randomUUID } from 'node:crypto';
+
 import type { Pool } from 'pg';
 
 /** The only API-key configuration identity manages (design D8). */
@@ -106,6 +108,19 @@ export interface AuthRepository {
   globalInvitationById: (invitationId: string) => Promise<InvitationRead | undefined>;
   /** Tenant ids only, one per membership of the user. */
   globalMembershipTenantsOf: (userId: string) => Promise<string[]>;
+
+  // Verification section: the `password-reset:` rows of `auth.verification` (044 design D3).
+  // Each statement runs on `db`, the connection that holds the per-user lock.
+
+  /** Deletes the user's `password-reset:` rows (the user id is the third `:` field of `value`). */
+  deleteResetTokensOf: (userId: string, db: Pick<Pool, 'query'>) => Promise<number>;
+  /** Deletes every expired `password-reset:` row. */
+  deleteExpiredResetTokens: (db: Pick<Pool, 'query'>) => Promise<number>;
+  /** Inserts `password-reset:<id>` with the stored value, expiring `ttlSeconds` from now. */
+  insertResetToken: (
+    row: { id: string; value: string; ttlSeconds: number },
+    db: Pick<Pool, 'query'>,
+  ) => Promise<void>;
 }
 
 interface ApiKeyRow {
@@ -408,6 +423,31 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [userId],
       );
       return result.rows.map((r) => r.organization_id);
+    },
+
+    async deleteResetTokensOf(userId, db) {
+      const result = await db.query(
+        `delete from auth.verification
+         where identifier like 'password-reset:%' and split_part(value, ':', 3) = $1`,
+        [userId],
+      );
+      return result.rowCount ?? 0;
+    },
+
+    async deleteExpiredResetTokens(db) {
+      const result = await db.query(
+        `delete from auth.verification
+         where identifier like 'password-reset:%' and expires_at <= now()`,
+      );
+      return result.rowCount ?? 0;
+    },
+
+    async insertResetToken(row, db) {
+      await db.query(
+        `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+         values ($1, $2, $3, now() + make_interval(secs => $4), now(), now())`,
+        [randomUUID(), `password-reset:${row.id}`, row.value, row.ttlSeconds],
+      );
     },
   };
 }
