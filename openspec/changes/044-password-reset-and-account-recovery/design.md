@@ -127,8 +127,8 @@ archive of `002` (`e3f5771`):
 
 ## Decisions
 
-Decisions D1-D20 are this design's. Q1-Q30 at the end are the human's approved
-answers (Q1-Q11 on 2026-10-14, Q12-Q30 on 2026-10-15); each D names the Q it implements.
+Decisions D1-D20 are this design's. Q1-Q31 at the end are the human's approved
+answers (Q1-Q11 on 2026-10-14, Q12-Q31 on 2026-10-15); each D names the Q it implements.
 
 ### D1. Tayzu owns both reset routes; Better Auth's stay closed (Q2)
 
@@ -807,7 +807,7 @@ authentication"). The mechanism mirrors the temporary-password marker (Q17):
   convention is not "forces". _Alternative:_ require a factor of everyone: out of scope
   (`002` decides who must have one). _Rejected (Q17):_ no marker.
 
-### D12. Break-glass for an admin, an owner, a multi-tenant member or a squatted factor (Q6, Q14, Q15, Q16, Q29, Q30)
+### D12. Break-glass for an admin, an owner, a multi-tenant member or a squatted factor (Q6, Q14, Q15, Q16, Q29, Q30, Q31)
 
 An admin cannot ask another admin to reset them when they are the last one, an owner and an
 admin target are outside the admin operation (Q15), a member of several tenants is outside it
@@ -858,15 +858,19 @@ All four are recovered out of band, like `043`'s bootstrap CLI
   first script to hold `ACS_CONNECTION_STRING`, a send-as-the-platform-domain secret; its
   handling is part of the runbook and `secrets.md` (task 15.2). Rejected: no email from the
   CLI; a runbook with no code.
-- **Telemetry guard and completion line (Q29).** The audit event is the only durable record of
+- **Telemetry guard and completion line (Q29, amended by Q31).** The audit event is the only durable record of
   who approved removing a second factor, and the operator sets the CLI's environment, so
   the shared script rule ("a script refuses to run without an OTLP endpoint unless
   `TAYZU_TELEMETRY_DISABLED=true`", `secrets.md:212-217`, `telemetry.ts:134-146`, which also
-  lets a run proceed with the flag set and an endpoint present) is stricter here. Outside
-  `NODE_ENV=test` the command refuses to start, before any database or email work, when
-  `TAYZU_TELEMETRY_DISABLED` is true **or** no OTLP endpoint variable is set (the endpoint
-  list at `telemetry.ts:24-29` becomes one exported helper that `startTelemetry` and this
-  guard share). It exits non-zero when the final flush fails: `runScript` awaits `shutdown()`
+  lets a run proceed with the flag set and an endpoint present) is stricter here. The guard lives
+  in the command's entry point, its `main()`, and ignores `NODE_ENV` entirely (Q31): `main()`
+  refuses to start, before any database or email work, when `TAYZU_TELEMETRY_DISABLED` is true
+  **or** no OTLP endpoint variable is set, whatever `NODE_ENV` says, so no environment variable
+  can switch the audit event off in a real run (the endpoint list at `telemetry.ts:24-29`
+  becomes one exported helper that `startTelemetry` and this guard share). The tests call the
+  exported run function with an injected `env` and never read `process.env` for the guard,
+  because `startTelemetry` falls back to `process.env['NODE_ENV']` (and returns `undefined`
+  under `test`), so the tests must not depend on it. It exits non-zero when the final flush fails: `runScript` awaits `shutdown()`
   in a `finally` (`run-script.ts:44-46`), so a rejection reaches the entry point, which sets
   `process.exitCode = 1` as `bootstrap-admin.ts` does; the stderr text is fixed and says the
   audit event may be missing. The reset itself is committed by then and is not undone, so the
@@ -1112,9 +1116,9 @@ rebases onto them (a textual merge only). `044` lands first (`002 -> 043 -> 044 
   reset is allowed only for credential accounts (D4); that the completion is one SQL
   transaction on the lock's connection because Better Auth's adapter here is not
   transactional (D7, Q13); and that the break-glass is a CLI with a named approver that
-  refuses to run with telemetry off (D12, Q14, Q29). It is dated **2026-10-14**, the day the
+  refuses to run with telemetry off (D12, Q14, Q29, Q31). It is dated **2026-10-14**, the day the
   first of these decisions (Q1, Q2) was approved, and carries an "Amended 2026-10-15" line for
-  Q12-Q30, the day the rest were approved. It is task 1.1, the first task, so that the record
+  Q12-Q31, the day the rest were approved. It is task 1.1, the first task, so that the record
   exists before the code it describes (root `CLAUDE.md`: ADRs the same day a decision is
   made).
 - `docs/security/attack-surfaces.md`: the "Public accept route" section becomes "Public
@@ -1163,7 +1167,7 @@ See D15 for the full contract (spans, metrics, log events, value sets and enforc
 
 Read at design time against `.claude/skills/ssa-validator`. The draft's three reviews of
 2026-10-15 (consistency, threat model, and the VCDM Mode A pre-assessment) were folded in;
-what each decided is in the decisions Q12-Q30. The formal re-run is task 16.2 (the
+what each decided is in the decisions Q12-Q31. The formal re-run is task 16.2 (the
 `vcdm-ssa-validator` subagent, before Checkpoint 2). A GAP in tenant isolation, access
 control, injection, secrets or logging would block.
 
@@ -1294,8 +1298,10 @@ control, injection, secrets or logging would block.
   `tayzu_auth` role can write `auth.*` directly, so the audit event is not tamper-proof; PIM,
   the second approver, the review of the event and the completion line attached to the PIM
   record are the controls. The cheaper bypass, running the command with telemetry switched off,
-  is closed by Q29 (the command refuses to start and exits non-zero on a failed flush); what
-  remains is someone who can edit the code or write `auth.*` directly.
+  is closed by Q29 and Q31 (the entry point refuses to start, whatever `NODE_ENV` says, and the
+  command exits non-zero on a failed flush); no environment variable switches the audit event
+  off in a real run. What remains is someone who can edit the code, run another entry point
+  than `main()`, or write `auth.*` directly.
 - **Unnormalized sign-in limiter** → the reset limiters use the /64 key; `002`'s sign-in limiter
   still keys the raw IPv6 address (ticket).
 - **Dot-alias and case variants of an address bypass the per-recipient cap** → known, shared
@@ -1349,7 +1355,7 @@ on this change are restated, then this change's own.
 5. The break-glass runbook of D12 is adopted: named approvers, just-in-time access in place,
    and production runs only from the production-network operator environment under Azure PIM
    with a personal account, never from a laptop; that environment can reach an OTLP endpoint
-   (the CLI refuses to start without one, Q29) and the operator attaches the completion line to
+   (the CLI refuses to start without one, whatever `NODE_ENV` says, Q29 and Q31) and the operator attaches the completion line to
    the PIM record; `010` decides whether to wrap the CLI in a job.
 6. Alerts (with `010`) on `catalog.security.recovery_email_suppressed` with the reasons
    `recipient_cap`, `ip_cap`, `global_cap` and `provider_failure`, on
@@ -1413,8 +1419,8 @@ oracle" (the invitation gate's visible 429 stays; the reset path avoids it by de
 
 ## Resolved decisions (asked and approved in chat, 2026-10-14 and 2026-10-15)
 
-Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q30 on
-2026-10-15 with the recommended option. The text below is the approved text; Q12-Q30 amend
+Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q31 on
+2026-10-15 with the recommended option. The text below is the approved text; Q12-Q31 amend
 how Q1-Q11 are read where they say so. Where Q2, Q13 and Q19 say "the 8.1 password policy",
 that is `043`'s password policy (`043` task 8.1), not this change's own task 8.1.
 
@@ -1705,7 +1711,7 @@ _Implemented by:_ D16, D7, D10, D5, D9; tasks 1.6, 8.13, 10.5, 4.2.
 
 ### Q29. Break-glass CLI and telemetry (2026-10-15)
 
-Outside `NODE_ENV=test`, the CLI refuses to start when `TAYZU_TELEMETRY_DISABLED` is true or no
+_Amended by Q31: the guard no longer depends on `NODE_ENV`, and the completion line reports the notice as sent, suppressed or failed._ The CLI refuses to start when `TAYZU_TELEMETRY_DISABLED` is true or no
 OTLP endpoint is set. It exits non-zero when the final telemetry flush fails. On completion it
 prints one line, which the operator attaches to the PIM record: operator id, approver id, the
 target's opaque user id, the number of sessions revoked, and whether the notice was sent or
@@ -1721,6 +1727,18 @@ tickets (admin rotation from `043`'s viewer, and an audit count of SSO links and
 are extended to the MFA reset. _Rejected:_ revoking the user's credentials when the reason is
 `suspected_compromise`; leaving it as is. _Implemented by:_ D8, D10, D12, Tickets; tasks 3.3,
 10.3.
+
+### Q31. Break-glass CLI telemetry guard in the entry point (2026-10-15)
+
+The guard lives in the CLI's entry point (its `main()`) and ignores `NODE_ENV` entirely: it
+refuses to start when `TAYZU_TELEMETRY_DISABLED` is true or no OTLP endpoint variable is set,
+whatever `NODE_ENV` says, so no environment variable can switch the audit event off in a real
+run. The tests call the exported run function with an injected `env` and never read
+`process.env` for the guard, because `startTelemetry` falls back to `process.env['NODE_ENV']`.
+This amends Q29: its "outside `NODE_ENV=test`" no longer applies to the CLI's guard, and its
+completion line reports the notice as sent, suppressed or failed. _Rejected:_ keeping Q29 as
+approved and stating the `NODE_ENV=test` residual in Risks. _Implemented by:_ D12, Risks,
+Gate 5; tasks 11.3, 15.2.
 
 ### Size (2026-10-15)
 

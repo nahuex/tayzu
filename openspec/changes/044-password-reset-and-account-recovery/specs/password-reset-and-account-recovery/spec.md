@@ -645,7 +645,7 @@ refuse to run otherwise. It MUST refuse an unknown organization or a user who is
 of it. It MUST NOT load the Better Auth signing secret: it works through SQL on the
 `tayzu_auth` role and its declared variable list MUST exclude `BETTER_AUTH_SECRET`. It MUST
 send the fixed notice through the sender, the kill switch and the disabled-tenant list.
-Outside the test environment it MUST refuse to start, before any database or email work, when
+Its entry point MUST refuse to start, whatever `NODE_ENV` says, before any database or email work, when
 `TAYZU_TELEMETRY_DISABLED` is true or no OTLP endpoint is set, so that its audit event cannot be
 switched off by the person it audits, and it MUST exit non-zero when the final telemetry flush
 fails. On completion it MUST print exactly one line, for the operator to attach to the
@@ -682,8 +682,8 @@ password has a window to enrol first; if the confirmation asks for a factor, the
 
 #### Scenario: The command refuses to run without telemetry
 
-- **GIVEN** the environment is not the test environment
-- **WHEN** the command starts with `TAYZU_TELEMETRY_DISABLED=true`, or with no OTLP endpoint set
+- **GIVEN** any value of `NODE_ENV`, including `test`
+- **WHEN** the command's entry point starts with `TAYZU_TELEMETRY_DISABLED=true`, or with no OTLP endpoint set
 - **THEN** it exits non-zero before any database or email work and changes nothing
 
 #### Scenario: A failed telemetry flush fails the run

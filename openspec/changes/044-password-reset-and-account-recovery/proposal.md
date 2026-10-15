@@ -22,7 +22,7 @@ design.md, "References and Port"). The requirements therefore come from the
 OWASP Forgot Password and Multifactor Authentication cheat sheets, NIST SP
 800-63B and the VCDM Security Self-Assessment, and every design choice was
 approved by the human on 2026-10-14 and 2026-10-15 (design.md, "Resolved decisions",
-Q1-Q30).
+Q1-Q31).
 
 ## What Changes
 
