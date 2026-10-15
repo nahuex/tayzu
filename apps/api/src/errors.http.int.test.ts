@@ -1,5 +1,5 @@
 /**
- * Task 14.5 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 14.5 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Conventions": reused error codes; "Invitation acceptance": "Acceptance errors do
  * not reveal which failure occurred" and "The accept route is rate-limited";
  * "Every cap answers with the same Retry-After"; design D10).

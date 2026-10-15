@@ -1,5 +1,5 @@
 /**
- * Task 4.2 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 4.2 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "A disabled user is not revived by a hook"; design D2; Resolved decisions Q11,
  * Q62 and Q76).
  *

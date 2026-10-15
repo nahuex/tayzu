@@ -76,7 +76,7 @@ The decision stands. Two facts about the shipped code qualify it:
 ## Update (2026-10-13)
 
 The decision stands. Change
-[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/043-identity-lifecycle-and-org-admin/design.md)
+[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/design.md)
 (design D8, Resolved decisions Q29 and Q94) adds a static access-control set to
 Better Auth's `organization` plugin, and this note records that it does no
 authorization work of Tayzu's:

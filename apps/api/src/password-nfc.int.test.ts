@@ -1,5 +1,5 @@
 /**
- * Task 8.1d of openspec/changes/043-identity-lifecycle-and-org-admin (design Q22,
+ * Task 8.1d of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design Q22,
  * Q132; spec "Password policy", scenarios "A password verifies in any normalization
  * form" and "A breached password is refused in any normalization form").
  *

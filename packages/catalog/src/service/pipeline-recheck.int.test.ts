@@ -1,5 +1,5 @@
 /**
- * Integration test for task 13.6 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Integration test for task 13.6 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (002 VCDM M4; the hand-off table in design.md, "Hand-offs from 002").
  *
  * Authorization and the write must run against the same state: the handler

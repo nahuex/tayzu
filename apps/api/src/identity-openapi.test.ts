@@ -1,5 +1,5 @@
 /**
- * Task 14.1c (openspec/changes/043-identity-lifecycle-and-org-admin, design D10,
+ * Task 14.1c (openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin, design D10,
  * Resolved decisions Q43 and Q52): the second committed OpenAPI document,
  * `openapi/identity.openapi.json`, generated from the identity router's `.route`
  * declarations. No database is needed, so this is a plain `*.test.ts`.

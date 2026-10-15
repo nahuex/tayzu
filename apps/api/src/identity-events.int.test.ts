@@ -1,5 +1,5 @@
 /**
- * Task 15.6 of openspec/changes/043-identity-lifecycle-and-org-admin (design.md, Observability
+ * Task 15.6 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design.md, Observability
  * contract; Resolved decisions Q116, Q117 and Q126). Scenarios, quoted from
  * `specs/identity-lifecycle-and-org-admin/spec.md`, requirement "Security-relevant events are
  * logged":

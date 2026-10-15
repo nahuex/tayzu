@@ -1,5 +1,5 @@
 /**
- * Task 16.12b of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 16.12b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Invitation email is fixed and capped"; Resolved decision Q149).
  *
  * Task 16.12b Verify: "`invitation-caps.int.test.ts` covers a capped invite leaving

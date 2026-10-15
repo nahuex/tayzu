@@ -1,5 +1,5 @@
 /**
- * Task 12.1 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 12.1 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (cross-tenant matrix, in process; design D4 and D10 "Input contract",
  * SEC03/SEC12; the HTTP twin is task 14.8).
  *
@@ -901,7 +901,7 @@ describe('cross-tenant matrix: service accounts (task 12.5)', () => {
 });
 
 /**
- * Task 12.6 of openspec/changes/043-identity-lifecycle-and-org-admin (list and create).
+ * Task 12.6 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (list and create).
  *
  * Scenario (verbatim from the spec, "Another tenant's credential cannot be listed, rotated or
  * revoked"): GIVEN a credential of tenant `t2`, WHEN an admin of `t1` lists, rotates or revokes
@@ -1127,7 +1127,7 @@ describe('cross-tenant matrix: credentials list and create (task 12.6)', () => {
 });
 
 /**
- * Task 12.7 of openspec/changes/043-identity-lifecycle-and-org-admin (rotate and revoke).
+ * Task 12.7 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (rotate and revoke).
  *
  * Scenario (spec "Targets belong to the caller's tenant", "Another tenant's credential cannot be
  * listed, rotated or revoked"): for `identity.credentials.rotate` and `.revoke`, an admin of `t1`
@@ -1292,7 +1292,7 @@ describe('cross-tenant matrix: credentials rotate and revoke (task 12.7)', () =>
 });
 
 /**
- * Task 12.8 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q135).
+ * Task 12.8 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved decision Q135).
  *
  * Verify: with a recording Cerbos client, a call on a target of the caller's tenant reaches Cerbos
  * with the resource tenant taken from the record, and a call whose target belongs to `t2` answers

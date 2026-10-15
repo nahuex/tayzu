@@ -1,5 +1,5 @@
 /**
- * Task 13.3 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 13.3 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q74; `002` Q42): the user, credential and bootstrap lifecycle events
  * are declared in the separate identity contract module, before any route
  * mounts them.

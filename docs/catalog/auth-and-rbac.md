@@ -73,7 +73,7 @@ no second "unauthenticated" code.
 Cerbos knows six fixed resource kinds (constants in
 `packages/authz/src/resource-kinds.ts`). Blueprints do not get a kind each:
 the blueprint is an attribute of the entity resource. Change
-[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/043-identity-lifecycle-and-org-admin/design.md)
+[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/design.md)
 (D3) added `service_account` and `credential`.
 
 | Kind                | What it stands for                                       | Attributes sent to Cerbos                                                                                                 |

@@ -1,5 +1,5 @@
 /**
- * Task 13.4 of openspec/changes/043-identity-lifecycle-and-org-admin (design
+ * Task 13.4 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design
  * D13, Resolved decision Q54). Spec scenario, quoted from
  * `specs/identity-lifecycle-and-org-admin/spec.md`:
  *

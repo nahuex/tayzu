@@ -1,5 +1,5 @@
 /**
- * Task 14.8 of openspec/changes/043-identity-lifecycle-and-org-admin (the HTTP twin of the
+ * Task 14.8 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (the HTTP twin of the
  * in-process cross-tenant matrix, tasks 12.1, 12.5, 12.6 and 12.9; spec requirement
  * "Targets belong to the caller's tenant": every target MUST belong to the host's `tenantId`,
  * otherwise `CATALOG_NOT_FOUND`, identical to a nonexistent id; Resolved decisions Q25, Q31, Q62).

@@ -1,5 +1,5 @@
 /**
- * Task 15.5 of openspec/changes/043-identity-lifecycle-and-org-admin (design D16,
+ * Task 15.5 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D16,
  * Resolved decisions Q119 and Q74 of 002).
  *
  * Scenarios (spec.md, requirement "Telemetry"):

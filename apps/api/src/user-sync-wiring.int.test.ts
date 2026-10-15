@@ -1,5 +1,5 @@
 /**
- * Task 4.1b of openspec/changes/043-identity-lifecycle-and-org-admin (design D2,
+ * Task 4.1b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D2,
  * Resolved decisions Q10, Q11, Q30 and Q76).
  *
  * Task 4.1b: "`createApp` builds the adapter of 4.1 and passes it to `createAuth`

@@ -1,5 +1,5 @@
 /**
- * Task 13.5b of openspec/changes/043-identity-lifecycle-and-org-admin, the generator
+ * Task 13.5b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin, the generator
  * part that Resolved decision Q136 moves ahead of 8.1c: one shared generator of
  * policy-compliant temporary passwords, used by both call sites.
  *

@@ -1,5 +1,5 @@
 /**
- * Task 10.2 of openspec/changes/043-identity-lifecycle-and-org-admin (design D3
+ * Task 10.2 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D3
  * and D10, Resolved decision Q62): the wrapper of 5.3b2 against the real Cerbos
  * container and the `service_account` resource policy.
  *

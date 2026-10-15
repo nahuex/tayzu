@@ -1,5 +1,5 @@
 /**
- * Task 9.4 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.4 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (design D7 and D8; Resolved decision Q20).
  *
  * `rotationDueAt` is computed from the credential's `metadata.rotatedAt`, or from its

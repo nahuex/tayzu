@@ -1,5 +1,5 @@
 /**
- * Task 11.2 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 11.2 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (`identity.users.setStatus` for a human, Resolved decisions Q25 and Q117; design D13;
  * spec "Disabling a human takes effect immediately").
  *

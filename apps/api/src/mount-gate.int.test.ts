@@ -1,5 +1,5 @@
 /**
- * Task 14.3 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 14.3 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * requirement "Identity routes are unreachable until mounted"; design D15).
  *
  * Task 14.3 Verify (the part of this file): "`mount-gate.int.test.ts` covers

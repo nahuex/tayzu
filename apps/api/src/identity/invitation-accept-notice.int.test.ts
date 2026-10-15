@@ -1,5 +1,5 @@
 /**
- * Task 8.15 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 8.15 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Invitation acceptance"; design D4 step 6, D5 "Notice emails"; Resolved decisions
  * Q39, Q53, Q122 and Q127).
  *

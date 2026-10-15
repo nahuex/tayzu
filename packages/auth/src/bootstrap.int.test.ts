@@ -232,7 +232,7 @@ describe("Bootstrapping an organization's first admin is idempotent (task 18.4, 
 });
 
 /**
- * Task 4.6 of openspec/changes/043-identity-lifecycle-and-org-admin (design D2,
+ * Task 4.6 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D2,
  * Resolved decisions Q76 and Q116).
  *
  * ## Production symbols expected

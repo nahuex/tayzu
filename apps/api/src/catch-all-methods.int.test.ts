@@ -1,5 +1,5 @@
 /**
- * Task 14.21 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 14.21 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q141; allowlist of task 14.3b).
  *
  * Task 14.21 Verify: "`catch-all-methods.int.test.ts` covers an anonymous and an

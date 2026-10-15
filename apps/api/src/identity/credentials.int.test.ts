@@ -1,5 +1,5 @@
 /**
- * Task 9.2 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.2 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (`identity.credentials.list`; design D7, D8; Resolved decisions Q29, Q56, Q90).
  *
  * Scenarios (verbatim from the spec, "Org API-credentials viewer never re-exposes a secret"):
@@ -572,7 +572,7 @@ describe('identity.credentials.list (task 9.2)', () => {
 });
 
 /**
- * Task 9.5 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.5 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (`identity.credentials.create`, integration and agent credentials; design D8; Resolved
  * decisions Q20, Q44, Q90, Q94).
  *
@@ -853,7 +853,7 @@ describe('identity.credentials.create (task 9.5)', () => {
 });
 
 /**
- * Task 9.5b of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.5b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (the optional `userId` of `identity.credentials.create`; design D6, D14; Resolved decisions
  * Q40, Q62, Q90).
  *
@@ -1136,7 +1136,7 @@ describe('identity.credentials.create with a bound userId (task 9.5b)', () => {
 });
 
 /**
- * Task 9.5d of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.5d of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (the per-tenant credential cap; design D8; Resolved decision Q56).
  *
  * Scenario (verbatim from the spec): "The credential cap and the name limit hold": GIVEN a
@@ -1348,7 +1348,7 @@ describe('the credential cap holds (task 9.5d, Q56)', () => {
 });
 
 /**
- * Task 9.6 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.6 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (`identity.credentials.rotate`; design D8; Resolved decisions Q40, Q90).
  *
  * Scenario (verbatim from the spec): "Rotating replaces the usable credential": GIVEN service
@@ -1659,7 +1659,7 @@ describe('identity.credentials.rotate (task 9.6)', () => {
 });
 
 /**
- * Task 9.6b of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.6b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (rotation serialized per service account; design D8; Resolved decision Q40).
  *
  * Scenario (verbatim from the spec): "Concurrent rotation leaves exactly one active
@@ -2211,7 +2211,7 @@ describe('identity.credentials.rotate signals an incomplete compensation (task 9
 });
 
 /**
- * Task 9.9 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 9.9 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (`identity.credentials.revoke`; design D8; Resolved decisions Q40, Q90).
  *
  * Scenario (verbatim from the spec): "Revoking a credential is permanent": GIVEN an enabled
@@ -2951,7 +2951,7 @@ describe('a foreign or unknown credential id answers CATALOG_NOT_FOUND (task 9.1
 });
 
 /**
- * Task 16.11b of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q147;
+ * Task 16.11b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved decision Q147;
  * the security review's LOW-2): `identity.credentials.create` never takes a second pooled
  * connection while its transaction holds an advisory lock.
  *
@@ -3074,7 +3074,7 @@ describe('identity.credentials.create under a small pool (task 16.11b)', () => {
 });
 
 /**
- * Task 16.12d of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 16.12d of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (rotating a revoked credential counts like a creation; Resolved decisions Q56 and Q149; 9.5d).
  *
  * Rotating a revoked credential restores a non-revoked one, so it takes the
@@ -3295,7 +3295,7 @@ describe('rotating a revoked credential counts against the cap (task 16.12d, Q56
 });
 
 /**
- * Task 16.12j of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q148):
+ * Task 16.12j of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved decision Q148):
  * identity mutations that take an advisory lock are bounded per process by an in-memory semaphore
  * of 2, taken before a pooled connection.
  *

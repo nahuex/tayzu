@@ -1,5 +1,5 @@
 /**
- * Task 14.9 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q45:
+ * Task 14.9 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved decision Q45:
  * every identity procedure is built with the mandatory authorization wrapper, so the matrix
  * proves the wrapper's outcome for every route over HTTP).
  *

@@ -62,5 +62,5 @@ If the range service is unreachable the check fails closed. The remaining
 exposure is the egress itself to `api.pwnedpasswords.com`. The ticket
 "Offline breached-password corpus" evaluates an offline corpus to remove it; it
 is listed under "Tickets" in
-[the design of change 043](../../openspec/changes/043-identity-lifecycle-and-org-admin/design.md),
+[the design of change 043](../../openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/design.md),
 with the ticket "FQDN egress allowlist" for `010`.

@@ -1,5 +1,5 @@
 /**
- * Task 14.10 of openspec/changes/043-identity-lifecycle-and-org-admin (spec requirement
+ * Task 14.10 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec requirement
  * "Identity procedures parse untrusted input strictly", scenario "Hostile or oversized input is
  * rejected before any work"; design D10 "Input contract"; task 5.3d).
  *

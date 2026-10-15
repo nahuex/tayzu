@@ -1,5 +1,5 @@
 /**
- * Task 8.5j of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 8.5j of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q86; design D4 step 7 and D24).
  *
  * An admin `unlinkSsoAccount` revokes every session of the target user through the

@@ -1,5 +1,5 @@
 /**
- * Task 8.1e of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 8.1e of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Invitation acceptance"; design D4 steps 1 to 5, D2; Resolved decisions Q89,
  * Q105, Q112, Q116, Q118, Q120, Q122, Q123 and Q127).
  *

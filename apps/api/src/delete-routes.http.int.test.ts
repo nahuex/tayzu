@@ -1,5 +1,5 @@
 /**
- * Task 14.6b of openspec/changes/043-identity-lifecycle-and-org-admin (design D10 and
+ * Task 14.6b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D10 and
  * task 14.1: every identity route declares `inputStructure: 'detailed'`; the two
  * `DELETE` routes carry their target in the path and no body; Resolved decisions Q31
  * and Q62: a foreign, a human-for-a-service-account and an unknown target look alike).

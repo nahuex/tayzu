@@ -1,5 +1,5 @@
 /**
- * Task 7.3 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 7.3 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Invitation lifecycle", "Invitation email is fixed and capped" and "User
  * status has four states"; design D2, D4 "Reaching Better Auth" and "Hooks";
  * Resolved decisions Q42, Q76, Q117 and Q126).

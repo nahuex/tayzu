@@ -1,5 +1,5 @@
 /**
- * Task 14.1b of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 14.1b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Invitation acceptance"; design D4 "Acceptance", D10, Resolved decisions Q8,
  * Q18 and Q24).
  *
