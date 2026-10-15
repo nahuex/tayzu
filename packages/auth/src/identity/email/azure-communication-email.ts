@@ -74,10 +74,18 @@ export type AzureCommunicationEmailSenderOptions = { readonly senderAddress: str
 );
 
 function content(template: EmailTemplate): AcsEmailMessage['content'] {
-  const rendered =
-    template.kind === 'InvitationEmail'
-      ? renderInvitationEmail(template)
-      : renderAdminAcceptedNotice(template);
+  let rendered;
+  switch (template.kind) {
+    case 'InvitationEmail':
+      rendered = renderInvitationEmail(template);
+      break;
+    case 'AdminAcceptedNotice':
+      rendered = renderAdminAcceptedNotice(template);
+      break;
+    default:
+      // The recovery kinds get their renderers in 044 task 3.4; until then, fail closed.
+      throw new EmailProviderError();
+  }
   return { subject: rendered.subject, plainText: rendered.text, html: rendered.html };
 }
 
