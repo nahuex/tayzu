@@ -35,7 +35,15 @@ export interface ResetTokenStore {
    * connection when the completion re-reads the row; without it the read uses the pool.
    */
   lookup: (id: string, token: string, db?: Pick<Pool, 'query'>) => Promise<ResetTokenLookup>;
+  /**
+   * Counts one failed factor with one atomic conditional update, then deletes the row once
+   * the count reaches 5. Resolves to the new count, or `undefined` when no row was updated.
+   */
+  recordFailure: (id: string, db?: Pick<Pool, 'query'>) => Promise<number | undefined>;
 }
+
+/** The failure budget of one token (D3). */
+const MAX_FAILURES = 5;
 
 export function createResetTokenStore(options: {
   authPool: Pool;
@@ -51,6 +59,13 @@ export function createResetTokenStore(options: {
       if (row.expired) return { status: 'expired' };
       if (parsed === null || !matches) return { status: 'token_mismatch' };
       return { status: 'found', userId: parsed.userId, failures: parsed.failures };
+    },
+    async recordFailure(id, db = options.authPool) {
+      const failures = await repository.incrementResetTokenFailures(id, db);
+      if (failures !== undefined && failures >= MAX_FAILURES) {
+        await repository.deleteResetToken(id, db);
+      }
+      return failures;
     },
     issue: (userId) =>
       options.withUserLock(userId, async (tx) => {

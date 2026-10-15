@@ -126,6 +126,13 @@ export interface AuthRepository {
     id: string,
     db: Pick<Pool, 'query'>,
   ) => Promise<{ value: string; expired: boolean } | undefined>;
+  /**
+   * One atomic statement adding one to the counter in `value` where it is below 5.
+   * Returns the new count, or `undefined` when no row was updated.
+   */
+  incrementResetTokenFailures: (id: string, db: Pick<Pool, 'query'>) => Promise<number | undefined>;
+  /** Deletes `password-reset:<id>`. */
+  deleteResetToken: (id: string, db: Pick<Pool, 'query'>) => Promise<boolean>;
 }
 
 interface ApiKeyRow {
@@ -462,6 +469,26 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [`password-reset:${id}`],
       );
       return result.rows[0];
+    },
+
+    async incrementResetTokenFailures(id, db) {
+      // The counter is the last `:` field; the pattern admits only 0..4, so the cast is safe.
+      const result = await db.query<{ failures: number }>(
+        `update auth.verification
+         set value = left(value, length(value) - 1) || (right(value, 1)::int + 1)::text,
+             updated_at = now()
+         where identifier = $1 and value ~ '^v1:[0-9a-f]{64}:[^:]+:[0-4]$'
+         returning right(value, 1)::int as failures`,
+        [`password-reset:${id}`],
+      );
+      return result.rows[0]?.failures;
+    },
+
+    async deleteResetToken(id, db) {
+      const result = await db.query('delete from auth.verification where identifier = $1', [
+        `password-reset:${id}`,
+      ]);
+      return (result.rowCount ?? 0) > 0;
     },
   };
 }

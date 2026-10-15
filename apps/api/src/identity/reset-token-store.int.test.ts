@@ -232,3 +232,80 @@ describe('reset token store: lookup (task 2.4)', () => {
     }
   });
 });
+
+/**
+ * Task 2.5 (design D3 "Failure budget"; scenario "Five wrong factors burn the token", store level).
+ *
+ * ## Production symbols expected
+ *
+ * ```ts
+ * // apps/api/src/identity/reset-token-store.ts, added to ResetTokenStore
+ * // One atomic `update ... set value = <failures + 1> where identifier = $1 and failures < 5
+ * // returning failures`, then a delete once the count reaches 5. No read-modify-write, no retry.
+ * // Resolves to the new count (1..5), or `undefined` when no row was updated (unknown id,
+ * // or the budget is already spent). `db` defaults to the pool.
+ * recordFailure: (id: string, db?: Pick<Pool, 'query'>) => Promise<number | undefined>;
+ * ```
+ */
+describe('reset token store: recordFailure (task 2.5)', () => {
+  let authPool: Pool;
+  let store: ResetTokenStore;
+
+  beforeAll(async () => {
+    ({ authPool } = await harnessPools());
+    await runMigrations(authPool);
+    store = createResetTokenStore({ authPool, withUserLock: createWithUserLock(authPool) });
+  }, 60_000);
+
+  async function valueById(id: string): Promise<string | undefined> {
+    const result = await authPool.query<{ value: string }>(
+      'select value from auth.verification where identifier = $1',
+      [`${PREFIX}${id}`],
+    );
+    return result.rows[0]?.value;
+  }
+
+  it('each failure adds one to the counter inside value and keeps the digest and user', async () => {
+    const userId = randomUUID();
+    const { id, token } = await store.issue(userId);
+
+    expect(await store.recordFailure(id)).toBe(1);
+    expect(await store.recordFailure(id)).toBe(2);
+
+    expect(parseResetTokenValue((await valueById(id)) ?? '')).toEqual({
+      digest: digestResetToken(token),
+      userId,
+      failures: 2,
+    });
+    expect(await store.lookup(id, token)).toEqual({ status: 'found', userId, failures: 2 });
+  });
+
+  it('the fifth failure deletes the row', async () => {
+    const userId = randomUUID();
+    const { id, token } = await store.issue(userId);
+
+    for (const expected of [1, 2, 3, 4]) {
+      expect(await store.recordFailure(id)).toBe(expected);
+      expect(await valueById(id)).toBeDefined();
+    }
+    expect(await store.recordFailure(id)).toBe(5);
+
+    expect(await valueById(id)).toBeUndefined();
+    expect(await store.lookup(id, token)).toEqual({ status: 'not_found' });
+  });
+
+  it('a failure on an unknown id counts nothing', async () => {
+    expect(await store.recordFailure(randomUUID())).toBeUndefined();
+  });
+
+  it('50 parallel recordFailure calls count exactly 5 and none is lost', async () => {
+    const { id } = await store.issue(randomUUID());
+
+    const results = await Promise.all(Array.from({ length: 50 }, () => store.recordFailure(id)));
+
+    const counted = results.filter((count): count is number => count !== undefined);
+    expect([...counted].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+    expect(results.filter((count) => count === undefined)).toHaveLength(45);
+    expect(await valueById(id)).toBeUndefined();
+  });
+});
