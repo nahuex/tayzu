@@ -197,6 +197,15 @@ const REVOCATION_REASON_ATTRIBUTE = 'tayzu.auth.revocation.reason';
 const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
 
 /**
+ * The one password-hash function: NFC-normalize, then Better Auth's `hashPassword`.
+ * `emailAndPassword.password.hash` uses it, and so does the reset completion
+ * (044 design D7, Q13).
+ */
+export function hashPasswordNfc(password: string): Promise<string> {
+  return hashPassword(password.normalize('NFC'));
+}
+
+/**
  * Mirrors `@better-auth/core/utils/url`'s `normalizePathname` (also mirrored
  * by `./rate-limit/pre-auth-rate-limit.ts`'s own `requestPath`), relative to
  * the fixed `AUTH_BASE_PATH` above. Duplicated locally rather than imported:
@@ -958,7 +967,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // Task 8.1d (design Q22, Q132), layer 1: both functions NFC-normalize first, so
       // every verifying path is covered without a list of paths.
       password: {
-        hash: (password) => hashPassword(password.normalize('NFC')),
+        hash: hashPasswordNfc,
         verify: ({ hash, password }) =>
           verifyPassword({ hash, password: password.normalize('NFC') }),
       },
