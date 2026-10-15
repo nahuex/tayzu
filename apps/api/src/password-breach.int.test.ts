@@ -1,5 +1,5 @@
 /**
- * Task 8.1b of openspec/changes/043-identity-lifecycle-and-org-admin (design Q23;
+ * Task 8.1b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design Q23;
  * spec "Password policy", scenarios "A breached password is refused" and "The
  * breach check fails closed").
  *

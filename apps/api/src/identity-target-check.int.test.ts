@@ -1,5 +1,5 @@
 /**
- * Task 16.12a of openspec/changes/043-identity-lifecycle-and-org-admin (design D3 and
+ * Task 16.12a of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D3 and
  * D10 step 3; Resolved decisions Q62, Q90 and Q149): the target check of the identity
  * wrapper sends the resolved target's real resource.
  *

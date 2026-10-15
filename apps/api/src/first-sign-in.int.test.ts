@@ -1,5 +1,5 @@
 /**
- * Task 4.4 of openspec/changes/043-identity-lifecycle-and-org-admin (spec "User
+ * Task 4.4 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec "User
  * status has four states with forward-only transitions": the scenarios "First
  * sign-in activates a staged or invited user" and "First sign-in does not activate
  * a second tenant's `_user`"; design D2; Resolved decisions Q111 and Q117).

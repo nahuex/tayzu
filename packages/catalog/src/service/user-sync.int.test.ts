@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 4.1 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Integration tests for task 4.1 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (spec "User status has four states with forward-only transitions"; design D2;
  * Resolved decision Q10).
  *

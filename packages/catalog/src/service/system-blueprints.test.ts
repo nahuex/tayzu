@@ -1,5 +1,5 @@
 /**
- * Unit tests for task 2.1 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Unit tests for task 2.1 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (design D1).
  *
  * ## Production symbols assumed

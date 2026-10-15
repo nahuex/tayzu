@@ -1,5 +1,5 @@
 /**
- * Task 8.5h of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 8.5h of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decisions Q73, Q86, Q87, Q105, Q112, Q114, Q120 and Q122; design D4 step 7).
  *
  * Scenarios (from the spec, "An SSO link that its user did not make does not

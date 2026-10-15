@@ -2094,7 +2094,7 @@ describe('resolveContext: service-account principal check (task 11.6, D13, Q40)'
 });
 
 /**
- * Task 11.8 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 11.8 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q105 part 3, which amends the "`Disabled` only" rule of Q25; Q46,
  * Q50, Q77; design D13). Spec scenarios, quoted from
  * `specs/identity-lifecycle-and-org-admin/spec.md`:
@@ -2563,7 +2563,7 @@ describe('resolveContext: a human is admitted only with an Active _user (task 11
 });
 
 /**
- * Task 13.4 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 13.4 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q77; design D13). Spec scenario, quoted from
  * `specs/identity-lifecycle-and-org-admin/spec.md`:
  *

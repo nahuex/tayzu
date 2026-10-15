@@ -1,5 +1,5 @@
 /**
- * Task 14.6 of openspec/changes/043-identity-lifecycle-and-org-admin (design D10:
+ * Task 14.6 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D10:
  * "`{user}` is the `_user` entity identifier (an email, or `svc-…`), sent unencoded
  * because `@` is legal in a path segment (Resolved decision Q12) ... and a path
  * containing `%` is a 404 (`002` Q74)").

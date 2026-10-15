@@ -1,5 +1,5 @@
 /**
- * Integration test for task 23.2 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 23.2 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * Q34, D9, D10, D11; spec auth-and-rbac, requirements "Three-tier role
  * baseline", "Team ownership" and "Dynamic attribute-based access control").
  *

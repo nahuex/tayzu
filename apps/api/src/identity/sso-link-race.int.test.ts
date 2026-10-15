@@ -1,5 +1,5 @@
 /**
- * Task 8.5h of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 8.5h of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q87, Q105 and Q114; spec scenario "A link cannot race a join").
  *
  * Verify (8.5h): "a link that starts while a join is adding the second membership

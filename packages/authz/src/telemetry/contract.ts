@@ -1,5 +1,5 @@
 /**
- * Task 13.1 (openspec/changes/002-auth-and-rbac/tasks.md): the executable
+ * Task 13.1 (openspec/changes/archive/2026-10-15-002-auth-and-rbac/tasks.md): the executable
  * mirror of design.md's "Observability contract" section for 002. It is pure
  * data (no tracer, meter or logger), so importing it never pulls the OTel SDK
  * in. `otel-smoke-check` and the `observability-auditor` subagent check the

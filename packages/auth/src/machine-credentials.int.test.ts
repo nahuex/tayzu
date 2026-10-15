@@ -302,7 +302,7 @@ describe('Machine credentials (task 5.1, design D5)', () => {
   /**
    * Task 5.2 (design D5; `specs/auth-and-rbac/spec.md`, "Machine
    * credentials"). Task 5.2's own Verify clause, quoted from
-   * `openspec/changes/002-auth-and-rbac/tasks.md`: "A revoke procedure (no
+   * `openspec/changes/archive/2026-10-15-002-auth-and-rbac/tasks.md`: "A revoke procedure (no
    * in-place rotation). Verify: `machine-credentials.int.test.ts` covers
    * that a revoked credential's id can no longer authenticate at the token
    * endpoint (used together with 5.3)." Unlike every other task in this

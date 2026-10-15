@@ -1,5 +1,5 @@
 /**
- * Integration test for task 20.2 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 20.2 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * D24 path (a), Resolved decisions Q18 and Q19; `specs/auth-and-rbac/spec.md`,
  * requirement "Account linking to Visma Connect is explicit and keyed on the
  * Visma Connect UserID").

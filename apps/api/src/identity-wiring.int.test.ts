@@ -1,5 +1,5 @@
 /**
- * Task 14.11 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 14.11 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q138; design D5 "Sender selection", Q80).
  *
  * Task 14.11 Verify: "`identity-wiring.int.test.ts` (in `apps/api/src/`; every case is

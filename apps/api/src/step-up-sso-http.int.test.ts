@@ -1,5 +1,5 @@
 /**
- * Integration test for task 23.8 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 23.8 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * Resolved decision Q36 and D25; `specs/auth-and-rbac/spec.md`, requirement
  * "Step-up authentication for high-risk operations").
  *

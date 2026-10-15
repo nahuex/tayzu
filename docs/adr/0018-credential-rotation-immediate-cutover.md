@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-10-13
-- **Change**: [`043-identity-lifecycle-and-org-admin`](../../openspec/changes/043-identity-lifecycle-and-org-admin/design.md) (design D8; Resolved decisions Q20, Q29, Q40, Q44, Q56, Q78)
+- **Change**: [`043-identity-lifecycle-and-org-admin`](../../openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/design.md) (design D8; Resolved decisions Q20, Q29, Q40, Q44, Q56, Q78)
 
 ## Context
 

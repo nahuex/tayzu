@@ -1,5 +1,5 @@
 /**
- * Integration test for task 23.3 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 23.3 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * Q34, D7, D9, D11; spec auth-and-rbac, requirements "Team ownership",
  * "Moderator role scoped to blueprints", "Dynamic attribute-based access
  * control" and "Authorization is decided by Cerbos and fails closed").

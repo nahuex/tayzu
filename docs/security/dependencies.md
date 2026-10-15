@@ -167,7 +167,7 @@ that every response carries `Strict-Transport-Security` with a `max-age` of at
 least one year (31536000) and `includeSubDomains`.
 
 The ingress half is a manual, one-time check against the deployed Azure
-Container Apps ingress. **Status: pending until the first deployment**
+Container Apps ingress. **Status: pending until the first deployment** (owned by `010`; `002` was archived on 2026-10-15 with task 11.12 deferred to it)
 (nothing is deployed yet). Run these checks then, and record the outcome in
 the table below:
 

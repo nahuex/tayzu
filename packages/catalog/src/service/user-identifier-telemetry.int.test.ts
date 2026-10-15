@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 4.1d of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Integration tests for task 4.1d of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (Resolved decisions Q107, Q113, Q119, Q130; spec "Telemetry contract" scenarios
  * "A `_user` email never reaches a catalog span", "... the catalog audit event" and
  * "... the Cerbos decision log"; design, Observability contract).

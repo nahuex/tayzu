@@ -1,6 +1,6 @@
 # Secrets
 
-Design D15 of `openspec/changes/002-auth-and-rbac/design.md`. Secrets come
+Design D15 of `openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md`. Secrets come
 only from the environment. In every deployed environment they are Azure Key
 Vault secrets, referenced natively by Azure Container Apps and resolved into
 environment variables at container start. Locally and in tests they come from

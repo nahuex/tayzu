@@ -1,6 +1,6 @@
 # Data retention and identity runbooks
 
-Design D12 of `openspec/changes/043-identity-lifecycle-and-org-admin/design.md`
+Design D12 of `openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/design.md`
 (task 16.5). This file holds the policies and operator runbooks of the identity
 lifecycle: the credential rotation cadence, the invitation caps, the email
 policy, the repairs for a failed acceptance, the off-boarding step and the

@@ -1,5 +1,5 @@
 /**
- * Task 5.3b of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 5.3b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * requirement "Every identity route declares its authorization"; design D10,
  * Resolved decisions Q45 and Q57).
  *

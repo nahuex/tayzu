@@ -1,5 +1,5 @@
 /**
- * Task 7.11 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 7.11 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Invitation lifecycle"; design "Email form", Resolved decision Q33).
  *
  * Task 7.11 Verify: "`email-boundary.int.test.ts` covers both operations

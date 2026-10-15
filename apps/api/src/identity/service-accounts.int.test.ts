@@ -1,5 +1,5 @@
 /**
- * Task 10.3 of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Task 10.3 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (`identity.serviceAccounts.create`; design D6, Resolved decisions Q30, Q40, Q90, Q117;
  * spec "Service accounts are non-human users created API-only").
  *
@@ -1242,7 +1242,7 @@ describe('identity.serviceAccounts.create (task 10.3)', () => {
 });
 
 /**
- * Task 16.11b of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q147;
+ * Task 16.11b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved decision Q147;
  * the security review's LOW-2): `identity.serviceAccounts.create` never takes a second pooled
  * connection while its transaction holds an advisory lock.
  *
@@ -1368,7 +1368,7 @@ describe('identity.serviceAccounts.create under a small pool (task 16.11b)', () 
 });
 
 /**
- * Task 16.12j of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved decision Q148):
+ * Task 16.12j of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved decision Q148):
  * identity mutations that take an advisory lock are bounded per process by an in-memory semaphore
  * of 2, taken before a pooled connection.
  *

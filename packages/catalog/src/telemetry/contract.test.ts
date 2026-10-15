@@ -465,7 +465,7 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
     });
   });
 
-  // Task 4.1d of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+  // Task 4.1d of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
   // decisions Q107, Q113, Q119): a `_user` identifier is the member's email, so the
   // entity spans, the audit event and the Cerbos resource id carry one fixed
   // placeholder instead. The placeholder is exported by this module under the

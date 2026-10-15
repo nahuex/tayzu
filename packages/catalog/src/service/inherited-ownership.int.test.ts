@@ -1,5 +1,5 @@
 /**
- * Integration test for task 13.6c of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Integration test for task 13.6c of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (002 VCDM M15; Resolved decisions Q37 and Q137).
  *
  * `Inherited` ownership is unreachable in production today (`readInherited`

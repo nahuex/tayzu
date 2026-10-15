@@ -1,5 +1,5 @@
 /**
- * `otel-smoke-check`, 002 extension (task 13.2, openspec/changes/002-auth-and-rbac;
+ * `otel-smoke-check`, 002 extension (task 13.2, openspec/changes/archive/2026-10-15-002-auth-and-rbac;
  * design.md "Observability contract"; Resolved decisions Q16-Q21 and Q26-Q29).
  *
  * "Extend `otel-smoke-check` to run every new auth/authz operation once on
@@ -1855,7 +1855,7 @@ describe('otel-smoke-check, 043: every declared identity name is in the imported
 });
 
 /**
- * `otel-smoke-check`, 043 extension (task 15.2, openspec/changes/043-identity-lifecycle-and-org-admin;
+ * `otel-smoke-check`, 043 extension (task 15.2, openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin;
  * design.md "Observability contract", Resolved decisions Q74, Q107, Q116, Q117 and Q131).
  *
  * "Extend `otel-smoke-check` to run every operation in this change once successfully and once
@@ -3566,7 +3566,7 @@ describe('otel-smoke-check, 043: no tayzu.identity.* metric carries an attribute
 });
 
 /**
- * Task 15.4 (openspec/changes/043-identity-lifecycle-and-org-admin; spec scenarios "Invited email
+ * Task 15.4 (openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin; spec scenarios "Invited email
  * never reaches telemetry", "The invitation link never leaves the email", "The email provider's
  * failure never leaks", and the placeholder of Resolved decisions Q107, Q113 and Q119).
  *

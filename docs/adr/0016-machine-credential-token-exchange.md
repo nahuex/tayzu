@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-09-29
-- **Change**: [`002-auth-and-rbac`](../../openspec/changes/002-auth-and-rbac/design.md) (design D5, D20, D21; Resolved decisions Q5, Q13, Q28)
+- **Change**: [`002-auth-and-rbac`](../../openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md) (design D5, D20, D21; Resolved decisions Q5, Q13, Q28)
 
 ## Context
 

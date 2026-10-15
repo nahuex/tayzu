@@ -1,5 +1,5 @@
 /**
- * Integration test for task 13.6b of openspec/changes/043-identity-lifecycle-and-org-admin
+ * Integration test for task 13.6b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin
  * (002 VCDM M15, the upsert part).
  *
  * "An entity with an owner team MUST be updatable only by a member of that team,

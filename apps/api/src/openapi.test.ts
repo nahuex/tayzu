@@ -1,5 +1,5 @@
 /**
- * Task 14.2 (openspec/changes/043-identity-lifecycle-and-org-admin, Resolved
+ * Task 14.2 (openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin, Resolved
  * decisions Q19 and Q31): scenario "Every route in the high-risk set is marked".
  * Reads the committed `openapi/identity.openapi.json` of 14.1c; no database.
  */

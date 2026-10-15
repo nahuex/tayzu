@@ -1,5 +1,5 @@
 /**
- * Task 2.0c (openspec/changes/043-identity-lifecycle-and-org-admin/tasks.md):
+ * Task 2.0c (openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/tasks.md):
  * the helpers through which `apps/api` creates every identity log event, span
  * and counter, and the separate identity contract module (Resolved decision
  * Q74). `apps/api` has no `@opentelemetry/api` dependency, so the helpers

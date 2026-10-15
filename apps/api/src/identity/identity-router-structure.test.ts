@@ -1,5 +1,5 @@
 /**
- * Task 5.3b of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 5.3b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * scenario "A route built without the wrapper is rejected": WHEN a procedure is
  * added to the identity router without the authorization wrapper, including by
  * chaining or by an unwrapped builder, THEN the structure test fails).

@@ -1,5 +1,5 @@
 /**
- * Integration test for task 23.19 (openspec/changes/002-auth-and-rbac; design
+ * Integration test for task 23.19 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; design
  * Resolved decision Q48 and D23; `specs/auth-and-rbac/spec.md`, requirement
  * "Visma Connect SSO sign-in").
  *

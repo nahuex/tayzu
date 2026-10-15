@@ -1,5 +1,5 @@
 /**
- * Task 8.2 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 8.2 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Invitation acceptance"; design D4 steps 1 to 5 and the Observability
  * contract; Resolved decisions Q112 and Q116).
  *

@@ -1,5 +1,5 @@
 /**
- * Integration tests for task 12.2 (openspec/changes/002-auth-and-rbac; spec
+ * Integration tests for task 12.2 (openspec/changes/archive/2026-10-15-002-auth-and-rbac; spec
  * auth-and-rbac, "User and Team system blueprints"; design D22, Resolved
  * decisions Q16 and Q26).
  *
@@ -349,7 +349,7 @@ describe('Creating a user creates a matching `_user` entity, written only by the
 });
 
 /**
- * Task 4.1 of openspec/changes/043-identity-lifecycle-and-org-admin (spec "User
+ * Task 4.1 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec "User
  * status has four states with forward-only transitions"; design D2; Resolved
  * decisions Q10 and Q83).
  *
@@ -714,7 +714,7 @@ describe('Every status writer goes through the state machine: the adapter (task 
 });
 
 /**
- * Task 4.1e of openspec/changes/043-identity-lifecycle-and-org-admin (spec "Every
+ * Task 4.1e of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec "Every
  * status change names its principal"; design D2 "Every status change is audited",
  * Observability contract; Resolved decisions Q117 and Q126).
  *
@@ -1045,7 +1045,7 @@ describe('The adapter audits every status change (task 4.1e)', () => {
 });
 
 /**
- * Task 4.2 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 4.2 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q76): the acceptance's entry point, given the `membership_added`
  * intent, derives the event from the stored status and returns it, or none.
  *

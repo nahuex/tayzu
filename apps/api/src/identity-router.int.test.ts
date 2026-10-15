@@ -1,5 +1,5 @@
 /**
- * Task 4.3 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 4.3 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "A user created by an admin is active"; design D2; Resolved decisions Q76
  * and Q117).
  *
@@ -231,7 +231,7 @@ describe('identity.users.create writes the _user through the membership hook onl
 });
 
 /**
- * Task 5.3 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 5.3 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * "Only an admin may invite a user or change another user's status": the
  * identity pipeline MUST emit `catalog.security.authz_denied` on every Cerbos
  * deny and increment the authorization-decision metric; scenario "Non-admin
@@ -499,7 +499,7 @@ describe('identity router authorization telemetry (task 5.3)', () => {
 });
 
 /**
- * Task 13.2 of openspec/changes/043-identity-lifecycle-and-org-admin (`002` VCDM
+ * Task 13.2 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (`002` VCDM
  * M10): identity operations that act on the global account refuse a target with
  * a membership outside the caller's tenant. `linkSsoAccount` and
  * `unlinkSsoAccount` on a two-tenant user are refused with the generic
@@ -661,7 +661,7 @@ describe('identity operations refuse a target with a membership in another tenan
 });
 
 /**
- * Task 13.2b of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 13.2b of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q88, Q115; spec scenario "An admin cannot record an SSO link on an
  * admin or an owner").
  *
@@ -1063,7 +1063,7 @@ describe('an admin links their own identity through /link-social with step-up (t
 });
 
 /**
- * Task 13.3 of openspec/changes/043-identity-lifecycle-and-org-admin (Resolved
+ * Task 13.3 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (Resolved
  * decision Q115, G9-6; `002` Q42).
  *
  * Scenario (verbatim from the spec): "Create and link give one generic answer

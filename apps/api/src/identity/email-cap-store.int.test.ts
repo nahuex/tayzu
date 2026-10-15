@@ -1,5 +1,5 @@
 /**
- * Task 14.12 of openspec/changes/043-identity-lifecycle-and-org-admin (design D4
+ * Task 14.12 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D4
  * "Invitation email caps", Resolved decisions Q15, Q101 and Q138; tasks 6.6, 6.7, 6.10
  * and 6.12b).
  *

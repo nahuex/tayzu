@@ -1,5 +1,5 @@
 /**
- * Task 14.4 of openspec/changes/043-identity-lifecycle-and-org-admin (spec
+ * Task 14.4 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (spec
  * requirement "Every high-risk operation requires step-up"; design D10/D15 and
  * Resolved decisions Q43, Q49, Q51).
  *

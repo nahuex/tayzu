@@ -2,7 +2,7 @@
 # Idempotently starts a local Cerbos PDP container for development, mirroring
 # compose.yaml's `cerbos` service (config/cerbos.yaml: disk driver over
 # `policies/`, watchForChanges: false, strictEvaluation: true — design D7,
-# openspec/changes/002-auth-and-rbac/design.md). Starts dockerd first if it
+# openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md). Starts dockerd first if it
 # is installed but not running. No secrets are involved: the image is public
 # and the config carries no credentials.
 #

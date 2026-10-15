@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-09-29
-- **Change**: [`002-auth-and-rbac`](../../openspec/changes/002-auth-and-rbac/design.md) (design D2, D8)
+- **Change**: [`002-auth-and-rbac`](../../openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md) (design D2, D8)
 
 ## Context
 
@@ -76,7 +76,7 @@ The decision stands. Two facts about the shipped code qualify it:
 ## Update (2026-10-13)
 
 The decision stands. Change
-[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/043-identity-lifecycle-and-org-admin/design.md)
+[`043-identity-lifecycle-and-org-admin`](../../openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/design.md)
 (design D8, Resolved decisions Q29 and Q94) adds a static access-control set to
 Better Auth's `organization` plugin, and this note records that it does no
 authorization work of Tayzu's:

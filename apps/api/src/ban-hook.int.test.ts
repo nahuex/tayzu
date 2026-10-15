@@ -1,5 +1,5 @@
 /**
- * Task 4.5 of openspec/changes/043-identity-lifecycle-and-org-admin (design D2,
+ * Task 4.5 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D2,
  * Resolved decisions Q102 and Q117).
  *
  * Spec scenario "The ban hook never re-enables a user":

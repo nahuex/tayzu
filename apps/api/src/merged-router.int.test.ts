@@ -1,5 +1,5 @@
 /**
- * Task 14.1 of openspec/changes/043-identity-lifecycle-and-org-admin (design D10
+ * Task 14.1 of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design D10
  * "API contract").
  *
  * Task 14.1 Verify (the part of this file): "`merged-router.int.test.ts` covers

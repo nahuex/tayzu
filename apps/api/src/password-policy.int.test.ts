@@ -1,5 +1,5 @@
 /**
- * Task 8.1c of openspec/changes/043-identity-lifecycle-and-org-admin (design Q22,
+ * Task 8.1c of openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin (design Q22,
  * Q132; spec "Password policy", scenario "A short password is refused" and the
  * requirement that `/change-password` sets only a policy-compliant password).
  *
