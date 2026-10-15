@@ -381,7 +381,8 @@ function emitBannedSignInAttempt(userId: string, channel: 'local' | 'sso'): void
 }
 
 /** The reasons of `auth.security.session_revoked` (043 Resolved decision Q86). */
-export type SessionRevocationReason = 'password_change' | 'admin_action' | 'sso_link_shed';
+export type SessionRevocationReason =
+  'password_change' | 'admin_action' | 'sso_link_shed' | 'password_reset' | 'mfa_reset';
 
 /**
  * design.md, Log events table: `auth.security.session_revoked`. Exported so
