@@ -103,6 +103,11 @@ export interface AuthRepository {
   globalUserById: (userId: string) => Promise<UserRead | undefined>;
   /** Whether a member of the tenant is banned; `undefined` when the user is not a member. */
   memberBanned: (tenantId: string, userId: string) => Promise<boolean | undefined>;
+  /**
+   * Whether the user is banned (a NULL column reads as false); `undefined` when there is no
+   * such user. `db` is the per-user lock's connection, for the in-lock re-read (044 D7).
+   */
+  globalUserBanned: (userId: string, db?: Pick<Pool, 'query'>) => Promise<boolean | undefined>;
   globalAccountByKey: (providerId: string, accountId: string) => Promise<AccountRead | undefined>;
   globalAccountsOf: (userId: string) => Promise<AccountRead[]>;
   globalInvitationById: (invitationId: string) => Promise<InvitationRead | undefined>;
@@ -387,6 +392,15 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [userId],
       );
       return result.rows[0];
+    },
+
+    async globalUserBanned(userId, db = authPool) {
+      const result = await db.query<{ banned: boolean | null }>(
+        'select banned from auth."user" where id = $1',
+        [userId],
+      );
+      const row = result.rows[0];
+      return row === undefined ? undefined : row.banned === true;
     },
 
     async memberBanned(tenantId, userId) {

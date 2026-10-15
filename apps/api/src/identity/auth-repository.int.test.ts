@@ -403,6 +403,48 @@ describe('auth-repository', () => {
     expect(await repo.globalUserByEmail(`none-${randomUUID()}@example.test`)).toBeUndefined();
   });
 
+  /*
+   * Task 5.1 of `044-password-reset-and-account-recovery` (design D4, D7 step 2).
+   *
+   * ## Production symbols expected
+   *
+   * ```ts
+   * // apps/api/src/identity/auth-repository.ts, added to AuthRepository
+   * globalUserBanned: (userId: string, db?: Pick<Pool, 'query'>) => Promise<boolean | undefined>;
+   * // reads auth."user".banned only; `undefined` when there is no such user;
+   * // a NULL column reads as false; with `db` the statement runs on that client.
+   * ```
+   */
+  it('globalUserBanned: true for a banned user, false for an unbanned one, undefined for no user', async () => {
+    const banned = await seedUser();
+    const unbanned = await seedUser();
+    const nullBanned = await seedUser();
+    await authPool.query('update auth."user" set banned = true where id = $1', [banned]);
+    await authPool.query('update auth."user" set banned = false where id = $1', [unbanned]);
+    await authPool.query('update auth."user" set banned = null where id = $1', [nullBanned]);
+
+    expect(await repo.globalUserBanned(banned)).toBe(true);
+    expect(await repo.globalUserBanned(unbanned)).toBe(false);
+    expect(await repo.globalUserBanned(nullBanned)).toBe(false);
+    expect(await repo.globalUserBanned(`usr-${randomUUID()}`)).toBeUndefined();
+  });
+
+  it('globalUserBanned: with a db argument the statement runs on that client', async () => {
+    const userId = await seedUser();
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      // Uncommitted: visible to this client only.
+      await client.query('update auth."user" set banned = true where id = $1', [userId]);
+
+      expect(await repo.globalUserBanned(userId, client)).toBe(true);
+      expect(await repo.globalUserBanned(userId), 'the pool does not see it').toBe(false);
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+  });
+
   it('only the global functions are callable without a tenantId', async () => {
     const names = Object.keys(repo);
     const globals = names.filter((name) => name.startsWith('global'));
@@ -412,6 +454,7 @@ describe('auth-repository', () => {
         'globalAccountsOf',
         'globalInvitationById',
         'globalMembershipTenantsOf',
+        'globalUserBanned',
         'globalUserByEmail',
         'globalUserById',
       ].sort(),
