@@ -1,5 +1,7 @@
 # Proposal: 044-password-reset-and-account-recovery
 
+**Status:** approved at Checkpoint 1 by the human on 2026-10-15.
+
 ## Why
 
 Tayzu has no way back for a person who cannot sign in. `002-auth-and-rbac` ships
