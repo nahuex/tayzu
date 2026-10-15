@@ -58,6 +58,30 @@ export interface Config {
     readonly max: number;
     readonly windowSeconds: number;
   };
+  /** Reset request route, per caller IP (044 D9); window in seconds. */
+  readonly passwordResetRequestRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Reset confirm route, per caller IP (044 D9); window in seconds. */
+  readonly passwordResetConfirmRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Reset emails per recipient (044 D9, Q23); window in seconds. */
+  readonly passwordResetRecipientCap: { readonly max: number; readonly windowSeconds: number };
+  /** Reset emails per caller IP key (044 D9, Q28); window in seconds. */
+  readonly passwordResetIpCap: { readonly max: number; readonly windowSeconds: number };
+  /** Reset emails across the platform (044 D9); window in seconds. */
+  readonly passwordResetGlobalCap: { readonly max: number; readonly windowSeconds: number };
+  /** Recovery notice emails per recipient (044 D9); window in seconds. */
+  readonly recoveryNoticeRecipientCap: { readonly max: number; readonly windowSeconds: number };
+  /** Account-created notice emails per tenant (044 Q20); window in seconds. */
+  readonly accountCreatedNoticeTenantCap: {
+    readonly max: number;
+    readonly windowSeconds: number;
+  };
+  /** Account-created notice emails across the platform (044 Q20); window in seconds. */
+  readonly accountCreatedNoticeGlobalCap: {
+    readonly max: number;
+    readonly windowSeconds: number;
+  };
+  /** Minimum response time of the reset request route in milliseconds, 1..5000 (044 D9). */
+  readonly passwordResetMinResponseMs: number;
   /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
   readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
@@ -92,6 +116,16 @@ const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
 const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
 const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
 const DEFAULT_MACHINE_CREDENTIAL_LIMIT = { max: 60, windowSeconds: 3600 };
+const DEFAULT_PASSWORD_RESET_REQUEST_LIMIT = { max: 10, windowSeconds: 60 };
+const DEFAULT_PASSWORD_RESET_CONFIRM_LIMIT = { max: 10, windowSeconds: 60 };
+const DEFAULT_PASSWORD_RESET_RECIPIENT_CAP = { max: 5, windowSeconds: 3600 };
+const DEFAULT_PASSWORD_RESET_IP_CAP = { max: 10, windowSeconds: 3600 };
+const DEFAULT_PASSWORD_RESET_GLOBAL_CAP = { max: 600, windowSeconds: 3600 };
+const DEFAULT_RECOVERY_NOTICE_RECIPIENT_CAP = { max: 10, windowSeconds: 86_400 };
+const DEFAULT_ACCOUNT_CREATED_NOTICE_TENANT_CAP = { max: 20, windowSeconds: 86_400 };
+const DEFAULT_ACCOUNT_CREATED_NOTICE_GLOBAL_CAP = { max: 1000, windowSeconds: 86_400 };
+const DEFAULT_PASSWORD_RESET_MIN_RESPONSE_MS = 400;
+const MAX_PASSWORD_RESET_MIN_RESPONSE_MS = 5000;
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 const DEFAULT_CREDENTIAL_CAP = 200;
 const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
@@ -133,6 +167,17 @@ function limitWithDefaults(
     max: optionalPositiveInt(env, maxName) ?? defaults.max,
     windowSeconds: optionalPositiveInt(env, windowName) ?? defaults.windowSeconds,
   };
+}
+
+/** `PASSWORD_RESET_MIN_RESPONSE_MS` (044 D9): an integer in 1..5000. */
+function loadPasswordResetMinResponseMs(env: Env): number {
+  const value = optionalPositiveInt(env, 'PASSWORD_RESET_MIN_RESPONSE_MS');
+  if (value !== undefined && value > MAX_PASSWORD_RESET_MIN_RESPONSE_MS) {
+    throw new Error(
+      `PASSWORD_RESET_MIN_RESPONSE_MS is malformed (1 to ${String(MAX_PASSWORD_RESET_MIN_RESPONSE_MS)}).`,
+    );
+  }
+  return value ?? DEFAULT_PASSWORD_RESET_MIN_RESPONSE_MS;
 }
 
 const SSO_VARIABLES = [
@@ -421,6 +466,16 @@ export function loadConfig(env: Env): Config {
     'REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_PUBLIC_ROUTE_LIMIT,
   );
+  const resetLimit = (
+    prefix: string,
+    defaults: { max: number; windowSeconds: number },
+  ): { max: number; windowSeconds: number } =>
+    limitWithDefaults(
+      env,
+      `${prefix}_RATE_LIMIT_MAX`,
+      `${prefix}_RATE_LIMIT_WINDOW_SECONDS`,
+      defaults,
+    );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const credentialCap = optionalPositiveInt(env, 'CREDENTIAL_CAP') ?? DEFAULT_CREDENTIAL_CAP;
   const serviceAccountCap =
@@ -452,6 +507,33 @@ export function loadConfig(env: Env): Config {
     machineCredentialRateLimit,
     invitationAcceptRateLimit,
     reauthorizationCallbackRateLimit,
+    passwordResetRequestRateLimit: resetLimit(
+      'PASSWORD_RESET_REQUEST',
+      DEFAULT_PASSWORD_RESET_REQUEST_LIMIT,
+    ),
+    passwordResetConfirmRateLimit: resetLimit(
+      'PASSWORD_RESET_CONFIRM',
+      DEFAULT_PASSWORD_RESET_CONFIRM_LIMIT,
+    ),
+    passwordResetRecipientCap: resetLimit(
+      'PASSWORD_RESET_RECIPIENT',
+      DEFAULT_PASSWORD_RESET_RECIPIENT_CAP,
+    ),
+    passwordResetIpCap: resetLimit('PASSWORD_RESET_IP', DEFAULT_PASSWORD_RESET_IP_CAP),
+    passwordResetGlobalCap: resetLimit('PASSWORD_RESET_GLOBAL', DEFAULT_PASSWORD_RESET_GLOBAL_CAP),
+    recoveryNoticeRecipientCap: resetLimit(
+      'RECOVERY_NOTICE_RECIPIENT',
+      DEFAULT_RECOVERY_NOTICE_RECIPIENT_CAP,
+    ),
+    accountCreatedNoticeTenantCap: resetLimit(
+      'ACCOUNT_CREATED_NOTICE_TENANT',
+      DEFAULT_ACCOUNT_CREATED_NOTICE_TENANT_CAP,
+    ),
+    accountCreatedNoticeGlobalCap: resetLimit(
+      'ACCOUNT_CREATED_NOTICE_GLOBAL',
+      DEFAULT_ACCOUNT_CREATED_NOTICE_GLOBAL_CAP,
+    ),
+    passwordResetMinResponseMs: loadPasswordResetMinResponseMs(env),
     invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     credentialCap,
