@@ -137,6 +137,19 @@ export interface CreateAppOptions {
     /** The notices' buckets (Q101, 6.12b); the defaults are 60 per hour and 3 per 24 hours. */
     readonly noticeTenantCap?: { readonly max: number; readonly windowSeconds: number };
     readonly noticeRecipientCap?: { readonly max: number; readonly windowSeconds: number };
+    /** 044 task 4.3 (D16): the reset and recovery buckets, built from `Config` by the production start. */
+    readonly passwordResetRecipientCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly passwordResetIpCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly passwordResetGlobalCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly recoveryNoticeRecipientCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly accountCreatedNoticeTenantCap?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
+    readonly accountCreatedNoticeGlobalCap?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
   };
   /**
    * 043 task 14.3 (D15): mounts the identity routes (the accept route and the identity
@@ -310,6 +323,22 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
               notice_tenant: ruleOf(email.noticeTenantCap ?? { max: 60, windowSeconds: 3600 }),
               notice_recipient: ruleOf(
                 email.noticeRecipientCap ?? { max: 3, windowSeconds: 86_400 },
+              ),
+              reset_email_recipient: ruleOf(
+                email.passwordResetRecipientCap ?? { max: 5, windowSeconds: 3600 },
+              ),
+              reset_email_ip: ruleOf(email.passwordResetIpCap ?? { max: 10, windowSeconds: 3600 }),
+              reset_email_global: ruleOf(
+                email.passwordResetGlobalCap ?? { max: 600, windowSeconds: 3600 },
+              ),
+              recovery_notice_recipient: ruleOf(
+                email.recoveryNoticeRecipientCap ?? { max: 10, windowSeconds: 86_400 },
+              ),
+              account_created_notice_tenant: ruleOf(
+                email.accountCreatedNoticeTenantCap ?? { max: 20, windowSeconds: 86_400 },
+              ),
+              account_created_notice_global: ruleOf(
+                email.accountCreatedNoticeGlobalCap ?? { max: 1000, windowSeconds: 86_400 },
               ),
             },
           }),

@@ -303,3 +303,213 @@ describe('the email caps on the shared DB-backed store (task 14.12, Q138)', () =
     }
   });
 });
+
+/**
+ * Task 4.3 of openspec/changes/044-password-reset-and-account-recovery (design D16 and the
+ * "Caps" bullet of D7; scenario "Reset caps and invitation caps are counted apart").
+ *
+ * ## Production symbols expected
+ *
+ * - `./email-cap-store.js`: the `BUCKETS` table gains six rows. The cap scope the mailer
+ *   passes to `consume(scope, key)` maps onto the bucket (`RateLimitScope`, kind) of
+ *   `@tayzu/auth`:
+ *   - `reset_recipient` -> `reset_email_recipient` (kind `email`)
+ *   - `reset_ip` -> `reset_email_ip` (kind `ip`)
+ *   - `reset_global` -> `reset_email_global` (kind `global`, one constant key)
+ *   - `recovery_notice_recipient` -> `recovery_notice_recipient` (kind `email`)
+ *   - `account_created_tenant` -> `account_created_notice_tenant` (kind `tenant`)
+ *   - `account_created_global` -> `account_created_notice_global` (kind `global`)
+ * - A full bucket rejects with `AuthRateLimitedError`; a scope with no row still throws.
+ * - The rules of the six buckets are built from `Config` in `createApp` (`server.ts`); this
+ *   file builds its own rules, so that wiring is covered by the later config and wiring tasks.
+ */
+describe('the reset and recovery caps on the shared DB-backed store (044 task 4.3)', () => {
+  const RESET_RECIPIENT_MAX = 2;
+  const RESET_IP_MAX = 3;
+  const RESET_GLOBAL_MAX = 4;
+  const NOTICE_RECIPIENT_MAX_044 = 2;
+  const ACCOUNT_TENANT_MAX = 3;
+  const ACCOUNT_GLOBAL_MAX = 5;
+
+  const RULES_044 = {
+    invitation_recipient: { max: RECIPIENT_MAX, window: DAY },
+    notice_recipient: { max: NOTICE_RECIPIENT_MAX, window: DAY },
+    reset_email_recipient: { max: RESET_RECIPIENT_MAX, window: HOUR },
+    reset_email_ip: { max: RESET_IP_MAX, window: HOUR },
+    reset_email_global: { max: RESET_GLOBAL_MAX, window: HOUR },
+    recovery_notice_recipient: { max: NOTICE_RECIPIENT_MAX_044, window: DAY },
+    account_created_notice_tenant: { max: ACCOUNT_TENANT_MAX, window: DAY },
+    account_created_notice_global: { max: ACCOUNT_GLOBAL_MAX, window: DAY },
+  } as const;
+
+  let dbA: TestDb;
+  let dbB: TestDb;
+  let storeA: EmailCapStore;
+  let storeB: EmailCapStore;
+
+  async function adapterOf(db: TestDb): Promise<RateLimitBucketStoreOptions['adapter']> {
+    const auth = createAuth({ db, secret: TEST_SECRET });
+    return (await (auth.$context as Promise<{ adapter: RateLimitBucketStoreOptions['adapter'] }>))
+      .adapter;
+  }
+
+  async function rowsWithKey(key: string): Promise<{ key: string; count: number }[]> {
+    return dbA
+      .select({ key: authSchema.rateLimit.key, count: authSchema.rateLimit.count })
+      .from(authSchema.rateLimit)
+      .where(eq(authSchema.rateLimit.key, key));
+  }
+
+  async function rowsLike(fragment: string): Promise<{ key: string }[]> {
+    return dbA
+      .select({ key: authSchema.rateLimit.key })
+      .from(authSchema.rateLimit)
+      .where(like(authSchema.rateLimit.key, `%${fragment}%`));
+  }
+
+  beforeAll(async () => {
+    dbA = connect(databaseUrl());
+    dbB = connect(databaseUrl());
+    await runMigrations(dbA.$client);
+    storeA = createDbEmailCapStore({
+      store: createRateLimitBucketStore({ adapter: await adapterOf(dbA), rules: RULES_044 }),
+    });
+    storeB = createDbEmailCapStore({
+      store: createRateLimitBucketStore({ adapter: await adapterOf(dbB), rules: RULES_044 }),
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    for (const db of [dbA, dbB]) {
+      db.$client.on('error', () => {
+        // Expected only during teardown.
+      });
+      await db.$client.end();
+    }
+  });
+
+  it('Reset caps and invitation caps are counted apart', async () => {
+    // GIVEN an address with a full invitation bucket
+    const key = `value-${randomUUID()}`;
+    for (let hit = 0; hit < RECIPIENT_MAX; hit += 1) {
+      await storeA.consume('recipient', key);
+    }
+    await expect(storeA.consume('recipient', key)).rejects.toBeInstanceOf(AuthRateLimitedError);
+
+    // WHEN it requests a reset THEN the reset bucket still has room
+    await expect(storeB.consume('reset_recipient', key)).resolves.toBeUndefined();
+
+    // AND the reverse holds: a full reset bucket leaves the invitation and notice buckets alone
+    const other = `value-${randomUUID()}`;
+    for (let hit = 0; hit < RESET_RECIPIENT_MAX; hit += 1) {
+      await storeA.consume('reset_recipient', other);
+    }
+    await expect(storeB.consume('reset_recipient', other)).rejects.toBeInstanceOf(
+      AuthRateLimitedError,
+    );
+    await expect(storeB.consume('recipient', other)).resolves.toBeUndefined();
+    await expect(storeB.consume('notice_recipient', other)).resolves.toBeUndefined();
+    await expect(storeB.consume('recovery_notice_recipient', other)).resolves.toBeUndefined();
+  });
+
+  it('The six buckets hold under two store instances over one database', async () => {
+    const cases = [
+      {
+        scope: 'reset_recipient',
+        max: RESET_RECIPIENT_MAX,
+        bucket: 'reset_email_recipient',
+        kind: 'email',
+      },
+      { scope: 'reset_ip', max: RESET_IP_MAX, bucket: 'reset_email_ip', kind: 'ip' },
+      {
+        scope: 'reset_global',
+        max: RESET_GLOBAL_MAX,
+        bucket: 'reset_email_global',
+        kind: 'global',
+      },
+      {
+        scope: 'recovery_notice_recipient',
+        max: NOTICE_RECIPIENT_MAX_044,
+        bucket: 'recovery_notice_recipient',
+        kind: 'email',
+      },
+      {
+        scope: 'account_created_tenant',
+        max: ACCOUNT_TENANT_MAX,
+        bucket: 'account_created_notice_tenant',
+        kind: 'tenant',
+      },
+      {
+        scope: 'account_created_global',
+        max: ACCOUNT_GLOBAL_MAX,
+        bucket: 'account_created_notice_global',
+        kind: 'global',
+      },
+    ] as const;
+
+    for (const { scope, max, bucket, kind } of cases) {
+      // Global buckets hold one constant key, so they are compared by behavior, not by row.
+      const value = `value-${randomUUID()}`;
+      const isGlobal = kind === 'global';
+      for (let hit = 0; hit < max; hit += 1) {
+        await (hit % 2 === 0 ? storeA : storeB).consume(scope, value);
+      }
+
+      // The cap is shared: the next hit is refused whichever store serves it.
+      const byA = await rejection(storeA.consume(scope, value));
+      const byB = await rejection(storeB.consume(scope, value));
+      expect(byA, `${scope} refused by A`).toBeInstanceOf(AuthRateLimitedError);
+      expect(byB, `${scope} refused by B`).toBeInstanceOf(AuthRateLimitedError);
+      expect((byA as AuthRateLimitedError).code).toBe('AUTH_RATE_LIMITED');
+      expect((byA as AuthRateLimitedError).retryAfterSeconds).toBeGreaterThan(0);
+
+      if (!isGlobal) {
+        const rows = await rowsWithKey(hashed(bucket, kind, value));
+        expect(rows, `${scope}: one row, one shared count`).toHaveLength(1);
+        expect(rows[0]?.count).toBe(max);
+        expect(rows[0]?.key).toMatch(/^[0-9a-f]{64}$/);
+        expect(await rowsLike(value), `${scope}: the raw value is not stored`).toHaveLength(0);
+      }
+    }
+  });
+
+  it('The six buckets never share a count with each other', async () => {
+    const value = `value-${randomUUID()}`;
+    for (let hit = 0; hit < RESET_RECIPIENT_MAX; hit += 1) {
+      await storeA.consume('reset_recipient', value);
+    }
+    await expect(storeB.consume('reset_recipient', value)).rejects.toBeInstanceOf(
+      AuthRateLimitedError,
+    );
+    await expect(storeB.consume('reset_ip', value)).resolves.toBeUndefined();
+    await expect(storeB.consume('account_created_tenant', value)).resolves.toBeUndefined();
+  });
+
+  it('an unsupported scope still throws', async () => {
+    const value = `value-${randomUUID()}`;
+
+    // The names of the underlying rate-limit scopes are not cap scopes.
+    for (const scope of [
+      'not_a_scope',
+      'reset_email_recipient',
+      'reset_email_ip',
+      'reset_email_global',
+      'account_created_notice_tenant',
+      'account_created_notice_global',
+      'password_reset_request',
+    ]) {
+      await expect(storeA.consume(scope, value), scope).rejects.toThrow();
+    }
+
+    expect(await rowsLike(value)).toHaveLength(0);
+    for (const bucket of [
+      'reset_email_recipient',
+      'reset_email_ip',
+      'account_created_notice_tenant',
+    ]) {
+      for (const kind of ['tenant', 'email', 'ip', 'user', 'global']) {
+        expect(await rowsWithKey(hashed(bucket, kind, value))).toHaveLength(0);
+      }
+    }
+  });
+});
