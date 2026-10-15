@@ -309,3 +309,128 @@ describe('reset token store: recordFailure (task 2.5)', () => {
     expect(await valueById(id)).toBeUndefined();
   });
 });
+
+/**
+ * Task 2.6 (design D7 step 5; scenarios "A token is single use" and "A concurrent double
+ * submit completes once", store level).
+ *
+ * ## Production symbols expected
+ *
+ * ```ts
+ * // apps/api/src/identity/reset-token-store.ts, added to ResetTokenStore
+ * // `delete from auth.verification where identifier = 'password-reset:' || $1 returning ...`
+ * // on the caller's lock connection. One row deleted resolves to 'consumed'; zero rows
+ * // resolves to 'conflict' (the completion aborts as `consume_conflict`). `db` is required.
+ * consume: (id: string, db: Pick<Pool, 'query'>) => Promise<'consumed' | 'conflict'>;
+ * ```
+ */
+describe('reset token store: consume (task 2.6)', () => {
+  let authPool: Pool;
+  let store: ResetTokenStore;
+  let withUserLock: ReturnType<typeof createWithUserLock>;
+
+  beforeAll(async () => {
+    ({ authPool } = await harnessPools());
+    await runMigrations(authPool);
+    withUserLock = createWithUserLock(authPool);
+    store = createResetTokenStore({ authPool, withUserLock });
+  }, 60_000);
+
+  async function exists(id: string): Promise<boolean> {
+    const result = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      `${PREFIX}${id}`,
+    ]);
+    return result.rowCount === 1;
+  }
+
+  it('A token is single use: the first consume deletes the row, the second is a conflict', async () => {
+    const userId = randomUUID();
+    const { id, token } = await store.issue(userId);
+
+    const first = await withUserLock(userId, (tx) => store.consume(id, tx));
+    const second = await withUserLock(userId, (tx) => store.consume(id, tx));
+
+    expect(first).toBe('consumed');
+    expect(second).toBe('conflict');
+    expect(await exists(id)).toBe(false);
+    expect(await store.lookup(id, token)).toEqual({ status: 'not_found' });
+  });
+
+  it('an unknown id is a conflict and deletes nothing else', async () => {
+    const userId = randomUUID();
+    const other = await store.issue(randomUUID());
+
+    const result = await withUserLock(userId, (tx) => store.consume(randomUUID(), tx));
+
+    expect(result).toBe('conflict');
+    expect(await exists(other.id)).toBe(true);
+  });
+
+  it('consume deletes only the named row', async () => {
+    const userA = randomUUID();
+    const userB = randomUUID();
+    const a = await store.issue(userA);
+    const b = await store.issue(userB);
+
+    expect(await withUserLock(userA, (tx) => store.consume(a.id, tx))).toBe('consumed');
+
+    expect(await exists(a.id)).toBe(false);
+    expect(await exists(b.id)).toBe(true);
+  });
+
+  it('the delete runs on the given connection: a rolled-back consume leaves the token usable', async () => {
+    const userId = randomUUID();
+    const { id, token } = await store.issue(userId);
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      expect(await store.consume(id, client)).toBe('consumed');
+      // Not committed: the pool still sees the row.
+      expect(await store.lookup(id, token)).toEqual({ status: 'found', userId, failures: 0 });
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+
+    expect(await store.lookup(id, token)).toEqual({ status: 'found', userId, failures: 0 });
+  });
+
+  it('A concurrent double submit completes once: two parallel consumes, exactly one wins', async () => {
+    const userId = randomUUID();
+    const { id } = await store.issue(userId);
+
+    const results = await Promise.all([
+      withUserLock(userId, (tx) => store.consume(id, tx)),
+      withUserLock(userId, (tx) => store.consume(id, tx)),
+    ]);
+
+    expect([...results].sort()).toEqual(['conflict', 'consumed']);
+    expect(await exists(id)).toBe(false);
+  });
+
+  it('exactly one of two parallel consumes on separate connections wins, without the lock', async () => {
+    const { id } = await store.issue(randomUUID());
+    const [clientA, clientB] = await Promise.all([authPool.connect(), authPool.connect()]);
+    try {
+      await Promise.all([clientA.query('begin'), clientB.query('begin')]);
+      const results = await Promise.all([
+        store.consume(id, clientA).then(async (r) => {
+          await clientA.query('commit');
+          return r;
+        }),
+        store.consume(id, clientB).then(async (r) => {
+          await clientB.query('commit');
+          return r;
+        }),
+      ]);
+
+      expect([...results].sort()).toEqual(['conflict', 'consumed']);
+    } finally {
+      await clientA.query('rollback').catch(() => undefined);
+      await clientB.query('rollback').catch(() => undefined);
+      clientA.release();
+      clientB.release();
+    }
+    expect(await exists(id)).toBe(false);
+  });
+});

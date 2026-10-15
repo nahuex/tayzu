@@ -40,6 +40,11 @@ export interface ResetTokenStore {
    * the count reaches 5. Resolves to the new count, or `undefined` when no row was updated.
    */
   recordFailure: (id: string, db?: Pick<Pool, 'query'>) => Promise<number | undefined>;
+  /**
+   * Deletes the row on the caller's lock connection (D7 step 5). Zero rows deleted means
+   * another completion won, and the caller aborts as `consume_conflict`.
+   */
+  consume: (id: string, db: Pick<Pool, 'query'>) => Promise<'consumed' | 'conflict'>;
 }
 
 /** The failure budget of one token (D3). */
@@ -66,6 +71,9 @@ export function createResetTokenStore(options: {
         await repository.deleteResetToken(id, db);
       }
       return failures;
+    },
+    async consume(id, db) {
+      return (await repository.deleteResetToken(id, db)) ? 'consumed' : 'conflict';
     },
     issue: (userId) =>
       options.withUserLock(userId, async (tx) => {
