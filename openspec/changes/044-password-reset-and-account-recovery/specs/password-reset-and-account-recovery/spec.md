@@ -107,8 +107,8 @@ token MUST be checked against it in constant time, with a dummy comparison when 
 record matches. The token MUST be usable once. A new token issued for a user MUST delete that
 user's earlier unused reset tokens, so only the newest works. A token MUST be issued only for a
 request the email controls admitted: a request that is suppressed by the kill switch, the
-disabled-tenant list or a cap MUST issue no token and MUST NOT delete or change any earlier
-token. The token and the link MUST NOT appear in any response, log record, span, metric, or in
+recipient-domain allowlist, the disabled-tenant list or a cap MUST issue no token and MUST NOT
+delete or change any earlier token. The token and the link MUST NOT appear in any response, log record, span, metric, or in
 anything the non-sending sender keeps. The link MUST be the only link in the email.
 
 #### Scenario: The newest link wins
@@ -119,7 +119,7 @@ anything the non-sending sender keeps. The link MUST be the only link in the ema
 
 #### Scenario: A suppressed request leaves the earlier link valid
 
-- **GIVEN** an eligible user who holds a valid link, and then a full recipient cap, a kill switch turned on, or every tenant of the user on the disabled-tenant list
+- **GIVEN** an eligible user who holds a valid link, and then a full recipient cap, a kill switch turned on, every tenant of the user on the disabled-tenant list, or a recipient domain that is not on the allowlist
 - **WHEN** the address is posted again
 - **THEN** the answer is the uniform one, no email is sent, no token is issued, and the earlier link still works
 
@@ -160,7 +160,9 @@ resource, and the reason MUST be logged internally with a closed reason set. The
 request MUST carry the header `x-csrf-token: orpc` and an `Origin` that is one of the
 allowed origins, or it is rejected the same way. The shape and the limits of the body
 MUST be checked, and the per-IP limiter MUST have run, before any lookup, hash or
-network call.
+network call; a malformed body, which depends only on the request, MUST answer
+`CATALOG_VALIDATION_FAILED` (the answer of the invitation accept route) and not the uniform
+rejection.
 
 #### Scenario: Every token problem looks the same
 
@@ -176,7 +178,7 @@ network call.
 #### Scenario: Cheap checks run first
 
 - **WHEN** the confirm route receives an oversized body, an unknown field or a `constructor` key
-- **THEN** it fails before any database, hash or breached-password lookup
+- **THEN** it answers `CATALOG_VALIDATION_FAILED` before any database, hash or breached-password lookup
 
 ### Requirement: A user with a second factor must prove it to reset the password
 
@@ -187,8 +189,10 @@ request carries a valid TOTP code or an unused backup code in `factor`. A reques
 factor, or with an invalid one, MUST change nothing, MUST NOT consume the token and MUST
 answer `AUTH_STEP_UP_REQUIRED`. An inconsistent state (the flag true with no verified row,
 or a verified row with the flag off) MUST fail closed: the answer MUST be
-`AUTH_STEP_UP_REQUIRED` for every request and nothing MUST change. A used backup code MUST be
-spent inside the transaction that completes the reset. Failed factors MUST count against
+`AUTH_STEP_UP_REQUIRED` for every request and nothing MUST change. The enrolled decision MUST be taken again under the per-user lock, on the connection that
+holds it, before the password changes, so that a factor enrolled between the first read and
+the lock is not bypassed. A used backup code MUST be spent inside the transaction that
+completes the reset. Failed factors MUST count against
 the account's second-factor lockout and against a budget of 5 per token, after which the
 token MUST be deleted; the check, the count and the lockout MUST hold under concurrent
 requests, so that parallel wrong factors consume exactly the budget. A user with no
@@ -226,6 +230,12 @@ enrolled second factor.
 - **GIVEN** a user whose `twoFactorEnabled` is true but who has no verified `twoFactor` row, and a valid token
 - **WHEN** the token and a compliant password are submitted, with or without a factor
 - **THEN** the answer is `AUTH_STEP_UP_REQUIRED`, the password is unchanged, the token is not consumed and no failure is counted
+
+#### Scenario: A factor enrolled during the request is not bypassed
+
+- **GIVEN** a user with no factor, a valid token, and a factor enrolled after the route's first read and before the lock
+- **WHEN** the token and a compliant password are submitted without a factor
+- **THEN** the answer is `AUTH_STEP_UP_REQUIRED`, the password is unchanged and the token is not consumed
 
 #### Scenario: A user without a second factor needs only the link
 
@@ -292,7 +302,8 @@ the backup code when one was used; and revoke every session of the user in every
 emitting `auth.security.session_revoked` with the reason `password_reset` for each. If
 any of these writes fails, the password MUST be unchanged and the token MUST remain
 usable. A sign-in that verified the old password before the commit and would create its session
-after it MUST be refused. After the commit the system MUST send the fixed password-changed
+after it MUST be refused, and the check that does so MUST NOT make the sign-in answer differ
+for a known and an unknown address. After the commit the system MUST send the fixed password-changed
 notice, whose fixed text tells the user to review their service accounts, credentials and
 linked sign-ins. The reset MUST NOT sign the user in and MUST NOT touch machine credentials,
 service accounts or SSO links.
@@ -331,6 +342,12 @@ service accounts or SSO links.
 - **GIVEN** a sign-in that has verified the old password and is held before it creates its session
 - **WHEN** a reset completes and the held sign-in then continues
 - **THEN** the sign-in is refused like a wrong password, no session exists and no usable second-factor challenge exists
+
+#### Scenario: The sign-in fence does not reveal an account
+
+- **GIVEN** an address with a password and an address with no account
+- **WHEN** each is submitted to the sign-in route
+- **THEN** both answers have the same status, code and body shape, and the fence performs the same single credential lookup for each
 
 #### Scenario: A reset leaves linked sign-ins and credentials, and the notice says to review them
 
@@ -401,7 +418,8 @@ state MUST be shared across replicas. The limiter key MUST be the client address
 normalized to its IPv6 /64 prefix (an IPv4 address is its own /32, an IPv4-mapped IPv6
 address is its IPv4 form), here and in the per-IP email cap, so that one /64 shares a
 bucket. If the limiter store fails, the route MUST fail closed with a sanitized internal
-error and MUST run no lookup and send no email. The limits MUST be configurable, and a
+error and MUST run no lookup and send no email. The invitation accept route shares this
+pre-handler and so shares the key and the failure behavior. The limits MUST be configurable, and a
 disabled or zero limit MUST fail startup. The limiter key MUST NOT appear in any signal
 or response.
 
@@ -421,6 +439,11 @@ or response.
 - **WHEN** either reset route is called
 - **THEN** the answer is a sanitized internal error, no account lookup runs and no email is sent
 
+#### Scenario: The invitation accept route shares the key and the failure behavior
+
+- **WHEN** 6 requests come from `2001:db8:1:2::1` and 5 from `2001:db8:1:2:ffff::9` within 60 seconds to the accept route, and the rate-limit store then throws
+- **THEN** the eleventh request of that /64 is limited like any other route's, and the call during the failure answers a sanitized internal error with no acceptance attempted
+
 #### Scenario: A zero limit fails startup
 
 - **WHEN** `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX=0`
@@ -434,11 +457,14 @@ address or a bare digest), per IP and global, with defaults of 5 per hour per re
 10 per hour per IP and 600 per hour globally. It MUST obey the shared kill switch
 (`INVITATION_EMAIL_KILL_SWITCH`) and the shared recipient-domain allowlist, and MUST be
 suppressed when every tenant of the user is on `EMAIL_DISABLED_TENANT_IDS`. These controls
-MUST be applied in that order before the token is issued (a request they refuse changes no
-token). Every refusal (a cap, the kill switch, the allowlist, a disabled tenant, a provider
-failure) MUST be silent: the response stays the uniform one, and the refusal MUST be logged
-only with a closed reason and no address. A refused request MUST NOT consume the token's
-single use.
+MUST be applied in this order, all before the token is issued: the kill switch, the
+recipient-domain allowlist, the disabled-tenant list, then the per-recipient, the per-IP and
+the global caps, so that a request refused by a narrower control consumes none of the wider
+buckets. A request they refuse changes no token; the allowlist is decided at admission, not
+when the message is handed to the provider. Every refusal (a cap, the kill switch, the
+allowlist, a disabled tenant, a provider failure) MUST be silent: the response stays the
+uniform one, and the refusal MUST be logged only with a closed reason and no address. A
+refused request MUST NOT consume the token's single use.
 
 #### Scenario: A per-recipient cap is silent
 
@@ -456,13 +482,19 @@ single use.
 
 - **GIVEN** the kill switch is on, or a recipient whose domain is not on the allowlist
 - **WHEN** the address is posted
-- **THEN** nothing is sent, the answer is the uniform one, and the allowlist case logs `catalog.security.email_recipient_blocked` with the template and no address
+- **THEN** nothing is sent, no token is issued, the answer is the uniform one, and the allowlist case logs `catalog.security.email_recipient_blocked` with the template and no address, and `catalog.security.recovery_email_suppressed` with the reason `recipient_domain_blocked`
 
 #### Scenario: A provider failure is invisible to the caller
 
 - **GIVEN** a provider that fails with an error containing the recipient address
 - **WHEN** the address is posted
 - **THEN** the answer is the uniform one and the address appears in no signal
+
+#### Scenario: A narrower refusal consumes no wider bucket
+
+- **GIVEN** an address whose recipient cap is full, and an IP and a global bucket with room
+- **WHEN** the address is posted
+- **THEN** no email is sent and the IP and global buckets are unchanged
 
 #### Scenario: Reset caps and invitation caps are counted apart
 
@@ -497,15 +529,19 @@ parsed, the target is resolved on the server, Cerbos decides with the resource k
 mount switch. A target that is not a member of the caller's tenant, or does not exist,
 MUST answer `CATALOG_NOT_FOUND`, identical for both. An admin MUST NOT reset their own
 second factor, and MUST NOT reset the factor of another admin or of an owner: those attempts
-are refused, nothing changes, and the policy and the service both enforce it. A target with
-no enrolled factor, a target who also belongs to another tenant, and a target who is not
-a plain member MUST each be refused by the service with the same `CATALOG_VALIDATION_FAILED`
-answer, identical in status, code, message and body shape, decided after every check has been
-evaluated, so that neither the order nor the time of the refusal reveals which held; only the
-internal log carries the reason, and the response MUST NOT reveal a membership in another
-tenant. On success the operation MUST delete the target's second factor, revoke every session
-of the target, mark the target for re-enrolment, send the fixed MFA-reset notice to the
-target's registered address, and emit the audit event.
+are refused, nothing changes, and the policy and the service both enforce it. With the policy
+bundle deployed, the policy answers `AUTH_FORBIDDEN` for the self, admin and owner targets,
+which reveals only the caller's own id and the roles of the caller's own tenant; without it,
+the service answers them with `CATALOG_VALIDATION_FAILED`. A target with no enrolled factor, a
+target who also belongs to another tenant, and a target who is not a plain member MUST each be
+refused by the service with the same `CATALOG_VALIDATION_FAILED` answer, identical in status,
+code, message and body shape, decided after every check has been evaluated, so that neither
+the order nor the time of the refusal reveals which held; only the internal log carries the
+reason, and the response MUST NOT reveal a membership in another tenant. On success the
+operation MUST delete the target's second factor, revoke every session of the target, mark the
+target for re-enrolment, send the fixed MFA-reset notice to the target's registered address,
+and emit the audit event. It MUST NOT revoke or change machine credentials, service accounts or
+SSO links of the target.
 
 #### Scenario: An admin resets a member's lost factor
 
@@ -539,12 +575,14 @@ target's registered address, and emit the audit event.
 
 - **WHEN** an admin calls the operation for their own account
 - **THEN** it is refused, nothing changes, and `catalog.security.self_mfa_reset_denied` is logged with the tenant and the admin's id, whether or not the policy bundle is deployed
+- **AND** the answer is `AUTH_FORBIDDEN` with the policy bundle deployed and `CATALOG_VALIDATION_FAILED` without it
 
 #### Scenario: An admin or owner target is refused
 
 - **GIVEN** a second admin and an owner of the same tenant, both with a second factor
 - **WHEN** an admin calls the operation for each
 - **THEN** it is refused, nothing changes, and only the operator command can reset them
+- **AND** the answer is `AUTH_FORBIDDEN` with the policy bundle deployed and `CATALOG_VALIDATION_FAILED` without it
 
 #### Scenario: A member of several tenants is refused
 
@@ -562,6 +600,12 @@ target's registered address, and emit the audit event.
 - **GIVEN** a member with no enrolled factor, a member of two tenants, and a member of two tenants with no factor
 - **WHEN** an admin calls the operation for each
 - **THEN** the three responses have the same status, code, message and body bytes, and the three internal records carry their own reasons
+
+#### Scenario: An MFA reset leaves credentials and linked sign-ins, and the notice says to review them
+
+- **GIVEN** a member with a second factor, a linked Visma Connect account and a service account with a credential
+- **WHEN** an admin, or the operator command, resets the member's second factor
+- **THEN** the link and the credential are unchanged, and the MFA-reset notice tells the member, in its fixed text, to review service accounts, credentials and linked sign-ins
 
 #### Scenario: Humans and agents take the same path
 
@@ -600,12 +644,20 @@ require an approver id, of the operator id's form, that differs from the operato
 refuse to run otherwise. It MUST refuse an unknown organization or a user who is not a member
 of it. It MUST NOT load the Better Auth signing secret: it works through SQL on the
 `tayzu_auth` role and its declared variable list MUST exclude `BETTER_AUTH_SECRET`. It MUST
-send the fixed notice through the sender, the kill switch and the disabled-tenant list, and
-MUST report only whether the notice was sent or suppressed. A runbook MUST state who may run
-it, that a production run happens only from the production-network operator environment
-under just-in-time access with a personal account and never from a laptop, the identity
-verification and the second approver it requires, and that the member then sets a password
-through the reset flow.
+send the fixed notice through the sender, the kill switch and the disabled-tenant list.
+Outside the test environment it MUST refuse to start, before any database or email work, when
+`TAYZU_TELEMETRY_DISABLED` is true or no OTLP endpoint is set, so that its audit event cannot be
+switched off by the person it audits, and it MUST exit non-zero when the final telemetry flush
+fails. On completion it MUST print exactly one line, for the operator to attach to the
+just-in-time access record, holding the operator id, the approver id, the target's opaque user id,
+the number of sessions revoked and whether the notice was sent or suppressed, and no address and
+no secret. A runbook MUST state who may run it, that a production run happens only from the
+production-network operator environment under just-in-time access with a personal account and
+never from a laptop, the identity verification and the second approver it requires, and the order
+of the recovery: the person requests the reset link before the run, the operator runs the
+command, the person confirms the reset at once and then enrols a second factor in a supervised
+session, and the account is handed back only after the enrolment, so that no one who knew the old
+password has a window to enrol first; if the confirmation asks for a factor, the run is repeated.
 
 #### Scenario: The operator resets the last admin's factor
 
@@ -628,6 +680,22 @@ through the reset flow.
 - **WHEN** the command's declared variable list is read
 - **THEN** it contains `AUTH_DATABASE_URL`, `TAYZU_OPERATOR_ID` and the email variables, and not `BETTER_AUTH_SECRET`, `DATABASE_URL` or `CERBOS_ADDRESS`
 
+#### Scenario: The command refuses to run without telemetry
+
+- **GIVEN** the environment is not the test environment
+- **WHEN** the command starts with `TAYZU_TELEMETRY_DISABLED=true`, or with no OTLP endpoint set
+- **THEN** it exits non-zero before any database or email work and changes nothing
+
+#### Scenario: A failed telemetry flush fails the run
+
+- **WHEN** the final telemetry flush of a completed run fails
+- **THEN** the command exits non-zero with a fixed message that says the audit event may be missing
+
+#### Scenario: The command prints one completion line
+
+- **WHEN** the command completes
+- **THEN** it prints exactly one line holding the operator id, the approver id, the target's opaque user id, the number of sessions revoked and whether the notice was sent or suppressed, and no address and no secret
+
 #### Scenario: The operator resets a member of several tenants
 
 - **GIVEN** a member of two organizations whose admin was refused by the admin operation
@@ -637,8 +705,14 @@ through the reset flow.
 #### Scenario: A squatter enrolled a factor on an account created for my address
 
 - **GIVEN** an admin created an account for `victim@example.com`, signed in with the temporary password and enrolled a TOTP factor, and the victim's reset now asks for a code the victim never set up
-- **WHEN** the victim contacts the platform operator and the operator runs the command for that member with an approver
-- **THEN** the squatter's factor and sessions are gone, and the victim completes a reset with the link alone
+- **WHEN** the victim contacts the platform operator, requests a reset link before the run, the operator runs the command for that member with an approver, and the victim confirms with the link at once
+- **THEN** the squatter's factor and sessions are gone, the victim completes the reset with the link alone, and the old password no longer signs in
+
+#### Scenario: A squatter who re-enrols in the window is removed by a repeat run
+
+- **GIVEN** the state after the command ran in the scenario above, and the squatter signs in with the old password before the victim confirms
+- **WHEN** the squatter's session calls a `/v1` route and then enrols a TOTP factor, and the victim's confirmation then asks for a factor
+- **THEN** the `/v1` call is rejected as a missing context, the confirmation answers `AUTH_STEP_UP_REQUIRED`, and a second run of the command followed at once by the victim's confirmation completes the reset
 
 ### Requirement: Backup codes remain the self-service recovery for a lost authenticator
 
@@ -659,7 +733,9 @@ second factor is enrolled or their backup codes are regenerated; an admin or ope
 resets their second factor; and an account is created for their address through
 `identity.users.create`. Each notice MUST have a fixed subject and body, no interpolated
 value, no link, no organization, actor or other tenant free text, and exactly one
-recipient. The account-created notice MUST tell the owner to use the forgot-password page
+recipient. The password-changed notice and the MFA-reset notice MUST each tell the user, in
+the same fixed sentence, to review their service accounts, credentials and linked sign-ins.
+The account-created notice MUST tell the owner to use the forgot-password page
 if they do not expect the account and to contact the platform operator if a reset asks for a
 code they never set up. A notice MUST NOT block the operation that triggered it and MUST NOT be
 sent when the operation fails.

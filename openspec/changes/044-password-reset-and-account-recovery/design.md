@@ -127,15 +127,17 @@ archive of `002` (`e3f5771`):
 
 ## Decisions
 
-Decisions D1-D20 are this design's. Q1-Q27 at the end are the human's approved
-answers (Q1-Q11 on 2026-10-14, Q12-Q27 on 2026-10-15); each D names the Q it implements.
+Decisions D1-D20 are this design's. Q1-Q30 at the end are the human's approved
+answers (Q1-Q11 on 2026-10-14, Q12-Q30 on 2026-10-15); each D names the Q it implements.
 
 ### D1. Tayzu owns both reset routes; Better Auth's stay closed (Q2)
 
 Two plain Fastify routes in `apps/api`, modeled on the accept route, replace Better
 Auth's three. Better Auth's remain off the allowlist and keep answering the byte-identical
-`404` of any unknown path; the drift test keeps listing them as blocked (its comment
-changes from "no reset flow yet" to "Tayzu-owned routes, D1"). The final password write
+`404` of any unknown path. The drift test already lists them as blocked
+(`auth-route-allowlist.test.ts:60-66`) and asserts it (`:259-261`), so the spec scenario
+"Better Auth's own reset routes stay closed" is covered by that test as it stands and this
+change does not touch it. The final password write
 uses Better Auth's exported password hash function (D7, Q13), so hashing, NFC
 normalization, the password policy (`validatePassword`) and the breached-password check
 all apply.
@@ -162,15 +164,17 @@ all apply.
 - **Registration.** The two public routes are registered in `server.ts` next to the accept
   route, inside the same `if (options.mountIdentityRoutes === true)` block, before the
   `/v1/*` catch-all, and added to `PUBLIC_ROUTE_ALLOWLIST` each with a `reason`
-  (Q9). With the switch off they do not exist: an unauthenticated call hits the catch-all
-  and answers 401 `CATALOG_CONTEXT_REQUIRED`, an authenticated one 404, as `043` D15
-  states. `mount-gate.int.test.ts` and `route-auth-allowlist.int.test.ts` gain the three
-  routes. Neither public route is in an OpenAPI document (like the accept route), which
+  (Q9). Each route's allowlist entry is added by the task that registers the route (6.1,
+  8.3), because the existing allowlist tests fail on a public route with no entry and on an
+  entry with no route. With the switch off they do not exist: an unauthenticated call hits
+  the catch-all and answers 401 `CATALOG_CONTEXT_REQUIRED`, an authenticated one 404, as
+  `043` D15 states. `mount-gate.int.test.ts` and `route-auth-allowlist.int.test.ts` gain the
+  routes with the same tasks (6.1, 8.3, 10.5). Neither public route is in an OpenAPI document (like the accept route), which
   is why D17 adds the DAST probe.
 - **Order of work, request route:** the per-IP limiter (a `preHandler`, before the
   handler) → CSRF header and `Origin` check → strict parse and limits → canonical address
-  → eligibility (D4) → **the mailer's admission** (kill switch, disabled tenants, global,
-  IP and recipient caps, D5) → only for an admitted request, token issue (D3) and the
+  → eligibility (D4) → **the mailer's admission** (kill switch, recipient-domain allowlist,
+  disabled tenants, then the recipient, IP and global caps, D5) → only for an admitted request, token issue (D3) and the
   detached send → pad the response to the minimum duration (D4) → the uniform answer. A
   request the mailer does not admit issues no token and deletes none (D5, review
   correction C1): the user's earlier link stays valid until it expires.
@@ -203,14 +207,20 @@ all apply.
   `bodyLimit` of the app applies.
 - **Answers.** The uniform rejection of the confirm route is `CATALOG_NOT_FOUND`, 404, with
   the text of the catalog's own not-found (the accept route's `AcceptanceNotFoundError`
-  precedent). `AUTH_STEP_UP_REQUIRED` (403) answers a missing, invalid or unsatisfiable
+  precedent). A malformed confirm body, which depends only on the request, answers
+  `CATALOG_VALIDATION_FAILED` (400) with the denial reason `malformed_request`, as the accept
+  route does (`accept-flow.ts:611-633`); Q24's reading ("only account- or token-dependent
+  refusals are uniform") covers it. `AUTH_STEP_UP_REQUIRED` (403) answers a missing, invalid or unsatisfiable
   factor. `CATALOG_VALIDATION_FAILED` (400) answers a policy or breach refusal with only the
   rule name. `AUTH_RATE_LIMITED` (429, `Retry-After`) answers the IP limiter. A breach-service
   outage and a limiter-store failure answer the sanitized `INTERNAL` 500. No new error code
   is introduced.
-- **No caching.** Every response of both routes, success or refusal, carries
-  `Cache-Control: no-store` and `Pragma: no-cache`, so a shared cache or a browser never
-  keeps an answer or a body. `D17`'s probe asserts the headers.
+- **No caching.** Every response of both routes, success or refusal, the limiter's `429` and
+  the fail-closed `500` included, carries `Cache-Control: no-store` and `Pragma: no-cache`,
+  so a shared cache or a browser never keeps an answer or a body. The app already adds
+  `Cache-Control: no-store` to every response that sets none (`server.ts:483-487`); the
+  routes add `Pragma: no-cache` through one helper (tasks 6.7, 8.3). `D17`'s probe asserts
+  the headers.
 - _Alternative:_ one route with a `?mode=` switch, or `GET` for the link. Rejected: a `GET`
   that consumes or reflects a token is prefetchable, and two routes keep the
   enumeration-sensitive one trivially small.
@@ -241,8 +251,8 @@ all apply.
   user's rows (`identifier like 'password-reset:%' and split_part(value, ':', 3) = $userId`),
   delete expired `password-reset:` rows (opportunistic cleanup, so no janitor is needed),
   insert the new row. Bind parameters only. The route calls `issue` only after the mailer
-  admitted the send (D5), so a request that is suppressed by the kill switch, the disabled
-  tenants or a cap deletes nothing: an attacker who fills a victim's recipient cap cannot
+  admitted the send (D5), so a request that is suppressed by the kill switch, the allowlist,
+  the disabled tenants or a cap deletes nothing: an attacker who fills a victim's recipient cap cannot
   evict the link the victim already has. The prefix scan is bounded: a row exists only for
   an admitted send, so live rows never exceed the global cap (600 per hour by default) plus
   the expired rows the next issue purges; if the janitor ticket is ever triggered, an
@@ -321,10 +331,20 @@ same HMAC key.
 - **Admission before issue.** The reset email has two steps. `admitResetEmail({ address,
   userId, tenantIds, ipKey })` runs the controls in this order and returns `{ admitted:
   false }` (after logging the suppression once) or `{ admitted: true, send(link) }`:
-  kill switch (`INVITATION_EMAIL_KILL_SWITCH`) → every tenant of the user is on
-  `EMAIL_DISABLED_TENANT_IDS` (suppressed; the list is read from the same configuration as
-  `043`'s) → global cap → IP cap (the normalized key of D16) → recipient cap (HMAC of the
-  canonical address, `recipient-key.ts`). Only an admitted request reaches the token store
+  kill switch (`INVITATION_EMAIL_KILL_SWITCH`) → recipient-domain allowlist (a pure check of
+  the address's domain against `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`, the same
+  `isRecipientDomainAllowed` function the sender wrapper uses, so a refused domain changes no
+  token) → every tenant of the user is on `EMAIL_DISABLED_TENANT_IDS` (suppressed; the list is
+  read from the same configuration as `043`'s) → recipient cap (HMAC of the canonical address,
+  `recipient-key.ts`) → IP cap (the normalized key of D16) → global cap. The three
+  counters run narrowest first, so a request refused by a narrower control consumes none of the
+  wider buckets: the 600-per-hour global bucket can be spent only by requests that already
+  passed the recipient and the IP caps, which makes it dearer to exhaust than if it came first
+  (review NP-10; the cost is that a request refused by the global cap has already spent one
+  recipient and one IP unit, which it would not have been mailed anyway). The allowlist
+  refusal is logged as `recovery_email_suppressed` (`recipient_domain_blocked`) and, because
+  `043`'s alerts key on it, also as the existing `catalog.security.email_recipient_blocked`
+  with the template. Only an admitted request reaches the token store
   (D3); `send(link)` then starts the detached send. Every refusal returns normally; none
   throws; each is logged once as `catalog.security.recovery_email_suppressed` with the
   template and a closed reason, and the user id when there is one. **A refused request
@@ -332,13 +352,13 @@ same HMAC key.
   the user already holds stays valid until it expires (review correction C1: issuing first let
   anyone who knows an address evict the victim's mailed link). The buckets are
   consumed at admission even if the token store then fails.
-- **What a failed send leaves.** A provider failure or a recipient-domain refusal by the
-  allowlist wrapper happens after the token was issued: the new token exists and is
-  unmailed, and the earlier one is already deleted. The mailer logs it as
-  `provider_failure` (the wrapper also logs `catalog.security.email_recipient_blocked`
-  with the template, as today). The user requests again; this is the only case where a
-  request can leave a user with no mailed link, and it needs a provider fault, not an
-  attacker action.
+- **What a failed send leaves.** A provider failure happens after the token was issued: the
+  new token exists and is unmailed, and the earlier one is already deleted. The mailer logs
+  it as `provider_failure`. The user requests again; this is the only case where a request
+  can leave a user with no mailed link, and it needs a provider fault, not an attacker
+  action. The allowlist is no longer such a case: it is decided at admission, so a
+  recipient domain off the list can no longer evict a link (review NP-2); the sender wrapper
+  stays as the second line and, if it ever refuses at send time, the case is this one.
 - **Caps.** Own scopes in the closed `RateLimitScope` union and own rows in the cap store's
   `BUCKETS` table: `reset_email_recipient` (kind `email`), `reset_email_ip` (kind `ip`),
   `reset_email_global` (a new kind `global`, one constant key), `recovery_notice_recipient`
@@ -383,6 +403,10 @@ the check fails toward the stricter side (the draft used AND, so an inconsistent
 have let the link alone change a password).
 
 - **No factor enrolled:** the link is enough (Q1).
+- **The predicate is evaluated twice, and the second decides.** The read before the lock
+  (D2) is a fast fail only. Inside the lock, on the lock's connection, the predicate is
+  evaluated again (D7 step 3), so a factor enrolled between the two reads is not bypassed by
+  a confirm that carried no factor: it answers `AUTH_STEP_UP_REQUIRED` and consumes nothing.
 - **Enrolled and no `factor` in the body:** answer `AUTH_STEP_UP_REQUIRED` (403), change
   nothing, do not consume the token, do not count a failure. This discloses "this account
   has a second factor" only to a holder of a valid token, who is entitled to it. It runs
@@ -397,7 +421,7 @@ have let the link alone change a password).
     `@better-auth/utils/otp`, the calls the installed plugin makes in
     `dist/plugins/two-factor/totp/index.mjs:188`. `@better-auth/utils@0.4.2` is already in the
     lockfile as Better Auth's own dependency; this design names it and adds it as a direct
-    dependency of `@tayzu/auth` at that exact version (task 1.1, Q18), the one dependency of
+    dependency of `@tayzu/auth` at that exact version (task 1.2, Q18), the one dependency of
     the change.
   - `backup_code`: the verifier decrypts with Better Auth's `getBackupCodes`, compares each
     stored code with `timingSafeEqual` (the plugin's `verifyBackupCode` uses `includes`, not
@@ -455,7 +479,7 @@ Better Auth's `haveibeenpwned` module (k-anonymity; a failure to reach the servi
 the sanitized 500 and consumes nothing). Both run before the transaction and before any
 factor is checked or spent, so a refusal never burns the token or a backup code (Better
 Auth's own route burns the token first, Context). The new requirement extends the
-"Password policy" requirement of `identity-lifecycle-and-org-admin`: the reset is one more
+"Password policy" requirement of `identity-lifecycle-and-org-admin` (`043` task 8.1): the reset is one more
 entry point of it, and the breach check sees the NFC form.
 
 **One transaction, written as SQL (Q13).** Better Auth's adapter is not transactional here
@@ -472,11 +496,17 @@ Inside the lock, in this order (any thrown error rolls the whole transaction bac
    else is the uniform rejection (`consume_conflict` or `not_found`);
 2. re-read `banned` and the `credential` account of the user; a banned or credential-less
    user is `not_eligible` (the eligibility check before the lock can be overtaken by a ban);
-3. if the user is enrolled: the factor check and its accounting (D6). A failure writes its
-   counters, commits those writes only, and answers `AUTH_STEP_UP_REQUIRED`; nothing below
-   runs;
+3. evaluate the enrolled predicate of D6 again; if the user is enrolled and the body has no
+   factor, answer `AUTH_STEP_UP_REQUIRED` with nothing consumed; if the user is enrolled and
+   there is a factor, check it with its accounting (D6). A failure writes its counters,
+   commits those writes only, and answers `AUTH_STEP_UP_REQUIRED`; nothing below runs.
+
+Steps 1-3 and every write below run on the connection the lock holds: each repository
+function takes an optional `db` (the lock's client), as `markInvitationAccepted(..., db?)`
+does (`auth-repository.ts:93-97`, `:329`), and a test with a pool of one connection proves
+that no second pooled connection is taken (tasks 2.4, 5.1, 8.2, 8.7, 8.10).
 4. hash the password with the exported function that `emailAndPassword.password.hash`
-   uses (`auth.ts:960`: NFC, then `hashPassword`; exported as one symbol, task 1.4, so the
+   uses (`auth.ts:960`: NFC, then `hashPassword`; exported as one symbol, task 1.5, so the
    config and the reset cannot diverge). The `haveIBeenPwned` wrapper around
    `context.password.hash` is deliberately not used: it keys on the endpoint path and would
    throw outside an endpoint, and the check already ran explicitly. A test proves the stored
@@ -485,17 +515,25 @@ Inside the lock, in this order (any thrown error rolls the whole transaction bac
 6. update the `credential` row of `auth.account` (`password`, `updated_at`); exactly one row
    must change, else abort;
 7. delete the user's other `password-reset:` rows;
-8. delete `temp-password:<userId>` (the marker `/change-password` deletes in `hooks.after`),
-   and delete the user's pending two-factor challenge rows (`2fa-<random>`, value = user id)
-   and `trust-device-*` rows (value = user id), so a challenge opened before the commit
-   cannot finish a sign-in after it. `mfa-reenrol:<userId>` is **not** deleted: a reset does
-   not give back a factor that was reset;
+8. delete `temp-password:<userId>` by its identifier (the marker `/change-password` deletes in
+   `hooks.after`; its `value` is an ISO expiry, `temporary-password.ts:121`, so a value match
+   cannot find it), and delete the user's pending two-factor challenge rows (`2fa-<random>`) and
+   `trust-device-*` rows by `value` = user id (the installed plugin stores the user id as the
+   value of both: `better-auth/dist/plugins/two-factor/index.mjs:294-298` and
+   `verify-two-factor.mjs:49-56`), so a challenge opened before the commit cannot finish a
+   sign-in after it. The sibling `2fa-attempts-2fa-<random>` rows hold the value `0`
+   (`index.mjs:299-303`), are not matched and expire with their challenge (10 minutes,
+   `index.mjs:290`); the test expects them to remain. `mfa-reenrol:<userId>` is **not**
+   deleted: a reset does not give back a factor that was reset;
 9. set `emailVerified` to true on `auth.user`;
 10. if a backup code was used, the compare-and-swap spend of D6; a lost swap (a sign-in spent
     the same code at the same moment) aborts and answers `AUTH_STEP_UP_REQUIRED`;
 11. reset the account's failure counter if a factor was checked;
 12. delete every session of the user in every tenant with `returning`, so the events know how
-    many and in which tenant.
+    many and in which tenant. A session's `active_organization_id` is nullable
+    (`persistence/schema.ts:92`), so a returned row may have no tenant, and
+    `emitSessionRevoked` takes an optional tenant (`auth.ts:391-402`): the event then omits
+    `tayzu.tenant.id`.
 
 If any step throws, the transaction rolls back: the old password signs in, the sessions
 live and the token is intact (spec scenario "A failed write leaves everything as it was").
@@ -518,8 +556,11 @@ inside the transaction, but a sign-in that verified the old password just before
 could insert its session just after it. Two controls close that, and one residual remains:
 
 - `hooks.before` on `/sign-in/email` reads the credential account's stored hash for the
-  address (kept in a request-scoped `WeakMap`, like `activeOrganizationBeforeAttempt`,
-  `auth.ts:265`); `hooks.after`, after a successful sign-in, reads it again and, if it
+  address in one lookup that runs the same way for a known and an unknown address (an unknown
+  address finds no row; there is no branch on existence), and keeps it in a request-scoped
+  `WeakMap`, like `activeOrganizationBeforeAttempt` (`auth.ts:265`), so the fence adds no
+  difference to the status, code or body shape that `002`'s enumeration requirement fixes
+  (task 8.13 tests it); `hooks.after`, after a successful sign-in, reads it again and, if it
   changed, deletes the new session, clears the new-session slot and the cookie and answers
   the same wrong-password response the expired-temporary-password branch gives
   (`auth.ts:1394`). A hash cannot change by a clock, so the comparison needs no clock
@@ -543,7 +584,7 @@ could insert its session just after it. Two controls close that, and one residua
   if `045` marks it `Disabled` the user is ineligible by D4, otherwise the reset is
   harmless.
 
-### D8. The notices (Q7, Q16, Q20, Q21)
+### D8. The notices (Q7, Q16, Q20, Q21, Q30)
 
 Five new members join the closed `EmailTemplate` union
 (`packages/auth/src/identity/email/sender.ts`), each with a renderer in
@@ -557,7 +598,7 @@ the same union after this change merges and rebases (D18).
 | `PasswordResetEmail`    | `password_reset`  | link, expiry text     | 1    | an admitted request (D5)                                                                          |
 | `PasswordChangedNotice` | `password_changed`| none                  | 0    | a completed reset, and a successful `/change-password`; its fixed text tells the user to review their service accounts, credentials and linked sign-ins (Q21) |
 | `MfaChangedNotice`      | `mfa_changed`     | none                  | 0    | a TOTP factor becomes verified for a session user, or backup codes are regenerated                |
-| `MfaResetNotice`        | `mfa_reset`       | none                  | 0    | an admin or operator MFA reset (D10, D12): tells the user to sign in and enrol again              |
+| `MfaResetNotice`        | `mfa_reset`       | none                  | 0    | an admin or operator MFA reset (D10, D12): tells the user to sign in and enrol again, and, as fixed text, to review their service accounts, credentials and linked sign-ins (Q30) |
 | `AccountCreatedNotice`  | `account_created` | none                  | 0    | `identity.users.create` committed: "an account was created for this address"; no link; says to use the forgot-password page if the person does not expect it, and to contact the platform operator if a reset asks for a code they never set up (Q16) |
 
 Fixed subject and body per template, no tenant, actor or organization text, one recipient,
@@ -603,7 +644,7 @@ they stand as drafted, with no configuration for the 30 minutes or the budget of
 | `PASSWORD_RESET_GLOBAL_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`                       | 600 per 3600 s     | emails across the platform |
 | `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`                   | 10 per 86 400 s    | per recipient, all five notices, apart from the other buckets |
 | `ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`               | 20 per 86 400 s    | account-created notices per creating tenant (Q20) |
-| `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`               | 1000 per 86 400 s  | account-created notices across the platform (Q20) |
+| `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`               | 1000 per 86 400 s  | account-created notices across the platform (Q20; the default 1000 is confirmed by Q28) |
 | `PASSWORD_RESET_MIN_RESPONSE_MS`                                                | 400                | a positive integer between 1 and 5000, else startup fails |
 
 Every limit is parsed like the other caps: a missing value takes the default, a non-integer,
@@ -629,7 +670,7 @@ is omitted, so no limiter or cap is ever off (the Q140 lesson of `043`). The DAS
 environment gains the new variables where `dast.sh` sets them. `docs/security/secrets.md`
 lists them, and lists the operator CLI's own variable set (D12).
 
-### D10. The admin MFA reset (Q6, Q12, Q15)
+### D10. The admin MFA reset (Q6, Q12, Q15, Q28, Q30)
 
 `identity.users.resetMfa`, a branded procedure of the identity router built with
 `defineIdentityOperation({ authorization: { kind: RESOURCE_KINDS.user, action: 'resetMfa',
@@ -640,7 +681,8 @@ high`, `inputStructure: 'detailed'`, behind the mount switch and listed in
 Auth user (`043` D14); the exported path is the route template (`043` D16 adds this
 template to its list). The body is `{ reason }`, a **mandatory reason code from a closed
 enum** (`lost_both_factors`, `device_replaced`, `suspected_compromise`,
-`identity_verified_request`), recorded by the audit event (Q15).
+`identity_verified_request`; the four values are confirmed by Q28), recorded by the audit event
+(Q15).
 
 - **Targets: members only (Q15).** A tenant admin may reset the factor of a **member** of
   the tenant. Another admin, or an owner, can be reset only by the operator CLI with a named
@@ -661,12 +703,23 @@ enum** (`lost_both_factors`, `device_replaced`, `suspected_compromise`,
   `updateStatus` rule (`R.id == P.id`). The change adds, for `resetMfa`: (1) the self-target
   deny, by adding the action to that rule; (2) a deny when the target is not a plain member:
   the wrapper supplies the target's tenant role as a new resource attribute `memberRole`
-  (from `memberOf` in the target resolver, task 10.2), and the rule denies `resetMfa` unless
-  `R.attr.memberRole == "member"`, written to fail closed when the attribute is absent and to
-  leave the wrapper's targetless caller check (resource id `new`) untouched; and (3) test cases in
+  (the raw role string, from `memberOf` in the target resolver, task 10.2), and the rule
+  denies `resetMfa` unless `R.attr.memberRole == "member"`. Two goals meet in that one rule:
+  it must fail closed when the attribute is absent on a target check, and it must leave the
+  wrapper's targetless caller check alone. That check is the first step of every operation:
+  it names the resource id `new` and carries no `memberRole` (`define-operation.ts:174`,
+  `identity-attributes.ts:56-59`), so a rule that denied on an absent attribute alone would
+  deny every admin at step 1 and make the operation unusable. The rule therefore reads
+  `R.id != "new" && (!has(R.attr.memberRole) || R.attr.memberRole != "member")`, or the
+  equivalent the policy-writer proves, and the roles are comma-separated strings
+  (`context-resolver.ts:318`), so a composite `admin,owner` or `member,admin` is not equal to
+  `member` and is denied (a generated user id is never `new`); and (3) test cases in
   `policies/resource_policies/user_test.yaml`: a same-tenant admin on a member allowed; a
   member denied; an admin of another tenant denied (cross-tenant deny); an admin on
-  themselves denied; an admin on another admin denied; an admin on an owner denied.
+  themselves denied; an admin on another admin denied; an admin on an owner denied; an admin on
+  resource id `new` allowed and a member on `new` denied (the targetless caller check); a
+  target whose role is `admin,owner` denied, one whose role is `member,admin` denied, and a
+  target with no `memberRole` denied.
   **This is a Cerbos policy change and a Checkpoint 3 stop** (task 10.1, `policy-writer`,
   `pnpm policy:compile`, presented in chat with its compile output, approved separately
   before tasks 10.2 onward). The wrapper's self-target signal (`STATUS_ACTION`,
@@ -685,8 +738,11 @@ enum** (`lost_both_factors`, `device_replaced`, `suspected_compromise`,
   them. The internal reason goes only to the log: `catalog.security.identity_conflict_refused`
   with `target_in_other_tenant`, `target_is_admin_or_owner` or the new `no_enrolled_factor`, or
   `catalog.security.self_mfa_reset_denied` for the actor. (When Cerbos is deployed it denies
-  the self and role cases earlier with `AUTH_FORBIDDEN`, which reveals nothing the caller
-  does not know: their own id, and the roles of their own tenant.) An admin therefore never
+  the self, admin and owner cases earlier with `AUTH_FORBIDDEN`, which reveals nothing the
+  caller does not know: their own id, and the roles of their own tenant. So the answer code of
+  those three cases is `AUTH_FORBIDDEN` with the bundle deployed and `CATALOG_VALIDATION_FAILED`
+  without it, and the "same body" rule above covers the service-level predicates: no factor,
+  other tenant, role and self; the spec and tasks 10.4 and 10.6 state both codes.) An admin therefore never
   learns that a member also belongs to another organization. **The multi-tenant refusal
   belongs to the admin path only** (Q12): the operator CLI recovers such users. Rejected: a
   global effect from one tenant's admin; requiring approval from the other tenants.
@@ -696,8 +752,13 @@ enum** (`lost_both_factors`, `device_replaced`, `suspected_compromise`,
   `auth.security.session_revoked` with the new reason `mfa_reset` once per returned row; delete
   the user's `2fa-` challenge rows and `trust-device-*` rows (value = user id; the sign-in
   flow already refuses `trustDevice`, `auth.ts:1299-1302`, so the second kind should not exist).
+  It leaves the user's `password-reset:` rows alone: the operator runbook of D12 relies on a
+  link requested before the run still working after it.
   After the commit: `MfaResetNotice` to the target (D8), `catalog.audit.mfa_reset` (form
-  `admin`, with the reason code), the metric.
+  `admin`, with the reason code), the metric. Machine credentials, service accounts and SSO
+  links of the target are left untouched, as for a password reset (Q21, Q30, including when the
+  reason is `suspected_compromise`); the fixed notice tells the target to review them, and the
+  two tickets of Q21 cover the MFA reset too.
 - **Self-service stays as `002` shipped it.** The target recovers with the password and the
   enrolment of D11. The admin never sees a secret, a code or a password.
 - _Alternatives:_ **email-only MFA reset** (a mailbox would defeat MFA), **backup codes
@@ -714,7 +775,12 @@ authentication"). The mechanism mirrors the temporary-password marker (Q17):
 - `mfa-reenrol:<userId>` in `auth.verification`, value a constant, `expires_at` the same
   far-future sentinel the SSO-link and temporary-password markers use (`043` Q142; `9999-12-31`,
   `temporary-password.ts:96`), so Better Auth's opportunistic cleanup of expired rows keeps
-  it. It is written by the MFA reset and the operator CLI and cleared on enrolment. It is an
+  it. It has **one writer**: `writeMfaReenrolMarker(userId, db?)` in the auth repository module
+  (SQL on the lock's connection), called by the shared MFA reset service for both the admin
+  form and the operator CLI, which hold no Better Auth instance (D12). `@tayzu/auth` owns
+  only the constants (identifier, value, the sentinel exported from `temporary-password.ts`)
+  and the adapter-based reader and clearer its hooks use (task 9.1). It is cleared on
+  enrolment. It is an
   identifier family that `045`'s completeness test must classify (D18).
 - `hooks.before`: a session whose user holds the marker may reach only
   `/two-factor/enable`, `/two-factor/verify-totp`, `/get-session` and `/sign-out`; anything
@@ -739,7 +805,7 @@ authentication"). The mechanism mirrors the temporary-password marker (Q17):
   convention is not "forces". _Alternative:_ require a factor of everyone: out of scope
   (`002` decides who must have one). _Rejected (Q17):_ no marker.
 
-### D12. Break-glass for an admin, an owner, a multi-tenant member or a squatted factor (Q6, Q14, Q15, Q16)
+### D12. Break-glass for an admin, an owner, a multi-tenant member or a squatted factor (Q6, Q14, Q15, Q16, Q29, Q30)
 
 An admin cannot ask another admin to reset them when they are the last one, an owner and an
 admin target are outside the admin operation (Q15), a member of several tenants is outside it
@@ -757,7 +823,8 @@ All four are recovered out of band, like `043`'s bootstrap CLI
 - **Operator and approver (Q14).** The operator id comes from `TAYZU_OPERATOR_ID`, read by
   `loadScriptConfig` (`apps/api/scripts/script-config.ts`, `043` Q116), not from an argument.
   `--approver` is required, uses the operator id's charset (`OPERATOR_ID_PATTERN`,
-  1 to 128 of `A-Z a-z 0-9 _ . : -`) and must differ from the operator id; the CLI refuses to
+  1 to 128 of `A-Z a-z 0-9 _ . : -`, declared but not exported at `script-config.ts:41`; task
+  11.1 exports it) and must differ from the operator id; the CLI refuses to
   run otherwise. The audit event `catalog.audit.mfa_reset` (form `operator`) carries
   `tayzu.identity.operator.id` and `tayzu.identity.approver.id`. Both are self-asserted
   opaque ids, not authenticated: the Azure PIM record of the run and the person who approves
@@ -773,28 +840,68 @@ All four are recovered out of band, like `043`'s bootstrap CLI
   `AUTH_DATABASE_URL`, `TAYZU_OPERATOR_ID` and the email variables below; it has no
   `DATABASE_URL`, no `CERBOS_ADDRESS` and no `IDENTITY_TOKEN_HMAC_SECRET`. A test asserts the
   list. `docs/security/secrets.md` lists the CLI with its variables and the `tayzu_auth`
-  identity's use (task 15.3).
+  identity's use (task 15.2).
 - **Email (Q14).** The CLI sends the fixed `MfaResetNotice` to the user. It declares
   `EMAIL_PROVIDER`, `EMAIL_SENDER_ADDRESS`, `ACS_CONNECTION_STRING` (required only for
   `acs`), `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST` (required for a real provider),
   `EMAIL_DISABLED_TENANT_IDS` and `INVITATION_EMAIL_KILL_SWITCH` (both optional), builds its
-  sender with the package constructors the app uses (the allowlist wrapper applies), and
-  honors the kill switch and the disabled-tenant list. It has no cap store (that needs a
-  Better Auth adapter), so its single notice is outside the recipient caps; the supervised
-  run is the control. It prints only whether the notice was sent or suppressed, so the
-  operator knows if the owner was not told. Rejected: no email from the CLI; a runbook with
-  no code.
+  sender with `createEmailSender` (`apps/api/src/email-sender.ts:17`; the allowlist wrapper
+  applies), whose parameter becomes the four-field slice of `Config` it reads
+  (`emailProvider`, `acsConnectionString`, `emailSenderAddress`,
+  `emailRecipientDomainAllowlist`), a type-only change so that the script needs no full
+  `Config` (task 11.2), and honors the kill switch and the disabled-tenant list. It has no cap
+  store (that needs a Better Auth adapter), so its single notice is outside the recipient
+  caps; the supervised run is the control. The completion line below says whether the notice
+  was sent or suppressed, so the operator knows if the owner was not told. The CLI is also the
+  first script to hold `ACS_CONNECTION_STRING`, a send-as-the-platform-domain secret; its
+  handling is part of the runbook and `secrets.md` (task 15.2). Rejected: no email from the
+  CLI; a runbook with no code.
+- **Telemetry guard and completion line (Q29).** The audit event is the only durable record of
+  who approved removing a second factor, and the operator sets the CLI's environment, so
+  the shared script rule ("a script refuses to run without an OTLP endpoint unless
+  `TAYZU_TELEMETRY_DISABLED=true`", `secrets.md:212-217`, `telemetry.ts:134-146`, which also
+  lets a run proceed with the flag set and an endpoint present) is stricter here. Outside
+  `NODE_ENV=test` the command refuses to start, before any database or email work, when
+  `TAYZU_TELEMETRY_DISABLED` is true **or** no OTLP endpoint variable is set (the endpoint
+  list at `telemetry.ts:24-29` becomes one exported helper that `startTelemetry` and this
+  guard share). It exits non-zero when the final flush fails: `runScript` awaits `shutdown()`
+  in a `finally` (`run-script.ts:44-46`), so a rejection reaches the entry point, which sets
+  `process.exitCode = 1` as `bootstrap-admin.ts` does; the stderr text is fixed and says the
+  audit event may be missing. The reset itself is committed by then and is not undone, so the
+  completion line below is the operator's record in that case. On completion the command
+  prints exactly one line on stdout, `mfa-reset operator=<id> approver=<id> user=<opaque user
+  id> sessions_revoked=<n> notice=<sent|suppressed>`, which the operator attaches to the PIM
+  record; the ids use the pattern's charset, which has no space or `=`, so the line cannot be
+  forged by an id, and it carries no address and no secret (task 11.3). Rejected: refusing
+  only the opt-out, without the flush check and the line; PIM as the only evidence.
+- **Machine credentials (Q30).** The command leaves the target's machine credentials,
+  service accounts and SSO links untouched, as the password reset does (Q21); the fixed
+  `MfaResetNotice` tells the user to review them. Rejected: revoking the user's credentials
+  when the reason is `suspected_compromise`.
 - **Where it runs (Q14).** A production run happens only from the production-network
   operator environment under Azure PIM with a personal account, never from a laptop. The
   runbook and Gate 5 say so.
 - **The runbook** (`docs/security/secrets.md`, "Maintenance jobs and the bootstrap CLI", gains
-  a section; the full text is task 15.3) states: who may run it; identity verification out
+  a section; the full text is task 15.2) states: who may run it; identity verification out
   of band (video call or an employer-confirmed request) with a named **second approver**
-  recorded before the run and passed as `--approver`; just-in-time access like `043` D9; that
-  the user then sets a password through the reset flow if needed (the MFA is gone, so the link
-  alone suffices) and is confined to enrolment on first sign-in (D11); the squatting path (an
-  owner who reports a reset asking for a code they never set up); that the user enrols in a
-  supervised session; and that the run is reviewed afterwards from the audit event.
+  recorded before the run and passed as `--approver`; just-in-time access like `043` D9; how
+  the operator obtains `AUTH_DATABASE_URL` and `ACS_CONNECTION_STRING` (a Key Vault read under
+  the PIM role, held in the process environment only, never typed into a shell, written to a
+  file or left in a history); the squatting path (an owner who reports a reset asking for a
+  code they never set up); the completion line attached to the PIM record; and that the run
+  is reviewed afterwards from the audit event. **The order of the recovery matters, because
+  after the run the factor is gone and a password is the only thing between the account and
+  the next person to enrol** (the account is confined to enrolment by D11, but whoever signs
+  in first can enrol): (1) the verified person requests a reset link **before** the run (it is
+  valid for 30 minutes) and keeps the page open; (2) the operator runs the command; (3) the
+  person confirms the reset at once, with the link alone because no factor is enrolled any
+  more, which replaces the password and ends every session, so a squatter's or a thief's
+  knowledge of the old password dies; (4) the person signs in with the new password and
+  enrols a second factor in a supervised session while the operator waits; (5) only then is
+  the account handed back and the operator tells the person that the run is over. If step 3
+  answers a factor request, someone enrolled in the window of step 2 to 3, and the operator
+  repeats the run and the confirmation. The window of step 2 to 3 is as short as one
+  request, and it is recorded in Risks.
 - The CLI cannot reset a password: an admin who forgot the password and lost the factor first
   has the factor reset by the runbook, then uses the reset flow.
 - _Alternative:_ a Container Apps Job and a workflow like `045`'s reversal: rejected for this
@@ -806,7 +913,8 @@ All four are recovered out of band, like `043`'s bootstrap CLI
 The same `MOUNT_IDENTITY_ROUTES`, off by default, gates the two public routes and
 `identity.users.resetMfa`. The `043` rule "no HTTP assertion about these routes before the
 hand-off group" does not apply: the hand-offs are done. `ALLOWED_AUTH_ROUTES` is unchanged
-and the drift test only changes its comments. `PUBLIC_ROUTE_ALLOWLIST` gains two entries.
+and the drift test is not touched. `PUBLIC_ROUTE_ALLOWLIST` gains two entries, one with each
+route's task (6.1, 8.3).
 The `identity.openapi.json` document gains the oRPC route (no schemas, as `043` Q52).
 Turning the switch on is a Gate that includes the TLS and DNS checks of Q25 (Gates).
 _Alternative:_ a separate `MOUNT_RECOVERY_ROUTES`: rejected by Q9.
@@ -841,7 +949,7 @@ ids and allowed; an unknown address produces no identifier.
 | Name                               | Required attributes                  | Where |
 | ---------------------------------- | ------------------------------------ | ----- |
 | `identity.password_reset.request`  | none                                 | the request route handler (the uniform path is the same span for every branch) |
-| `identity.password_reset.confirm`  | `tayzu.identity.reset.mfa` (set after the factor step) | the confirm route handler |
+| `identity.password_reset.confirm`  | none; `tayzu.identity.reset.mfa` is conditional: set once the factor step has run, absent on a rejection before it (malformed request, cross-site, unknown token, ineligible account) | the confirm route handler |
 | `identity.mfa.reset`               | `tayzu.identity.mfa_reset.path`      | the MFA reset service, admin and operator |
 
 **Metrics** (counters, `{event}`)
@@ -865,7 +973,8 @@ ids and allowed; an unknown address produces no identifier.
 | `catalog.security.self_mfa_reset_denied`      | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                           |
 
 For the operator form, `tayzu.tenant.id` is the tenant of the organization named on the
-command line; a user of several tenants has one event per run, not per tenant.
+command line; a user of several tenants has one event per run, not per tenant. The operator
+command's completion line (D12) is stdout for the operator's PIM record, not a signal.
 
 Reused unchanged: `auth.security.session_revoked` (gains the reasons `password_reset` and
 `mfa_reset` in `SessionRevocationReason`, `identity-contract.ts` and the fixture),
@@ -885,7 +994,7 @@ existing, and `no_enrolled_factor`, new), `catalog.security.authz_denied` and
 | `tayzu.identity.reset.request_outcome`     | `issued`, `ineligible`, `suppressed` |
 | `tayzu.identity.reset.confirm_outcome`     | `completed`, `rejected`, `factor_required`, `policy_refused`, `breach_check_unavailable` |
 | `tayzu.identity.reset.denial_reason`       | `malformed_request`, `csrf_rejected`, `origin_rejected`, `not_found`, `expired`, `token_mismatch`, `not_eligible`, `factor_invalid`, `factor_state_inconsistent`, `attempts_exhausted`, `policy_violation`, `breached`, `breach_check_unavailable`, `consume_conflict` |
-| `tayzu.identity.recovery.suppression`      | `unknown_address`, `no_credential_account`, `banned`, `disabled_everywhere`, `no_membership`, `kill_switch`, `tenants_email_disabled`, `recipient_cap`, `ip_cap`, `global_cap`, `tenant_cap`, `provider_failure`, `token_issue_failure` |
+| `tayzu.identity.recovery.suppression`      | `unknown_address`, `no_credential_account`, `banned`, `disabled_everywhere`, `no_membership`, `kill_switch`, `recipient_domain_blocked`, `tenants_email_disabled`, `recipient_cap`, `ip_cap`, `global_cap`, `tenant_cap`, `provider_failure`, `token_issue_failure` |
 | `tayzu.identity.mfa_reset.path`            | `admin`, `operator` |
 | `tayzu.identity.mfa_reset.reason`          | `lost_both_factors`, `device_replaced`, `suspected_compromise`, `identity_verified_request` |
 | `tayzu.identity.conflict.reason`           | the existing `account_exists`, `target_in_other_tenant`, `sub_already_linked`, `target_is_admin_or_owner`, plus `no_enrolled_factor` |
@@ -893,8 +1002,10 @@ existing, and `no_enrolled_factor`, new), `catalog.security.authz_denied` and
 | `tayzu.identity.email.outcome`             | `sent`, `suppressed`, `failed` |
 | `tayzu.auth.revocation.reason`             | `sso_link_shed`, `password_reset`, `mfa_reset` |
 
-`provider_failure` also covers a recipient the allowlist wrapper refuses at send time (the
-wrapper logs `email_recipient_blocked` itself). `tenant_cap` and `global_cap` apply to the
+`recipient_domain_blocked` is the admission-time refusal of a recipient domain off the allowlist
+(D5; the mailer also logs the existing `email_recipient_blocked` with the template);
+`provider_failure` is a provider fault after the token was issued, and also covers the
+sender wrapper's own refusal if it ever fires at send time. `tenant_cap` and `global_cap` apply to the
 account-created notice as well as, for `global_cap`, the reset email.
 `tayzu.identity.sessions.revoked` is an integer. `tayzu.identity.notice.template` is not
 extended (the recovery emails use `tayzu.identity.email.template`), so `045`'s extension of
@@ -932,9 +1043,11 @@ store; the IP and the HMAC key never reach a signal.
 - **The IP key is normalized.** A single IPv6 /64 holds 2^64 addresses, so keying on the raw
   `request.ip` would let one attacker with ordinary IPv6 access rotate through the route
   limiters and the `reset_email_ip` cap. `apps/api/src/identity/client-ip-key.ts` maps an
-  IPv4 address to itself (a /32), an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its IPv4
-  form, and any other IPv6 address to its first 64 bits in expanded form. It is used by the
-  route limiter's pre-handler (which the accept route shares) and by the mailer's IP cap.
+  IPv4 address to itself (a /32), an IPv4-mapped IPv6 address (`::ffff:a.b.c.d` or its hex
+  form `::ffff:102:304`) to its IPv4 form, and any other IPv6 address to its first 64 bits in
+  expanded form, dropping a zone id (`fe80::1%eth0`). It is used by the route limiter's
+  pre-handler (which `043`'s accept route shares, so that route changes with it, Q28) and by
+  the mailer's IP cap.
   The sign-in limiter of `002` keeps the raw address; normalizing it is a ticket.
 - **A limiter-store failure fails closed.** If `store.consume` throws, the pre-handler
   answers the sanitized `INTERNAL` 500 itself (not the framework's default error reply) and
@@ -942,7 +1055,7 @@ store; the IP and the HMAC key never reach a signal.
 - **`auth.rate_limit` growth.** Each distinct key writes a row, and nothing prunes expired
   rows (`packages/db/migrations/0004_rate_limit_table.sql`); the /64 key bounds the growth an
   attacker can cause. Pruning rows whose `last_request` is older than the longest window is a
-  data-retention item (`docs/security/data-retention.md`, task 15.4) and a ticket.
+  data-retention item (`docs/security/data-retention.md`, task 15.3) and a ticket.
 - The trust setting behind `request.ip` is the pending gate of D9, not a variable.
 
 ### D17. The DAST probe (Q11)
@@ -988,18 +1101,31 @@ rebases onto them (a textual merge only). `044` lands first (`002 -> 043 -> 044 
 ### D19. Docs and the ADR
 
 - **ADR-0023** (`docs/adr/0023-password-reset-is-tayzu-owned-and-mfa-aware.md`; `0019` is
-  reserved for `045`, `0022` is the last used): Tayzu owns the reset routes (D1); the mailbox
-  alone never changes an MFA-enrolled user's password or removes a second factor (D6, D10);
-  a reset is allowed only for credential accounts (D4); the completion is one SQL transaction
-  on the lock's connection (D7, Q13). Written the same day the first decision lands (task
-  15.1).
+  reserved for `045`, `0022` is the last used). **An ADR is warranted**: the decisions are hard
+  to reverse and later changes build on them (`045` classifies the identifier families, `003`
+  serves the page). It records that Tayzu owns the reset routes (D1); that the mailbox alone
+  never changes an MFA-enrolled user's password or removes a second factor (D6, D10); that a
+  reset is allowed only for credential accounts (D4); that the completion is one SQL
+  transaction on the lock's connection because Better Auth's adapter here is not
+  transactional (D7, Q13); and that the break-glass is a CLI with a named approver that
+  refuses to run with telemetry off (D12, Q14, Q29). It is dated **2026-10-14**, the day the
+  first of these decisions (Q1, Q2) was approved, and carries an "Amended 2026-10-15" line for
+  Q12-Q30, the day the rest were approved. It is task 1.1, the first task, so that the record
+  exists before the code it describes (root `CLAUDE.md`: ADRs the same day a decision is
+  made).
 - `docs/security/attack-surfaces.md`: the "Public accept route" section becomes "Public
   routes" with the reset rows; "Blocked routes" notes that Better Auth's three reset routes
   stay blocked and why; "Email and phishing (SEC11)" no longer says the invitation email is
   the only email and records the SEC11 answers of D5; the rate-limit row; the source of IP
-  forensics (the ingress logs); the `tayzu_auth` identity's use (SEC14); "Pending".
+  forensics (the ingress logs); the `tayzu_auth` identity's use (SEC14); "Pending", whose TLS
+  row (`:362`) points at Gate 9. `docs/security/dependencies.md` already holds the `002` task
+  11.12 record (its section "TLS and HSTS posture on the public ACA ingress", `:163-190`, with the
+  check table), so Q25's record lives there and gains one line for the DNS provider's
+  DDoS-protection state (task 15.1).
 - `docs/security/secrets.md`: the new variables (D9), the shared kill switch's wider scope,
-  the operator CLI's variables and the break-glass section (D12), the `tayzu_auth` use.
+  the operator CLI's variables, the CLI as a second reader of `ACS_CONNECTION_STRING` and
+  `AUTH_DATABASE_URL` with their rotation text, how the operator obtains them, the
+  break-glass section (D12), the `tayzu_auth` use (task 15.2).
 - `docs/security/data-retention.md` and `docs/security/crypto-inventory.md` (token
   generation and digest, backup-code and TOTP decryption path, reuse of the password hash).
 - `docs/catalog/auth-and-rbac.md` (the auth reference): the reset flow, the re-enrolment
@@ -1017,9 +1143,13 @@ rebases onto them (a textual merge only). `044` lands first (`002 -> 043 -> 044 
 
 Group 10 starts with the policy task; no later task of group 10 begins before the human
 approves it. Everything else is code and tests. No database migration exists in this change,
-so the only Checkpoint 3 item is the Cerbos change. The groups before it (1-9) and the CLI
-(group 11, which uses the service of group 10) do not depend on the policy, except that group
-11 starts after the service exists.
+so the only Checkpoint 3 item is the Cerbos change. Groups 1-9 do not depend on the policy.
+Tasks run in order, so every task from 10.2 on waits for the approval, and the CLI (group 11)
+waits with them because it uses the service of 10.3 and its operator form of 10.4, which sit in
+group 10 behind the stop. Groups 12-14 emit and probe the MFA reset and so also come after it.
+Only task 10.6 (the matrix over HTTP with the approved bundle) needs the policy itself; the
+others wait because the human approves the group's policy before any code of the operation
+exists, which is the rule of root `CLAUDE.md`.
 
 ## Observability contract
 
@@ -1029,7 +1159,7 @@ See D15 for the full contract (spans, metrics, log events, value sets and enforc
 
 Read at design time against `.claude/skills/ssa-validator`. The draft's three reviews of
 2026-10-15 (consistency, threat model, and the VCDM Mode A pre-assessment) were folded in;
-what each decided is in the decisions Q12-Q27. The formal re-run is task 16.2 (the
+what each decided is in the decisions Q12-Q30. The formal re-run is task 16.2 (the
 `vcdm-ssa-validator` subagent, before Checkpoint 2). A GAP in tenant isolation, access
 control, injection, secrets or logging would block.
 
@@ -1044,13 +1174,13 @@ control, injection, secrets or logging would block.
 | SEC07 Dependencies | applies | one direct dependency, already locked (D6, Q18) |
 | SEC08 File upload | N/A | no upload surface |
 | SEC09 Secrets in code | applies (light) | fixtures generate tokens; nothing real-looking; `DATABASE_URL` never printed |
-| SEC10 Secret management | applies | no new secret; D9 variables and the CLI's in `secrets.md`; the CLI holds no signing key (D12); link base URL is not a secret |
+| SEC10 Secret management | applies | no new secret; D9 variables and the CLI's in `secrets.md`; the CLI holds no signing key (D12) but is the second reader of `ACS_CONNECTION_STRING` and `AUTH_DATABASE_URL`, with its rotation steps and how the operator obtains them in the runbook (task 15.2); link base URL is not a secret |
 | SEC11 Phishing | applies, core | one clickable link, justified (the OWASP-permitted forgot-password link), fixed templates, single recipient, no attachments, no tracking, config-only origin, caps including the account-created notice's per-tenant and global ones (Q20), kill switch, allowlist, demo suppression (D5, D8). Extends `043`'s recorded answers; it does not replace them |
 | SEC12 Testing/QA | applies | tasks 6-11 scenario tests, the DAST probe (D17), actor parity row; training and monitoring in Mode B (Q27) |
 | SEC13 Secure deployment | partial | D9 config and the Gates; the CLI runs only from the production-network operator environment under PIM (D12) |
 | SEC14 Infra permissions | partial | no migration and no grant, but the `tayzu_auth` identity gains two users: the unauthenticated reset routes and the operator CLI. It writes `auth.verification`, `auth.rate_limit`, `auth.two_factor`, `auth.session`, `auth.user` and `auth.account` here; it has full CRUD on the `auth` schema (`0003`), and narrowing it is `043`'s O-7, now with these two users (ticket) |
 | SEC15 Network/host | partial | no new egress: ACS and Pwned Passwords as before; FQDN allowlist stays `043`'s ticket; the DNS provider's DDoS protection state is recorded at the gate (Q25) |
-| SEC16 Security logging | applies | D15: audit and security events, opaque ids, trace-id correlation, sampling-exempt; IP forensics from the ingress logs |
+| SEC16 Security logging | applies | D15: audit and security events, opaque ids, trace-id correlation, sampling-exempt; IP forensics from the ingress logs; the break-glass CLI cannot run with telemetry off and exits non-zero on a failed flush (D12, Q29) |
 
 ### SSA notes (Q27)
 
@@ -1090,8 +1220,9 @@ control, injection, secrets or logging would block.
   changes no token, so the link the victim already holds keeps working until it expires
   (D5): the attack costs the victim new mail, not the old link. Mitigated by IP caps on the
   /64 prefix, the short window, alerts on `recipient_cap` and `global_cap` (a Gate for
-  `010`), the kill switch as a manual lever, and a ticket for proof-of-work. Chosen over a
-  visible 429, which is an oracle. Someone who has the victim's address can still make the
+  `010`), the kill switch as a manual lever, and a ticket for proof-of-work. The counters run
+  narrowest first (recipient, IP, global; D5), so a capped recipient cannot be used to spend the
+  global bucket. Chosen over a visible 429, which is an oracle. Someone who has the victim's address can still make the
   victim receive up to five reset emails an hour; each admitted one replaces the last.
 - **The minimum response duration is not constant work** → under a slow database, or under
   contention on the per-user lock, the eligible branch can exceed 400 ms and become
@@ -1103,7 +1234,10 @@ control, injection, secrets or logging would block.
 - **Mailbox compromise changes the password of a user without a second factor** → inherent
   to email recovery (NIST treats email as a weak authenticator); mitigated by session
   revocation, the password-changed notice to the same mailbox, and Q1 for enrolled users.
-  Admins always have a factor (`002` Q43). A mistyped address given by an admin to
+  An admin or owner without an enrolled factor (a new admin, or one whose factor an operator
+  reset) is not protected by Q1: a link-only reset is possible for them, and until they
+  enrol they are only confined to enrolment (`server.ts:945-953` answers
+  `AUTH_STEP_UP_REQUIRED` on `/v1`; `002` Q43 does not guarantee a factor). A mistyped address given by an admin to
   `identity.users.create` hands the account to the mailbox owner on their first reset; the
   account-created notice goes to that same mailbox. Inherent.
 - **A compromised admin with a fresh step-up can reset a member's factor** → mitigated by the
@@ -1113,13 +1247,22 @@ control, injection, secrets or logging would block.
 - **The window after an MFA reset** → there is no password-only path to the platform (D11), but
   whoever holds the password and signs in before the real member enrols can enrol their own
   authenticator. Mitigations in D11; accepted.
+- **The window after an operator recovery** → after the command removes the factor, the old
+  password (a squatter's temporary one, or a stolen one) still signs in until the person
+  confirms the reset, and that sign-in is confined to enrolment but can enrol. The runbook
+  order (D12) closes it to one request: the link is requested before the run, the confirmation
+  follows at once and replaces the password and ends every session, and a confirmation that
+  asks for a factor means someone enrolled in the window, so the run is repeated. A squatter
+  who watches the account can still try to win that race each time; the supervised enrolment
+  and the audit review are the controls, and the residual is accepted.
 - **A squatter-enrolled factor** → an admin who created an account for someone else's address
   can enrol a factor first, and the rightful owner's reset then asks for a code they never set
   up (Q16). Recovery is the operator CLI, which accepts any member; the account-created
   notice tells the owner to contact the platform operator. Residual: until the owner
   reports, the squatter holds the account. 043's temporary-password creation is not changed.
-- **A reset does not evict persistence** → SSO links and machine credentials survive (Q21).
-  The fixed notice says to review them; two tickets follow.
+- **A reset does not evict persistence** → SSO links and machine credentials survive a password
+  reset (Q21) and an admin or operator MFA reset (Q30), including when the reason is
+  `suspected_compromise`. The fixed notices say to review them; two tickets follow.
 - **A user linked to Visma Connect with a local password can reset** (Q22) → as their password
   sign-in already is allowed under `002`; a per-organization policy is a ticket for `025`.
 - **TOTP replay within the window** → a code observed in real time can be replayed once within
@@ -1145,7 +1288,10 @@ control, injection, secrets or logging would block.
   tenants it revokes their sessions in all of them (Q12: the admin path refuses these users, the
   operator path serves them). The operator and approver ids are not authenticated and the
   `tayzu_auth` role can write `auth.*` directly, so the audit event is not tamper-proof; PIM,
-  the second approver and the review of the event are the controls.
+  the second approver, the review of the event and the completion line attached to the PIM
+  record are the controls. The cheaper bypass, running the command with telemetry switched off,
+  is closed by Q29 (the command refuses to start and exits non-zero on a failed flush); what
+  remains is someone who can edit the code or write `auth.*` directly.
 - **Unnormalized sign-in limiter** → the reset limiters use the /64 key; `002`'s sign-in limiter
   still keys the raw IPv6 address (ticket).
 - **Dot-alias and case variants of an address bypass the per-recipient cap** → known, shared
@@ -1178,8 +1324,10 @@ on this change are restated, then this change's own.
 **Inherited from `043` and `002` (apply to the new routes):**
 
 - A verified Communication Services sender domain (SPF, DKIM, DMARC) and the connection
-  string in Key Vault (`043` Q28); `EMAIL_PROVIDER` set explicitly in every deployed
-  environment; CI, DAST and demo tenants use the non-sending sender.
+  string in Key Vault (`043` Q28), with the managed-identity alternative of that gate now
+  covering the operator CLI too (it is the second holder of the string);
+  `EMAIL_PROVIDER` set explicitly in every deployed environment; CI, DAST and demo tenants use
+  the non-sending sender.
 - A configurable trust-proxy setting (`002` Q58; there is no `TRUST_PROXY` variable today,
   D9) set to the exact ingress hop count: the route and email IP limiters key on
   `request.ip`.
@@ -1196,8 +1344,9 @@ on this change are restated, then this change's own.
 4. The DAST probe of D17 passes against the sandbox with the switch on.
 5. The break-glass runbook of D12 is adopted: named approvers, just-in-time access in place,
    and production runs only from the production-network operator environment under Azure PIM
-   with a personal account, never from a laptop; `010` decides whether to wrap the CLI in a
-   job.
+   with a personal account, never from a laptop; that environment can reach an OTLP endpoint
+   (the CLI refuses to start without one, Q29) and the operator attaches the completion line to
+   the PIM record; `010` decides whether to wrap the CLI in a job.
 6. Alerts (with `010`) on `catalog.security.recovery_email_suppressed` with the reasons
    `recipient_cap`, `ip_cap`, `global_cap` and `provider_failure`, on
    `catalog.security.password_reset_denied` with `attempts_exhausted`, `consume_conflict` and
@@ -1206,8 +1355,10 @@ on this change are restated, then this change's own.
    measured in staging under concurrent load.
 8. `INVITATION_EMAIL_KILL_SWITCH` is documented to operators as the stop for every email.
 9. (Q25, from `002` task 11.12) TLS 1.0 and 1.1 are disabled and HSTS is set at the ingress,
-   the SSL Labs result is recorded in `docs/security/dependencies.md`, and the state of the
-   DNS provider's DDoS protection for the link origin and the sender domain is recorded.
+   the SSL Labs result is recorded in the table of `docs/security/dependencies.md` ("TLS and
+   HSTS posture on the public ACA ingress", `:163-190`, the file that already holds the `002`
+   task 11.12 record), and the state of the DNS provider's DDoS protection for the link origin
+   and the sender domain is recorded on the same page.
 
 ## Tickets
 
@@ -1227,8 +1378,8 @@ on this change are restated, then this change's own.
 | IPv6 /64 key for the sign-in limiter | Apply `client-ip-key.ts` to `002`'s pre-auth limiter (SEC06). |
 | Remaining-backup-codes display | `003` could show how many codes are left; Better Auth exposes no count endpoint (the only listing, `viewBackupCodes`, is server-only: `dist/plugins/two-factor/backup-codes/index.mjs:318`). |
 | TOTP replay within the window | Record the last accepted step per user, for sign-in and reset together (SEC06, D6). |
-| Admin rotation from `043`'s viewer | Let an admin rotate or revoke the credentials a user owns after a reset (Q21, SEC03). |
-| Audit count of SSO links and credentials | Emit the count of a user's SSO links and live machine credentials at reset time (Q21, SEC06). |
+| Admin rotation from `043`'s viewer | Let an admin rotate or revoke the credentials a user owns after a password reset or an admin or operator MFA reset (Q21, Q30, SEC03). |
+| Audit count of SSO links and credentials | Emit the count of a user's SSO links and live machine credentials at password-reset and MFA-reset time (Q21, Q30, SEC06). |
 | Per-tenant cap on `identity.users.create` | `043` Q147 O-10: partially closed by the account-created notice's caps (Q20); the cap on creation remains. |
 | `tayzu_auth` least privilege | `043` O-7, with the unauthenticated reset routes and the operator CLI now users of the role (SEC14). |
 | Security log retention and IP forensics | The retention of security events (12 months minimum) and the ingress-log source of IPs (SEC16); `043` O-11 on the Cerbos audit backend is related. |
@@ -1258,9 +1409,10 @@ oracle" (the invitation gate's visible 429 stays; the reset path avoids it by de
 
 ## Resolved decisions (asked and approved in chat, 2026-10-14 and 2026-10-15)
 
-Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q27 on
-2026-10-15 with the recommended option. The text below is the approved text; Q12-Q27 amend
-how Q1-Q11 are read where they say so.
+Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q30 on
+2026-10-15 with the recommended option. The text below is the approved text; Q12-Q30 amend
+how Q1-Q11 are read where they say so. Where Q2, Q13 and Q19 say "the 8.1 password policy",
+that is `043`'s password policy (`043` task 8.1), not this change's own task 8.1.
 
 ### Q1. Reset for a user with MFA enrolled
 
@@ -1282,8 +1434,8 @@ route:
 - a DB-backed limiter runs before any lookup;
 - both routes are on the explicit public-route allowlist and behind the mount switch.
 
-The final password write goes through Better Auth's internal adapter (hashing, NFC, the 8.1
-password policy and the breach check apply), and Better Auth's built-in
+The final password write goes through Better Auth's internal adapter (hashing, NFC, `043`'s
+password policy (`043` task 8.1) and the breach check apply), and Better Auth's built-in
 `/request-password-reset` and `/reset-password` stay off the `/api/auth` allowlist.
 _Rejected:_ Better Auth's built-in routes with hooks (plaintext token in a query string,
 timing differences, outside the mount switch), and a mix of the two. _Implemented by:_ D1,
@@ -1410,7 +1562,7 @@ in `auth.account` using Better Auth's exported password hash function, the token
 the deletion of every session with `returning` (one `session_revoked` per row), the marker
 deletions, `emailVerified`, and the backup-code spend (Q19). Q2's "through Better Auth's
 internal adapter" is read as "with Better Auth's hash function, NFC normalization and
-schema". The 8.1 password policy and the breach check still run before the transaction. No
+schema". `043`'s password policy (`043` task 8.1) and the breach check still run before the transaction. No
 second pooled connection is taken while the lock is held (`043` Q147/Q148). _Rejected:_
 enabling `transaction: true` for the whole Better Auth instance; non-atomic writes with
 compensation. _Implemented by:_ D7.
@@ -1435,7 +1587,8 @@ _Rejected:_ no email from the CLI; a runbook with no code. _Implemented by:_ D12
 ### Q15. Targets of the admin MFA reset (2026-10-15)
 
 A tenant admin may reset the factor of **members only**, and must give a mandatory reason
-code from a closed enum, which the audit event records. Another admin or an owner can be
+code from a closed enum (`lost_both_factors`, `device_replaced`, `suspected_compromise`,
+`identity_verified_request`; the values are confirmed by Q28), which the audit event records. Another admin or an owner can be
 reset only by the operator CLI with an approver (Q14). The spec and the Cerbos test cases
 state this. A second-approver flow for admin-initiated resets stays a ticket. _Rejected:_
 members and admins but not owners; anyone in the tenant. _Implemented by:_ D10, D12.
@@ -1465,7 +1618,7 @@ backup codes only at confirm; a hand-rolled RFC 6238 implementation. _Implemente
 
 ### Q19. Order at confirm (2026-10-15)
 
-At confirm, the 8.1 password policy and the breach check run before the factor is spent. The
+At confirm, `043`'s password policy (`043` task 8.1) and the breach check run before the factor is spent. The
 backup code is spent inside the Q13 transaction, so a policy, breach or race failure never
 burns it. _Rejected:_ leaving the order and documenting the burn. _Implemented by:_ D6, D7.
 
@@ -1473,7 +1626,7 @@ burns it. _Rejected:_ leaving the order and documenting the burn. _Implemented b
 
 That notice gets a per-tenant cap (20 per day by default, configurable, parsed like the other
 caps) and a global cap, in addition to the per-recipient one. The global default (1000 per
-day) is the spec-writer's number inside this decision. _Rejected:_ per-recipient only;
+day) was the spec-writer's number inside this decision and is confirmed by Q28. _Rejected:_ per-recipient only;
 dropping the notice. _Implemented by:_ D5, D9, D16.
 
 ### Q21. Persistence after a reset (2026-10-15)
@@ -1507,7 +1660,9 @@ _Implemented by:_ D2.
 
 `002` task 11.12 becomes a Gate for turning on `MOUNT_IDENTITY_ROUTES`: TLS 1.0/1.1
 disabled, HSTS at the ingress, the SSL Labs result recorded, and the DNS provider's DDoS
-protection state recorded. _Rejected:_ keeping it only in `010`. _Implemented by:_ Gates (9).
+protection state recorded. The record is the table of `docs/security/dependencies.md`
+("TLS and HSTS posture on the public ACA ingress", `:163-190`), the file that already holds
+the `002` task 11.12 record; Gate 9 and task 15.1 say so. _Rejected:_ keeping it only in `010`. _Implemented by:_ Gates (9).
 
 ### Q26. Page preconditions for `003` (2026-10-15)
 
@@ -1528,24 +1683,59 @@ _Implemented by:_ D14, Gates (2).
 
 _Implemented by:_ "SSA notes (Q27)", task 16.2.
 
+### Q28. Behaviour changes from the reviews (2026-10-15)
+
+All four are confirmed as written:
+
+- **IPv6 limiter keys:** the limiters key IPv6 clients by their /64 prefix and IPv4 clients by
+  /32, and a limiter-store failure fails closed. The shared pre-handler changes with them, so
+  `043`'s accept route changes too.
+- **Sign-in fence:** a fence on sign-in, so that a sign-in racing a reset commit cannot keep a
+  session on the old password.
+- **Admin MFA-reset reason codes:** `lost_both_factors`, `device_replaced`,
+  `suspected_compromise` and `identity_verified_request`.
+- **Account-created notice cap:** a global default of 1000 per day, configurable.
+
+_Rejected:_ dropping the fence; keeping `002` and `043`'s behaviour byte for byte; other values.
+_Implemented by:_ D16, D7, D10, D5, D9; tasks 1.6, 8.13, 10.5, 4.2.
+
+### Q29. Break-glass CLI and telemetry (2026-10-15)
+
+Outside `NODE_ENV=test`, the CLI refuses to start when `TAYZU_TELEMETRY_DISABLED` is true or no
+OTLP endpoint is set. It exits non-zero when the final telemetry flush fails. On completion it
+prints one line, which the operator attaches to the PIM record: operator id, approver id, the
+target's opaque user id, the number of sessions revoked, and whether the notice was sent or
+suppressed. The line carries no address and no secret. _Rejected:_ refusing the opt-out only,
+without the flush check and the line; PIM as the only evidence. _Implemented by:_ D12, Risks,
+Gate 5; tasks 11.3, 15.2.
+
+### Q30. Machine credentials after an admin or operator MFA reset (2026-10-15)
+
+They are left untouched, as Q21 does for the password reset. `MfaResetNotice` gains the same
+fixed sentence: review your service accounts, credentials and linked sign-ins. The two Q21
+tickets (admin rotation from `043`'s viewer, and an audit count of SSO links and credentials)
+are extended to the MFA reset. _Rejected:_ revoking the user's credentials when the reason is
+`suspected_compromise`; leaving it as is. _Implemented by:_ D8, D10, D12, Tickets; tasks 3.3,
+10.3.
+
 ### Size (2026-10-15)
 
 `044` stays one change (Q6). The task budget may go slightly over 80; the rule is to stop at
-85 and ask before adding more. `tasks.md` has 82.
+85 and ask before adding more. `tasks.md` has 84.
 
 ### Review corrections folded in (not decisions)
 
 The three reviews of the draft (consistency, threat model, VCDM Mode A, 2026-10-15) also
-found defects that needed no human decision; they are corrected in the artifacts:
+found defects that needed no human decision; they are corrected in the artifacts. C3 (the
+IPv6 /64 limiter key and the fail-closed limiter) and C5 (the sign-in fence) changed archived
+behaviour, so they were put to the human and are Q28 above, not corrections:
 
 | Id | Correction | Where |
 | -- | ---------- | ----- |
-| C1 | The mailer's admission (kill switch, tenants, caps) runs before the token is issued; a suppressed request changes no token | D2, D3, D5; spec "The reset token is secret, single use and short lived" |
+| C1 | The mailer's admission (kill switch, allowlist, tenants, caps) runs before the token is issued; a suppressed request changes no token | D2, D3, D5; spec "The reset token is secret, single use and short lived" |
 | C2 | The factor step is serialized under the per-user lock and each count is an atomic statement | D3, D6 |
-| C3 | Limiter keys use the IPv6 /64 prefix; a limiter-store failure fails closed | D16 |
 | C4 | "Enrolled" is an OR with a stricter answer for inconsistent state | D6 |
-| C5 | A sign-in a reset overtook is refused | D7 |
-| C6 | `Cache-Control: no-store` on both routes | D2, D17 |
+| C6 | `Cache-Control: no-store` and `Pragma: no-cache` on both routes | D2, D17 |
 | C7 | The service repeats the self-target and role checks; the Migration Plan states the true state of the policy | D10, Migration Plan |
 | C8 | Facts fixed: `TRUST_PROXY` does not exist; the commit hashes of the Context; the research notes are no longer cited | Context, D9 |
 

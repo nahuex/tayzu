@@ -22,7 +22,7 @@ design.md, "References and Port"). The requirements therefore come from the
 OWASP Forgot Password and Multifactor Authentication cheat sheets, NIST SP
 800-63B and the VCDM Security Self-Assessment, and every design choice was
 approved by the human on 2026-10-14 and 2026-10-15 (design.md, "Resolved decisions",
-Q1-Q27).
+Q1-Q30).
 
 ## What Changes
 
@@ -68,8 +68,14 @@ Q1-Q27).
   members only, and every refusal of the service looks the same. A break-glass
   operator runbook with a CLI, which needs a named approver, covers an admin, an
   owner, a member of several tenants and a member whose factor a squatter enrolled.
+  The CLI refuses to start with telemetry switched off, exits non-zero if the final
+  flush fails, and prints one completion line for the operator's PIM record. The
+  runbook orders the recovery so that no one who knew the old password can enrol
+  first: the person requests the link before the run and confirms at once after it.
 - **Notices** (`043` Q92 ticket): fixed templates with no link and no tenant free
-  text for a changed or reset password, a changed or reset second factor, and
+  text for a changed or reset password, a changed or reset second factor (the
+  password-changed and MFA-reset notices tell the user to review service accounts,
+  credentials and linked sign-ins; neither reset revokes them), and
   "an account was created for this address", which `identity.users.create` now
   sends. They go through `043`'s sender with their own caps (the account-created notice
   also per tenant and globally), the shared kill switch, the shared recipient-domain
@@ -116,7 +122,8 @@ Q1-Q27).
   new notices, the re-enrolment gate and the sign-in fence, scope and reason enums,
   the exported password hasher, the identity telemetry contract); `apps/api` (the
   two routes, the recovery mailer and eligibility reader, the recovery and
-  completion sections of the auth repository module, the client IP key,
+  completion sections of the auth repository module, the client IP key (also used by
+  `043`'s accept route through the shared pre-handler, so that route changes with it),
   `identity.users.resetMfa` and its service, the wrapper's self-target set and the
   target role attribute in `identity/define-operation.ts`, `identity-attributes.ts`
   and `identity-target.ts`, `identity.users.create`'s notice, config, public-route
@@ -153,7 +160,7 @@ Q1-Q27).
 ## Sizing
 
 The roadmap budget is about 30-80 TDD tasks. `043` overran it (227 tasks) and had
-to split (Q103). `044` plans 82 tasks in 16 groups (tasks.md), slightly over 80 with the
+to split (Q103). `044` plans 84 tasks in 16 groups (tasks.md), slightly over 80 with the
 human's agreement (design, "Size"), and stops at 85 to ask. It keeps to that by reusing
 `043`'s email sender, cap store, kill switch, allowlist, public-route pattern, wrapper and
 telemetry helpers, by adding no migration and by leaving every page to `003`.
