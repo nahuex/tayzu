@@ -12,7 +12,10 @@ export {
   type UserSyncPort,
 } from './auth.js';
 export type { SsoLinkShedPort } from './identity/ports.js';
-export { createAllowlistEmailSender } from './identity/email/email-allowlist.js';
+export {
+  createAllowlistEmailSender,
+  isRecipientDomainAllowed,
+} from './identity/email/email-allowlist.js';
 export { createNonSendingEmailSender } from './identity/email/non-sending-sender.js';
 export {
   createRecordingEmailSender,
