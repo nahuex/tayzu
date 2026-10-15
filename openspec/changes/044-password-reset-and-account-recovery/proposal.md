@@ -128,7 +128,9 @@ Q1-Q30).
   target role attribute in `identity/define-operation.ts`, `identity-attributes.ts`
   and `identity-target.ts`, `identity.users.create`'s notice, config, public-route
   allowlist, wiring in `createApp` and `createAppFromEnv`, the operator CLI and its
-  `script-config.ts` entry, the DAST probe); `policies/` (Checkpoint 3). There is
+  `script-config.ts` entry, `scripts/run-script.ts` (a telemetry seam),
+  `email-sender.ts` (a narrower `createEmailSender` parameter), `telemetry.ts` (the
+  shared OTLP endpoint helper), the DAST probe); `policies/` (Checkpoint 3). There is
   no change to `packages/authz`: actions are plain strings in the operation
   declaration.
 - **Dependencies.** One: `@better-auth/utils@0.4.2`, already in the lockfile as

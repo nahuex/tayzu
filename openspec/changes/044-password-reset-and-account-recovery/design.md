@@ -340,7 +340,7 @@ same HMAC key.
   counters run narrowest first, so a request refused by a narrower control consumes none of the
   wider buckets: the 600-per-hour global bucket can be spent only by requests that already
   passed the recipient and the IP caps, which makes it dearer to exhaust than if it came first
-  (review NP-10; the cost is that a request refused by the global cap has already spent one
+  (the cost is that a request refused by the global cap has already spent one
   recipient and one IP unit, which it would not have been mailed anyway). The allowlist
   refusal is logged as `recovery_email_suppressed` (`recipient_domain_blocked`) and, because
   `043`'s alerts key on it, also as the existing `catalog.security.email_recipient_blocked`
@@ -357,7 +357,7 @@ same HMAC key.
   it as `provider_failure`. The user requests again; this is the only case where a request
   can leave a user with no mailed link, and it needs a provider fault, not an attacker
   action. The allowlist is no longer such a case: it is decided at admission, so a
-  recipient domain off the list can no longer evict a link (review NP-2); the sender wrapper
+  recipient domain off the list can no longer evict a link; the sender wrapper
   stays as the second line and, if it ever refuses at send time, the case is this one.
 - **Caps.** Own scopes in the closed `RateLimitScope` union and own rows in the cap store's
   `BUCKETS` table: `reset_email_recipient` (kind `email`), `reset_email_ip` (kind `ip`),
@@ -380,7 +380,8 @@ same HMAC key.
   The mailer reuses their parts (store, key, sender, switch, list), not their
   signatures.
 - **The operator CLI does not use the mailer** (D12): it holds no cap store and sends its one
-  notice through the sender, the kill switch and the disabled-tenant list.
+  notice through the sender, the kill switch and the disabled-tenant list, behind the
+  `RecoveryNoticePort` that the shared MFA-reset service takes (tasks 10.3, 11.2).
 - **No tracking, no Reply-To, one link.** The ACS adapter already disables tracking and sets no
   Reply-To for every template (`azure-communication-email.ts`); the reset email has one
   link, the notices none.
@@ -612,8 +613,9 @@ input) and goes through the mailer (D5), except the operator CLI's (D12).
   `/change-password` success (next to the existing marker delete and `session_revoked`
   emit), for `/two-factor/verify-totp` when a session exists and `hooks.before` recorded
   `twoFactorEnabled` as not true (enrolment, not the sign-in challenge, which has no
-  session), and for `/two-factor/generate-backup-codes`. The reset confirm route and the
-  MFA reset call the mailer directly. `identity.users.create` receives the mailer through
+  session), and for `/two-factor/generate-backup-codes`. The reset confirm route calls the mailer directly. The MFA reset service takes a
+  `RecoveryNoticePort.send(kind, userId)`, implemented by the mailer's notice path for the admin
+  form and by an adapter over the sender, the kill switch and the disabled-tenant list for the CLI (D12). `identity.users.create` receives the mailer through
   `CreateIdentityRouterOptions.recoveryMailer` and notifies after its `addMember` succeeds
   and before it returns; a failure or suppression of the notice never fails the creation.
 - **The squatter-enrolled factor (Q16).** `identity.users.create` hands a temporary password
@@ -852,7 +854,7 @@ All four are recovered out of band, like `043`'s bootstrap CLI
   `Config` (task 11.2), and honors the kill switch and the disabled-tenant list. It has no cap
   store (that needs a Better Auth adapter), so its single notice is outside the recipient
   caps; the supervised run is the control. The completion line below says whether the notice
-  was sent or suppressed, so the operator knows if the owner was not told. The CLI is also the
+  was sent, suppressed or failed, so the operator knows if the owner was not told. The CLI is also the
   first script to hold `ACS_CONNECTION_STRING`, a send-as-the-platform-domain secret; its
   handling is part of the runbook and `secrets.md` (task 15.2). Rejected: no email from the
   CLI; a runbook with no code.
@@ -868,9 +870,11 @@ All four are recovered out of band, like `043`'s bootstrap CLI
   in a `finally` (`run-script.ts:44-46`), so a rejection reaches the entry point, which sets
   `process.exitCode = 1` as `bootstrap-admin.ts` does; the stderr text is fixed and says the
   audit event may be missing. The reset itself is committed by then and is not undone, so the
-  completion line below is the operator's record in that case. On completion the command
+  completion line is printed inside the `runScript` callback, before the flush, and is the
+  operator's record in that case; `RunScriptOptions.telemetry` is the seam a test uses to supply
+  the handle, since `startTelemetry` returns `undefined` under test. On completion the command
   prints exactly one line on stdout, `mfa-reset operator=<id> approver=<id> user=<opaque user
-  id> sessions_revoked=<n> notice=<sent|suppressed>`, which the operator attaches to the PIM
+  id> sessions_revoked=<n> notice=<sent|suppressed|failed>`, which the operator attaches to the PIM
   record; the ids use the pattern's charset, which has no space or `=`, so the line cannot be
   forged by an id, and it carries no address and no secret (task 11.3). Rejected: refusing
   only the opt-out, without the flush check and the line; PIM as the only evidence.
@@ -1015,7 +1019,7 @@ the notice set does not conflict with this change.
 is emitted inside the route's or the operation's active span, so it carries the trace id as
 the correlation key (a test asserts it), and the container-app ingress logs in Azure Monitor
 are the source for the source IP of a reset abuse investigation; `attack-surfaces.md` says
-so (task 15.2).
+so (task 15.1).
 
 **Exported path.** `apps/api/src/telemetry.ts` already strips `?` and `#` from paths and
 replaces the identity routes with their templates (`043` D16). The two reset routes carry no

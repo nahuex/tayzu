@@ -650,8 +650,8 @@ Outside the test environment it MUST refuse to start, before any database or ema
 switched off by the person it audits, and it MUST exit non-zero when the final telemetry flush
 fails. On completion it MUST print exactly one line, for the operator to attach to the
 just-in-time access record, holding the operator id, the approver id, the target's opaque user id,
-the number of sessions revoked and whether the notice was sent or suppressed, and no address and
-no secret. A runbook MUST state who may run it, that a production run happens only from the
+the number of sessions revoked and whether the notice was sent, suppressed or failed, and no address and
+no secret. The line MUST be printed before the final telemetry flush, so that a failed flush does not lose it. A runbook MUST state who may run it, that a production run happens only from the
 production-network operator environment under just-in-time access with a personal account and
 never from a laptop, the identity verification and the second approver it requires, and the order
 of the recovery: the person requests the reset link before the run, the operator runs the
@@ -689,12 +689,17 @@ password has a window to enrol first; if the confirmation asks for a factor, the
 #### Scenario: A failed telemetry flush fails the run
 
 - **WHEN** the final telemetry flush of a completed run fails
-- **THEN** the command exits non-zero with a fixed message that says the audit event may be missing
+- **THEN** the command exits non-zero with a fixed message that says the audit event may be missing, and the completion line was already printed
 
 #### Scenario: The command prints one completion line
 
 - **WHEN** the command completes
-- **THEN** it prints exactly one line holding the operator id, the approver id, the target's opaque user id, the number of sessions revoked and whether the notice was sent or suppressed, and no address and no secret
+- **THEN** it prints exactly one line holding the operator id, the approver id, the target's opaque user id, the number of sessions revoked and whether the notice was sent, suppressed or failed, and no address and no secret
+
+#### Scenario: The completion line reports a failed notice
+
+- **WHEN** the command completes and the email provider fails on the notice
+- **THEN** the run still completes and the line says the notice failed, so the operator knows the owner was not told
 
 #### Scenario: The operator resets a member of several tenants
 
@@ -776,7 +781,7 @@ from the invitation, admin-notice and reset-email buckets. The account-created n
 also be capped per creating tenant (default 20 per 24 hours) and globally (default 1000 per
 24 hours), each configurable and failing startup when zero. A suppressed notice MUST be
 logged as `catalog.security.recovery_email_suppressed` with the template and the reason,
-and never an address.
+and never an address. The break-glass command's one notice is the exception to the caps: it goes through the sender, the kill switch and the disabled-tenant list and has no cap store, so it is outside the per-recipient cap (the supervised run is its control).
 
 #### Scenario: A full notice bucket suppresses and logs
 
