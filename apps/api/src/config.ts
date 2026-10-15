@@ -16,6 +16,7 @@ export interface Config {
   readonly betterAuthUrl?: string;
   /** Origin of invitation links (Q32): `https` and in `allowedOrigins` outside test; undefined only in test. */
   readonly invitationLinkBaseUrl?: string;
+  readonly passwordResetLinkBaseUrl?: string;
   /** Key of the per-recipient caps (Q93): at least 32 bytes outside test; undefined only in test when unset. */
   readonly identityTokenHmacSecret?: string;
   /** Email provider (Q96): required outside test; undefined only under test when unset. */
@@ -187,33 +188,39 @@ function loadBetterAuthUrl(env: Env): string | undefined {
   return value;
 }
 
-/** `INVITATION_LINK_BASE_URL` (Q32): outside test it is required, `https` and one of `ALLOWED_ORIGINS`. */
-function loadInvitationLinkBaseUrl(
+/**
+ * A link base URL variable (`INVITATION_LINK_BASE_URL`, Q32, and
+ * `PASSWORD_RESET_LINK_BASE_URL`, 044 D9): outside test it is required, `https`
+ * and one of `ALLOWED_ORIGINS`; under test it is optional, `http` or `https`.
+ * An error names the variable and never its value.
+ */
+function loadLinkBaseUrl(
   env: Env,
+  name: string,
   allowedOrigins: readonly string[],
 ): string | undefined {
   const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
-  if (isTest && env['INVITATION_LINK_BASE_URL'] === undefined) {
+  if (isTest && env[name] === undefined) {
     return undefined;
   }
-  const value = required(env, 'INVITATION_LINK_BASE_URL').trim();
+  const value = required(env, name).trim();
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new Error('INVITATION_LINK_BASE_URL is malformed (an absolute URL is required).');
+    throw new Error(`${name} is malformed (an absolute URL is required).`);
   }
   if (isTest) {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+      throw new Error(`${name} is malformed (https is required).`);
     }
     return value;
   }
   if (url.protocol !== 'https:') {
-    throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+    throw new Error(`${name} is malformed (https is required).`);
   }
   if (!allowedOrigins.includes(url.origin)) {
-    throw new Error('INVITATION_LINK_BASE_URL is malformed (it must be one of ALLOWED_ORIGINS).');
+    throw new Error(`${name} is malformed (it must be one of ALLOWED_ORIGINS).`);
   }
   return value;
 }
@@ -345,7 +352,12 @@ export function loadConfig(env: Env): Config {
     .filter((origin) => origin !== '');
   validateAllowedOrigins(env, allowedOrigins);
   const betterAuthUrl = loadBetterAuthUrl(env);
-  const invitationLinkBaseUrl = loadInvitationLinkBaseUrl(env, allowedOrigins);
+  const invitationLinkBaseUrl = loadLinkBaseUrl(env, 'INVITATION_LINK_BASE_URL', allowedOrigins);
+  const passwordResetLinkBaseUrl = loadLinkBaseUrl(
+    env,
+    'PASSWORD_RESET_LINK_BASE_URL',
+    allowedOrigins,
+  );
   const identityTokenHmacSecret = loadIdentityTokenHmacSecret(env);
   const email = loadEmail(env);
   const sso = loadSso(env);
@@ -424,6 +436,7 @@ export function loadConfig(env: Env): Config {
     allowedOrigins,
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
     ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+    ...(passwordResetLinkBaseUrl === undefined ? {} : { passwordResetLinkBaseUrl }),
     ...(identityTokenHmacSecret === undefined ? {} : { identityTokenHmacSecret }),
     backchannelLogoutRateLimitPerMinute,
     ...email,

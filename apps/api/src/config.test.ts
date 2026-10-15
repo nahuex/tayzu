@@ -63,6 +63,7 @@ function env(
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
+    PASSWORD_RESET_LINK_BASE_URL: 'https://app.tayzu.test',
     IDENTITY_TOKEN_HMAC_SECRET: HMAC_SECRET,
     ...overrides,
   };
@@ -392,6 +393,98 @@ describe('INVITATION_LINK_BASE_URL (043 task 6.3, Q32)', () => {
 
   it('is undefined in test when unset', () => {
     expect(loadConfig(link(undefined, 'test')).invitationLinkBaseUrl).toBeUndefined();
+  });
+});
+
+/**
+ * `044` task 4.1 (design D9 configuration table): `PASSWORD_RESET_LINK_BASE_URL`
+ * is parsed like `INVITATION_LINK_BASE_URL`. Production symbol:
+ * `Config.passwordResetLinkBaseUrl?: string` (`apps/api/src/config.ts`),
+ * undefined only in test when unset; `loadConfig` throws an `Error` naming the
+ * variable and never echoing the value.
+ */
+describe('PASSWORD_RESET_LINK_BASE_URL (044 task 4.1, D9)', () => {
+  const NAME = 'PASSWORD_RESET_LINK_BASE_URL';
+  const link = (value: string | undefined, nodeEnv: string): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      [NAME]: value,
+    });
+
+  describe('outside test it is required, https and one of ALLOWED_ORIGINS', () => {
+    it('accepts an https value on ALLOWED_ORIGINS', () => {
+      const config = loadConfig(link('https://app.tayzu.test', 'production'));
+      expect(config.passwordResetLinkBaseUrl).toBe('https://app.tayzu.test');
+    });
+
+    it('rejects a missing value', () => {
+      const error = thrown(() => loadConfig(link(undefined, 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects an empty value', () => {
+      const error = thrown(() => loadConfig(link('', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects a malformed value', () => {
+      const error = thrown(() => loadConfig(link('not a url', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects an http value', () => {
+      const error = thrown(() => loadConfig(link('http://app.tayzu.test', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects an https value outside ALLOWED_ORIGINS', () => {
+      const error = thrown(() => loadConfig(link('https://elsewhere.tayzu.invalid', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+  });
+
+  describe('under test it is optional and http or https', () => {
+    it('is undefined when unset', () => {
+      expect(loadConfig(link(undefined, 'test')).passwordResetLinkBaseUrl).toBeUndefined();
+    });
+
+    it('accepts an http value', () => {
+      const config = loadConfig(link('http://localhost:3000', 'test'));
+      expect(config.passwordResetLinkBaseUrl).toBe('http://localhost:3000');
+    });
+
+    it('accepts an https value', () => {
+      const config = loadConfig(link('https://reset.tayzu.test', 'test'));
+      expect(config.passwordResetLinkBaseUrl).toBe('https://reset.tayzu.test');
+    });
+
+    it('rejects a value that is neither http nor https', () => {
+      const error = thrown(() => loadConfig(link('ftp://app.tayzu.test', 'test')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects a malformed value', () => {
+      const error = thrown(() => loadConfig(link('not a url', 'test')));
+      expect(error.message).toContain(NAME);
+    });
+  });
+
+  describe('an error names the variable and never its value', () => {
+    const rejected: readonly (readonly [string, string, string])[] = [
+      ['an http value', 'http://secret-host.tayzu.test', 'production'],
+      ['a value outside ALLOWED_ORIGINS', 'https://secret-host.tayzu.invalid', 'production'],
+      ['a non-http scheme under test', 'ftp://secret-host.tayzu.test', 'test'],
+    ];
+
+    it.each(rejected)('%s', (_label, value, nodeEnv) => {
+      const error = thrown(() => loadConfig(link(value, nodeEnv)));
+      expect(error.message).toContain(NAME);
+      expect(error.message).not.toContain(value);
+      expect(error.message).not.toContain('secret-host');
+    });
   });
 });
 
