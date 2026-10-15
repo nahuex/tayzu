@@ -18,8 +18,9 @@ value, with no link or any tenant, actor or invitee free text (`045` adds the or
 notice to the same controls). `identity.users.create` also sends the fixed account-created
 notice to the address of the account it creates; that notice, like the password-reset email
 and the password and second-factor notices, belongs to the
-`password-reset-and-account-recovery` capability and is counted in buckets of its own, so
-it neither consumes nor is limited by the buckets of this requirement. Every notice MUST go through the same global kill switch as the
+`password-reset-and-account-recovery` capability and is counted in buckets of its own (per
+recipient, per tenant and global), so it neither consumes nor is limited by the buckets of this
+requirement. Every notice MUST go through the same global kill switch as the
 invitation email and through a per-recipient cap of its own, with the same limit of 3 per
 24 hours and the same keyed hash of the normalized email, counted apart from the
 invitation cap, so that invitations cannot exhaust a person's notice budget and notices
@@ -143,4 +144,4 @@ template.
 
 - **GIVEN** an address whose invitation bucket and admin-notice bucket are both full
 - **WHEN** an admin creates a user for that address through `identity.users.create`
-- **THEN** the operation succeeds and the fixed account-created notice is sent, because it is counted in the recovery-notice bucket
+- **THEN** the operation succeeds and the fixed account-created notice is sent, because it is counted in the recovery-notice buckets

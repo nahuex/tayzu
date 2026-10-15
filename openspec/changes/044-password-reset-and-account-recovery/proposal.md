@@ -21,7 +21,8 @@ or account recovery, and Port's public documentation says nothing on either (see
 design.md, "References and Port"). The requirements therefore come from the
 OWASP Forgot Password and Multifactor Authentication cheat sheets, NIST SP
 800-63B and the VCDM Security Self-Assessment, and every design choice was
-approved by the human on 2026-10-14 (design.md, "Resolved decisions", Q1-Q11).
+approved by the human on 2026-10-14 and 2026-10-15 (design.md, "Resolved decisions",
+Q1-Q27).
 
 ## What Changes
 
@@ -34,37 +35,49 @@ approved by the human on 2026-10-14 (design.md, "Resolved decisions", Q1-Q11).
 - **Reset token.** 256 bits from the CSPRNG, travelling in the URL fragment,
   stored only as a sha256 digest in `auth.verification` under a new identifier
   family (no migration), verified in constant time, single use, valid for 30
-  minutes, and replaced by the next request of the same user.
+  minutes, and replaced by the next request of the same user that the email
+  controls admit: a request they suppress issues no token and deletes none.
 - **Enumeration resistance.** One identical public answer, in status, body shape
   and time, for an unknown address, an SSO-only account, a banned account, an
   account `Disabled` in every tenant, a capped or suppressed send and a provider
   failure. Only an account that has a `credential` account, is not banned and is
   not `Disabled` everywhere receives mail. The send is detached and the response
-  time is padded.
+  time is padded. Limiter keys use the IPv6 /64 prefix, and a limiter failure fails
+  closed.
 - **MFA-aware confirmation.** For a user with a second factor enrolled, the new
   password takes effect only after a TOTP or an unused backup code is verified in
-  the same confirm request.
-- **Effects of a completed reset.** The password is written through Better Auth's
-  internal adapter under the existing password policy and breach check; every
+  the same confirm request. The password policy and the breach check run first, so
+  a refusal never burns a backup code; "enrolled" fails closed on an inconsistent
+  state; and the factor check and its counts are serialized, so parallel guesses
+  cannot exceed the budget.
+- **Effects of a completed reset.** One SQL transaction on the connection that holds
+  the per-user lock writes the password with Better Auth's exported hash function
+  (under the existing password policy and breach check, which run first); every
   session of the user in every tenant is revoked (`auth.security.session_revoked`
-  reason `password_reset`); the user's other reset tokens and the
-  temporary-password marker are deleted; `emailVerified` becomes true; a fixed
-  "your password was changed" notice is sent; the user is not signed in. A reset
-  never clears `banned` and never re-enables a `_user`.
+  reason `password_reset`); the user's other reset tokens, the temporary-password
+  marker and pending second-factor challenges are deleted; `emailVerified` becomes
+  true; a fixed "your password was changed" notice, which tells the user to review
+  service accounts, credentials and linked sign-ins, is sent; the user is not signed
+  in. A sign-in the reset overtook is refused. A reset never clears `banned`, never
+  re-enables a `_user` and does not revoke machine credentials or SSO links.
 - **MFA recovery.** Backup codes remain the self-service path. For a member who
   lost both factors, a new high-risk identity operation, `identity.users.resetMfa`
   (`POST /v1/users/{user}/mfa/reset`), lets a tenant admin remove the member's
-  second factor under step-up and Cerbos, revoke their sessions, notify them and
-  force re-enrolment at the next sign-in. A break-glass operator runbook with a
-  CLI covers the last admin of an organization.
+  second factor under step-up and Cerbos, with a mandatory reason code, revoke their
+  sessions, notify them and force re-enrolment at the next sign-in. It serves
+  members only, and every refusal of the service looks the same. A break-glass
+  operator runbook with a CLI, which needs a named approver, covers an admin, an
+  owner, a member of several tenants and a member whose factor a squatter enrolled.
 - **Notices** (`043` Q92 ticket): fixed templates with no link and no tenant free
   text for a changed or reset password, a changed or reset second factor, and
   "an account was created for this address", which `identity.users.create` now
-  sends. They go through `043`'s sender with their own caps, the shared kill
-  switch, the shared recipient-domain allowlist and the disabled-tenant list.
+  sends. They go through `043`'s sender with their own caps (the account-created notice
+  also per tenant and globally), the shared kill switch, the shared recipient-domain
+  allowlist and the disabled-tenant list.
 - **Email path for an anonymous reset.** A dedicated mailer over `043`'s sender
   and shared DB-backed cap store, with caps per recipient (HMAC key), per IP and
-  global, and silent refusals so no cap becomes an oracle.
+  global, admitted before any token is issued, and silent refusals so no cap
+  becomes an oracle.
 - **Reset link target.** A fixed, server-configured base URL
   (`PASSWORD_RESET_LINK_BASE_URL`), validated like `INVITATION_LINK_BASE_URL`; the
   client never supplies a `redirectTo`. The page is `003`'s.
@@ -98,25 +111,32 @@ approved by the human on 2026-10-14 (design.md, "Resolved decisions", Q1-Q11).
 
 ## Impact
 
-- **Code.** `packages/auth` (reset token module, factor verifier, new email
-  templates and renderers, the `mfa-reenrol` marker, `auth.ts` hooks for the new
-  notices and the re-enrolment gate, scope and reason enums, the identity
-  telemetry contract); `apps/api` (the two routes, the recovery mailer and
-  eligibility reader, `identity.users.resetMfa`, `identity.users.create`'s notice,
-  config, public-route allowlist, wiring in `createApp` and `createAppFromEnv`, the
-  operator CLI, the DAST probe); `packages/authz` (the new Cerbos action constant);
-  `policies/` (Checkpoint 3).
+- **Code.** `packages/auth` (reset token module, the pure factor verifier, new
+  email templates and renderers, the `mfa-reenrol` marker, `auth.ts` hooks for the
+  new notices, the re-enrolment gate and the sign-in fence, scope and reason enums,
+  the exported password hasher, the identity telemetry contract); `apps/api` (the
+  two routes, the recovery mailer and eligibility reader, the recovery and
+  completion sections of the auth repository module, the client IP key,
+  `identity.users.resetMfa` and its service, the wrapper's self-target set and the
+  target role attribute in `identity/define-operation.ts`, `identity-attributes.ts`
+  and `identity-target.ts`, `identity.users.create`'s notice, config, public-route
+  allowlist, wiring in `createApp` and `createAppFromEnv`, the operator CLI and its
+  `script-config.ts` entry, the DAST probe); `policies/` (Checkpoint 3). There is
+  no change to `packages/authz`: actions are plain strings in the operation
+  declaration.
 - **Dependencies.** One: `@better-auth/utils@0.4.2`, already in the lockfile as
   Better Auth's own dependency, added as a direct dependency of `@tayzu/auth` for
   the TOTP check (design D6).
 - **Database.** No migration. The token and the new markers live in
   `auth.verification`; migrations `0012`-`0014` stay reserved for `045`.
-- **Policy.** One Cerbos change (`resetMfa` on `user`), Checkpoint 3.
+- **Policy.** One Cerbos change (`resetMfa` on `user`: self-target deny and a
+  members-only target rule, hardening the existing admin grant), Checkpoint 3.
 - **Other changes.** `045` classifies the new identifier families in its
   verification-family completeness test and extends the same closed
   email-template union; `003` serves the reset page.
-- **Operations.** New environment variables, listed in design D9; a new
-  first-deployment gate list in design.md, "Gates".
+- **Operations.** New environment variables, listed in design D9, and the operator
+  CLI's own variable set (design D12); a new first-deployment gate list in
+  design.md, "Gates", including the TLS and DNS checks of `002` task 11.12.
 
 ## Non-goals
 
@@ -133,7 +153,7 @@ approved by the human on 2026-10-14 (design.md, "Resolved decisions", Q1-Q11).
 ## Sizing
 
 The roadmap budget is about 30-80 TDD tasks. `043` overran it (227 tasks) and had
-to split (Q103). `044` plans about 70 tasks in 13 groups (tasks.md) and keeps to
-the budget by reusing `043`'s email sender, cap store, kill switch, allowlist,
-public-route pattern, wrapper and telemetry helpers, by adding no migration and by
-leaving every page to `003`.
+to split (Q103). `044` plans 82 tasks in 16 groups (tasks.md), slightly over 80 with the
+human's agreement (design, "Size"), and stops at 85 to ask. It keeps to that by reusing
+`043`'s email sender, cap store, kill switch, allowlist, public-route pattern, wrapper and
+telemetry helpers, by adding no migration and by leaving every page to `003`.
