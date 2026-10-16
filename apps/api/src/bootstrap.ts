@@ -116,6 +116,15 @@ export async function createAppFromEnv(env: Env): Promise<App> {
         tenantCap: config.invitationTenantCap,
         recipientCap: config.invitationRecipientCap,
         noticeTenantCap: config.noticeTenantCap,
+        passwordResetRequestRateLimit: config.passwordResetRequestRateLimit,
+        passwordResetConfirmRateLimit: config.passwordResetConfirmRateLimit,
+        passwordResetRecipientCap: config.passwordResetRecipientCap,
+        passwordResetIpCap: config.passwordResetIpCap,
+        passwordResetGlobalCap: config.passwordResetGlobalCap,
+        passwordResetMinResponseMs: config.passwordResetMinResponseMs,
+        recoveryNoticeRecipientCap: config.recoveryNoticeRecipientCap,
+        accountCreatedNoticeTenantCap: config.accountCreatedNoticeTenantCap,
+        accountCreatedNoticeGlobalCap: config.accountCreatedNoticeGlobalCap,
       },
     });
     const ownedAuthPool = authPool;

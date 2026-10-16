@@ -56,6 +56,17 @@ import { createAuthRepository } from './identity/auth-repository.js';
 import { createDbEmailCapStore } from './identity/email-cap-store.js';
 import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
 import { createWithUserLock } from './identity/user-lock.js';
+import { IdentityInputError } from './identity/parse-input.js';
+import { applyNoCacheHeaders } from './identity/no-cache.js';
+import type { ResetFactorInput } from '../../../packages/auth/src/identity/reset-factor.js';
+import {
+  createPasswordResetConfirmFlow,
+  ResetNotFoundError,
+} from './identity/password-reset-confirm.js';
+import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
+import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
+import { createRecoveryMailer } from './identity/recovery-mailer.js';
+import { createResetTokenStore } from './identity/reset-token-store.js';
 import { createNoticeDispatcher } from './identity/notices.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -129,14 +140,41 @@ export interface CreateAppOptions {
   readonly email?: {
     readonly sender: EmailSender;
     readonly invitationLinkBaseUrl?: string;
+    /** 044 task 6.1 (D9): the origin of the emailed reset link (`PASSWORD_RESET_LINK_BASE_URL`). */
+    readonly passwordResetLinkBaseUrl?: string;
+    /** 044 task 6.4 (D4, D9): the minimum duration of a reset request answer, in ms (default 400). */
+    readonly passwordResetMinResponseMs?: number;
     readonly disabledTenantIds: readonly string[];
     readonly killSwitch: boolean;
+    /** 044 task 6.3 (D5): the mailer's admission refuses a recipient domain off this list. */
+    readonly recipientDomainAllowlist?: readonly string[];
     readonly recipientKeySecret?: string;
     readonly tenantCap: { readonly max: number; readonly windowSeconds: number };
     readonly recipientCap: { readonly max: number; readonly windowSeconds: number };
     /** The notices' buckets (Q101, 6.12b); the defaults are 60 per hour and 3 per 24 hours. */
     readonly noticeTenantCap?: { readonly max: number; readonly windowSeconds: number };
     readonly noticeRecipientCap?: { readonly max: number; readonly windowSeconds: number };
+    /** 044 task 4.3 (D16): the reset and recovery buckets, built from `Config` by the production start. */
+    readonly passwordResetRequestRateLimit?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
+    readonly passwordResetConfirmRateLimit?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
+    readonly passwordResetRecipientCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly passwordResetIpCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly passwordResetGlobalCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly recoveryNoticeRecipientCap?: { readonly max: number; readonly windowSeconds: number };
+    readonly accountCreatedNoticeTenantCap?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
+    readonly accountCreatedNoticeGlobalCap?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
   };
   /**
    * 043 task 14.3 (D15): mounts the identity routes (the accept route and the identity
@@ -191,6 +229,8 @@ interface StepUpHandlerContext {
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
 const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
+const PASSWORD_RESET_REQUEST_PATH = '/v1/auth/password-reset/request';
+const PASSWORD_RESET_CONFIRM_PATH = '/v1/auth/password-reset/confirm';
 /** Default budget of the public accept route, per caller IP (window in seconds). */
 const DEFAULT_INVITATION_ACCEPT_RATE_LIMIT = { max: 10, window: 60 } as const;
 const DEFAULT_REAUTHORIZATION_CALLBACK_RATE_LIMIT = { max: 10, window: 60 } as const;
@@ -311,6 +351,22 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
               notice_recipient: ruleOf(
                 email.noticeRecipientCap ?? { max: 3, windowSeconds: 86_400 },
               ),
+              reset_email_recipient: ruleOf(
+                email.passwordResetRecipientCap ?? { max: 5, windowSeconds: 3600 },
+              ),
+              reset_email_ip: ruleOf(email.passwordResetIpCap ?? { max: 10, windowSeconds: 3600 }),
+              reset_email_global: ruleOf(
+                email.passwordResetGlobalCap ?? { max: 600, windowSeconds: 3600 },
+              ),
+              recovery_notice_recipient: ruleOf(
+                email.recoveryNoticeRecipientCap ?? { max: 10, windowSeconds: 86_400 },
+              ),
+              account_created_notice_tenant: ruleOf(
+                email.accountCreatedNoticeTenantCap ?? { max: 20, windowSeconds: 86_400 },
+              ),
+              account_created_notice_global: ruleOf(
+                email.accountCreatedNoticeGlobalCap ?? { max: 1000, windowSeconds: 86_400 },
+              ),
             },
           }),
         });
@@ -334,6 +390,19 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           recipientKeySecret,
           killSwitch: email.killSwitch,
         });
+  const recoveryMailer =
+    email === undefined || emailCapStore === undefined || recipientKeySecret === undefined
+      ? undefined
+      : createRecoveryMailer({
+          disabledTenantIds: email.disabledTenantIds,
+          capStore: emailCapStore,
+          sender: email.sender,
+          recipientKeySecret,
+          killSwitch: email.killSwitch,
+          ...(email.recipientDomainAllowlist !== undefined && {
+            recipientDomainAllowlist: email.recipientDomainAllowlist,
+          }),
+        });
   const invitationLinkBaseUrl =
     email === undefined ? options.identity?.invitationLinkBaseUrl : email.invitationLinkBaseUrl;
 
@@ -353,6 +422,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           userSync,
           ...(emailGate === undefined ? {} : { emailGate }),
           ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+          ...(recoveryMailer === undefined ? {} : { recoveryMailer }),
           ...(options.credentialCap === undefined ? {} : { credentialCap: options.credentialCap }),
           ...(options.serviceAccountCap === undefined
             ? {}
@@ -906,6 +976,134 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         }
       },
     );
+
+    // 044 task 6.1 (D2): the reset request is a plain public route. It answers the uniform
+    // 200 whatever the account; only a malformed body answers otherwise.
+    const resetLinkBaseUrl = email?.passwordResetLinkBaseUrl;
+    const resetMinResponseMs = email?.passwordResetMinResponseMs ?? 400;
+    const resetRequest =
+      recoveryMailer === undefined || resetLinkBaseUrl === undefined
+        ? undefined
+        : createPasswordResetRequestFlow({
+            eligibility: createRecoveryEligibility({ authPool: options.authPool, userSync }),
+            mailer: recoveryMailer,
+            tokens: createResetTokenStore({
+              authPool: options.authPool,
+              withUserLock: createWithUserLock(options.authPool),
+            }),
+            linkBaseUrl: resetLinkBaseUrl,
+          });
+    // Fastify's own JSON parser answers a `__proto__` key with its own error code; this scope
+    // keeps the body as plain data so the strict parser refuses it as CATALOG_VALIDATION_FAILED.
+    // D2, D16: the per-IP limiter runs before the handler, on the DB-backed store.
+    const resetRequestLimit = createAcceptRateLimitPreHandler({
+      scope: 'password_reset_request',
+      store: createRateLimitBucketStore({
+        adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+          .adapter,
+        rules: {
+          password_reset_request: ruleOf(
+            email?.passwordResetRequestRateLimit ?? { max: 10, windowSeconds: 60 },
+          ),
+        },
+      }),
+    });
+    // 044 task 8.3 (D2): the confirm route has its own scope and budget (default 10 per minute).
+    const resetConfirm = createPasswordResetConfirmFlow({
+      authPool: options.authPool,
+      eligibility: createRecoveryEligibility({ authPool: options.authPool, userSync }),
+      tokens: createResetTokenStore({
+        authPool: options.authPool,
+        withUserLock: createWithUserLock(options.authPool),
+      }),
+      withUserLock: createWithUserLock(options.authPool),
+      ...(recoveryMailer === undefined ? {} : { mailer: recoveryMailer }),
+      secretConfig: ((await auth.$context) as { secretConfig: ResetFactorInput['secretConfig'] })
+        .secretConfig,
+    });
+    const resetConfirmLimit = createAcceptRateLimitPreHandler({
+      scope: 'password_reset_confirm',
+      store: createRateLimitBucketStore({
+        adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+          .adapter,
+        rules: {
+          password_reset_confirm: ruleOf(
+            email?.passwordResetConfirmRateLimit ?? { max: 10, windowSeconds: 60 },
+          ),
+        },
+      }),
+    });
+    await app.register((scope, _opts, done) => {
+      // Set before the limiter and the handler run, so every answer carries it, refusals included.
+      scope.addHook('onRequest', (_request, reply, hookDone) => {
+        applyNoCacheHeaders(reply);
+        hookDone();
+      });
+      scope.addContentTypeParser(
+        'application/json',
+        { parseAs: 'string' },
+        (_request, body, parsed) => {
+          try {
+            parsed(null, JSON.parse(body as string));
+          } catch {
+            parsed(null, undefined);
+          }
+        },
+      );
+      scope.post(
+        PASSWORD_RESET_REQUEST_PATH,
+        { preHandler: resetRequestLimit },
+        async (request, reply) => {
+          const startedAt = performance.now();
+          try {
+            // D2: both are required, checked before the strict parse and any lookup. The answer
+            // depends only on the request's own headers (Q24), so it is a 400, not the uniform 200.
+            if (
+              request.headers['x-csrf-token'] !== 'orpc' ||
+              request.headers.origin === undefined ||
+              !allowedOrigins.has(request.headers.origin)
+            ) {
+              throw new IdentityInputError();
+            }
+            await resetRequest?.handle({ body: request.body, clientIp: request.ip });
+            // D4 padding: wait out the rest of the minimum duration (a timer, no busy-wait).
+            const remaining = resetMinResponseMs - (performance.now() - startedAt);
+            if (remaining > 0) {
+              await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+            }
+            return await reply.status(200).send({ accepted: true });
+          } catch (error) {
+            const mapped = toOrpcError(error);
+            return reply.status(mapped.status).send(mapped.toJSON());
+          }
+        },
+      );
+      scope.post(
+        PASSWORD_RESET_CONFIRM_PATH,
+        { preHandler: resetConfirmLimit },
+        async (request, reply) => {
+          try {
+            // D2: after the limiter and before any lookup; the refusal is the uniform one.
+            if (
+              request.headers['x-csrf-token'] !== 'orpc' ||
+              request.headers.origin === undefined ||
+              !allowedOrigins.has(request.headers.origin)
+            ) {
+              throw new ResetNotFoundError();
+            }
+            await resetConfirm.handle({ body: request.body });
+            return await reply.status(200).send({ completed: true });
+          } catch (error) {
+            const mapped = toOrpcError(error);
+            return reply.status(mapped.status).send(mapped.toJSON());
+          }
+        },
+      );
+      done();
+    });
+    app.addHook('onClose', async () => {
+      await recoveryMailer?.drain();
+    });
   }
 
   let v1Config: { rateLimit?: object } = {};

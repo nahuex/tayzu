@@ -81,6 +81,7 @@
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
  */
+import { hasMfaReenrolMarker } from './identity/mfa-reenrol-marker.js';
 import {
   hasActiveTemporaryPasswordMarker,
   hasExpiredTemporaryPasswordMarker,
@@ -272,6 +273,11 @@ interface AuthContextSurface {
       readonly model: 'member' | 'verification';
       readonly where: ReadonlyArray<{ readonly field: string; readonly value: string }>;
     }): Promise<{ readonly role?: unknown; readonly value?: unknown } | null>;
+    /** Present for the shape `./identity/mfa-reenrol-marker.ts` takes; the resolver never calls it. */
+    deleteMany(data: {
+      readonly model: 'verification';
+      where: { field: string; value: string }[];
+    }): Promise<unknown>;
   };
 }
 
@@ -657,6 +663,7 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     const markerHeld = await contextOf(options.auth)
       .then(
         async (context) =>
+          (await hasMfaReenrolMarker(context.adapter, result.user.id)) ||
           (await hasActiveTemporaryPasswordMarker(context.adapter, result.user.id)) ||
           // Task 16.11a, Q146: an expired marker refuses the existing session too.
           (await hasExpiredTemporaryPasswordMarker(context.adapter, result.user.id)),

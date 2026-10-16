@@ -48,6 +48,7 @@ import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
 import type { WithUserLock } from './identity/user-lock.js';
+import type { RecoveryMailer } from './identity/recovery-mailer.js';
 import { canonicalEmail, isValidIdentityEmail } from './identity/email-canonical.js';
 import { buildInvitationLink } from './identity/invitation-link.js';
 import { createDefineIdentityOperation } from './identity/define-operation.js';
@@ -155,6 +156,8 @@ export interface CreateIdentityRouterOptions {
   readonly withUserLock: WithUserLock;
   /** The one gate that sends invitation emails (task 6.5c). */
   readonly emailGate?: EmailTenantGate;
+  /** Sends the account-created notice after `identity.users.create` (044 task 7.3). */
+  readonly recoveryMailer?: RecoveryMailer;
   /** The trusted `INVITATION_LINK_BASE_URL`; the link's origin comes only from it. */
   readonly invitationLinkBaseUrl?: string;
   /** The `tayzu_app` pool the revocation list is read through (task 9.2). */
@@ -784,6 +787,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             });
             // Design D4 (Q110): the user now exists, so a pending invitation of this tenant to the address is moot.
             const tenantId = rawTenantId(context);
+            // The notice never rejects; the new user's only membership is the creating tenant.
+            await options.recoveryMailer?.sendNotice({
+              kind: 'AccountCreatedNotice',
+              address: input.email,
+              userId: user.id,
+              tenantIds: [tenantId],
+              creatingTenantId: tenantId,
+            });
             const pending = await options.authRepository.pendingInvitationsByEmail(
               tenantId,
               input.email,

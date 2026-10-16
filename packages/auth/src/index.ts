@@ -4,6 +4,7 @@
 export {
   createAuth,
   emitSessionRevoked,
+  hashPasswordNfc,
   type SessionRevocationReason,
   type AuthInstance,
   type CreateAuthOptions,
@@ -12,7 +13,10 @@ export {
   type UserSyncPort,
 } from './auth.js';
 export type { SsoLinkShedPort } from './identity/ports.js';
-export { createAllowlistEmailSender } from './identity/email/email-allowlist.js';
+export {
+  createAllowlistEmailSender,
+  isRecipientDomainAllowed,
+} from './identity/email/email-allowlist.js';
 export { createNonSendingEmailSender } from './identity/email/non-sending-sender.js';
 export {
   createRecordingEmailSender,
@@ -24,6 +28,7 @@ export {
   parseAzureEmailConfig,
 } from './identity/email/azure-communication-email.js';
 export { validatePassword, type PasswordValidation } from './identity/password-policy.js';
+export { isPasswordCompromised } from 'better-auth/plugins';
 export { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 export {
   createContextResolver,
@@ -93,7 +98,14 @@ export {
   verifyInvitationToken,
 } from './identity/invitation-token.js';
 export {
+  clearMfaReenrolMarker,
+  hasMfaReenrolMarker,
+  MFA_REENROL_MARKER_VALUE,
+  mfaReenrolMarkerIdentifier,
+} from './identity/mfa-reenrol-marker.js';
+export {
   generateTemporaryPassword,
+  MARKER_EXPIRES_AT_SENTINEL,
   hasActiveTemporaryPasswordMarker,
   hasExpiredTemporaryPasswordMarker,
   writeTemporaryPasswordMarker,

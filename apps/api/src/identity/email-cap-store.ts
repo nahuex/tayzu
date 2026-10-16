@@ -14,6 +14,13 @@ const BUCKETS: Readonly<Record<string, { readonly scope: string; readonly kind: 
   recipient: { scope: 'invitation_recipient', kind: 'email' },
   notice_tenant: { scope: 'notice_tenant', kind: 'tenant' },
   notice_recipient: { scope: 'notice_recipient', kind: 'email' },
+  // Change 044 (task 4.3, design D16): the reset and recovery buckets.
+  reset_recipient: { scope: 'reset_email_recipient', kind: 'email' },
+  reset_ip: { scope: 'reset_email_ip', kind: 'ip' },
+  reset_global: { scope: 'reset_email_global', kind: 'global' },
+  recovery_notice_recipient: { scope: 'recovery_notice_recipient', kind: 'email' },
+  account_created_tenant: { scope: 'account_created_notice_tenant', kind: 'tenant' },
+  account_created_global: { scope: 'account_created_notice_global', kind: 'global' },
 };
 
 export function createDbEmailCapStore(options: {

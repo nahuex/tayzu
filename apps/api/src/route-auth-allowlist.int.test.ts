@@ -43,6 +43,12 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import {
+  ALLOWED_AUTH_ROUTES,
+  AUTH_BASE_PATH,
+  createRecordingEmailSender,
+  isAllowedAuthPath,
+} from '@tayzu/auth';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -236,4 +242,184 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
 
     expect(await unguardedRoutes(scratchApp, scratch.pairs, extended)).toEqual([]);
   }, 120_000);
+});
+
+/**
+ * Task 6.1 of openspec/changes/044-password-reset-and-account-recovery, scenario "A route
+ * outside the allowlist cannot be public" (spec requirement "The reset routes are public,
+ * API-only and behind the mount switch"): with the switch on, the request route is a new
+ * public entry with a reason, and any other route outside the allowlist still answers an
+ * anonymous call like the `/v1/*` catch-all. The cases of the describe above stay as they are.
+ *
+ * Production symbols expected: `POST /v1/auth/password-reset/request` registered when the
+ * switch is on (with or without email settings), and its `PUBLIC_ROUTE_ALLOWLIST` entry with a
+ * non-empty `reason`.
+ */
+describe('the password reset request route is a reviewed public route (044 task 6.1)', () => {
+  const REQUEST_PATH = '/v1/auth/password-reset/request';
+  const collected = routeCollector();
+  let app: App;
+  const allowlist: readonly AllowlistEntry[] = PUBLIC_ROUTE_ALLOWLIST;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const secret = 'mount-wiring-test-only-secret-0123456789-abcdef';
+    const email = {
+      sender: createRecordingEmailSender(),
+      invitationLinkBaseUrl: ORIGIN,
+      passwordResetLinkBaseUrl: ORIGIN,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: secret,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: secret,
+      ...{ email, configureApp: collected.install },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  it('the route table holds the request route and the allowlist names it with a reason', () => {
+    expect(collected.pairs).toContainEqual({ method: 'POST', path: REQUEST_PATH });
+    const entry = allowlist.find((candidate) => candidate.path === REQUEST_PATH);
+    expect(entry, 'the request route is on the allowlist').toBeDefined();
+    expect(entry?.method).toBe('POST');
+    expect(entry?.reason.trim()).not.toBe('');
+  });
+
+  it('every other route outside the allowlist still answers 401 CATALOG_CONTEXT_REQUIRED to an anonymous caller', async () => {
+    expect(await unguardedRoutes(app, collected.pairs, allowlist)).toEqual([]);
+  }, 120_000);
+
+  it('without its allowlist entry the request route would be an offender (it is public)', async () => {
+    const withoutEntry = allowlist.filter((candidate) => candidate.path !== REQUEST_PATH);
+
+    const offenders = await unguardedRoutes(app, collected.pairs, withoutEntry);
+
+    expect(offenders).toEqual([`POST ${REQUEST_PATH}`]);
+  }, 120_000);
+});
+
+/**
+ * Task 8.3 of openspec/changes/044-password-reset-and-account-recovery, scenario "A route
+ * outside the allowlist cannot be public" (spec requirement "The reset routes are public,
+ * API-only and behind the mount switch"), now covering both reset routes: they are the only new
+ * public entries, each with a reason, and any other route outside the allowlist still answers an
+ * anonymous call like the `/v1/*` catch-all.
+ *
+ * Also the _guard_ scenario "No email-only removal of a second factor exists" (spec requirement
+ * "Backup codes remain the self-service recovery for a lost authenticator"): WHEN every public
+ * route is enumerated; THEN none removes or disables a second factor without a session and a fresh
+ * verification. "Every public route" is the Fastify allowlist (`PUBLIC_ROUTE_ALLOWLIST`) and the
+ * Better Auth routes it forwards (`ALLOWED_AUTH_ROUTES`).
+ *
+ * Production symbols expected: `POST /v1/auth/password-reset/confirm` registered when the switch
+ * is on, and its `PUBLIC_ROUTE_ALLOWLIST` entry with a non-empty `reason`.
+ */
+describe('the password reset routes are reviewed public routes (044 task 8.3)', () => {
+  const REQUEST_PATH = '/v1/auth/password-reset/request';
+  const CONFIRM_PATH = '/v1/auth/password-reset/confirm';
+  const collected = routeCollector();
+  let app: App;
+  const allowlist: readonly AllowlistEntry[] = PUBLIC_ROUTE_ALLOWLIST;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const secret = 'mount-wiring-test-only-secret-0123456789-abcdef';
+    const email = {
+      sender: createRecordingEmailSender(),
+      invitationLinkBaseUrl: ORIGIN,
+      passwordResetLinkBaseUrl: ORIGIN,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: secret,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: secret,
+      ...{ email, configureApp: collected.install },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  it('the route table holds the confirm route and the allowlist names it with a reason', () => {
+    expect(collected.pairs).toContainEqual({ method: 'POST', path: CONFIRM_PATH });
+    const entry = allowlist.find((candidate) => candidate.path === CONFIRM_PATH);
+    expect(entry, 'the confirm route is on the allowlist').toBeDefined();
+    expect(entry?.method).toBe('POST');
+    expect(entry?.reason.trim()).not.toBe('');
+  });
+
+  it('the two reset routes are the only password-reset entries of the allowlist, each with a reason', () => {
+    const resetEntries = allowlist.filter((candidate) => /password-reset/.test(candidate.path));
+    expect(resetEntries.map((entry) => `${entry.method} ${entry.path}`).sort()).toEqual([
+      `POST ${CONFIRM_PATH}`,
+      `POST ${REQUEST_PATH}`,
+    ]);
+    for (const entry of resetEntries) {
+      expect(entry.reason.trim(), entry.path).not.toBe('');
+    }
+  });
+
+  it('every other route outside the allowlist still answers 401 CATALOG_CONTEXT_REQUIRED to an anonymous caller', async () => {
+    expect(await unguardedRoutes(app, collected.pairs, allowlist)).toEqual([]);
+  }, 120_000);
+
+  it('without its allowlist entry the confirm route would be an offender (it is public)', async () => {
+    const withoutEntry = allowlist.filter((candidate) => candidate.path !== CONFIRM_PATH);
+
+    const offenders = await unguardedRoutes(app, collected.pairs, withoutEntry);
+
+    expect(offenders).toEqual([`POST ${CONFIRM_PATH}`]);
+  }, 120_000);
+
+  it('No email-only removal of a second factor exists: no public Fastify route and no allowlisted Better Auth route disables or removes a second factor', () => {
+    const publicPaths = allowlist.map((entry) => entry.path);
+    for (const path of publicPaths) {
+      expect(path, 'a public Fastify route names a second factor').not.toMatch(/two-?factor|mfa/i);
+    }
+    const betterAuthRoutes = [...ALLOWED_AUTH_ROUTES];
+    expect(betterAuthRoutes.length).toBeGreaterThan(0);
+    for (const route of betterAuthRoutes) {
+      expect(route, 'an allowlisted Better Auth route removes a second factor').not.toMatch(
+        /two-factor\/(disable|remove|delete|reset|unenroll)/i,
+      );
+    }
+    expect(isAllowedAuthPath(`${AUTH_BASE_PATH}/two-factor/disable`)).toBe(false);
+  });
+
+  it('No email-only removal of a second factor exists: an anonymous call to the second-factor disable route does not succeed', async () => {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: `${AUTH_BASE_PATH}/two-factor/disable`,
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({ password: 'irrelevant-password-1!' }),
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
 });

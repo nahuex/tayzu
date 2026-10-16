@@ -11,18 +11,38 @@ import type { EmailSender, EmailTemplate } from './sender.js';
 const TEMPLATE_NAMES: Record<EmailTemplate['kind'], string> = {
   InvitationEmail: 'invitation',
   AdminAcceptedNotice: 'admin_accepted',
+  PasswordResetEmail: 'password_reset',
+  PasswordChangedNotice: 'password_changed',
+  MfaChangedNotice: 'mfa_changed',
+  MfaResetNotice: 'mfa_reset',
+  AccountCreatedNotice: 'account_created',
 };
+
+function canonicalRecipient(address: string): string {
+  return address.normalize('NFC').trim().toLowerCase();
+}
+
+/**
+ * The one allowlist test (`044` design D5): the sender wrapper and the reset mailer both use
+ * it. An address without `@`, and any address against an empty list, is not allowed.
+ */
+export function isRecipientDomainAllowed(
+  address: string,
+  allowedDomains: readonly string[],
+): boolean {
+  const to = canonicalRecipient(address);
+  if (!to.includes('@')) return false;
+  return allowedDomains.includes(to.slice(to.lastIndexOf('@') + 1));
+}
 
 export function createAllowlistEmailSender(
   inner: EmailSender,
   allowedDomains: readonly string[],
 ): EmailSender {
-  const allowed = new Set(allowedDomains);
   return {
     async send(rawTo, template) {
-      const to = rawTo.normalize('NFC').trim().toLowerCase();
-      const domain = to.slice(to.lastIndexOf('@') + 1);
-      if (!to.includes('@') || !allowed.has(domain)) {
+      const to = canonicalRecipient(rawTo);
+      if (!isRecipientDomainAllowed(to, allowedDomains)) {
         emitIdentityEvent({
           name: 'catalog.security.email_recipient_blocked',
           severity: 'WARN',
