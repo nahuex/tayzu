@@ -61,6 +61,7 @@ import {
   testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { enrollTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createResetTokenStore } from './identity/reset-token-store.js';
 import { createWithUserLock } from './identity/user-lock.js';
@@ -882,5 +883,438 @@ describe('POST /v1/auth/password-reset/confirm over HTTP (task 8.3)', () => {
       expect(text).not.toContain('ENOTFOUND');
       expect(text).not.toContain(NEW_PASSWORD);
     });
+  });
+});
+
+/**
+ * Task 8.7 (design D7 steps 1-3, D6 "Serialization and accounting"): the lock section up to the
+ * factor check. Scenarios "Five wrong factors burn the token", "Parallel wrong factors cannot
+ * exceed the budget" and "A factor enrolled during the request is not bypassed" of
+ * `specs/password-reset-and-account-recovery/spec.md`, and the cases "ten failures across two tokens
+ * lock the account for sign-in too", "a locked account answers `AUTH_STEP_UP_REQUIRED` without
+ * verifying and counts one token failure", "a ban between the eligibility check and the lock answers
+ * the uniform rejection (`not_eligible`)" and "the reads of steps 1-3 run on the lock's connection".
+ *
+ * ## Harness
+ *
+ * Its own app, over a `tayzu_auth` pool wrapper that records `{ connection, statement }` for every
+ * statement (the pool itself is `pool`, every checked-out client has its own id) and can run an async
+ * hook before the per-user advisory lock statement executes. That hook stands in for the spec's
+ * "repository wrapper enrols the factor after its first read": the lock is taken after the route's
+ * first (fast-fail) read, so a hook there acts exactly between that read and the in-lock re-read,
+ * and a ban written there acts between the eligibility check and the lock. Users are enrolled for
+ * real (`enrollTotp`: Better Auth's own enrolment), so a correct TOTP code is a real one.
+ *
+ * ## Production symbols expected
+ *
+ * The lock section of the completion, inside `createPasswordResetConfirmFlow`
+ * (`./identity/password-reset-confirm.js`), on the connection of `createWithUserLock`, using the
+ * two-factor section of `./identity/auth-repository.js` (`globalTwoFactorStateOf`,
+ * `globalRecordTwoFactorFailure`, `globalClearExpiredTwoFactorLock`), `globalUserBanned`,
+ * `globalAccountsOf` and the token store's `lookup` / `recordFailure`, all with the lock's `db`, plus
+ * `verifyResetFactor` from `@tayzu/auth`. A factor failure answers `403 AUTH_STEP_UP_REQUIRED`.
+ */
+describe('The lock section up to the factor check (task 8.7)', () => {
+  interface StatementEvent {
+    readonly connection: string;
+    readonly sql: string;
+  }
+
+  let app: App;
+  let authPool: Pool;
+  let events: StatementEvent[];
+  let beforeLock: (() => Promise<void>) | undefined;
+  const sender = createRecordingEmailSender();
+  const WRONG_FACTOR = { kind: 'totp', code: '12345a' } as const;
+  const LOCK_STATEMENT = /pg_advisory_xact_lock/i;
+  const SECTION_TABLES = /two_factor|verification|auth\.user\b|"user"|auth\.account\b/i;
+
+  function spyAndHook(pool: Pool): Pool {
+    let nextClient = 0;
+    const run = async (connection: string, target: unknown, args: unknown[]): Promise<unknown> => {
+      const sql = statementText(args[0]);
+      events.push({ connection, sql });
+      if (LOCK_STATEMENT.test(sql) && beforeLock !== undefined) {
+        const hook = beforeLock;
+        beforeLock = undefined;
+        await hook();
+      }
+      return (target as { query: QueryFunction }).query(...args);
+    };
+    const spyOnClient = (client: PoolClient): PoolClient => {
+      nextClient += 1;
+      const connection = `client-${String(nextClient)}`;
+      return new Proxy(client, {
+        get(target, property): unknown {
+          const value: unknown = Reflect.get(target, property, target);
+          if (property === 'query') {
+            return (...args: unknown[]): unknown => run(connection, target, args);
+          }
+          return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+        },
+      });
+    };
+    return new Proxy(pool, {
+      get(target, property): unknown {
+        const value: unknown = Reflect.get(target, property, target);
+        if (property === 'query') {
+          return (...args: unknown[]): unknown => run('pool', target, args);
+        }
+        if (property === 'connect') {
+          return async (): Promise<PoolClient> => spyOnClient(await target.connect());
+        }
+        return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+      },
+    });
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    events = [];
+    authPool = pools.authPool;
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      passwordResetMinResponseMs: 0,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    app = await createApp({
+      appPool: pools.appPool,
+      authPool: spyAndHook(pools.authPool),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+  }, 60_000);
+
+  afterEach(() => {
+    beforeLock = undefined;
+    vi.unstubAllGlobals();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  function store() {
+    return createResetTokenStore({ authPool, withUserLock: createWithUserLock(authPool) });
+  }
+
+  async function createAccount(): Promise<{ email: string; userId: string; cookie: string }> {
+    const suffix = randomUUID();
+    const email = `lock-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Lock User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Lock Org ${suffix}`,
+      organizationSlug: `lock-${suffix}`,
+      ip: randomIp(),
+    });
+    return { email, userId: tenant.userId, cookie: tenant.cookie };
+  }
+
+  /** A user with TOTP enrolled through Better Auth itself; `secret` yields real codes. */
+  async function createEnrolled(): Promise<{ email: string; userId: string; secret: string }> {
+    const account = await createAccount();
+    const secret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: account.cookie,
+    });
+    const state = await authPool.query<{ enabled: boolean | null; verified: number }>(
+      `select u.two_factor_enabled as enabled,
+              (select count(*)::int from auth.two_factor t where t.user_id = u.id and t.verified is not false) as verified
+         from auth."user" u where u.id = $1`,
+      [account.userId],
+    );
+    expect(state.rows[0], 'the harness enrolled the user consistently').toEqual({
+      enabled: true,
+      verified: 1,
+    });
+    return { email: account.email, userId: account.userId, secret };
+  }
+
+  async function currentCode(secret: string): Promise<string> {
+    const api = app.auth.api as {
+      generateTOTP(args: { body: { secret: string } }): Promise<{ code: string }>;
+    };
+    return (await api.generateTOTP({ body: { secret } })).code;
+  }
+
+  async function post(fields: Record<string, unknown>, ip: string = randomIp()): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: CONFIRM_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': ip,
+      },
+      payload: JSON.stringify({ newPassword: NEW_PASSWORD, ...fields }),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return {
+      status: response.statusCode,
+      body,
+      cacheControl: response.headers['cache-control'],
+      pragma: response.headers['pragma'],
+      retryAfter: response.headers['retry-after'],
+    };
+  }
+
+  async function passwordHash(userId: string): Promise<string> {
+    const result = await authPool.query<{ password: string | null }>(
+      `select password from auth.account where user_id = $1 and provider_id = 'credential'`,
+      [userId],
+    );
+    return result.rows[0]?.password ?? '';
+  }
+
+  async function counters(
+    userId: string,
+  ): Promise<{ failed: number | null; lockedUntil: Date | null }> {
+    const result = await authPool.query<{ failed: number | null; locked_until: Date | null }>(
+      'select failed_verification_count as failed, locked_until from auth.two_factor where user_id = $1',
+      [userId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Error('expected the two_factor row');
+    return { failed: row.failed, lockedUntil: row.locked_until };
+  }
+
+  async function tokenRows(id: string): Promise<number> {
+    const result = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      `password-reset:${id}`,
+    ]);
+    return result.rowCount ?? 0;
+  }
+
+  function expectStepUp(answer: Answer): void {
+    expect(answer.status).toBe(403);
+    expect(answer.body).toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    expect(String(answer.cacheControl)).toContain('no-store');
+  }
+
+  function expectUniformRejection(answer: Answer): void {
+    expect(answer.status).toBe(404);
+    expect(answer.body).toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+  }
+
+  it('Five wrong factors burn the token: five AUTH_STEP_UP_REQUIRED, then the uniform 404 even with the right factor', async () => {
+    const user = await createEnrolled();
+    const issued = await store().issue(user.userId);
+    const hashBefore = await passwordHash(user.userId);
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const answer = await post({ id: issued.id, token: issued.token, factor: WRONG_FACTOR });
+      expectStepUp(answer);
+      expect(await tokenRows(issued.id), `the token survives failure ${String(attempt)}`).toBe(
+        attempt < 5 ? 1 : 0,
+      );
+    }
+
+    const sixth = await post({
+      id: issued.id,
+      token: issued.token,
+      factor: { kind: 'totp', code: await currentCode(user.secret) },
+    });
+    expectUniformRejection(sixth);
+    expect(await tokenRows(issued.id), 'the token is gone').toBe(0);
+    expect(await passwordHash(user.userId), 'the password is unchanged').toBe(hashBefore);
+    expect((await counters(user.userId)).failed, 'each failure counted on the account').toBe(5);
+  });
+
+  it('Parallel wrong factors cannot exceed the budget: of 50 at once exactly 5 answer AUTH_STEP_UP_REQUIRED, the rest the uniform 404, the account counter did not pass 5', async () => {
+    const user = await createEnrolled();
+    const issued = await store().issue(user.userId);
+
+    const answers = await Promise.all(
+      Array.from({ length: 50 }, () =>
+        post({ id: issued.id, token: issued.token, factor: WRONG_FACTOR }),
+      ),
+    );
+
+    const stepUp = answers.filter((answer) => answer.status === 403);
+    const uniform = answers.filter((answer) => answer.status === 404);
+    expect(stepUp, 'exactly the budget is counted').toHaveLength(5);
+    for (const answer of stepUp)
+      expect(answer.body).toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    expect(uniform).toHaveLength(45);
+    for (const answer of uniform) expect(answer.body).toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+    expect(await tokenRows(issued.id), 'the token is deleted').toBe(0);
+    const account = await counters(user.userId);
+    expect(account.failed).toBe(5);
+    expect(account.failed ?? 0).toBeLessThanOrEqual(5);
+  }, 60_000);
+
+  it('A factor enrolled during the request is not bypassed: the answer is AUTH_STEP_UP_REQUIRED, the password unchanged, the token not consumed', async () => {
+    const account = await createAccount();
+    const issued = await store().issue(account.userId);
+    const hashBefore = await passwordHash(account.userId);
+    beforeLock = async () => {
+      await authPool.query(
+        `insert into auth.two_factor (id, secret, backup_codes, user_id, verified, failed_verification_count)
+         values ($1, $2, $3, $4, true, 0)`,
+        [`tf-${randomUUID()}`, 'enc-secret', 'enc-codes', account.userId],
+      );
+      await authPool.query('update auth."user" set two_factor_enabled = true where id = $1', [
+        account.userId,
+      ]);
+    };
+
+    const answer = await post({ id: issued.id, token: issued.token });
+
+    expect(beforeLock, 'the hook ran at the lock').toBeUndefined();
+    expectStepUp(answer);
+    expect(await passwordHash(account.userId), 'the password is unchanged').toBe(hashBefore);
+    expect(await store().lookup(issued.id, issued.token)).toEqual({
+      status: 'found',
+      userId: account.userId,
+      failures: 0,
+    });
+  });
+
+  it('ten failures across two tokens lock the account for sign-in too', async () => {
+    const user = await createEnrolled();
+    const first = await store().issue(user.userId);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expectStepUp(await post({ id: first.id, token: first.token, factor: WRONG_FACTOR }));
+    }
+    expect(await tokenRows(first.id)).toBe(0);
+    const second = await store().issue(user.userId);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expectStepUp(await post({ id: second.id, token: second.token, factor: WRONG_FACTOR }));
+    }
+
+    const account = await counters(user.userId);
+    expect(account.failed).toBe(10);
+    expect(account.lockedUntil, 'the account is locked').not.toBeNull();
+    expect((account.lockedUntil ?? new Date(0)).getTime()).toBeGreaterThan(Date.now());
+
+    const handler = (app.auth as unknown as { handler: (request: Request) => Promise<Response> })
+      .handler;
+    const challenge = await handler(
+      new Request('http://localhost:3000/api/auth/sign-in/email', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: ORIGIN,
+        },
+        body: JSON.stringify({ email: user.email, password: TEST_PASSWORD }),
+      }),
+    );
+    expect(challenge.status, 'the password step still answers').toBe(200);
+    const verify = await handler(
+      new Request('http://localhost:3000/api/auth/two-factor/verify-totp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: ORIGIN,
+          cookie: challenge.headers
+            .getSetCookie()
+            .map((raw) => raw.split(';')[0])
+            .join('; '),
+        },
+        body: JSON.stringify({ code: await currentCode(user.secret) }),
+      }),
+    );
+    expect(verify.status, 'the right code is refused while the account is locked').not.toBe(200);
+  }, 60_000);
+
+  it('a locked account answers AUTH_STEP_UP_REQUIRED without verifying and counts one token failure', async () => {
+    const user = await createEnrolled();
+    const issued = await store().issue(user.userId);
+    await authPool.query(
+      `update auth.two_factor
+          set failed_verification_count = 10, locked_until = now() + interval '10 minutes'
+        where user_id = $1`,
+      [user.userId],
+    );
+    const hashBefore = await passwordHash(user.userId);
+    const lockedBefore = await counters(user.userId);
+
+    const answer = await post({
+      id: issued.id,
+      token: issued.token,
+      factor: { kind: 'totp', code: await currentCode(user.secret) },
+    });
+
+    expectStepUp(answer);
+    expect(await passwordHash(user.userId), 'the correct code was not verified').toBe(hashBefore);
+    expect(await store().lookup(issued.id, issued.token), 'one failure on the token').toEqual({
+      status: 'found',
+      userId: user.userId,
+      failures: 1,
+    });
+    expect(await counters(user.userId), 'the account counter and lock are unchanged').toEqual(
+      lockedBefore,
+    );
+  });
+
+  it('a ban between the eligibility check and the lock answers the uniform rejection (not_eligible)', async () => {
+    const account = await createAccount();
+    const issued = await store().issue(account.userId);
+    const hashBefore = await passwordHash(account.userId);
+    beforeLock = async () => {
+      await authPool.query('update auth."user" set banned = true where id = $1', [account.userId]);
+    };
+
+    const answer = await post({ id: issued.id, token: issued.token });
+
+    expect(beforeLock, 'the hook ran at the lock').toBeUndefined();
+    expectUniformRejection(answer);
+    expect(await passwordHash(account.userId), 'the password is unchanged').toBe(hashBefore);
+    expect(await tokenRows(issued.id), 'nothing was consumed').toBe(1);
+  });
+
+  it("the reads of steps 1-3 run on the lock's connection", async () => {
+    const user = await createEnrolled();
+    const issued = await store().issue(user.userId);
+    const before = events.length;
+
+    const answer = await post({ id: issued.id, token: issued.token, factor: WRONG_FACTOR });
+
+    expectStepUp(answer);
+    const request = events.slice(before);
+    const lockIndex = request.findIndex((event) => LOCK_STATEMENT.test(event.sql));
+    expect(lockIndex, 'the request took the per-user lock').toBeGreaterThanOrEqual(0);
+    const lockConnection = request[lockIndex]?.connection ?? '';
+    expect(lockConnection).not.toBe('pool');
+    const afterLock = request
+      .slice(lockIndex + 1)
+      .filter((event) => SECTION_TABLES.test(event.sql));
+    const onLock = afterLock.filter((event) => event.connection === lockConnection);
+    expect(
+      afterLock.filter((event) => event.connection !== lockConnection),
+      'no statement of steps 1-3 or of the failure accounting left the lock connection',
+    ).toEqual([]);
+    for (const table of [
+      /verification/i,
+      /two_factor/i,
+      /banned|auth\."?user"?/i,
+      /auth\.account/i,
+    ]) {
+      expect(
+        onLock.some((event) => table.test(event.sql)),
+        `a statement matching ${String(table)} ran on the lock connection`,
+      ).toBe(true);
+    }
   });
 });

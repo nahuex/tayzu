@@ -58,6 +58,7 @@ import { createEmailTenantGate, type EmailTenantGate } from './identity/email-te
 import { createWithUserLock } from './identity/user-lock.js';
 import { IdentityInputError } from './identity/parse-input.js';
 import { applyNoCacheHeaders } from './identity/no-cache.js';
+import type { ResetFactorInput } from '../../../packages/auth/src/identity/reset-factor.js';
 import {
   createPasswordResetConfirmFlow,
   ResetNotFoundError,
@@ -1015,6 +1016,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         authPool: options.authPool,
         withUserLock: createWithUserLock(options.authPool),
       }),
+      withUserLock: createWithUserLock(options.authPool),
+      secretConfig: ((await auth.$context) as { secretConfig: ResetFactorInput['secretConfig'] })
+        .secretConfig,
     });
     const resetConfirmLimit = createAcceptRateLimitPreHandler({
       scope: 'password_reset_confirm',

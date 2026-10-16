@@ -6,10 +6,15 @@
  */
 import { AuthStepUpError, isPasswordCompromised, validatePassword } from '@tayzu/auth';
 
-import { createAuthRepository } from './auth-repository.js';
+import {
+  verifyResetFactor,
+  type ResetFactorInput,
+} from '../../../../packages/auth/src/identity/reset-factor.js';
+import { createAuthRepository, type TwoFactorStateRead } from './auth-repository.js';
 import { IdentityInputError, parseIdentityInput, type InputSchema } from './parse-input.js';
 import type { RecoveryEligibilityChecker } from './recovery-eligibility.js';
 import type { ResetTokenStore } from './reset-token-store.js';
+import type { WithUserLock } from './user-lock.js';
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const RESET_ID_LENGTH = 22;
@@ -17,6 +22,8 @@ const RESET_TOKEN_LENGTH = 43;
 /** Code units; the policy maximum (128 code points) is checked later by `validatePassword`. */
 const MAX_NEW_PASSWORD_LENGTH = 512;
 const MAX_FACTOR_CODE_LENGTH = 32;
+/** The failure budget of one token (D3). */
+const MAX_TOKEN_FAILURES = 5;
 
 const CONFIRM_BODY_SCHEMA: InputSchema = {
   body: {
@@ -64,6 +71,13 @@ export interface ConfirmFactor {
   readonly code: string;
 }
 
+/** The D6 predicate: enrolled needs the flag and a verified row; exactly one of them is inconsistent. */
+function enrolmentOf(state: TwoFactorStateRead): 'none' | 'inconsistent' | 'enrolled' {
+  const hasVerifiedRow = state.rows.some((row) => row.verified);
+  if (!state.twoFactorEnabled && !hasVerifiedRow) return 'none';
+  return state.twoFactorEnabled && hasVerifiedRow ? 'enrolled' : 'inconsistent';
+}
+
 /** Checks the declared shape of the opaque `factor` object (already screened for forbidden keys). */
 function parseFactor(raw: unknown): ConfirmFactor {
   const factor = raw as Record<string, unknown>;
@@ -90,12 +104,15 @@ export function createPasswordResetConfirmFlow(options: {
   readonly authPool: Parameters<typeof createAuthRepository>[0];
   readonly eligibility: RecoveryEligibilityChecker;
   readonly tokens: ResetTokenStore;
+  readonly withUserLock: WithUserLock;
+  /** `(await auth.$context).secretConfig`, for the factor verifier (D6). */
+  readonly secretConfig: ResetFactorInput['secretConfig'];
 }): PasswordResetConfirmFlow {
   const repository = createAuthRepository(options.authPool);
   return {
     async handle({ body }) {
       const parsed = parseIdentityInput(CONFIRM_BODY_SCHEMA, { body }).body;
-      if (parsed['factor'] !== undefined) parseFactor(parsed['factor']);
+      const factor = parsed['factor'] === undefined ? undefined : parseFactor(parsed['factor']);
 
       const lookup = await options.tokens.lookup(parsed['id'] as string, parsed['token'] as string);
       if (lookup.status !== 'found') throw new ResetNotFoundError();
@@ -105,15 +122,11 @@ export function createPasswordResetConfirmFlow(options: {
       const eligibility = await options.eligibility.check(user.email);
       if (eligibility.status !== 'eligible') throw new ResetNotFoundError();
 
-      // D6 fast fail: the read before the lock decides nothing final. Enrolled means the flag OR
-      // a verified row; an inconsistent state (only one of them) can never be satisfied, so it
-      // answers the same way and consumes and counts nothing.
+      // D6 fast fail: the read before the lock decides nothing final. An inconsistent state can
+      // never be satisfied, so it answers the same way and consumes and counts nothing.
       const twoFactor = await repository.globalTwoFactorStateOf(lookup.userId);
-      const hasVerifiedRow = twoFactor.rows.some((row) => row.verified);
-      if (
-        (twoFactor.twoFactorEnabled || hasVerifiedRow) &&
-        (!twoFactor.twoFactorEnabled || !hasVerifiedRow || parsed['factor'] === undefined)
-      ) {
+      const enrolment = enrolmentOf(twoFactor);
+      if (enrolment === 'inconsistent' || (enrolment === 'enrolled' && factor === undefined)) {
         throw new AuthStepUpError();
       }
 
@@ -124,6 +137,55 @@ export function createPasswordResetConfirmFlow(options: {
       if (await isPasswordCompromised(checked.password)) {
         throw new ResetPasswordRefusedError('breached');
       }
+
+      const tokenId = parsed['id'] as string;
+      const rawToken = parsed['token'] as string;
+      const outcome = await options.withUserLock(lookup.userId, async (tx) => {
+        // D7 step 1: the token row again, on the lock's connection.
+        const again = await options.tokens.lookup(tokenId, rawToken, tx);
+        if (
+          again.status !== 'found' ||
+          again.userId !== lookup.userId ||
+          again.failures >= MAX_TOKEN_FAILURES
+        ) {
+          return 'rejected' as const;
+        }
+        // Step 2: a ban or a missing credential account can overtake the earlier check.
+        const banned = await repository.globalUserBanned(lookup.userId, tx);
+        const accounts = await repository.globalAccountsOf(lookup.userId, tx);
+        if (banned !== false || !accounts.some((account) => account.providerId === 'credential')) {
+          return 'rejected' as const;
+        }
+        // Step 3: the enrolled predicate again; this one decides.
+        const state = await repository.globalTwoFactorStateOf(lookup.userId, tx);
+        const enrolled = enrolmentOf(state);
+        if (enrolled === 'none') return 'checked' as const;
+        const row = state.rows.find((candidate) => candidate.verified);
+        if (enrolled === 'inconsistent' || factor === undefined || row === undefined) {
+          return 'step_up' as const;
+        }
+        if (row.lockedUntil !== null) {
+          if (row.lockedUntil.getTime() > Date.now()) {
+            // Locked: not verified, one failure against the token only.
+            await options.tokens.recordFailure(tokenId, tx);
+            return 'step_up' as const;
+          }
+          await repository.globalClearExpiredTwoFactorLock(row.id, tx);
+        }
+        const verdict = await verifyResetFactor({
+          factor,
+          twoFactor: { secret: row.secret, backupCodes: row.backupCodes },
+          secretConfig: options.secretConfig,
+        });
+        if (!verdict.verified) {
+          await repository.globalRecordTwoFactorFailure(row.id, tx);
+          await options.tokens.recordFailure(tokenId, tx);
+          return 'step_up' as const;
+        }
+        return 'checked' as const;
+      });
+      if (outcome === 'rejected') throw new ResetNotFoundError();
+      if (outcome === 'step_up') throw new AuthStepUpError();
 
       // Task 8.9 replaces this with the completion; until then the sanitized INTERNAL 500.
       throw new Error('The password reset completion is not implemented');
