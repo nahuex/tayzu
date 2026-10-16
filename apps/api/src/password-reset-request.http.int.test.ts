@@ -47,6 +47,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
+  seedUserRow,
   testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -252,4 +253,239 @@ describe('POST /v1/auth/password-reset/request over HTTP (task 6.1, design D2, D
       expect(lookups.length).toBeGreaterThan(0);
     });
   });
+});
+
+/**
+ * Task 6.2 (design D4 "Uniform answer"): scenario "Every refusal state gets the same answer" of
+ * `specs/password-reset-and-account-recovery/spec.md`.
+ *
+ * GIVEN an SSO-only account, a banned account, an account `Disabled` in its only tenant, an
+ * address on a full recipient cap, a kill switch turned on, and a provider that fails; WHEN each
+ * is posted to the request route in turn; THEN every answer equals the answer for an eligible
+ * account and for an unknown address, and no response names the state.
+ *
+ * Three apps over one database: A (recording sender, recipient cap of 1), B (kill switch on) and
+ * C (a sender that always fails with the recipient address in its error). Every state uses its
+ * own freshly created account, so nothing is shared between cases.
+ */
+describe('Every refusal state gets the same answer (task 6.2)', () => {
+  let appA: App;
+  let appB: App;
+  let appC: App;
+  let senderA: ReturnType<typeof createRecordingEmailSender>;
+  let senderB: ReturnType<typeof createRecordingEmailSender>;
+  let failedSends: number;
+  let sentToFailing: string[];
+  let authPool: Pool;
+
+  function emailOptions(
+    sender: { send: (to: string, template: never) => Promise<void> },
+    overrides: { killSwitch: boolean; recipientMax: number },
+  ) {
+    return {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      disabledTenantIds: [] as string[],
+      killSwitch: overrides.killSwitch,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: { max: overrides.recipientMax, windowSeconds: 3600 },
+      passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+    };
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    senderA = createRecordingEmailSender();
+    senderB = createRecordingEmailSender();
+    failedSends = 0;
+    sentToFailing = [];
+    const failing = {
+      send: (to: string): Promise<void> => {
+        failedSends += 1;
+        sentToFailing.push(to);
+        return Promise.reject(new Error(`provider rejected ${to}`));
+      },
+    };
+    const base = {
+      appPool: pools.appPool,
+      authPool: pools.authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+    };
+    appA = await createApp({
+      ...base,
+      email: emailOptions(senderA, { killSwitch: false, recipientMax: 1 }),
+    });
+    appB = await createApp({
+      ...base,
+      email: emailOptions(senderB, { killSwitch: true, recipientMax: 1000 }),
+    });
+    appC = await createApp({
+      ...base,
+      email: emailOptions(failing, { killSwitch: false, recipientMax: 1000 }),
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await appA.close();
+    await appB.close();
+    await appC.close();
+  }, 60_000);
+
+  async function post(app: App, email: string): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: REQUEST_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ email }),
+    });
+    return {
+      status: response.statusCode,
+      body: response.json(),
+      headerNames: Object.keys(response.headers).sort(),
+    };
+  }
+
+  /** A fresh password account that is the admin of its own tenant; optionally Disabled there. */
+  async function createAccount(
+    status: 'Active' | 'Disabled' = 'Active',
+  ): Promise<{ email: string; userId: string; tenantId: string }> {
+    const suffix = randomUUID();
+    const email = `refusal-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(appA.auth, {
+      pool: testAppPool(),
+      name: 'Refusal User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Refusal Org ${suffix}`,
+      organizationSlug: `refusal-${suffix}`,
+      ip: randomIp(),
+      writeUserRow: false,
+    });
+    await seedUserRow(testAppPool(), {
+      tenantId: tenant.organizationId,
+      email,
+      name: 'Refusal User',
+      status,
+      portRole: 'admin',
+    });
+    if (status === 'Disabled') {
+      // The membership hook may have written the Active row first (seedUserRow leaves it as is).
+      const client = await testAppPool().connect();
+      try {
+        await client.query('begin');
+        await client.query(`select set_config('app.tenant_id', $1, true)`, [tenant.organizationId]);
+        await client.query(
+          `update catalog_entity
+              set spec_properties = jsonb_set(spec_properties, '{status}', '"Disabled"')
+            where tenant_id = $1 and identifier = $2`,
+          [tenant.organizationId, email],
+        );
+        await client.query('commit');
+      } finally {
+        client.release();
+      }
+    }
+    return { email, userId: tenant.userId, tenantId: tenant.organizationId };
+  }
+
+  function sentTo(address: string): number {
+    return senderA.sent.filter((message) => message.to === address).length;
+  }
+
+  function expectSameAnswer(actual: Answer, expected: Answer): void {
+    expect(actual.status).toBe(expected.status);
+    expect(actual.body).toEqual(expected.body);
+    expect(actual.headerNames).toEqual(expected.headerNames);
+  }
+
+  it('SSO-only, banned, disabled everywhere, full cap, kill switch and failing provider each answer exactly like an eligible account and an unknown address', async () => {
+    // The two reference answers.
+    const eligible = await createAccount();
+    const eligibleAnswer = await post(appA, eligible.email);
+    const unknownAnswer = await post(appA, `ghost-${randomUUID()}@example.test`);
+    expect(eligibleAnswer.status).toBe(200);
+    expect(eligibleAnswer.body).toEqual({ accepted: true });
+    expectSameAnswer(unknownAnswer, eligibleAnswer);
+    await vi.waitFor(() => {
+      expect(sentTo(eligible.email)).toBe(1);
+    });
+
+    // SSO-only: the credential account is replaced by a linked sign-in.
+    const sso = await createAccount();
+    await authPool.query(
+      `delete from auth.account where user_id = $1 and provider_id = 'credential'`,
+      [sso.userId],
+    );
+    await authPool.query(
+      `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+       values ($1, $2, 'visma-connect', $3, now(), now())`,
+      [`acc-${randomUUID()}`, `sso-${randomUUID()}`, sso.userId],
+    );
+    const ssoAnswer = await post(appA, sso.email);
+
+    // Banned.
+    const banned = await createAccount();
+    await authPool.query('update auth."user" set banned = true where id = $1', [banned.userId]);
+    const bannedAnswer = await post(appA, banned.email);
+
+    // Disabled in its only tenant.
+    const disabled = await createAccount('Disabled');
+    const disabledAnswer = await post(appA, disabled.email);
+
+    // A full recipient cap (app A allows one reset email per address per hour).
+    const capped = await createAccount();
+    const firstOfCapped = await post(appA, capped.email);
+    await vi.waitFor(() => {
+      expect(sentTo(capped.email)).toBe(1);
+    });
+    const cappedAnswer = await post(appA, capped.email);
+
+    // The kill switch (app B).
+    const killed = await createAccount();
+    const killedAnswer = await post(appB, killed.email);
+
+    // A provider that fails (app C), with the address inside its error.
+    const failing = await createAccount();
+    const failingAnswer = await post(appC, failing.email);
+    await vi.waitFor(() => {
+      expect(failedSends).toBeGreaterThanOrEqual(1);
+    });
+
+    expectSameAnswer(firstOfCapped, eligibleAnswer);
+    for (const answer of [
+      ssoAnswer,
+      bannedAnswer,
+      disabledAnswer,
+      cappedAnswer,
+      killedAnswer,
+      failingAnswer,
+    ]) {
+      expectSameAnswer(answer, eligibleAnswer);
+      expectSameAnswer(answer, unknownAnswer);
+      expect(JSON.stringify(answer.body)).toBe('{"accepted":true}');
+    }
+
+    // Give a wrongly attempted detached send time to land, then check each refusal sent nothing.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sentTo(sso.email)).toBe(0);
+    expect(sentTo(banned.email)).toBe(0);
+    expect(sentTo(disabled.email)).toBe(0);
+    expect(sentTo(capped.email)).toBe(1);
+    expect(senderB.sent).toHaveLength(0);
+    expect(sentToFailing).toEqual([failing.email]);
+  }, 120_000);
 });
