@@ -296,6 +296,13 @@ function requireTenant(tenantId: unknown): asserts tenantId is string {
   }
 }
 
+/** Fails closed: a user-keyed write never runs without a non-empty user id. */
+function requireUserId(userId: unknown): asserts userId is string {
+  if (typeof userId !== 'string' || userId === '') {
+    throw new Error('auth repository: a userId is required');
+  }
+}
+
 export function createAuthRepository(authPool: Pool): AuthRepository {
   const MEMBER_COLUMNS = 'id, organization_id, user_id, role';
   // Never selects the hashed `key` column.
@@ -659,6 +666,7 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
     },
 
     async writeMfaReenrolMarker(userId, db = authPool) {
+      requireUserId(userId);
       await db.query(
         `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
          select $1, $2, $3, $4, now(), now()
