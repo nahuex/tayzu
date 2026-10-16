@@ -412,6 +412,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           userSync,
           ...(emailGate === undefined ? {} : { emailGate }),
           ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+          ...(recoveryMailer === undefined ? {} : { recoveryMailer }),
           ...(options.credentialCap === undefined ? {} : { credentialCap: options.credentialCap }),
           ...(options.serviceAccountCap === undefined
             ? {}
