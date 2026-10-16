@@ -94,6 +94,11 @@ import {
 } from './sso/visma-connect.js';
 import type { EmailTemplate } from './identity/email/sender.js';
 import type { SsoLinkShedPort } from './identity/ports.js';
+import {
+  MFA_REENROL_ALLOWED_PATHS,
+  clearMfaReenrolMarker,
+  hasMfaReenrolMarker,
+} from './identity/mfa-reenrol-marker.js';
 import { validatePassword } from './identity/password-policy.js';
 import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 import { organizationAccess } from './org-access.js';
@@ -1282,6 +1287,18 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 message: 'PASSWORD_CHANGE_REQUIRED',
               });
             }
+            // 044 D11, Q17: a session of a user whose factor was reset reaches only
+            // second-factor enrolment, `/get-session` and `/sign-out`. A failed lookup refuses.
+            if (
+              peek &&
+              !MFA_REENROL_ALLOWED_PATHS.includes(ctx.path) &&
+              (await hasMfaReenrolMarker(ctx.context.adapter, peek.user.id))
+            ) {
+              throw new APIError('FORBIDDEN', {
+                code: 'MFA_ENROLMENT_REQUIRED',
+                message: 'MFA_ENROLMENT_REQUIRED',
+              });
+            }
             // Task 16.11a, Q36, Q146: once the marker has expired, a session opened
             // under it reaches only `/sign-out`; `/change-password` is refused too.
             if (
@@ -1586,6 +1603,19 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'verified' });
+          if (ctx.path === VERIFY_TOTP_PATH) {
+            // 044 D11: a verified enrolment lifts the confinement. Better Auth rotates the
+            // session on a first verification, so the user comes from the new session first.
+            const verifiedUserId = ctx.context.newSession?.user.id ?? ctx.context.session?.user.id;
+            if (verifiedUserId !== undefined) {
+              const user = await ctx.context.adapter.findOne<{ twoFactorEnabled?: boolean | null }>(
+                { model: 'user', where: [{ field: 'id', value: verifiedUserId }] },
+              );
+              if (user?.twoFactorEnabled === true) {
+                await clearMfaReenrolMarker(ctx.context.adapter, verifiedUserId);
+              }
+            }
+          }
           if (enrolling) {
             const enrolled = await getSessionFromCtx(ctx).catch(() => null);
             if (enrolled) {

@@ -16,6 +16,14 @@ export function mfaReenrolMarkerIdentifier(userId: string): string {
   return `mfa-reenrol:${userId}`;
 }
 
+/** The routes a session under the marker may reach on `/api/auth/*`. */
+export const MFA_REENROL_ALLOWED_PATHS: readonly string[] = [
+  '/two-factor/enable',
+  '/two-factor/verify-totp',
+  '/get-session',
+  '/sign-out',
+];
+
 /** The adapter surface the reader and clearer need. */
 interface MarkerAdapter {
   findOne(args: {
