@@ -2,9 +2,15 @@
  * The confirm half of the password reset (`044` design D2 "Order of work, confirm route").
  * This skeleton runs the strict parse, the token lookup and the eligibility re-check; every
  * refusal that depends on the token or the account is the one uniform `CATALOG_NOT_FOUND`.
- * The completion (factor, policy, effects) is not implemented yet.
+ * The completion (D7 steps 4-12) runs on the lock's connection; the notice is task 8.12.
  */
-import { AuthStepUpError, isPasswordCompromised, validatePassword } from '@tayzu/auth';
+import {
+  AuthStepUpError,
+  emitSessionRevoked,
+  hashPasswordNfc,
+  isPasswordCompromised,
+  validatePassword,
+} from '@tayzu/auth';
 
 import {
   verifyResetFactor,
@@ -159,36 +165,65 @@ export function createPasswordResetConfirmFlow(options: {
         // Step 3: the enrolled predicate again; this one decides.
         const state = await repository.globalTwoFactorStateOf(lookup.userId, tx);
         const enrolled = enrolmentOf(state);
-        if (enrolled === 'none') return 'checked' as const;
-        const row = state.rows.find((candidate) => candidate.verified);
-        if (enrolled === 'inconsistent' || factor === undefined || row === undefined) {
-          return 'step_up' as const;
-        }
-        if (row.lockedUntil !== null) {
-          if (row.lockedUntil.getTime() > Date.now()) {
-            // Locked: not verified, one failure against the token only.
+        let checkedFactorRowId: string | undefined;
+        if (enrolled !== 'none') {
+          const row = state.rows.find((candidate) => candidate.verified);
+          if (enrolled === 'inconsistent' || factor === undefined || row === undefined) {
+            return 'step_up' as const;
+          }
+          if (row.lockedUntil !== null) {
+            if (row.lockedUntil.getTime() > Date.now()) {
+              // Locked: not verified, one failure against the token only.
+              await options.tokens.recordFailure(tokenId, tx);
+              return 'step_up' as const;
+            }
+            await repository.globalClearExpiredTwoFactorLock(row.id, tx);
+          }
+          const verdict = await verifyResetFactor({
+            factor,
+            twoFactor: { secret: row.secret, backupCodes: row.backupCodes },
+            secretConfig: options.secretConfig,
+          });
+          if (!verdict.verified) {
+            await repository.globalRecordTwoFactorFailure(row.id, tx);
             await options.tokens.recordFailure(tokenId, tx);
             return 'step_up' as const;
           }
-          await repository.globalClearExpiredTwoFactorLock(row.id, tx);
+          // The backup-code spend is task 8.10; until then a spent code must not complete.
+          if (verdict.remainingBackupCodes !== null) {
+            throw new Error('The backup-code completion is not implemented');
+          }
+          checkedFactorRowId = row.id;
         }
-        const verdict = await verifyResetFactor({
-          factor,
-          twoFactor: { secret: row.secret, backupCodes: row.backupCodes },
-          secretConfig: options.secretConfig,
-        });
-        if (!verdict.verified) {
-          await repository.globalRecordTwoFactorFailure(row.id, tx);
-          await options.tokens.recordFailure(tokenId, tx);
-          return 'step_up' as const;
+
+        // D7 step 4: the same hash function as sign-in; the password is already NFC-checked.
+        const passwordHash = await hashPasswordNfc(checked.password);
+        // Step 5: consume; zero rows means another completion won.
+        if ((await options.tokens.consume(tokenId, tx)) === 'conflict') {
+          return 'rejected' as const;
         }
-        return 'checked' as const;
+        await repository.globalSetCredentialPassword(lookup.userId, passwordHash, tx);
+        await repository.deleteResetTokensOf(lookup.userId, tx);
+        await repository.globalDeleteTemporaryPasswordMarker(lookup.userId, tx);
+        await repository.globalDeleteTwoFactorChallenges(lookup.userId, tx);
+        await repository.globalMarkEmailVerified(lookup.userId, tx);
+        if (checkedFactorRowId !== undefined) {
+          await repository.globalResetTwoFactorFailures(checkedFactorRowId, tx);
+        }
+        const revoked = await repository.globalDeleteSessionsOf(lookup.userId, tx);
+        return { completed: revoked };
       });
       if (outcome === 'rejected') throw new ResetNotFoundError();
       if (outcome === 'step_up') throw new AuthStepUpError();
 
-      // Task 8.9 replaces this with the completion; until then the sanitized INTERNAL 500.
-      throw new Error('The password reset completion is not implemented');
+      // After the commit: one event per ended session; the tenant is omitted when it has none.
+      for (const session of outcome.completed) {
+        emitSessionRevoked({
+          actorId: lookup.userId,
+          ...(session.tenantId === null ? {} : { tenantId: session.tenantId }),
+          reason: 'password_reset',
+        });
+      }
     },
   };
 }

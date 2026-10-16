@@ -4,6 +4,7 @@
 export {
   createAuth,
   emitSessionRevoked,
+  hashPasswordNfc,
   type SessionRevocationReason,
   type AuthInstance,
   type CreateAuthOptions,
