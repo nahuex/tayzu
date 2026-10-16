@@ -166,6 +166,7 @@ export function createPasswordResetConfirmFlow(options: {
         const state = await repository.globalTwoFactorStateOf(lookup.userId, tx);
         const enrolled = enrolmentOf(state);
         let checkedFactorRowId: string | undefined;
+        let spend: { expected: string; remaining: string | null } | undefined;
         if (enrolled !== 'none') {
           const row = state.rows.find((candidate) => candidate.verified);
           if (enrolled === 'inconsistent' || factor === undefined || row === undefined) {
@@ -189,11 +190,8 @@ export function createPasswordResetConfirmFlow(options: {
             await options.tokens.recordFailure(tokenId, tx);
             return 'step_up' as const;
           }
-          // The backup-code spend is task 8.10; until then a spent code must not complete.
-          if (verdict.remainingBackupCodes !== null) {
-            throw new Error('The backup-code completion is not implemented');
-          }
           checkedFactorRowId = row.id;
+          spend = { expected: row.backupCodes, remaining: verdict.remainingBackupCodes };
         }
 
         // D7 step 4: the same hash function as sign-in; the password is already NFC-checked.
@@ -207,6 +205,16 @@ export function createPasswordResetConfirmFlow(options: {
         await repository.globalDeleteTemporaryPasswordMarker(lookup.userId, tx);
         await repository.globalDeleteTwoFactorChallenges(lookup.userId, tx);
         await repository.globalMarkEmailVerified(lookup.userId, tx);
+        // Step 10: a lost swap (a sign-in spent the same code) aborts and rolls everything back.
+        if (spend?.remaining != null && checkedFactorRowId !== undefined) {
+          const swapped = await repository.globalSpendBackupCode(
+            checkedFactorRowId,
+            spend.expected,
+            spend.remaining,
+            tx,
+          );
+          if (!swapped) throw new AuthStepUpError();
+        }
         if (checkedFactorRowId !== undefined) {
           await repository.globalResetTwoFactorFailures(checkedFactorRowId, tx);
         }

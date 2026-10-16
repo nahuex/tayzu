@@ -60,11 +60,11 @@ import {
   registration,
   type TelemetryTestHarness,
 } from './__fixtures__/link-telemetry.js';
-import { randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 
 import { createRecordingEmailSender } from '@tayzu/auth';
 import { withTenantTransaction } from '@tayzu/db';
-import type { Pool } from 'pg';
+import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -719,6 +719,561 @@ describe('The completion transaction of a password reset (task 8.9)', () => {
       expectCompleted(answer);
       expect(await passwordHash(person.userId)).not.toBe(hashBefore);
       expect((await signInRaw(person.email, NEW_PASSWORD)).status).toBe(200);
+    }, 60_000);
+  });
+});
+
+/**
+ * Task 8.10 of openspec/changes/044-password-reset-and-account-recovery (design D7 steps 10-12,
+ * D6 "Enrolled and a `factor`", Q19). Scenarios of `specs/password-reset-and-account-recovery/spec.md`,
+ * quoted:
+ *
+ * - "A backup code completes the reset and is spent": WHEN the request carries an unused backup
+ *   code; THEN the reset completes, and the same backup code is refused on the next sign-in.
+ * - "A refused password does not spend the backup code": GIVEN an enrolled user, a valid token and
+ *   an unused backup code; WHEN the token, the backup code and a weak or breached password are
+ *   submitted; THEN the answer is `CATALOG_VALIDATION_FAILED` and the same backup code still
+ *   completes a reset with a compliant password.
+ * - "A failed write leaves everything as it was": GIVEN a failure injected after the password write
+ *   and before the commit; WHEN a valid token is submitted; THEN the old password still signs in,
+ *   the sessions are still live, the token still works and a backup code that was presented is not
+ *   spent.
+ * - Case "a lost backup-code swap aborts with `AUTH_STEP_UP_REQUIRED` and nothing else changed"
+ *   (D7 step 10: a sign-in spent the same code at the same moment).
+ * - Case "with a pool of one connection the completion does not take a second pooled connection
+ *   while the lock is held" (D7, Q13).
+ *
+ * ## Harness
+ *
+ * Two real servers over instrumented `pg` pools (the `connect` event wraps each physical client's
+ * promise-style `query`): one normal-size pool whose hook injects the failure at `commit` after the
+ * credential write, and the interleaved sign-in just before the backup-code swap; one pool of
+ * exactly one connection. Everything else is as the first describe of this file. No production
+ * hook is needed: the failure and the race are injected at the database client.
+ *
+ * ## Production symbols expected
+ *
+ * None new: `createPasswordResetConfirmFlow` spends the backup code with the existing
+ * `globalSpendBackupCode(twoFactorId, expected, remaining, tx)` inside the completion transaction
+ * (D7 step 10), aborting with `AuthStepUpError` when the swap changes no row.
+ */
+describe('Atomicity and the backup code of a password reset (task 8.10)', () => {
+  type QueryHook = (client: object, sql: string) => Promise<void> | void;
+
+  interface Instrumented {
+    readonly pool: Pool;
+    setHook(hook: QueryHook | undefined): void;
+  }
+
+  function instrumentedPool(max?: number): Instrumented {
+    const url = process.env['DATABASE_URL'];
+    if (url === undefined || url.trim() === '') throw new Error('DATABASE_URL is not set');
+    const pool = new Pool({ connectionString: url, ...(max === undefined ? {} : { max }) });
+    let current: QueryHook | undefined;
+    pool.on('connect', (client) => {
+      const target = client as unknown as { query: (...args: unknown[]) => unknown };
+      const original = target.query.bind(client);
+      target.query = (...args: unknown[]): unknown => {
+        const first = args[0];
+        const sql =
+          typeof first === 'string'
+            ? first
+            : ((first as { text?: string } | undefined)?.text ?? '');
+        const last = args[args.length - 1];
+        if (current !== undefined && typeof last !== 'function') {
+          const hook = current;
+          return Promise.resolve(hook(client, sql)).then(() => original(...args));
+        }
+        return original(...args);
+      };
+    });
+    pool.on('error', () => undefined);
+    return {
+      pool,
+      setHook(hook) {
+        current = hook;
+      },
+    };
+  }
+
+  const BREACHED = 'Crème-Brûlée-Battery-Staple-2026!';
+  let harnessAuthPool: Pool;
+  let appPool: Pool;
+  let normal: Instrumented;
+  let single: Instrumented;
+  let appA: App;
+  let appOne: App;
+  const sender = createRecordingEmailSender();
+
+  function buildApp(authPool: Pool): Promise<App> {
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      passwordResetMinResponseMs: 0,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+      accountCreatedNoticeGlobalCap: { max: 100_000, windowSeconds: 86_400 },
+    };
+    return createApp({
+      appPool,
+      authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    harnessAuthPool = pools.authPool;
+    normal = instrumentedPool();
+    single = instrumentedPool(1);
+    appA = await buildApp(normal.pool);
+    appOne = await buildApp(single.pool);
+  }, 60_000);
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', (): Promise<Response> => {
+      return Promise.resolve(
+        new Response('0000000000000000000000000000000000A:3\r\n', { status: 200 }),
+      );
+    });
+  });
+
+  afterEach(() => {
+    normal.setHook(undefined);
+    single.setHook(undefined);
+    vi.unstubAllGlobals();
+  });
+
+  afterAll(async () => {
+    const giveUp = new Promise<void>((resolve) => setTimeout(resolve, 5000));
+    await Promise.race([
+      Promise.all([appA.close(), appOne.close(), normal.pool.end(), single.pool.end()]),
+      giveUp,
+    ]);
+  }, 60_000);
+
+  function store() {
+    return createResetTokenStore({
+      authPool: harnessAuthPool,
+      withUserLock: createWithUserLock(harnessAuthPool),
+    });
+  }
+
+  function handlerOf(): Handler {
+    return (appA.auth as unknown as { handler: Handler }).handler;
+  }
+
+  interface Enrolled {
+    readonly email: string;
+    readonly userId: string;
+    readonly secret: string;
+    readonly backupCodes: readonly string[];
+    /** A live session cookie created after the enrolment (through a TOTP sign-in). */
+    readonly cookie: string;
+  }
+
+  async function createEnrolledWithBackupCodes(): Promise<Enrolled> {
+    const suffix = randomUUID();
+    const email = `effects-backup-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(appA.auth, {
+      pool: testAppPool(),
+      name: 'Backup User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Backup Org ${suffix}`,
+      organizationSlug: `backup-${suffix}`,
+      ip: randomIp(),
+    });
+    const secret = await enrollTotp(appA, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(appA, {
+      email,
+      password: TEST_PASSWORD,
+      secret,
+      origin: 'http://localhost:3000',
+    });
+    const generated = await (
+      appA.auth.api as {
+        generateBackupCodes(args: {
+          body: { password: string };
+          headers: Headers;
+        }): Promise<{ backupCodes: string[] }>;
+      }
+    ).generateBackupCodes({
+      body: { password: TEST_PASSWORD },
+      headers: new Headers({ cookie }),
+    });
+    expect(generated.backupCodes.length, 'precondition: backup codes exist').toBeGreaterThan(1);
+    return { email, userId: tenant.userId, secret, backupCodes: generated.backupCodes, cookie };
+  }
+
+  async function postTo(app: App, fields: Record<string, unknown>): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: CONFIRM_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ newPassword: NEW_PASSWORD, ...fields }),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return {
+      status: response.statusCode,
+      body,
+      setCookie: response.headers['set-cookie'],
+      cacheControl: response.headers['cache-control'],
+      pragma: response.headers['pragma'],
+    };
+  }
+
+  function completed(answer: Answer): void {
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ completed: true });
+  }
+
+  function stepUp(answer: Answer): void {
+    expect(answer.status).toBe(403);
+    expect(answer.body).toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+  }
+
+  async function scalar(sql: string, params: unknown[]): Promise<string> {
+    const result = await harnessAuthPool.query<{ v: string | null }>(sql, params);
+    return result.rows[0]?.v ?? '';
+  }
+
+  const passwordOf = (userId: string): Promise<string> =>
+    scalar(
+      `select password as v from auth.account where user_id = $1 and provider_id = 'credential'`,
+      [userId],
+    );
+  const backupCodesOf = (userId: string): Promise<string> =>
+    scalar('select backup_codes as v from auth.two_factor where user_id = $1', [userId]);
+  const tokenRowsOf = (id: string): Promise<string> =>
+    scalar(`select count(*)::text as v from auth.verification where identifier = $1`, [
+      `password-reset:${id}`,
+    ]);
+  const sessionsOf = async (userId: string): Promise<number> =>
+    Number(
+      await scalar('select count(*)::text as v from auth.session where user_id = $1', [userId]),
+    );
+
+  async function signIn(email: string, password: string): Promise<Response> {
+    return handlerOf()(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: 'http://localhost:3000',
+        },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+  }
+
+  /** Signs in with the password and answers the status of `verify-backup-code` for `code`. */
+  async function backupCodeSignInStatus(
+    email: string,
+    password: string,
+    code: string,
+  ): Promise<number> {
+    const challenge = await signIn(email, password);
+    expect(challenge.status, 'the password step is challenged').toBe(200);
+    const cookie = challenge.headers
+      .getSetCookie()
+      .map((raw) => raw.split(';')[0])
+      .join('; ');
+    const response = await handlerOf()(
+      new Request(`${AUTH_BASE_URL}/two-factor/verify-backup-code`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: 'http://localhost:3000',
+          cookie,
+        },
+        body: JSON.stringify({ code }),
+      }),
+    );
+    return response.status;
+  }
+
+  async function sessionLive(cookie: string): Promise<boolean> {
+    const response = await handlerOf()(
+      new Request(`${AUTH_BASE_URL}/get-session`, {
+        method: 'GET',
+        headers: { cookie, 'x-forwarded-for': randomIp() },
+      }),
+    );
+    if (response.status !== 200) return false;
+    const body = (await response.json().catch(() => null)) as {
+      session?: { id?: string };
+    } | null;
+    return body?.session?.id !== undefined;
+  }
+
+  describe('A backup code completes the reset and is spent', () => {
+    it('the reset completes and the same backup code is refused on the next sign-in, a reset included', async () => {
+      const user = await createEnrolledWithBackupCodes();
+      const [spent, unused] = user.backupCodes;
+      expect(spent).toBeDefined();
+      expect(unused).toBeDefined();
+      const issued = await store().issue(user.userId);
+      const hashBefore = await passwordOf(user.userId);
+      const codesBefore = await backupCodesOf(user.userId);
+
+      const answer = await postTo(appA, {
+        id: issued.id,
+        token: issued.token,
+        factor: { kind: 'backup_code', code: spent },
+      });
+
+      completed(answer);
+      expect(await tokenRowsOf(issued.id), 'the token is consumed').toBe('0');
+      expect(await passwordOf(user.userId), 'the password changed').not.toBe(hashBefore);
+      expect(await backupCodesOf(user.userId), 'the stored code list shrank').not.toBe(codesBefore);
+
+      const reuse = await backupCodeSignInStatus(user.email, NEW_PASSWORD, spent ?? '');
+      expect(reuse, 'the spent code is refused at sign-in').toBeGreaterThanOrEqual(400);
+      const other = await backupCodeSignInStatus(user.email, NEW_PASSWORD, unused ?? '');
+      expect(other, 'an unused code still signs in').toBe(200);
+
+      const second = await store().issue(user.userId);
+      stepUp(
+        await postTo(appA, {
+          id: second.id,
+          token: second.token,
+          factor: { kind: 'backup_code', code: spent },
+        }),
+      );
+      expect(await tokenRowsOf(second.id), 'the refused spent code left the token').toBe('1');
+    }, 90_000);
+  });
+
+  describe('A refused password does not spend the backup code', () => {
+    it.each([
+      ['weak', 'Short-1!'],
+      ['breached', BREACHED],
+    ])(
+      'a %s password answers CATALOG_VALIDATION_FAILED and the same backup code then completes a reset',
+      async (kind, newPassword) => {
+        const user = await createEnrolledWithBackupCodes();
+        const code = user.backupCodes[0];
+        const issued = await store().issue(user.userId);
+        const hashBefore = await passwordOf(user.userId);
+        const codesBefore = await backupCodesOf(user.userId);
+        if (kind === 'breached') {
+          vi.stubGlobal('fetch', (input: string | URL | Request): Promise<Response> => {
+            const url =
+              typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+            const prefix = new URL(url).pathname.split('/').pop() ?? '';
+            const hash = createHash('sha1').update(BREACHED.normalize('NFC')).digest('hex');
+            const upper = hash.toUpperCase();
+            const lines = ['0000000000000000000000000000000000A:3'];
+            if (upper.startsWith(prefix)) lines.push(`${upper.slice(5)}:42`);
+            return Promise.resolve(new Response(lines.join('\r\n'), { status: 200 }));
+          });
+        }
+
+        const refused = await postTo(appA, {
+          id: issued.id,
+          token: issued.token,
+          newPassword,
+          factor: { kind: 'backup_code', code },
+        });
+
+        expect(refused.status).toBe(400);
+        expect(refused.body).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+        expect(await backupCodesOf(user.userId), 'the backup code is not spent').toBe(codesBefore);
+        expect(await passwordOf(user.userId)).toBe(hashBefore);
+        expect(await tokenRowsOf(issued.id), 'the token survives').toBe('1');
+
+        vi.unstubAllGlobals();
+        vi.stubGlobal('fetch', (): Promise<Response> => {
+          return Promise.resolve(
+            new Response('0000000000000000000000000000000000A:3\r\n', { status: 200 }),
+          );
+        });
+        completed(
+          await postTo(appA, {
+            id: issued.id,
+            token: issued.token,
+            factor: { kind: 'backup_code', code },
+          }),
+        );
+        expect(await passwordOf(user.userId)).not.toBe(hashBefore);
+      },
+      90_000,
+    );
+  });
+
+  describe('A failed write leaves everything as it was', () => {
+    it('a failure after the password write and before the commit keeps the old password, the sessions, the token and the backup code', async () => {
+      const user = await createEnrolledWithBackupCodes();
+      const code = user.backupCodes[0];
+      const issued = await store().issue(user.userId);
+      const hashBefore = await passwordOf(user.userId);
+      const codesBefore = await backupCodesOf(user.userId);
+      const sessionsBefore = await sessionsOf(user.userId);
+      expect(sessionsBefore, 'precondition: live sessions').toBeGreaterThan(0);
+      expect(await sessionLive(user.cookie), 'precondition: the session is live').toBe(true);
+
+      const wrote = new WeakSet<object>();
+      normal.setHook((client, sql) => {
+        if (/^\s*update\s+auth\.account\b/i.test(sql)) wrote.add(client);
+        if (sql.trim().toLowerCase() === 'commit' && wrote.has(client)) {
+          throw new Error('injected failure before the commit');
+        }
+      });
+      const failed = await postTo(appA, {
+        id: issued.id,
+        token: issued.token,
+        factor: { kind: 'backup_code', code },
+      });
+      normal.setHook(undefined);
+
+      expect(failed.status, 'a sanitized internal error').toBe(500);
+      expect(JSON.stringify(failed.body)).not.toContain('injected');
+      expect(await passwordOf(user.userId), 'the password is unchanged').toBe(hashBefore);
+      expect((await signIn(user.email, TEST_PASSWORD)).status, 'the old password signs in').toBe(
+        200,
+      );
+      expect((await signIn(user.email, NEW_PASSWORD)).status, 'the new one does not').toBe(401);
+      expect(await sessionsOf(user.userId), 'the sessions are live').toBeGreaterThanOrEqual(
+        sessionsBefore,
+      );
+      expect(await sessionLive(user.cookie)).toBe(true);
+      expect(await tokenRowsOf(issued.id), 'the token row is there').toBe('1');
+      expect(await backupCodesOf(user.userId), 'the backup code is not spent').toBe(codesBefore);
+
+      completed(
+        await postTo(appA, {
+          id: issued.id,
+          token: issued.token,
+          factor: { kind: 'backup_code', code },
+        }),
+      );
+      expect(await passwordOf(user.userId), 'the token still works').not.toBe(hashBefore);
+    }, 90_000);
+  });
+
+  describe('Backup-code swap and connection discipline', () => {
+    it('a lost backup-code swap aborts with AUTH_STEP_UP_REQUIRED and nothing else changed', async () => {
+      const user = await createEnrolledWithBackupCodes();
+      const code = user.backupCodes[0];
+      const issued = await store().issue(user.userId);
+      await harnessAuthPool.query('update auth."user" set email_verified = false where id = $1', [
+        user.userId,
+      ]);
+      await harnessAuthPool.query(
+        `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+         values ($1, $2, $3, $4, now(), now())`,
+        [
+          randomUUID(),
+          `temp-password:${user.userId}`,
+          new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          new Date('9999-12-31T23:59:59.000Z'),
+        ],
+      );
+      const hashBefore = await passwordOf(user.userId);
+      const sessionsBefore = await sessionsOf(user.userId);
+      const failuresBefore = await scalar(
+        'select coalesce(failed_verification_count, 0)::text as v from auth.two_factor where user_id = $1',
+        [user.userId],
+      );
+      let racedValue = '';
+      let raced = false;
+
+      // A sign-in spends the same code at the same moment: its write commits on another
+      // connection just before the completion's swap.
+      normal.setHook(async (_client, sql) => {
+        if (!raced && /^\s*update\s+auth\.two_factor\s+set\s+backup_codes/i.test(sql)) {
+          raced = true;
+          racedValue = `raced-${randomUUID()}`;
+          await harnessAuthPool.query(
+            'update auth.two_factor set backup_codes = $2 where user_id = $1',
+            [user.userId, racedValue],
+          );
+        }
+      });
+      const answer = await postTo(appA, {
+        id: issued.id,
+        token: issued.token,
+        factor: { kind: 'backup_code', code },
+      });
+      normal.setHook(undefined);
+
+      expect(raced, 'the swap statement was reached and raced').toBe(true);
+      stepUp(answer);
+      expect(await passwordOf(user.userId), 'the password is unchanged').toBe(hashBefore);
+      expect(await tokenRowsOf(issued.id), 'the token is not consumed').toBe('1');
+      expect(await sessionsOf(user.userId), 'the sessions are untouched').toBe(sessionsBefore);
+      expect(
+        await scalar('select email_verified::text as v from auth."user" where id = $1', [
+          user.userId,
+        ]),
+        'emailVerified is untouched',
+      ).toBe('false');
+      expect(
+        await scalar(`select count(*)::text as v from auth.verification where identifier = $1`, [
+          `temp-password:${user.userId}`,
+        ]),
+        'the temporary-password marker is still there',
+      ).toBe('1');
+      expect(await backupCodesOf(user.userId), 'only the racing write stands').toBe(racedValue);
+      expect(
+        await scalar(
+          'select coalesce(failed_verification_count, 0)::text as v from auth.two_factor where user_id = $1',
+          [user.userId],
+        ),
+        'the account counter is untouched',
+      ).toBe(failuresBefore);
+    }, 90_000);
+
+    it('with a pool of one connection the completion does not take a second pooled connection while the lock is held', async () => {
+      const user = await createEnrolledWithBackupCodes();
+      const code = user.backupCodes[0];
+      const issued = await store().issue(user.userId);
+      const hashBefore = await passwordOf(user.userId);
+
+      const outcome = await Promise.race([
+        postTo(appOne, {
+          id: issued.id,
+          token: issued.token,
+          factor: { kind: 'backup_code', code },
+        }),
+        new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 20_000)),
+      ]);
+
+      expect(outcome, 'the completion did not wait for a second connection').not.toBe('hung');
+      if (outcome === 'hung') return;
+      completed(outcome);
+      expect(single.pool.totalCount, 'the pool never grew past one').toBeLessThanOrEqual(1);
+      expect(await passwordOf(user.userId)).not.toBe(hashBefore);
+      expect(await tokenRowsOf(issued.id)).toBe('0');
     }, 60_000);
   });
 });
