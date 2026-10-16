@@ -2,7 +2,8 @@
  * The confirm half of the password reset (`044` design D2 "Order of work, confirm route").
  * This skeleton runs the strict parse, the token lookup and the eligibility re-check; every
  * refusal that depends on the token or the account is the one uniform `CATALOG_NOT_FOUND`.
- * The completion (D7 steps 4-12) runs on the lock's connection; the notice is task 8.12.
+ * The completion (D7 steps 4-12) runs on the lock's connection; the password-changed notice
+ * (D8) is sent after the commit.
  */
 import {
   AuthStepUpError,
@@ -18,6 +19,7 @@ import {
 } from '../../../../packages/auth/src/identity/reset-factor.js';
 import { createAuthRepository, type TwoFactorStateRead } from './auth-repository.js';
 import { IdentityInputError, parseIdentityInput, type InputSchema } from './parse-input.js';
+import type { RecoveryMailer } from './recovery-mailer.js';
 import type { RecoveryEligibilityChecker } from './recovery-eligibility.js';
 import type { ResetTokenStore } from './reset-token-store.js';
 import type { WithUserLock } from './user-lock.js';
@@ -111,6 +113,8 @@ export function createPasswordResetConfirmFlow(options: {
   readonly eligibility: RecoveryEligibilityChecker;
   readonly tokens: ResetTokenStore;
   readonly withUserLock: WithUserLock;
+  /** Sends the password-changed notice after the commit; absent when email is not configured. */
+  readonly mailer?: RecoveryMailer;
   /** `(await auth.$context).secretConfig`, for the factor verifier (D6). */
   readonly secretConfig: ResetFactorInput['secretConfig'];
 }): PasswordResetConfirmFlow {
@@ -232,6 +236,14 @@ export function createPasswordResetConfirmFlow(options: {
           reason: 'password_reset',
         });
       }
+
+      // After the commit, to the canonical address; sendNotice never rejects (a failure is logged).
+      await options.mailer?.sendNotice({
+        kind: 'PasswordChangedNotice',
+        address: eligibility.email,
+        userId: lookup.userId,
+        tenantIds: eligibility.tenantIds ?? [],
+      });
     },
   };
 }

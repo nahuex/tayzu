@@ -1017,6 +1017,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         withUserLock: createWithUserLock(options.authPool),
       }),
       withUserLock: createWithUserLock(options.authPool),
+      ...(recoveryMailer === undefined ? {} : { mailer: recoveryMailer }),
       secretConfig: ((await auth.$context) as { secretConfig: ResetFactorInput['secretConfig'] })
         .secretConfig,
     });
