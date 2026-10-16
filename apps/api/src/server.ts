@@ -149,6 +149,10 @@ export interface CreateAppOptions {
     readonly noticeTenantCap?: { readonly max: number; readonly windowSeconds: number };
     readonly noticeRecipientCap?: { readonly max: number; readonly windowSeconds: number };
     /** 044 task 4.3 (D16): the reset and recovery buckets, built from `Config` by the production start. */
+    readonly passwordResetRequestRateLimit?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
     readonly passwordResetRecipientCap?: { readonly max: number; readonly windowSeconds: number };
     readonly passwordResetIpCap?: { readonly max: number; readonly windowSeconds: number };
     readonly passwordResetGlobalCap?: { readonly max: number; readonly windowSeconds: number };
@@ -979,6 +983,19 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           });
     // Fastify's own JSON parser answers a `__proto__` key with its own error code; this scope
     // keeps the body as plain data so the strict parser refuses it as CATALOG_VALIDATION_FAILED.
+    // D2, D16: the per-IP limiter runs before the handler, on the DB-backed store.
+    const resetRequestLimit = createAcceptRateLimitPreHandler({
+      scope: 'password_reset_request',
+      store: createRateLimitBucketStore({
+        adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+          .adapter,
+        rules: {
+          password_reset_request: ruleOf(
+            email?.passwordResetRequestRateLimit ?? { max: 10, windowSeconds: 60 },
+          ),
+        },
+      }),
+    });
     await app.register((scope, _opts, done) => {
       scope.addContentTypeParser(
         'application/json',
@@ -991,30 +1008,34 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           }
         },
       );
-      scope.post(PASSWORD_RESET_REQUEST_PATH, async (request, reply) => {
-        const startedAt = performance.now();
-        try {
-          // D2: both are required, checked before the strict parse and any lookup. The answer
-          // depends only on the request's own headers (Q24), so it is a 400, not the uniform 200.
-          if (
-            request.headers['x-csrf-token'] !== 'orpc' ||
-            request.headers.origin === undefined ||
-            !allowedOrigins.has(request.headers.origin)
-          ) {
-            throw new IdentityInputError();
+      scope.post(
+        PASSWORD_RESET_REQUEST_PATH,
+        { preHandler: resetRequestLimit },
+        async (request, reply) => {
+          const startedAt = performance.now();
+          try {
+            // D2: both are required, checked before the strict parse and any lookup. The answer
+            // depends only on the request's own headers (Q24), so it is a 400, not the uniform 200.
+            if (
+              request.headers['x-csrf-token'] !== 'orpc' ||
+              request.headers.origin === undefined ||
+              !allowedOrigins.has(request.headers.origin)
+            ) {
+              throw new IdentityInputError();
+            }
+            await resetRequest?.handle({ body: request.body, clientIp: request.ip });
+            // D4 padding: wait out the rest of the minimum duration (a timer, no busy-wait).
+            const remaining = resetMinResponseMs - (performance.now() - startedAt);
+            if (remaining > 0) {
+              await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+            }
+            return await reply.status(200).send({ accepted: true });
+          } catch (error) {
+            const mapped = toOrpcError(error);
+            return reply.status(mapped.status).send(mapped.toJSON());
           }
-          await resetRequest?.handle({ body: request.body, clientIp: request.ip });
-          // D4 padding: wait out the rest of the minimum duration (a timer, no busy-wait).
-          const remaining = resetMinResponseMs - (performance.now() - startedAt);
-          if (remaining > 0) {
-            await new Promise<void>((resolve) => setTimeout(resolve, remaining));
-          }
-          return await reply.status(200).send({ accepted: true });
-        } catch (error) {
-          const mapped = toOrpcError(error);
-          return reply.status(mapped.status).send(mapped.toJSON());
-        }
-      });
+        },
+      );
       done();
     });
     app.addHook('onClose', async () => {
