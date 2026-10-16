@@ -445,6 +445,330 @@ describe('auth-repository', () => {
     }
   });
 
+  /*
+   * Task 8.2 of `044-password-reset-and-account-recovery` (design D6, D7 steps 1-3 and 10-11).
+   *
+   * ## Production symbols expected
+   *
+   * ```ts
+   * // apps/api/src/identity/auth-repository.ts, added to AuthRepository. The design fixes
+   * // only `globalTwoFactorStateOf`; the other names carry the 043 `global` prefix because
+   * // they take no tenantId (the 'only the global functions' case lists them).
+   * interface TwoFactorRowRead {
+   *   id: string; secret: string; backupCodes: string; // the stored, encrypted columns
+   *   verified: boolean;                               // NULL reads as true ("not false")
+   *   failedVerificationCount: number;                 // NULL reads as 0
+   *   lockedUntil: Date | null;
+   * }
+   * globalTwoFactorStateOf(userId, db?): Promise<{ twoFactorEnabled: boolean; rows: TwoFactorRowRead[] }>;
+   *   // `twoFactorEnabled` is `user.two_factor_enabled` (NULL reads as false); `rows` are the
+   *   // user's `two_factor` rows, ordered by id; both are raw facts, the route decides "enrolled".
+   * globalRecordTwoFactorFailure(twoFactorId, db?): Promise<{ failedVerificationCount: number; lockedUntil: Date | null }>;
+   *   // ONE atomic statement adding one (NULL counts as 0); once the new count is >= 10
+   *   // it sets locked_until = now() + 900 seconds. The counter keeps counting past 10.
+   * globalClearExpiredTwoFactorLock(twoFactorId, db?): Promise<boolean>;
+   *   // where locked_until <= now(): counter 0 and locked_until NULL; true when a row changed.
+   * globalResetTwoFactorFailures(twoFactorId, db?): Promise<void>; // counter 0, locked_until NULL
+   * globalSpendBackupCode(twoFactorId, expectedBackupCodes, remainingBackupCodes, db?): Promise<boolean>;
+   *   // compare-and-swap: sets backup_codes = remaining where id and backup_codes = expected;
+   *   // true when exactly one row changed.
+   * globalAccountsOf(userId, db?): Promise<AccountRead[]>; // gains the optional client
+   * ```
+   */
+  async function seedTwoFactor(
+    userId: string,
+    overrides: {
+      verified?: boolean | null;
+      failed?: number | null;
+      lockedUntilSql?: string;
+      backupCodes?: string;
+    } = {},
+  ): Promise<string> {
+    const id = `tf-${randomUUID()}`;
+    await authPool.query(
+      `insert into auth.two_factor (id, secret, backup_codes, user_id, verified, failed_verification_count, locked_until)
+       values ($1, $2, $3, $4, $5, $6, ${overrides.lockedUntilSql ?? 'null'})`,
+      [
+        id,
+        `enc-secret-${id}`,
+        overrides.backupCodes ?? `enc-codes-${id}`,
+        userId,
+        overrides.verified === undefined ? true : overrides.verified,
+        overrides.failed === undefined ? 0 : overrides.failed,
+      ],
+    );
+    return id;
+  }
+
+  async function setTwoFactorFlag(userId: string, enabled: boolean | null): Promise<void> {
+    await authPool.query('update auth."user" set two_factor_enabled = $2 where id = $1', [
+      userId,
+      enabled,
+    ]);
+  }
+
+  async function twoFactorColumns(
+    id: string,
+  ): Promise<{ failed: number | null; lockedUntil: Date | null; backupCodes: string }> {
+    const result = await authPool.query<{
+      failed: number | null;
+      locked_until: Date | null;
+      backup_codes: string;
+    }>(
+      'select failed_verification_count as failed, locked_until, backup_codes from auth.two_factor where id = $1',
+      [id],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Error('expected the two_factor row');
+    return { failed: row.failed, lockedUntil: row.locked_until, backupCodes: row.backup_codes };
+  }
+
+  it('globalTwoFactorStateOf: enrolled-consistent, flag-only, row-only and unverified-row states are reported as such', async () => {
+    const consistent = await seedUser();
+    await setTwoFactorFlag(consistent, true);
+    const consistentRow = await seedTwoFactor(consistent, { verified: true });
+
+    const flagOnly = await seedUser();
+    await setTwoFactorFlag(flagOnly, true);
+
+    const rowOnly = await seedUser();
+    await setTwoFactorFlag(rowOnly, false);
+    const rowOnlyRow = await seedTwoFactor(rowOnly, { verified: true });
+
+    const unverified = await seedUser();
+    await setTwoFactorFlag(unverified, false);
+    const unverifiedRow = await seedTwoFactor(unverified, { verified: false });
+
+    const nothing = await seedUser();
+    await setTwoFactorFlag(nothing, null);
+
+    const a = await repo.globalTwoFactorStateOf(consistent);
+    expect(a.twoFactorEnabled).toBe(true);
+    expect(a.rows).toHaveLength(1);
+    expect(a.rows[0]).toMatchObject({
+      id: consistentRow,
+      secret: `enc-secret-${consistentRow}`,
+      backupCodes: `enc-codes-${consistentRow}`,
+      verified: true,
+      failedVerificationCount: 0,
+      lockedUntil: null,
+    });
+
+    const b = await repo.globalTwoFactorStateOf(flagOnly);
+    expect(b.twoFactorEnabled).toBe(true);
+    expect(b.rows).toEqual([]);
+
+    const c = await repo.globalTwoFactorStateOf(rowOnly);
+    expect(c.twoFactorEnabled).toBe(false);
+    expect(c.rows.map((r) => [r.id, r.verified])).toEqual([[rowOnlyRow, true]]);
+
+    const d = await repo.globalTwoFactorStateOf(unverified);
+    expect(d.twoFactorEnabled).toBe(false);
+    expect(d.rows.map((r) => [r.id, r.verified])).toEqual([[unverifiedRow, false]]);
+
+    const e = await repo.globalTwoFactorStateOf(nothing);
+    expect(e.twoFactorEnabled).toBe(false);
+    expect(e.rows).toEqual([]);
+  });
+
+  it('globalTwoFactorStateOf: reports the counter and the lock, and reads only the rows of the user', async () => {
+    const userId = await seedUser();
+    const other = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const own = await seedTwoFactor(userId, {
+      failed: 3,
+      lockedUntilSql: "now() + interval '10 minutes'",
+    });
+    await seedTwoFactor(other);
+
+    const state = await repo.globalTwoFactorStateOf(userId);
+    expect(state.rows.map((r) => r.id)).toEqual([own]);
+    expect(state.rows[0]?.failedVerificationCount).toBe(3);
+    expect(state.rows[0]?.lockedUntil).toBeInstanceOf(Date);
+    expect((state.rows[0]?.lockedUntil?.getTime() ?? 0) > Date.now()).toBe(true);
+  });
+
+  it('50 parallel failures count exactly 50 and lock the account at 10', async () => {
+    const userId = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const id = await seedTwoFactor(userId);
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => repo.globalRecordTwoFactorFailure(id)),
+    );
+
+    // Every statement saw its own count: none was lost, none was counted twice.
+    expect(results.map((r) => r.failedVerificationCount).sort((x, y) => x - y)).toEqual(
+      Array.from({ length: 50 }, (_, i) => i + 1),
+    );
+    const after = await twoFactorColumns(id);
+    expect(after.failed).toBe(50);
+    expect(after.lockedUntil).toBeInstanceOf(Date);
+    const remainingMs = (after.lockedUntil?.getTime() ?? 0) - Date.now();
+    expect(remainingMs).toBeGreaterThan(800_000);
+    expect(remainingMs).toBeLessThanOrEqual(900_000 + 5_000);
+  });
+
+  it('the account is not locked before the tenth failure and locked at it', async () => {
+    const userId = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const id = await seedTwoFactor(userId, { failed: null });
+
+    for (let n = 1; n <= 9; n += 1) {
+      const r = await repo.globalRecordTwoFactorFailure(id);
+      expect(r.failedVerificationCount).toBe(n);
+      expect(r.lockedUntil, `failure ${String(n)}`).toBeNull();
+    }
+    const tenth = await repo.globalRecordTwoFactorFailure(id);
+    expect(tenth.failedVerificationCount).toBe(10);
+    expect(tenth.lockedUntil).toBeInstanceOf(Date);
+    expect((tenth.lockedUntil?.getTime() ?? 0) > Date.now()).toBe(true);
+  });
+
+  it('an expired lock is cleared before the next count', async () => {
+    const userId = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const id = await seedTwoFactor(userId, {
+      failed: 10,
+      lockedUntilSql: "now() - interval '1 second'",
+    });
+
+    expect(await repo.globalClearExpiredTwoFactorLock(id)).toBe(true);
+    expect(await twoFactorColumns(id)).toMatchObject({ failed: 0, lockedUntil: null });
+
+    const next = await repo.globalRecordTwoFactorFailure(id);
+    expect(next.failedVerificationCount, 'the count restarts at one').toBe(1);
+    expect(next.lockedUntil).toBeNull();
+  });
+
+  it('a lock still in force is not cleared', async () => {
+    const userId = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const id = await seedTwoFactor(userId, {
+      failed: 10,
+      lockedUntilSql: "now() + interval '5 minutes'",
+    });
+
+    expect(await repo.globalClearExpiredTwoFactorLock(id)).toBe(false);
+    const after = await twoFactorColumns(id);
+    expect(after.failed).toBe(10);
+    expect(after.lockedUntil).toBeInstanceOf(Date);
+  });
+
+  it('the counter reset clears the count and the lock of that row only', async () => {
+    const userId = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const id = await seedTwoFactor(userId, {
+      failed: 7,
+      lockedUntilSql: "now() + interval '5 minutes'",
+    });
+    const otherUser = await seedUser();
+    const otherId = await seedTwoFactor(otherUser, { failed: 4 });
+
+    await repo.globalResetTwoFactorFailures(id);
+
+    expect(await twoFactorColumns(id)).toMatchObject({ failed: 0, lockedUntil: null });
+    expect((await twoFactorColumns(otherId)).failed).toBe(4);
+  });
+
+  it('two parallel spends of one backup code: exactly one wins', async () => {
+    const userId = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const id = await seedTwoFactor(userId, { backupCodes: 'enc-original' });
+
+    const outcomes = await Promise.all([
+      repo.globalSpendBackupCode(id, 'enc-original', 'enc-remaining-1'),
+      repo.globalSpendBackupCode(id, 'enc-original', 'enc-remaining-2'),
+    ]);
+
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    const winner = outcomes[0] ? 'enc-remaining-1' : 'enc-remaining-2';
+    expect((await twoFactorColumns(id)).backupCodes).toBe(winner);
+
+    // A later spend against the stale value loses too.
+    expect(await repo.globalSpendBackupCode(id, 'enc-original', 'enc-remaining-3')).toBe(false);
+    expect((await twoFactorColumns(id)).backupCodes).toBe(winner);
+  });
+
+  it('every function of the two-factor section runs on the client passed as db', async () => {
+    const userId = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    const lockedId = await seedTwoFactor(userId, {
+      failed: 10,
+      lockedUntilSql: "now() - interval '1 second'",
+      backupCodes: 'enc-original',
+    });
+    const accountId = await seedAccount(userId, 'credential', userId);
+
+    // The repository's own pool is a stub that fails on any use.
+    let poolUses = 0;
+    const deadPool = {
+      query: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+      connect: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+    } as unknown as Pool;
+    const probeRepo = createAuthRepository(deadPool);
+
+    const client = await authPool.connect();
+    const statements: string[] = [];
+    const runOnClient = client.query.bind(client) as (...args: unknown[]) => unknown;
+    const probe = new Proxy(client, {
+      get(target, prop) {
+        if (prop === 'query') {
+          return (...args: unknown[]): unknown => {
+            statements.push(typeof args[0] === 'string' ? args[0] : '');
+            return runOnClient(...args);
+          };
+        }
+        return Reflect.get(target, prop) as unknown;
+      },
+    });
+    try {
+      const state = await probeRepo.globalTwoFactorStateOf(userId, probe);
+      expect(state.rows.map((r) => r.id)).toEqual([lockedId]);
+      expect(await probeRepo.globalClearExpiredTwoFactorLock(lockedId, probe)).toBe(true);
+      const failure = await probeRepo.globalRecordTwoFactorFailure(lockedId, probe);
+      expect(failure.failedVerificationCount).toBe(1);
+      await probeRepo.globalResetTwoFactorFailures(lockedId, probe);
+      expect(
+        await probeRepo.globalSpendBackupCode(lockedId, 'enc-original', 'enc-rest', probe),
+      ).toBe(true);
+      expect((await probeRepo.globalAccountsOf(userId, probe)).map((a) => a.id)).toEqual([
+        accountId,
+      ]);
+    } finally {
+      client.release();
+    }
+
+    expect(poolUses, 'the pool sees none of the statements').toBe(0);
+    expect(statements.length, 'the probe client saw every statement').toBeGreaterThanOrEqual(6);
+  });
+
+  it('globalAccountsOf: with a db argument the statement runs on that client', async () => {
+    const userId = await seedUser();
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      // Uncommitted: visible to this client only.
+      await client.query(
+        `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+         values ($1, $2, 'credential', $3, now(), now())`,
+        [`acc-${randomUUID()}`, userId, userId],
+      );
+
+      expect(await repo.globalAccountsOf(userId, client)).toHaveLength(1);
+      expect(await repo.globalAccountsOf(userId), 'the pool does not see it').toEqual([]);
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+  });
+
   it('only the global functions are callable without a tenantId', async () => {
     const names = Object.keys(repo);
     const globals = names.filter((name) => name.startsWith('global'));
@@ -452,8 +776,13 @@ describe('auth-repository', () => {
       [
         'globalAccountByKey',
         'globalAccountsOf',
+        'globalClearExpiredTwoFactorLock',
         'globalInvitationById',
         'globalMembershipTenantsOf',
+        'globalRecordTwoFactorFailure',
+        'globalResetTwoFactorFailures',
+        'globalSpendBackupCode',
+        'globalTwoFactorStateOf',
         'globalUserBanned',
         'globalUserByEmail',
         'globalUserById',
