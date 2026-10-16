@@ -523,4 +523,189 @@ describe('POST /v1/auth/password-reset/confirm over HTTP (task 8.3)', () => {
       });
     }
   });
+
+  /**
+   * Task 8.5 (design D6 "What enrolled means, failing closed", "Enrolled and no factor in the body";
+   * D2 order of work): scenarios "The link alone does not change an enrolled user's password" and
+   * "An inconsistent factor state fails closed" of `specs/password-reset-and-account-recovery/spec.md`.
+   *
+   * - GIVEN a user with TOTP enrolled and a valid token; WHEN the token and a new password are
+   *   submitted without a factor; THEN the answer is `AUTH_STEP_UP_REQUIRED`, the password is
+   *   unchanged and the token is still valid.
+   * - GIVEN a user whose `twoFactorEnabled` is true but who has no verified `twoFactor` row (or the
+   *   reverse), and a valid token; WHEN the token and a compliant password are submitted, with or
+   *   without a factor; THEN the answer is `AUTH_STEP_UP_REQUIRED`, the password is unchanged, the
+   *   token is not consumed and no failure is counted.
+   *
+   * Expected production behavior: the confirm route answers `403 AUTH_STEP_UP_REQUIRED` from the
+   * enrolled predicate of D6 (`globalTwoFactorStateOf`) before the password policy, the breach check
+   * and the lock. The factor rows are seeded raw (the route refuses before decrypting anything).
+   */
+  describe('The factor gate and the enrolled predicate (task 8.5)', () => {
+    const FACTOR = { kind: 'totp', code: '123456' } as const;
+
+    async function seedTwoFactor(userId: string, verified: boolean): Promise<string> {
+      const id = `tf-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth.two_factor (id, secret, backup_codes, user_id, verified, failed_verification_count)
+         values ($1, $2, $3, $4, $5, 0)`,
+        [id, `enc-secret-${id}`, `enc-codes-${id}`, userId, verified],
+      );
+      return id;
+    }
+
+    async function setFlag(userId: string, enabled: boolean): Promise<void> {
+      await authPool.query('update auth."user" set two_factor_enabled = $2 where id = $1', [
+        userId,
+        enabled,
+      ]);
+    }
+
+    async function passwordHash(userId: string): Promise<string> {
+      const result = await authPool.query<{ password: string | null }>(
+        `select password from auth.account where user_id = $1 and provider_id = 'credential'`,
+        [userId],
+      );
+      return result.rows[0]?.password ?? '';
+    }
+
+    async function twoFactorCounters(
+      id: string,
+    ): Promise<{ failed: number | null; lockedUntil: Date | null; backupCodes: string }> {
+      const result = await authPool.query<{
+        failed: number | null;
+        locked_until: Date | null;
+        backup_codes: string;
+      }>(
+        'select failed_verification_count as failed, locked_until, backup_codes from auth.two_factor where id = $1',
+        [id],
+      );
+      const row = result.rows[0];
+      if (row === undefined) throw new Error('expected the two_factor row');
+      return { failed: row.failed, lockedUntil: row.locked_until, backupCodes: row.backup_codes };
+    }
+
+    async function expectRefusedUntouched(
+      userId: string,
+      tokenId: string,
+      token: string,
+      fields: Record<string, unknown>,
+      twoFactorId: string | undefined,
+    ): Promise<void> {
+      const hashBefore = await passwordHash(userId);
+      const countersBefore =
+        twoFactorId === undefined ? undefined : await twoFactorCounters(twoFactorId);
+
+      const answer = await post({ id: tokenId, token, ...fields });
+
+      expect(answer.status).toBe(403);
+      expect(answer.body).toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+      expectNotCacheable(answer);
+      expect(await passwordHash(userId), 'the password is unchanged').toBe(hashBefore);
+      const lookup = await store().lookup(tokenId, token);
+      expect(lookup, 'the token is not consumed and no failure is counted').toEqual({
+        status: 'found',
+        userId,
+        failures: 0,
+      });
+      if (twoFactorId !== undefined) {
+        expect(await twoFactorCounters(twoFactorId), 'no account failure is counted').toEqual(
+          countersBefore,
+        );
+      }
+    }
+
+    it('The link alone does not change an enrolled user: no factor answers AUTH_STEP_UP_REQUIRED, the password is unchanged and the token is still valid', async () => {
+      const account = await createAccount();
+      const twoFactorId = await seedTwoFactor(account.userId, true);
+      await setFlag(account.userId, true);
+      const issued = await store().issue(account.userId);
+
+      await expectRefusedUntouched(account.userId, issued.id, issued.token, {}, twoFactorId);
+    });
+
+    it('the enrolled fast fail runs before the password policy: a non-compliant password without a factor still answers AUTH_STEP_UP_REQUIRED', async () => {
+      const account = await createAccount();
+      const twoFactorId = await seedTwoFactor(account.userId, true);
+      await setFlag(account.userId, true);
+      const issued = await store().issue(account.userId);
+
+      await expectRefusedUntouched(
+        account.userId,
+        issued.id,
+        issued.token,
+        { newPassword: 'short' },
+        twoFactorId,
+      );
+    });
+
+    it('the enrolled fast fail makes no breached-password lookup', async () => {
+      const account = await createAccount();
+      await seedTwoFactor(account.userId, true);
+      await setFlag(account.userId, true);
+      const issued = await store().issue(account.userId);
+      const rangeLookups: string[] = [];
+      vi.stubGlobal('fetch', (input: string | URL | Request): Promise<Response> => {
+        rangeLookups.push(
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        );
+        return Promise.resolve(new Response('', { status: 200 }));
+      });
+
+      const answer = await post({ id: issued.id, token: issued.token });
+
+      expect(answer.status).toBe(403);
+      expect(rangeLookups).toEqual([]);
+    });
+
+    it('control: a user with no factor and no flag is not refused by the gate (the link is enough)', async () => {
+      const account = await createAccount();
+      const issued = await store().issue(account.userId);
+
+      const answer = await post({ id: issued.id, token: issued.token });
+
+      expect(answer.body).not.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    });
+
+    const inconsistent: readonly {
+      readonly name: string;
+      readonly flag: boolean;
+      readonly row: 'none' | 'unverified' | 'verified';
+    }[] = [
+      { name: 'the flag is on and there is no two_factor row', flag: true, row: 'none' },
+      { name: 'the flag is on and the only row is unverified', flag: true, row: 'unverified' },
+      { name: 'a verified row exists and the flag is off', flag: false, row: 'verified' },
+    ];
+
+    for (const { name, flag, row } of inconsistent) {
+      for (const withFactor of [false, true]) {
+        it(`An inconsistent factor state fails closed: ${name}, ${withFactor ? 'with' : 'without'} a factor`, async () => {
+          const account = await createAccount();
+          const twoFactorId =
+            row === 'none' ? undefined : await seedTwoFactor(account.userId, row === 'verified');
+          await setFlag(account.userId, flag);
+          const issued = await store().issue(account.userId);
+
+          await expectRefusedUntouched(
+            account.userId,
+            issued.id,
+            issued.token,
+            withFactor ? { factor: FACTOR } : {},
+            twoFactorId,
+          );
+        });
+      }
+    }
+
+    it('an enrolment still in progress (flag off, only an unverified row) counts as not enrolled: the gate does not refuse', async () => {
+      const account = await createAccount();
+      await seedTwoFactor(account.userId, false);
+      await setFlag(account.userId, false);
+      const issued = await store().issue(account.userId);
+
+      const answer = await post({ id: issued.id, token: issued.token });
+
+      expect(answer.body).not.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    });
+  });
 });

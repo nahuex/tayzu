@@ -4,6 +4,8 @@
  * refusal that depends on the token or the account is the one uniform `CATALOG_NOT_FOUND`.
  * The completion (factor, policy, effects) is not implemented yet.
  */
+import { AuthStepUpError } from '@tayzu/auth';
+
 import { createAuthRepository } from './auth-repository.js';
 import { IdentityInputError, parseIdentityInput, type InputSchema } from './parse-input.js';
 import type { RecoveryEligibilityChecker } from './recovery-eligibility.js';
@@ -90,6 +92,18 @@ export function createPasswordResetConfirmFlow(options: {
       if (user === undefined) throw new ResetNotFoundError();
       const eligibility = await options.eligibility.check(user.email);
       if (eligibility.status !== 'eligible') throw new ResetNotFoundError();
+
+      // D6 fast fail: the read before the lock decides nothing final. Enrolled means the flag OR
+      // a verified row; an inconsistent state (only one of them) can never be satisfied, so it
+      // answers the same way and consumes and counts nothing.
+      const twoFactor = await repository.globalTwoFactorStateOf(lookup.userId);
+      const hasVerifiedRow = twoFactor.rows.some((row) => row.verified);
+      if (
+        (twoFactor.twoFactorEnabled || hasVerifiedRow) &&
+        (!twoFactor.twoFactorEnabled || !hasVerifiedRow || parsed['factor'] === undefined)
+      ) {
+        throw new AuthStepUpError();
+      }
 
       // Task 8.9 replaces this with the completion; until then the sanitized INTERNAL 500.
       throw new Error('The password reset completion is not implemented');
