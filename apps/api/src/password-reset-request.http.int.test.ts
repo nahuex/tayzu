@@ -137,6 +137,7 @@ describe('POST /v1/auth/password-reset/request over HTTP (task 6.1, design D2, D
       recipientKeySecret: HMAC_SECRET,
       tenantCap: { max: 1000, windowSeconds: 3600 },
       recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
     };
     app = await createApp({
       appPool: pools.appPool,
