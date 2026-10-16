@@ -46,8 +46,20 @@ export function createPasswordResetRequestFlow(options: {
         ipKey: clientIpKey(clientIp),
       });
       if (!admission.admitted) return;
-      const { id, token } = await options.tokens.issue(result.userId);
-      admission.send(buildPasswordResetLink({ baseUrl: options.linkBaseUrl, resetId: id, token }));
+      let issued: { id: string; token: string };
+      try {
+        issued = await options.tokens.issue(result.userId);
+      } catch {
+        admission.tokenIssueFailed();
+        return;
+      }
+      admission.send(
+        buildPasswordResetLink({
+          baseUrl: options.linkBaseUrl,
+          resetId: issued.id,
+          token: issued.token,
+        }),
+      );
     },
   };
 }

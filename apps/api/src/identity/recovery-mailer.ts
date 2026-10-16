@@ -23,6 +23,8 @@ export type ResetEmailAdmission =
       readonly admitted: true;
       /** Starts the detached send and returns at once; a failure is swallowed and counted. */
       send(link: string): void;
+      /** Logs `token_issue_failure` once; the token store failed after admission (D2). */
+      tokenIssueFailed(): void;
     };
 
 /** The `kind` of each link-less notice template the mailer can send. */
@@ -79,7 +81,8 @@ type Suppression =
   | 'tenant_cap'
   | 'ip_cap'
   | 'global_cap'
-  | 'provider_failure';
+  | 'provider_failure'
+  | 'token_issue_failure';
 
 /** The one constant key of the global bucket. */
 const GLOBAL_KEY = 'global';
@@ -208,6 +211,9 @@ export function createRecoveryMailer(deps: {
     }
     return {
       admitted: true,
+      tokenIssueFailed(): void {
+        suppressed('token_issue_failure', input.userId);
+      },
       send(link: string): void {
         const delivery = deps.sender
           .send(input.address, { kind: 'PasswordResetEmail', link, expiryText: EXPIRY_TEXT })

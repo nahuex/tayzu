@@ -39,11 +39,14 @@
  * - For an eligible account, one `PasswordResetEmail` reaches `email.sender` (detached from the
  *   response), addressed to the canonical address.
  */
+// Load-bearing import order (design D1): the telemetry harness registers before anything that
+// loads `@tayzu/auth` creates its logger (task 6.3 reads the `token_issue_failure` log event).
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRecordingEmailSender } from '@tayzu/auth';
 import type { Pool, PoolClient } from 'pg';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
@@ -52,6 +55,8 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { createResetTokenStore } from './identity/reset-token-store.js';
+import { createWithUserLock } from './identity/user-lock.js';
 import { createApp, type App } from './server.js';
 
 const ORIGIN = 'https://app.tayzu.test';
@@ -487,5 +492,360 @@ describe('Every refusal state gets the same answer (task 6.2)', () => {
     expect(sentTo(capped.email)).toBe(1);
     expect(senderB.sent).toHaveLength(0);
     expect(sentToFailing).toEqual([failing.email]);
+  }, 120_000);
+});
+
+/**
+ * Task 6.3 (design D5 "Admission before issue", D3 "Newest wins, for an admitted send only", D4
+ * "Detached send", review correction C1): scenarios "A suppressed request leaves the earlier link
+ * valid" (one case each for a full recipient cap, the kill switch, every tenant disabled and a
+ * recipient domain off the allowlist) and "The newest link wins", plus the case "a token-store
+ * failure after admission still answers the uniform 200 and logs `token_issue_failure`".
+ *
+ * Scenarios (verbatim from the spec):
+ * - "The newest link wins": GIVEN an eligible user who requested a reset twice; WHEN the first
+ *   link is submitted; THEN the answer is the uniform rejection, and the second link still works.
+ * - "A suppressed request leaves the earlier link valid": GIVEN an eligible user who holds a valid
+ *   link, and then a full recipient cap, a kill switch turned on, every tenant of the user on the
+ *   disabled-tenant list, or a recipient domain that is not on the allowlist; WHEN the address is
+ *   posted again; THEN the answer is the uniform one, no email is sent, no token is issued, and
+ *   the earlier link still works.
+ *
+ * The confirm route does not exist before task 8.3, so "the link is submitted" and "still works"
+ * are observed at the token store (`lookup(id, token)` with the id and token read from the emailed
+ * link): `found` is a working link, `not_found` is the uniform rejection. "No token is issued" is
+ * observed as the user's `password-reset:` rows being exactly the earlier row, unchanged.
+ *
+ * ## Production symbols expected
+ *
+ * - `CreateAppOptions.email.recipientDomainAllowlist?: readonly string[]` (`server.ts`), handed to
+ *   `createRecoveryMailer({ recipientDomainAllowlist })`, which already supports it, so that the
+ *   mailer's admission (not only the sender wrapper) refuses a domain off the list. Passed here
+ *   through a variable, so this file type-checks before the option exists.
+ * - The request route catches a token-store failure after admission, logs
+ *   `catalog.security.recovery_email_suppressed` with `tayzu.identity.recovery.suppression` =
+ *   `token_issue_failure`, sends nothing and answers the uniform `200 { "accepted": true }`.
+ */
+describe('Admission before issue (task 6.3)', () => {
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let apps: App[];
+  let failTokenInsert: boolean;
+
+  const roomy = { max: 1000, windowSeconds: 3600 };
+
+  function makeApp(
+    sender: ReturnType<typeof createRecordingEmailSender>,
+    overrides: Record<string, unknown> = {},
+    pool: Pool = authPool,
+  ): Promise<App> {
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: roomy,
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: roomy,
+      passwordResetIpCap: roomy,
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+      ...overrides,
+    };
+    return harnessPools().then(async (pools) => {
+      const app = await createApp({
+        appPool: pools.appPool,
+        authPool: pool,
+        authSecret: TEST_SECRET,
+        cerbosAddress: 'localhost:3593',
+        allowedOrigins: [ORIGIN],
+        mountIdentityRoutes: true,
+        identityTokenHmacSecret: HMAC_SECRET,
+        ...{ email },
+      });
+      apps.push(app);
+      return app;
+    });
+  }
+
+  /** Fails the reset token's insert while `failTokenInsert` is on; everything else passes. */
+  function failingInsertPool(pool: Pool): Pool {
+    const guard = (first: unknown, run: () => unknown): unknown =>
+      failTokenInsert && /insert\s+into\s+auth\.verification/i.test(statementText(first))
+        ? Promise.reject(new Error('token store unavailable'))
+        : run();
+    const wrapClient = (client: PoolClient): PoolClient =>
+      new Proxy(client, {
+        get(target, property): unknown {
+          const value: unknown = Reflect.get(target, property, target);
+          if (property === 'query') {
+            return (...args: unknown[]): unknown =>
+              guard(args[0], () => (value as QueryFunction).apply(target, args));
+          }
+          return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+        },
+      });
+    return new Proxy(pool, {
+      get(target, property): unknown {
+        const value: unknown = Reflect.get(target, property, target);
+        if (property === 'query') {
+          return (...args: unknown[]): unknown =>
+            guard(args[0], () => (value as QueryFunction).apply(target, args));
+        }
+        if (property === 'connect') {
+          return async (): Promise<PoolClient> => wrapClient(await target.connect());
+        }
+        return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+      },
+    });
+  }
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    authPool = (await harnessPools()).authPool;
+    apps = [];
+  }, 60_000);
+
+  beforeEach(async () => {
+    failTokenInsert = false;
+    await harness.reset();
+  });
+
+  afterAll(async () => {
+    for (const app of apps) await app.close();
+  }, 60_000);
+
+  async function post(app: App, email: string): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: REQUEST_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ email }),
+    });
+    return {
+      status: response.statusCode,
+      body: response.json(),
+      headerNames: Object.keys(response.headers).sort(),
+    };
+  }
+
+  async function createAccount(app: App): Promise<{
+    email: string;
+    userId: string;
+    tenantId: string;
+  }> {
+    const suffix = randomUUID();
+    const email = `admission-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Admission User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Admission Org ${suffix}`,
+      organizationSlug: `admission-${suffix}`,
+      ip: randomIp(),
+    });
+    return { email, userId: tenant.userId, tenantId: tenant.organizationId };
+  }
+
+  async function tokenRows(userId: string): Promise<{ identifier: string; value: string }[]> {
+    const result = await authPool.query<{ identifier: string; value: string }>(
+      `select identifier, value from auth.verification
+        where identifier like 'password-reset:%' and split_part(value, ':', 3) = $1
+        order by identifier`,
+      [userId],
+    );
+    return result.rows;
+  }
+
+  function linksTo(
+    sender: ReturnType<typeof createRecordingEmailSender>,
+    address: string,
+  ): { id: string; token: string }[] {
+    const links: { id: string; token: string }[] = [];
+    for (const message of sender.sent) {
+      if (message.to !== address || message.template.kind !== 'PasswordResetEmail') continue;
+      const fragment = new URLSearchParams(new URL(message.template.link).hash.slice(1));
+      links.push({ id: fragment.get('reset') ?? '', token: fragment.get('token') ?? '' });
+    }
+    return links;
+  }
+
+  function store() {
+    return createResetTokenStore({ authPool, withUserLock: createWithUserLock(authPool) });
+  }
+
+  /** The user's first, admitted request: one email, one row, and the link works. */
+  async function holdAValidLink(
+    app: App,
+    sender: ReturnType<typeof createRecordingEmailSender>,
+    account: { email: string; userId: string },
+  ) {
+    const answer = await post(app, account.email);
+    expect(answer.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(linksTo(sender, account.email)).toHaveLength(1);
+    });
+    const [link] = linksTo(sender, account.email);
+    const rows = await tokenRows(account.userId);
+    expect(rows).toHaveLength(1);
+    expect(link).toBeDefined();
+    const earlier = link as { id: string; token: string };
+    expect(await store().lookup(earlier.id, earlier.token)).toMatchObject({ status: 'found' });
+    return { answer, earlier, rows };
+  }
+
+  async function expectSuppressedAndEarlierLinkValid(input: {
+    sender: ReturnType<typeof createRecordingEmailSender>;
+    account: { email: string; userId: string };
+    reference: Awaited<ReturnType<typeof holdAValidLink>>;
+    answer: Answer;
+  }): Promise<void> {
+    const { sender, account, reference, answer } = input;
+    expect(answer.status).toBe(reference.answer.status);
+    expect(answer.body).toEqual({ accepted: true });
+    expect(answer.headerNames).toEqual(reference.answer.headerNames);
+    // Give a wrongly attempted detached send time to land.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(linksTo(sender, account.email)).toHaveLength(1);
+    expect(await tokenRows(account.userId), 'no token issued, none deleted or changed').toEqual(
+      reference.rows,
+    );
+    expect(await store().lookup(reference.earlier.id, reference.earlier.token)).toMatchObject({
+      status: 'found',
+    });
+  }
+
+  it('A suppressed request leaves the earlier link valid: a full recipient cap', async () => {
+    const sender = createRecordingEmailSender();
+    const app = await makeApp(sender, {
+      passwordResetRecipientCap: { max: 1, windowSeconds: 3600 },
+    });
+    const account = await createAccount(app);
+    const reference = await holdAValidLink(app, sender, account);
+
+    const answer = await post(app, account.email);
+
+    await expectSuppressedAndEarlierLinkValid({ sender, account, reference, answer });
+  }, 120_000);
+
+  it('A suppressed request leaves the earlier link valid: the kill switch turned on', async () => {
+    const senderBefore = createRecordingEmailSender();
+    const senderKilled = createRecordingEmailSender();
+    const open = await makeApp(senderBefore);
+    const killed = await makeApp(senderKilled, { killSwitch: true });
+    const account = await createAccount(open);
+    const reference = await holdAValidLink(open, senderBefore, account);
+
+    const answer = await post(killed, account.email);
+
+    await expectSuppressedAndEarlierLinkValid({
+      sender: senderBefore,
+      account,
+      reference,
+      answer,
+    });
+    expect(senderKilled.sent).toHaveLength(0);
+  }, 120_000);
+
+  it('A suppressed request leaves the earlier link valid: every tenant of the user disabled', async () => {
+    const senderBefore = createRecordingEmailSender();
+    const senderDisabled = createRecordingEmailSender();
+    const open = await makeApp(senderBefore);
+    const account = await createAccount(open);
+    const reference = await holdAValidLink(open, senderBefore, account);
+    const disabled = await makeApp(senderDisabled, { disabledTenantIds: [account.tenantId] });
+
+    const answer = await post(disabled, account.email);
+
+    await expectSuppressedAndEarlierLinkValid({
+      sender: senderBefore,
+      account,
+      reference,
+      answer,
+    });
+    expect(senderDisabled.sent).toHaveLength(0);
+  }, 120_000);
+
+  it('A suppressed request leaves the earlier link valid: a recipient domain off the allowlist', async () => {
+    const senderBefore = createRecordingEmailSender();
+    const senderListed = createRecordingEmailSender();
+    const open = await makeApp(senderBefore);
+    const listed = await makeApp(senderListed, { recipientDomainAllowlist: ['allowed.example'] });
+    const account = await createAccount(open);
+    const reference = await holdAValidLink(open, senderBefore, account);
+
+    const answer = await post(listed, account.email);
+
+    await expectSuppressedAndEarlierLinkValid({
+      sender: senderBefore,
+      account,
+      reference,
+      answer,
+    });
+    expect(senderListed.sent).toHaveLength(0);
+  }, 120_000);
+
+  it('The newest link wins: after two admitted requests the first link is the uniform rejection and the second still works', async () => {
+    const sender = createRecordingEmailSender();
+    const app = await makeApp(sender);
+    const account = await createAccount(app);
+
+    expect((await post(app, account.email)).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(linksTo(sender, account.email)).toHaveLength(1);
+    });
+    expect((await post(app, account.email)).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(linksTo(sender, account.email)).toHaveLength(2);
+    });
+
+    const [first, second] = linksTo(sender, account.email) as [
+      { id: string; token: string },
+      { id: string; token: string },
+    ];
+    expect(first.id).not.toBe(second.id);
+    expect(await store().lookup(first.id, first.token)).toEqual({ status: 'not_found' });
+    expect(await store().lookup(second.id, second.token)).toMatchObject({ status: 'found' });
+    expect(await tokenRows(account.userId)).toHaveLength(1);
+  }, 120_000);
+
+  it('a token-store failure after admission still answers the uniform 200 and logs token_issue_failure', async () => {
+    const sender = createRecordingEmailSender();
+    const app = await makeApp(sender, {}, failingInsertPool(authPool));
+    const account = await createAccount(app);
+    const reference = await post(app, `ghost-${randomUUID()}@example.test`);
+    await harness.reset();
+
+    failTokenInsert = true;
+    const answer = await post(app, account.email);
+    failTokenInsert = false;
+
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ accepted: true });
+    expect(answer.headerNames).toEqual(reference.headerNames);
+    await harness.forceFlush();
+    const events = harness.logExporter
+      .getFinishedLogRecords()
+      .filter((record) => record.eventName === 'catalog.security.recovery_email_suppressed');
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes['tayzu.identity.recovery.suppression']).toBe(
+      'token_issue_failure',
+    );
+    expect(JSON.stringify(events[0]?.attributes)).not.toContain(account.email);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sender.sent.filter((message) => message.to === account.email)).toHaveLength(0);
+    expect(await tokenRows(account.userId)).toHaveLength(0);
   }, 120_000);
 });

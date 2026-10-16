@@ -137,6 +137,8 @@ export interface CreateAppOptions {
     readonly passwordResetLinkBaseUrl?: string;
     readonly disabledTenantIds: readonly string[];
     readonly killSwitch: boolean;
+    /** 044 task 6.3 (D5): the mailer's admission refuses a recipient domain off this list. */
+    readonly recipientDomainAllowlist?: readonly string[];
     readonly recipientKeySecret?: string;
     readonly tenantCap: { readonly max: number; readonly windowSeconds: number };
     readonly recipientCap: { readonly max: number; readonly windowSeconds: number };
@@ -379,6 +381,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           sender: email.sender,
           recipientKeySecret,
           killSwitch: email.killSwitch,
+          ...(email.recipientDomainAllowlist !== undefined && {
+            recipientDomainAllowlist: email.recipientDomainAllowlist,
+          }),
         });
   const invitationLinkBaseUrl =
     email === undefined ? options.identity?.invitationLinkBaseUrl : email.invitationLinkBaseUrl;
