@@ -25,6 +25,17 @@ export type ResetEmailAdmission =
       send(link: string): void;
     };
 
+/** The `kind` of each link-less notice template the mailer can send. */
+export type RecoveryNoticeKind =
+  'PasswordChangedNotice' | 'MfaChangedNotice' | 'MfaResetNotice' | 'AccountCreatedNotice';
+
+const NOTICE_TEMPLATE_NAMES: Readonly<Record<RecoveryNoticeKind, string>> = {
+  PasswordChangedNotice: 'password_changed',
+  MfaChangedNotice: 'mfa_changed',
+  MfaResetNotice: 'mfa_reset',
+  AccountCreatedNotice: 'account_created',
+};
+
 export interface RecoveryMailer {
   admitResetEmail(input: {
     /** Canonical. */
@@ -35,6 +46,18 @@ export interface RecoveryMailer {
     /** The normalized key of `client-ip-key.ts`. */
     readonly ipKey: string;
   }): Promise<ResetEmailAdmission>;
+  /**
+   * Kill switch, disabled tenants, then the `recovery_notice_recipient` cap, then the send.
+   * Never rejects: a refusal or a failure is logged and counted, not thrown.
+   */
+  sendNotice(input: {
+    readonly kind: RecoveryNoticeKind;
+    /** Canonical. */
+    readonly address: string;
+    readonly userId: string;
+    /** Every membership tenant of the user. */
+    readonly tenantIds: readonly string[];
+  }): Promise<void>;
   /** Resolves when every started send has settled. */
   drain(): Promise<void>;
 }
@@ -66,12 +89,16 @@ export function createRecoveryMailer(deps: {
   const disabled = new Set(deps.disabledTenantIds);
   const inFlight = new Set<Promise<void>>();
 
-  function suppressed(suppression: Suppression, userId: string): void {
+  function suppressed(
+    suppression: Suppression,
+    userId: string,
+    template: string = TEMPLATE_NAME,
+  ): void {
     emitIdentityEvent({
       name: 'catalog.security.recovery_email_suppressed',
       severity: 'WARN',
       attributes: {
-        'tayzu.identity.email.template': TEMPLATE_NAME,
+        'tayzu.identity.email.template': template,
         'tayzu.identity.recovery.suppression': suppression,
         'tayzu.identity.user.id': userId,
       },
@@ -103,6 +130,38 @@ export function createRecoveryMailer(deps: {
         return Promise.resolve(refuse('tenants_email_disabled', input.userId));
       }
       return admitThroughCaps(input);
+    },
+    async sendNotice(input) {
+      const template = NOTICE_TEMPLATE_NAMES[input.kind];
+      try {
+        if (deps.killSwitch === true) {
+          suppressed('kill_switch', input.userId, template);
+          return;
+        }
+        if (input.tenantIds.every((tenantId) => disabled.has(tenantId))) {
+          suppressed('tenants_email_disabled', input.userId, template);
+          return;
+        }
+        try {
+          await deps.capStore.consume(
+            'recovery_notice_recipient',
+            recipientKey(input.address, deps.recipientKeySecret),
+          );
+        } catch (error) {
+          if (error instanceof AuthRateLimitedError) {
+            suppressed('recipient_cap', input.userId, template);
+            return;
+          }
+          throw error;
+        }
+        await deps.sender.send(input.address, { kind: input.kind });
+      } catch {
+        recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
+          'tayzu.identity.email.template': template,
+          'tayzu.identity.email.outcome': 'failed',
+        });
+        suppressed('provider_failure', input.userId, template);
+      }
     },
     async drain() {
       await Promise.all([...inFlight]);

@@ -674,3 +674,259 @@ describe('Cases of the caps (044 task 5.4)', () => {
     expect(store.consumed).toHaveLength(0);
   });
 });
+
+/*
+ * Task 5.5 (design D5 "Notices", D8): the mailer's notice path. A notice goes through the kill
+ * switch, then the disabled-tenant list (suppressed when every tenant of the recipient is
+ * disabled), then the `recovery_notice_recipient` cap (key = `recipientKey(address, secret)`),
+ * then the send. It never throws into the operation that triggered it. A suppression is logged
+ * once as `catalog.security.recovery_email_suppressed` with the template name and the reason.
+ *
+ * Scenarios (specs/password-reset-and-account-recovery/spec.md, requirements "Recovery notices
+ * are fixed and carry no link" and "Recovery notices are capped and suppressible"), mailer level:
+ *
+ * - "A full notice bucket suppresses and logs"
+ * - "A failing provider never breaks the operation"
+ *
+ * ## Production symbols expected (added to `RecoveryMailer`, apps/api/src/identity/recovery-mailer.ts)
+ *
+ * ```ts
+ * export type RecoveryNoticeKind =
+ *   | 'PasswordChangedNotice' | 'MfaChangedNotice' | 'MfaResetNotice' | 'AccountCreatedNotice';
+ * interface RecoveryMailer {
+ *   // Never rejects. Resolves once the notice was sent, suppressed or failed.
+ *   sendNotice(input: {
+ *     readonly kind: RecoveryNoticeKind; // the `kind` of the EmailTemplate, no other field
+ *     readonly address: string; // canonical, read from the auth schema
+ *     readonly userId: string;
+ *     readonly tenantIds: readonly string[]; // every membership tenant of the user
+ *   }): Promise<void>;
+ * }
+ * ```
+ *
+ * The template sent is exactly `{ kind }`. The telemetry template name is `password_changed`,
+ * `mfa_changed`, `mfa_reset` or `account_created`. A failed send counts on
+ * `tayzu.identity.recovery_emails` with the outcome `failed` and logs `provider_failure`.
+ */
+const NOTICE_SCOPE = 'recovery_notice_recipient';
+
+function noticeInput(overrides: Partial<{ tenantIds: readonly string[] }> = {}) {
+  return {
+    kind: 'PasswordChangedNotice' as const,
+    address: newAddress(),
+    userId: `user-${randomUUID()}`,
+    tenantIds: [newTenant()],
+    ...overrides,
+  };
+}
+
+describe('Scenario: A full notice bucket suppresses and logs (044 task 5.5)', () => {
+  it('a full recipient notice bucket sends nothing, resolves, and logs recipient_cap with no address', async () => {
+    const request = noticeInput();
+    const { mailer, sender } = mailerWith({ capStore: storeRefusing(NOTICE_SCOPE) });
+
+    await expect(mailer.sendNotice(request)).resolves.toBeUndefined();
+    await mailer.drain();
+
+    expect(sender.sent).toHaveLength(0);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.severityText).toBe('WARN');
+    expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe('recipient_cap');
+    expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('password_changed');
+    expect(records[0]?.attributes['tayzu.identity.user.id']).toBe(request.userId);
+    expect(await everySignal()).not.toContain(request.address);
+  });
+
+  it('the notice bucket is keyed by the HMAC of the address and no reset bucket is consumed', async () => {
+    const request = noticeInput();
+    const { mailer, sender, store } = mailerWith();
+
+    await mailer.sendNotice(request);
+    await mailer.drain();
+
+    expect(store.consumed).toEqual([
+      { scope: NOTICE_SCOPE, key: recipientKey(request.address, HMAC_SECRET) },
+    ]);
+    expect(sender.sent).toEqual([
+      { to: request.address, template: { kind: 'PasswordChangedNotice' } },
+    ]);
+    expect(await eventsNamed(SUPPRESSED)).toHaveLength(0);
+  });
+
+  it('each notice kind is sent as its own link-less template and logs its own template name', async () => {
+    const cases = [
+      ['PasswordChangedNotice', 'password_changed'],
+      ['MfaChangedNotice', 'mfa_changed'],
+      ['MfaResetNotice', 'mfa_reset'],
+      ['AccountCreatedNotice', 'account_created'],
+    ] as const;
+    for (const [kind, name] of cases) {
+      await harness.reset();
+      const request = { ...noticeInput(), kind };
+      const ok = mailerWith();
+      await ok.mailer.sendNotice(request);
+      await ok.mailer.drain();
+      expect(ok.sender.sent).toEqual([{ to: request.address, template: { kind } }]);
+
+      const full = mailerWith({ capStore: storeRefusing(NOTICE_SCOPE) });
+      await full.mailer.sendNotice(request);
+      const records = await eventsNamed(SUPPRESSED);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.attributes['tayzu.identity.email.template']).toBe(name);
+    }
+  });
+});
+
+describe('Scenario: A failing provider never breaks the operation (notice level, 044 task 5.5)', () => {
+  it('a sender that fails with the address in its error does not reject and leaks nowhere', async () => {
+    const request = noticeInput();
+    const failing: EmailSender = {
+      send: (to) => Promise.reject(new Error(`provider refused ${to}`)),
+    };
+    const spies = [vi.spyOn(console, 'log'), vi.spyOn(console, 'error'), vi.spyOn(console, 'warn')];
+    const { mailer } = mailerWith({ sender: failing });
+
+    await expect(mailer.sendNotice(request)).resolves.toBeUndefined();
+    await expect(mailer.drain()).resolves.toBeUndefined();
+
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe('provider_failure');
+    expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('password_changed');
+    expect(records[0]?.attributes['tayzu.identity.user.id']).toBe(request.userId);
+    const signals = await everySignal();
+    expect(signals).not.toContain(request.address);
+    expect(signals).not.toContain(request.address.split('@')[0] ?? request.address);
+    for (const spy of spies) {
+      expect(JSON.stringify(spy.mock.calls)).not.toContain(request.address);
+    }
+  });
+
+  it('a failed notice is counted on tayzu.identity.recovery_emails with the outcome failed', async () => {
+    const failing: EmailSender = { send: () => Promise.reject(new Error('down')) };
+    const { mailer } = mailerWith({ sender: failing });
+
+    await mailer.sendNotice({ ...noticeInput(), kind: 'MfaResetNotice' });
+    await mailer.drain();
+    await harness.forceFlush();
+
+    const attributes: Readonly<Record<string, unknown>>[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          if (metric.descriptor.name === RECOVERY_EMAILS) {
+            for (const point of metric.dataPoints) attributes.push(point.attributes);
+          }
+        }
+      }
+    }
+    expect(
+      attributes.some(
+        (a) =>
+          a['tayzu.identity.email.outcome'] === 'failed' &&
+          a['tayzu.identity.email.template'] === 'mfa_reset',
+      ),
+    ).toBe(true);
+  });
+
+  it('a cap store that fails for another reason does not reject and sends nothing', async () => {
+    const broken: EmailCapStore = { consume: () => Promise.reject(new Error('database down')) };
+    const { mailer, sender } = mailerWith({ capStore: broken });
+
+    await expect(mailer.sendNotice(noticeInput())).resolves.toBeUndefined();
+    await mailer.drain();
+
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  it('a synchronously throwing sender does not reject either', async () => {
+    const throwing: EmailSender = {
+      send: () => {
+        throw new Error('sync failure');
+      },
+    };
+    const { mailer } = mailerWith({ sender: throwing });
+
+    await expect(mailer.sendNotice(noticeInput())).resolves.toBeUndefined();
+    await expect(mailer.drain()).resolves.toBeUndefined();
+  });
+});
+
+describe('Cases of the notice path (044 task 5.5)', () => {
+  it('the kill switch suppresses with kill_switch and consumes no bucket', async () => {
+    const request = noticeInput();
+    const { mailer, sender, store } = mailerWith({ killSwitch: true });
+
+    await expect(mailer.sendNotice(request)).resolves.toBeUndefined();
+    await mailer.drain();
+
+    expect(sender.sent).toHaveLength(0);
+    expect(store.consumed).toHaveLength(0);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe('kill_switch');
+    expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('password_changed');
+    expect(await everySignal()).not.toContain(request.address);
+  });
+
+  it('every tenant disabled suppresses with tenants_email_disabled; one enabled tenant passes', async () => {
+    const [a, b] = [newTenant(), newTenant()];
+    const blocked = mailerWith({ disabledTenantIds: [a, b] });
+    await blocked.mailer.sendNotice(noticeInput({ tenantIds: [a, b] }));
+    await blocked.mailer.drain();
+
+    expect(blocked.sender.sent).toHaveLength(0);
+    expect(blocked.store.consumed).toHaveLength(0);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe(
+      'tenants_email_disabled',
+    );
+
+    const passing = mailerWith({ disabledTenantIds: [a] });
+    await passing.mailer.sendNotice(noticeInput({ tenantIds: [a, b] }));
+    await passing.mailer.drain();
+    expect(passing.sender.sent).toHaveLength(1);
+  });
+
+  it('the order is kill switch, tenants, recipient cap', async () => {
+    const disabledTenant = newTenant();
+    const reasonWith = async (killSwitch: boolean, disabledTenantIds: readonly string[]) => {
+      await harness.reset();
+      const { mailer } = mailerWith({
+        killSwitch,
+        disabledTenantIds,
+        capStore: storeRefusing(NOTICE_SCOPE),
+      });
+      await mailer.sendNotice(noticeInput({ tenantIds: [disabledTenant] }));
+      const records = await eventsNamed(SUPPRESSED);
+      expect(records).toHaveLength(1);
+      return records[0]?.attributes['tayzu.identity.recovery.suppression'];
+    };
+
+    expect(await reasonWith(true, [disabledTenant])).toBe('kill_switch');
+    expect(await reasonWith(false, [disabledTenant])).toBe('tenants_email_disabled');
+    expect(await reasonWith(false, [])).toBe('recipient_cap');
+  });
+
+  it('a notice never consumes the reset buckets, and a reset admission never the notice one', async () => {
+    const { mailer, store } = mailerWith();
+
+    await mailer.sendNotice(noticeInput());
+    expect(store.consumed.map((entry) => entry.scope)).toEqual([NOTICE_SCOPE]);
+
+    store.consumed.length = 0;
+    await mailer.admitResetEmail(input());
+    expect(store.consumed.map((entry) => entry.scope)).not.toContain(NOTICE_SCOPE);
+  });
+
+  it('a full notice bucket does not stop a reset email to the same recipient', async () => {
+    const request = input();
+    const { mailer } = mailerWith({ capStore: storeRefusing(NOTICE_SCOPE) });
+
+    const admission = await mailer.admitResetEmail(request);
+
+    expect(admission.admitted).toBe(true);
+  });
+});
