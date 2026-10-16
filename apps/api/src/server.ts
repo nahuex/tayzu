@@ -57,6 +57,7 @@ import { createDbEmailCapStore } from './identity/email-cap-store.js';
 import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { IdentityInputError } from './identity/parse-input.js';
+import { applyNoCacheHeaders } from './identity/no-cache.js';
 import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
 import { createRecoveryMailer } from './identity/recovery-mailer.js';
@@ -997,6 +998,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       }),
     });
     await app.register((scope, _opts, done) => {
+      // Set before the limiter and the handler run, so every answer carries it, refusals included.
+      scope.addHook('onRequest', (_request, reply, hookDone) => {
+        applyNoCacheHeaders(reply);
+        hookDone();
+      });
       scope.addContentTypeParser(
         'application/json',
         { parseAs: 'string' },

@@ -1238,3 +1238,165 @@ describe('CSRF header, Origin and redirectTo on the request route (task 6.5)', (
     }
   });
 });
+
+/**
+ * Task 6.7 (design D2, constraint C6): scenario "Reset responses are not cacheable" of
+ * `specs/password-reset-and-account-recovery/spec.md`, for the request route.
+ *
+ * Scenario (verbatim): WHEN either reset route answers a success, a refusal or a rate-limit
+ * response; THEN the response carries `Cache-Control: no-store` and `Pragma: no-cache`.
+ *
+ * Cases: success (an eligible account), the uniform answer (an unknown address), a validation
+ * refusal (malformed body, and a cross-site request), the limiter `429`, and the fail-closed `500`
+ * (the `auth.rate_limit` store throws).
+ *
+ * ## Harness
+ *
+ * The real server with the identity routes mounted over a recording sender; the `tayzu_auth` pool
+ * is wrapped so that, while a flag is on, any statement touching `rate_limit` throws. Every
+ * request carries a fresh random `x-forwarded-for` (except the limiter case, which reuses one).
+ *
+ * ## Production symbols expected
+ *
+ * - A helper (for example `applyNoCacheHeaders(reply)` in `./identity/no-cache.ts`) that sets
+ *   `Pragma: no-cache`, called on every response of the request route, including the pre-handler
+ *   refusals. `Cache-Control: no-store` is already set by the app on every response. The tests
+ *   observe only headers, so the helper's name and path are the implementer's choice.
+ */
+describe('Reset responses are not cacheable (task 6.7)', () => {
+  let app: App;
+  let knownEmail: string;
+  let failStore = false;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const sender = createRecordingEmailSender();
+    const authPool = spyOnPool(pools.authPool, (sql) => {
+      if (failStore && /rate_limit/i.test(sql)) throw new Error('store down');
+    });
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      passwordResetMinResponseMs: 0,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    app = await createApp({
+      appPool: pools.appPool,
+      authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+    const suffix = randomUUID();
+    knownEmail = `cache-${suffix}@example.test`;
+    await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Cache User',
+      email: knownEmail,
+      password: TEST_PASSWORD,
+      organizationName: `Cache Org ${suffix}`,
+      organizationSlug: `cache-${suffix}`,
+      ip: randomIp(),
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    failStore = false;
+    await app.close();
+  }, 60_000);
+
+  async function postRaw(
+    payload: string,
+    overrides: { ip?: string; headers?: Record<string, string> } = {},
+  ): Promise<{ status: number; cacheControl: unknown; pragma: unknown }> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: REQUEST_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': overrides.ip ?? randomIp(),
+        ...overrides.headers,
+      },
+      payload,
+    });
+    return {
+      status: response.statusCode,
+      cacheControl: response.headers['cache-control'],
+      pragma: response.headers['pragma'],
+    };
+  }
+
+  function expectNotCacheable(answer: { cacheControl: unknown; pragma: unknown }): void {
+    expect(String(answer.cacheControl)).toContain('no-store');
+    expect(answer.pragma).toBe('no-cache');
+  }
+
+  it('a success (an eligible account): 200 with Cache-Control: no-store and Pragma: no-cache', async () => {
+    const answer = await postRaw(JSON.stringify({ email: knownEmail }));
+
+    expect(answer.status).toBe(200);
+    expectNotCacheable(answer);
+  });
+
+  it('the uniform answer (an unknown address): 200 with Cache-Control: no-store and Pragma: no-cache', async () => {
+    const answer = await postRaw(JSON.stringify({ email: `ghost-${randomUUID()}@example.test` }));
+
+    expect(answer.status).toBe(200);
+    expectNotCacheable(answer);
+  });
+
+  it('a validation refusal (malformed body): 400 with Cache-Control: no-store and Pragma: no-cache', async () => {
+    const answer = await postRaw(JSON.stringify({ email: 12_345 }));
+
+    expect(answer.status).toBe(400);
+    expectNotCacheable(answer);
+  });
+
+  it('a validation refusal (cross-site request): 400 with Cache-Control: no-store and Pragma: no-cache', async () => {
+    const answer = await postRaw(JSON.stringify({ email: knownEmail }), {
+      headers: { origin: 'https://evil.example' },
+    });
+
+    expect(answer.status).toBe(400);
+    expectNotCacheable(answer);
+  });
+
+  it('the limiter 429: Cache-Control: no-store and Pragma: no-cache', async () => {
+    const ip = randomIp();
+    for (let index = 0; index < 10; index += 1) {
+      const admitted = await postRaw(JSON.stringify({ email: `g-${randomUUID()}@example.test` }), {
+        ip,
+      });
+      expect(admitted.status, `request ${String(index + 1)}`).toBe(200);
+    }
+
+    const limited = await postRaw(JSON.stringify({ email: `g-${randomUUID()}@example.test` }), {
+      ip,
+    });
+
+    expect(limited.status).toBe(429);
+    expectNotCacheable(limited);
+  });
+
+  it('the fail-closed 500: Cache-Control: no-store and Pragma: no-cache', async () => {
+    failStore = true;
+    try {
+      const answer = await postRaw(JSON.stringify({ email: knownEmail }));
+
+      expect(answer.status).toBe(500);
+      expectNotCacheable(answer);
+    } finally {
+      failStore = false;
+    }
+  });
+});
