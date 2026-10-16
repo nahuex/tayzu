@@ -47,7 +47,8 @@ export interface RecoveryMailer {
     readonly ipKey: string;
   }): Promise<ResetEmailAdmission>;
   /**
-   * Kill switch, disabled tenants, then the `recovery_notice_recipient` cap, then the send.
+   * Kill switch, disabled tenants, for `AccountCreatedNotice` the tenant then global caps, then
+   * the `recovery_notice_recipient` cap, then the send.
    * Never rejects: a refusal or a failure is logged and counted, not thrown.
    */
   sendNotice(input: {
@@ -57,6 +58,11 @@ export interface RecoveryMailer {
     readonly userId: string;
     /** Every membership tenant of the user. */
     readonly tenantIds: readonly string[];
+    /**
+     * The tenant of the admin that created the account: the key of the per-tenant cap. Read only
+     * for kind `AccountCreatedNotice`; distinct from `tenantIds`, the recipient's memberships.
+     */
+    readonly creatingTenantId?: string;
   }): Promise<void>;
   /** Resolves when every started send has settled. */
   drain(): Promise<void>;
@@ -70,6 +76,7 @@ type Suppression =
   | 'recipient_domain_blocked'
   | 'tenants_email_disabled'
   | 'recipient_cap'
+  | 'tenant_cap'
   | 'ip_cap'
   | 'global_cap'
   | 'provider_failure';
@@ -142,17 +149,29 @@ export function createRecoveryMailer(deps: {
           suppressed('tenants_email_disabled', input.userId, template);
           return;
         }
-        try {
-          await deps.capStore.consume(
-            'recovery_notice_recipient',
-            recipientKey(input.address, deps.recipientKeySecret),
+        const caps: (readonly [string, string, Suppression])[] = [];
+        if (input.kind === 'AccountCreatedNotice') {
+          if (input.creatingTenantId === undefined) throw new Error('missing creating tenant');
+          caps.push(
+            ['account_created_tenant', input.creatingTenantId, 'tenant_cap'],
+            ['account_created_global', GLOBAL_KEY, 'global_cap'],
           );
-        } catch (error) {
-          if (error instanceof AuthRateLimitedError) {
-            suppressed('recipient_cap', input.userId, template);
-            return;
+        }
+        caps.push([
+          'recovery_notice_recipient',
+          recipientKey(input.address, deps.recipientKeySecret),
+          'recipient_cap',
+        ]);
+        for (const [scope, key, suppression] of caps) {
+          try {
+            await deps.capStore.consume(scope, key);
+          } catch (error) {
+            if (error instanceof AuthRateLimitedError) {
+              suppressed(suppression, input.userId, template);
+              return;
+            }
+            throw error;
           }
-          throw error;
         }
         await deps.sender.send(input.address, { kind: input.kind });
       } catch {

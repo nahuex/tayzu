@@ -763,7 +763,11 @@ describe('Scenario: A full notice bucket suppresses and logs (044 task 5.5)', ()
     ] as const;
     for (const [kind, name] of cases) {
       await harness.reset();
-      const request = { ...noticeInput(), kind };
+      const request = {
+        ...noticeInput(),
+        kind,
+        creatingTenantId: newTenant(),
+      };
       const ok = mailerWith();
       await ok.mailer.sendNotice(request);
       await ok.mailer.drain();
@@ -928,5 +932,261 @@ describe('Cases of the notice path (044 task 5.5)', () => {
     const admission = await mailer.admitResetEmail(request);
 
     expect(admission.admitted).toBe(true);
+  });
+});
+
+/*
+ * Task 5.6 (design D5 "Notices", Q20): the account-created notice path. The kill switch, then the
+ * disabled-tenant list, then the per-tenant cap of the CREATING tenant (scope
+ * `account_created_tenant`, key = the creating tenant id), then the global cap (scope
+ * `account_created_global`, one constant key), then the recipient cap
+ * (`recovery_notice_recipient`), then the send. Never throws. Only the `AccountCreatedNotice` kind
+ * consumes the two extra buckets.
+ *
+ * Scenario (specs/password-reset-and-account-recovery/spec.md, requirement "Recovery notices are
+ * capped and suppressible"), mailer level:
+ *
+ * - "The account-created notice has its own tenant and global caps"
+ *
+ * ## Production symbols expected (a new field on `RecoveryMailer.sendNotice`'s input)
+ *
+ * ```ts
+ * // apps/api/src/identity/recovery-mailer.ts
+ * sendNotice(input: {
+ *   ...existing fields;
+ *   // The tenant of the admin that created the account: the key of the per-tenant cap. Read only
+ *   // for kind `AccountCreatedNotice`; distinct from `tenantIds`, the recipient's memberships.
+ *   readonly creatingTenantId?: string;
+ * }): Promise<void>;
+ * ```
+ *
+ * Suppression reasons: `tenant_cap` and `global_cap` (added to the `Suppression` union).
+ */
+const TENANT_SCOPE = 'account_created_tenant';
+const GLOBAL_SCOPE = 'account_created_global';
+
+function storeRefusingScopes(scopes: readonly string[]): FakeStore {
+  const consumed: FakeStore['consumed'] = [];
+  return {
+    consumed,
+    consume(consumedScope, key) {
+      consumed.push({ scope: consumedScope, key });
+      return scopes.includes(consumedScope)
+        ? Promise.reject(new AuthRateLimitedError(3600))
+        : Promise.resolve();
+    },
+  };
+}
+
+function accountCreatedInput(
+  overrides: Partial<{ creatingTenantId: string; tenantIds: readonly string[] }> = {},
+) {
+  return {
+    kind: 'AccountCreatedNotice' as const,
+    address: newAddress(),
+    userId: `user-${randomUUID()}`,
+    tenantIds: [newTenant()],
+    creatingTenantId: newTenant(),
+    ...overrides,
+  };
+}
+
+describe('Scenario: The account-created notice has its own tenant and global caps (044 task 5.6)', () => {
+  it('a tenant at its cap sends nothing, resolves, and logs tenant_cap with no address', async () => {
+    const request = accountCreatedInput();
+    const { mailer, sender } = mailerWith({ capStore: storeRefusingScopes([TENANT_SCOPE]) });
+
+    await expect(mailer.sendNotice(request)).resolves.toBeUndefined();
+    await mailer.drain();
+
+    expect(sender.sent).toHaveLength(0);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.severityText).toBe('WARN');
+    expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe('tenant_cap');
+    expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('account_created');
+    expect(records[0]?.attributes['tayzu.identity.user.id']).toBe(request.userId);
+    const signals = await everySignal();
+    expect(signals).not.toContain(request.address);
+    expect(signals).not.toContain(request.creatingTenantId);
+  });
+
+  it('a platform at its global cap sends nothing for another tenant and logs global_cap', async () => {
+    const request = accountCreatedInput();
+    const { mailer, sender } = mailerWith({ capStore: storeRefusingScopes([GLOBAL_SCOPE]) });
+
+    await expect(mailer.sendNotice(request)).resolves.toBeUndefined();
+    await mailer.drain();
+
+    expect(sender.sent).toHaveLength(0);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe('global_cap');
+    expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('account_created');
+    expect(await everySignal()).not.toContain(request.address);
+  });
+
+  it('both creations succeed in sequence: tenant A is capped, then tenant B hits the global cap', async () => {
+    const tenantA = newTenant();
+    const tenantB = newTenant();
+    const consumed: FakeStore['consumed'] = [];
+    const store: FakeStore = {
+      consumed,
+      consume(scope, key) {
+        consumed.push({ scope, key });
+        const refuse = (scope === TENANT_SCOPE && key === tenantA) || scope === GLOBAL_SCOPE;
+        return refuse ? Promise.reject(new AuthRateLimitedError(3600)) : Promise.resolve();
+      },
+    };
+    const { mailer, sender } = mailerWith({ capStore: store });
+
+    await expect(
+      mailer.sendNotice(accountCreatedInput({ creatingTenantId: tenantA })),
+    ).resolves.toBeUndefined();
+    await expect(
+      mailer.sendNotice(accountCreatedInput({ creatingTenantId: tenantB })),
+    ).resolves.toBeUndefined();
+    await mailer.drain();
+
+    expect(sender.sent).toHaveLength(0);
+    const reasons = (await eventsNamed(SUPPRESSED)).map(
+      (record) => record.attributes['tayzu.identity.recovery.suppression'],
+    );
+    expect(reasons).toEqual(['tenant_cap', 'global_cap']);
+  });
+});
+
+describe('Cases of the account-created notice path (044 task 5.6)', () => {
+  it('the order is kill switch, tenants, tenant cap, global cap, recipient cap', async () => {
+    const disabledTenant = newTenant();
+    const reasonWith = async (
+      killSwitch: boolean,
+      disabledTenantIds: readonly string[],
+      refusing: readonly string[],
+    ) => {
+      await harness.reset();
+      const { mailer } = mailerWith({
+        killSwitch,
+        disabledTenantIds,
+        capStore: storeRefusingScopes(refusing),
+      });
+      await mailer.sendNotice(accountCreatedInput({ tenantIds: [disabledTenant] }));
+      const records = await eventsNamed(SUPPRESSED);
+      expect(records).toHaveLength(1);
+      return records[0]?.attributes['tayzu.identity.recovery.suppression'];
+    };
+    const all = [TENANT_SCOPE, GLOBAL_SCOPE, NOTICE_SCOPE];
+
+    expect(await reasonWith(true, [disabledTenant], all)).toBe('kill_switch');
+    expect(await reasonWith(false, [disabledTenant], all)).toBe('tenants_email_disabled');
+    expect(await reasonWith(false, [], all)).toBe('tenant_cap');
+    expect(await reasonWith(false, [], [GLOBAL_SCOPE, NOTICE_SCOPE])).toBe('global_cap');
+    expect(await reasonWith(false, [], [NOTICE_SCOPE])).toBe('recipient_cap');
+  });
+
+  it('the buckets are consumed in the order tenant, global, recipient, keyed as designed', async () => {
+    const request = accountCreatedInput();
+    const { mailer, sender, store } = mailerWith();
+
+    await mailer.sendNotice(request);
+    await mailer.drain();
+
+    expect(store.consumed.map((entry) => entry.scope)).toEqual([
+      TENANT_SCOPE,
+      GLOBAL_SCOPE,
+      NOTICE_SCOPE,
+    ]);
+    expect(store.consumed[0]?.key).toBe(request.creatingTenantId);
+    expect(store.consumed[2]?.key).toBe(recipientKey(request.address, HMAC_SECRET));
+    expect(store.consumed[1]?.key).not.toContain(request.address);
+    expect(store.consumed[1]?.key).not.toBe(request.creatingTenantId);
+    expect(sender.sent).toEqual([
+      { to: request.address, template: { kind: 'AccountCreatedNotice' } },
+    ]);
+    expect(await eventsNamed(SUPPRESSED)).toHaveLength(0);
+  });
+
+  it('the global bucket is one constant key across tenants', async () => {
+    const { mailer, store } = mailerWith();
+
+    await mailer.sendNotice(accountCreatedInput());
+    await mailer.sendNotice(accountCreatedInput());
+
+    const keys = store.consumed
+      .filter((entry) => entry.scope === GLOBAL_SCOPE)
+      .map((entry) => entry.key);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  it('a tenant at its cap does not consume the global bucket', async () => {
+    const store = storeRefusingScopes([TENANT_SCOPE]);
+    const { mailer } = mailerWith({ capStore: store });
+
+    await mailer.sendNotice(accountCreatedInput());
+
+    expect(store.consumed.map((entry) => entry.scope)).toEqual([TENANT_SCOPE]);
+  });
+
+  it('the global cap refusing consumes no recipient bucket', async () => {
+    const store = storeRefusingScopes([GLOBAL_SCOPE]);
+    const { mailer } = mailerWith({ capStore: store });
+
+    await mailer.sendNotice(accountCreatedInput());
+
+    expect(store.consumed.map((entry) => entry.scope)).toEqual([TENANT_SCOPE, GLOBAL_SCOPE]);
+  });
+
+  it('the kill switch and all-tenants-disabled consume no account-created bucket', async () => {
+    const disabledTenant = newTenant();
+    const killed = mailerWith({ killSwitch: true });
+    const disabled = mailerWith({ disabledTenantIds: [disabledTenant] });
+
+    await killed.mailer.sendNotice(accountCreatedInput());
+    await disabled.mailer.sendNotice(accountCreatedInput({ tenantIds: [disabledTenant] }));
+
+    expect(killed.store.consumed).toHaveLength(0);
+    expect(disabled.store.consumed).toHaveLength(0);
+  });
+
+  it('the other notice kinds never consume the account-created buckets', async () => {
+    const { mailer, store } = mailerWith();
+
+    await mailer.sendNotice({ ...accountCreatedInput(), kind: 'PasswordChangedNotice' });
+
+    expect(store.consumed.map((entry) => entry.scope)).toEqual([NOTICE_SCOPE]);
+  });
+
+  it('the suppressions are logged with tenant_cap and global_cap and no address', async () => {
+    const cases = [
+      [TENANT_SCOPE, 'tenant_cap'],
+      [GLOBAL_SCOPE, 'global_cap'],
+    ] as const;
+    for (const [scope, reason] of cases) {
+      await harness.reset();
+      const request = accountCreatedInput();
+      const { mailer } = mailerWith({ capStore: storeRefusingScopes([scope]) });
+
+      await mailer.sendNotice(request);
+
+      const records = await eventsNamed(SUPPRESSED);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe(reason);
+      expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('account_created');
+      expect(records[0]?.attributes['tayzu.identity.user.id']).toBe(request.userId);
+      const signals = await everySignal();
+      expect(signals).not.toContain(request.address);
+      expect(signals).not.toContain(request.creatingTenantId);
+    }
+  });
+
+  it('a cap store failing for another reason never rejects and sends nothing', async () => {
+    const broken: EmailCapStore = { consume: () => Promise.reject(new Error('database down')) };
+    const { mailer, sender } = mailerWith({ capStore: broken });
+
+    await expect(mailer.sendNotice(accountCreatedInput())).resolves.toBeUndefined();
+    await mailer.drain();
+
+    expect(sender.sent).toHaveLength(0);
   });
 });
