@@ -73,6 +73,7 @@ import {
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { EmailCapStore } from './email-tenant-gate.js';
+import { recipientKey } from './recipient-key.js';
 import {
   createRecoveryMailer,
   type RecoveryMailer,
@@ -488,5 +489,188 @@ describe('Cases of the admission (044 task 5.3)', () => {
     await expect(idle.mailer.drain()).resolves.toBeUndefined();
     admittedOf(await broken.mailer.admitResetEmail(input())).send(LINK);
     await expect(broken.mailer.drain()).resolves.toBeUndefined();
+  });
+});
+
+/*
+ * Task 5.4 (design D5, "Caps"): `admitResetEmail`, second half. After the controls that need no
+ * counter, the caps run through the shared cap store, narrowest first: recipient (scope
+ * `reset_recipient`, key = `recipientKey(address, secret)`), IP (scope `reset_ip`, key = the
+ * normalized `ipKey` as given) and global (scope `reset_global`, one constant key). A refusal
+ * (the store rejects with `AuthRateLimitedError`) returns `{ admitted: false }`, throws nothing and
+ * is logged once as `catalog.security.recovery_email_suppressed` with the reason `recipient_cap`,
+ * `ip_cap` or `global_cap`, the template and the user id, and no address.
+ */
+function storeRefusing(scope: string): FakeStore {
+  const consumed: FakeStore['consumed'] = [];
+  return {
+    consumed,
+    consume(consumedScope, key) {
+      consumed.push({ scope: consumedScope, key });
+      return consumedScope === scope
+        ? Promise.reject(new AuthRateLimitedError(3600))
+        : Promise.resolve();
+    },
+  };
+}
+
+describe('Scenario: A per-recipient cap is silent (044 task 5.4)', () => {
+  it('a full recipient bucket sends nothing and logs recipient_cap with no address', async () => {
+    const request = input();
+    const { mailer, sender } = mailerWith({ capStore: storeRefusing('reset_recipient') });
+
+    const admission = await mailer.admitResetEmail(request);
+    await mailer.drain();
+
+    expect(admission).toEqual({ admitted: false });
+    expect('send' in admission).toBe(false);
+    expect(sender.sent).toHaveLength(0);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.severityText).toBe('WARN');
+    expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe('recipient_cap');
+    expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('password_reset');
+    expect(records[0]?.attributes['tayzu.identity.user.id']).toBe(request.userId);
+    expect(await eventsNamed(BLOCKED)).toHaveLength(0);
+    expect(await everySignal()).not.toContain(request.address);
+  });
+
+  it('the recipient bucket is keyed by the HMAC of the canonical address, never the address', async () => {
+    const request = input();
+    const { mailer, store } = mailerWith();
+
+    await mailer.admitResetEmail(request);
+
+    const recipient = store.consumed.filter((entry) => entry.scope === 'reset_recipient');
+    expect(recipient).toEqual([
+      { scope: 'reset_recipient', key: recipientKey(request.address, HMAC_SECRET) },
+    ]);
+    expect(recipient[0]?.key).not.toContain(request.address);
+  });
+});
+
+describe('Scenario: A narrower refusal consumes no wider bucket (044 task 5.4)', () => {
+  it('a recipient refusal consumes neither the IP nor the global bucket', async () => {
+    const store = storeRefusing('reset_recipient');
+    const { mailer, sender } = mailerWith({ capStore: store });
+
+    const admission = await mailer.admitResetEmail(input());
+    await mailer.drain();
+
+    expect(admission.admitted).toBe(false);
+    expect(sender.sent).toHaveLength(0);
+    expect(store.consumed.map((entry) => entry.scope)).toEqual(['reset_recipient']);
+  });
+
+  it('an IP refusal consumes the recipient bucket but not the global one', async () => {
+    const store = storeRefusing('reset_ip');
+    const { mailer, sender } = mailerWith({ capStore: store });
+
+    const admission = await mailer.admitResetEmail(input());
+    await mailer.drain();
+
+    expect(admission.admitted).toBe(false);
+    expect(sender.sent).toHaveLength(0);
+    expect(store.consumed.map((entry) => entry.scope)).toEqual(['reset_recipient', 'reset_ip']);
+  });
+});
+
+describe('Cases of the caps (044 task 5.4)', () => {
+  it('the order is recipient, IP, global', async () => {
+    const { mailer, store } = mailerWith();
+
+    const admission = await mailer.admitResetEmail(input());
+
+    expect(admission.admitted).toBe(true);
+    expect(store.consumed.map((entry) => entry.scope)).toEqual([
+      'reset_recipient',
+      'reset_ip',
+      'reset_global',
+    ]);
+  });
+
+  it('a global refusal has spent one recipient and one IP unit and mails nothing', async () => {
+    const store = storeRefusing('reset_global');
+    const { mailer, sender } = mailerWith({ capStore: store });
+
+    const admission = await mailer.admitResetEmail(input());
+    await mailer.drain();
+
+    expect(admission.admitted).toBe(false);
+    expect(sender.sent).toHaveLength(0);
+    expect(store.consumed.map((entry) => entry.scope)).toEqual([
+      'reset_recipient',
+      'reset_ip',
+      'reset_global',
+    ]);
+  });
+
+  it('the global bucket is one constant key that is not the address or the IP', async () => {
+    const { mailer, store } = mailerWith();
+    const first = input({});
+    const second = { ...input({}), ipKey: '198.51.100.9' };
+
+    await mailer.admitResetEmail(first);
+    await mailer.admitResetEmail(second);
+
+    const keys = store.consumed
+      .filter((entry) => entry.scope === 'reset_global')
+      .map((entry) => entry.key);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).not.toContain(first.address);
+    expect(keys[0]).not.toContain(first.ipKey);
+  });
+
+  it('the IP bucket key is the normalized /64 form of 1.6 and never reaches a signal', async () => {
+    const ipKey = '2001:db8:1:2::/64';
+    const request = { ...input(), ipKey };
+    for (const refusing of ['reset_ip', 'reset_global'] as const) {
+      await harness.reset();
+      const store = storeRefusing(refusing);
+      const { mailer } = mailerWith({ capStore: store });
+
+      await mailer.admitResetEmail(request);
+
+      expect(store.consumed.filter((entry) => entry.scope === 'reset_ip')).toEqual([
+        { scope: 'reset_ip', key: ipKey },
+      ]);
+      const signals = await everySignal();
+      expect(signals).not.toContain('2001:db8');
+      expect(signals).not.toContain(request.address);
+    }
+  });
+
+  it('the suppressions are logged with recipient_cap, ip_cap and global_cap and no address', async () => {
+    const cases = [
+      ['reset_recipient', 'recipient_cap'],
+      ['reset_ip', 'ip_cap'],
+      ['reset_global', 'global_cap'],
+    ] as const;
+    for (const [scope, reason] of cases) {
+      await harness.reset();
+      const request = input();
+      const { mailer } = mailerWith({ capStore: storeRefusing(scope) });
+
+      const admission = await mailer.admitResetEmail(request);
+
+      expect(admission).toEqual({ admitted: false });
+      const records = await eventsNamed(SUPPRESSED);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.attributes['tayzu.identity.recovery.suppression']).toBe(reason);
+      expect(records[0]?.attributes['tayzu.identity.email.template']).toBe('password_reset');
+      expect(records[0]?.attributes['tayzu.identity.user.id']).toBe(request.userId);
+      const signals = await everySignal();
+      expect(signals).not.toContain(request.address);
+      expect(signals).not.toContain(request.ipKey);
+    }
+  });
+
+  it('a request refused before the counters consumes no cap (kill switch, allowlist, tenants)', async () => {
+    const { mailer, store } = mailerWith({ killSwitch: true });
+
+    await mailer.admitResetEmail(input());
+
+    expect(store.consumed).toHaveLength(0);
   });
 });

@@ -7,6 +7,7 @@
  * No signal carries an address or a link.
  */
 import {
+  AuthRateLimitedError,
   emitIdentityEvent,
   isRecipientDomainAllowed,
   recordIdentityMetric,
@@ -14,6 +15,7 @@ import {
 } from '@tayzu/auth';
 
 import type { EmailCapStore } from './email-tenant-gate.js';
+import { recipientKey } from './recipient-key.js';
 
 export type ResetEmailAdmission =
   | { readonly admitted: false }
@@ -41,7 +43,16 @@ const TEMPLATE_NAME = 'password_reset';
 const EXPIRY_TEXT = '30 minutes';
 
 type Suppression =
-  'kill_switch' | 'recipient_domain_blocked' | 'tenants_email_disabled' | 'provider_failure';
+  | 'kill_switch'
+  | 'recipient_domain_blocked'
+  | 'tenants_email_disabled'
+  | 'recipient_cap'
+  | 'ip_cap'
+  | 'global_cap'
+  | 'provider_failure';
+
+/** The one constant key of the global bucket. */
+const GLOBAL_KEY = 'global';
 
 export function createRecoveryMailer(deps: {
   readonly disabledTenantIds: readonly string[];
@@ -91,27 +102,49 @@ export function createRecoveryMailer(deps: {
       if (input.tenantIds.every((tenantId) => disabled.has(tenantId))) {
         return Promise.resolve(refuse('tenants_email_disabled', input.userId));
       }
-      return Promise.resolve({
-        admitted: true,
-        send(link: string): void {
-          const delivery = deps.sender
-            .send(input.address, { kind: 'PasswordResetEmail', link, expiryText: EXPIRY_TEXT })
-            .catch(() => {
-              recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
-                'tayzu.identity.email.template': TEMPLATE_NAME,
-                'tayzu.identity.email.outcome': 'failed',
-              });
-              suppressed('provider_failure', input.userId);
-            })
-            .finally(() => {
-              inFlight.delete(delivery);
-            });
-          inFlight.add(delivery);
-        },
-      });
+      return admitThroughCaps(input);
     },
     async drain() {
       await Promise.all([...inFlight]);
     },
   };
+
+  /** Recipient, then IP, then global: a narrower refusal consumes no wider bucket. */
+  async function admitThroughCaps(input: {
+    readonly address: string;
+    readonly userId: string;
+    readonly ipKey: string;
+  }): Promise<ResetEmailAdmission> {
+    const caps: readonly (readonly [string, string, Suppression])[] = [
+      ['reset_recipient', recipientKey(input.address, deps.recipientKeySecret), 'recipient_cap'],
+      ['reset_ip', input.ipKey, 'ip_cap'],
+      ['reset_global', GLOBAL_KEY, 'global_cap'],
+    ];
+    for (const [scope, key, suppression] of caps) {
+      try {
+        await deps.capStore.consume(scope, key);
+      } catch (error) {
+        if (error instanceof AuthRateLimitedError) return refuse(suppression, input.userId);
+        throw error;
+      }
+    }
+    return {
+      admitted: true,
+      send(link: string): void {
+        const delivery = deps.sender
+          .send(input.address, { kind: 'PasswordResetEmail', link, expiryText: EXPIRY_TEXT })
+          .catch(() => {
+            recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
+              'tayzu.identity.email.template': TEMPLATE_NAME,
+              'tayzu.identity.email.outcome': 'failed',
+            });
+            suppressed('provider_failure', input.userId);
+          })
+          .finally(() => {
+            inFlight.delete(delivery);
+          });
+        inFlight.add(delivery);
+      },
+    };
+  }
 }
