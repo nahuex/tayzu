@@ -4,7 +4,7 @@
  * refusal that depends on the token or the account is the one uniform `CATALOG_NOT_FOUND`.
  * The completion (factor, policy, effects) is not implemented yet.
  */
-import { AuthStepUpError } from '@tayzu/auth';
+import { AuthStepUpError, isPasswordCompromised, validatePassword } from '@tayzu/auth';
 
 import { createAuthRepository } from './auth-repository.js';
 import { IdentityInputError, parseIdentityInput, type InputSchema } from './parse-input.js';
@@ -36,6 +36,18 @@ const CONFIRM_BODY_SCHEMA: InputSchema = {
     factor: { kind: 'object', optional: true },
   },
 };
+
+/** A password refused by the policy or the breach check; names only the rule (D7). */
+export class ResetPasswordRefusedError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED' as const;
+  readonly issues: readonly { path: string; message: string }[];
+
+  constructor(rule: string) {
+    super(`The password does not meet the policy: ${rule}`);
+    this.name = 'ResetPasswordRefusedError';
+    this.issues = [{ path: '/newPassword', message: rule }];
+  }
+}
 
 /** The uniform rejection: same code and text as the catalog's not-found. */
 export class ResetNotFoundError extends Error {
@@ -103,6 +115,14 @@ export function createPasswordResetConfirmFlow(options: {
         (!twoFactor.twoFactorEnabled || !hasVerifiedRow || parsed['factor'] === undefined)
       ) {
         throw new AuthStepUpError();
+      }
+
+      // D7: policy, then the breach check on the NFC form, before any lock, factor or consumption.
+      // An unreachable range service throws and surfaces as the sanitized INTERNAL.
+      const checked = validatePassword(parsed['newPassword'] as string);
+      if (!checked.ok) throw new ResetPasswordRefusedError(checked.rule);
+      if (await isPasswordCompromised(checked.password)) {
+        throw new ResetPasswordRefusedError('breached');
       }
 
       // Task 8.9 replaces this with the completion; until then the sanitized INTERNAL 500.

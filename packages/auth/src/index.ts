@@ -27,6 +27,7 @@ export {
   parseAzureEmailConfig,
 } from './identity/email/azure-communication-email.js';
 export { validatePassword, type PasswordValidation } from './identity/password-policy.js';
+export { isPasswordCompromised } from 'better-auth/plugins';
 export { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 export {
   createContextResolver,

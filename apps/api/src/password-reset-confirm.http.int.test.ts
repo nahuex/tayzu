@@ -50,7 +50,7 @@
  *   `400 CATALOG_VALIDATION_FAILED`; every token- or account-dependent refusal answers
  *   `404 CATALOG_NOT_FOUND` with one body shape.
  */
-import { randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 import { createRecordingEmailSender } from '@tayzu/auth';
 import type { Pool, PoolClient } from 'pg';
@@ -706,6 +706,181 @@ describe('POST /v1/auth/password-reset/confirm over HTTP (task 8.3)', () => {
       const answer = await post({ id: issued.id, token: issued.token });
 
       expect(answer.body).not.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    });
+  });
+
+  /**
+   * Task 8.6 (design D7 "Before taking any lock or consuming anything", Q19): scenarios "A weak
+   * password is refused and the token survives", "A breached password is refused and the token
+   * survives", "A breached password in a decomposed form is refused" and "A breach-service outage
+   * does not burn the token" of `specs/password-reset-and-account-recovery/spec.md`.
+   *
+   * Expected production behavior: after the cheap checks, the token lookup and the eligibility
+   * re-check, the route runs `validatePassword` and then the breached-password check (on the NFC
+   * form) before the per-user lock, the factor and the consumption. A policy or breach refusal
+   * answers `400 CATALOG_VALIDATION_FAILED` naming only the rule; an unreachable range service answers
+   * the sanitized `500 INTERNAL`. In every case the password hash and the token row are unchanged
+   * and no advisory lock statement runs. That the same token then completes a reset is task 8.9.
+   */
+  describe('Password policy and breached-password check before any lock (task 8.6)', () => {
+    const BREACHED_NFC = 'Crème-Brûlée-Battery-Staple-2026!';
+    const BREACHED_NFD = BREACHED_NFC.normalize('NFD');
+
+    function sha1Upper(value: string): string {
+      return createHash('sha1').update(value).digest('hex').toUpperCase();
+    }
+
+    /** The range service: decoys plus the SHA-1 suffix of every given (NFC) password. */
+    function stubRangeService(breached: readonly string[]): string[] {
+      const urls: string[] = [];
+      vi.stubGlobal('fetch', (input: string | URL | Request): Promise<Response> => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        urls.push(url);
+        const prefix = new URL(url).pathname.split('/').pop() ?? '';
+        const lines = [
+          '0000000000000000000000000000000000A:3',
+          '1111111111111111111111111111111111B:9',
+        ];
+        for (const password of breached) {
+          const hash = sha1Upper(password);
+          if (hash.startsWith(prefix)) lines.push(`${hash.slice(5)}:42`);
+        }
+        return Promise.resolve(new Response(lines.join('\r\n'), { status: 200 }));
+      });
+      return urls;
+    }
+
+    async function passwordHash(userId: string): Promise<string> {
+      const result = await authPool.query<{ password: string | null }>(
+        `select password from auth.account where user_id = $1 and provider_id = 'credential'`,
+        [userId],
+      );
+      return result.rows[0]?.password ?? '';
+    }
+
+    async function tokenRow(id: string): Promise<unknown> {
+      const result = await authPool.query(
+        'select id, identifier, value, expires_at from auth.verification where identifier = $1',
+        [`password-reset:${id}`],
+      );
+      return result.rows;
+    }
+
+    async function expectNothingChanged(
+      account: { userId: string },
+      issued: { id: string; token: string },
+      attempt: () => Promise<Answer>,
+    ): Promise<Answer> {
+      const hashBefore = await passwordHash(account.userId);
+      const rowBefore = await tokenRow(issued.id);
+      expect(rowBefore).toHaveLength(1);
+      const before = statements.length;
+
+      const answer = await attempt();
+
+      expect(await passwordHash(account.userId), 'the password is unchanged').toBe(hashBefore);
+      expect(await tokenRow(issued.id), 'the token row is unchanged').toEqual(rowBefore);
+      expect(await store().lookup(issued.id, issued.token)).toEqual({
+        status: 'found',
+        userId: account.userId,
+        failures: 0,
+      });
+      expect(
+        statements.slice(before).filter((sql) => /pg_advisory/i.test(sql)),
+        'no lock was taken',
+      ).toEqual([]);
+      expectNotCacheable(answer);
+      return answer;
+    }
+
+    const weak: readonly { readonly rule: string; readonly password: string }[] = [
+      { rule: 'length', password: 'Short-1!' },
+      { rule: 'uppercase', password: 'all-lowercase-passphrase-77!' },
+      { rule: 'lowercase', password: 'ALL-UPPERCASE-PASSPHRASE-77!' },
+      { rule: 'digit', password: 'No-Digits-In-This-Passphrase!' },
+      { rule: 'symbol', password: 'NoSymbolsInThisPassphrase77' },
+    ];
+
+    for (const { rule, password } of weak) {
+      it(`A weak password is refused and the token survives: failing the ${rule} rule answers CATALOG_VALIDATION_FAILED naming only the rule`, async () => {
+        const account = await createAccount();
+        const issued = await store().issue(account.userId);
+        const rangeLookups = stubRangeService([]);
+
+        const answer = await expectNothingChanged(account, issued, () =>
+          post({ id: issued.id, token: issued.token, newPassword: password }),
+        );
+
+        expect(answer.status).toBe(400);
+        expect(answer.body).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+        const text = JSON.stringify(answer.body);
+        expect(text).toContain(rule);
+        expect(text).not.toContain(password);
+        expect(rangeLookups, 'the policy runs before the breach lookup').toEqual([]);
+      });
+    }
+
+    it('A breached password is refused and the token survives', async () => {
+      const account = await createAccount();
+      const issued = await store().issue(account.userId);
+      const rangeLookups = stubRangeService([BREACHED_NFC]);
+
+      const answer = await expectNothingChanged(account, issued, () =>
+        post({ id: issued.id, token: issued.token, newPassword: BREACHED_NFC }),
+      );
+
+      expect(answer.status).toBe(400);
+      expect(answer.body).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+      expect(JSON.stringify(answer.body)).not.toContain(BREACHED_NFC);
+      expect(rangeLookups.length, 'the range service was asked').toBeGreaterThan(0);
+    });
+
+    it('A breached password in a decomposed form is refused', async () => {
+      expect(BREACHED_NFD).not.toBe(BREACHED_NFC);
+      const account = await createAccount();
+      const issued = await store().issue(account.userId);
+      stubRangeService([BREACHED_NFC]);
+
+      const answer = await expectNothingChanged(account, issued, () =>
+        post({ id: issued.id, token: issued.token, newPassword: BREACHED_NFD }),
+      );
+
+      expect(answer.status).toBe(400);
+      expect(answer.body).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+      expect(JSON.stringify(answer.body)).not.toContain(BREACHED_NFD);
+    });
+
+    it('control: a compliant password that is not in the corpus is not refused by the policy or the breach check', async () => {
+      const account = await createAccount();
+      const issued = await store().issue(account.userId);
+      stubRangeService([BREACHED_NFC]);
+
+      const answer = await post({ id: issued.id, token: issued.token });
+
+      expect(answer.status).not.toBe(400);
+      expect(answer.body).not.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    });
+
+    it('A breach-service outage does not burn the token: a sanitized internal error, the password and the token unchanged', async () => {
+      const account = await createAccount();
+      const issued = await store().issue(account.userId);
+      vi.stubGlobal('fetch', (): Promise<Response> => {
+        return Promise.reject(
+          new TypeError('fetch failed: getaddrinfo ENOTFOUND provider-detail.example'),
+        );
+      });
+
+      const answer = await expectNothingChanged(account, issued, () =>
+        post({ id: issued.id, token: issued.token }),
+      );
+
+      expect(answer.status).toBe(500);
+      expect(answer.body).toMatchObject({ code: 'INTERNAL' });
+      const text = JSON.stringify(answer.body);
+      expect(text).not.toContain('provider-detail');
+      expect(text).not.toContain('ENOTFOUND');
+      expect(text).not.toContain(NEW_PASSWORD);
     });
   });
 });
