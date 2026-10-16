@@ -1069,3 +1069,172 @@ describe('The minimum response duration and the detached send (task 6.4)', () =>
     }
   }, 120_000);
 });
+
+/**
+ * Task 6.5 (design D2 "CSRF and `Origin`" and "Request-route refusals (Q24)"): scenarios "A
+ * cross-site request is refused before any lookup" and "The client cannot choose where the link
+ * points" of `specs/password-reset-and-account-recovery/spec.md`.
+ *
+ * Scenarios (verbatim from the spec):
+ * - "A cross-site request is refused before any lookup": WHEN the request route receives a valid
+ *   body without the CSRF header, or from an `Origin` that is not allowed; THEN it answers
+ *   `CATALOG_VALIDATION_FAILED`, performs no account lookup and sends no email.
+ * - "The client cannot choose where the link points": WHEN the request route receives a
+ *   `redirectTo` or `callbackURL` field; THEN it answers `CATALOG_VALIDATION_FAILED`.
+ *
+ * Q24: these answers are `400`, not the uniform `200` (they depend only on the request).
+ *
+ * ## Harness
+ *
+ * The real server with the identity routes mounted, over a recording sender and a spy on the
+ * `tayzu_auth` pool (as task 6.1). The body is the address of a real, eligible account, so a
+ * request that wrongly passed the check would look the account up and send mail. Every request
+ * carries a fresh random `x-forwarded-for`.
+ *
+ * ## Production symbols expected
+ *
+ * - The request route (`server.ts`) requires `x-csrf-token: orpc` and an `Origin` in
+ *   `ALLOWED_ORIGINS` (`allowedOrigins`), and otherwise answers `400 CATALOG_VALIDATION_FAILED`
+ *   before the strict parse, any lookup or any send. No new export.
+ */
+describe('CSRF header, Origin and redirectTo on the request route (task 6.5)', () => {
+  let app: App;
+  let sender: ReturnType<typeof createRecordingEmailSender>;
+  let statements: string[];
+  let knownEmail: string;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    statements = [];
+    sender = createRecordingEmailSender();
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+    };
+    app = await createApp({
+      appPool: pools.appPool,
+      authPool: spyOnPool(pools.authPool, (sql) => statements.push(sql)),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+    const suffix = randomUUID();
+    knownEmail = `csrf-${suffix}@example.test`;
+    await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Csrf User',
+      email: knownEmail,
+      password: TEST_PASSWORD,
+      organizationName: `Csrf Org ${suffix}`,
+      organizationSlug: `csrf-${suffix}`,
+      ip: randomIp(),
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  async function postWith(
+    headers: Record<string, string>,
+    payload: Record<string, unknown>,
+  ): Promise<{ status: number; body: unknown }> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: REQUEST_PATH,
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        ...headers,
+      },
+      payload: JSON.stringify(payload),
+    });
+    return { status: response.statusCode, body: response.json() };
+  }
+
+  async function expectRefusedBeforeAnyLookup(
+    headers: Record<string, string>,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const sentBefore = sender.sent.length;
+    const before = statements.length;
+
+    const answer = await postWith(headers, payload);
+
+    expect(answer.status).toBe(400);
+    expect(answer.body).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    expect(answer.body).not.toEqual({ accepted: true });
+    const lookups = statements.slice(before).filter((sql) => ACCOUNT_TABLES.test(sql));
+    expect(lookups, 'no statement touched the account tables').toEqual([]);
+    // Give a wrongly attempted detached send time to land.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sender.sent).toHaveLength(sentBefore);
+  }
+
+  it('control: a same-site request for the same address does look the account up and mails it', async () => {
+    const before = statements.length;
+
+    const answer = await postWith(
+      { origin: ORIGIN, 'x-csrf-token': 'orpc' },
+      { email: knownEmail },
+    );
+
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ accepted: true });
+    expect(
+      statements.slice(before).filter((sql) => ACCOUNT_TABLES.test(sql)).length,
+    ).toBeGreaterThan(0);
+    await vi.waitFor(() => {
+      expect(
+        sender.sent.filter((m) => m.to === knownEmail && m.template.kind === 'PasswordResetEmail'),
+      ).toHaveLength(1);
+    });
+  });
+
+  describe('A cross-site request is refused before any lookup', () => {
+    it('a valid body without the x-csrf-token header: CATALOG_VALIDATION_FAILED, no lookup, no email', async () => {
+      await expectRefusedBeforeAnyLookup({ origin: ORIGIN }, { email: knownEmail });
+    });
+
+    it('a valid body with a wrong x-csrf-token value: CATALOG_VALIDATION_FAILED, no lookup, no email', async () => {
+      await expectRefusedBeforeAnyLookup(
+        { origin: ORIGIN, 'x-csrf-token': 'not-orpc' },
+        { email: knownEmail },
+      );
+    });
+
+    it('a valid body from an Origin that is not allowed: CATALOG_VALIDATION_FAILED, no lookup, no email', async () => {
+      await expectRefusedBeforeAnyLookup(
+        { origin: 'https://evil.example', 'x-csrf-token': 'orpc' },
+        { email: knownEmail },
+      );
+    });
+
+    it('a valid body with no Origin header: CATALOG_VALIDATION_FAILED, no lookup, no email', async () => {
+      await expectRefusedBeforeAnyLookup({ 'x-csrf-token': 'orpc' }, { email: knownEmail });
+    });
+  });
+
+  describe('The client cannot choose where the link points', () => {
+    for (const field of ['redirectTo', 'callbackURL']) {
+      it(`a ${field} field: CATALOG_VALIDATION_FAILED, no lookup, no email`, async () => {
+        await expectRefusedBeforeAnyLookup(
+          { origin: ORIGIN, 'x-csrf-token': 'orpc' },
+          { email: knownEmail, [field]: 'https://evil.example/steal' },
+        );
+      });
+    }
+  });
+});

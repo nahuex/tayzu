@@ -56,6 +56,7 @@ import { createAuthRepository } from './identity/auth-repository.js';
 import { createDbEmailCapStore } from './identity/email-cap-store.js';
 import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
 import { createWithUserLock } from './identity/user-lock.js';
+import { IdentityInputError } from './identity/parse-input.js';
 import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
 import { createRecoveryMailer } from './identity/recovery-mailer.js';
@@ -993,6 +994,15 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       scope.post(PASSWORD_RESET_REQUEST_PATH, async (request, reply) => {
         const startedAt = performance.now();
         try {
+          // D2: both are required, checked before the strict parse and any lookup. The answer
+          // depends only on the request's own headers (Q24), so it is a 400, not the uniform 200.
+          if (
+            request.headers['x-csrf-token'] !== 'orpc' ||
+            request.headers.origin === undefined ||
+            !allowedOrigins.has(request.headers.origin)
+          ) {
+            throw new IdentityInputError();
+          }
           await resetRequest?.handle({ body: request.body, clientIp: request.ip });
           // D4 padding: wait out the rest of the minimum duration (a timer, no busy-wait).
           const remaining = resetMinResponseMs - (performance.now() - startedAt);
