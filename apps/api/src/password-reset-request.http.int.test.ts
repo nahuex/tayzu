@@ -849,3 +849,223 @@ describe('Admission before issue (task 6.3)', () => {
     expect(await tokenRows(account.userId)).toHaveLength(0);
   }, 120_000);
 });
+
+/**
+ * Task 6.4 (design D4 "Detached send" and "Padding", D9 `PASSWORD_RESET_MIN_RESPONSE_MS`):
+ * scenario "A slow provider does not slow the response" of
+ * `specs/password-reset-and-account-recovery/spec.md`, and the case "an unknown and an eligible
+ * address both return at the minimum duration, not before".
+ *
+ * Scenario (verbatim from the spec): GIVEN an eligible account and a sender that takes two seconds
+ * to answer; WHEN the address is posted to the request route; THEN the response is returned
+ * without waiting for the sender, and no sooner than the fixed minimum duration.
+ *
+ * ## Harness
+ *
+ * The timers and `performance` are faked (`setTimeout`, `clearTimeout`, `performance`; never
+ * `setImmediate`, so the real database I/O and the real-time yields below keep working). The slow
+ * sender resolves on a faked `setTimeout(2000)`, so it finishes only when the test advances the
+ * clock. The fake clock is advanced in 50 ms steps, yielding real time after each step so the
+ * promise chains settle; the response is "settled" when the injected request has resolved.
+ * Accounts are created before the clock is faked.
+ *
+ * ## Production symbols expected
+ *
+ * - The request route (`server.ts`) computes its answer, then waits until
+ *   `PASSWORD_RESET_MIN_RESPONSE_MS` (400 by default) has elapsed on `performance.now()` since the
+ *   handler started, with a timer, for every branch (also the `400` answers are outside this
+ *   requirement; only the `200` path is observed here).
+ * - `CreateAppOptions.email.passwordResetMinResponseMs?: number` carries the value (passed here as
+ *   400, equal to the default, through a variable so this file type-checks before it exists).
+ * - The send is detached: the handler never awaits `mailer.send(link)`.
+ */
+describe('The minimum response duration and the detached send (task 6.4)', () => {
+  const MIN_MS = 400;
+  const SLOW_SENDER_MS = 2000;
+  const STEP_MS = 50;
+
+  let app: App;
+  let sender: ReturnType<typeof createRecordingEmailSender>;
+  let senderCalls: number;
+  let slowSenderDone: boolean;
+  let slow: boolean;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    sender = createRecordingEmailSender();
+    senderCalls = 0;
+    slowSenderDone = false;
+    slow = false;
+    const timedSender = {
+      send: async (to: string, template: never): Promise<void> => {
+        senderCalls += 1;
+        if (slow) {
+          await new Promise<void>((resolve) => setTimeout(resolve, SLOW_SENDER_MS));
+          slowSenderDone = true;
+        }
+        await (sender as { send: (to: string, template: never) => Promise<void> }).send(
+          to,
+          template,
+        );
+      },
+    };
+    const email = {
+      sender: timedSender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      passwordResetMinResponseMs: MIN_MS,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+    };
+    app = await createApp({
+      appPool: pools.appPool,
+      authPool: pools.authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await app.close();
+  }, 60_000);
+
+  beforeEach(() => {
+    slow = false;
+    slowSenderDone = false;
+  });
+
+  async function createAccount(): Promise<string> {
+    const suffix = randomUUID();
+    const email = `padding-${suffix}@example.test`;
+    await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Padding User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Padding Org ${suffix}`,
+      organizationSlug: `padding-${suffix}`,
+      ip: randomIp(),
+    });
+    return email;
+  }
+
+  /** Yields real time (setImmediate is not faked) for `ms` milliseconds of wall clock. */
+  async function yieldReal(ms: number): Promise<void> {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    }
+  }
+
+  /**
+   * Posts under the fake clock and reports the fake time (a multiple of STEP_MS) at which the
+   * response settled, and whether the slow sender had finished by then.
+   */
+  async function timedPost(
+    address: string,
+    waitForSend: boolean,
+  ): Promise<{ status: number; body: unknown; settledAtMs: number; senderDone: boolean }> {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      let settled:
+        { status: number; body: unknown; settledAtMs: number; senderDone: boolean } | undefined;
+      let fakeElapsed = 0;
+      const pending = app.app
+        .inject({
+          method: 'POST',
+          url: REQUEST_PATH,
+          headers: {
+            'content-type': 'application/json',
+            origin: ORIGIN,
+            'x-csrf-token': 'orpc',
+            'x-forwarded-for': randomIp(),
+          },
+          payload: JSON.stringify({ email: address }),
+        })
+        .then((response) => {
+          settled = {
+            status: response.statusCode,
+            body: response.json(),
+            settledAtMs: fakeElapsed,
+            senderDone: slowSenderDone,
+          };
+        });
+
+      // Let the handler finish its real work (database) with the clock standing still.
+      const deadline = Date.now() + 10_000;
+      if (waitForSend) {
+        while (senderCalls === 0 && Date.now() < deadline) await yieldReal(10);
+      }
+      await yieldReal(500);
+
+      while (settled === undefined && fakeElapsed < SLOW_SENDER_MS + 1000) {
+        fakeElapsed += STEP_MS;
+        await vi.advanceTimersByTimeAsync(STEP_MS);
+        await yieldReal(100);
+      }
+      await pending;
+      if (settled === undefined) throw new Error('the response never settled');
+      return settled;
+    } finally {
+      // Let any slow send finish before the real clock returns.
+      await vi.advanceTimersByTimeAsync(SLOW_SENDER_MS);
+      await yieldReal(100);
+      vi.useRealTimers();
+    }
+  }
+
+  it('A slow provider does not slow the response: with a sender that takes two seconds, the 200 returns at the minimum duration, before the sender is done', async () => {
+    const address = await createAccount();
+    slow = true;
+    senderCalls = 0;
+
+    const result = await timedPost(address, true);
+
+    expect(senderCalls, 'the send was started').toBe(1);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ accepted: true });
+    expect(result.settledAtMs, 'not before the minimum duration').toBeGreaterThanOrEqual(MIN_MS);
+    expect(result.settledAtMs, 'without waiting for the sender').toBeLessThan(SLOW_SENDER_MS);
+    expect(result.senderDone, 'the sender was still running when the response returned').toBe(
+      false,
+    );
+
+    // The detached send still completes and delivers the mail.
+    await vi.waitFor(() => {
+      expect(
+        sender.sent.filter((m) => m.to === address && m.template.kind === 'PasswordResetEmail'),
+      ).toHaveLength(1);
+    });
+  }, 120_000);
+
+  it('an unknown and an eligible address both return at the minimum duration, not before', async () => {
+    const eligible = await createAccount();
+    const ghost = `ghost-${randomUUID()}@example.test`;
+    senderCalls = 0;
+
+    const eligibleResult = await timedPost(eligible, true);
+    const ghostResult = await timedPost(ghost, false);
+
+    for (const result of [eligibleResult, ghostResult]) {
+      expect(result.status).toBe(200);
+      expect(result.body).toEqual({ accepted: true });
+      expect(result.settledAtMs, 'not before the minimum duration').toBeGreaterThanOrEqual(MIN_MS);
+      expect(result.settledAtMs, 'padded to the minimum, not beyond').toBeLessThan(
+        MIN_MS + STEP_MS * 2,
+      );
+    }
+  }, 120_000);
+});

@@ -135,6 +135,8 @@ export interface CreateAppOptions {
     readonly invitationLinkBaseUrl?: string;
     /** 044 task 6.1 (D9): the origin of the emailed reset link (`PASSWORD_RESET_LINK_BASE_URL`). */
     readonly passwordResetLinkBaseUrl?: string;
+    /** 044 task 6.4 (D4, D9): the minimum duration of a reset request answer, in ms (default 400). */
+    readonly passwordResetMinResponseMs?: number;
     readonly disabledTenantIds: readonly string[];
     readonly killSwitch: boolean;
     /** 044 task 6.3 (D5): the mailer's admission refuses a recipient domain off this list. */
@@ -961,6 +963,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     // 044 task 6.1 (D2): the reset request is a plain public route. It answers the uniform
     // 200 whatever the account; only a malformed body answers otherwise.
     const resetLinkBaseUrl = email?.passwordResetLinkBaseUrl;
+    const resetMinResponseMs = email?.passwordResetMinResponseMs ?? 400;
     const resetRequest =
       recoveryMailer === undefined || resetLinkBaseUrl === undefined
         ? undefined
@@ -988,8 +991,14 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         },
       );
       scope.post(PASSWORD_RESET_REQUEST_PATH, async (request, reply) => {
+        const startedAt = performance.now();
         try {
           await resetRequest?.handle({ body: request.body, clientIp: request.ip });
+          // D4 padding: wait out the rest of the minimum duration (a timer, no busy-wait).
+          const remaining = resetMinResponseMs - (performance.now() - startedAt);
+          if (remaining > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+          }
           return await reply.status(200).send({ accepted: true });
         } catch (error) {
           const mapped = toOrpcError(error);
