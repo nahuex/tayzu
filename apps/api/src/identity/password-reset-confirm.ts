@@ -36,7 +36,7 @@ const CONFIRM_BODY_SCHEMA: InputSchema = {
 };
 
 /** The uniform rejection: same code and text as the catalog's not-found. */
-class ResetNotFoundError extends Error {
+export class ResetNotFoundError extends Error {
   readonly code = 'CATALOG_NOT_FOUND' as const;
 
   constructor() {

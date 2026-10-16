@@ -58,7 +58,10 @@ import { createEmailTenantGate, type EmailTenantGate } from './identity/email-te
 import { createWithUserLock } from './identity/user-lock.js';
 import { IdentityInputError } from './identity/parse-input.js';
 import { applyNoCacheHeaders } from './identity/no-cache.js';
-import { createPasswordResetConfirmFlow } from './identity/password-reset-confirm.js';
+import {
+  createPasswordResetConfirmFlow,
+  ResetNotFoundError,
+} from './identity/password-reset-confirm.js';
 import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
 import { createRecoveryMailer } from './identity/recovery-mailer.js';
@@ -1075,6 +1078,14 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         { preHandler: resetConfirmLimit },
         async (request, reply) => {
           try {
+            // D2: after the limiter and before any lookup; the refusal is the uniform one.
+            if (
+              request.headers['x-csrf-token'] !== 'orpc' ||
+              request.headers.origin === undefined ||
+              !allowedOrigins.has(request.headers.origin)
+            ) {
+              throw new ResetNotFoundError();
+            }
             await resetConfirm.handle({ body: request.body });
             return await reply.status(200).send({ completed: true });
           } catch (error) {

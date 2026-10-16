@@ -440,4 +440,87 @@ describe('POST /v1/auth/password-reset/confirm over HTTP (task 8.3)', () => {
       expect(lookups, 'no lookup runs when the limiter fails').toEqual([]);
     });
   });
+
+  /**
+   * Task 8.4: scenario "A cross-site confirmation is rejected the same way" (WHEN a valid token is
+   * submitted without the `x-csrf-token` header, or from an `Origin` that is not allowed; THEN the
+   * answer is the uniform rejection and the token is not consumed). Design D2: the check runs after
+   * the limiter and before any lookup; the reasons `csrf_rejected` / `origin_rejected` are internal.
+   */
+  describe('A cross-site confirmation is rejected the same way (task 8.4)', () => {
+    async function postWithHeaders(
+      fields: Record<string, unknown>,
+      headers: Record<string, string>,
+    ): Promise<Answer> {
+      const response = await app.app.inject({
+        method: 'POST',
+        url: CONFIRM_PATH,
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          ...headers,
+        },
+        payload: JSON.stringify({ newPassword: NEW_PASSWORD, ...fields }),
+      });
+      let body: unknown;
+      try {
+        body = response.json();
+      } catch {
+        body = response.body;
+      }
+      return {
+        status: response.statusCode,
+        body,
+        cacheControl: response.headers['cache-control'],
+        pragma: response.headers['pragma'],
+        retryAfter: response.headers['retry-after'],
+      };
+    }
+
+    async function tokenRowCount(id: string): Promise<number> {
+      const result = await authPool.query('select 1 from auth.verification where identifier = $1', [
+        `password-reset:${id}`,
+      ]);
+      return result.rowCount ?? 0;
+    }
+
+    const cases: readonly {
+      readonly name: string;
+      readonly headers: Record<string, string>;
+    }[] = [
+      { name: 'no x-csrf-token header', headers: { origin: ORIGIN } },
+      { name: 'a wrong x-csrf-token value', headers: { origin: ORIGIN, 'x-csrf-token': 'nope' } },
+      { name: 'no Origin header', headers: { 'x-csrf-token': 'orpc' } },
+      {
+        name: 'an Origin that is not allowed',
+        headers: { origin: 'https://evil.example', 'x-csrf-token': 'orpc' },
+      },
+      {
+        name: 'neither the header nor an allowed Origin',
+        headers: { origin: 'https://evil.example' },
+      },
+    ];
+
+    for (const { name, headers } of cases) {
+      it(`${name}: the uniform rejection, no lookup, the token is not consumed and still works afterwards`, async () => {
+        const account = await createAccount();
+        const issued = await store().issue(account.userId);
+        const unknown = await post({ id: randomId(), token: randomToken() });
+        const before = statements.length;
+
+        const answer = await postWithHeaders({ id: issued.id, token: issued.token }, headers);
+
+        expect(answer.status).toBe(404);
+        expect(answer.body).toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+        expect(shapeOf(answer)).toEqual(shapeOf(unknown));
+        expectNotCacheable(answer);
+        const lookups = statements.slice(before).filter((sql) => ACCOUNT_TABLES.test(sql));
+        expect(lookups, 'rejected before any lookup').toEqual([]);
+        expect(await tokenRowCount(issued.id), 'the token row is untouched').toBe(1);
+
+        const retry = await post({ id: issued.id, token: issued.token });
+        expect([400, 404, 429]).not.toContain(retry.status);
+      });
+    }
+  });
 });
