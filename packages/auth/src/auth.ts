@@ -276,6 +276,13 @@ interface ActiveOrganizationSnapshot {
 /** Task 7.2: calls whose `hooks.before` saw a session user without a verified factor on verify-totp. */
 const totpEnrolmentAttempts = new WeakSet<object>();
 const activeOrganizationBeforeAttempt = new WeakMap<object, ActiveOrganizationSnapshot>();
+/**
+ * Task 8.13, design D7, Q28: the credential hash `hooks.before` read for a sign-in, keyed by the
+ * per-request `ctx.context`. `null` stands for "no credential row" (an unknown address too).
+ */
+const signInCredentialHashBefore = new WeakMap<object, string | null>();
+/** The account id no row has, so an unknown address runs the same lookup as a known one. */
+const NO_SUCH_USER_ID = '';
 
 /** The `auth.session` row's tenant column, read back after `/sign-in/email` creates it. */
 interface ActiveOrganizationRow {
@@ -1364,6 +1371,25 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             }
             return undefined;
           }
+          if (ctx.path === SIGN_IN_EMAIL_PATH) {
+            // Task 8.13, design D7, Q28: keep the credential hash the sign-in is about to verify.
+            // Two reads that run the same way for a known and an unknown address: no branch on
+            // existence, and the second one always runs, against a sentinel id when there is no user.
+            const email = (ctx.body as { email?: unknown } | null | undefined)?.email;
+            const user =
+              typeof email === 'string'
+                ? await ctx.context.internalAdapter.findUserByEmail(email.toLowerCase())
+                : null;
+            const credential = await ctx.context.adapter.findOne<{ password?: string | null }>({
+              model: 'account',
+              where: [
+                { field: 'userId', value: user?.user.id ?? NO_SUCH_USER_ID },
+                { field: 'providerId', value: 'credential' },
+              ],
+            });
+            signInCredentialHashBefore.set(ctx.context, credential?.password ?? null);
+            return undefined;
+          }
           if (ctx.path !== CHANGE_PASSWORD_PATH) {
             return undefined;
           }
@@ -1431,6 +1457,25 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           const response = ctx.context.returned as SignInEmailSuccessResponse;
+          // Task 8.13, design D7, Q28: a reset that committed since `hooks.before` overtook this
+          // sign-in. Refuse it like a wrong password; clearing the new-session slot also stops the
+          // two-factor plugin's after hook from opening a challenge.
+          const hashBefore = signInCredentialHashBefore.get(ctx.context);
+          signInCredentialHashBefore.delete(ctx.context);
+          const hashNow = await ctx.context.adapter.findOne<{ password?: string | null }>({
+            model: 'account',
+            where: [
+              { field: 'userId', value: response.user.id },
+              { field: 'providerId', value: 'credential' },
+            ],
+          });
+          if ((hashNow?.password ?? null) !== (hashBefore ?? null)) {
+            await ctx.context.internalAdapter.deleteSession(response.token);
+            ctx.context.setNewSession(null);
+            ctx.context.responseHeaders?.delete('set-cookie');
+            emitLoginFailed();
+            return wrongPasswordResponse();
+          }
           // Task 13.5d (Q36, Q97): an expired temporary password fails like a wrong one.
           // The sign-in already created its session, so delete it and drop its cookie.
           if (await hasExpiredTemporaryPasswordMarker(ctx.context.adapter, response.user.id)) {
