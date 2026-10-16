@@ -97,7 +97,7 @@ other cases carry its red step.
 - [x] 7.1 `AccountNoticePort` in `CreateAuthOptions`, and the password-changed notice after a successful `/change-password`. Verify: `packages/auth/src/account-notices.int.test.ts`, scenario "A password change is announced" and the case "a failed change sends none".
 - [x] 7.2 The second-factor notices: a TOTP factor becoming verified for a session user, and regenerated backup codes; never on the sign-in challenge. Verify: `packages/auth/src/account-notices.int.test.ts`, scenario "A second-factor change is announced" (enrolment and regeneration) and the case "a sign-in challenge sends none".
 - [x] 7.3 `identity.users.create` sends the account-created notice after `addMember`, through `CreateIdentityRouterOptions.recoveryMailer` and the path of 5.6; the response and the failure behavior are unchanged. Verify: `apps/api/src/admin-user-creation.int.test.ts`, scenario "A squatted address is warned" and cases "the response body equals the pre-044 body", "a failing or capped notice does not fail the creation".
-- [ ] 7.4 The notice buckets are apart from `043`'s. Verify: `apps/api/src/identity/recovery-notice-buckets.int.test.ts`, the `identity-lifecycle-and-org-admin` delta scenario "Creating a user sends the account-created notice outside these buckets" and the scenario "Notices and reset emails count apart".
+- [x] 7.4 The notice buckets are apart from `043`'s. Verify: `apps/api/src/identity/recovery-notice-buckets.int.test.ts`, the `identity-lifecycle-and-org-admin` delta scenario "Creating a user sends the account-created notice outside these buckets" and the scenario "Notices and reset emails count apart".
 
 ## 8. The confirm route
 
