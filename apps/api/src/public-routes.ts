@@ -37,6 +37,11 @@ export const PUBLIC_ROUTE_ALLOWLIST: readonly PublicRoute[] = [
   },
   {
     method: 'POST',
+    path: '/v1/auth/password-reset/request',
+    reason: 'Password reset request: public by nature, answers the uniform 200 (044 D2).',
+  },
+  {
+    method: 'POST',
     path: '/v1/auth/visma-connect/backchannel-logout',
     reason: 'OIDC back-channel logout: authenticated by the signed logout token.',
   },

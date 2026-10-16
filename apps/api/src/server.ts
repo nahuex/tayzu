@@ -56,6 +56,10 @@ import { createAuthRepository } from './identity/auth-repository.js';
 import { createDbEmailCapStore } from './identity/email-cap-store.js';
 import { createEmailTenantGate, type EmailTenantGate } from './identity/email-tenant-gate.js';
 import { createWithUserLock } from './identity/user-lock.js';
+import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
+import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
+import { createRecoveryMailer } from './identity/recovery-mailer.js';
+import { createResetTokenStore } from './identity/reset-token-store.js';
 import { createNoticeDispatcher } from './identity/notices.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -129,6 +133,8 @@ export interface CreateAppOptions {
   readonly email?: {
     readonly sender: EmailSender;
     readonly invitationLinkBaseUrl?: string;
+    /** 044 task 6.1 (D9): the origin of the emailed reset link (`PASSWORD_RESET_LINK_BASE_URL`). */
+    readonly passwordResetLinkBaseUrl?: string;
     readonly disabledTenantIds: readonly string[];
     readonly killSwitch: boolean;
     readonly recipientKeySecret?: string;
@@ -204,6 +210,7 @@ interface StepUpHandlerContext {
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
 const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
+const PASSWORD_RESET_REQUEST_PATH = '/v1/auth/password-reset/request';
 /** Default budget of the public accept route, per caller IP (window in seconds). */
 const DEFAULT_INVITATION_ACCEPT_RATE_LIMIT = { max: 10, window: 60 } as const;
 const DEFAULT_REAUTHORIZATION_CALLBACK_RATE_LIMIT = { max: 10, window: 60 } as const;
@@ -357,6 +364,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     email === undefined || emailCapStore === undefined || recipientKeySecret === undefined
       ? undefined
       : createNoticeDispatcher({
+          disabledTenantIds: email.disabledTenantIds,
+          capStore: emailCapStore,
+          sender: email.sender,
+          recipientKeySecret,
+          killSwitch: email.killSwitch,
+        });
+  const recoveryMailer =
+    email === undefined || emailCapStore === undefined || recipientKeySecret === undefined
+      ? undefined
+      : createRecoveryMailer({
           disabledTenantIds: email.disabledTenantIds,
           capStore: emailCapStore,
           sender: email.sender,
@@ -935,6 +952,50 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         }
       },
     );
+
+    // 044 task 6.1 (D2): the reset request is a plain public route. It answers the uniform
+    // 200 whatever the account; only a malformed body answers otherwise.
+    const resetLinkBaseUrl = email?.passwordResetLinkBaseUrl;
+    const resetRequest =
+      recoveryMailer === undefined || resetLinkBaseUrl === undefined
+        ? undefined
+        : createPasswordResetRequestFlow({
+            eligibility: createRecoveryEligibility({ authPool: options.authPool, userSync }),
+            mailer: recoveryMailer,
+            tokens: createResetTokenStore({
+              authPool: options.authPool,
+              withUserLock: createWithUserLock(options.authPool),
+            }),
+            linkBaseUrl: resetLinkBaseUrl,
+          });
+    // Fastify's own JSON parser answers a `__proto__` key with its own error code; this scope
+    // keeps the body as plain data so the strict parser refuses it as CATALOG_VALIDATION_FAILED.
+    await app.register((scope, _opts, done) => {
+      scope.addContentTypeParser(
+        'application/json',
+        { parseAs: 'string' },
+        (_request, body, parsed) => {
+          try {
+            parsed(null, JSON.parse(body as string));
+          } catch {
+            parsed(null, undefined);
+          }
+        },
+      );
+      scope.post(PASSWORD_RESET_REQUEST_PATH, async (request, reply) => {
+        try {
+          await resetRequest?.handle({ body: request.body, clientIp: request.ip });
+          return await reply.status(200).send({ accepted: true });
+        } catch (error) {
+          const mapped = toOrpcError(error);
+          return reply.status(mapped.status).send(mapped.toJSON());
+        }
+      });
+      done();
+    });
+    app.addHook('onClose', async () => {
+      await recoveryMailer?.drain();
+    });
   }
 
   let v1Config: { rateLimit?: object } = {};

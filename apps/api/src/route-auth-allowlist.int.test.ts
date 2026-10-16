@@ -43,6 +43,7 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import { createRecordingEmailSender } from '@tayzu/auth';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -235,5 +236,71 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
     ];
 
     expect(await unguardedRoutes(scratchApp, scratch.pairs, extended)).toEqual([]);
+  }, 120_000);
+});
+
+/**
+ * Task 6.1 of openspec/changes/044-password-reset-and-account-recovery, scenario "A route
+ * outside the allowlist cannot be public" (spec requirement "The reset routes are public,
+ * API-only and behind the mount switch"): with the switch on, the request route is a new
+ * public entry with a reason, and any other route outside the allowlist still answers an
+ * anonymous call like the `/v1/*` catch-all. The cases of the describe above stay as they are.
+ *
+ * Production symbols expected: `POST /v1/auth/password-reset/request` registered when the
+ * switch is on (with or without email settings), and its `PUBLIC_ROUTE_ALLOWLIST` entry with a
+ * non-empty `reason`.
+ */
+describe('the password reset request route is a reviewed public route (044 task 6.1)', () => {
+  const REQUEST_PATH = '/v1/auth/password-reset/request';
+  const collected = routeCollector();
+  let app: App;
+  const allowlist: readonly AllowlistEntry[] = PUBLIC_ROUTE_ALLOWLIST;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const secret = 'mount-wiring-test-only-secret-0123456789-abcdef';
+    const email = {
+      sender: createRecordingEmailSender(),
+      invitationLinkBaseUrl: ORIGIN,
+      passwordResetLinkBaseUrl: ORIGIN,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: secret,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: secret,
+      ...{ email, configureApp: collected.install },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  it('the route table holds the request route and the allowlist names it with a reason', () => {
+    expect(collected.pairs).toContainEqual({ method: 'POST', path: REQUEST_PATH });
+    const entry = allowlist.find((candidate) => candidate.path === REQUEST_PATH);
+    expect(entry, 'the request route is on the allowlist').toBeDefined();
+    expect(entry?.method).toBe('POST');
+    expect(entry?.reason.trim()).not.toBe('');
+  });
+
+  it('every other route outside the allowlist still answers 401 CATALOG_CONTEXT_REQUIRED to an anonymous caller', async () => {
+    expect(await unguardedRoutes(app, collected.pairs, allowlist)).toEqual([]);
+  }, 120_000);
+
+  it('without its allowlist entry the request route would be an offender (it is public)', async () => {
+    const withoutEntry = allowlist.filter((candidate) => candidate.path !== REQUEST_PATH);
+
+    const offenders = await unguardedRoutes(app, collected.pairs, withoutEntry);
+
+    expect(offenders).toEqual([`POST ${REQUEST_PATH}`]);
   }, 120_000);
 });

@@ -37,6 +37,7 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import { createRecordingEmailSender } from '@tayzu/auth';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -285,4 +286,131 @@ describe('createApp refuses to mount the identity routes without a secret (task 
     const app = await createApp(await base());
     await app.close();
   }, 60_000);
+});
+
+/**
+ * Task 6.1 of openspec/changes/044-password-reset-and-account-recovery, scenario "Off by
+ * default" for the request route (spec requirement "The reset routes are public, API-only and
+ * behind the mount switch").
+ *
+ * - GIVEN `MOUNT_IDENTITY_ROUTES` is unset
+ * - WHEN either reset route is called, with or without authentication
+ * - THEN it answers exactly as an unknown `/v1` path does
+ *
+ * Only `POST /v1/auth/password-reset/request` exists at this task (the confirm route joins in 8.3).
+ * The control is the same request against an app with the switch on, which answers the uniform
+ * `200 { "accepted": true }`.
+ *
+ * Production symbols expected: as in `password-reset-request.http.int.test.ts` (the route, and
+ * `CreateAppOptions.email.passwordResetLinkBaseUrl`, passed here through a variable).
+ */
+describe('the password reset request route is unreachable until mounted (044 task 6.1)', () => {
+  const REQUEST_PATH = '/v1/auth/password-reset/request';
+  let off: App;
+  let on: App;
+  let cookie: string;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const base = {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+    const email = {
+      sender: createRecordingEmailSender(),
+      invitationLinkBaseUrl: ORIGIN,
+      passwordResetLinkBaseUrl: ORIGIN,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    off = await createApp({ ...base, ...{ email } });
+    on = await createApp({
+      ...base,
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(off.auth, {
+      pool: testAppPool(),
+      name: 'Reset Gate Admin',
+      email: `reset-gate-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Reset Gate Org ${suffix}`,
+      organizationSlug: `reset-gate-${suffix}`,
+      ip: randomIp(),
+    });
+    cookie = await freshMfaSessionCookie(off, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+      origin: ORIGIN,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await off.close();
+    await on.close();
+  }, 60_000);
+
+  async function post(
+    app: App,
+    url: string,
+    caller: 'anonymous' | 'authenticated',
+  ): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        ...(caller === 'authenticated' ? { cookie } : {}),
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({ email: `nobody-${randomUUID()}@example.test` }),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return { status: response.statusCode, body };
+  }
+
+  it('Off by default: unauthenticated, the request route answers as an unknown /v1 path does (401 CATALOG_CONTEXT_REQUIRED)', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, 'anonymous');
+    expect(unknown.status).toBe(401);
+    expect(unknown.body).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+
+    const answer = await post(off, REQUEST_PATH, 'anonymous');
+
+    expect(answer).toEqual(unknown);
+  });
+
+  it('Off by default: authenticated, the request route answers as an unknown /v1 path does (the router 404)', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, 'authenticated');
+    expect(unknown.status).toBe(404);
+
+    const answer = await post(off, REQUEST_PATH, 'authenticated');
+
+    expect(answer).toEqual(unknown);
+  });
+
+  it('Off by default: the Fastify route table has no request route while off and has it while on', async () => {
+    expect(off.app.hasRoute({ method: 'POST', url: REQUEST_PATH })).toBe(false);
+    expect(on.app.hasRoute({ method: 'POST', url: REQUEST_PATH })).toBe(true);
+
+    // The control: with the switch on, the same anonymous request reaches the route.
+    const answer = await post(on, REQUEST_PATH, 'anonymous');
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ accepted: true });
+  });
 });
