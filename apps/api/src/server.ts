@@ -58,6 +58,7 @@ import { createEmailTenantGate, type EmailTenantGate } from './identity/email-te
 import { createWithUserLock } from './identity/user-lock.js';
 import { IdentityInputError } from './identity/parse-input.js';
 import { applyNoCacheHeaders } from './identity/no-cache.js';
+import { createPasswordResetConfirmFlow } from './identity/password-reset-confirm.js';
 import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
 import { createRecoveryMailer } from './identity/recovery-mailer.js';
@@ -154,6 +155,10 @@ export interface CreateAppOptions {
       readonly max: number;
       readonly windowSeconds: number;
     };
+    readonly passwordResetConfirmRateLimit?: {
+      readonly max: number;
+      readonly windowSeconds: number;
+    };
     readonly passwordResetRecipientCap?: { readonly max: number; readonly windowSeconds: number };
     readonly passwordResetIpCap?: { readonly max: number; readonly windowSeconds: number };
     readonly passwordResetGlobalCap?: { readonly max: number; readonly windowSeconds: number };
@@ -221,6 +226,7 @@ interface StepUpHandlerContext {
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
 const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
 const PASSWORD_RESET_REQUEST_PATH = '/v1/auth/password-reset/request';
+const PASSWORD_RESET_CONFIRM_PATH = '/v1/auth/password-reset/confirm';
 /** Default budget of the public accept route, per caller IP (window in seconds). */
 const DEFAULT_INVITATION_ACCEPT_RATE_LIMIT = { max: 10, window: 60 } as const;
 const DEFAULT_REAUTHORIZATION_CALLBACK_RATE_LIMIT = { max: 10, window: 60 } as const;
@@ -998,6 +1004,27 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         },
       }),
     });
+    // 044 task 8.3 (D2): the confirm route has its own scope and budget (default 10 per minute).
+    const resetConfirm = createPasswordResetConfirmFlow({
+      authPool: options.authPool,
+      eligibility: createRecoveryEligibility({ authPool: options.authPool, userSync }),
+      tokens: createResetTokenStore({
+        authPool: options.authPool,
+        withUserLock: createWithUserLock(options.authPool),
+      }),
+    });
+    const resetConfirmLimit = createAcceptRateLimitPreHandler({
+      scope: 'password_reset_confirm',
+      store: createRateLimitBucketStore({
+        adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+          .adapter,
+        rules: {
+          password_reset_confirm: ruleOf(
+            email?.passwordResetConfirmRateLimit ?? { max: 10, windowSeconds: 60 },
+          ),
+        },
+      }),
+    });
     await app.register((scope, _opts, done) => {
       // Set before the limiter and the handler run, so every answer carries it, refusals included.
       scope.addHook('onRequest', (_request, reply, hookDone) => {
@@ -1037,6 +1064,19 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
               await new Promise<void>((resolve) => setTimeout(resolve, remaining));
             }
             return await reply.status(200).send({ accepted: true });
+          } catch (error) {
+            const mapped = toOrpcError(error);
+            return reply.status(mapped.status).send(mapped.toJSON());
+          }
+        },
+      );
+      scope.post(
+        PASSWORD_RESET_CONFIRM_PATH,
+        { preHandler: resetConfirmLimit },
+        async (request, reply) => {
+          try {
+            await resetConfirm.handle({ body: request.body });
+            return await reply.status(200).send({ completed: true });
           } catch (error) {
             const mapped = toOrpcError(error);
             return reply.status(mapped.status).send(mapped.toJSON());

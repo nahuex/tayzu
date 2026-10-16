@@ -117,6 +117,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
         recipientCap: config.invitationRecipientCap,
         noticeTenantCap: config.noticeTenantCap,
         passwordResetRequestRateLimit: config.passwordResetRequestRateLimit,
+        passwordResetConfirmRateLimit: config.passwordResetConfirmRateLimit,
         passwordResetRecipientCap: config.passwordResetRecipientCap,
         passwordResetIpCap: config.passwordResetIpCap,
         passwordResetGlobalCap: config.passwordResetGlobalCap,
