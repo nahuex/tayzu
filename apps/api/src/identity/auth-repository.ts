@@ -181,6 +181,28 @@ export interface AuthRepository {
    * Returns the new count, or `undefined` when no row was updated.
    */
   incrementResetTokenFailures: (id: string, db: Pick<Pool, 'query'>) => Promise<number | undefined>;
+  // Completion section (044 design D7). Each statement runs on `db`, the lock's connection.
+
+  /** Sets the hash on the user's `credential` account; throws unless exactly one row changed. */
+  globalSetCredentialPassword: (
+    userId: string,
+    passwordHash: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<void>;
+  /** Deletes the `temp-password:<userId>` marker; true when a row went. */
+  globalDeleteTemporaryPasswordMarker: (
+    userId: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<boolean>;
+  /** Deletes the user's `2fa-` challenge rows (not `2fa-attempts-`) and `trust-device-` rows. */
+  globalDeleteTwoFactorChallenges: (userId: string, db: Pick<Pool, 'query'>) => Promise<number>;
+  /** Sets `email_verified` on the user. */
+  globalMarkEmailVerified: (userId: string, db: Pick<Pool, 'query'>) => Promise<void>;
+  /** Deletes every session of the user in every tenant, returning each row's tenant (nullable). */
+  globalDeleteSessionsOf: (
+    userId: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<{ id: string; tenantId: string | null }[]>;
   /** Deletes `password-reset:<id>`. */
   deleteResetToken: (id: string, db: Pick<Pool, 'query'>) => Promise<boolean>;
 }
@@ -624,6 +646,45 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         `password-reset:${id}`,
       ]);
       return (result.rowCount ?? 0) > 0;
+    },
+
+    async globalSetCredentialPassword(userId, passwordHash, db) {
+      const result = await db.query(
+        `update auth.account set password = $2, updated_at = now()
+         where user_id = $1 and provider_id = 'credential'`,
+        [userId, passwordHash],
+      );
+      if (result.rowCount !== 1) throw new Error('credential password update must change one row');
+    },
+
+    async globalDeleteTemporaryPasswordMarker(userId, db) {
+      const result = await db.query('delete from auth.verification where identifier = $1', [
+        `temp-password:${userId}`,
+      ]);
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async globalDeleteTwoFactorChallenges(userId, db) {
+      const result = await db.query(
+        `delete from auth.verification
+         where value = $1
+           and ((identifier like '2fa-%' and identifier not like '2fa-attempts-%')
+                or identifier like 'trust-device-%')`,
+        [userId],
+      );
+      return result.rowCount ?? 0;
+    },
+
+    async globalMarkEmailVerified(userId, db) {
+      await db.query('update auth."user" set email_verified = true where id = $1', [userId]);
+    },
+
+    async globalDeleteSessionsOf(userId, db) {
+      const result = await db.query<{ id: string; active_organization_id: string | null }>(
+        'delete from auth.session where user_id = $1 returning id, active_organization_id',
+        [userId],
+      );
+      return result.rows.map((row) => ({ id: row.id, tenantId: row.active_organization_id }));
     },
   };
 }

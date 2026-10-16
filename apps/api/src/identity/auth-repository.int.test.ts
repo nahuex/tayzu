@@ -769,6 +769,246 @@ describe('auth-repository', () => {
     }
   });
 
+  /*
+   * Task 8.8 of `044-password-reset-and-account-recovery` (design D7 steps 6, 8, 9 and 12).
+   *
+   * ## Production symbols expected
+   *
+   * ```ts
+   * // apps/api/src/identity/auth-repository.ts, added to AuthRepository. The design fixes no
+   * // name, and none takes a tenantId, so all carry the 043 `global` prefix. Each takes the
+   * // lock's connection as a required last argument `db: Pick<Pool, 'query'>`.
+   * globalSetCredentialPassword(userId, passwordHash, db): Promise<void>;
+   *   // updates password and updated_at of the user's `credential` account; exactly one row
+   *   // must change, else it throws (zero or two rows).
+   * globalDeleteTemporaryPasswordMarker(userId, db): Promise<boolean>;
+   *   // deletes the verification row whose identifier is `temp-password:<userId>`; true when a row went.
+   * globalDeleteTwoFactorChallenges(userId, db): Promise<number>;
+   *   // deletes verification rows whose identifier starts `2fa-` (but not `2fa-attempts-`) or
+   *   // `trust-device-` AND whose value equals the user id; returns the rows deleted.
+   * globalMarkEmailVerified(userId, db): Promise<void>; // user.email_verified = true
+   * globalDeleteSessionsOf(userId, db): Promise<{ id: string; tenantId: string | null }[]>;
+   *   // deletes every session of the user in every tenant, returning each deleted row's
+   *   // id and active_organization_id (null when it has none).
+   * ```
+   *
+   * "Delete other reset tokens" is the existing `deleteResetTokensOf(userId, db)`.
+   */
+  async function seedVerification(identifier: string, value: string): Promise<void> {
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+       values ($1, $2, $3, now() + interval '10 minutes', now(), now())`,
+      [randomUUID(), identifier, value],
+    );
+  }
+
+  async function verificationIdentifiers(...identifiers: string[]): Promise<string[]> {
+    const result = await authPool.query<{ identifier: string }>(
+      'select identifier from auth.verification where identifier = any($1::text[]) order by identifier',
+      [identifiers],
+    );
+    return result.rows.map((r) => r.identifier);
+  }
+
+  async function seedCredential(userId: string, password: string | null): Promise<string> {
+    const id = `acc-${randomUUID()}`;
+    await authPool.query(
+      `insert into auth.account (id, account_id, provider_id, user_id, password, created_at, updated_at)
+       values ($1, $2, 'credential', $3, $4, now() - interval '1 day', now() - interval '1 day')`,
+      [id, userId, userId, password],
+    );
+    return id;
+  }
+
+  async function passwordOf(
+    accountId: string,
+  ): Promise<{ password: string | null; fresh: boolean }> {
+    const result = await authPool.query<{ password: string | null; fresh: boolean }>(
+      `select password, updated_at > now() - interval '1 hour' as fresh from auth.account where id = $1`,
+      [accountId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Error('expected the account row');
+    return row;
+  }
+
+  it('the password update changes exactly one credential row or throws', async () => {
+    const userId = await seedUser();
+    const credential = await seedCredential(userId, 'old-hash');
+    const other = await seedAccount(userId, 'github', `gh-${randomUUID()}`);
+    const otherUser = await seedUser();
+    const otherCredential = await seedCredential(otherUser, 'other-hash');
+
+    await repo.globalSetCredentialPassword(userId, 'new-hash', authPool);
+
+    expect(await passwordOf(credential)).toEqual({ password: 'new-hash', fresh: true });
+    expect((await passwordOf(other)).password, 'a linked account is untouched').toBeNull();
+    expect((await passwordOf(otherCredential)).password, 'another user is untouched').toBe(
+      'other-hash',
+    );
+
+    // Zero rows: no credential account.
+    const noCredential = await seedUser();
+    await seedAccount(noCredential, 'github', `gh-${randomUUID()}`);
+    await expect(repo.globalSetCredentialPassword(noCredential, 'x', authPool)).rejects.toThrow();
+
+    // Two rows: the update is not left half applied by the caller's rollback, so it must throw.
+    const twice = await seedUser();
+    const first = await seedCredential(twice, 'a');
+    await seedAccount(twice, 'credential', `second-${twice}`);
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      await expect(repo.globalSetCredentialPassword(twice, 'z', client)).rejects.toThrow();
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+    expect((await passwordOf(first)).password).toBe('a');
+  });
+
+  it('the temporary-password marker is deleted by identifier (its value is an ISO expiry)', async () => {
+    const userId = await seedUser();
+    const otherUser = await seedUser();
+    const expiry = new Date(Date.now() + 3_600_000).toISOString();
+    await seedVerification(`temp-password:${userId}`, expiry);
+    await seedVerification(`temp-password:${otherUser}`, expiry);
+
+    expect(await repo.globalDeleteTemporaryPasswordMarker(userId, authPool)).toBe(true);
+    expect(
+      await verificationIdentifiers(`temp-password:${userId}`, `temp-password:${otherUser}`),
+    ).toEqual([`temp-password:${otherUser}`]);
+    expect(await repo.globalDeleteTemporaryPasswordMarker(userId, authPool)).toBe(false);
+  });
+
+  it('challenge and trust rows are deleted by value equal to the user id', async () => {
+    const userId = await seedUser();
+    const suffix = randomUUID();
+    await seedVerification(`2fa-${suffix}-a`, userId);
+    await seedVerification(`2fa-${suffix}-b`, userId);
+    await seedVerification(`trust-device-${suffix}-a`, userId);
+
+    expect(await repo.globalDeleteTwoFactorChallenges(userId, authPool)).toBe(3);
+    expect(
+      await verificationIdentifiers(
+        `2fa-${suffix}-a`,
+        `2fa-${suffix}-b`,
+        `trust-device-${suffix}-a`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('the 2fa-attempts- rows (value 0), the mfa-reenrol: rows and other users rows are left', async () => {
+    const userId = await seedUser();
+    const otherUser = await seedUser();
+    const suffix = randomUUID();
+    await seedVerification(`2fa-${suffix}`, userId);
+    await seedVerification(`2fa-attempts-2fa-${suffix}`, '0');
+    await seedVerification(`mfa-reenrol:${userId}`, 'required');
+    await seedVerification(`2fa-other-${suffix}`, otherUser);
+    await seedVerification(`trust-device-other-${suffix}`, otherUser);
+    await seedVerification(`temp-password:${userId}`, new Date(Date.now() + 60_000).toISOString());
+    // Even if an attempts row held the user id, it is not a challenge.
+    await seedVerification(`2fa-attempts-2fa-user-${suffix}`, userId);
+
+    expect(await repo.globalDeleteTwoFactorChallenges(userId, authPool)).toBe(1);
+
+    expect(
+      await verificationIdentifiers(
+        `2fa-${suffix}`,
+        `2fa-attempts-2fa-${suffix}`,
+        `mfa-reenrol:${userId}`,
+        `2fa-other-${suffix}`,
+        `trust-device-other-${suffix}`,
+        `temp-password:${userId}`,
+        `2fa-attempts-2fa-user-${suffix}`,
+      ),
+    ).toEqual(
+      [
+        `2fa-attempts-2fa-${suffix}`,
+        `mfa-reenrol:${userId}`,
+        `2fa-other-${suffix}`,
+        `trust-device-other-${suffix}`,
+        `temp-password:${userId}`,
+        `2fa-attempts-2fa-user-${suffix}`,
+      ].sort(),
+    );
+  });
+
+  it('globalMarkEmailVerified sets emailVerified on that user only', async () => {
+    const userId = await seedUser();
+    const otherUser = await seedUser();
+    await authPool.query('update auth."user" set email_verified = false where id = any($1)', [
+      [userId, otherUser],
+    ]);
+
+    await repo.globalMarkEmailVerified(userId, authPool);
+
+    const result = await authPool.query<{ id: string; email_verified: boolean }>(
+      'select id, email_verified from auth."user" where id = any($1)',
+      [[userId, otherUser]],
+    );
+    const byId = new Map(result.rows.map((r) => [r.id, r.email_verified]));
+    expect(byId.get(userId)).toBe(true);
+    expect(byId.get(otherUser)).toBe(false);
+  });
+
+  it('the session delete returns the tenant of each row, null included', async () => {
+    const tenantA = await seedTenant();
+    const tenantB = await seedTenant();
+    const userId = await seedUser();
+    const otherUser = await seedUser();
+    const inA = await seedSession(userId, tenantA);
+    const inB = await seedSession(userId, tenantB);
+    const none = await seedSession(userId, null);
+    const others = await seedSession(otherUser, tenantA);
+
+    const deleted = await repo.globalDeleteSessionsOf(userId, authPool);
+
+    expect([...deleted].sort((x, y) => x.id.localeCompare(y.id))).toEqual(
+      [
+        { id: inA, tenantId: tenantA },
+        { id: inB, tenantId: tenantB },
+        { id: none, tenantId: null },
+      ].sort((x, y) => x.id.localeCompare(y.id)),
+    );
+    expect(await sessionExists(inA)).toBe(false);
+    expect(await sessionExists(inB)).toBe(false);
+    expect(await sessionExists(none)).toBe(false);
+    expect(await sessionExists(others), "another user's session stays").toBe(true);
+    expect(await repo.globalDeleteSessionsOf(userId, authPool)).toEqual([]);
+  });
+
+  it('every function of the completion section runs on the client passed as db', async () => {
+    const userId = await seedUser();
+    await seedCredential(userId, 'old');
+    await seedSession(userId, null);
+    let poolUses = 0;
+    const deadPool = {
+      query: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+      connect: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+    } as unknown as Pool;
+    const probeRepo = createAuthRepository(deadPool);
+
+    const client = await authPool.connect();
+    try {
+      await probeRepo.globalSetCredentialPassword(userId, 'new', client);
+      await probeRepo.globalDeleteTemporaryPasswordMarker(userId, client);
+      await probeRepo.globalDeleteTwoFactorChallenges(userId, client);
+      await probeRepo.globalMarkEmailVerified(userId, client);
+      expect(await probeRepo.globalDeleteSessionsOf(userId, client)).toHaveLength(1);
+    } finally {
+      client.release();
+    }
+    expect(poolUses).toBe(0);
+  });
+
   it('only the global functions are callable without a tenantId', async () => {
     const names = Object.keys(repo);
     const globals = names.filter((name) => name.startsWith('global'));
@@ -777,10 +1017,15 @@ describe('auth-repository', () => {
         'globalAccountByKey',
         'globalAccountsOf',
         'globalClearExpiredTwoFactorLock',
+        'globalDeleteSessionsOf',
+        'globalDeleteTemporaryPasswordMarker',
+        'globalDeleteTwoFactorChallenges',
         'globalInvitationById',
+        'globalMarkEmailVerified',
         'globalMembershipTenantsOf',
         'globalRecordTwoFactorFailure',
         'globalResetTwoFactorFailures',
+        'globalSetCredentialPassword',
         'globalSpendBackupCode',
         'globalTwoFactorStateOf',
         'globalUserBanned',
