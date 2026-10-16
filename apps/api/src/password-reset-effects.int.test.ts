@@ -77,6 +77,8 @@ import {
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import { renderPasswordChangedNotice } from '../../../packages/auth/src/identity/email/recovery-notice-templates.js';
+import { createMachineCredential } from '../../../packages/auth/src/machine-credentials.js';
 import { createResetTokenStore } from './identity/reset-token-store.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { createApp, type App } from './server.js';
@@ -1485,5 +1487,312 @@ describe('Concurrency of a password reset (task 8.11)', () => {
       ]);
       expect(rows.rowCount, 'the token is consumed').toBe(0);
     }, 60_000);
+  });
+});
+
+/**
+ * Task 8.14 of openspec/changes/044-password-reset-and-account-recovery (design D7, D8, Resolved
+ * decisions Q21 and the squatted-account recovery of D12). Scenarios of
+ * `specs/password-reset-and-account-recovery/spec.md`, quoted:
+ *
+ * - "A reset recovers a squatted account": GIVEN an admin created an account for the victim's
+ *   address with a temporary password the admin knows, and the admin has a live session on it;
+ *   WHEN the victim completes a reset; THEN the admin's session and knowledge of the temporary
+ *   password are both useless, and the victim receives the password-changed notice.
+ * - "Machine credentials are untouched": GIVEN a user who owns a service account with a
+ *   credential; WHEN the user completes a reset; THEN the credential still exchanges for a token.
+ * - "A reset leaves linked sign-ins and credentials, and the notice says to review them": GIVEN a
+ *   user with a linked Visma Connect account and a service account with a credential; WHEN the user
+ *   completes a reset; THEN the link and the credential are unchanged, and the password-changed
+ *   notice tells the user, in its fixed text, to review service accounts, credentials and linked
+ *   sign-ins.
+ *
+ * ## Harness
+ *
+ * As the first describe of this file (real server, injected requests, random `x-forwarded-for`,
+ * stubbed range service, roomy global caps). The squatted account is a real account whose
+ * temporary password (`TEST_PASSWORD`) the "admin" knows, with a valid temporary-password marker
+ * and the admin's live session. The credential is a real machine credential bound to a seeded
+ * service-account `_user`, exchanged at `POST /v1/auth/token`. The Visma Connect link is an
+ * `auth.account` row with a random subject. Row snapshots are compared as `to_jsonb`.
+ *
+ * ## Production symbols expected
+ *
+ * None new: the completion of task 8.9 and the notice of task 8.12. The reset must not touch
+ * `auth.apikey` or any `auth.account` row other than the `credential` one.
+ */
+describe('Recovery and invariant scenarios of a password reset (task 8.14)', () => {
+  let app: App;
+  let authPool: Pool;
+  const sender = createRecordingEmailSender();
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      passwordResetMinResponseMs: 0,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+      accountCreatedNoticeGlobalCap: { max: 100_000, windowSeconds: 86_400 },
+    };
+    app = await createApp({
+      appPool: pools.appPool,
+      authPool: pools.authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+  }, 60_000);
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', (): Promise<Response> => {
+      return Promise.resolve(
+        new Response('0000000000000000000000000000000000A:3\r\n', { status: 200 }),
+      );
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  function store() {
+    return createResetTokenStore({ authPool, withUserLock: createWithUserLock(authPool) });
+  }
+
+  async function createPerson() {
+    const suffix = randomUUID();
+    const email = `effects-recovery-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Recovery User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Recovery Org ${suffix}`,
+      organizationSlug: `recovery-${suffix}`,
+      ip: randomIp(),
+    });
+    return {
+      email,
+      userId: tenant.userId,
+      cookie: tenant.cookie,
+      organizationId: tenant.organizationId,
+    };
+  }
+
+  async function confirm(fields: Record<string, unknown>) {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: CONFIRM_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ newPassword: NEW_PASSWORD, ...fields }),
+    });
+    return { status: response.statusCode, body: response.body };
+  }
+
+  async function signInStatus(email: string, password: string): Promise<number> {
+    const response = await (app.auth as unknown as { handler: Handler }).handler(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+    return response.status;
+  }
+
+  async function sessionAlive(cookie: string): Promise<boolean> {
+    const response = await (app.auth as unknown as { handler: Handler }).handler(
+      new Request(`${AUTH_BASE_URL}/get-session`, {
+        method: 'GET',
+        headers: { cookie, 'x-forwarded-for': randomIp() },
+      }),
+    );
+    if (response.status !== 200) return false;
+    const body = (await response.json().catch(() => null)) as {
+      session?: { id?: string };
+    } | null;
+    return body?.session?.id !== undefined;
+  }
+
+  async function exchange(credential: { id: string; secret: string }): Promise<number> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/v1/auth/token',
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ clientId: credential.id, clientSecret: credential.secret }),
+    });
+    return response.statusCode;
+  }
+
+  async function snapshot(sql: string, params: unknown[]): Promise<unknown[]> {
+    const result = await authPool.query<{ row: unknown }>(sql, params);
+    return result.rows.map((r) => r.row);
+  }
+
+  const credentialRows = (id: string): Promise<unknown[]> =>
+    snapshot('select to_jsonb(k) as row from auth.apikey k where id = $1', [id]);
+  const linkRows = (userId: string): Promise<unknown[]> =>
+    snapshot(
+      `select to_jsonb(a) as row from auth.account a
+        where user_id = $1 and provider_id <> 'credential' order by id`,
+      [userId],
+    );
+
+  async function withServiceAccount(person: {
+    userId: string;
+    organizationId: string;
+  }): Promise<{ id: string; secret: string }> {
+    const serviceAccountId = `svc-${randomUUID().slice(0, 8)}`;
+    await seedUserRow(testAppPool(), {
+      tenantId: person.organizationId,
+      email: serviceAccountId,
+      name: serviceAccountId,
+      status: 'Active',
+    });
+    return createMachineCredential(app.auth, {
+      userId: person.userId,
+      organizationId: person.organizationId,
+      name: 'Service account credential',
+      actorKind: 'integration',
+      metadata: { userId: serviceAccountId, createdBy: person.userId },
+    });
+  }
+
+  async function noticesTo(email: string) {
+    await vi.waitFor(() => {
+      expect(sender.sent.filter((message) => message.to === email)).toHaveLength(1);
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    return sender.sent.filter((message) => message.to === email);
+  }
+
+  describe('A reset recovers a squatted account', () => {
+    it('the admin session and the temporary password are useless and the victim receives the password-changed notice', async () => {
+      // The account an admin created: the admin knows its temporary password (TEST_PASSWORD) and
+      // holds a live session on it.
+      const victim = await createPerson();
+      await authPool.query(
+        `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+         values ($1, $2, $3, $4, now(), now())`,
+        [
+          randomUUID(),
+          `temp-password:${victim.userId}`,
+          new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+          new Date('9999-12-31T23:59:59.000Z'),
+        ],
+      );
+      const adminSession = await signInAdminUser(app.auth, {
+        email: victim.email,
+        password: TEST_PASSWORD,
+        ip: randomIp(),
+      });
+      expect(
+        await sessionAlive(adminSession.cookie),
+        'precondition: the admin session is live',
+      ).toBe(true);
+      const issued = await store().issue(victim.userId);
+
+      const answer = await confirm({ id: issued.id, token: issued.token });
+
+      expect(answer.status).toBe(200);
+      expect(JSON.parse(answer.body)).toEqual({ completed: true });
+      expect(await sessionAlive(adminSession.cookie), 'the admin session is useless').toBe(false);
+      expect(await sessionAlive(victim.cookie)).toBe(false);
+      expect(
+        await signInStatus(victim.email, TEST_PASSWORD),
+        'the temporary password is useless',
+      ).toBe(401);
+      expect(await signInStatus(victim.email, NEW_PASSWORD), 'the victim signs in').toBe(200);
+      const sent = await noticesTo(victim.email);
+      expect(sent, 'exactly one notice, to the victim').toHaveLength(1);
+      expect(sent[0]?.template).toEqual({ kind: 'PasswordChangedNotice' });
+    }, 90_000);
+  });
+
+  describe('Machine credentials are untouched', () => {
+    it('a credential of a service account the user owns still exchanges for a token after a reset', async () => {
+      const person = await createPerson();
+      const credential = await withServiceAccount(person);
+      expect(await exchange(credential), 'precondition: the credential exchanges').toBe(200);
+      const before = await credentialRows(credential.id);
+      expect(before, 'precondition: the credential row exists').toHaveLength(1);
+      const issued = await store().issue(person.userId);
+
+      const answer = await confirm({ id: issued.id, token: issued.token });
+
+      expect(answer.status).toBe(200);
+      expect(await exchange(credential), 'the credential still exchanges').toBe(200);
+      const after = await credentialRows(credential.id);
+      expect(after.length, 'the credential row survives').toBe(1);
+      expect(
+        (after[0] as Record<string, unknown>)['key'],
+        'the stored credential hash is unchanged',
+      ).toBe((before[0] as Record<string, unknown>)['key']);
+    }, 90_000);
+  });
+
+  describe('A reset leaves linked sign-ins and credentials, and the notice says to review them', () => {
+    it('the Visma Connect link and the credential are unchanged and the notice tells the user to review them', async () => {
+      const person = await createPerson();
+      const credential = await withServiceAccount(person);
+      await authPool.query(
+        `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+         values ($1, $2, 'visma-connect', $3, now(), now())`,
+        [randomUUID(), `sub-${randomUUID()}`, person.userId],
+      );
+      const linksBefore = await linkRows(person.userId);
+      const credentialBefore = await credentialRows(credential.id);
+      expect(linksBefore, 'precondition: one linked sign-in').toHaveLength(1);
+      expect(credentialBefore, 'precondition: one credential').toHaveLength(1);
+      const issued = await store().issue(person.userId);
+
+      const answer = await confirm({ id: issued.id, token: issued.token });
+
+      expect(answer.status).toBe(200);
+      expect(await linkRows(person.userId), 'the link is unchanged').toEqual(linksBefore);
+      expect(await credentialRows(credential.id), 'the credential is unchanged').toEqual(
+        credentialBefore,
+      );
+      expect(await exchange(credential)).toBe(200);
+
+      const sent = await noticesTo(person.email);
+      expect(sent).toHaveLength(1);
+      const template = sent[0]?.template;
+      expect(template).toEqual({ kind: 'PasswordChangedNotice' });
+      const rendered = renderPasswordChangedNotice({ kind: 'PasswordChangedNotice' });
+      for (const body of [rendered.text, rendered.html]) {
+        const lower = body.toLowerCase();
+        expect(lower).toContain('service accounts');
+        expect(lower).toContain('credentials');
+        expect(lower).toContain('linked sign-ins');
+      }
+    }, 90_000);
   });
 });
