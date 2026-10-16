@@ -140,6 +140,7 @@ const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 /** Q49: a successful password re-entry is the step-up for a user without MFA. */
 const VERIFY_PASSWORD_PATH = '/verify-password';
+const VERIFY_TOTP_PATH = '/two-factor/verify-totp';
 const GENERATE_BACKUP_CODES_PATH = '/two-factor/generate-backup-codes';
 /** Q61, Q43: the two-factor verification paths that must never set a trust-device cookie. */
 const VERIFY_TWO_FACTOR_PATHS: readonly string[] = [
@@ -272,6 +273,8 @@ interface ActiveOrganizationSnapshot {
   readonly previousActiveOrganizationId: string | null;
 }
 
+/** Task 7.2: calls whose `hooks.before` saw a session user without a verified factor on verify-totp. */
+const totpEnrolmentAttempts = new WeakSet<object>();
 const activeOrganizationBeforeAttempt = new WeakMap<object, ActiveOrganizationSnapshot>();
 
 /** The `auth.session` row's tenant column, read back after `/sign-in/email` creates it. */
@@ -809,7 +812,10 @@ export interface CreateAuthOptions {
 }
 
 /** The notice kinds `@tayzu/auth` hooks can trigger (the `EmailTemplate` kinds of 044 D8). */
-export type AccountNoticeKind = Extract<EmailTemplate['kind'], 'PasswordChangedNotice'>;
+export type AccountNoticeKind = Extract<
+  EmailTemplate['kind'],
+  'PasswordChangedNotice' | 'MfaChangedNotice'
+>;
 
 /** Sends one fixed notice to a user's canonical address. Never throws; carries only the user id. */
 export interface AccountNoticePort {
@@ -1321,6 +1327,17 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           if (VERIFY_TWO_FACTOR_PATHS.includes(ctx.path)) {
+            // Task 7.2, design D8: remember a TOTP verification that enrols a factor for a
+            // session user (never the sign-in challenge, which has no session).
+            if (ctx.path === VERIFY_TOTP_PATH) {
+              const session = await getSessionFromCtx(ctx).catch(() => null);
+              if (
+                session &&
+                (session.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled !== true
+              ) {
+                totpEnrolmentAttempts.add(ctx.context);
+              }
+            }
             // Q61, Q43: refuse `trustDevice: true` so every sign-in of an enrolled
             // user is MFA-checked; nothing is verified and no cookie is set.
             const body = ctx.body as { trustDevice?: unknown } | null | undefined;
@@ -1499,7 +1516,19 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           }
           return undefined;
         }
+        if (ctx.path === GENERATE_BACKUP_CODES_PATH) {
+          if (!isAPIError(ctx.context.returned)) {
+            const session = await getSessionFromCtx(ctx).catch(() => null);
+            if (session) {
+              await options.accountNotices?.notify('MfaChangedNotice', {
+                userId: session.user.id,
+              });
+            }
+          }
+          return undefined;
+        }
         if (ctx.path.startsWith(TWO_FACTOR_VERIFY_PATH_PREFIX)) {
+          const enrolling = totpEnrolmentAttempts.delete(ctx.context);
           // Task 4.2, design D4: record the freshness marker `./step-up.ts`'s
           // guard later reads, on every successful `/two-factor/verify-*`
           // completion (TOTP, backup code, or a future OTP factor alike).
@@ -1512,6 +1541,14 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'verified' });
+          if (enrolling) {
+            const enrolled = await getSessionFromCtx(ctx).catch(() => null);
+            if (enrolled) {
+              await options.accountNotices?.notify('MfaChangedNotice', {
+                userId: enrolled.user.id,
+              });
+            }
+          }
           const response = ctx.context.returned as TwoFactorVerifySuccessResponse;
           if (response.token === undefined || response.token === null) {
             return undefined;
