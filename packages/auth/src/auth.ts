@@ -92,6 +92,7 @@ import {
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import type { EmailTemplate } from './identity/email/sender.js';
 import type { SsoLinkShedPort } from './identity/ports.js';
 import { validatePassword } from './identity/password-policy.js';
 import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
@@ -799,6 +800,20 @@ export interface CreateAuthOptions {
    * each key at creation. Defaults to 60 per hour.
    */
   readonly machineCredentialRateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /**
+   * Task 7.1 (044 design D8): sends the fixed account notices a Better Auth route triggers
+   * (a successful `/change-password` so far). Typed structurally; the host passes the mailer's
+   * notice path. Optional so earlier `createAuth({ db, secret })` calls keep working.
+   */
+  readonly accountNotices?: AccountNoticePort;
+}
+
+/** The notice kinds `@tayzu/auth` hooks can trigger (the `EmailTemplate` kinds of 044 D8). */
+export type AccountNoticeKind = Extract<EmailTemplate['kind'], 'PasswordChangedNotice'>;
+
+/** Sends one fixed notice to a user's canonical address. Never throws; carries only the user id. */
+export interface AccountNoticePort {
+  notify(kind: AccountNoticeKind, subject: { readonly userId: string }): Promise<void>;
 }
 
 /** The structural slice of `@tayzu/catalog`'s `UserSync` this package calls. */
@@ -1458,6 +1473,9 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             actorId: response.user.id,
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
             reason: PASSWORD_CHANGE_REVOCATION_REASON,
+          });
+          await options.accountNotices?.notify('PasswordChangedNotice', {
+            userId: response.user.id,
           });
           return undefined;
         }
