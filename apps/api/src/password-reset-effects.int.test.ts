@@ -1277,3 +1277,213 @@ describe('Atomicity and the backup code of a password reset (task 8.10)', () => 
     }, 60_000);
   });
 });
+
+/**
+ * Task 8.11 of openspec/changes/044-password-reset-and-account-recovery (design D7, Resolved
+ * decision on single use). Scenarios of `specs/password-reset-and-account-recovery/spec.md`, quoted:
+ *
+ * - "A token is single use": WHEN a valid token completes a reset and is submitted again; THEN the
+ *   second submission is the uniform rejection and changes nothing.
+ * - "A concurrent double submit completes once": WHEN the same valid token is submitted twice at
+ *   the same time; THEN exactly one completes and the other is the uniform rejection.
+ *
+ * ## Harness
+ *
+ * The real server with the identity routes mounted over the shared pools, as the first describe of
+ * this file. The two parallel submissions carry different passwords so the winner is identifiable
+ * from which password signs in. Every seeded value is random per run.
+ *
+ * ## Production symbols expected
+ *
+ * None new: the confirm flow of task 8.9 (`createPasswordResetConfirmFlow`) consuming the token on
+ * the lock's connection (`createResetTokenStore().consume`, task 2.6).
+ */
+describe('Concurrency of a password reset (task 8.11)', () => {
+  const FIRST_PASSWORD = 'First-Winner-Passphrase-Perfectly-Fine-11!';
+  const SECOND_PASSWORD = 'Second-Winner-Passphrase-Perfectly-Fine-22!';
+  let app: App;
+  let authPool: Pool;
+  const sender = createRecordingEmailSender();
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      passwordResetMinResponseMs: 0,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+      accountCreatedNoticeGlobalCap: { max: 100_000, windowSeconds: 86_400 },
+    };
+    app = await createApp({
+      appPool: pools.appPool,
+      authPool: pools.authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+  }, 60_000);
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', (): Promise<Response> => {
+      return Promise.resolve(
+        new Response('0000000000000000000000000000000000A:3\r\n', { status: 200 }),
+      );
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  function store() {
+    return createResetTokenStore({ authPool, withUserLock: createWithUserLock(authPool) });
+  }
+
+  async function createUser(): Promise<{ email: string; userId: string }> {
+    const suffix = randomUUID();
+    const email = `effects-race-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Race User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Race Org ${suffix}`,
+      organizationSlug: `race-${suffix}`,
+      ip: randomIp(),
+    });
+    return { email, userId: tenant.userId };
+  }
+
+  async function confirm(fields: Record<string, unknown>): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: CONFIRM_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify(fields),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return {
+      status: response.statusCode,
+      body,
+      setCookie: response.headers['set-cookie'],
+      cacheControl: response.headers['cache-control'],
+      pragma: response.headers['pragma'],
+    };
+  }
+
+  async function passwordOf(userId: string): Promise<string> {
+    const result = await authPool.query<{ password: string | null }>(
+      `select password from auth.account where user_id = $1 and provider_id = 'credential'`,
+      [userId],
+    );
+    return result.rows[0]?.password ?? '';
+  }
+
+  async function signInStatus(email: string, password: string): Promise<number> {
+    const response = await (app.auth as unknown as { handler: Handler }).handler(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+    return response.status;
+  }
+
+  function isCompleted(answer: Answer): boolean {
+    return answer.status === 200 && JSON.stringify(answer.body) === '{"completed":true}';
+  }
+
+  function isUniform(answer: Answer): boolean {
+    return (
+      answer.status === 404 &&
+      typeof answer.body === 'object' &&
+      answer.body !== null &&
+      (answer.body as { code?: unknown }).code === 'CATALOG_NOT_FOUND'
+    );
+  }
+
+  describe('A token is single use', () => {
+    it('a token that completed a reset is the uniform rejection when submitted again, and changes nothing', async () => {
+      const user = await createUser();
+      const issued = await store().issue(user.userId);
+
+      const first = await confirm({
+        id: issued.id,
+        token: issued.token,
+        newPassword: FIRST_PASSWORD,
+      });
+      expect(first.status).toBe(200);
+      expect(first.body).toEqual({ completed: true });
+      const hashAfterFirst = await passwordOf(user.userId);
+
+      const second = await confirm({
+        id: issued.id,
+        token: issued.token,
+        newPassword: SECOND_PASSWORD,
+      });
+
+      expect(second.status).toBe(404);
+      expect(second.body).toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+      expect(await passwordOf(user.userId), 'the password is unchanged by the replay').toBe(
+        hashAfterFirst,
+      );
+      expect(await signInStatus(user.email, FIRST_PASSWORD)).toBe(200);
+      expect(await signInStatus(user.email, SECOND_PASSWORD)).not.toBe(200);
+    }, 60_000);
+  });
+
+  describe('A concurrent double submit completes once', () => {
+    it('two simultaneous submissions of one token: exactly one completes and the other is the uniform rejection', async () => {
+      const user = await createUser();
+      const issued = await store().issue(user.userId);
+
+      const [a, b] = await Promise.all([
+        confirm({ id: issued.id, token: issued.token, newPassword: FIRST_PASSWORD }),
+        confirm({ id: issued.id, token: issued.token, newPassword: SECOND_PASSWORD }),
+      ]);
+
+      expect([a, b].filter(isCompleted), 'exactly one completes').toHaveLength(1);
+      expect([a, b].filter(isUniform), 'the other is the uniform rejection').toHaveLength(1);
+      const winnerPassword = isCompleted(a) ? FIRST_PASSWORD : SECOND_PASSWORD;
+      const loserPassword = isCompleted(a) ? SECOND_PASSWORD : FIRST_PASSWORD;
+      expect(await signInStatus(user.email, winnerPassword), 'the winner password signs in').toBe(
+        200,
+      );
+      expect(
+        await signInStatus(user.email, loserPassword),
+        'the loser password was never written',
+      ).not.toBe(200);
+      const rows = await authPool.query(`select 1 from auth.verification where identifier = $1`, [
+        `password-reset:${issued.id}`,
+      ]);
+      expect(rows.rowCount, 'the token is consumed').toBe(0);
+    }, 60_000);
+  });
+});
