@@ -22,6 +22,7 @@ import type { Pool } from 'pg';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { harnessPools } from '../__fixtures__/pools.js';
+import { createAuthRepository } from './auth-repository.js';
 import { createResetTokenStore } from './reset-token-store.js';
 import { createWithUserLock } from './user-lock.js';
 
@@ -60,6 +61,16 @@ describe('auth.verification identifier families (task 2.7)', () => {
           const userId = randomUUID();
           const { id, token } = await store.issue(userId);
           return { needles: [userId, id], secrets: [token] };
+        },
+      },
+      {
+        // Task 9.1: the one production writer of the `mfa-reenrol:` marker.
+        name: 'mfa-reenrol marker write',
+        run: async () => {
+          const userId = randomUUID();
+          await createAuthRepository(authPool).writeMfaReenrolMarker(userId);
+          // The marker carries no secret; the probe string proves nothing is stored under it.
+          return { needles: [userId], secrets: [`never-stored-${randomUUID()}`] };
         },
       },
     ];

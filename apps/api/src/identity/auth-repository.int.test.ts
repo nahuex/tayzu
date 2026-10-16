@@ -60,6 +60,11 @@
  */
 import { randomUUID } from 'node:crypto';
 
+import {
+  MARKER_EXPIRES_AT_SENTINEL,
+  MFA_REENROL_MARKER_VALUE,
+  mfaReenrolMarkerIdentifier,
+} from '@tayzu/auth';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 
@@ -1004,6 +1009,76 @@ describe('auth-repository', () => {
       await probeRepo.globalMarkEmailVerified(userId, client);
       expect(await probeRepo.globalDeleteSessionsOf(userId, client)).toHaveLength(1);
     } finally {
+      client.release();
+    }
+    expect(poolUses).toBe(0);
+  });
+
+  /*
+   * Task 9.1 of `044-password-reset-and-account-recovery` (design D11).
+   *
+   * ## Production symbols expected
+   *
+   * - `auth-repository.ts`: `writeMfaReenrolMarker(userId, db?): Promise<void>` on
+   *   `AuthRepository`. The design fixes the name without the `global` prefix, so it is NOT in
+   *   the 'only the global functions' list and must reject a call without a user id.
+   * - `@tayzu/auth` (index): `mfaReenrolMarkerIdentifier`, `MFA_REENROL_MARKER_VALUE` and
+   *   `MARKER_EXPIRES_AT_SENTINEL` (a `Date`, exported from `temporary-password.ts`).
+   */
+  it('writeMfaReenrolMarker writes one row with the module identifier, value and sentinel, a second write leaves one row, and it runs on the client passed as db', async () => {
+    const userId = await seedUser();
+    const identifier = mfaReenrolMarkerIdentifier(userId);
+    expect(identifier).toBe(`mfa-reenrol:${userId}`);
+
+    const rowsOf = async (): Promise<{ identifier: string; value: string; expires_at: Date }[]> =>
+      (
+        await authPool.query<{ identifier: string; value: string; expires_at: Date }>(
+          'select identifier, value, expires_at from auth.verification where identifier = $1',
+          [identifier],
+        )
+      ).rows;
+
+    await repo.writeMfaReenrolMarker(userId);
+    const first = await rowsOf();
+    expect(first).toHaveLength(1);
+    expect(first[0]?.identifier).toBe(identifier);
+    expect(first[0]?.value).toBe(MFA_REENROL_MARKER_VALUE);
+    expect(first[0]?.expires_at.getTime()).toBe(MARKER_EXPIRES_AT_SENTINEL.getTime());
+
+    await repo.writeMfaReenrolMarker(userId);
+    expect(await rowsOf(), 'a second write leaves one row').toHaveLength(1);
+
+    // On the client passed as `db`: uncommitted there, invisible to the pool.
+    const otherUser = await seedUser();
+    const otherIdentifier = mfaReenrolMarkerIdentifier(otherUser);
+    let poolUses = 0;
+    const deadPool = {
+      query: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+      connect: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+    } as unknown as Pool;
+    const probeRepo = createAuthRepository(deadPool);
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      await probeRepo.writeMfaReenrolMarker(otherUser, client);
+      const seenByClient = await client.query(
+        'select 1 from auth.verification where identifier = $1',
+        [otherIdentifier],
+      );
+      expect(seenByClient.rowCount).toBe(1);
+      const seenByPool = await authPool.query(
+        'select 1 from auth.verification where identifier = $1',
+        [otherIdentifier],
+      );
+      expect(seenByPool.rowCount, 'the pool does not see it').toBe(0);
+    } finally {
+      await client.query('rollback');
       client.release();
     }
     expect(poolUses).toBe(0);

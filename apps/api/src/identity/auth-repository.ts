@@ -9,6 +9,11 @@
  */
 import { randomUUID } from 'node:crypto';
 
+import {
+  MARKER_EXPIRES_AT_SENTINEL,
+  MFA_REENROL_MARKER_VALUE,
+  mfaReenrolMarkerIdentifier,
+} from '@tayzu/auth';
 import type { Pool } from 'pg';
 
 /** The only API-key configuration identity manages (design D8). */
@@ -181,6 +186,11 @@ export interface AuthRepository {
    * Returns the new count, or `undefined` when no row was updated.
    */
   incrementResetTokenFailures: (id: string, db: Pick<Pool, 'query'>) => Promise<number | undefined>;
+  /**
+   * Writes the `mfa-reenrol:<userId>` marker (044 design D11), the only production write of it.
+   * A second write leaves one row.
+   */
+  writeMfaReenrolMarker: (userId: string, db?: Pick<Pool, 'query'>) => Promise<void>;
   // Completion section (044 design D7). Each statement runs on `db`, the lock's connection.
 
   /** Sets the hash on the user's `credential` account; throws unless exactly one row changed. */
@@ -646,6 +656,20 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         `password-reset:${id}`,
       ]);
       return (result.rowCount ?? 0) > 0;
+    },
+
+    async writeMfaReenrolMarker(userId, db = authPool) {
+      await db.query(
+        `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+         select $1, $2, $3, $4, now(), now()
+         where not exists (select 1 from auth.verification where identifier = $2)`,
+        [
+          randomUUID(),
+          mfaReenrolMarkerIdentifier(userId),
+          MFA_REENROL_MARKER_VALUE,
+          MARKER_EXPIRES_AT_SENTINEL,
+        ],
+      );
     },
 
     async globalSetCredentialPassword(userId, passwordHash, db) {

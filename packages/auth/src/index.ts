@@ -98,7 +98,14 @@ export {
   verifyInvitationToken,
 } from './identity/invitation-token.js';
 export {
+  clearMfaReenrolMarker,
+  hasMfaReenrolMarker,
+  MFA_REENROL_MARKER_VALUE,
+  mfaReenrolMarkerIdentifier,
+} from './identity/mfa-reenrol-marker.js';
+export {
   generateTemporaryPassword,
+  MARKER_EXPIRES_AT_SENTINEL,
   hasActiveTemporaryPasswordMarker,
   hasExpiredTemporaryPasswordMarker,
   writeTemporaryPasswordMarker,
