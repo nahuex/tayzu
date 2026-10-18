@@ -2,4 +2,4 @@
 # Dependabot's `docker` ecosystem (.github/dependabot.yml) can read and bump
 # the pins, and dast.sh reads the FROM lines from here (task 13.12).
 FROM postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54 AS postgres
-FROM ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef AS zap
+FROM ghcr.io/zaproxy/zaproxy@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6 AS zap
