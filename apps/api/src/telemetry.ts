@@ -28,6 +28,11 @@ const ENDPOINT_VARIABLES = [
   'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
 ] as const;
 
+/** True when any OTLP endpoint variable is set to a non-empty value; shared with the CLI guard. */
+export function hasOtlpEndpoint(env: Env): boolean {
+  return ENDPOINT_VARIABLES.some((name) => (env[name] ?? '') !== '');
+}
+
 /**
  * Resolves one signal's URL from the injected environment: the per-signal
  * endpoint is used as is, the generic one gets `/v1/<signal>` appended.
@@ -133,7 +138,7 @@ function queryFreeExporter(inner: tracing.SpanExporter): tracing.SpanExporter {
 }
 
 export function startTelemetry(env: Env): Telemetry | undefined {
-  if (!ENDPOINT_VARIABLES.some((name) => (env[name] ?? '') !== '')) {
+  if (!hasOtlpEndpoint(env)) {
     if ((env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test') {
       return undefined;
     }

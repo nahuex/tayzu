@@ -3,11 +3,15 @@
  * `recoverAdminMfa` resolves the organization and the user, then runs the shared service of
  * `src/identity/mfa-reset.ts` in operator form on the `tayzu_auth` pool. The CLI holds no
  * `BETTER_AUTH_SECRET`, no cap store and no mailer: its one notice goes through the sender.
- * It prints nothing; the completion line and the telemetry guard are task 11.3's.
+ * `recoverAdminMfa` prints nothing; `main` applies the telemetry guard (Q29, Q31) and prints the
+ * completion line inside the `runScript` callback, before the final flush.
  */
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import type { EmailSender } from '@tayzu/auth';
+import { createPool } from '@tayzu/db';
 import type { Pool } from 'pg';
 
 import { createEmailSender } from '../src/email-sender.js';
@@ -18,6 +22,8 @@ import {
   type NoticeOutcome,
   type RecoveryNoticePort,
 } from '../src/identity/mfa-reset.js';
+import { hasOtlpEndpoint, startTelemetry, type Telemetry } from '../src/telemetry.js';
+import { runScript } from './run-script.js';
 import { loadScriptConfig, OPERATOR_ID_PATTERN } from './script-config.js';
 
 export interface RecoverAdminMfaOptions {
@@ -145,4 +151,92 @@ export async function recoverAdminMfa(
     userId: user.id,
   });
   return { userId: user.id, ...result };
+}
+
+export interface RecoverAdminMfaCliOptions {
+  /** Defaults to `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Defaults to `process.argv.slice(2)`. */
+  readonly args?: readonly string[];
+  /** A pool the host already built; when given, `main` does not end it. */
+  readonly authPool?: Pool;
+  readonly sender?: EmailSender;
+  /** Replaces `startTelemetry(env)`; a test seam. */
+  readonly telemetry?: Telemetry;
+}
+
+const FLUSH_FAILED_MESSAGE =
+  'The telemetry flush failed: the audit event of this reset may be missing.';
+
+/**
+ * The entry point. The guard ignores `NODE_ENV`: it refuses to start, before any database or
+ * email work, without telemetry. A failed final flush rejects with a fixed message.
+ */
+export async function main(options: RecoverAdminMfaCliOptions = {}): Promise<void> {
+  const env = options.env ?? process.env;
+  if (env['TAYZU_TELEMETRY_DISABLED'] === 'true') {
+    throw new Error('recover-admin-mfa refuses to run with TAYZU_TELEMETRY_DISABLED=true.');
+  }
+  if (!hasOtlpEndpoint(env)) {
+    throw new Error('recover-admin-mfa requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).');
+  }
+  const base = options.telemetry ?? startTelemetry(env);
+  const telemetry: Telemetry = {
+    async shutdown() {
+      try {
+        await base?.shutdown();
+      } catch {
+        throw new Error(FLUSH_FAILED_MESSAGE);
+      }
+    },
+  };
+  const args = options.args ?? process.argv.slice(2);
+  const config = loadScriptConfig('recover-admin-mfa', env);
+  let authPool = options.authPool;
+  try {
+    authPool ??= createPool(config.AUTH_DATABASE_URL);
+    const pool = authPool;
+    await runScript(
+      'recover-admin-mfa',
+      async () => {
+        const result = await recoverAdminMfa({
+          env,
+          args,
+          authPool: pool,
+          ...(options.sender === undefined ? {} : { sender: options.sender }),
+        });
+        const parsed = parseArgs({
+          args: [...args],
+          options: { approver: { type: 'string' } },
+          strict: false,
+        });
+        console.log(
+          `mfa-reset operator=${config.TAYZU_OPERATOR_ID} approver=${String(parsed.values.approver)} user=${result.userId} sessions_revoked=${String(result.sessionsRevoked)} notice=${result.notice}`,
+        );
+      },
+      { env, roles: [{ pool, roles: ['tayzu_auth'] }], telemetry },
+    );
+  } finally {
+    if (options.authPool === undefined) await authPool?.end();
+  }
+}
+
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  main().catch((error: unknown) => {
+    // Only the message: never the stack or the environment.
+    process.stderr.write(
+      `recover-admin-mfa failed: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+    );
+    process.exitCode = 1;
+  });
 }
