@@ -43,8 +43,8 @@ function signalUrl(env: Env, signal: 'traces' | 'metrics' | 'logs'): string | un
 const URL_ATTRIBUTES = ['url.full', 'http.url', 'http.target', 'url.path'] as const;
 
 /**
- * The fifteen route templates whose path carries an identifier (email, invitation id,
- * credential id): the twelve path templates of the identity routes (design D10) and the
+ * The sixteen route templates whose path carries an identifier (email, invitation id,
+ * credential id): the thirteen path templates of the identity routes (design D10) and the
  * three catalog `_user` routes (D12, Resolved decision Q119). `{x}` matches any non-empty
  * segment, percent-encoded or not.
  */
@@ -54,6 +54,7 @@ const ROUTE_TEMPLATES: readonly (readonly string[])[] = [
   '/v1/users/invitations/{invitation}/resend',
   '/v1/auth/invitations/accept',
   '/v1/users/{user}/status',
+  '/v1/users/{user}/mfa/reset',
   '/v1/users',
   '/v1/users/{user}/sso-account',
   '/v1/service-accounts',
@@ -68,7 +69,7 @@ const ROUTE_TEMPLATES: readonly (readonly string[])[] = [
 
 /**
  * Returns the route template of a parsed pathname, or `undefined` when the path is none of
- * the fifteen templates (the catalog routes of other blueprints keep their paths).
+ * the sixteen templates (the catalog routes of other blueprints keep their paths).
  */
 export function routeTemplate(pathname: string): string | undefined {
   const segments = pathname.split('/');

@@ -21,9 +21,9 @@
  * `createApp` over the real pools, Cerbos and Better Auth, driven with
  * `app.app.inject`. Two apps: one with the switch left at its default (off) and
  * one with it on, the control that proves the same requests do reach the routes
- * when it is on. The thirteen procedures are the router's own list, read from
+ * when it is on. The fourteen procedures are the router's own list, read from
  * `generateIdentityOpenApiDocument` (it walks `createIdentityRouter`'s procedures),
- * so a new procedure is covered without editing this file; the fourteenth route is
+ * so a new procedure is covered without editing this file; the fifteenth route is
  * the plain accept route. The authenticated caller is an MFA-enrolled admin with a
  * fresh verification (so the catch-all's enrollment gate lets it through). The
  * baseline is an unknown `/v1` path with the same method and caller.
@@ -72,8 +72,8 @@ interface Answer {
   readonly body: unknown;
 }
 
-/** The thirteen oRPC routes, from the router's own procedures, plus the plain accept route. */
-async function fourteenRoutes(): Promise<readonly Route[]> {
+/** The fourteen oRPC routes, from the router's own procedures, plus the plain accept route. */
+async function fifteenRoutes(): Promise<readonly Route[]> {
   const document = (await generateIdentityOpenApiDocument()) as {
     paths: Record<string, Record<string, unknown>>;
   };
@@ -111,7 +111,7 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
       ...base,
       ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
     });
-    routes = await fourteenRoutes();
+    routes = await fifteenRoutes();
 
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(off.auth, {
@@ -163,9 +163,9 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
     return { status: response.statusCode, body };
   }
 
-  it('lists the thirteen router procedures and the accept route as the fourteen routes', () => {
-    expect(routes).toHaveLength(14);
-    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(13);
+  it('lists the fourteen router procedures and the accept route as the fifteen routes', () => {
+    expect(routes).toHaveLength(15);
+    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(14);
   });
 
   it('Routes answer like an unknown path while the switch is off: unauthenticated, 401 CATALOG_CONTEXT_REQUIRED', async () => {
@@ -547,4 +547,95 @@ describe('the password reset routes are unreachable until mounted (044 task 8.3)
     expect(answer.status).toBe(404);
     expect(answer.body).toMatchObject({ code: 'CATALOG_NOT_FOUND' });
   });
+});
+
+/**
+ * 044 task 10.5 (design D10: "behind the mount switch"): `POST /v1/users/{user}/mfa/reset` is
+ * absent with the switch off (it answers as an unknown `/v1` path does, for both callers) and
+ * matched by the router with the switch on. The control is that, with the switch on, the same
+ * request is not the unknown-path answer.
+ */
+describe('the admin MFA reset route is unreachable until mounted (044 task 10.5)', () => {
+  const RESET_PATH = '/v1/users/{user}/mfa/reset';
+  let off: App;
+  let on: App;
+  let cookie: string;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const base = {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+    off = await createApp(base);
+    on = await createApp({
+      ...base,
+      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
+    });
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(off.auth, {
+      pool: testAppPool(),
+      name: 'Mount Gate Reset Admin',
+      email: `mount-gate-reset-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Mount Gate Reset Org ${suffix}`,
+      organizationSlug: `mount-gate-reset-${suffix}`,
+      ip: randomIp(),
+    });
+    cookie = await freshMfaSessionCookie(off, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+      origin: ORIGIN,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await off.close();
+    await on.close();
+  }, 60_000);
+
+  async function post(app: App, url: string, authenticated: boolean): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...(authenticated ? { cookie } : {}),
+        ...csrfHeaders('POST'),
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify({ reason: 'device_replaced' }),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return { status: response.statusCode, body };
+  }
+
+  const resetUrl = (): string => concrete(RESET_PATH);
+
+  it('`POST /v1/users/{user}/mfa/reset` is absent with the switch off: unauthenticated, as an unknown path', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, false);
+    expect(unknown.status).toBe(401);
+    expect(unknown.body).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+    expect(await post(off, resetUrl(), false)).toEqual(unknown);
+  }, 60_000);
+
+  it('`POST /v1/users/{user}/mfa/reset` is absent with the switch off: authenticated, the router 404', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, true);
+    expect(unknown.status).toBe(404);
+    expect(await post(off, resetUrl(), true)).toEqual(unknown);
+  }, 60_000);
+
+  it('`POST /v1/users/{user}/mfa/reset` is present with the switch on: not the unknown-path answer', async () => {
+    const open = await post(on, resetUrl(), true);
+    expect(open.body).not.toMatchObject({ code: 'NOT_FOUND' });
+  }, 60_000);
 });

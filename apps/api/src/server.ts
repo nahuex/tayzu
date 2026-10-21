@@ -67,6 +67,8 @@ import { createPasswordResetRequestFlow } from './identity/password-reset-reques
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
 import { createRecoveryMailer } from './identity/recovery-mailer.js';
 import { createResetTokenStore } from './identity/reset-token-store.js';
+import { createMfaResetService } from './identity/mfa-reset.js';
+import { createMailerNoticePort } from './identity/mfa-reset-notice.js';
 import { createNoticeDispatcher } from './identity/notices.js';
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
@@ -429,6 +431,13 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           ...(emailGate === undefined ? {} : { emailGate }),
           ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
           ...(recoveryMailer === undefined ? {} : { recoveryMailer }),
+          mfaReset: createMfaResetService({
+            authPool: options.authPool,
+            notices: createMailerNoticePort({
+              authRepository: createAuthRepository(options.authPool),
+              recoveryMailer,
+            }),
+          }),
           ...(options.credentialCap === undefined ? {} : { credentialCap: options.credentialCap }),
           ...(options.serviceAccountCap === undefined
             ? {}
