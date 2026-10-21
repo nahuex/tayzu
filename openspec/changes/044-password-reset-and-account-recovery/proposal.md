@@ -164,7 +164,7 @@ Q1-Q31).
 ## Sizing
 
 The roadmap budget is about 30-80 TDD tasks. `043` overran it (227 tasks) and had
-to split (Q103). `044` plans 84 tasks in 16 groups (tasks.md), slightly over 80 with the
-human's agreement (design, "Size"), and stops at 85 to ask. It keeps to that by reusing
+to split (Q103). `044` plans 85 tasks in 16 groups (tasks.md), slightly over 80 with the
+human's agreement (design, "Size"); Q32's task 5.7 reached the limit of 85. It keeps to that by reusing
 `043`'s email sender, cap store, kill switch, allowlist, public-route pattern, wrapper and
 telemetry helpers, by adding no migration and by leaving every page to `003`.

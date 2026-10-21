@@ -127,8 +127,9 @@ archive of `002` (`e3f5771`):
 
 ## Decisions
 
-Decisions D1-D20 are this design's. Q1-Q31 at the end are the human's approved
-answers (Q1-Q11 on 2026-10-14, Q12-Q31 on 2026-10-15); each D names the Q it implements.
+Decisions D1-D20 are this design's. Q1-Q33 at the end are the human's approved
+answers (Q1-Q11 on 2026-10-14, Q12-Q31 on 2026-10-15, Q32-Q33 on 2026-10-21); each D names
+the Q it implements.
 
 ### D1. Tayzu owns both reset routes; Better Auth's stay closed (Q2)
 
@@ -320,7 +321,7 @@ all apply.
   smallest thing that removes the send from the response time. **Await the send and pad
   to its worst case**: rejected, a provider timeout would be user-visible latency.
 
-### D5. The email path of an anonymous reset (Q8, Q20)
+### D5. The email path of an anonymous reset (Q8, Q20, Q32)
 
 A new `apps/api/src/identity/recovery-mailer.ts` is the single place a 044 email is sent.
 It is built in `createApp` next to the gate and the dispatcher, over the same
@@ -368,6 +369,17 @@ same HMAC key.
   `password_reset_confirm` (kind `ip`). Recipient and IP caps are consumed only for an
   eligible account, so random addresses do not allocate bucket rows beyond the route
   limiter's per-IP row.
+- **Fixed windows for the two global caps (Q32).** `reset_email_global` and
+  `account_created_notice_global` each have one key for the whole platform, so `002`'s window
+  semantics (a bucket resets only after a full window with no allowed request, `043` Q66)
+  would turn steady legitimate traffic at the cap into a platform-wide stop for a whole idle
+  window. For these two buckets only, the DB cap store (`apps/api/src/identity/email-cap-store.ts`)
+  appends the index of the current fixed window to the bucket value, `<key>:<floor(now /
+  window)>`, using the window of the configured cap (passed by `createApp`; the clock is
+  injectable for tests), so each window starts a new row at zero and the cap means N per
+  fixed window. Every other bucket keeps `002`'s semantics. No migration: the row of a past
+  window is an ordinary expired `auth.rate_limit` row, covered by the pruning item of D16.
+  Telemetry is unchanged.
 - **Notices** (D8) go through the same mailer: kill switch → all tenants disabled →
   `recovery_notice_recipient` cap → send. The account-created notice, which a tenant admin
   aims at an address of the admin's choosing, adds two caps in front of the recipient cap
@@ -387,7 +399,7 @@ same HMAC key.
   link, the notices none.
 - **Configuration** is D9.
 
-### D6. Confirmation for a user with a second factor (Q1, Q18, Q19)
+### D6. Confirmation for a user with a second factor (Q1, Q18, Q19, Q33)
 
 **What "enrolled" means, failing closed.** The confirm route reads the user's state through
 the auth repository module (`globalTwoFactorStateOf(userId)`: `user.two_factor_enabled` and
@@ -424,7 +436,10 @@ have let the link alone change a password).
     lockfile as Better Auth's own dependency; this design names it and adds it as a direct
     dependency of `@tayzu/auth` at that exact version (task 1.2, Q18), the one dependency of
     the change.
-  - `backup_code`: the verifier decrypts with Better Auth's `getBackupCodes`, compares each
+  - `backup_code`: the verifier decrypts with `symmetricDecrypt` from `better-auth/crypto` and a
+    guarded JSON parse, which is what Better Auth's `getBackupCodes` does for the plugin's
+    default `storeBackupCodes: "encrypted"` (`getBackupCodes` is declared but not exported at
+    runtime in 1.7.6, Q33), compares each
     stored code with `timingSafeEqual` (the plugin's `verifyBackupCode` uses `includes`, not
     constant time) and, on a match, returns the re-encrypted remaining codes. The spend is a
     compare-and-swap `update` of `backup_codes` **inside the completion transaction** (D7), so a
@@ -1417,10 +1432,10 @@ oracle" (the invitation gate's visible 429 stays; the reset path avoids it by de
 "Recipient-cap alias normalization", "Persistent per-tenant email-disable list" and
 "Bounce and complaint handling".
 
-## Resolved decisions (asked and approved in chat, 2026-10-14 and 2026-10-15)
+## Resolved decisions (asked and approved in chat, 2026-10-14, 2026-10-15 and 2026-10-21)
 
 Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q31 on
-2026-10-15 with the recommended option. The text below is the approved text; Q12-Q31 amend
+2026-10-15 and Q32-Q33 on 2026-10-21, each with the recommended option. The text below is the approved text; Q12-Q31 amend
 how Q1-Q11 are read where they say so. Where Q2, Q13 and Q19 say "the 8.1 password policy",
 that is `043`'s password policy (`043` task 8.1), not this change's own task 8.1.
 
@@ -1740,10 +1755,34 @@ completion line reports the notice as sent, suppressed or failed. _Rejected:_ ke
 approved and stating the `NODE_ENV=test` residual in Risks. _Implemented by:_ D12, Risks,
 Gate 5; tasks 11.3, 15.2.
 
+### Q32. Fixed windows for the two global caps (2026-10-21)
+
+The reset-email global cap (600 per hour by default) and the account-created global cap
+(1000 per day by default) count in fixed windows: the bucket value carries the index of the
+current window, so each hour or day starts at zero, and steady traffic at the cap holds new
+sends back only until the window ends, never for a full idle window. Found during
+implementation, when the shared test database's single global row passed 600 and never reset
+under `043` Q66's semantics. No migration; one task (5.7) brings the count to 85.
+_Rejected:_ keeping Q66's semantics for the global caps and documenting the platform-wide
+stop; fixed windows for every `044` cap (over the 85-task limit, and a departure from `043`'s
+buckets). _Implemented by:_ D5; tasks 5.7, 15.3.
+
+### Q33. Backup-code decryption without `getBackupCodes` (2026-10-21)
+
+Better Auth 1.7.6 declares `getBackupCodes` in its two-factor type declarations but does not
+export it at runtime (`dist/plugins/two-factor/index.mjs:349` exports only
+`TWO_FACTOR_ERROR_CODES`, `twoFactor` and `twoFactorClient`). D6's verifier therefore decrypts
+with `symmetricDecrypt` from `better-auth/crypto` and a guarded JSON parse, which is what
+`getBackupCodes` does for the plugin's default `storeBackupCodes: "encrypted"`
+(`dist/plugins/two-factor/index.mjs:26`, `dist/plugins/two-factor/backup-codes/index.mjs:44-51`),
+the mode Tayzu's `twoFactor()` instance uses. D6 is corrected to say so; the code of task 8.1
+is unchanged. _Rejected:_ a vendored copy of the four-line function. _Implemented by:_ D6;
+task 8.1.
+
 ### Size (2026-10-15)
 
 `044` stays one change (Q6). The task budget may go slightly over 80; the rule is to stop at
-85 and ask before adding more. `tasks.md` has 84.
+85 and ask before adding more. `tasks.md` had 84; Q32 adds task 5.7, so it has 85, the limit.
 
 ### Review corrections folded in (not decisions)
 
