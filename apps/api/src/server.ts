@@ -38,6 +38,7 @@ import {
   type CreateAuthOptions,
   type EmailSender,
   type RateLimitBucketStoreOptions,
+  type ResetFactorInput,
 } from '@tayzu/auth';
 import { createCerbosClient } from '@tayzu/authz';
 import type { createPool } from '@tayzu/db';
@@ -59,7 +60,6 @@ import { createEmailTenantGate, type EmailTenantGate } from './identity/email-te
 import { createWithUserLock } from './identity/user-lock.js';
 import { IdentityInputError } from './identity/parse-input.js';
 import { applyNoCacheHeaders } from './identity/no-cache.js';
-import type { ResetFactorInput } from '../../../packages/auth/src/identity/reset-factor.js';
 import { createPasswordResetConfirmFlow } from './identity/password-reset-confirm.js';
 import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';

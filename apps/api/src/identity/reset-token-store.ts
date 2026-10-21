@@ -5,14 +5,12 @@
 import type { Pool } from 'pg';
 
 import {
-  formatResetTokenValue,
-  parseResetTokenValue,
-} from '../../../../packages/auth/src/identity/reset-token-value.js';
-import {
   digestResetToken,
+  formatResetTokenValue,
   generateResetToken,
+  parseResetTokenValue,
   verifyResetToken,
-} from '../../../../packages/auth/src/identity/reset-token.js';
+} from '@tayzu/auth';
 import { createAuthRepository } from './auth-repository.js';
 import type { WithUserLock } from './user-lock.js';
 

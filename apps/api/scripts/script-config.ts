@@ -89,10 +89,18 @@ const MIN_SECRET_LENGTH = 32;
 /** The catalog's id pattern (design D9): never an email. */
 export const OPERATOR_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
+/** An error whose message is a fixed text: a CLI entry point may print it as it is. */
+export class FixedMessageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FixedMessageError';
+  }
+}
+
 function required(env: Env, name: ScriptVariable): string {
   const value = env[name];
   if (value === undefined || value.trim() === '') {
-    throw new Error(`${name} is required.`);
+    throw new FixedMessageError(`${name} is required.`);
   }
   return value;
 }
@@ -100,12 +108,14 @@ function required(env: Env, name: ScriptVariable): string {
 function read(env: Env, name: ScriptVariable): string {
   const value = required(env, name);
   if (name === 'BETTER_AUTH_SECRET' && value.length < MIN_SECRET_LENGTH) {
-    throw new Error(
+    throw new FixedMessageError(
       `BETTER_AUTH_SECRET is malformed (at least ${String(MIN_SECRET_LENGTH)} characters).`,
     );
   }
   if (name === 'TAYZU_OPERATOR_ID' && !OPERATOR_ID_PATTERN.test(value)) {
-    throw new Error('TAYZU_OPERATOR_ID is malformed (1 to 128 of A-Z a-z 0-9 _ . : -).');
+    throw new FixedMessageError(
+      'TAYZU_OPERATOR_ID is malformed (1 to 128 of A-Z a-z 0-9 _ . : -).',
+    );
   }
   return value;
 }
@@ -128,7 +138,7 @@ export function loadScriptConfig<S extends ScriptName>(script: S, env: Env): Scr
   if (script === 'recover-admin-mfa') {
     const provider = config.EMAIL_PROVIDER;
     if (provider !== 'acs' && provider !== 'none') {
-      throw new Error('EMAIL_PROVIDER is malformed (acs or none).');
+      throw new FixedMessageError('EMAIL_PROVIDER is malformed (acs or none).');
     }
     const conditional = provider === 'acs' ? [...ACS_REQUIRED, ...REAL_PROVIDER_REQUIRED] : [];
     for (const name of conditional) {

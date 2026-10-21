@@ -24,7 +24,7 @@ import {
 } from '../src/identity/mfa-reset.js';
 import { hasOtlpEndpoint, startTelemetry, type Telemetry } from '../src/telemetry.js';
 import { runScript } from './run-script.js';
-import { loadScriptConfig, OPERATOR_ID_PATTERN } from './script-config.js';
+import { FixedMessageError, loadScriptConfig, OPERATOR_ID_PATTERN } from './script-config.js';
 
 export interface RecoverAdminMfaOptions {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -43,7 +43,7 @@ export interface RecoverAdminMfaResult {
 }
 
 /** Fixed text for every refusal about the target: it says nothing about which check failed. */
-class TargetRefusedError extends Error {
+class TargetRefusedError extends FixedMessageError {
   constructor() {
     super('The organization or the user was not found.');
     this.name = 'TargetRefusedError';
@@ -99,15 +99,15 @@ export async function recoverAdminMfa(
   const operatorId = config.TAYZU_OPERATOR_ID;
   const approverId = values.approver;
   if (approverId === undefined || !OPERATOR_ID_PATTERN.test(approverId)) {
-    throw new Error('--approver is required and must be an opaque id.');
+    throw new FixedMessageError('--approver is required and must be an opaque id.');
   }
   if (approverId === operatorId) {
-    throw new Error('--approver must differ from the operator id.');
+    throw new FixedMessageError('--approver must differ from the operator id.');
   }
   const slug = values['organization-slug'];
   const email = values.email;
   if (slug === undefined || slug === '' || email === undefined || email === '') {
-    throw new Error('--organization-slug and --email are required.');
+    throw new FixedMessageError('--organization-slug and --email are required.');
   }
 
   const sender =
@@ -165,6 +165,7 @@ export interface RecoverAdminMfaCliOptions {
   readonly telemetry?: Telemetry;
 }
 
+const GENERIC_FAILURE_MESSAGE = 'the command failed; check the arguments and the environment.';
 const FLUSH_FAILED_MESSAGE =
   'The telemetry flush failed: the audit event of this reset may be missing.';
 
@@ -175,10 +176,14 @@ const FLUSH_FAILED_MESSAGE =
 export async function main(options: RecoverAdminMfaCliOptions = {}): Promise<void> {
   const env = options.env ?? process.env;
   if (env['TAYZU_TELEMETRY_DISABLED'] === 'true') {
-    throw new Error('recover-admin-mfa refuses to run with TAYZU_TELEMETRY_DISABLED=true.');
+    throw new FixedMessageError(
+      'recover-admin-mfa refuses to run with TAYZU_TELEMETRY_DISABLED=true.',
+    );
   }
   if (!hasOtlpEndpoint(env)) {
-    throw new Error('recover-admin-mfa requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).');
+    throw new FixedMessageError(
+      'recover-admin-mfa requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).',
+    );
   }
   const base = options.telemetry ?? startTelemetry(env);
   const telemetry: Telemetry = {
@@ -186,7 +191,7 @@ export async function main(options: RecoverAdminMfaCliOptions = {}): Promise<voi
       try {
         await base?.shutdown();
       } catch {
-        throw new Error(FLUSH_FAILED_MESSAGE);
+        throw new FixedMessageError(FLUSH_FAILED_MESSAGE);
       }
     },
   };
@@ -233,9 +238,9 @@ function isEntryPoint(): boolean {
 
 if (isEntryPoint()) {
   main().catch((error: unknown) => {
-    // Only the message: never the stack or the environment.
+    // Only a fixed text: an argument parser or a driver error can quote an argument or a host.
     process.stderr.write(
-      `recover-admin-mfa failed: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+      `recover-admin-mfa failed: ${error instanceof FixedMessageError ? error.message : GENERIC_FAILURE_MESSAGE}\n`,
     );
     process.exitCode = 1;
   });

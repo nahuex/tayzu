@@ -110,3 +110,14 @@ export {
   hasExpiredTemporaryPasswordMarker,
   writeTemporaryPasswordMarker,
 } from './identity/temporary-password.js';
+export { digestResetToken, generateResetToken, verifyResetToken } from './identity/reset-token.js';
+export {
+  formatResetTokenValue,
+  parseResetTokenValue,
+  type ResetTokenValue,
+} from './identity/reset-token-value.js';
+export {
+  verifyResetFactor,
+  type ResetFactorInput,
+  type ResetFactorResult,
+} from './identity/reset-factor.js';

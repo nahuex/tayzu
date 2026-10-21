@@ -14,13 +14,11 @@ import {
   isPasswordCompromised,
   recordIdentityMetric,
   validatePassword,
+  verifyResetFactor,
   withIdentitySpan,
+  type ResetFactorInput,
 } from '@tayzu/auth';
 
-import {
-  verifyResetFactor,
-  type ResetFactorInput,
-} from '../../../../packages/auth/src/identity/reset-factor.js';
 import { createAuthRepository, type TwoFactorStateRead } from './auth-repository.js';
 import { IdentityInputError, parseIdentityInput, type InputSchema } from './parse-input.js';
 import type { RecoveryMailer } from './recovery-mailer.js';
