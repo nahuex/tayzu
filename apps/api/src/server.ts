@@ -63,7 +63,7 @@ import type { ResetFactorInput } from '../../../packages/auth/src/identity/reset
 import { createPasswordResetConfirmFlow } from './identity/password-reset-confirm.js';
 import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
-import { createRecoveryMailer } from './identity/recovery-mailer.js';
+import { createRecoveryMailer, type RecoveryMailer } from './identity/recovery-mailer.js';
 import { createResetTokenStore } from './identity/reset-token-store.js';
 import { createMfaResetService } from './identity/mfa-reset.js';
 import { createMailerNoticePort } from './identity/mfa-reset-notice.js';
@@ -312,9 +312,27 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
 
   // Q30: the shed core is built once; `createAuth` takes its port, the accept flow the core.
   const ssoLinkShed = createSsoLinkShed({ authPool: options.authPool });
+  // The recovery mailer needs the cap store, which needs `auth`; the port reads it late.
+  const accountNoticeMailer: { current?: RecoveryMailer } = {};
+  const accountNoticeRepository = createAuthRepository(options.authPool);
+  const accountNotices: NonNullable<CreateAuthOptions['accountNotices']> = {
+    async notify(kind, { userId }) {
+      try {
+        const mailer = accountNoticeMailer.current;
+        if (mailer === undefined) return;
+        const user = await accountNoticeRepository.globalUserById(userId);
+        if (user === undefined) return;
+        const tenantIds = await accountNoticeRepository.globalMembershipTenantsOf(userId);
+        await mailer.sendNotice({ kind, address: user.email, userId, tenantIds });
+      } catch {
+        // A notice never fails the password change that triggered it.
+      }
+    },
+  };
   const auth = createAuth({
     db: authDb,
     userSync,
+    accountNotices,
     ssoLinkShed: ssoLinkShed.port,
     secret: options.authSecret,
     ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
@@ -421,6 +439,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
             recipientDomainAllowlist: email.recipientDomainAllowlist,
           }),
         });
+  accountNoticeMailer.current = recoveryMailer;
   const invitationLinkBaseUrl =
     email === undefined ? options.identity?.invitationLinkBaseUrl : email.invitationLinkBaseUrl;
 

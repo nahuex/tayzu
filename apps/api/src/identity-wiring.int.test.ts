@@ -40,7 +40,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import type { createRecordingEmailSender } from '@tayzu/auth';
 import { withTenantTransaction } from '@tayzu/db';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
@@ -52,7 +52,11 @@ import {
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
-import { enrolledAdminSession, sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
+import {
+  enrollTotp,
+  enrolledAdminSession,
+  sessionTokenOfCookie,
+} from './__fixtures__/fresh-mfa.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
 import {
   ORIGIN as SSO_ORIGIN,
@@ -791,5 +795,230 @@ describe('the configured caps reach the identity router (task 14.18)', () => {
     expect(second.code).toBe('CATALOG_VALIDATION_FAILED');
     expect(await userEntityCount(admin.organizationId, secondId), 'no second _user').toBe(0);
     expect(await keyCount(admin.organizationId), 'no second key').toBe(1);
+  }, 120_000);
+});
+
+/**
+ * Task 13.4 of openspec/changes/044-password-reset-and-account-recovery (design D8 "The notices",
+ * hook points; spec "Recovery notices are fixed and carry no link": "A user is told when their
+ * password changes", "A user is told when an admin resets their second factor", "Creating a user
+ * sends the account-created notice"; "The account-created notice has its own tenant and global
+ * caps").
+ *
+ * Task 13.4 Verify: `identity-wiring.int.test.ts`, new cases "a password change sends one
+ * `PasswordChangedNotice`", "`identity.users.create` sends one `AccountCreatedNotice` and stops at
+ * the tenant cap", "`identity.users.resetMfa` over HTTP sends one `MfaResetNotice`".
+ *
+ * Every case is built through `createAppFromEnv` with `MOUNT_IDENTITY_ROUTES=true` and the recording
+ * sender `createEmailSender` selects, with roomy global caps (the shared test database keeps those
+ * buckets between files). Notices are detached, so the cases wait for the send and then settle
+ * before asserting "exactly one".
+ *
+ * Production symbols expected: none new. `createApp` (`./server.js`) passes an `accountNotices` port
+ * (`AccountNoticePort` of `@tayzu/auth`, `notify(kind, { userId })`, backed by the recovery mailer's
+ * notice path) to `createAuth`, so `/change-password` success sends `PasswordChangedNotice`.
+ */
+describe('the recovery notices reach production (task 13.4)', () => {
+  let pools: HarnessPools;
+  const apps: App[] = [];
+  const AUTH_BASE = 'http://localhost:3000/api/auth';
+  const NEW_PASSWORD = 'Another-Perfectly-Fine-Passphrase-77!';
+
+  async function buildApp(
+    extra: Record<string, string> = {},
+  ): Promise<{ app: App; sender: RecordingSender }> {
+    const before = state.senders.length;
+    const built = await createAppFromEnv({
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN}`,
+      INVITATION_LINK_BASE_URL: LINK_ORIGIN,
+      IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
+      MOUNT_IDENTITY_ROUTES: 'true',
+      PASSWORD_RESET_LINK_BASE_URL: ORIGIN,
+      PASSWORD_RESET_GLOBAL_RATE_LIMIT_MAX: '100000',
+      PASSWORD_RESET_GLOBAL_RATE_LIMIT_WINDOW_SECONDS: '3600',
+      ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX: '100000',
+      ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_WINDOW_SECONDS: '86400',
+      ...extra,
+    });
+    apps.push(built);
+    expect(state.senders.length, 'one sender is built for this app').toBe(before + 1);
+    return { app: built, sender: state.senders[before] as RecordingSender };
+  }
+
+  beforeAll(async () => {
+    pools = await harnessPools();
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+  }, 60_000);
+
+  beforeEach(() => {
+    // The breached-password range service reports nothing as breached.
+    vi.stubGlobal('fetch', (): Promise<Response> => {
+      return Promise.resolve(
+        new Response('0000000000000000000000000000000000A:3\r\n', { status: 200 }),
+      );
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  afterAll(async () => {
+    for (const built of apps) await built.close();
+    state.pools.clear();
+  }, 60_000);
+
+  async function adminOn(target: App): Promise<BootstrappedTenant> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(target.auth, {
+      pool: testAppPool(),
+      name: 'Identity Notice Admin',
+      email: `identity-notice-admin-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Identity Notice ${suffix}`,
+      organizationSlug: `identity-notice-${suffix}`,
+      ip: randomIp(),
+    });
+    return await enrolledAdminSession(target, tenant, {
+      password: TEST_PASSWORD,
+      origin: ORIGIN,
+    });
+  }
+
+  function noticesTo(sender: RecordingSender, address: string, kind: string) {
+    return sender.sent.filter(
+      (message) => message.to === address && message.template.kind === kind,
+    );
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  it('a password change sends one PasswordChangedNotice', async () => {
+    const { app: target, sender } = await buildApp();
+    const admin = await adminOn(target);
+    const handler = (target.auth as unknown as { handler: Handler }).handler;
+    const change = (currentPassword: string): Promise<Response> =>
+      handler(
+        new Request(`${AUTH_BASE}/change-password`, {
+          method: 'POST',
+          headers: {
+            cookie: admin.cookie,
+            'content-type': 'application/json',
+            'x-forwarded-for': randomIp(),
+            origin: ORIGIN,
+          },
+          body: JSON.stringify({ currentPassword, newPassword: NEW_PASSWORD }),
+        }),
+      );
+
+    const failed = await change(`wrong-${randomUUID()}`);
+    expect(failed.ok, 'a wrong current password is refused').toBe(false);
+    await settle();
+    expect(
+      noticesTo(sender, admin.email, 'PasswordChangedNotice'),
+      'a failed change sends none',
+    ).toHaveLength(0);
+
+    const changed = await change(TEST_PASSWORD);
+
+    expect(changed.status, await changed.clone().text()).toBe(200);
+    await vi.waitFor(() => {
+      expect(noticesTo(sender, admin.email, 'PasswordChangedNotice')).toHaveLength(1);
+    });
+    await settle();
+    expect(noticesTo(sender, admin.email, 'PasswordChangedNotice'), 'exactly one').toHaveLength(1);
+  }, 120_000);
+
+  it('identity.users.create sends one AccountCreatedNotice and stops at the tenant cap', async () => {
+    const { app: target, sender } = await buildApp({
+      ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_MAX: '1',
+      ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS: '86400',
+    });
+    const admin = await adminOn(target);
+    const create = async (email: string) =>
+      await target.app.inject({
+        method: 'POST',
+        url: '/v1/users',
+        headers: {
+          cookie: admin.cookie,
+          origin: ORIGIN,
+          'x-forwarded-for': randomIp(),
+          ...csrfHeaders('POST'),
+          'content-type': 'application/json',
+        },
+        payload: JSON.stringify({ email, name: 'Notice Person', role: 'member' }),
+      });
+    const first = `identity-created-a-${randomUUID()}@example.test`;
+    const second = `identity-created-b-${randomUUID()}@example.test`;
+
+    const firstAnswer = await create(first);
+
+    expect(firstAnswer.statusCode, firstAnswer.body).toBe(200);
+    await vi.waitFor(() => {
+      expect(noticesTo(sender, first, 'AccountCreatedNotice')).toHaveLength(1);
+    });
+    await settle();
+    expect(noticesTo(sender, first, 'AccountCreatedNotice'), 'exactly one').toHaveLength(1);
+
+    const secondAnswer = await create(second);
+
+    expect(secondAnswer.statusCode, 'the creation still succeeds at the cap').toBe(200);
+    await settle();
+    expect(noticesTo(sender, second, 'AccountCreatedNotice'), 'the cap suppresses it').toHaveLength(
+      0,
+    );
+  }, 120_000);
+
+  it('identity.users.resetMfa over HTTP sends one MfaResetNotice', async () => {
+    const { app: target, sender } = await buildApp();
+    const admin = await adminOn(target);
+    const email = `identity-mfa-member-${randomUUID()}@example.test`;
+    const created = await createAdminUser(target.auth, {
+      name: 'Mfa Member',
+      email,
+      password: TEST_PASSWORD,
+    });
+    await (
+      target.auth.api as {
+        addMember(args: {
+          body: { userId: string; role: 'member'; organizationId: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({
+      body: { userId: created.userId, role: 'member', organizationId: admin.organizationId },
+    });
+    const memberSession = await signInAdminUser(target.auth, {
+      email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    await enrollTotp(target, { password: TEST_PASSWORD, enrollmentCookie: memberSession.cookie });
+
+    const answer = await target.app.inject({
+      method: 'POST',
+      url: `/v1/users/${email}/mfa/reset`,
+      headers: {
+        cookie: admin.cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify({ reason: 'device_replaced' }),
+    });
+
+    expect(answer.statusCode, answer.body).toBe(200);
+    await vi.waitFor(() => {
+      expect(noticesTo(sender, email, 'MfaResetNotice')).toHaveLength(1);
+    });
+    await settle();
+    expect(noticesTo(sender, email, 'MfaResetNotice'), 'exactly one').toHaveLength(1);
   }, 120_000);
 });
