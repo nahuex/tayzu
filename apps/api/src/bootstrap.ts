@@ -113,6 +113,10 @@ export async function createAppFromEnv(env: Env): Promise<App> {
           : { passwordResetLinkBaseUrl: config.passwordResetLinkBaseUrl }),
         disabledTenantIds: config.emailDisabledTenantIds,
         killSwitch: config.invitationEmailKillSwitch,
+        // An empty list means no restriction, as for the sender's own allowlist.
+        ...(config.emailRecipientDomainAllowlist.length === 0
+          ? {}
+          : { recipientDomainAllowlist: config.emailRecipientDomainAllowlist }),
         ...(config.identityTokenHmacSecret === undefined
           ? {}
           : { recipientKeySecret: config.identityTokenHmacSecret }),
