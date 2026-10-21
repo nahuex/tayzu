@@ -7,6 +7,13 @@
  * their readers, and the two global reads of tenant-keyed models, are named `global…`.
  * All SQL is parameterized and no read selects the hashed `key` column.
  */
+import { randomUUID } from 'node:crypto';
+
+import {
+  MARKER_EXPIRES_AT_SENTINEL,
+  MFA_REENROL_MARKER_VALUE,
+  mfaReenrolMarkerIdentifier,
+} from '@tayzu/auth';
 import type { Pool } from 'pg';
 
 /** The only API-key configuration identity manages (design D8). */
@@ -65,6 +72,24 @@ export interface AdminRecipientRead {
   readonly memberSince: Date;
 }
 
+/** A `two_factor` row as stored: `secret` and `backupCodes` are still encrypted. */
+export interface TwoFactorRowRead {
+  readonly id: string;
+  readonly secret: string;
+  readonly backupCodes: string;
+  /** A NULL column reads as true: only an explicit false means "not yet verified". */
+  readonly verified: boolean;
+  /** A NULL column reads as 0. */
+  readonly failedVerificationCount: number;
+  readonly lockedUntil: Date | null;
+}
+
+/** The raw two-factor facts of a user; the caller decides what "enrolled" means (044 D6). */
+export interface TwoFactorStateRead {
+  readonly twoFactorEnabled: boolean;
+  readonly rows: TwoFactorRowRead[];
+}
+
 export interface AuthRepository {
   listApiKeys: (
     tenantId: string,
@@ -101,11 +126,103 @@ export interface AuthRepository {
   globalUserById: (userId: string) => Promise<UserRead | undefined>;
   /** Whether a member of the tenant is banned; `undefined` when the user is not a member. */
   memberBanned: (tenantId: string, userId: string) => Promise<boolean | undefined>;
+  /**
+   * Whether the user is banned (a NULL column reads as false); `undefined` when there is no
+   * such user. `db` is the per-user lock's connection, for the in-lock re-read (044 D7).
+   */
+  globalUserBanned: (userId: string, db?: Pick<Pool, 'query'>) => Promise<boolean | undefined>;
   globalAccountByKey: (providerId: string, accountId: string) => Promise<AccountRead | undefined>;
-  globalAccountsOf: (userId: string) => Promise<AccountRead[]>;
+  globalAccountsOf: (userId: string, db?: Pick<Pool, 'query'>) => Promise<AccountRead[]>;
   globalInvitationById: (invitationId: string) => Promise<InvitationRead | undefined>;
   /** Tenant ids only, one per membership of the user. */
   globalMembershipTenantsOf: (userId: string) => Promise<string[]>;
+
+  // Two-factor section (044 design D6): each statement runs on `db`, the lock's connection.
+
+  /** `user.two_factor_enabled` (NULL reads as false) and the user's `two_factor` rows, by id. */
+  globalTwoFactorStateOf: (userId: string, db?: Pick<Pool, 'query'>) => Promise<TwoFactorStateRead>;
+  /**
+   * One atomic statement adding one to the failure counter; from the tenth failure on it also
+   * locks the row for 900 seconds (the plugin's defaults). Returns the new state.
+   */
+  globalRecordTwoFactorFailure: (
+    twoFactorId: string,
+    db?: Pick<Pool, 'query'>,
+  ) => Promise<{ failedVerificationCount: number; lockedUntil: Date | null }>;
+  /** Resets the counter and the lock when the lock has expired; true when a row changed. */
+  globalClearExpiredTwoFactorLock: (
+    twoFactorId: string,
+    db?: Pick<Pool, 'query'>,
+  ) => Promise<boolean>;
+  /** Resets the counter and the lock. */
+  globalResetTwoFactorFailures: (twoFactorId: string, db?: Pick<Pool, 'query'>) => Promise<void>;
+  /** Compare-and-swap of the encrypted backup codes; true when exactly one row changed. */
+  globalSpendBackupCode: (
+    twoFactorId: string,
+    expectedBackupCodes: string,
+    remainingBackupCodes: string,
+    db?: Pick<Pool, 'query'>,
+  ) => Promise<boolean>;
+
+  // Verification section: the `password-reset:` rows of `auth.verification` (044 design D3).
+  // Each statement runs on `db`, the connection that holds the per-user lock.
+
+  /** Deletes the user's `password-reset:` rows (the user id is the third `:` field of `value`). */
+  deleteResetTokensOf: (userId: string, db: Pick<Pool, 'query'>) => Promise<number>;
+  /** Deletes every expired `password-reset:` row. */
+  deleteExpiredResetTokens: (db: Pick<Pool, 'query'>) => Promise<number>;
+  /** Inserts `password-reset:<id>` with the stored value, expiring `ttlSeconds` from now. */
+  insertResetToken: (
+    row: { id: string; value: string; ttlSeconds: number },
+    db: Pick<Pool, 'query'>,
+  ) => Promise<void>;
+  /** Reads `password-reset:<id>`; `expired` is decided by the database clock. */
+  findResetToken: (
+    id: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<{ value: string; expired: boolean } | undefined>;
+  /**
+   * One atomic statement adding one to the counter in `value` where it is below 5.
+   * Returns the new count, or `undefined` when no row was updated.
+   */
+  incrementResetTokenFailures: (id: string, db: Pick<Pool, 'query'>) => Promise<number | undefined>;
+  /**
+   * Writes the `mfa-reenrol:<userId>` marker (044 design D11), the only production write of it.
+   * A second write leaves one row.
+   */
+  writeMfaReenrolMarker: (userId: string, db?: Pick<Pool, 'query'>) => Promise<void>;
+  /** Deletes every `two_factor` row of the user (the MFA reset, 044 design D10). */
+  deleteTwoFactorRows: (userId: string, db?: Pick<Pool, 'query'>) => Promise<number>;
+  /** Sets `user.two_factor_enabled`; true when a row changed. */
+  setTwoFactorEnabled: (
+    userId: string,
+    enabled: boolean,
+    db?: Pick<Pool, 'query'>,
+  ) => Promise<boolean>;
+  // Completion section (044 design D7). Each statement runs on `db`, the lock's connection.
+
+  /** Sets the hash on the user's `credential` account; throws unless exactly one row changed. */
+  globalSetCredentialPassword: (
+    userId: string,
+    passwordHash: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<void>;
+  /** Deletes the `temp-password:<userId>` marker; true when a row went. */
+  globalDeleteTemporaryPasswordMarker: (
+    userId: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<boolean>;
+  /** Deletes the user's `2fa-` challenge rows (not `2fa-attempts-`) and `trust-device-` rows. */
+  globalDeleteTwoFactorChallenges: (userId: string, db: Pick<Pool, 'query'>) => Promise<number>;
+  /** Sets `email_verified` on the user. */
+  globalMarkEmailVerified: (userId: string, db: Pick<Pool, 'query'>) => Promise<void>;
+  /** Deletes every session of the user in every tenant, returning each row's tenant (nullable). */
+  globalDeleteSessionsOf: (
+    userId: string,
+    db: Pick<Pool, 'query'>,
+  ) => Promise<{ id: string; tenantId: string | null }[]>;
+  /** Deletes `password-reset:<id>`. */
+  deleteResetToken: (id: string, db: Pick<Pool, 'query'>) => Promise<boolean>;
 }
 
 interface ApiKeyRow {
@@ -184,6 +301,13 @@ const toAccount = (r: AccountRow): AccountRead => ({
 function requireTenant(tenantId: unknown): asserts tenantId is string {
   if (typeof tenantId !== 'string' || tenantId === '') {
     throw new Error('auth repository: a tenantId is required');
+  }
+}
+
+/** Fails closed: a user-keyed write never runs without a non-empty user id. */
+function requireUserId(userId: unknown): asserts userId is string {
+  if (typeof userId !== 'string' || userId === '') {
+    throw new Error('auth repository: a userId is required');
   }
 }
 
@@ -362,6 +486,15 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       return result.rows[0];
     },
 
+    async globalUserBanned(userId, db = authPool) {
+      const result = await db.query<{ banned: boolean | null }>(
+        'select banned from auth."user" where id = $1',
+        [userId],
+      );
+      const row = result.rows[0];
+      return row === undefined ? undefined : row.banned === true;
+    },
+
     async memberBanned(tenantId, userId) {
       requireTenant(tenantId);
       const result = await authPool.query<{ banned: boolean | null }>(
@@ -384,8 +517,8 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       return row === undefined ? undefined : toAccount(row);
     },
 
-    async globalAccountsOf(userId) {
-      const result = await authPool.query<AccountRow>(
+    async globalAccountsOf(userId, db = authPool) {
+      const result = await db.query<AccountRow>(
         `select id, provider_id, account_id, user_id from auth.account
          where user_id = $1 order by id`,
         [userId],
@@ -408,6 +541,205 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [userId],
       );
       return result.rows.map((r) => r.organization_id);
+    },
+
+    async globalTwoFactorStateOf(userId, db = authPool) {
+      const flag = await db.query<{ two_factor_enabled: boolean | null }>(
+        'select two_factor_enabled from auth."user" where id = $1',
+        [userId],
+      );
+      const rows = await db.query<{
+        id: string;
+        secret: string;
+        backup_codes: string;
+        verified: boolean | null;
+        failed_verification_count: number | null;
+        locked_until: Date | null;
+      }>(
+        `select id, secret, backup_codes, verified, failed_verification_count, locked_until
+         from auth.two_factor where user_id = $1 order by id`,
+        [userId],
+      );
+      return {
+        twoFactorEnabled: flag.rows[0]?.two_factor_enabled === true,
+        rows: rows.rows.map((r) => ({
+          id: r.id,
+          secret: r.secret,
+          backupCodes: r.backup_codes,
+          verified: r.verified !== false,
+          failedVerificationCount: r.failed_verification_count ?? 0,
+          lockedUntil: r.locked_until,
+        })),
+      };
+    },
+
+    async globalRecordTwoFactorFailure(twoFactorId, db = authPool) {
+      const result = await db.query<{ failed: number; locked_until: Date | null }>(
+        `update auth.two_factor
+         set failed_verification_count = coalesce(failed_verification_count, 0) + 1,
+             locked_until = case when coalesce(failed_verification_count, 0) + 1 >= 10
+                                 then now() + make_interval(secs => 900)
+                                 else locked_until end
+         where id = $1
+         returning failed_verification_count as failed, locked_until`,
+        [twoFactorId],
+      );
+      const row = result.rows[0];
+      if (row === undefined) throw new Error('auth repository: no such two_factor row');
+      return { failedVerificationCount: row.failed, lockedUntil: row.locked_until };
+    },
+
+    async globalClearExpiredTwoFactorLock(twoFactorId, db = authPool) {
+      const result = await db.query(
+        `update auth.two_factor set failed_verification_count = 0, locked_until = null
+         where id = $1 and locked_until <= now()`,
+        [twoFactorId],
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async globalResetTwoFactorFailures(twoFactorId, db = authPool) {
+      await db.query(
+        `update auth.two_factor set failed_verification_count = 0, locked_until = null
+         where id = $1`,
+        [twoFactorId],
+      );
+    },
+
+    async globalSpendBackupCode(
+      twoFactorId,
+      expectedBackupCodes,
+      remainingBackupCodes,
+      db = authPool,
+    ) {
+      const result = await db.query(
+        'update auth.two_factor set backup_codes = $3 where id = $1 and backup_codes = $2',
+        [twoFactorId, expectedBackupCodes, remainingBackupCodes],
+      );
+      return result.rowCount === 1;
+    },
+
+    async deleteResetTokensOf(userId, db) {
+      const result = await db.query(
+        `delete from auth.verification
+         where identifier like 'password-reset:%' and split_part(value, ':', 3) = $1`,
+        [userId],
+      );
+      return result.rowCount ?? 0;
+    },
+
+    async deleteExpiredResetTokens(db) {
+      const result = await db.query(
+        `delete from auth.verification
+         where identifier like 'password-reset:%' and expires_at <= now()`,
+      );
+      return result.rowCount ?? 0;
+    },
+
+    async insertResetToken(row, db) {
+      await db.query(
+        `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+         values ($1, $2, $3, now() + make_interval(secs => $4), now(), now())`,
+        [randomUUID(), `password-reset:${row.id}`, row.value, row.ttlSeconds],
+      );
+    },
+
+    async findResetToken(id, db) {
+      const result = await db.query<{ value: string; expired: boolean }>(
+        `select value, expires_at <= now() as expired
+         from auth.verification where identifier = $1`,
+        [`password-reset:${id}`],
+      );
+      return result.rows[0];
+    },
+
+    async incrementResetTokenFailures(id, db) {
+      // The counter is the last `:` field; the pattern admits only 0..4, so the cast is safe.
+      const result = await db.query<{ failures: number }>(
+        `update auth.verification
+         set value = left(value, length(value) - 1) || (right(value, 1)::int + 1)::text,
+             updated_at = now()
+         where identifier = $1 and value ~ '^v1:[0-9a-f]{64}:[^:]+:[0-4]$'
+         returning right(value, 1)::int as failures`,
+        [`password-reset:${id}`],
+      );
+      return result.rows[0]?.failures;
+    },
+
+    async deleteResetToken(id, db) {
+      const result = await db.query('delete from auth.verification where identifier = $1', [
+        `password-reset:${id}`,
+      ]);
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async writeMfaReenrolMarker(userId, db = authPool) {
+      requireUserId(userId);
+      await db.query(
+        `insert into auth.verification (id, identifier, value, expires_at, created_at, updated_at)
+         select $1, $2, $3, $4, now(), now()
+         where not exists (select 1 from auth.verification where identifier = $2)`,
+        [
+          randomUUID(),
+          mfaReenrolMarkerIdentifier(userId),
+          MFA_REENROL_MARKER_VALUE,
+          MARKER_EXPIRES_AT_SENTINEL,
+        ],
+      );
+    },
+
+    async deleteTwoFactorRows(userId, db = authPool) {
+      requireUserId(userId);
+      const result = await db.query('delete from auth.two_factor where user_id = $1', [userId]);
+      return result.rowCount ?? 0;
+    },
+
+    async setTwoFactorEnabled(userId, enabled, db = authPool) {
+      requireUserId(userId);
+      const result = await db.query(
+        'update auth."user" set two_factor_enabled = $2 where id = $1',
+        [userId, enabled],
+      );
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async globalSetCredentialPassword(userId, passwordHash, db) {
+      const result = await db.query(
+        `update auth.account set password = $2, updated_at = now()
+         where user_id = $1 and provider_id = 'credential'`,
+        [userId, passwordHash],
+      );
+      if (result.rowCount !== 1) throw new Error('credential password update must change one row');
+    },
+
+    async globalDeleteTemporaryPasswordMarker(userId, db) {
+      const result = await db.query('delete from auth.verification where identifier = $1', [
+        `temp-password:${userId}`,
+      ]);
+      return (result.rowCount ?? 0) > 0;
+    },
+
+    async globalDeleteTwoFactorChallenges(userId, db) {
+      const result = await db.query(
+        `delete from auth.verification
+         where value = $1
+           and ((identifier like '2fa-%' and identifier not like '2fa-attempts-%')
+                or identifier like 'trust-device-%')`,
+        [userId],
+      );
+      return result.rowCount ?? 0;
+    },
+
+    async globalMarkEmailVerified(userId, db) {
+      await db.query('update auth."user" set email_verified = true where id = $1', [userId]);
+    },
+
+    async globalDeleteSessionsOf(userId, db) {
+      const result = await db.query<{ id: string; active_organization_id: string | null }>(
+        'delete from auth.session where user_id = $1 returning id, active_organization_id',
+        [userId],
+      );
+      return result.rows.map((row) => ({ id: row.id, tenantId: row.active_organization_id }));
     },
   };
 }

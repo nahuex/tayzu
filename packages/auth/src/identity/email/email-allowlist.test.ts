@@ -193,3 +193,71 @@ describe('the recipient-domain allowlist wrapper (043 task 6.5b)', () => {
     }
   });
 });
+
+describe('isRecipientDomainAllowed agrees with the wrapper (044 task 5.3, design D5)', () => {
+  const TABLE: readonly {
+    readonly name: string;
+    readonly address: string;
+    readonly domains: readonly string[];
+    readonly allowed: boolean;
+  }[] = [
+    { name: 'plain', address: 'p@allowed.example', domains: ['allowed.example'], allowed: true },
+    {
+      name: 'mixed case',
+      address: 'Person@Allowed.EXAMPLE',
+      domains: ['allowed.example'],
+      allowed: true,
+    },
+    {
+      name: 'surrounding whitespace',
+      address: '  p@allowed.example \t',
+      domains: ['allowed.example'],
+      allowed: true,
+    },
+    {
+      name: 'NFC (decomposed address, composed list entry)',
+      address: 'p@ré.example',
+      domains: ['ré.example'],
+      allowed: true,
+    },
+    {
+      name: 'NFC (composed address, composed list entry)',
+      address: 'p@ré.example',
+      domains: ['ré.example'],
+      allowed: true,
+    },
+    { name: 'no @', address: 'allowed.example', domains: ['allowed.example'], allowed: false },
+    {
+      name: 'a subdomain',
+      address: 'p@sub.allowed.example',
+      domains: ['allowed.example'],
+      allowed: false,
+    },
+    {
+      name: 'a look-alike suffix',
+      address: 'p@allowed.example.attacker.test',
+      domains: ['allowed.example'],
+      allowed: false,
+    },
+    {
+      name: 'another domain',
+      address: 'p@other.example',
+      domains: ['allowed.example'],
+      allowed: false,
+    },
+    { name: 'an empty list', address: 'p@allowed.example', domains: [], allowed: false },
+    { name: 'an empty list and no @', address: 'nobody', domains: [], allowed: false },
+  ];
+
+  it.each(TABLE)('$name: the pure check and the wrapper give the same answer', async (row) => {
+    const provider = stubProvider();
+    const sender = allowlist.createAllowlistEmailSender(provider, row.domains);
+
+    const pure = allowlist.isRecipientDomainAllowed(row.address, row.domains);
+    const refusal = await rejectionOf(sender.send(row.address, NOTICE));
+
+    expect(pure).toBe(row.allowed);
+    expect(refusal === undefined).toBe(row.allowed);
+    expect(provider.calls).toHaveLength(row.allowed ? 1 : 0);
+  });
+});

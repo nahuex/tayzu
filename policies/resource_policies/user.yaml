@@ -17,12 +17,27 @@ resourcePolicy:
           expr: R.attr.tenantId != P.attr.tenantId
     # Task 5.4 (design D3): nobody changes their own status. R.id is the opaque
     # user id (never an email), so the comparison with P.id is not vacuous.
-    - actions: [updateStatus]
+    # Task 10.1 (044 D10): `resetMfa` joins the same self-target deny.
+    - actions: [updateStatus, resetMfa]
       effect: EFFECT_DENY
       roles: ['*']
       condition:
         match:
           expr: R.id == P.id
+    # Task 10.1 (044 D10, Q15): an admin may reset the factor of a plain member
+    # only. This hardens the existing `'*'` admin grant below; it adds no grant.
+    # `memberRole` is the target's raw tenant role string (comma-separated when
+    # composite), so `admin,owner` and `member,admin` are not `member` and are
+    # denied. An absent `memberRole` on a target check is denied (fail closed).
+    # The wrapper's targetless caller check names the resource id `new` and
+    # carries no `memberRole`; it is left alone (a generated user id is never
+    # `new`).
+    - actions: [resetMfa]
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          expr: R.id != "new" && (!has(R.attr.memberRole) || R.attr.memberRole != "member")
     # Task 5.5 (design D3, Resolved decisions Q7 and Q16): service-account
     # ceiling. A service account holds `member` and no Moderator grant, always.
     # Any action on a service-account resource whose resulting portRole is not

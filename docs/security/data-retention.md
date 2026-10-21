@@ -82,6 +82,88 @@ consumed. It is an **environment variable**, so flipping it needs a **new app
 revision**; there is no runtime toggle. The emergency procedure is in
 [Secrets](secrets.md).
 
+## Password reset and recovery
+
+Design D3, D5, D11, D16 and D18 of
+`openspec/changes/044-password-reset-and-account-recovery/design.md`. The change
+adds no table, no column and no migration; `0012`-`0014` stay reserved for `045`.
+
+### Identifier families in `auth.verification`
+
+The change writes exactly two families. A test
+(`apps/api/src/identity/verification-families.int.test.ts`) runs each writer once
+and fails on any other prefix, so the list below is the one the test declares.
+
+| Family                 | Written by                                                          | Lifetime                                                                                                 | Removed by                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `password-reset:<id>`  | The reset-token store, only after the mailer admitted the send (D3) | 30 minutes, a constant                                                                                   | The confirm that consumes it; a newer admitted request for the same user; the opportunistic purge of expired rows in the next issue; the budget of 5 failed factors    |
+| `mfa-reenrol:<userId>` | `writeMfaReenrolMarker`, the only writer (D11)                      | Far-future sentinel `expires_at` (`9999-12-31`), shared with the temporary-password and SSO-link markers | The user's enrolment of a factor (`hooks.after` on `/two-factor/verify-totp`). A password reset does not delete it: a reset does not give back a factor that was reset |
+
+The `password-reset:<id>` row holds the lowercase hex SHA-256 digest of the
+token, the user id and a failure count in `value`; the token is in no column.
+The identifier holds a random id, neither a tenant nor a user.
+
+A completed reset also deletes the user's `temp-password:<userId>` marker, the
+user's pending `2fa-<random>` challenge rows and `trust-device-*` rows (both
+matched by `value` = user id). The sibling `2fa-attempts-2fa-<random>` rows have
+the value `0`, are not matched, and expire with their challenge (10 minutes).
+
+### Reset caps in `auth.rate_limit`
+
+The caps added by this change are keyed by hashed values, so `auth.rate_limit`
+holds no address or email in clear: the recipient caps use the HMAC of the
+canonical address under `IDENTITY_TOKEN_HMAC_SECRET`, and the IP keys are the
+normalized client key of D16 (an IPv4 address, or the first 64 bits of an IPv6
+one). Both are pseudonymous and carry no tenant.
+
+| Scope                                             | Default                                 | Variables                                                                                                 |
+| ------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `password_reset_request` (route, per IP)          | 10 requests per 60 seconds              | `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX`, `PASSWORD_RESET_REQUEST_RATE_LIMIT_WINDOW_SECONDS`               |
+| `password_reset_confirm` (route, per IP)          | 10 requests per 60 seconds              | `PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX`, `PASSWORD_RESET_CONFIRM_RATE_LIMIT_WINDOW_SECONDS`               |
+| `reset_email_recipient` (per recipient)           | 5 emails per hour                       | `PASSWORD_RESET_RECIPIENT_RATE_LIMIT_MAX`, `PASSWORD_RESET_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS`           |
+| `reset_email_ip` (per normalized IP)              | 10 emails per hour                      | `PASSWORD_RESET_IP_RATE_LIMIT_MAX`, `PASSWORD_RESET_IP_RATE_LIMIT_WINDOW_SECONDS`                         |
+| `reset_email_global` (platform)                   | 600 emails per hour, fixed window       | `PASSWORD_RESET_GLOBAL_RATE_LIMIT_MAX`, `PASSWORD_RESET_GLOBAL_RATE_LIMIT_WINDOW_SECONDS`                 |
+| `recovery_notice_recipient` (per recipient)       | 10 emails per 24 hours                  | `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_MAX`, `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_WINDOW_SECONDS`         |
+| `account_created_notice_tenant` (creating tenant) | 20 notices per 24 hours                 | `ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_MAX`, `ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_WINDOW_SECONDS` |
+| `account_created_notice_global` (platform)        | 1000 notices per 24 hours, fixed window | `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX`, `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_WINDOW_SECONDS` |
+
+**Fixed windows for the two global caps (Resolved decision Q32).** The two
+platform-wide buckets have one key each. Under the window semantics of `002`
+(a bucket resets only after a full window with no allowed request) steady
+traffic at the cap would stop the whole platform for a whole idle window. For
+these two buckets only, the cap store appends the index of the current window to
+the bucket value, `<key>:<floor(now / window)>`, so each hour or day starts a new
+row at zero and the cap means N per fixed window. Every other bucket keeps the
+semantics of `002`. The row of a past window is an ordinary expired
+`auth.rate_limit` row, covered by the pruning item below.
+
+### Pruning expired `auth.rate_limit` rows
+
+Nothing prunes `auth.rate_limit` today: each distinct key writes a row, and an
+expired row stays (`packages/db/migrations/0004_rate_limit_table.sql`). The
+normalized IP key bounds the growth an attacker can cause, and the fixed-window
+rows of the two global caps add one row per window. Pruning the rows whose
+`last_request` is older than the longest window is a data-retention item with a
+ticket (design D16), not built in this change. Until it is, the table grows with
+the number of distinct keys.
+
+### Hand-off note to `045`
+
+`044` adds no migration. Its two families need a classification in the
+completeness test of `045`, which classifies every `auth.verification` family by
+pattern and fails on an unlisted one:
+
+| Family                 | Recommended classification                                                                                                            | Reason                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `password-reset:<id>`  | Exempt as short-lived state (30 minutes, a random id, a digest, and a user id in `value`; purged opportunistically by the next issue) | The identifier holds neither a tenant nor a user, so a purge policy that joins by identifier family cannot join it, and it does not need to |
+| `mfa-reenrol:<userId>` | Purge step: delete with the user's other `verification` markers (`temp-password:`, `sso-link:`) before the row its policy joins       | Keyed by user id; far-future `expires_at`, so nothing else removes it                                                                       |
+
+Also for `045`: `auth.rate_limit` now holds the hashed reset caps and IP keys
+above (pseudonymous, no tenant; exempt as `045` already treats the table), and
+the `EmailTemplate` union and the `tayzu.identity.email.template` set are
+extended by `044` first, so the `OrgDeletionNotice` of `045` rebases onto them.
+`verification-families.int.test.ts` is the early-warning list.
+
 ## Email policy
 
 - **Provider.** `EMAIL_PROVIDER` is `acs` or `none` (the non-sending sender).

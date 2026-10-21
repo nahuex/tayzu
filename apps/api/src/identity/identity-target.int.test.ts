@@ -195,11 +195,21 @@ describe('identity target resolution', () => {
 
     await expect(
       resolver.resolve({ tenantId: t1 }, { kind: 'user', id: ownUser }),
-    ).resolves.toEqual({ kind: 'user', id: ownUser, tenantId: t1 });
+    ).resolves.toEqual({
+      kind: 'user',
+      id: ownUser,
+      tenantId: t1,
+      attributes: { memberRole: 'member' },
+    });
     // A user belongs to the tenant when they have a membership in it, even if they also belong to another.
     await expect(
       resolver.resolve({ tenantId: t1 }, { kind: 'user', id: bothUser }),
-    ).resolves.toEqual({ kind: 'user', id: bothUser, tenantId: t1 });
+    ).resolves.toEqual({
+      kind: 'user',
+      id: bothUser,
+      tenantId: t1,
+      attributes: { memberRole: 'member' },
+    });
   });
 
   it('A target carrying a tenantId or actor field is rejected before anything is read', async () => {
@@ -258,5 +268,58 @@ describe('identity target resolution', () => {
       ['apiKeyById', t1, 'key-1'],
       ['userInTenant', t1, 'usr-1'],
     ]);
+  });
+
+  /**
+   * Task 10.2 of `044-password-reset-and-account-recovery`. Case "the resolver reports
+   * `memberRole` for a user target and a composite role arrives unmodified".
+   *
+   * Production symbol expected: `ResolvedIdentityTarget.attributes?.memberRole`, the raw
+   * `role` string of the user's membership in the host tenant (from `memberOf`). The existing
+   * user case above compares the whole resolved target with `toEqual` and has to learn of the
+   * new attribute when the implementer adds it (reported, not changed here).
+   */
+  it('the resolver reports memberRole for a user target and a composite role arrives unmodified', async () => {
+    const t1 = await seedTenant();
+    const t2 = await seedTenant();
+    const roles = ['member', 'admin', 'owner', 'admin,owner', 'member,admin'];
+    for (const role of roles) {
+      const userId = await seedUser();
+      await authPool.query(
+        'insert into auth.member (id, organization_id, user_id, role, created_at) values ($1, $2, $3, $4, now())',
+        [`mem-${randomUUID()}`, t1, userId, role],
+      );
+
+      const resolved = await resolver.resolve({ tenantId: t1 }, { kind: 'user', id: userId });
+
+      expect(resolved.attributes?.memberRole).toBe(role);
+    }
+
+    // A second membership elsewhere never changes the host tenant's role.
+    const both = await seedUser();
+    await seedMember(t1, both);
+    await authPool.query(
+      "insert into auth.member (id, organization_id, user_id, role, created_at) values ($1, $2, $3, 'owner', now())",
+      [`mem-${randomUUID()}`, t2, both],
+    );
+    const resolvedBoth = await resolver.resolve({ tenantId: t1 }, { kind: 'user', id: both });
+    expect(resolvedBoth.attributes?.memberRole).toBe('member');
+  });
+
+  it('an invitation or credential target reports no memberRole', async () => {
+    const t1 = await seedTenant();
+    const inviter = await seedUser();
+    await seedMember(t1, inviter);
+    const invitation = await seedInvitation(t1, inviter);
+    const key = await seedApiKey(t1);
+
+    const resolvedInvitation = await resolver.resolve(
+      { tenantId: t1 },
+      { kind: 'invitation', id: invitation },
+    );
+    const resolvedKey = await resolver.resolve({ tenantId: t1 }, { kind: 'credential', id: key });
+
+    expect(resolvedInvitation.attributes?.memberRole).toBeUndefined();
+    expect(resolvedKey.attributes?.memberRole).toBeUndefined();
   });
 });

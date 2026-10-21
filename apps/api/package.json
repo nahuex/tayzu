@@ -17,6 +17,7 @@
     "identity:backfill-user-blueprint": "tsx scripts/backfill-user-blueprint.ts",
     "identity:reconcile-users": "tsx scripts/reconcile-users.ts",
     "bootstrap:admin": "tsx scripts/bootstrap-admin.ts",
+    "recover:admin-mfa": "tsx scripts/recover-admin-mfa.ts",
     "contract:generate": "tsx scripts/generate-identity-contract.ts",
     "contract:check": "tsx scripts/check-identity-contract.ts"
   },

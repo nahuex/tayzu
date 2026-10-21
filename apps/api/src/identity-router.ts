@@ -48,6 +48,8 @@ import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
 import type { WithUserLock } from './identity/user-lock.js';
+import type { MfaResetReason, MfaResetService } from './identity/mfa-reset.js';
+import type { RecoveryMailer } from './identity/recovery-mailer.js';
 import { canonicalEmail, isValidIdentityEmail } from './identity/email-canonical.js';
 import { buildInvitationLink } from './identity/invitation-link.js';
 import { createDefineIdentityOperation } from './identity/define-operation.js';
@@ -155,6 +157,8 @@ export interface CreateIdentityRouterOptions {
   readonly withUserLock: WithUserLock;
   /** The one gate that sends invitation emails (task 6.5c). */
   readonly emailGate?: EmailTenantGate;
+  /** Sends the account-created notice after `identity.users.create` (044 task 7.3). */
+  readonly recoveryMailer?: RecoveryMailer;
   /** The trusted `INVITATION_LINK_BASE_URL`; the link's origin comes only from it. */
   readonly invitationLinkBaseUrl?: string;
   /** The `tayzu_app` pool the revocation list is read through (task 9.2). */
@@ -165,6 +169,8 @@ export interface CreateIdentityRouterOptions {
   readonly serviceAccountCap?: number;
   /** The Q30 adapter every `_user` write goes through (service accounts, task 10.3). */
   readonly userSync?: UserSyncAdapter;
+  /** The shared MFA reset service behind `identity.users.resetMfa` (044 task 10.5). */
+  readonly mfaReset?: MfaResetService;
 }
 
 export interface CreateUserInput {
@@ -249,6 +255,10 @@ const USER_PARAM = { user: EMAIL_FIELD } as const;
 const INVITATION_PARAM = { invitation: { kind: 'string', maxLength: 64 } } as const;
 const CREDENTIAL_PARAM = { credential: { kind: 'string', maxLength: 64 } } as const;
 
+/** The closed set of admin MFA reset reason codes (044 design D10, Q28). */
+const MFA_RESET_REASON_PATTERN =
+  /^(?:lost_both_factors|device_replaced|suspected_compromise|identity_verified_request)$/;
+
 /** The detailed input shape of each procedure (design D10 "Input contract"). */
 const SCHEMAS = {
   createUser: {
@@ -257,6 +267,10 @@ const SCHEMAS = {
   invite: { body: { email: EMAIL_FIELD, role: ROLE_FIELD } },
   invitation: { params: INVITATION_PARAM },
   setStatus: { params: USER_PARAM, body: { status: { kind: 'string', maxLength: 16 } } },
+  resetMfa: {
+    params: USER_PARAM,
+    body: { reason: { kind: 'string', maxLength: 32, pattern: MFA_RESET_REASON_PATTERN } },
+  },
   link: { params: USER_PARAM, body: { subject: { kind: 'string', maxLength: 256 } } },
   user: { params: USER_PARAM },
   createServiceAccount: {
@@ -421,7 +435,10 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
         options.appPool === undefined || user === undefined
           ? undefined
           : await readUserAttributes(options.appPool, context.tenantId, user.email);
-      return attributes === undefined ? resolved : { ...resolved, attributes };
+      // Keep what the base resolver reported (`memberRole`, 044 task 10.2) next to the `_user` attributes.
+      return attributes === undefined
+        ? resolved
+        : { ...resolved, attributes: { ...resolved.attributes, ...attributes } };
     },
   };
 
@@ -784,6 +801,14 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             });
             // Design D4 (Q110): the user now exists, so a pending invitation of this tenant to the address is moot.
             const tenantId = rawTenantId(context);
+            // The notice never rejects; the new user's only membership is the creating tenant.
+            await options.recoveryMailer?.sendNotice({
+              kind: 'AccountCreatedNotice',
+              address: input.email,
+              userId: user.id,
+              tenantIds: [tenantId],
+              creatingTenantId: tenantId,
+            });
             const pending = await options.authRepository.pendingInvitationsByEmail(
               tenantId,
               input.email,
@@ -1020,6 +1045,29 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
               }
             });
             emitAdminLinkEvent('linked', context);
+          },
+        }),
+        // Design D10: members only; the service repeats the target checks and sends the notice.
+        resetMfa: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.user,
+            action: 'resetMfa',
+            resolveTarget: userTargetOf(SCHEMAS.resetMfa),
+          },
+          route: identityRoute('POST', '/v1/users/{user}/mfa/reset', { highRisk: true }),
+          handler: async ({ context, input: rawInput, target }): Promise<{ reset: true }> => {
+            const { body } = parseDetailedInput(SCHEMAS.resetMfa, rawInput);
+            // Fail closed when the host did not wire the service.
+            if (options.mfaReset === undefined || target === undefined) {
+              throw new IdentityInputError();
+            }
+            await options.mfaReset.resetAdmin({
+              tenantId: rawTenantId(context),
+              actorId: (context['actor'] as { id: string }).id,
+              userId: target.id,
+              reason: body['reason'] as MfaResetReason,
+            });
+            return { reset: true };
           },
         }),
         // Tenant-scoped (Q25): the tenant's sessions go always; the global ban only for a single membership.

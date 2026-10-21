@@ -141,6 +141,9 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
   const encodedStatusMarker = `marker-enc-status-${suffix}@example.test`;
   const encodedCatalogMarker = `marker-enc-get-${suffix}@example.test`;
   const otherBlueprintEntity = `keep-${suffix}`;
+  const MFA_RESET = '/v1/users/{user}/mfa/reset';
+  const resetRawMarker = `marker-user-${suffix}@example.com`;
+  const resetEncodedMarker = `marker-enc-user-${suffix}@example.com`;
   const otherBlueprintPath = `/v1/blueprints/component/entities/${otherBlueprintEntity}`;
 
   let spans: JsonSpan[] = [];
@@ -256,6 +259,14 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
           'GET',
           `/v1/blueprints/_user/entities/${encodeURIComponent(encodedCatalogMarker)}`,
         );
+        // 044 task 10.5: the admin MFA reset path, in its raw and percent-encoded spelling.
+        // It shares this SDK and receiver: a second `startTelemetry` in one process cannot
+        // register its exporter, so a separate describe would find no spans.
+        for (const target of [resetRawMarker, encodeURIComponent(resetEncodedMarker)]) {
+          await call(base, cookie, 'POST', `/v1/users/${target}/mfa/reset`, {
+            reason: 'device_replaced',
+          });
+        }
       } finally {
         await app.close();
       }
@@ -298,6 +309,16 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
     expectNoMarker(statusMarker, credentialMarker);
   });
 
+  it('`POST /v1/users/marker-user@example.com/mfa/reset` and its percent-encoded form export `/v1/users/{user}/mfa/reset` and no marker', () => {
+    const found = serverSpans('POST', MFA_RESET);
+    expect(
+      found.length,
+      'a POST server span per spelling exports the template',
+    ).toBeGreaterThanOrEqual(2);
+    expectTemplateExported('POST', MFA_RESET);
+    expectNoMarker(resetRawMarker, resetEncodedMarker, encodeURIComponent(resetEncodedMarker));
+  });
+
   it('A `_user` email never reaches a catalog HTTP span', () => {
     expectTemplateExported('GET', CATALOG_USER);
     expectTemplateExported('PUT', CATALOG_USER_STATUS);
@@ -326,6 +347,7 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
       CATALOG_USER,
       CATALOG_USER_STATUS,
       CATALOG_USER_RELATED,
+      MFA_RESET,
     ]);
     const candidates = spans.filter((s) => {
       const path = pathOf(s) ?? '';
@@ -385,5 +407,15 @@ describe('docs/catalog/catalog-core.md (task 15.5)', () => {
     for (const template of [CATALOG_USER, CATALOG_USER_STATUS, CATALOG_USER_RELATED]) {
       expect(doc).toContain(template);
     }
+  });
+});
+
+/** 044 task 10.5: the template matcher covers the admin MFA reset route. */
+describe('the admin MFA reset template matcher (044 task 10.5)', () => {
+  const MFA_RESET = '/v1/users/{user}/mfa/reset';
+
+  it('the template matcher covers the reset route whatever the identifier spelling', () => {
+    expect(routeTemplate('/v1/users/a@b.test/mfa/reset')).toBe(MFA_RESET);
+    expect(routeTemplate('/v1/users/a%40b.test/mfa/reset')).toBe(MFA_RESET);
   });
 });

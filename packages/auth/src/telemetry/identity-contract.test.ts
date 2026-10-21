@@ -213,7 +213,217 @@ describe('the identity contract declares every remaining span, metric and log ev
     ];
     expect(everyKey.length).toBeGreaterThan(0);
     for (const key of everyKey) {
-      expect(key).not.toMatch(/email(?!\.template)|token|secret|\.name$|password|\bsub\b/);
+      // D15 (044): email.outcome is a closed value set (sent, suppressed, failed), never an address.
+      expect(key).not.toMatch(
+        /email(?!\.(template|outcome))|token|secret|\.name$|password|\bsub\b/,
+      );
     }
+  });
+});
+
+/*
+ * Task 12.1 of openspec/changes/044-password-reset-and-account-recovery (design D15).
+ *
+ * ## Production symbols expected (`./identity-contract.js`)
+ *
+ * - `IDENTITY_SPANS` gains `identity.password_reset.request` (no attributes),
+ *   `identity.password_reset.confirm` (no required attribute; `conditional:
+ *   ['tayzu.identity.reset.mfa']`, a new optional `conditional` field on
+ *   `IdentitySpanDeclaration`) and `identity.mfa.reset`
+ *   (`tayzu.identity.mfa_reset.path`).
+ * - `IDENTITY_METRICS` gains the four 044 counters.
+ * - `IDENTITY_LOG_EVENTS` gains the six 044 events (`catalog.audit.mfa_reset`
+ *   with forms `admin` and `operator`).
+ * - `IDENTITY_ATTRIBUTE_VALUES` gains the 044 value sets and extends
+ *   `tayzu.identity.email.template`, `tayzu.identity.conflict.reason` and
+ *   `tayzu.auth.revocation.reason`.
+ *
+ * The expectations are in the fixture (`EXPECTED_*`), written from design D15.
+ * The existing 043 cases above compare against the same fixture, so they also
+ * cover every 044 name and attribute once those are declared.
+ */
+const EXPECTED_044_NAMES = {
+  spans: [
+    'identity.password_reset.request',
+    'identity.password_reset.confirm',
+    'identity.mfa.reset',
+  ],
+  metrics: [
+    'tayzu.identity.password_reset_requests',
+    'tayzu.identity.password_reset_confirms',
+    'tayzu.identity.mfa_resets',
+    'tayzu.identity.recovery_emails',
+  ],
+  events: [
+    'catalog.audit.password_reset_requested',
+    'catalog.audit.password_reset_completed',
+    'catalog.audit.mfa_reset',
+    'catalog.security.password_reset_denied',
+    'catalog.security.recovery_email_suppressed',
+    'catalog.security.self_mfa_reset_denied',
+  ],
+};
+
+const VALUES_044 = [
+  'tayzu.identity.reset.mfa',
+  'tayzu.identity.reset.request_outcome',
+  'tayzu.identity.reset.confirm_outcome',
+  'tayzu.identity.reset.denial_reason',
+  'tayzu.identity.recovery.suppression',
+  'tayzu.identity.mfa_reset.path',
+  'tayzu.identity.mfa_reset.reason',
+  'tayzu.identity.conflict.reason',
+  'tayzu.identity.email.template',
+  'tayzu.identity.email.outcome',
+  'tayzu.auth.revocation.reason',
+];
+
+describe('the identity contract declares the 044 telemetry of design D15 (task 12.1)', () => {
+  const contract = identityContract as unknown as {
+    IDENTITY_SPANS: readonly (Declared & { attributes: readonly string[] })[];
+    IDENTITY_METRICS: readonly Declared[];
+    IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>>;
+  };
+  const events = asDeclared(IDENTITY_LOG_EVENTS);
+
+  it('every declared name and attribute equals the expected fixture', () => {
+    for (const name of EXPECTED_044_NAMES.spans) {
+      const expected = EXPECTED_SPANS.find((s) => s.name === name);
+      expect(expected, `fixture has ${name}`).toBeDefined();
+      const declared = byName(asDeclared(contract.IDENTITY_SPANS), name);
+      expect(declared, `${name} declared`).toBeDefined();
+      expect(sorted(declared?.attributes)).toEqual(sorted(expected?.attributes));
+      expect(sorted(declared?.conditional)).toEqual(sorted(expected?.conditional));
+    }
+    for (const name of EXPECTED_044_NAMES.metrics) {
+      const expected = EXPECTED_METRICS.find((m) => m.name === name);
+      expect(expected, `fixture has ${name}`).toBeDefined();
+      const declared = byName(asDeclared(contract.IDENTITY_METRICS), name);
+      expect(declared, `${name} declared`).toBeDefined();
+      expect(sorted(declared?.attributes)).toEqual(sorted(expected?.attributes));
+    }
+    for (const name of EXPECTED_044_NAMES.events) {
+      const expected = EXPECTED_LOG_EVENTS.find((e) => e.name === name);
+      expect(expected, `fixture has ${name}`).toBeDefined();
+      const declared = byName(events, name);
+      expect(declared, `${name} declared`).toBeDefined();
+      expect(declared?.severity).toBe(expected?.severity);
+      if (expected?.forms === undefined) {
+        expect(declared?.forms).toBeUndefined();
+        expect(sorted(declared?.attributes)).toEqual(sorted(expected?.attributes));
+      } else {
+        expect(Object.keys(declared?.forms ?? {}).sort()).toEqual(
+          Object.keys(expected.forms).sort(),
+        );
+        for (const [form, attributes] of Object.entries(expected.forms)) {
+          expect(sorted(declared?.forms?.[form]), `form ${form}`).toEqual(sorted(attributes));
+        }
+      }
+      expect(sorted(declared?.conditional)).toEqual(sorted(expected?.conditional));
+    }
+  });
+
+  it('declares the two denial and suppression events with the user id conditional', () => {
+    expect(byName(events, 'catalog.security.password_reset_denied')?.conditional).toEqual([
+      'tayzu.identity.user.id',
+    ]);
+    expect(byName(events, 'catalog.security.recovery_email_suppressed')?.conditional).toEqual([
+      'tayzu.identity.user.id',
+    ]);
+    const operator = byName(events, 'catalog.audit.mfa_reset')?.forms?.operator ?? [];
+    expect(operator).toContain('tayzu.identity.approver.id');
+    expect(operator).toContain('tayzu.identity.operator.id');
+  });
+
+  it('the value sets equal design D15', () => {
+    for (const key of VALUES_044) {
+      expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES[key]), key).toEqual(
+        sorted(EXPECTED_ATTRIBUTE_VALUES[key]),
+      );
+    }
+    expect(
+      sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.reset.denial_reason']),
+    ).toEqual(
+      sorted([
+        'malformed_request',
+        'csrf_rejected',
+        'origin_rejected',
+        'not_found',
+        'expired',
+        'token_mismatch',
+        'not_eligible',
+        'factor_invalid',
+        'factor_state_inconsistent',
+        'attempts_exhausted',
+        'policy_violation',
+        'breached',
+        'breach_check_unavailable',
+        'consume_conflict',
+      ]),
+    );
+    expect(
+      sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.recovery.suppression']),
+    ).toEqual(
+      sorted([
+        'unknown_address',
+        'no_credential_account',
+        'banned',
+        'disabled_everywhere',
+        'no_membership',
+        'kill_switch',
+        'recipient_domain_blocked',
+        'tenants_email_disabled',
+        'recipient_cap',
+        'ip_cap',
+        'global_cap',
+        'tenant_cap',
+        'provider_failure',
+        'token_issue_failure',
+      ]),
+    );
+    expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.conflict.reason'])).toEqual(
+      sorted([
+        'account_exists',
+        'target_in_other_tenant',
+        'sub_already_linked',
+        'target_is_admin_or_owner',
+        'no_enrolled_factor',
+      ]),
+    );
+    expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.email.template'])).toEqual(
+      sorted([
+        'invitation',
+        'admin_accepted',
+        'password_reset',
+        'password_changed',
+        'mfa_changed',
+        'mfa_reset',
+        'account_created',
+      ]),
+    );
+  });
+
+  it('the `tayzu.auth.revocation.reason` set equals `sso_link_shed`, `password_reset`, `mfa_reset`', () => {
+    expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.auth.revocation.reason'])).toEqual([
+      'mfa_reset',
+      'password_reset',
+      'sso_link_shed',
+    ]);
+  });
+
+  it('`tayzu.identity.reset.mfa` is conditional on the confirm span', () => {
+    const confirm = byName(asDeclared(contract.IDENTITY_SPANS), 'identity.password_reset.confirm');
+    expect(confirm, 'declared').toBeDefined();
+    expect(confirm?.attributes ?? []).not.toContain('tayzu.identity.reset.mfa');
+    expect(confirm?.conditional).toEqual(['tayzu.identity.reset.mfa']);
+    const request = byName(asDeclared(contract.IDENTITY_SPANS), 'identity.password_reset.request');
+    expect(request?.attributes ?? []).toEqual([]);
+    expect(request?.conditional ?? []).toEqual([]);
+  });
+
+  it('`tayzu.identity.notice.template` is unchanged', () => {
+    expect(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.notice.template']).toEqual([
+      'admin_accepted',
+    ]);
   });
 });

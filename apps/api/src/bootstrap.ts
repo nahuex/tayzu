@@ -108,14 +108,30 @@ export async function createAppFromEnv(env: Env): Promise<App> {
         ...(config.invitationLinkBaseUrl === undefined
           ? {}
           : { invitationLinkBaseUrl: config.invitationLinkBaseUrl }),
+        ...(config.passwordResetLinkBaseUrl === undefined
+          ? {}
+          : { passwordResetLinkBaseUrl: config.passwordResetLinkBaseUrl }),
         disabledTenantIds: config.emailDisabledTenantIds,
         killSwitch: config.invitationEmailKillSwitch,
+        // An empty list means no restriction, as for the sender's own allowlist.
+        ...(config.emailRecipientDomainAllowlist.length === 0
+          ? {}
+          : { recipientDomainAllowlist: config.emailRecipientDomainAllowlist }),
         ...(config.identityTokenHmacSecret === undefined
           ? {}
           : { recipientKeySecret: config.identityTokenHmacSecret }),
         tenantCap: config.invitationTenantCap,
         recipientCap: config.invitationRecipientCap,
         noticeTenantCap: config.noticeTenantCap,
+        passwordResetRequestRateLimit: config.passwordResetRequestRateLimit,
+        passwordResetConfirmRateLimit: config.passwordResetConfirmRateLimit,
+        passwordResetRecipientCap: config.passwordResetRecipientCap,
+        passwordResetIpCap: config.passwordResetIpCap,
+        passwordResetGlobalCap: config.passwordResetGlobalCap,
+        passwordResetMinResponseMs: config.passwordResetMinResponseMs,
+        recoveryNoticeRecipientCap: config.recoveryNoticeRecipientCap,
+        accountCreatedNoticeTenantCap: config.accountCreatedNoticeTenantCap,
+        accountCreatedNoticeGlobalCap: config.accountCreatedNoticeGlobalCap,
       },
     });
     const ownedAuthPool = authPool;

@@ -33,8 +33,11 @@ class IdentityForbiddenError extends Error {
   }
 }
 
-/** The Cerbos action whose self-target deny is a security signal (design D3). */
-const STATUS_ACTION = 'updateStatus';
+/** Cerbos actions whose self-target deny is a security signal, with the event each logs (design D3, 044 D10). */
+const SELF_TARGET_EVENTS: Readonly<Record<string, string>> = {
+  updateStatus: 'catalog.security.self_status_change_denied',
+  resetMfa: 'catalog.security.self_mfa_reset_denied',
+};
 
 /** Any operation of the kind with a resolved target: it only picks the resource kind (design D3). */
 const TARGET_OPERATION: Record<ResourceKind, IdentityOperation> = {
@@ -208,6 +211,9 @@ export function createDefineIdentityOperation(
                 },
               },
             },
+            ...(target.attributes?.memberRole === undefined
+              ? {}
+              : { memberRole: target.attributes.memberRole }),
             ...(target.attributes?.portRole === undefined
               ? {}
               : { portRole: target.attributes.portRole }),
@@ -225,9 +231,10 @@ export function createDefineIdentityOperation(
           );
           // Design D3: the policy denies `updateStatus` on oneself; the target id is the
           // resolved Better Auth user id, so an email-addressed self-target is caught too.
-          if (action === STATUS_ACTION && target.id === caller.actor.id) {
+          const selfEvent = SELF_TARGET_EVENTS[action];
+          if (selfEvent !== undefined && target.id === caller.actor.id) {
             emitIdentityEvent({
-              name: 'catalog.security.self_status_change_denied',
+              name: selfEvent,
               severity: 'WARN',
               attributes: { 'tayzu.tenant.id': caller.tenantId, 'tayzu.actor.id': caller.actor.id },
             });

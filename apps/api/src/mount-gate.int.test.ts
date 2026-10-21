@@ -21,9 +21,9 @@
  * `createApp` over the real pools, Cerbos and Better Auth, driven with
  * `app.app.inject`. Two apps: one with the switch left at its default (off) and
  * one with it on, the control that proves the same requests do reach the routes
- * when it is on. The thirteen procedures are the router's own list, read from
+ * when it is on. The fourteen procedures are the router's own list, read from
  * `generateIdentityOpenApiDocument` (it walks `createIdentityRouter`'s procedures),
- * so a new procedure is covered without editing this file; the fourteenth route is
+ * so a new procedure is covered without editing this file; the fifteenth route is
  * the plain accept route. The authenticated caller is an MFA-enrolled admin with a
  * fresh verification (so the catch-all's enrollment gate lets it through). The
  * baseline is an unknown `/v1` path with the same method and caller.
@@ -37,6 +37,7 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
+import { createRecordingEmailSender } from '@tayzu/auth';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -71,8 +72,8 @@ interface Answer {
   readonly body: unknown;
 }
 
-/** The thirteen oRPC routes, from the router's own procedures, plus the plain accept route. */
-async function fourteenRoutes(): Promise<readonly Route[]> {
+/** The fourteen oRPC routes, from the router's own procedures, plus the plain accept route. */
+async function fifteenRoutes(): Promise<readonly Route[]> {
   const document = (await generateIdentityOpenApiDocument()) as {
     paths: Record<string, Record<string, unknown>>;
   };
@@ -110,7 +111,7 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
       ...base,
       ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
     });
-    routes = await fourteenRoutes();
+    routes = await fifteenRoutes();
 
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(off.auth, {
@@ -162,9 +163,9 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
     return { status: response.statusCode, body };
   }
 
-  it('lists the thirteen router procedures and the accept route as the fourteen routes', () => {
-    expect(routes).toHaveLength(14);
-    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(13);
+  it('lists the fourteen router procedures and the accept route as the fifteen routes', () => {
+    expect(routes).toHaveLength(15);
+    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(14);
   });
 
   it('Routes answer like an unknown path while the switch is off: unauthenticated, 401 CATALOG_CONTEXT_REQUIRED', async () => {
@@ -284,5 +285,357 @@ describe('createApp refuses to mount the identity routes without a secret (task 
   it('the start succeeds with the switch off and no secret', async () => {
     const app = await createApp(await base());
     await app.close();
+  }, 60_000);
+});
+
+/**
+ * Task 6.1 of openspec/changes/044-password-reset-and-account-recovery, scenario "Off by
+ * default" for the request route (spec requirement "The reset routes are public, API-only and
+ * behind the mount switch").
+ *
+ * - GIVEN `MOUNT_IDENTITY_ROUTES` is unset
+ * - WHEN either reset route is called, with or without authentication
+ * - THEN it answers exactly as an unknown `/v1` path does
+ *
+ * Only `POST /v1/auth/password-reset/request` exists at this task (the confirm route joins in 8.3).
+ * The control is the same request against an app with the switch on, which answers the uniform
+ * `200 { "accepted": true }`.
+ *
+ * Production symbols expected: as in `password-reset-request.http.int.test.ts` (the route, and
+ * `CreateAppOptions.email.passwordResetLinkBaseUrl`, passed here through a variable).
+ */
+describe('the password reset request route is unreachable until mounted (044 task 6.1)', () => {
+  const REQUEST_PATH = '/v1/auth/password-reset/request';
+  let off: App;
+  let on: App;
+  let cookie: string;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const base = {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+    const email = {
+      sender: createRecordingEmailSender(),
+      invitationLinkBaseUrl: ORIGIN,
+      passwordResetLinkBaseUrl: ORIGIN,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    off = await createApp({ ...base, ...{ email } });
+    on = await createApp({
+      ...base,
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(off.auth, {
+      pool: testAppPool(),
+      name: 'Reset Gate Admin',
+      email: `reset-gate-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Reset Gate Org ${suffix}`,
+      organizationSlug: `reset-gate-${suffix}`,
+      ip: randomIp(),
+    });
+    cookie = await freshMfaSessionCookie(off, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+      origin: ORIGIN,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await off.close();
+    await on.close();
+  }, 60_000);
+
+  async function post(
+    app: App,
+    url: string,
+    caller: 'anonymous' | 'authenticated',
+  ): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        ...(caller === 'authenticated' ? { cookie } : {}),
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({ email: `nobody-${randomUUID()}@example.test` }),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return { status: response.statusCode, body };
+  }
+
+  it('Off by default: unauthenticated, the request route answers as an unknown /v1 path does (401 CATALOG_CONTEXT_REQUIRED)', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, 'anonymous');
+    expect(unknown.status).toBe(401);
+    expect(unknown.body).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+
+    const answer = await post(off, REQUEST_PATH, 'anonymous');
+
+    expect(answer).toEqual(unknown);
+  });
+
+  it('Off by default: authenticated, the request route answers as an unknown /v1 path does (the router 404)', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, 'authenticated');
+    expect(unknown.status).toBe(404);
+
+    const answer = await post(off, REQUEST_PATH, 'authenticated');
+
+    expect(answer).toEqual(unknown);
+  });
+
+  it('Off by default: the Fastify route table has no request route while off and has it while on', async () => {
+    expect(off.app.hasRoute({ method: 'POST', url: REQUEST_PATH })).toBe(false);
+    expect(on.app.hasRoute({ method: 'POST', url: REQUEST_PATH })).toBe(true);
+
+    // The control: with the switch on, the same anonymous request reaches the route.
+    const answer = await post(on, REQUEST_PATH, 'anonymous');
+    expect(answer.status).toBe(200);
+    expect(answer.body).toEqual({ accepted: true });
+  });
+});
+
+/**
+ * Task 8.3 of openspec/changes/044-password-reset-and-account-recovery, scenario "Off by
+ * default" for the confirm route (spec requirement "The reset routes are public, API-only and
+ * behind the mount switch"), now covering both reset routes.
+ *
+ * - GIVEN `MOUNT_IDENTITY_ROUTES` is unset
+ * - WHEN either reset route is called, with or without authentication
+ * - THEN it answers exactly as an unknown `/v1` path does
+ *
+ * The control is a request against an app with the switch on, which reaches the route (the
+ * uniform `404 CATALOG_NOT_FOUND` of an unknown token, which differs from an unknown `/v1` path
+ * for an anonymous caller, whose answer is `401 CATALOG_CONTEXT_REQUIRED`).
+ *
+ * Production symbols expected: `POST /v1/auth/password-reset/confirm` registered in the
+ * `mountIdentityRoutes` block of `createApp`.
+ */
+describe('the password reset routes are unreachable until mounted (044 task 8.3)', () => {
+  const REQUEST_PATH = '/v1/auth/password-reset/request';
+  const CONFIRM_PATH = '/v1/auth/password-reset/confirm';
+  let off: App;
+  let on: App;
+  let cookie: string;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const base = {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+    const email = {
+      sender: createRecordingEmailSender(),
+      invitationLinkBaseUrl: ORIGIN,
+      passwordResetLinkBaseUrl: ORIGIN,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: { max: 1000, windowSeconds: 3600 },
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+    };
+    off = await createApp({ ...base, ...{ email } });
+    on = await createApp({
+      ...base,
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(off.auth, {
+      pool: testAppPool(),
+      name: 'Reset Confirm Gate Admin',
+      email: `reset-confirm-gate-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Reset Confirm Gate Org ${suffix}`,
+      organizationSlug: `reset-confirm-gate-${suffix}`,
+      ip: randomIp(),
+    });
+    cookie = await freshMfaSessionCookie(off, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+      origin: ORIGIN,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await off.close();
+    await on.close();
+  }, 60_000);
+
+  async function post(
+    app: App,
+    url: string,
+    caller: 'anonymous' | 'authenticated',
+  ): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-forwarded-for': randomIp(),
+        ...(caller === 'authenticated' ? { cookie } : {}),
+        ...csrfHeaders('POST'),
+      },
+      payload: JSON.stringify({
+        id: 'AAAAAAAAAAAAAAAAAAAAAA',
+        token: 'A'.repeat(43),
+        newPassword: 'Another-Perfectly-Fine-Passphrase-77!',
+      }),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return { status: response.statusCode, body };
+  }
+
+  it('Off by default: unauthenticated, the confirm route answers as an unknown /v1 path does (401 CATALOG_CONTEXT_REQUIRED)', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, 'anonymous');
+    expect(unknown.status).toBe(401);
+    expect(unknown.body).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+
+    const answer = await post(off, CONFIRM_PATH, 'anonymous');
+
+    expect(answer).toEqual(unknown);
+  });
+
+  it('Off by default: authenticated, the confirm route answers as an unknown /v1 path does (the router 404)', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, 'authenticated');
+    expect(unknown.status).toBe(404);
+
+    const answer = await post(off, CONFIRM_PATH, 'authenticated');
+
+    expect(answer).toEqual(unknown);
+  });
+
+  it('Off by default: the Fastify route table has neither reset route while off and has both while on', async () => {
+    expect(off.app.hasRoute({ method: 'POST', url: REQUEST_PATH })).toBe(false);
+    expect(off.app.hasRoute({ method: 'POST', url: CONFIRM_PATH })).toBe(false);
+    expect(on.app.hasRoute({ method: 'POST', url: REQUEST_PATH })).toBe(true);
+    expect(on.app.hasRoute({ method: 'POST', url: CONFIRM_PATH })).toBe(true);
+
+    // The control: with the switch on, the same anonymous request reaches the route.
+    const answer = await post(on, CONFIRM_PATH, 'anonymous');
+    expect(answer.status).toBe(404);
+    expect(answer.body).toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+  });
+});
+
+/**
+ * 044 task 10.5 (design D10: "behind the mount switch"): `POST /v1/users/{user}/mfa/reset` is
+ * absent with the switch off (it answers as an unknown `/v1` path does, for both callers) and
+ * matched by the router with the switch on. The control is that, with the switch on, the same
+ * request is not the unknown-path answer.
+ */
+describe('the admin MFA reset route is unreachable until mounted (044 task 10.5)', () => {
+  const RESET_PATH = '/v1/users/{user}/mfa/reset';
+  let off: App;
+  let on: App;
+  let cookie: string;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const base = {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+    off = await createApp(base);
+    on = await createApp({
+      ...base,
+      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
+    });
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(off.auth, {
+      pool: testAppPool(),
+      name: 'Mount Gate Reset Admin',
+      email: `mount-gate-reset-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Mount Gate Reset Org ${suffix}`,
+      organizationSlug: `mount-gate-reset-${suffix}`,
+      ip: randomIp(),
+    });
+    cookie = await freshMfaSessionCookie(off, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+      origin: ORIGIN,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await off.close();
+    await on.close();
+  }, 60_000);
+
+  async function post(app: App, url: string, authenticated: boolean): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...(authenticated ? { cookie } : {}),
+        ...csrfHeaders('POST'),
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify({ reason: 'device_replaced' }),
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return { status: response.statusCode, body };
+  }
+
+  const resetUrl = (): string => concrete(RESET_PATH);
+
+  it('`POST /v1/users/{user}/mfa/reset` is absent with the switch off: unauthenticated, as an unknown path', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, false);
+    expect(unknown.status).toBe(401);
+    expect(unknown.body).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+    expect(await post(off, resetUrl(), false)).toEqual(unknown);
+  }, 60_000);
+
+  it('`POST /v1/users/{user}/mfa/reset` is absent with the switch off: authenticated, the router 404', async () => {
+    const unknown = await post(off, `/v1/unknown-${randomUUID().slice(0, 8)}`, true);
+    expect(unknown.status).toBe(404);
+    expect(await post(off, resetUrl(), true)).toEqual(unknown);
+  }, 60_000);
+
+  it('`POST /v1/users/{user}/mfa/reset` is present with the switch on: not the unknown-path answer', async () => {
+    const open = await post(on, resetUrl(), true);
+    expect(open.body).not.toMatchObject({ code: 'NOT_FOUND' });
   }, 60_000);
 });

@@ -42,7 +42,7 @@ import { TEST_SECRET } from '../__fixtures__/test-secret.js';
 import { createAuth } from '../auth.js';
 import * as authSchema from '../persistence/schema.js';
 import { createRateLimitBucketStore } from './bucket-store.js';
-import type { RateLimitScope } from './pre-auth-rate-limit.js';
+import { hashBucketKey, type RateLimitScope } from './pre-auth-rate-limit.js';
 
 function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -440,6 +440,126 @@ describe('Invitation rate-limit store on 002 auth.rate_limit (task 6.10)', () =>
       expect(points).toHaveLength(1);
       expect(points[0]?.value).toBe(1);
       expect(points[0]?.attributes).toEqual({ [RATE_LIMIT_SCOPE_ATTRIBUTE]: 'notice_recipient' });
+    });
+  });
+
+  // Task 1.3 of change 044 (design D16): eight new scopes and the `global` key kind.
+  // `RateLimitScope` must gain the eight values and `BucketKeyKind` the `global` kind
+  // (both in `./pre-auth-rate-limit.js`) for this block to typecheck.
+  describe('the eight 044 scopes (task 1.3 of change 044)', () => {
+    const SCOPES_044 = [
+      { scope: 'password_reset_request', kind: 'ip' },
+      { scope: 'password_reset_confirm', kind: 'ip' },
+      { scope: 'reset_email_recipient', kind: 'email' },
+      { scope: 'reset_email_ip', kind: 'ip' },
+      { scope: 'reset_email_global', kind: 'global' },
+      { scope: 'recovery_notice_recipient', kind: 'email' },
+      { scope: 'account_created_notice_tenant', kind: 'tenant' },
+      { scope: 'account_created_notice_global', kind: 'global' },
+    ] as const satisfies readonly {
+      scope: RateLimitScope;
+      kind: Parameters<typeof hashBucketKey>[1];
+    }[];
+
+    /** A distinct cap per scope proves each consumes under its own rule. */
+    const rules044 = Object.fromEntries(
+      SCOPES_044.map(({ scope }, index) => [scope, { window: 3600, max: index + 1 }]),
+    ) as Record<(typeof SCOPES_044)[number]['scope'], { window: number; max: number }>;
+
+    let store044A: BucketStore;
+    let store044B: BucketStore;
+
+    beforeAll(async () => {
+      store044A = createRateLimitBucketStore({ adapter: adapterA, rules: rules044 });
+      store044B = createRateLimitBucketStore({ adapter: await adapterOf(dbB), rules: rules044 });
+    });
+
+    it.each(SCOPES_044.map((entry, index) => ({ ...entry, max: index + 1 })))(
+      'consumes scope $scope under its own rule (cap $max) and stores only a hash',
+      async ({ scope, kind, max }) => {
+        const bucket = { scope, kind, value: `bucket-value-${randomUUID()}` };
+
+        for (let hit = 0; hit < max; hit += 1) {
+          const outcome = await (hit % 2 === 0 ? store044A : store044B).consume(bucket);
+          expect(outcome.allowed, `hit ${String(hit + 1)} of ${String(max)}`).toBe(true);
+        }
+        const denied = await store044B.consume(bucket);
+        expect(denied.allowed).toBe(false);
+        expect(denied.retryAfterSeconds).toBeGreaterThan(0);
+
+        const key = hashBucketKey(scope, kind, bucket.value);
+        const rows = await rowsWithKey(key);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.count).toBe(max);
+        const leaked = await dbA
+          .select({ key: authSchema.rateLimit.key })
+          .from(authSchema.rateLimit)
+          .where(like(authSchema.rateLimit.key, `%${bucket.value}%`));
+        expect(leaked).toHaveLength(0);
+
+        await harness.forceFlush();
+        const logs = [...harness.logExporter.getFinishedLogRecords()].filter(
+          (record) => record.eventName === 'auth.security.rate_limited',
+        );
+        expect(logs).toHaveLength(1);
+        expect(logs[0]?.attributes).toEqual({ [RATE_LIMIT_SCOPE_ATTRIBUTE]: scope });
+      },
+    );
+
+    it('a `global` key is one bucket shared by every caller and by two instances', async () => {
+      const value = `global-${randomUUID()}`;
+      const bucket = { scope: 'reset_email_global', kind: 'global', value } as const;
+      const max = rules044.reset_email_global.max;
+
+      for (let hit = 0; hit < max; hit += 1) {
+        expect((await (hit % 2 === 0 ? store044A : store044B).consume(bucket)).allowed).toBe(true);
+      }
+      expect((await store044A.consume(bucket)).allowed).toBe(false);
+      expect((await store044B.consume(bucket)).allowed).toBe(false);
+
+      const rows = await rowsWithKey(hashBucketKey('reset_email_global', 'global', value));
+      expect(rows, 'one row, one shared count').toHaveLength(1);
+      expect(rows[0]?.count).toBe(max);
+
+      // The kind is part of the key: the same value under another kind is another bucket.
+      expect(
+        (await store044A.consume({ scope: 'reset_email_global', kind: 'ip', value })).allowed,
+      ).toBe(true);
+    });
+
+    it('the global scopes of the reset email and of the account-created notice never share a count', async () => {
+      const value = `global-${randomUUID()}`;
+      for (let hit = 0; hit < rules044.reset_email_global.max; hit += 1) {
+        expect(
+          (await store044A.consume({ scope: 'reset_email_global', kind: 'global', value })).allowed,
+        ).toBe(true);
+      }
+      expect(
+        (await store044A.consume({ scope: 'account_created_notice_global', kind: 'global', value }))
+          .allowed,
+      ).toBe(true);
+    });
+
+    it('a scope with no rule still throws "Unknown rate-limit scope" and creates no row', async () => {
+      const partial = createRateLimitBucketStore({
+        adapter: adapterA,
+        rules: { password_reset_request: { window: 60, max: 10 } },
+      });
+      const value = `bucket-value-${randomUUID()}`;
+
+      await expect(
+        partial.consume({ scope: 'password_reset_confirm', kind: 'ip', value }),
+      ).rejects.toThrow('Unknown rate-limit scope');
+      await expect(
+        partial.consume({ scope: 'reset_email_global', kind: 'global', value }),
+      ).rejects.toThrow('Unknown rate-limit scope');
+
+      for (const [scope, kind] of [
+        ['password_reset_confirm', 'ip'],
+        ['reset_email_global', 'global'],
+      ] as const) {
+        expect(await rowsWithKey(hashBucketKey(scope, kind, value))).toHaveLength(0);
+      }
     });
   });
 

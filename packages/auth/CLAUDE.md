@@ -11,7 +11,10 @@ disagree, stop and ask.
 `auth.ts` (the Better Auth instance), `context-resolver.ts`, `step-up.ts`,
 `rate-limit/`, `persistence/schema.ts` (tables in schema `auth`) and
 `telemetry/` (the package's executable telemetry contract). `tasks.md` in
-002 lists what each remaining group adds.
+002 lists what each remaining group adds. `identity/` holds the pure parts of
+changes `043` and `044`: the reset token (`reset-token.ts`,
+`reset-token-value.ts`), the factor verifier (`reset-factor.ts`), the
+`mfa-reenrol` marker (`mfa-reenrol-marker.ts`) and the email templates.
 
 ## Boundaries
 
@@ -49,6 +52,10 @@ disagree, stop and ask.
   as sha256 hashes in `auth.rate_limit`, and atomic increments. Better Auth's
   built-in `rateLimit` stays disabled; it cannot key by email or return
   `Retry-After` with `AUTH_RATE_LIMITED`.
+- Better Auth's own password-reset routes (`/request-password-reset`,
+  `/reset-password`) stay off the allowlist: the reset is Tayzu's, in
+  `apps/api` (044 D1). The re-enrolment marker `mfa-reenrol:<userId>` confines
+  a session to enrolment through `hooks.before` and `resolveContext` (044 D11).
 - Secrets (`BETTER_AUTH_SECRET`, the `jwt` signing key, DB role passwords)
   come from the environment only, Key-Vault-referenced in the Azure Container
   Apps deployment. Never log or print them.

@@ -13,6 +13,8 @@ export interface ResolvedIdentityAttributes {
   readonly accountKind?: string;
   readonly portRole?: string;
   readonly moderatedBlueprints?: readonly string[];
+  /** The raw `role` string of the user's membership in the host tenant; may be composite (`admin,owner`). */
+  readonly memberRole?: string;
 }
 
 export interface ResolvedIdentityTarget {
@@ -87,6 +89,17 @@ export function createIdentityTargetResolver(options: {
       const { kind, id } = parseTarget(rawTarget);
       const found = await lookup(context.tenantId, kind, id);
       if (found === undefined) throw new IdentityTargetNotFoundError();
+      if (kind === 'user') {
+        const member = await authRepository.memberOf(context.tenantId, id);
+        if (member !== undefined) {
+          return {
+            kind,
+            id,
+            tenantId: context.tenantId,
+            attributes: { memberRole: member.role },
+          };
+        }
+      }
       return { kind, id, tenantId: context.tenantId };
     },
   };

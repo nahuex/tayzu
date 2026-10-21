@@ -48,7 +48,7 @@ export interface ParsedIdentityInput {
   readonly body: Record<string, unknown>;
 }
 
-class IdentityInputError extends Error {
+export class IdentityInputError extends Error {
   readonly code = 'CATALOG_VALIDATION_FAILED' as const;
 
   constructor() {
