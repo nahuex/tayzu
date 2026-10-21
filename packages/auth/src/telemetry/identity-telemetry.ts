@@ -106,6 +106,7 @@ const METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.service_accounts': '{account}',
   'tayzu.identity.credential_mutations': '{mutation}',
   'tayzu.identity.recovery_emails': '{event}',
+  'tayzu.identity.mfa_resets': '{event}',
 };
 
 export function recordIdentityMetric(

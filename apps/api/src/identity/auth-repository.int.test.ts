@@ -1084,6 +1084,125 @@ describe('auth-repository', () => {
     expect(poolUses).toBe(0);
   });
 
+  /*
+   * Task 10.3 of `044-password-reset-and-account-recovery` (design D10, "Effects").
+   *
+   * ## Production symbols expected
+   *
+   * - `auth-repository.ts`, on `AuthRepository`: `deleteTwoFactorRows(userId, db?)` and
+   *   `setTwoFactorEnabled(userId, enabled, db?)`. The task fixes both names without the `global`
+   *   prefix, so neither is in the 'only the global functions' list and each must reject a call
+   *   without a user id (fail closed, as `writeMfaReenrolMarker` does). The return values are not
+   *   fixed and not asserted.
+   */
+  it('deleteTwoFactorRows deletes every two_factor row of that user only, and runs on the client passed as db', async () => {
+    const userId = await seedUser();
+    const otherUser = await seedUser();
+    await seedTwoFactor(userId, { verified: true });
+    await seedTwoFactor(userId, { verified: false });
+    const otherRow = await seedTwoFactor(otherUser);
+    const countOf = async (id: string): Promise<number> =>
+      (await authPool.query('select 1 from auth.two_factor where user_id = $1', [id])).rowCount ??
+      -1;
+    expect(await countOf(userId), 'precondition').toBe(2);
+
+    await repo.deleteTwoFactorRows(userId);
+
+    expect(await countOf(userId)).toBe(0);
+    expect(await countOf(otherUser), 'another user keeps its row').toBe(1);
+    expect(
+      (await authPool.query('select id from auth.two_factor where id = $1', [otherRow])).rowCount,
+    ).toBe(1);
+
+    // On the client passed as `db`: uncommitted there, invisible to the pool.
+    const third = await seedUser();
+    await seedTwoFactor(third);
+    let poolUses = 0;
+    const deadPool = {
+      query: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+      connect: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+    } as unknown as Pool;
+    const probeRepo = createAuthRepository(deadPool);
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      await probeRepo.deleteTwoFactorRows(third, client);
+      const seenByClient = await client.query('select 1 from auth.two_factor where user_id = $1', [
+        third,
+      ]);
+      expect(seenByClient.rowCount).toBe(0);
+      expect(await countOf(third), 'the pool still sees the row').toBe(1);
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+    expect(poolUses).toBe(0);
+    expect(await countOf(third), 'the rollback restored it').toBe(1);
+  });
+
+  it('setTwoFactorEnabled sets the flag of that user only, in both directions, and runs on the client passed as db', async () => {
+    const userId = await seedUser();
+    const otherUser = await seedUser();
+    await setTwoFactorFlag(userId, true);
+    await setTwoFactorFlag(otherUser, true);
+    const flagOf = async (id: string): Promise<boolean | null> =>
+      (
+        await authPool.query<{ two_factor_enabled: boolean | null }>(
+          'select two_factor_enabled from auth."user" where id = $1',
+          [id],
+        )
+      ).rows[0]?.two_factor_enabled ?? null;
+
+    await repo.setTwoFactorEnabled(userId, false);
+    expect(await flagOf(userId)).toBe(false);
+    expect(await flagOf(otherUser), 'another user is untouched').toBe(true);
+
+    await repo.setTwoFactorEnabled(userId, true);
+    expect(await flagOf(userId)).toBe(true);
+
+    let poolUses = 0;
+    const deadPool = {
+      query: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+      connect: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+    } as unknown as Pool;
+    const probeRepo = createAuthRepository(deadPool);
+    const client = await authPool.connect();
+    try {
+      await client.query('begin');
+      await probeRepo.setTwoFactorEnabled(userId, false, client);
+      const seenByClient = await client.query<{ two_factor_enabled: boolean }>(
+        'select two_factor_enabled from auth."user" where id = $1',
+        [userId],
+      );
+      expect(seenByClient.rows[0]?.two_factor_enabled).toBe(false);
+      expect(await flagOf(userId), 'the pool still sees true').toBe(true);
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
+    expect(poolUses).toBe(0);
+  });
+
+  it('deleteTwoFactorRows and setTwoFactorEnabled reject a missing or empty user id', async () => {
+    const missing = undefined as unknown as string;
+    await expect(repo.deleteTwoFactorRows(missing)).rejects.toThrow();
+    await expect(repo.deleteTwoFactorRows('')).rejects.toThrow();
+    await expect(repo.setTwoFactorEnabled(missing, false)).rejects.toThrow();
+    await expect(repo.setTwoFactorEnabled('', false)).rejects.toThrow();
+  });
+
   it('only the global functions are callable without a tenantId', async () => {
     const names = Object.keys(repo);
     const globals = names.filter((name) => name.startsWith('global'));

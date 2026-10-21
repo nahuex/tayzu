@@ -191,6 +191,14 @@ export interface AuthRepository {
    * A second write leaves one row.
    */
   writeMfaReenrolMarker: (userId: string, db?: Pick<Pool, 'query'>) => Promise<void>;
+  /** Deletes every `two_factor` row of the user (the MFA reset, 044 design D10). */
+  deleteTwoFactorRows: (userId: string, db?: Pick<Pool, 'query'>) => Promise<number>;
+  /** Sets `user.two_factor_enabled`; true when a row changed. */
+  setTwoFactorEnabled: (
+    userId: string,
+    enabled: boolean,
+    db?: Pick<Pool, 'query'>,
+  ) => Promise<boolean>;
   // Completion section (044 design D7). Each statement runs on `db`, the lock's connection.
 
   /** Sets the hash on the user's `credential` account; throws unless exactly one row changed. */
@@ -678,6 +686,21 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
           MARKER_EXPIRES_AT_SENTINEL,
         ],
       );
+    },
+
+    async deleteTwoFactorRows(userId, db = authPool) {
+      requireUserId(userId);
+      const result = await db.query('delete from auth.two_factor where user_id = $1', [userId]);
+      return result.rowCount ?? 0;
+    },
+
+    async setTwoFactorEnabled(userId, enabled, db = authPool) {
+      requireUserId(userId);
+      const result = await db.query(
+        'update auth."user" set two_factor_enabled = $2 where id = $1',
+        [userId, enabled],
+      );
+      return (result.rowCount ?? 0) > 0;
     },
 
     async globalSetCredentialPassword(userId, passwordHash, db) {
