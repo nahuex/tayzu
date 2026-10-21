@@ -187,6 +187,15 @@ the table below:
 | ------------------------------ | ---- | ----- | -------------------- | --------------- | -------- |
 | _(pending — first deployment)_ |      |       |                      |                 |          |
 
+Since `044` (Q25, Gate 9) this check is also a gate for turning on
+`MOUNT_IDENTITY_ROUTES`, because the password-reset routes are public. Record in
+the same place the state of the DNS provider's DDoS protection for the origin of
+`PASSWORD_RESET_LINK_BASE_URL` and for the sender domain.
+
+| Check date                     | Origin and sender domain | DDoS protection state | Reviewer |
+| ------------------------------ | ------------------------ | --------------------- | -------- |
+| _(pending — first deployment)_ |                          |                       |          |
+
 ## API key storage at rest (`@better-auth/api-key`)
 
 Checked against the installed source of `@better-auth/api-key@1.7.6`
