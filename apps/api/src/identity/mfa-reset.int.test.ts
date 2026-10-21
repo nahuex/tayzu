@@ -579,4 +579,395 @@ describe('The MFA reset service (task 10.3)', () => {
       }
     }, 60_000);
   });
+
+  // ---- task 10.4: the single refusal path of the admin form (design D10, Q12) ------------
+
+  /** What a caller can see of a refusal: every own property, the name and the message. */
+  function visible(error: Error): string {
+    return JSON.stringify({
+      name: error.name,
+      message: error.message,
+      own: Object.fromEntries(Object.entries(error)),
+    });
+  }
+
+  /** Runs `fn`, expects it to throw, and returns the error (a success fails the assertion). */
+  async function refusalOf(fn: () => Promise<unknown>): Promise<Error> {
+    let thrown: unknown;
+    let resolved = false;
+    try {
+      await fn();
+      resolved = true;
+    } catch (error) {
+      thrown = error;
+    }
+    expect(resolved, 'the admin form refuses; it must not complete').toBe(false);
+    expect(thrown).toBeInstanceOf(Error);
+    return thrown as Error;
+  }
+
+  /** The admin form's call for a target, with a random acting admin unless one is given. */
+  function adminCall(
+    service: MfaResetService,
+    target: { tenantId: string; userId: string },
+    actorId = `admin-${randomUUID()}`,
+  ): () => Promise<MfaResetResult> {
+    return () =>
+      resetAsAdmin(service, {
+        tenantId: target.tenantId,
+        actorId,
+        userId: target.userId,
+        reason: 'lost_both_factors',
+      });
+  }
+
+  /** A member with sessions but no enrolled factor (flag off, no row). */
+  async function seedNoFactorTarget(role = 'member'): Promise<Target> {
+    const target = await seedTarget(role);
+    await authPool.query('delete from auth.two_factor where user_id = $1', [target.userId]);
+    await authPool.query('update auth."user" set two_factor_enabled = false where id = $1', [
+      target.userId,
+    ]);
+    return target;
+  }
+
+  /** The same user also belongs to a second, fresh tenant. */
+  async function addSecondTenant(userId: string): Promise<string> {
+    const otherTenantId = await seedTenant();
+    await seedMember(otherTenantId, userId, 'member');
+    return otherTenantId;
+  }
+
+  interface Observed {
+    readonly factors: number;
+    readonly flag: boolean | null;
+    readonly sessions: number;
+    readonly markers: number;
+    readonly memberships: number;
+  }
+
+  async function observe(userId: string): Promise<Observed> {
+    return {
+      factors: await twoFactorRows(userId),
+      flag: await twoFactorEnabled(userId),
+      sessions: await sessionRows(userId),
+      markers: (await markerRows(userId)).length,
+      memberships: await count('from auth.member where user_id = $1', [userId]),
+    };
+  }
+
+  async function expectRefusedAndUnchanged(
+    target: Target,
+    notices: FakeNotices,
+    run: () => Promise<unknown>,
+  ): Promise<Error> {
+    const before = await observe(target.userId);
+    const error = await refusalOf(run);
+    expect(await observe(target.userId), 'nothing changes').toEqual(before);
+    expect(await markerRows(target.userId), 'no re-enrolment marker').toHaveLength(0);
+    expect(notices.sent, 'no notice goes out').toEqual([]);
+    expect(await eventsFor(AUDIT_EVENT, target.userId), 'no audit event of a reset').toHaveLength(
+      0,
+    );
+    expect(
+      (await linkLogEvents(harness, REVOKED_EVENT)).filter(
+        (record) => record.attributes['tayzu.actor.id'] === target.userId,
+      ),
+      'no session is revoked',
+    ).toHaveLength(0);
+    return error;
+  }
+
+  /** The answer the caller gets, whatever the internal reason. */
+  function expectValidationFailed(error: Error): void {
+    expect((error as Error & { code?: unknown }).code).toBe('CATALOG_VALIDATION_FAILED');
+  }
+
+  /** Wraps the pool so that every statement the service sends is recorded, on any connection. */
+  function countingPool(): { pool: Pool; statements: string[] } {
+    const statements: string[] = [];
+    type AnyFn = (...args: unknown[]) => unknown;
+    const record = (first: unknown): void => {
+      const text =
+        typeof first === 'string' ? first : (first as { text?: string } | undefined)?.text;
+      statements.push((text ?? '').replace(/\s+/g, ' ').trim());
+    };
+    const wrap = <T extends object>(subject: T): T =>
+      new Proxy(subject, {
+        get(target, property) {
+          const value: unknown = Reflect.get(target, property, target);
+          if (typeof value !== 'function') return value;
+          const fn = value as AnyFn;
+          if (property === 'query') {
+            return (...args: unknown[]) => {
+              record(args[0]);
+              return fn.apply(target, args);
+            };
+          }
+          if (property === 'connect') {
+            return async (...args: unknown[]) => {
+              const connected = await (fn.apply(target, args) as Promise<object | undefined>);
+              return connected === undefined ? connected : wrap(connected);
+            };
+          }
+          return fn.bind(target);
+        },
+      });
+    return { pool: wrap(authPool), statements };
+  }
+
+  describe('A target with no second factor is refused', () => {
+    it('answers CATALOG_VALIDATION_FAILED, changes nothing and logs no_enrolled_factor', async () => {
+      const target = await seedNoFactorTarget();
+      const actorId = `admin-${randomUUID()}`;
+      const notices = fakeNotices();
+
+      const error = await expectRefusedAndUnchanged(
+        target,
+        notices,
+        adminCall(buildService(notices), target, actorId),
+      );
+
+      expectValidationFailed(error);
+      const refused = await eventsFor('catalog.security.identity_conflict_refused', target.userId);
+      expect(refused).toHaveLength(1);
+      expect(refused[0]?.attributes).toMatchObject({
+        'tayzu.tenant.id': target.tenantId,
+        'tayzu.actor.id': actorId,
+        'tayzu.identity.conflict.reason': 'no_enrolled_factor',
+        'tayzu.identity.user.id': target.userId,
+      });
+    }, 30_000);
+  });
+
+  describe('A member of several tenants is refused', () => {
+    it('answers CATALOG_VALIDATION_FAILED, changes nothing, logs target_in_other_tenant and does not reveal the other tenant', async () => {
+      const target = await seedTarget();
+      const otherTenantId = await addSecondTenant(target.userId);
+      const actorId = `admin-${randomUUID()}`;
+      const notices = fakeNotices();
+
+      const error = await expectRefusedAndUnchanged(
+        target,
+        notices,
+        adminCall(buildService(notices), target, actorId),
+      );
+
+      expectValidationFailed(error);
+      expect(visible(error), 'the answer does not name the other tenant').not.toContain(
+        otherTenantId,
+      );
+      const refused = await eventsFor('catalog.security.identity_conflict_refused', target.userId);
+      expect(refused).toHaveLength(1);
+      expect(refused[0]?.attributes).toMatchObject({
+        'tayzu.tenant.id': target.tenantId,
+        'tayzu.actor.id': actorId,
+        'tayzu.identity.conflict.reason': 'target_in_other_tenant',
+        'tayzu.identity.user.id': target.userId,
+      });
+      expect(await twoFactorRows(target.userId), 'the other tenant keeps the factor').toBe(1);
+    }, 30_000);
+  });
+
+  describe('An admin or owner target is refused', () => {
+    for (const role of ['admin', 'owner']) {
+      it(`a ${role} target: CATALOG_VALIDATION_FAILED without the policy bundle, nothing changes, logs target_is_admin_or_owner`, async () => {
+        const target = await seedTarget(role);
+        const actorId = `admin-${randomUUID()}`;
+        const notices = fakeNotices();
+
+        const error = await expectRefusedAndUnchanged(
+          target,
+          notices,
+          adminCall(buildService(notices), target, actorId),
+        );
+
+        expectValidationFailed(error);
+        const refused = await eventsFor(
+          'catalog.security.identity_conflict_refused',
+          target.userId,
+        );
+        expect(refused).toHaveLength(1);
+        expect(refused[0]?.attributes).toMatchObject({
+          'tayzu.tenant.id': target.tenantId,
+          'tayzu.actor.id': actorId,
+          'tayzu.identity.conflict.reason': 'target_is_admin_or_owner',
+          'tayzu.identity.user.id': target.userId,
+        });
+        expect(await twoFactorRows(target.userId), 'the factor stays').toBe(1);
+      }, 30_000);
+    }
+
+    it('a composite role such as admin,owner is refused like an admin', async () => {
+      const target = await seedTarget('admin,owner');
+      const notices = fakeNotices();
+
+      const error = await expectRefusedAndUnchanged(
+        target,
+        notices,
+        adminCall(buildService(notices), target),
+      );
+
+      expectValidationFailed(error);
+    }, 30_000);
+  });
+
+  describe('Self-target is refused', () => {
+    it('answers CATALOG_VALIDATION_FAILED without the policy bundle, changes nothing and logs self_mfa_reset_denied with the tenant and the admin id', async () => {
+      const target = await seedTarget('admin');
+      const notices = fakeNotices();
+
+      const error = await expectRefusedAndUnchanged(
+        target,
+        notices,
+        adminCall(buildService(notices), target, target.userId),
+      );
+
+      expectValidationFailed(error);
+      const denied = await eventsFor('catalog.security.self_mfa_reset_denied', target.userId);
+      expect(denied).toHaveLength(1);
+      expect(denied[0]?.attributes).toMatchObject({
+        'tayzu.tenant.id': target.tenantId,
+        'tayzu.actor.id': target.userId,
+      });
+      expect(await twoFactorRows(target.userId), 'the factor stays').toBe(1);
+    }, 30_000);
+
+    it('a member acting on their own account is refused too', async () => {
+      const target = await seedTarget('member');
+      const notices = fakeNotices();
+
+      const error = await expectRefusedAndUnchanged(
+        target,
+        notices,
+        adminCall(buildService(notices), target, target.userId),
+      );
+
+      expectValidationFailed(error);
+      expect(await eventsFor('catalog.security.self_mfa_reset_denied', target.userId)).toHaveLength(
+        1,
+      );
+    }, 30_000);
+  });
+
+  describe('The refusals are indistinguishable', () => {
+    it('no factor, two tenants, and both give the same status, code, message and body bytes, each with its own internal reason, and nothing changes', async () => {
+      const noFactor = await seedNoFactorTarget();
+      const twoTenants = await seedTarget();
+      await addSecondTenant(twoTenants.userId);
+      const both = await seedNoFactorTarget();
+      await addSecondTenant(both.userId);
+      const notices = fakeNotices();
+      const service = buildService(notices);
+
+      const errors: Error[] = [];
+      for (const target of [noFactor, twoTenants, both]) {
+        errors.push(await expectRefusedAndUnchanged(target, notices, adminCall(service, target)));
+      }
+
+      const [first, second, third] = errors.map(visible);
+      expect(second, 'two tenants reads like no factor').toBe(first);
+      expect(third, 'both reads like no factor').toBe(first);
+      for (const error of errors) {
+        expectValidationFailed(error);
+        expect(error.message).not.toMatch(/factor|tenant|organi[sz]ation|member|admin/i);
+      }
+      const statuses = new Set(
+        errors.map((error) => (error as Error & { status?: unknown }).status),
+      );
+      expect(statuses.size, 'one status for all').toBe(1);
+
+      const reasonOf = async (target: Target): Promise<unknown[]> =>
+        (await eventsFor('catalog.security.identity_conflict_refused', target.userId)).map(
+          (record) => record.attributes['tayzu.identity.conflict.reason'],
+        );
+      expect(await reasonOf(noFactor)).toEqual(['no_enrolled_factor']);
+      expect(await reasonOf(twoTenants)).toEqual(['target_in_other_tenant']);
+      const bothReasons = await reasonOf(both);
+      expect(bothReasons, 'one internal record for the refusal').toHaveLength(1);
+      expect(['no_enrolled_factor', 'target_in_other_tenant']).toContain(bothReasons[0]);
+    }, 60_000);
+  });
+
+  describe('Every refusal reads every predicate', () => {
+    it('a read-counting fake sees the same reads for no factor, other tenant, both, admin, owner and self, and none of them writes', async () => {
+      const cases: { label: string; target: Target; self: boolean }[] = [];
+      cases.push({ label: 'no factor', target: await seedNoFactorTarget(), self: false });
+      const twoTenants = await seedTarget();
+      await addSecondTenant(twoTenants.userId);
+      cases.push({ label: 'other tenant', target: twoTenants, self: false });
+      const both = await seedNoFactorTarget();
+      await addSecondTenant(both.userId);
+      cases.push({ label: 'both', target: both, self: false });
+      cases.push({ label: 'admin', target: await seedTarget('admin'), self: false });
+      cases.push({ label: 'owner', target: await seedTarget('owner'), self: false });
+      cases.push({ label: 'self', target: await seedTarget('member'), self: true });
+
+      const sequences = new Map<string, string[]>();
+      for (const { label, target, self } of cases) {
+        const { pool, statements } = countingPool();
+        const service = createMfaResetService({ authPool: pool, notices: fakeNotices() });
+        await refusalOf(adminCall(service, target, self ? target.userId : `admin-${randomUUID()}`));
+        sequences.set(label, [...statements]);
+      }
+
+      const reference = sequences.get('no factor') ?? [];
+      expect(reference.length, 'the refusal reads from the database').toBeGreaterThan(0);
+      for (const [label, statements] of sequences) {
+        expect(statements, `${label}: the same statements, in the same order`).toEqual(reference);
+        expect(
+          statements.filter((text) => /^\s*(insert|update|delete)\b/i.test(text)),
+          `${label}: a refusal writes nothing`,
+        ).toEqual([]);
+      }
+    }, 60_000);
+  });
+
+  describe('The operator path accepts what the admin form refuses', () => {
+    for (const role of ['admin', 'owner']) {
+      it(`the operator path accepts ${role === 'admin' ? 'an admin' : 'an owner'}`, async () => {
+        const target = await seedTarget(role);
+        const notices = fakeNotices();
+
+        const result = await resetAsOperator(buildService(notices), {
+          tenantId: target.tenantId,
+          operatorId: `op-${randomUUID()}`,
+          approverId: `ap-${randomUUID()}`,
+          userId: target.userId,
+        });
+
+        expect(result.sessionsRevoked).toBe(2);
+        expect(await twoFactorRows(target.userId)).toBe(0);
+        expect(await twoFactorEnabled(target.userId)).toBe(false);
+        expect(await markerRows(target.userId)).toHaveLength(1);
+        expect(await sessionRows(target.userId)).toBe(0);
+        expect(notices.sent).toEqual([{ kind: 'MfaResetNotice', userId: target.userId }]);
+      }, 30_000);
+    }
+
+    it('the operator path accepts a member of several tenants and ends their sessions in all of them', async () => {
+      const target = await seedTarget();
+      const otherTenantId = await addSecondTenant(target.userId);
+      await seedSession(target.userId, otherTenantId);
+      const notices = fakeNotices();
+
+      const result = await resetAsOperator(buildService(notices), {
+        tenantId: target.tenantId,
+        operatorId: `op-${randomUUID()}`,
+        approverId: `ap-${randomUUID()}`,
+        userId: target.userId,
+      });
+
+      expect(result.sessionsRevoked).toBe(3);
+      expect(await twoFactorRows(target.userId)).toBe(0);
+      expect(await twoFactorEnabled(target.userId)).toBe(false);
+      expect(await markerRows(target.userId)).toHaveLength(1);
+      expect(await sessionRows(target.userId)).toBe(0);
+      expect(notices.sent).toEqual([{ kind: 'MfaResetNotice', userId: target.userId }]);
+      expect(
+        await eventsFor('catalog.security.identity_conflict_refused', target.userId),
+        'no refusal is logged',
+      ).toHaveLength(0);
+    }, 30_000);
+  });
 });

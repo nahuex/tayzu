@@ -15,6 +15,16 @@ import type { Pool } from 'pg';
 import { createAuthRepository } from './auth-repository.js';
 import { createWithUserLock } from './user-lock.js';
 
+/** Fixed message and code for every admin-form refusal: nothing says which predicate held (D10, Q12). */
+class MfaResetRefusedError extends Error {
+  readonly code = 'CATALOG_VALIDATION_FAILED' as const;
+
+  constructor() {
+    super('The request was rejected');
+    this.name = 'MfaResetRefusedError';
+  }
+}
+
 export type MfaResetReason =
   'lost_both_factors' | 'device_replaced' | 'suspected_compromise' | 'identity_verified_request';
 
@@ -53,6 +63,50 @@ export interface MfaResetServiceOptions {
 export function createMfaResetService(options: MfaResetServiceOptions): MfaResetService {
   const repository = createAuthRepository(options.authPool);
   const withUserLock = createWithUserLock(options.authPool);
+
+  /**
+   * The single refusal path of the admin form (D10, Q12): every predicate is read, none
+   * short-circuits, and one `refuse` throws the same error whatever held. The internal reason
+   * goes only to the log, with opaque identifiers.
+   */
+  async function refuseUnlessAllowed(
+    tenantId: string,
+    actorId: string,
+    userId: string,
+  ): Promise<void> {
+    const twoFactor = await repository.globalTwoFactorStateOf(userId);
+    const tenants = await repository.globalMembershipTenantsOf(userId);
+    const member = await repository.memberOf(tenantId, userId);
+    const hasFactor = twoFactor.twoFactorEnabled || twoFactor.rows.some((row) => row.verified);
+    const inOtherTenant = tenants.some((id) => id !== tenantId);
+    const notPlainMember = member?.role !== 'member';
+    const isSelf = actorId === userId;
+
+    if (!isSelf && hasFactor && !inOtherTenant && !notPlainMember) return;
+    if (isSelf) {
+      emitIdentityEvent({
+        name: 'catalog.security.self_mfa_reset_denied',
+        severity: 'WARN',
+        attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': actorId },
+      });
+    } else {
+      emitIdentityEvent({
+        name: 'catalog.security.identity_conflict_refused',
+        severity: 'WARN',
+        attributes: {
+          'tayzu.tenant.id': tenantId,
+          'tayzu.actor.id': actorId,
+          'tayzu.identity.conflict.reason': !hasFactor
+            ? 'no_enrolled_factor'
+            : inOtherTenant
+              ? 'target_in_other_tenant'
+              : 'target_is_admin_or_owner',
+          'tayzu.identity.user.id': userId,
+        },
+      });
+    }
+    throw new MfaResetRefusedError();
+  }
 
   async function run(
     path: 'admin' | 'operator',
@@ -103,11 +157,13 @@ export function createMfaResetService(options: MfaResetServiceOptions): MfaReset
   }
 
   return {
-    resetAdmin: ({ tenantId, actorId, userId, reason }) =>
-      run('admin', tenantId, userId, {
+    resetAdmin: async ({ tenantId, actorId, userId, reason }) => {
+      await refuseUnlessAllowed(tenantId, actorId, userId);
+      return run('admin', tenantId, userId, {
         'tayzu.actor.id': actorId,
         'tayzu.identity.mfa_reset.reason': reason,
-      }),
+      });
+    },
     resetOperator: ({ tenantId, operatorId, approverId, userId }) =>
       run('operator', tenantId, userId, {
         'tayzu.identity.operator.id': operatorId,
