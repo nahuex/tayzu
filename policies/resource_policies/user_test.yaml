@@ -355,7 +355,14 @@ tests:
 
   - name: Member and unknown role cannot reset any factor, in any tenant
     input:
-      principals: [member_t1, member_platform_t1, member_moderator_service_t1, member_platform_t2, unknown_role_t1]
+      principals:
+        [
+          member_t1,
+          member_platform_t1,
+          member_moderator_service_t1,
+          member_platform_t2,
+          unknown_role_t1,
+        ]
       resources: [user_reset_member_t1, user_reset_member_t2, user_new_t1]
       actions: [resetMfa]
     expected:
