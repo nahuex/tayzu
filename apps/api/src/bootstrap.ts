@@ -108,6 +108,9 @@ export async function createAppFromEnv(env: Env): Promise<App> {
         ...(config.invitationLinkBaseUrl === undefined
           ? {}
           : { invitationLinkBaseUrl: config.invitationLinkBaseUrl }),
+        ...(config.passwordResetLinkBaseUrl === undefined
+          ? {}
+          : { passwordResetLinkBaseUrl: config.passwordResetLinkBaseUrl }),
         disabledTenantIds: config.emailDisabledTenantIds,
         killSwitch: config.invitationEmailKillSwitch,
         ...(config.identityTokenHmacSecret === undefined
