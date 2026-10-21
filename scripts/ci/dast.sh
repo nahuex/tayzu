@@ -8,8 +8,9 @@
 #                  the pinned zaproxy/action-baseline runs in CI
 #   dast.sh api-scan
 #                  a passive ZAP API scan of every catalog OpenAPI operation
+#   dast.sh probe  the DAST probe of change 044 (design D17) against the same stack
 #   dast.sh down   stops the API and the database
-#   dast.sh all    up, scan, api-scan and down (the local equivalent of the CI job)
+#   dast.sh all    up, scan, api-scan, probe and down (the local equivalent of the CI job)
 #
 # The database keeps design D5's rule: every connection uses
 # `sslmode=verify-full`. Each run generates a throwaway CA and a `localhost`
@@ -171,6 +172,10 @@ up() {
   export ALLOWED_ORIGINS="https://localhost:${API_PORT}"
   # 6.3: must be one of ALLOWED_ORIGINS, port included.
   export INVITATION_LINK_BASE_URL="https://localhost:${API_PORT}"
+  export PASSWORD_RESET_LINK_BASE_URL="https://localhost:${API_PORT}"
+  # 044 D17: mounts the public identity routes the probe reaches. The sender is
+  # non-sending (EMAIL_PROVIDER=none below), so the probe sends no mail.
+  export MOUNT_IDENTITY_ROUTES="true"
   export ZAP_SEED_ORIGIN="https://localhost:${API_PORT}"
   export CERBOS_ADDRESS
   export PORT="$API_PORT"
@@ -306,6 +311,18 @@ api_scan() {
   (cd "$REPO_ROOT" && pnpm exec tsx scripts/ci/dast-coverage.ts "$ZAP_WORK/api_messages.json")
 }
 
+# 044 design D17: hostile and well-formed requests against the accept route and
+# both reset routes of the `up` stack; its responses are then counted.
+probe() {
+  [ -f "$STATE_DIR/seed.env" ] || fail "run 'dast.sh up' first"
+  local line result="$STATE_DIR/probe.json"
+  while IFS= read -r line; do
+    export "${line%%=*}=${line#*=}"
+  done <"$STATE_DIR/seed.env"
+  (cd "$REPO_ROOT" && DAST_PROBE_RESULT_FILE="$result" pnpm exec tsx scripts/ci/dast-probe.ts)
+  (cd "$REPO_ROOT" && pnpm exec tsx scripts/ci/dast-coverage.ts --probe "$result")
+}
+
 down() {
   if [ -f "$STATE_DIR/api.pid" ]; then
     local pid
@@ -327,15 +344,17 @@ case "${1:-}" in
   up) up ;;
   scan) scan ;;
   api-scan) api_scan ;;
+  probe) probe ;;
   down) down ;;
   all)
     trap down EXIT
     up
     scan
     api_scan
+    probe
     ;;
   *)
-    echo "usage: dast.sh up|scan|api-scan|down|all" >&2
+    echo "usage: dast.sh up|scan|api-scan|probe|down|all" >&2
     exit 2
     ;;
 esac

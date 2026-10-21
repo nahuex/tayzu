@@ -155,7 +155,7 @@ other cases carry its red step.
 ## 14. DAST probe
 
 - [x] 14.1 `scripts/ci/dast-probe.ts`: the requests of design D17 against the accept route and both reset routes, failing on 5xx, a stack trace, reflected input, a missing `no-store` or a known/unknown difference. Verify: `apps/api/src/dast-probe.test.ts` (against an in-process app), scenario "The probe covers the three routes" and a case "the probe fails when a route reflects its input".
-- [ ] 14.2 Wire the probe into `scripts/ci/dast.sh` with `EMAIL_PROVIDER=none`, `MOUNT_IDENTITY_ROUTES` on (it is not set there today), the new variables, and count its responses in `dast-coverage.ts`. Verify: `apps/api/src/dast-script.test.ts` and `apps/api/src/dast-coverage.test.ts`, scenario "The probe sends no mail" and cases "the script runs the probe after the ZAP scan" and "coverage fails when the probe saw no 2xx on the request route".
+- [x] 14.2 Wire the probe into `scripts/ci/dast.sh` with `EMAIL_PROVIDER=none`, `MOUNT_IDENTITY_ROUTES` on (it is not set there today), the new variables, and count its responses in `dast-coverage.ts`. Verify: `apps/api/src/dast-script.test.ts` and `apps/api/src/dast-coverage.test.ts`, scenario "The probe sends no mail" and cases "the script runs the probe after the ZAP scan" and "coverage fails when the probe saw no 2xx on the request route".
 
 ## 15. Docs and diagram
 

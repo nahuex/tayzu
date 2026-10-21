@@ -3,6 +3,8 @@
  * accept route and both password-reset routes of a running sandbox. It reports findings as a
  * kind and a path only, never a body or a sent value.
  */
+import { writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 export type ProbeFindingKind =
   | 'server_error'
@@ -152,4 +154,35 @@ export async function runDastProbe(options: ProbeOptions): Promise<ProbeResult> 
     findings,
     responses: seen.map(({ path, status }) => ({ path, status })),
   };
+}
+
+/**
+ * Runs the probe against the stack of `dast.sh up` (task 14.2). Reads the target and origin the
+ * seed already exports, writes the result to `DAST_PROBE_RESULT_FILE`, and exits 1 on a finding.
+ * Output carries kinds and paths only.
+ */
+async function main(): Promise<void> {
+  const env = process.env;
+  const baseUrl = env['ZAP_TARGET_URL'];
+  const origin = env['ZAP_SEED_ORIGIN'];
+  const resultFile = env['DAST_PROBE_RESULT_FILE'];
+  if (!baseUrl || !origin || !resultFile) {
+    console.error('DAST probe needs ZAP_TARGET_URL, ZAP_SEED_ORIGIN and DAST_PROBE_RESULT_FILE');
+    process.exit(2);
+  }
+  const knownEmail = env['ZAP_SEED_ADMIN_EMAIL'] || 'zap-admin@example.test';
+  const result = await runDastProbe({ baseUrl, origin, knownEmail });
+  writeFileSync(resultFile, JSON.stringify(result), { mode: 0o600 });
+  for (const finding of result.findings) {
+    console.error(`DAST probe finding: ${finding.kind} ${finding.path}`);
+  }
+  if (result.findings.length > 0) process.exit(1);
+  console.log(`DAST probe: ${String(result.responses.length)} responses, no findings.`);
+}
+
+const isDirectlyExecuted =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectlyExecuted) {
+  void main();
 }
