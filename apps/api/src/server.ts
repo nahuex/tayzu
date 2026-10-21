@@ -341,6 +341,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     email === undefined
       ? undefined
       : createDbEmailCapStore({
+          globalWindowSeconds: {
+            reset_global: (email.passwordResetGlobalCap ?? { windowSeconds: 3600 }).windowSeconds,
+            account_created_global: (
+              email.accountCreatedNoticeGlobalCap ?? { windowSeconds: 86_400 }
+            ).windowSeconds,
+          },
           store: createRateLimitBucketStore({
             adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
               .adapter,

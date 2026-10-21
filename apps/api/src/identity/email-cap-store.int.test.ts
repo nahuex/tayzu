@@ -37,7 +37,7 @@ import {
 import { runMigrations } from '@tayzu/db';
 import { eq, like } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { TEST_SECRET } from '../../../../packages/auth/src/__fixtures__/test-secret.js';
 import { createDbEmailCapStore } from './email-cap-store.js';
@@ -511,5 +511,230 @@ describe('the reset and recovery caps on the shared DB-backed store (044 task 4.
         expect(await rowsWithKey(hashed(bucket, kind, value))).toHaveLength(0);
       }
     }
+  });
+});
+
+/**
+ * Task 5.7 of openspec/changes/044-password-reset-and-account-recovery (design D5 "Fixed
+ * windows for the two global caps", Resolved decision Q32).
+ *
+ * ## Production symbols expected
+ *
+ * - `./email-cap-store.js`: `createDbEmailCapStore(options)` gains two optional options:
+ *   - `globalWindowSeconds: { reset_global: number; account_created_global: number }`, the
+ *     window of the configured cap of each global bucket (`createApp` passes it). A global
+ *     bucket's value becomes `<key>:<floor(now / window)>` before it reaches the bucket
+ *     store, so each fixed window is a new row at zero.
+ *   - `now: () => number` (epoch milliseconds, default `Date.now`), the injectable clock
+ *     that computes the window index.
+ * - Only `reset_global` and `account_created_global` change; every other scope keeps
+ *   `002`'s semantics (the window slides from the last allowed request, `043` Q66).
+ *
+ * The bucket store itself reads `Date.now()` for `lastRequest`, so the tests move both the
+ * injected clock and a Date-only fake clock together.
+ */
+describe('fixed windows for the two global caps (044 task 5.7, Q32)', () => {
+  const RESET_GLOBAL_MAX_FW = 4;
+  const ACCOUNT_GLOBAL_MAX_FW = 5;
+  const MINUTE_MS = 60_000;
+  const HOUR_MS = HOUR * 1000;
+  const DAY_MS = DAY * 1000;
+
+  const RULES_FW = {
+    invitation_tenant: { max: 2, window: HOUR },
+    invitation_recipient: { max: 2, window: DAY },
+    reset_email_recipient: { max: 2, window: HOUR },
+    reset_email_ip: { max: 2, window: HOUR },
+    reset_email_global: { max: RESET_GLOBAL_MAX_FW, window: HOUR },
+    account_created_notice_tenant: { max: 2, window: DAY },
+    account_created_notice_global: { max: ACCOUNT_GLOBAL_MAX_FW, window: DAY },
+  } as const;
+
+  let db: TestDb;
+  let store: EmailCapStore;
+  let clock = 0;
+
+  function setClock(ms: number): void {
+    clock = ms;
+    vi.setSystemTime(ms);
+  }
+
+  async function rowsWithKey(key: string): Promise<{ key: string; count: number }[]> {
+    return db
+      .select({ key: authSchema.rateLimit.key, count: authSchema.rateLimit.count })
+      .from(authSchema.rateLimit)
+      .where(eq(authSchema.rateLimit.key, key));
+  }
+
+  async function countOf(key: string): Promise<number | undefined> {
+    return (await rowsWithKey(key))[0]?.count;
+  }
+
+  /** A random window start well inside the past, aligned to `windowMs`. */
+  function alignedStart(windowMs: number): number {
+    const back = 1000 + Math.floor(Math.random() * 100_000);
+    return Math.floor(Date.now() / windowMs) * windowMs - back * windowMs;
+  }
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    const auth = createAuth({ db, secret: TEST_SECRET });
+    const adapter = (
+      await (auth.$context as Promise<{ adapter: RateLimitBucketStoreOptions['adapter'] }>)
+    ).adapter;
+    store = createDbEmailCapStore({
+      store: createRateLimitBucketStore({ adapter, rules: RULES_FW }),
+      globalWindowSeconds: { reset_global: HOUR, account_created_global: DAY },
+      now: () => clock,
+    });
+  }, 60_000);
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  afterAll(async () => {
+    db.$client.on('error', () => {
+      // Expected only during teardown.
+    });
+    await db.$client.end();
+  });
+
+  it('a global bucket at its cap admits again at the next fixed window while traffic continues', async () => {
+    const key = `global-${randomUUID()}`;
+    const windowStart = alignedStart(HOUR_MS);
+    vi.useFakeTimers({ toFake: ['Date'], now: windowStart });
+
+    // GIVEN the bucket filled late in a fixed window
+    setClock(windowStart + 50 * MINUTE_MS);
+    for (let hit = 0; hit < RESET_GLOBAL_MAX_FW; hit += 1) {
+      await store.consume('reset_global', key);
+    }
+    await expect(store.consume('reset_global', key)).rejects.toBeInstanceOf(AuthRateLimitedError);
+
+    // AND traffic continues inside the window: still refused
+    setClock(windowStart + 55 * MINUTE_MS);
+    await expect(store.consume('reset_global', key)).rejects.toBeInstanceOf(AuthRateLimitedError);
+
+    // WHEN the next fixed window starts (well under a full window after the last allowed hit)
+    setClock(windowStart + HOUR_MS + MINUTE_MS);
+
+    // THEN the cap admits again, up to its maximum, and then refuses again
+    for (let hit = 0; hit < RESET_GLOBAL_MAX_FW; hit += 1) {
+      await expect(store.consume('reset_global', key), `hit ${String(hit + 1)}`).resolves.toBe(
+        undefined,
+      );
+    }
+    await expect(store.consume('reset_global', key)).rejects.toBeInstanceOf(AuthRateLimitedError);
+  });
+
+  it('two consumes in one window share one row and the next window writes a new row', async () => {
+    const key = `global-${randomUUID()}`;
+    const windowStart = alignedStart(HOUR_MS);
+    const index = windowStart / HOUR_MS;
+    vi.useFakeTimers({ toFake: ['Date'], now: windowStart });
+
+    setClock(windowStart + MINUTE_MS);
+    await store.consume('reset_global', key);
+    setClock(windowStart + 30 * MINUTE_MS);
+    await store.consume('reset_global', key);
+
+    const first = hashed('reset_email_global', 'global', `${key}:${String(index)}`);
+    const second = hashed('reset_email_global', 'global', `${key}:${String(index + 1)}`);
+    expect(await rowsWithKey(first), 'one row for the window').toHaveLength(1);
+    expect(await countOf(first)).toBe(2);
+    expect(await rowsWithKey(second), 'no row for the next window yet').toHaveLength(0);
+    expect(
+      await rowsWithKey(hashed('reset_email_global', 'global', key)),
+      'the bare key is never stored',
+    ).toHaveLength(0);
+
+    setClock(windowStart + HOUR_MS + MINUTE_MS);
+    await store.consume('reset_global', key);
+
+    expect(await rowsWithKey(second), 'the next window writes a new row').toHaveLength(1);
+    expect(await countOf(second)).toBe(1);
+    expect(await countOf(first), 'the past window row is untouched').toBe(2);
+  });
+
+  it("the recipient, IP and tenant buckets keep 002's semantics (a consume just after the window still counts while traffic continues)", async () => {
+    const cases = [
+      { scope: 'reset_recipient', bucket: 'reset_email_recipient', kind: 'email', window: HOUR },
+      { scope: 'reset_ip', bucket: 'reset_email_ip', kind: 'ip', window: HOUR },
+      { scope: 'recipient', bucket: 'invitation_recipient', kind: 'email', window: DAY },
+      { scope: 'tenant', bucket: 'invitation_tenant', kind: 'tenant', window: HOUR },
+      {
+        scope: 'account_created_tenant',
+        bucket: 'account_created_notice_tenant',
+        kind: 'tenant',
+        window: DAY,
+      },
+    ] as const;
+
+    for (const { scope, bucket, kind, window } of cases) {
+      const value = `value-${randomUUID()}`;
+      const windowMs = window * 1000;
+      const windowStart = alignedStart(windowMs);
+      vi.useFakeTimers({ toFake: ['Date'], now: windowStart });
+
+      // GIVEN the bucket filled late in a fixed-window slot
+      setClock(windowStart + windowMs - 10 * MINUTE_MS);
+      await store.consume(scope, value);
+      await store.consume(scope, value);
+
+      // WHEN a consume arrives just after the fixed boundary, with traffic continuing
+      setClock(windowStart + windowMs + MINUTE_MS);
+
+      // THEN it still counts against the same bucket and is refused
+      await expect(
+        store.consume(scope, value),
+        `${scope} refused after the boundary`,
+      ).rejects.toBeInstanceOf(AuthRateLimitedError);
+      const rows = await rowsWithKey(hashed(bucket, kind, value));
+      expect(rows, `${scope}: one row under the bare value`).toHaveLength(1);
+      expect(rows[0]?.count).toBe(2);
+      vi.useRealTimers();
+    }
+  });
+
+  it('the account-created global bucket uses its own window', async () => {
+    const key = `global-${randomUUID()}`;
+    const dayStart = alignedStart(DAY_MS);
+    const dayIndex = dayStart / DAY_MS;
+    vi.useFakeTimers({ toFake: ['Date'], now: dayStart });
+
+    // GIVEN both global buckets filled late in an hour of the day
+    setClock(dayStart + 5 * HOUR_MS + 50 * MINUTE_MS);
+    for (let hit = 0; hit < ACCOUNT_GLOBAL_MAX_FW; hit += 1) {
+      await store.consume('account_created_global', key);
+    }
+    for (let hit = 0; hit < RESET_GLOBAL_MAX_FW; hit += 1) {
+      await store.consume('reset_global', key);
+    }
+
+    // THEN the row is keyed by the index of the day, not of the hour
+    const dayRow = hashed('account_created_notice_global', 'global', `${key}:${String(dayIndex)}`);
+    expect(await countOf(dayRow)).toBe(ACCOUNT_GLOBAL_MAX_FW);
+
+    // WHEN the next hour starts but the day goes on
+    setClock(dayStart + 6 * HOUR_MS + 10 * MINUTE_MS);
+
+    // THEN the hourly reset cap admits again and the daily account-created cap does not
+    await expect(store.consume('reset_global', key)).resolves.toBeUndefined();
+    await expect(store.consume('account_created_global', key)).rejects.toBeInstanceOf(
+      AuthRateLimitedError,
+    );
+
+    // AND the next day starts a new row for the account-created cap
+    setClock(dayStart + DAY_MS + MINUTE_MS);
+    await expect(store.consume('account_created_global', key)).resolves.toBeUndefined();
+    const nextDayRow = hashed(
+      'account_created_notice_global',
+      'global',
+      `${key}:${String(dayIndex + 1)}`,
+    );
+    expect(await countOf(nextDayRow)).toBe(1);
+    expect(await countOf(dayRow)).toBe(ACCOUNT_GLOBAL_MAX_FW);
   });
 });
