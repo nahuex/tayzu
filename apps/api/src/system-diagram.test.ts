@@ -234,3 +234,114 @@ describe('system diagram, 043 identity lifecycle (task 16.7)', () => {
     for (const e of fresh) expect(e.label, e.text).toMatch(PROTOCOL);
   });
 });
+
+/**
+ * `044` task 15.5 (SEC01, design D19): the diagram also shows the two public
+ * password-reset routes, the end user's mail client, the break-glass CLI run by
+ * the operator, the `auth.verification` writes and the Pwned Passwords call
+ * from the confirm route; every new arrow names its protocol.
+ *
+ * Production symbols expected: none (the change is the Markdown document and
+ * its regenerated image; the image is checked by hand).
+ */
+const RESET_ROUTES = [
+  'POST /v1/auth/password-reset/request',
+  'POST /v1/auth/password-reset/confirm',
+] as const;
+
+const isMailClient = (label: string): boolean => /mail client/i.test(label);
+const isBreakGlass = (label: string): boolean =>
+  /break-glass|recover[:-]admin-mfa/i.test(label) && !/job/i.test(label);
+const isResetRoute = (label: string): boolean => /\/v1\/auth\/password-reset\//.test(label);
+
+describe('system diagram, 044 password reset and account recovery (task 15.5)', () => {
+  it('keeps a structurally sound Mermaid block after the 044 additions', () => {
+    const lines = source.split('\n').map((l) => l.trim());
+    expect(lines.filter((l) => l.startsWith('subgraph ')).length).toBe(
+      lines.filter((l) => l === 'end').length,
+    );
+    expect(unparsed).toEqual([]);
+    for (const e of edges) expect(e.label.trim(), e.text).not.toBe('');
+  });
+
+  it.each(RESET_ROUTES)('shows the public route %s', (route) => {
+    const escaped = route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    expect(flatten(source)).toMatch(new RegExp(`${escaped}(?![\\w/{-])`));
+  });
+
+  it("draws the end user's mail client as an actor", () => {
+    expect([...nodes.values()].some(isMailClient)).toBe(true);
+  });
+
+  it('draws the operator as an actor of a break-glass CLI node (recover:admin-mfa)', () => {
+    expect([...nodes.values()].some(isBreakGlass)).toBe(true);
+    expectProtocol(find((e) => /platform operator/i.test(e.src) && isBreakGlass(e.dst)));
+  });
+
+  it('has the end user calling the reset request and confirm routes over HTTPS/JSON', () => {
+    for (const route of ['/password-reset/request', '/password-reset/confirm']) {
+      const matches = find((e) => e.dst.includes(route) && !/job/i.test(e.src));
+      expectProtocol(matches);
+      expect(
+        matches.some((e) => /HTTPS/i.test(e.label) && /JSON/i.test(e.label)),
+        route,
+      ).toBe(true);
+    }
+  });
+
+  it('has the reset routes sending reset and notice mail to the email provider over HTTPS to the ACS email API', () => {
+    const matches = find((e) => isResetRoute(e.src) && /email provider/i.test(e.dst));
+    expectProtocol(matches);
+    expect(
+      matches.some((e) => /HTTPS/i.test(e.label) && /ACS|Communication Services/i.test(e.text)),
+    ).toBe(true);
+  });
+
+  it('has the email provider delivering reset and notice mail to the mail client over SMTP', () => {
+    const matches = find((e) => /email provider/i.test(e.src) && isMailClient(e.dst));
+    expectProtocol(matches);
+    expect(matches.some((e) => /SMTP/i.test(e.label))).toBe(true);
+  });
+
+  it('has the mail client reading the mail over IMAP', () => {
+    const matches = find(
+      (e) => /IMAP/i.test(e.label) && (isMailClient(e.src) || isMailClient(e.dst)),
+    );
+    expectProtocol(matches);
+    expect(matches.length).toBeGreaterThan(0);
+  });
+
+  it('has the auth.verification writes over SQL on TLS', () => {
+    const matches = find((e) => /auth\.verification/.test(e.label));
+    expectProtocol(matches);
+    expect(matches.some((e) => /TLS/i.test(e.label) && /SQL|PostgreSQL/i.test(e.label))).toBe(true);
+  });
+
+  it('has the break-glass CLI reaching PostgreSQL as tayzu_auth over TLS', () => {
+    const matches = find((e) => isBreakGlass(e.src) && /PostgreSQL/i.test(e.dst + e.label));
+    expectProtocol(matches);
+    expect(matches.some((e) => /tayzu_auth/.test(e.label) && /TLS/i.test(e.label))).toBe(true);
+  });
+
+  it('has the break-glass CLI sending its notice mail to the email provider over HTTPS', () => {
+    const matches = find((e) => isBreakGlass(e.src) && /email provider/i.test(e.dst));
+    expectProtocol(matches);
+    expect(matches.some((e) => /HTTPS/i.test(e.label))).toBe(true);
+  });
+
+  it('has the Pwned Passwords range call drawn from the confirm route', () => {
+    const matches = find(
+      (e) =>
+        e.src.includes('/password-reset/confirm') && /Pwned Passwords|pwnedpasswords/i.test(e.dst),
+    );
+    expectProtocol(matches);
+    expect(matches.some((e) => /HTTPS/i.test(e.label) && /range/i.test(e.label))).toBe(true);
+  });
+
+  it('gives every arrow touching a 044 surface a protocol', () => {
+    const topic = /password-reset|mail client|auth\.verification|break-glass|recover[:-]admin-mfa/i;
+    const fresh = find((e) => topic.test(e.text));
+    expect(fresh.length).toBeGreaterThanOrEqual(8);
+    for (const e of fresh) expect(e.label, e.text).toMatch(PROTOCOL);
+  });
+});
