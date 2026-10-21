@@ -130,6 +130,7 @@ describe('identity email wiring through createAppFromEnv (task 14.11)', () => {
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,
       IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
       MOUNT_IDENTITY_ROUTES: 'true',
+      PASSWORD_RESET_LINK_BASE_URL: ORIGIN,
     });
   }, 60_000);
 
@@ -268,6 +269,7 @@ describe('identity email gate controls reach production (task 14.13)', () => {
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,
       IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
       MOUNT_IDENTITY_ROUTES: 'true',
+      PASSWORD_RESET_LINK_BASE_URL: ORIGIN,
       ...extra,
     });
     apps.push(built);
@@ -462,6 +464,7 @@ describe('the accept route runs the shed and sends the admin notice (task 14.15)
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,
       IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
       MOUNT_IDENTITY_ROUTES: 'true',
+      PASSWORD_RESET_LINK_BASE_URL: ORIGIN,
       VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
       VISMA_CONNECT_CLIENT_ID: stub.clientId,
       VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
@@ -665,6 +668,7 @@ describe('the configured caps reach the identity router (task 14.18)', () => {
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,
       IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
       MOUNT_IDENTITY_ROUTES: 'true',
+      PASSWORD_RESET_LINK_BASE_URL: ORIGIN,
       ...extra,
     });
     apps.push(built);

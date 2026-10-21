@@ -2037,6 +2037,7 @@ describe('otel-smoke-check, 043: every identity operation is driven (task 15.2)'
       email: {
         sender: appSender,
         invitationLinkBaseUrl: IDENTITY_ORIGIN,
+        passwordResetLinkBaseUrl: IDENTITY_ORIGIN,
         disabledTenantIds: [],
         killSwitch: false,
         recipientKeySecret: IDENTITY_SECRET,
@@ -3997,6 +3998,7 @@ describe('otel-smoke-check, 043: marker values never reach a signal (task 15.4)'
       email: {
         sender: createNonSendingEmailSender(),
         invitationLinkBaseUrl: IDENTITY_ORIGIN,
+        passwordResetLinkBaseUrl: IDENTITY_ORIGIN,
         disabledTenantIds: [],
         killSwitch: false,
         recipientKeySecret: IDENTITY_SECRET,

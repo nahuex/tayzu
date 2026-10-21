@@ -336,6 +336,18 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   if (options.mountIdentityRoutes === true && (recipientKeySecret ?? '') === '') {
     throw new Error('IDENTITY_TOKEN_HMAC_SECRET is required to mount the identity routes.');
   }
+  // The reset email path must exist whenever the identity routes mount (D9 startup rules).
+  // Only variable names are named, never values.
+  if (options.mountIdentityRoutes === true && email !== undefined) {
+    if ((email.passwordResetLinkBaseUrl ?? '') === '') {
+      throw new Error('PASSWORD_RESET_LINK_BASE_URL is required to mount the identity routes.');
+    }
+    if ((email.sender as EmailSender | undefined) === undefined) {
+      throw new Error(
+        'EMAIL_PROVIDER must configure an email sender to mount the identity routes.',
+      );
+    }
+  }
   // One cap store shared by the invitation gate and the notice dispatcher (Q138).
   const emailCapStore =
     email === undefined

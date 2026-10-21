@@ -57,6 +57,7 @@ const state = vi.hoisted(() => ({
   senders: [] as unknown[],
   sendDelayMs: 0,
   sendsStarted: 0,
+  omitSender: false,
 }));
 
 vi.mock('@tayzu/db', async (importActual) => {
@@ -86,6 +87,9 @@ vi.mock('./email-sender.js', async (importActual) => {
   return {
     ...actual,
     createEmailSender: vi.fn((config: Parameters<typeof actual.createEmailSender>[0]) => {
+      // Task 13.3: a deployment whose email sender is not configured.
+      if (state.omitSender)
+        return undefined as unknown as ReturnType<typeof actual.createEmailSender>;
       const real = actual.createEmailSender(config);
       state.senders.push(real);
       const send = async (...args: unknown[]): Promise<unknown> => {
@@ -667,4 +671,99 @@ describe('password reset controls through createAppFromEnv (task 13.2)', () => {
     const confirmLimited = await confirm(app, randomUUID(), randomUUID(), confirmIp);
     expect(confirmLimited.statusCode, confirmLimited.body).toBe(429);
   }, 180_000);
+});
+
+/**
+ * Task 13.3 of openspec/changes/044-password-reset-and-account-recovery (design D9 "Startup
+ * failure rules").
+ *
+ * Spec scenario "Mounting without the email path fails startup" (`specs/password-reset-and-account-recovery/spec.md`):
+ * WHEN the switch is on and the reset link base URL, the recipient key secret or the email sender
+ * is not configured; THEN startup fails naming the variable and never its value.
+ *
+ * Harness: as 13.1, with `MOUNT_IDENTITY_ROUTES=true`. Each case leaves out one of the three; the
+ * other values carry distinctive markers, and the error must not contain any of them. A missing
+ * sender is simulated by the `./email-sender.js` wrapper returning nothing (`state.omitSender`).
+ *
+ * ## Production symbols expected
+ *
+ * - `createApp` (`./server.js`) throws, with `mountIdentityRoutes` on, an error naming
+ *   `PASSWORD_RESET_LINK_BASE_URL` when `email.passwordResetLinkBaseUrl` is missing, and an error
+ *   naming `EMAIL_PROVIDER` when `email.sender` is missing. The existing `IDENTITY_TOKEN_HMAC_SECRET`
+ *   rule is kept. `createAppFromEnv` lets these errors through unchanged.
+ */
+describe('mounting without the email path fails startup through createAppFromEnv (task 13.3)', () => {
+  let pools: HarnessPools;
+  const HMAC_MARKER = 'marker-hmac-secret-0123456789-abcdefghijklmnop-zz';
+  const BASE_URL_MARKER = 'https://marker-reset-origin.tayzu.test';
+
+  beforeAll(async () => {
+    pools = await harnessPools();
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+  }, 60_000);
+
+  afterEach(() => {
+    state.omitSender = false;
+  });
+
+  afterAll(() => {
+    state.pools.clear();
+  });
+
+  function env(drop: string | undefined): Record<string, string> {
+    const full: Record<string, string> = {
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRET: TEST_SECRET,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: `${ORIGIN},${BASE_URL_MARKER}`,
+      INVITATION_LINK_BASE_URL: ORIGIN,
+      PASSWORD_RESET_LINK_BASE_URL: BASE_URL_MARKER,
+      IDENTITY_TOKEN_HMAC_SECRET: HMAC_MARKER,
+      MOUNT_IDENTITY_ROUTES: 'true',
+    };
+    if (drop !== undefined) Reflect.deleteProperty(full, drop);
+    return full;
+  }
+
+  async function startupError(drop: string | undefined): Promise<string> {
+    let built: App | undefined;
+    try {
+      built = await createAppFromEnv(env(drop));
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    await built.close().catch(() => undefined);
+    return '';
+  }
+
+  function expectNoValues(message: string): void {
+    for (const value of [HMAC_MARKER, BASE_URL_MARKER, TEST_SECRET]) {
+      expect(message, 'the error never carries a configured value').not.toContain(value);
+    }
+  }
+
+  it('Mounting without the email path fails startup: the reset link base URL', async () => {
+    const message = await startupError('PASSWORD_RESET_LINK_BASE_URL');
+
+    expect(message).toContain('PASSWORD_RESET_LINK_BASE_URL');
+    expectNoValues(message);
+  }, 60_000);
+
+  it('Mounting without the email path fails startup: the recipient key secret', async () => {
+    const message = await startupError('IDENTITY_TOKEN_HMAC_SECRET');
+
+    expect(message).toContain('IDENTITY_TOKEN_HMAC_SECRET');
+    expectNoValues(message);
+  }, 60_000);
+
+  it('Mounting without the email path fails startup: the sender', async () => {
+    state.omitSender = true;
+
+    const message = await startupError(undefined);
+
+    expect(message).toContain('EMAIL_PROVIDER');
+    expectNoValues(message);
+  }, 60_000);
 });
