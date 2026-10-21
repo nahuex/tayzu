@@ -63,7 +63,7 @@
  * instrument in `@tayzu/auth` and `@tayzu/catalog` is created at import time
  * and the OTel metrics API has no proxy meter provider.
  */
-import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { inspect } from 'node:util';
 
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
@@ -100,7 +100,10 @@ import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtu
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { exchangeMachineToken } from '../../../packages/auth/src/token-exchange.js';
 import { LOG_EVENTS, METRICS, SPANS } from '../../../packages/authz/src/telemetry/contract.js';
-import { USER_ENTITY_IDENTIFIER_PLACEHOLDER } from '../../../packages/catalog/src/telemetry/contract.js';
+import {
+  LOG_EVENTS as CATALOG_LOG_EVENTS,
+  USER_ENTITY_IDENTIFIER_PLACEHOLDER,
+} from '../../../packages/catalog/src/telemetry/contract.js';
 import * as identityContract from '../../../packages/auth/src/telemetry/identity-contract.js';
 import {
   EXPECTED_LOG_EVENTS,
@@ -119,6 +122,8 @@ import { createNoticeDispatcher, type NoticeDispatcher } from './identity/notice
 import { createSsoLinkShed } from './identity/sso-link-shed.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { createWithUserLock } from './identity/user-lock.js';
+import { createMfaResetService } from './identity/mfa-reset.js';
+import { createResetTokenStore } from './identity/reset-token-store.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
 import { main as bootstrapAdminMain } from '../scripts/bootstrap-admin.js';
@@ -1934,6 +1939,11 @@ const IDENTITY_METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.service_accounts': '{account}',
   'tayzu.identity.credential_mutations': '{mutation}',
   'tayzu.identity.principal_rejections': '{rejection}',
+  // 044 (design D15 Metrics: "counters, `{event}`").
+  'tayzu.identity.password_reset_requests': '{event}',
+  'tayzu.identity.password_reset_confirms': '{event}',
+  'tayzu.identity.mfa_resets': '{event}',
+  'tayzu.identity.recovery_emails': '{event}',
 };
 
 /** Span attributes the design lists as conditional (its Spans table). */
@@ -3117,6 +3127,370 @@ describe('otel-smoke-check, 043: every identity operation is driven (task 15.2)'
   }, 180_000);
 });
 
+/**
+ * `otel-smoke-check`, 044 extension (task 12.3, openspec/changes/044-password-reset-and-account-recovery;
+ * design D15 "Enforcement": "`otel-smoke-check` is extended to drive every operation once with each
+ * denial reason under an in-memory exporter and to assert every declared name is observed and none
+ * undeclared").
+ *
+ * This describe only drives the 044 operations, so that the 043 iteration below (spans, metrics, log
+ * events with their declared attributes and forms) observes every 044 name. Operations driven:
+ *
+ * - the request route for an eligible address (a token is issued and a `PasswordResetEmail` sent)
+ *   and for an unknown address (ineligible);
+ * - a suppressed reset email (a second server with the kill switch on, for an eligible address);
+ * - the confirm route: a refusal for an unknown id, a refusal for a wrong token of a real id, a
+ *   weak-password refusal that spares the token, and the completion with the same token (which sends
+ *   the `PasswordChangedNotice`);
+ * - the MFA reset service: the admin form allowed, the admin form refused for a self-target, and the
+ *   operator form.
+ *
+ * ## Production symbols expected
+ *
+ * - `createMfaResetService({ authPool, notices })` (`./identity/mfa-reset.js`, existing) with
+ *   `resetAdmin` and `resetOperator`.
+ * - `createResetTokenStore({ authPool, withUserLock }).issue(userId)` (`./identity/reset-token-store.js`).
+ * - `CreateAppOptions.email.passwordResetLinkBaseUrl`, `passwordResetMinResponseMs` and
+ *   `passwordResetGlobalCap` (`./server.js`).
+ * - The 044 spans, metrics and log events of `identity-contract.ts`, emitted by those operations.
+ */
+const RESET_REQUEST_PATH = '/v1/auth/password-reset/request';
+const RESET_CONFIRM_PATH = '/v1/auth/password-reset/confirm';
+const RESET_HMAC_SECRET = 'smoke-044-test-only-secret-0123456789-abcdef';
+const RESET_NEW_PASSWORD = 'Another-Perfectly-Fine-Passphrase-77!';
+
+describe('otel-smoke-check, 044: every password-reset and MFA-reset operation is driven (task 12.3)', () => {
+  let open: App;
+  let killed: App;
+  let pools: HarnessPools;
+  let harness: TelemetryTestHarness;
+  const openSender = createRecordingEmailSender();
+  const killedSender = createRecordingEmailSender();
+
+  function emailOptions(
+    sender: ReturnType<typeof createRecordingEmailSender>,
+    killSwitch: boolean,
+  ) {
+    return {
+      sender,
+      invitationLinkBaseUrl: IDENTITY_ORIGIN,
+      passwordResetLinkBaseUrl: IDENTITY_ORIGIN,
+      passwordResetMinResponseMs: 0,
+      disabledTenantIds: [] as string[],
+      killSwitch,
+      recipientKeySecret: RESET_HMAC_SECRET,
+      tenantCap: { max: 100_000, windowSeconds: 3600 },
+      recipientCap: { max: 100_000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: { max: 100_000, windowSeconds: 3600 },
+      passwordResetIpCap: { max: 100_000, windowSeconds: 3600 },
+      // The global bucket has one constant key shared by every test file: a roomy cap.
+      passwordResetGlobalCap: { max: 1_000_000, windowSeconds: 3600 },
+    };
+  }
+
+  function appWith(sender: ReturnType<typeof createRecordingEmailSender>, killSwitch: boolean) {
+    const email = emailOptions(sender, killSwitch);
+    return createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: IDENTITY_CERBOS,
+      allowedOrigins: [IDENTITY_ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: RESET_HMAC_SECRET,
+      ...{ email },
+    });
+  }
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    pools = await harnessPools();
+    await runMigrations(pools.authPool);
+    open = await appWith(openSender, false);
+    killed = await appWith(killedSender, true);
+    // The breached-password range service reports nothing as breached.
+    vi.stubGlobal('fetch', (): Promise<Response> => {
+      return Promise.resolve(
+        new Response('0000000000000000000000000000000000A:3\r\n', { status: 200 }),
+      );
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    vi.unstubAllGlobals();
+    await open.close();
+    await killed.close();
+  }, 60_000);
+
+  async function account(
+    label: string,
+  ): Promise<{ email: string; userId: string; tenantId: string }> {
+    const id = randomUUID();
+    const email = `s044-${label}-${id}@example.test`;
+    const tenant = await bootstrapTestTenant(open.auth, {
+      pool: testAppPool(),
+      name: `Smoke 044 ${label}`,
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Smoke 044 ${id}`,
+      organizationSlug: `s044-${id}`,
+      ip: randomIp(),
+    });
+    return { email, userId: tenant.userId, tenantId: tenant.organizationId };
+  }
+
+  async function postTo(
+    app: App,
+    url: string,
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; body: unknown }> {
+    const response = await app.app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        'content-type': 'application/json',
+        origin: IDENTITY_ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify(body),
+    });
+    return { status: response.statusCode, body: response.json() };
+  }
+
+  function sentTo(sender: ReturnType<typeof createRecordingEmailSender>, email: string): number {
+    return sender.sent.filter((message) => message.to === email).length;
+  }
+
+  it('the request route: an eligible address is issued a link and an unknown address is ineligible', async () => {
+    const known = await account('request');
+    const eligible = await postTo(open, RESET_REQUEST_PATH, { email: known.email });
+    const unknown = await postTo(open, RESET_REQUEST_PATH, {
+      email: `s044-ghost-${randomUUID()}@example.test`,
+    });
+    expect(eligible.status).toBe(200);
+    expect(unknown.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(sentTo(openSender, known.email)).toBe(1);
+    });
+  }, 60_000);
+
+  it('a suppressed reset email: the kill switch is on for an eligible address', async () => {
+    const known = await account('suppressed');
+    const answer = await postTo(killed, RESET_REQUEST_PATH, { email: known.email });
+    expect(answer.status).toBe(200);
+    await vi.waitFor(() => {
+      const suppressed = logRecords(harness, 'catalog.security.recovery_email_suppressed');
+      expect(
+        suppressed.some((record) => record.attributes['tayzu.identity.user.id'] === known.userId),
+      ).toBe(true);
+    });
+    expect(sentTo(killedSender, known.email)).toBe(0);
+  }, 60_000);
+
+  it('the confirm route: refusals (unknown id, wrong token, weak password) and a completion', async () => {
+    const known = await account('confirm');
+    const store = createResetTokenStore({
+      authPool: pools.authPool,
+      withUserLock: createWithUserLock(pools.authPool),
+    });
+    const issued = await store.issue(known.userId);
+
+    const unknownId = await postTo(open, RESET_CONFIRM_PATH, {
+      id: randomBytes(16).toString('base64url'),
+      token: randomBytes(32).toString('base64url'),
+      newPassword: RESET_NEW_PASSWORD,
+    });
+    expect(unknownId.status).toBe(404);
+    const wrongToken = await postTo(open, RESET_CONFIRM_PATH, {
+      id: issued.id,
+      token: randomBytes(32).toString('base64url'),
+      newPassword: RESET_NEW_PASSWORD,
+    });
+    expect(wrongToken.status).toBe(404);
+    const weak = await postTo(open, RESET_CONFIRM_PATH, {
+      id: issued.id,
+      token: issued.token,
+      newPassword: 'short',
+    });
+    expect(weak.status).toBeGreaterThanOrEqual(400);
+    const completed = await postTo(open, RESET_CONFIRM_PATH, {
+      id: issued.id,
+      token: issued.token,
+      newPassword: RESET_NEW_PASSWORD,
+    });
+    expect(completed.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(sentTo(openSender, known.email)).toBeGreaterThanOrEqual(1);
+    });
+  }, 60_000);
+
+  it('the MFA reset service: the admin form allowed and refused for a self-target, and the operator form', async () => {
+    const authPool = pools.authPool;
+    const notices = {
+      send: (): Promise<'sent'> => Promise.resolve('sent'),
+    };
+    const service = createMfaResetService({ authPool, notices });
+
+    const tenantId = `org-${randomUUID()}`;
+    await authPool.query(
+      'insert into auth.organization (id, name, slug, created_at) values ($1, $2, $3, now())',
+      [tenantId, 'Org', `slug-${tenantId}`],
+    );
+    const seedMember = async (): Promise<string> => {
+      const userId = `usr-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth."user" (id, name, email, email_verified, created_at, updated_at, two_factor_enabled)
+         values ($1, $2, $3, true, now(), now(), true)`,
+        [userId, 'User', `s044-m-${randomUUID()}@example.test`],
+      );
+      await authPool.query(
+        'insert into auth.member (id, organization_id, user_id, role, created_at) values ($1, $2, $3, $4, now())',
+        [`mem-${randomUUID()}`, tenantId, userId, 'member'],
+      );
+      await authPool.query(
+        `insert into auth.two_factor (id, secret, backup_codes, user_id, verified, failed_verification_count)
+         values ($1, $2, $3, $4, true, 0)`,
+        [`tf-${randomUUID()}`, `enc-secret-${randomUUID()}`, `enc-codes-${randomUUID()}`, userId],
+      );
+      await authPool.query(
+        `insert into auth.session (id, expires_at, token, created_at, updated_at, user_id, active_organization_id)
+         values ($1, now() + interval '1 day', $2, now(), now(), $3, $4)`,
+        [`ses-${randomUUID()}`, `tok-${randomUUID()}`, userId, tenantId],
+      );
+      return userId;
+    };
+
+    const target = await seedMember();
+    const allowed = await service.resetAdmin({
+      tenantId,
+      actorId: `adm-${randomUUID()}`,
+      userId: target,
+      reason: 'lost_both_factors',
+    });
+    expect(allowed.sessionsRevoked).toBe(1);
+
+    const own = await seedMember();
+    await expect(
+      service.resetAdmin({
+        tenantId,
+        actorId: own,
+        userId: own,
+        reason: 'device_replaced',
+      }),
+    ).rejects.toBeDefined();
+
+    const operatorTarget = await seedMember();
+    const operated = await service.resetOperator({
+      tenantId,
+      operatorId: `gh:${randomInt(1_000_000, 9_999_999).toString(10)}`,
+      approverId: `gh:${randomInt(1_000_000, 9_999_999).toString(10)}`,
+      userId: operatorTarget,
+    });
+    expect(operated.sessionsRevoked).toBe(1);
+  }, 60_000);
+});
+
+describe('otel-smoke-check, 044: every declared 044 name is observed once and no undeclared name appears (task 12.3)', () => {
+  let harness: TelemetryTestHarness;
+
+  /** The thirteen names design D15 adds (the spec side; the fixture and the module must agree). */
+  const SPANS_044 = [
+    'identity.password_reset.request',
+    'identity.password_reset.confirm',
+    'identity.mfa.reset',
+  ];
+  const METRICS_044 = [
+    'tayzu.identity.password_reset_requests',
+    'tayzu.identity.password_reset_confirms',
+    'tayzu.identity.mfa_resets',
+    'tayzu.identity.recovery_emails',
+  ];
+  const LOGS_044 = [
+    'catalog.audit.password_reset_requested',
+    'catalog.audit.password_reset_completed',
+    'catalog.audit.mfa_reset',
+    'catalog.security.password_reset_denied',
+    'catalog.security.recovery_email_suppressed',
+    'catalog.security.self_mfa_reset_denied',
+  ];
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    await harness.forceFlush();
+  });
+
+  function metricNames(): Set<string> {
+    const names = new Set<string>();
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) names.add(metric.descriptor.name);
+      }
+    }
+    return names;
+  }
+
+  it.each([
+    ...SPANS_044.map((name) => ['span', name] as const),
+    ...METRICS_044.map((name) => ['metric', name] as const),
+    ...LOGS_044.map((name) => ['log event', name] as const),
+  ])('the %s %s is declared exactly once and observed', (kind, name) => {
+    const declared =
+      kind === 'span'
+        ? identityContract.IDENTITY_SPANS
+        : kind === 'metric'
+          ? identityContract.IDENTITY_METRICS
+          : identityContract.IDENTITY_LOG_EVENTS;
+    expect(declared.filter((entry) => entry.name === name)).toHaveLength(1);
+    if (kind === 'span') {
+      expect(spansNamed(harness, name).length, `no "${name}" span was captured`).toBeGreaterThan(0);
+    } else if (kind === 'metric') {
+      expect(
+        dataPointAttributes(harness, name).length,
+        `no "${name}" data point was captured`,
+      ).toBeGreaterThan(0);
+    } else {
+      expect(logRecords(harness, name).length, `no "${name}" record was captured`).toBeGreaterThan(
+        0,
+      );
+    }
+  });
+
+  it('no span, metric or log event of the identity namespaces, or about a reset, carries an undeclared name', () => {
+    const declared = new Set<string>([
+      ...identityContract.IDENTITY_SPANS.map((entry) => entry.name),
+      ...identityContract.IDENTITY_METRICS.map((entry) => entry.name),
+      ...identityContract.IDENTITY_LOG_EVENTS.map((entry) => entry.name),
+      ...LOG_EVENTS.map((entry) => entry.name),
+      ...METRICS.map((entry) => entry.name),
+      ...SPANS.map((entry) => entry.name),
+      ...CATALOG_LOG_EVENTS.map((entry) => entry.name),
+    ]);
+    const aboutReset = /password_reset|mfa_reset|mfa\.reset|recovery/;
+    const undeclared: string[] = [];
+    for (const span of harness.spanExporter.getFinishedSpans()) {
+      if (span.name.startsWith('identity.') || aboutReset.test(span.name)) {
+        if (!declared.has(span.name)) undeclared.push(`span ${span.name}`);
+      }
+    }
+    for (const name of metricNames()) {
+      if (name.startsWith('tayzu.identity.') || aboutReset.test(name)) {
+        if (!declared.has(name)) undeclared.push(`metric ${name}`);
+      }
+    }
+    for (const record of harness.logExporter.getFinishedLogRecords()) {
+      const name = record.eventName ?? '';
+      if (
+        name.startsWith('catalog.audit.') ||
+        name.startsWith('catalog.security.') ||
+        aboutReset.test(name)
+      ) {
+        if (!declared.has(name)) undeclared.push(`log ${name}`);
+      }
+    }
+    expect([...new Set(undeclared)]).toEqual([]);
+  });
+});
+
 describe('otel-smoke-check, 043: every declared identity signal appears with its declared attributes (task 15.2)', () => {
   let harness: TelemetryTestHarness;
 
@@ -3146,7 +3520,9 @@ describe('otel-smoke-check, 043: every declared identity signal appears with its
       (name, contract) => {
         const spans = spansNamed(harness, name);
         expect(spans.length, `no "${name}" span was captured`).toBeGreaterThan(0);
-        const conditional = IDENTITY_SPAN_CONDITIONAL[name] ?? [];
+        const conditional = [
+          ...new Set([...(IDENTITY_SPAN_CONDITIONAL[name] ?? []), ...(contract.conditional ?? [])]),
+        ];
         const allowed = new Set([...contract.attributes, ...conditional, 'error.type']);
         for (const span of spans) {
           for (const key of Object.keys(span.attributes)) {

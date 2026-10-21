@@ -117,6 +117,10 @@ export function createRecoveryMailer(deps: {
 
   function refuse(suppression: Suppression, userId: string): ResetEmailAdmission {
     suppressed(suppression, userId);
+    recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
+      'tayzu.identity.email.template': TEMPLATE_NAME,
+      'tayzu.identity.email.outcome': 'suppressed',
+    });
     return { admitted: false };
   }
 
@@ -177,6 +181,10 @@ export function createRecoveryMailer(deps: {
           }
         }
         await deps.sender.send(input.address, { kind: input.kind });
+        recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
+          'tayzu.identity.email.template': template,
+          'tayzu.identity.email.outcome': 'sent',
+        });
       } catch {
         recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
           'tayzu.identity.email.template': template,
@@ -217,13 +225,21 @@ export function createRecoveryMailer(deps: {
       send(link: string): void {
         const delivery = deps.sender
           .send(input.address, { kind: 'PasswordResetEmail', link, expiryText: EXPIRY_TEXT })
-          .catch(() => {
-            recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
-              'tayzu.identity.email.template': TEMPLATE_NAME,
-              'tayzu.identity.email.outcome': 'failed',
-            });
-            suppressed('provider_failure', input.userId);
-          })
+          .then(
+            () => {
+              recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
+                'tayzu.identity.email.template': TEMPLATE_NAME,
+                'tayzu.identity.email.outcome': 'sent',
+              });
+            },
+            () => {
+              recordIdentityMetric('tayzu.identity.recovery_emails', 1, {
+                'tayzu.identity.email.template': TEMPLATE_NAME,
+                'tayzu.identity.email.outcome': 'failed',
+              });
+              suppressed('provider_failure', input.userId);
+            },
+          )
           .finally(() => {
             inFlight.delete(delivery);
           });

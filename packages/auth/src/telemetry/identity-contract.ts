@@ -10,6 +10,8 @@ export interface IdentitySpanDeclaration {
   readonly name: string;
   /** Required attributes. */
   readonly attributes: readonly string[];
+  /** Attributes that a span may omit (set only once a step has run). */
+  readonly conditional?: readonly string[];
 }
 
 export interface IdentityMetricDeclaration {
@@ -45,6 +47,9 @@ const STATUS_FROM = 'tayzu.identity.user.status.from';
 const STATUS_TO = 'tayzu.identity.user.status.to';
 const REJECTION_REASON = 'tayzu.identity.rejection.reason';
 const EMAIL_TEMPLATE = 'tayzu.identity.email.template';
+const RESET_MFA = 'tayzu.identity.reset.mfa';
+const MFA_RESET_PATH = 'tayzu.identity.mfa_reset.path';
+const SESSIONS_REVOKED = 'tayzu.identity.sessions.revoked';
 const RECONCILE_CREATED = 'tayzu.identity.reconcile.created';
 const RECONCILE_ORPHANS = 'tayzu.identity.reconcile.orphans';
 
@@ -70,6 +75,14 @@ export const IDENTITY_SPANS: readonly IdentitySpanDeclaration[] = [
     name: 'identity.user.reconcile',
     attributes: [TENANT, OPERATOR_ID, RECONCILE_CREATED, RECONCILE_ORPHANS],
   },
+  // 044 (design D15). The confirm span sets `reset.mfa` only once the factor step has run.
+  { name: 'identity.password_reset.request', attributes: [] },
+  {
+    name: 'identity.password_reset.confirm',
+    attributes: [],
+    conditional: [RESET_MFA],
+  },
+  { name: 'identity.mfa.reset', attributes: [MFA_RESET_PATH] },
 ];
 
 export const IDENTITY_METRICS: readonly IdentityMetricDeclaration[] = [
@@ -87,6 +100,20 @@ export const IDENTITY_METRICS: readonly IdentityMetricDeclaration[] = [
     attributes: [TENANT, CREDENTIAL_KIND, 'tayzu.identity.credential.mutation'],
   },
   { name: 'tayzu.identity.principal_rejections', attributes: [REJECTION_REASON, ACTOR_TYPE] },
+  // 044 (design D15).
+  {
+    name: 'tayzu.identity.password_reset_requests',
+    attributes: ['tayzu.identity.reset.request_outcome'],
+  },
+  {
+    name: 'tayzu.identity.password_reset_confirms',
+    attributes: ['tayzu.identity.reset.confirm_outcome'],
+  },
+  { name: 'tayzu.identity.mfa_resets', attributes: [TENANT, MFA_RESET_PATH] },
+  {
+    name: 'tayzu.identity.recovery_emails',
+    attributes: [EMAIL_TEMPLATE, 'tayzu.identity.email.outcome'],
+  },
 ];
 
 export const IDENTITY_LOG_EVENTS: readonly IdentityLogEventDeclaration[] = [
@@ -249,6 +276,38 @@ export const IDENTITY_LOG_EVENTS: readonly IdentityLogEventDeclaration[] = [
     severity: 'WARN',
     attributes: [TENANT, ACTOR_ID, 'tayzu.identity.conflict.reason', USER_ID],
   },
+  // 044 (design D15).
+  { name: 'catalog.audit.password_reset_requested', severity: 'INFO', attributes: [USER_ID] },
+  {
+    name: 'catalog.audit.password_reset_completed',
+    severity: 'INFO',
+    attributes: [USER_ID, RESET_MFA, SESSIONS_REVOKED],
+  },
+  {
+    name: 'catalog.audit.mfa_reset',
+    severity: 'INFO',
+    forms: {
+      admin: [TENANT, ACTOR_ID, USER_ID, 'tayzu.identity.mfa_reset.reason', SESSIONS_REVOKED],
+      operator: [TENANT, OPERATOR_ID, 'tayzu.identity.approver.id', USER_ID, SESSIONS_REVOKED],
+    },
+  },
+  {
+    name: 'catalog.security.password_reset_denied',
+    severity: 'WARN',
+    attributes: ['tayzu.identity.reset.denial_reason'],
+    conditional: [USER_ID],
+  },
+  {
+    name: 'catalog.security.recovery_email_suppressed',
+    severity: 'WARN',
+    attributes: [EMAIL_TEMPLATE, 'tayzu.identity.recovery.suppression'],
+    conditional: [USER_ID],
+  },
+  {
+    name: 'catalog.security.self_mfa_reset_denied',
+    severity: 'WARN',
+    attributes: [TENANT, ACTOR_ID],
+  },
 ];
 
 /**
@@ -317,7 +376,64 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
   ],
   'tayzu.identity.notice.template': ['admin_accepted'],
   'tayzu.identity.notice.suppression': ['global', 'tenant', 'recipient', 'truncated'],
-  'tayzu.identity.email.template': ['invitation', 'admin_accepted'],
+  'tayzu.identity.email.template': [
+    'invitation',
+    'admin_accepted',
+    'password_reset',
+    'password_changed',
+    'mfa_changed',
+    'mfa_reset',
+    'account_created',
+  ],
+  [RESET_MFA]: ['not_enrolled', 'totp', 'backup_code'],
+  'tayzu.identity.reset.request_outcome': ['issued', 'ineligible', 'suppressed'],
+  'tayzu.identity.reset.confirm_outcome': [
+    'completed',
+    'rejected',
+    'factor_required',
+    'policy_refused',
+    'breach_check_unavailable',
+  ],
+  'tayzu.identity.reset.denial_reason': [
+    'malformed_request',
+    'csrf_rejected',
+    'origin_rejected',
+    'not_found',
+    'expired',
+    'token_mismatch',
+    'not_eligible',
+    'factor_invalid',
+    'factor_state_inconsistent',
+    'attempts_exhausted',
+    'policy_violation',
+    'breached',
+    'breach_check_unavailable',
+    'consume_conflict',
+  ],
+  'tayzu.identity.recovery.suppression': [
+    'unknown_address',
+    'no_credential_account',
+    'banned',
+    'disabled_everywhere',
+    'no_membership',
+    'kill_switch',
+    'recipient_domain_blocked',
+    'tenants_email_disabled',
+    'recipient_cap',
+    'ip_cap',
+    'global_cap',
+    'tenant_cap',
+    'provider_failure',
+    'token_issue_failure',
+  ],
+  [MFA_RESET_PATH]: ['admin', 'operator'],
+  'tayzu.identity.mfa_reset.reason': [
+    'lost_both_factors',
+    'device_replaced',
+    'suspected_compromise',
+    'identity_verified_request',
+  ],
+  'tayzu.identity.email.outcome': ['sent', 'suppressed', 'failed'],
   'tayzu.identity.sign_in.channel': ['local', 'sso'],
   'tayzu.identity.sso_link.path': ['acceptance', 'membership_hook', 'reconcile'],
   'tayzu.identity.conflict.reason': [
@@ -325,6 +441,7 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'target_in_other_tenant',
     'sub_already_linked',
     'target_is_admin_or_owner',
+    'no_enrolled_factor',
   ],
-  'tayzu.auth.revocation.reason': ['sso_link_shed'],
+  'tayzu.auth.revocation.reason': ['sso_link_shed', 'password_reset', 'mfa_reset'],
 };

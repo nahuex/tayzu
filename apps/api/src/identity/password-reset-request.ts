@@ -4,6 +4,8 @@
  * admitted request and the detached send. The caller answers the uniform `200` whatever
  * happened here; the outcome never reaches it.
  */
+import { emitIdentityEvent, recordIdentityMetric } from '@tayzu/auth';
+
 import { clientIpKey } from './client-ip-key.js';
 import { canonicalEmail, isValidIdentityEmail } from './email-canonical.js';
 import { IdentityInputError, parseIdentityInput, type InputSchema } from './parse-input.js';
@@ -18,6 +20,14 @@ const MAX_EMAIL_LENGTH = 254;
 const REQUEST_BODY_SCHEMA: InputSchema = {
   body: { email: { kind: 'string', maxLength: MAX_EMAIL_LENGTH } },
 };
+
+type RequestOutcome = 'issued' | 'ineligible' | 'suppressed';
+
+function recordOutcome(outcome: RequestOutcome): void {
+  recordIdentityMetric('tayzu.identity.password_reset_requests', 1, {
+    'tayzu.identity.reset.request_outcome': outcome,
+  });
+}
 
 export interface PasswordResetRequestFlow {
   /** Throws `CATALOG_VALIDATION_FAILED` for a malformed body, before any lookup. */
@@ -38,21 +48,43 @@ export function createPasswordResetRequestFlow(options: {
       const canonical = canonicalEmail(raw);
       if (!isValidIdentityEmail(canonical)) throw new IdentityInputError();
       const result = await options.eligibility.check(canonical);
-      if (result.status !== 'eligible' || result.userId === undefined) return;
+      if (result.status !== 'eligible' || result.userId === undefined) {
+        // No user id: the signal must not tell a known address from an unknown one.
+        emitIdentityEvent({
+          name: 'catalog.security.recovery_email_suppressed',
+          severity: 'WARN',
+          attributes: {
+            'tayzu.identity.email.template': 'password_reset',
+            'tayzu.identity.recovery.suppression': result.status,
+          },
+        });
+        recordOutcome('ineligible');
+        return;
+      }
       const admission = await options.mailer.admitResetEmail({
         address: result.email,
         userId: result.userId,
         tenantIds: result.tenantIds ?? [],
         ipKey: clientIpKey(clientIp),
       });
-      if (!admission.admitted) return;
+      if (!admission.admitted) {
+        recordOutcome('suppressed');
+        return;
+      }
       let issued: { id: string; token: string };
       try {
         issued = await options.tokens.issue(result.userId);
       } catch {
         admission.tokenIssueFailed();
+        recordOutcome('suppressed');
         return;
       }
+      emitIdentityEvent({
+        name: 'catalog.audit.password_reset_requested',
+        severity: 'INFO',
+        attributes: { 'tayzu.identity.user.id': result.userId },
+      });
+      recordOutcome('issued');
       admission.send(
         buildPasswordResetLink({
           baseUrl: options.linkBaseUrl,

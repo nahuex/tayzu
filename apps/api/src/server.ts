@@ -32,6 +32,7 @@ import {
   isAllowedAuthPath,
   verifyLogoutToken,
   withBackchannelLogoutTelemetry,
+  withIdentitySpan,
   type AuthInstance,
   type BackchannelLogoutOutcome,
   type CreateAuthOptions,
@@ -59,10 +60,7 @@ import { createWithUserLock } from './identity/user-lock.js';
 import { IdentityInputError } from './identity/parse-input.js';
 import { applyNoCacheHeaders } from './identity/no-cache.js';
 import type { ResetFactorInput } from '../../../packages/auth/src/identity/reset-factor.js';
-import {
-  createPasswordResetConfirmFlow,
-  ResetNotFoundError,
-} from './identity/password-reset-confirm.js';
+import { createPasswordResetConfirmFlow } from './identity/password-reset-confirm.js';
 import { createPasswordResetRequestFlow } from './identity/password-reset-request.js';
 import { createRecoveryEligibility } from './identity/recovery-eligibility.js';
 import { createRecoveryMailer } from './identity/recovery-mailer.js';
@@ -1073,14 +1071,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           try {
             // D2: both are required, checked before the strict parse and any lookup. The answer
             // depends only on the request's own headers (Q24), so it is a 400, not the uniform 200.
-            if (
-              request.headers['x-csrf-token'] !== 'orpc' ||
-              request.headers.origin === undefined ||
-              !allowedOrigins.has(request.headers.origin)
-            ) {
-              throw new IdentityInputError();
-            }
-            await resetRequest?.handle({ body: request.body, clientIp: request.ip });
+            await withIdentitySpan('identity.password_reset.request', {}, async () => {
+              if (
+                request.headers['x-csrf-token'] !== 'orpc' ||
+                request.headers.origin === undefined ||
+                !allowedOrigins.has(request.headers.origin)
+              ) {
+                throw new IdentityInputError();
+              }
+              await resetRequest?.handle({ body: request.body, clientIp: request.ip });
+            });
             // D4 padding: wait out the rest of the minimum duration (a timer, no busy-wait).
             const remaining = resetMinResponseMs - (performance.now() - startedAt);
             if (remaining > 0) {
@@ -1099,14 +1099,17 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         async (request, reply) => {
           try {
             // D2: after the limiter and before any lookup; the refusal is the uniform one.
-            if (
-              request.headers['x-csrf-token'] !== 'orpc' ||
-              request.headers.origin === undefined ||
-              !allowedOrigins.has(request.headers.origin)
-            ) {
-              throw new ResetNotFoundError();
-            }
-            await resetConfirm.handle({ body: request.body });
+            const crossSiteDenial =
+              request.headers['x-csrf-token'] !== 'orpc'
+                ? 'csrf_rejected'
+                : request.headers.origin === undefined ||
+                    !allowedOrigins.has(request.headers.origin)
+                  ? 'origin_rejected'
+                  : undefined;
+            await resetConfirm.handle({
+              body: request.body,
+              ...(crossSiteDenial !== undefined && { crossSiteDenial }),
+            });
             return await reply.status(200).send({ completed: true });
           } catch (error) {
             const mapped = toOrpcError(error);
