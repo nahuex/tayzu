@@ -212,6 +212,7 @@ describe('Security-relevant events are logged (task 15.6)', () => {
       email: {
         sender: appSender,
         invitationLinkBaseUrl: ORIGIN,
+        passwordResetLinkBaseUrl: ORIGIN,
         disabledTenantIds: [],
         killSwitch: false,
         recipientKeySecret: SECRET,

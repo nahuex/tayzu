@@ -14,7 +14,7 @@ export interface RenderedEmail {
 
 const SUBJECT = 'You have been invited to join Tayzu';
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')

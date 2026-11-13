@@ -19,45 +19,57 @@ maintenance scripts read are in [Maintenance jobs](#maintenance-jobs-and-the-boo
 must live in Key Vault; "Sensitive" means it is not a credential but reveals
 topology or trust configuration, so it is still never logged or echoed.
 
-| Variable                                                                                         | Class     | Purpose                                                                                                                                                                                             | Validation                                                                                                                         |
-| ------------------------------------------------------------------------------------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                                                                                   | Secret    | Runtime pool as `tayzu_app` (password inside). Also what `db:migrate` reads today. Outside test, startup refuses a role that is a superuser, has `BYPASSRLS` or owns a `catalog_*` table.           | Required, non-blank. `sslmode=verify-full` outside the test harness (`createPool`).                                                |
-| `AUTH_DATABASE_URL`                                                                              | Secret    | Better Auth pool as `tayzu_auth`. Never falls back to `DATABASE_URL`. Same startup role assertion as `DATABASE_URL`.                                                                                | Required, non-blank. `sslmode=verify-full` outside the test harness.                                                               |
-| `BETTER_AUTH_SECRET`                                                                             | Secret    | Better Auth's one secret: cookie signing and the encryption key for the data below.                                                                                                                 | Required, at least 32 characters.                                                                                                  |
-| `VISMA_CONNECT_CLIENT_SECRET`                                                                    | Secret    | OAuth client secret for Visma Connect.                                                                                                                                                              | All three `VISMA_CONNECT_*` variables or none. When any is set, each is required and non-blank.                                    |
-| `ACS_CONNECTION_STRING`                                                                          | Secret    | Azure Communication Services connection string of the dedicated send-only resource for invitation and notice email (`043` design D5 and Q28). Read by `apps/api/src/config.ts` from `043` task 6.5. | Required when `EMAIL_PROVIDER` is `acs` (`043` task 6.5).                                                                          |
-| `IDENTITY_TOKEN_HMAC_SECRET`                                                                     | Secret    | Key of the HMAC-SHA256 that turns a recipient email into the cap key stored in `auth.rate_limit` (`043` Q93, `apps/api/src/identity/recipient-key.ts`). Read by `apps/api/src/config.ts`.           | Required outside `NODE_ENV=test`: a deployed environment without it fails startup. At least 32 bytes. Never printed.               |
-| `OTEL_EXPORTER_OTLP_HEADERS` and per-signal `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_HEADERS`   | Secret    | Collector authentication headers, read by the OpenTelemetry exporters from the process environment, not by Tayzu code.                                                                              | Not validated by Tayzu.                                                                                                            |
-| `EMAIL_PROVIDER`                                                                                 | Sensitive | Email provider: `acs` or `none` (the non-sending sender; DAST exports it). `043` task 6.5.                                                                                                          | Required outside `NODE_ENV=test`; unset fails closed.                                                                              |
-| `EMAIL_SENDER_ADDRESS`                                                                           | Sensitive | Sender address of the `acs` provider.                                                                                                                                                               | Required when `EMAIL_PROVIDER` is `acs`.                                                                                           |
-| `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`                                                               | Sensitive | Comma-separated recipient domains a real sender may reach (Q67, Q99).                                                                                                                               | Mandatory for a real provider under `NODE_ENV=test`; optional elsewhere.                                                           |
-| `INVITATION_EMAIL_KILL_SWITCH`                                                                   | Setting   | Stops every email template, the notices included, before any cap is consumed (`043` Q15, Q53).                                                                                                      | Unset or `false` is off, `true` is on, anything else fails startup. An environment variable: flipping it needs a new app revision. |
-| `EMAIL_DISABLED_TENANT_IDS`                                                                      | Sensitive | Comma-separated tenant ids (demo tenants) whose emails are suppressed and logged as `catalog.security.email_tenant_blocked` (`043` Q80).                                                            | Optional. Each entry matches the catalog's tenant-id pattern, else startup fails. Never echoed.                                    |
-| `INVITATION_LINK_BASE_URL`                                                                       | Sensitive | Base URL of the accept link in an invitation email (`043` Q32).                                                                                                                                     | Required outside `NODE_ENV=test`, then `https` and one of `ALLOWED_ORIGINS`. Never echoed.                                         |
-| `MOUNT_IDENTITY_ROUTES`                                                                          | Setting   | Mounts the `identity.*` routes (`043` task 14.3). Off by default.                                                                                                                                   | Unset or `false` is off, `true` is on, anything else fails startup.                                                                |
-| `BETTER_AUTH_URL`                                                                                | Sensitive | Public base URL of the API (cookies, redirects).                                                                                                                                                    | Required outside test and then `https`. Optional in test.                                                                          |
-| `ALLOWED_ORIGINS`                                                                                | Sensitive | Comma-separated CORS and Better Auth trusted origins. The first one also builds the SSO step-up callback URL.                                                                                       | Required. Outside test, every origin is `https` and wildcard-free. Never echoed.                                                   |
-| `CERBOS_ADDRESS`                                                                                 | Sensitive | `host:port` of the Cerbos gRPC endpoint. TLS is on unless it is `localhost`, `127.0.0.1` or `[::1]`.                                                                                                | Required, non-blank.                                                                                                               |
-| `VISMA_CONNECT_DISCOVERY_URL`                                                                    | Sensitive | OIDC discovery document of Visma Connect.                                                                                                                                                           | `https` outside test. Startup fails when it cannot be discovered. Never echoed.                                                    |
-| `VISMA_CONNECT_CLIENT_ID`                                                                        | Sensitive | OAuth client id for Visma Connect.                                                                                                                                                                  | See `VISMA_CONNECT_CLIENT_SECRET`.                                                                                                 |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` and per-signal `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT` | Sensitive | OTLP collector URLs.                                                                                                                                                                                | One must be set outside test, unless `TAYZU_TELEMETRY_DISABLED=true`.                                                              |
-| `TAYZU_TELEMETRY_DISABLED`                                                                       | Setting   | Explicit opt-out of telemetry export (Q41). Security logging must not be silently absent.                                                                                                           | Unset or `false` is off, `true` is on, anything else fails startup.                                                                |
-| `HOST`, `PORT`                                                                                   | Setting   | Listener address of `main.ts` (`HOST` defaults to `0.0.0.0`).                                                                                                                                       | `PORT` is required, an integer from 0 to 65535.                                                                                    |
-| `NODE_ENV`                                                                                       | Setting   | `test` relaxes the `https` checks, the `BETTER_AUTH_URL` requirement and the telemetry requirement.                                                                                                 | Must never be `test` in a deployed environment.                                                                                    |
+| Variable                                                                                         | Class     | Purpose                                                                                                                                                                                                                                                                                                   | Validation                                                                                                                         |
+| ------------------------------------------------------------------------------------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                                   | Secret    | Runtime pool as `tayzu_app` (password inside). Also what `db:migrate` reads today. Outside test, startup refuses a role that is a superuser, has `BYPASSRLS` or owns a `catalog_*` table.                                                                                                                 | Required, non-blank. `sslmode=verify-full` outside the test harness (`createPool`).                                                |
+| `AUTH_DATABASE_URL`                                                                              | Secret    | Better Auth pool as `tayzu_auth`. Never falls back to `DATABASE_URL`. Same startup role assertion as `DATABASE_URL`.                                                                                                                                                                                      | Required, non-blank. `sslmode=verify-full` outside the test harness.                                                               |
+| `BETTER_AUTH_SECRET`                                                                             | Secret    | Better Auth's one secret: cookie signing and the encryption key for the data below.                                                                                                                                                                                                                       | Required, at least 32 characters.                                                                                                  |
+| `VISMA_CONNECT_CLIENT_SECRET`                                                                    | Secret    | OAuth client secret for Visma Connect.                                                                                                                                                                                                                                                                    | All three `VISMA_CONNECT_*` variables or none. When any is set, each is required and non-blank.                                    |
+| `ACS_CONNECTION_STRING`                                                                          | Secret    | Azure Communication Services connection string of the dedicated send-only resource for invitation and notice email (`043` design D5 and Q28). Read by `apps/api/src/config.ts` from `043` task 6.5.                                                                                                       | Required when `EMAIL_PROVIDER` is `acs` (`043` task 6.5).                                                                          |
+| `IDENTITY_TOKEN_HMAC_SECRET`                                                                     | Secret    | Key of the HMAC-SHA256 that turns a recipient email into the cap key stored in `auth.rate_limit` (`043` Q93, `apps/api/src/identity/recipient-key.ts`). Read by `apps/api/src/config.ts`.                                                                                                                 | Required outside `NODE_ENV=test`: a deployed environment without it fails startup. At least 32 bytes. Never printed.               |
+| `OTEL_EXPORTER_OTLP_HEADERS` and per-signal `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_HEADERS`   | Secret    | Collector authentication headers, read by the OpenTelemetry exporters from the process environment, not by Tayzu code.                                                                                                                                                                                    | Not validated by Tayzu.                                                                                                            |
+| `EMAIL_PROVIDER`                                                                                 | Sensitive | Email provider: `acs` or `none` (the non-sending sender; DAST exports it). `043` task 6.5.                                                                                                                                                                                                                | Required outside `NODE_ENV=test`; unset fails closed.                                                                              |
+| `EMAIL_SENDER_ADDRESS`                                                                           | Sensitive | Sender address of the `acs` provider.                                                                                                                                                                                                                                                                     | Required when `EMAIL_PROVIDER` is `acs`.                                                                                           |
+| `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`                                                               | Sensitive | Comma-separated recipient domains a real sender may reach (Q67, Q99).                                                                                                                                                                                                                                     | Mandatory for a real provider under `NODE_ENV=test`; optional elsewhere.                                                           |
+| `INVITATION_EMAIL_KILL_SWITCH`                                                                   | Setting   | Stops every email template (invitation, password reset, the five notices) in the app, and the `recover:admin-mfa` CLI's notice, before any cap is consumed (`043` Q15, Q53; `044` D9, D12). Its name says "invitation" but its scope is every email; renaming it is a breaking change, so it is a ticket. | Unset or `false` is off, `true` is on, anything else fails startup. An environment variable: flipping it needs a new app revision. |
+| `EMAIL_DISABLED_TENANT_IDS`                                                                      | Sensitive | Comma-separated tenant ids (demo tenants) whose emails are suppressed and logged as `catalog.security.email_tenant_blocked` (`043` Q80).                                                                                                                                                                  | Optional. Each entry matches the catalog's tenant-id pattern, else startup fails. Never echoed.                                    |
+| `INVITATION_LINK_BASE_URL`                                                                       | Sensitive | Base URL of the accept link in an invitation email (`043` Q32).                                                                                                                                                                                                                                           | Required outside `NODE_ENV=test`, then `https` and one of `ALLOWED_ORIGINS`. Never echoed.                                         |
+| `PASSWORD_RESET_LINK_BASE_URL`                                                                   | Sensitive | Base URL of the single link in a password reset email (`044` design D9). The path `/reset-password` is fixed in code.                                                                                                                                                                                     | Required outside `NODE_ENV=test`, then `https` and one of `ALLOWED_ORIGINS`; in test optional, `http` or `https`. Never echoed.    |
+| `MOUNT_IDENTITY_ROUTES`                                                                          | Setting   | Mounts the `identity.*` routes (`043` task 14.3). Off by default.                                                                                                                                                                                                                                         | Unset or `false` is off, `true` is on, anything else fails startup.                                                                |
+| `BETTER_AUTH_URL`                                                                                | Sensitive | Public base URL of the API (cookies, redirects).                                                                                                                                                                                                                                                          | Required outside test and then `https`. Optional in test.                                                                          |
+| `ALLOWED_ORIGINS`                                                                                | Sensitive | Comma-separated CORS and Better Auth trusted origins. The first one also builds the SSO step-up callback URL.                                                                                                                                                                                             | Required. Outside test, every origin is `https` and wildcard-free. Never echoed.                                                   |
+| `CERBOS_ADDRESS`                                                                                 | Sensitive | `host:port` of the Cerbos gRPC endpoint. TLS is on unless it is `localhost`, `127.0.0.1` or `[::1]`.                                                                                                                                                                                                      | Required, non-blank.                                                                                                               |
+| `VISMA_CONNECT_DISCOVERY_URL`                                                                    | Sensitive | OIDC discovery document of Visma Connect.                                                                                                                                                                                                                                                                 | `https` outside test. Startup fails when it cannot be discovered. Never echoed.                                                    |
+| `VISMA_CONNECT_CLIENT_ID`                                                                        | Sensitive | OAuth client id for Visma Connect.                                                                                                                                                                                                                                                                        | See `VISMA_CONNECT_CLIENT_SECRET`.                                                                                                 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` and per-signal `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT` | Sensitive | OTLP collector URLs.                                                                                                                                                                                                                                                                                      | One must be set outside test, unless `TAYZU_TELEMETRY_DISABLED=true`.                                                              |
+| `TAYZU_TELEMETRY_DISABLED`                                                                       | Setting   | Explicit opt-out of telemetry export (Q41). Security logging must not be silently absent.                                                                                                                                                                                                                 | Unset or `false` is off, `true` is on, anything else fails startup.                                                                |
+| `HOST`, `PORT`                                                                                   | Setting   | Listener address of `main.ts` (`HOST` defaults to `0.0.0.0`).                                                                                                                                                                                                                                             | `PORT` is required, an integer from 0 to 65535.                                                                                    |
+| `NODE_ENV`                                                                                       | Setting   | `test` relaxes the `https` checks, the `BETTER_AUTH_URL` requirement and the telemetry requirement.                                                                                                                                                                                                       | Must never be `test` in a deployed environment.                                                                                    |
 
 ### Rate limits and request size
 
 Settings, not secrets. Each one only tunes a limiter that is on by default
-(Q39), and a set value must be a positive integer, else startup fails.
+(Q39), and a set value must be a positive integer, else startup fails. The
+`PASSWORD_RESET_*` and notice rows are `044` design D9; the Max and Window
+variables of one row are both read, and a missing one takes the default.
 
-| Variable                                                       | Default      | What it tunes                                                        |
-| -------------------------------------------------------------- | ------------ | -------------------------------------------------------------------- |
-| `PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s  | Sign-in, and the same budget for the two-factor verification routes. |
-| `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 10 per 60 s  | Routes that check the current password, per IP and per user.         |
-| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`                  | 600 per 60 s | Per-principal budget on `/v1/*`.                                     |
-| `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`          | 30 per 60 s  | `POST /v1/auth/token`, per IP.                                       |
-| `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`                     | 600          | Back-channel logout, per source IP.                                  |
-| `BODY_LIMIT_BYTES`                                             | 1,048,576    | Maximum request body.                                                |
+| Variable                                                             | Default           | What it tunes                                                             |
+| -------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------- |
+| `PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`              | 10 per 60 s       | Sign-in, and the same budget for the two-factor verification routes.      |
+| `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`       | 10 per 60 s       | Routes that check the current password, per IP and per user.              |
+| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`                        | 600 per 60 s      | Per-principal budget on `/v1/*`.                                          |
+| `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`                | 30 per 60 s       | `POST /v1/auth/token`, per IP.                                            |
+| `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`                           | 600               | Back-channel logout, per source IP.                                       |
+| `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset request route, per IP.                                              |
+| `PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset confirm route, per IP.                                              |
+| `PASSWORD_RESET_RECIPIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`      | 5 per 3600 s      | Reset emails per recipient (HMAC key).                                    |
+| `PASSWORD_RESET_IP_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`             | 10 per 3600 s     | Reset emails per normalized IP.                                           |
+| `PASSWORD_RESET_GLOBAL_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`         | 600 per 3600 s    | Reset emails across the platform.                                         |
+| `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`     | 10 per 86 400 s   | The five notices, per recipient, apart from the other buckets.            |
+| `ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 20 per 86 400 s   | Account-created notices per creating tenant (Q20).                        |
+| `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 1000 per 86 400 s | Account-created notices across the platform (Q20, Q28).                   |
+| `PASSWORD_RESET_MIN_RESPONSE_MS`                                     | 400               | Minimum response time of the two reset routes, an integer from 1 to 5000. |
+| `BODY_LIMIT_BYTES`                                                   | 1,048,576         | Maximum request body.                                                     |
 
 ### Migrations
 
@@ -86,11 +98,11 @@ The owner is the team that holds the Key Vault secret and runs its rotation.
 Each procedure below follows the [Change procedure](#change-procedure): a new
 Key Vault version, a new app revision, then revocation of the old version.
 
-| Secret                                                      | Owner    | Rotation                                                                              |
-| ----------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------- |
-| `ACS_CONNECTION_STRING`                                     | Platform | [Communication Services connection string](#communication-services-connection-string) |
-| `IDENTITY_TOKEN_HMAC_SECRET`                                | Platform | [Recipient cap key secret](#recipient-cap-key-secret)                                 |
-| `AUTH_DATABASE_URL` of the jobs (the `tayzu_auth` password) | Platform | [Maintenance jobs](#maintenance-jobs-and-the-bootstrap-cli)                           |
+| Secret                                                                   | Owner    | Rotation                                                                              |
+| ------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------- |
+| `ACS_CONNECTION_STRING`                                                  | Platform | [Communication Services connection string](#communication-services-connection-string) |
+| `IDENTITY_TOKEN_HMAC_SECRET`                                             | Platform | [Recipient cap key secret](#recipient-cap-key-secret)                                 |
+| `AUTH_DATABASE_URL` of the jobs and the CLIs (the `tayzu_auth` password) | Platform | [Maintenance jobs](#maintenance-jobs-and-the-bootstrap-cli)                           |
 
 The credential lifecycle of machine credentials (the 90-day cadence and the
 immediate cutover of a rotation) is a policy, not a Key Vault secret: it is in
@@ -101,11 +113,13 @@ and [ADR-0018](../adr/0018-credential-rotation-immediate-cutover.md).
 
 `ACS_CONNECTION_STRING` is the connection string of a **dedicated send-only**
 Azure Communication Services resource that serves only the invitation and notice
-email (`043` design D5 and Q28). The resource is restricted to the verified
+email (`043` design D5 and Q28; the password reset email and the notices of `044`
+use it too). The resource is restricted to the verified
 sender domain, so a leaked string cannot send as another domain, but it can
 still send as this one. A managed identity instead of a connection string is a
-first-deployment gate (Q28). Only `apps/api` reads it, and only when
-`EMAIL_PROVIDER` is `acs`.
+first-deployment gate (Q28). Two readers hold it: `apps/api`, and the
+`recover:admin-mfa` CLI (`044` D12), the first script to hold a secret that can
+send as the platform domain. Both read it only when `EMAIL_PROVIDER` is `acs`.
 
 Change procedure:
 
@@ -113,8 +127,12 @@ Change procedure:
    secret with the new connection string.
 2. Start a new app revision so the new value is resolved. If the string is
    missing the revision fails to start and the previous revision keeps serving.
-3. Once the new revision is healthy, regenerate the old key on the ACS resource,
-   which revokes it.
+3. Update the operator environment's copy: the next `recover:admin-mfa` run must
+   read the new version from Key Vault (see
+   [Operator CLI](#operator-cli-recover-admin-mfa)). A CLI run started before
+   this step still holds the old string.
+4. Once the new revision is healthy and the operator environment reads the new
+   version, regenerate the old key on the ACS resource, which revokes it.
 
 Suspected exposure is handled the same way, immediately. While it is handled,
 flip the [kill switch](#email-controls) if mail must stop at once.
@@ -179,19 +197,32 @@ The scripts do not use `loadConfig`. They read only the variables they declare i
 `apps/api/scripts/script-config.ts`, and a missing or malformed one throws an
 error that names the variable and never a value.
 
-| Variable             | Backfill | Reconcile | Bootstrap CLI | Class     | Owner                           |
-| -------------------- | -------- | --------- | ------------- | --------- | ------------------------------- |
-| `DATABASE_URL`       | Yes      | Yes       | Yes           | Secret    | Platform                        |
-| `AUTH_DATABASE_URL`  | Yes      | Yes       | Yes           | Secret    | Platform                        |
-| `CERBOS_ADDRESS`     | Yes      | Yes       | Yes           | Sensitive | Platform                        |
-| `TAYZU_OPERATOR_ID`  | No       | Yes       | Yes           | Sensitive | The operator who starts the run |
-| `BETTER_AUTH_SECRET` | **No**   | **No**    | Yes           | Secret    | Platform                        |
+| Variable                                                        | Backfill | Reconcile | Bootstrap CLI | `recover:admin-mfa` CLI | Class     | Owner                           |
+| --------------------------------------------------------------- | -------- | --------- | ------------- | ----------------------- | --------- | ------------------------------- |
+| `DATABASE_URL`                                                  | Yes      | Yes       | Yes           | **No**                  | Secret    | Platform                        |
+| `AUTH_DATABASE_URL`                                             | Yes      | Yes       | Yes           | Yes                     | Secret    | Platform                        |
+| `CERBOS_ADDRESS`                                                | Yes      | Yes       | Yes           | **No**                  | Sensitive | Platform                        |
+| `TAYZU_OPERATOR_ID`                                             | No       | Yes       | Yes           | Yes                     | Sensitive | The operator who starts the run |
+| `BETTER_AUTH_SECRET`                                            | **No**   | **No**    | Yes           | **No**                  | Secret    | Platform                        |
+| `IDENTITY_TOKEN_HMAC_SECRET`                                    | No       | No        | No            | **No**                  | Secret    | Platform                        |
+| `EMAIL_PROVIDER`, `EMAIL_SENDER_ADDRESS`                        | No       | No        | No            | Yes                     | Sensitive | Platform                        |
+| `ACS_CONNECTION_STRING`                                         | No       | No        | No            | Yes, when `acs`         | Secret    | Platform                        |
+| `EMAIL_RECIPIENT_DOMAIN_ALLOWLIST`                              | No       | No        | No            | Yes, for a real sender  | Sensitive | Platform                        |
+| `EMAIL_DISABLED_TENANT_IDS`, `INVITATION_EMAIL_KILL_SWITCH`     | No       | No        | No            | Optional                | Sensitive | Platform                        |
+| `OTEL_EXPORTER_OTLP_*_ENDPOINT`, `OTEL_EXPORTER_OTLP_*_HEADERS` | Yes      | Yes       | Yes           | Yes, required           | Sensitive | Platform                        |
+| `TAYZU_TELEMETRY_DISABLED`                                      | Yes      | Yes       | Yes           | Refused when true       | Setting   | Platform                        |
+
+The `recover:admin-mfa` CLI also takes the argument `--approver <opaque id>`
+(not an environment variable). It has no `BETTER_AUTH_SECRET` (it cannot sign a
+cookie or decrypt a factor secret), no `DATABASE_URL`, no `CERBOS_ADDRESS` and
+no recipient key secret: it has no cap store, so its single notice is outside
+the recipient caps. A test asserts its variable list.
 
 - **`AUTH_DATABASE_URL`** is the `tayzu_auth` secret. Each script asserts its
   database roles at start through `runScript` and refuses to run as a role it
   did not declare. Rotating the `tayzu_auth` password is the
   [Change procedure](#change-procedure) step 2, and the new URL must reach the
-  app, both jobs and the bootstrap CLI's environment before the old password is
+  app, both jobs, the bootstrap CLI's and the `recover:admin-mfa` CLI's environment before the old password is
   revoked. A job resolves it when an execution starts, so a rotation affects the
   next run, not one in progress.
 - **`CERBOS_ADDRESS`** points each job at **its own Cerbos sidecar** on the
@@ -215,6 +246,71 @@ error that names the variable and never a value.
   variables of the inventory above, and `TAYZU_TELEMETRY_DISABLED`. Outside test,
   a script refuses to run without an endpoint unless
   `TAYZU_TELEMETRY_DISABLED=true`, so an audit event is never silently dropped.
+  **The `recover:admin-mfa` CLI is stricter than this shared rule** (`044` D12,
+  Q29, Q31): its `main()` refuses to start, before any database or email work,
+  when `TAYZU_TELEMETRY_DISABLED` is true **or** no OTLP endpoint is set,
+  whatever `NODE_ENV` says. No environment variable can switch its audit event
+  off in a real run.
+
+### Operator CLI: recover-admin-mfa
+
+`apps/api/scripts/recover-admin-mfa.ts` (package script `recover:admin-mfa`,
+`044` design D12) removes the second factor of a user whom the admin reset
+cannot serve: the last admin, an owner, a member of several tenants, or a factor
+a squatter enrolled. It is never mounted and is not a job. It cannot reset a
+password: the person uses the reset flow for that.
+
+**Who may run it.** A platform operator, only from the production-network
+operator environment, under Azure PIM just-in-time access with a personal
+account. Never from a laptop, never with a shared account.
+
+**How the operator obtains the secrets.** `AUTH_DATABASE_URL` and
+`ACS_CONNECTION_STRING` are a Key Vault read under the PIM role. They are held in
+the process environment of the run only. They are never typed into a shell,
+never written to a file and never left in a shell history. The telemetry
+variables are set the same way. The environment is discarded at the end of the
+run.
+
+**Before the run.**
+
+1. Verify the person out of band (a video call or an employer-confirmed
+   request).
+2. Record a named second approver, different from the operator, and pass the
+   opaque id as `--approver`. `TAYZU_OPERATOR_ID` is the operator's own opaque
+   id. Neither is authenticated: the PIM record and the approver are the control.
+3. Confirm that the telemetry endpoint is set. The command refuses to start
+   otherwise (see the telemetry bullet above).
+
+**The order of the recovery.** After the run the factor is gone and the password
+is the only thing between the account and the next person to enrol, so the order
+matters:
+
+1. The verified person requests a password reset link **before** the run (valid
+   for 30 minutes) and keeps the page open.
+2. The operator runs `recover:admin-mfa` with `--organization-slug`, `--email`
+   and `--approver`.
+3. The person confirms the reset at once, with the link alone because no factor
+   is enrolled any more. This replaces the password and ends every session.
+4. The person signs in with the new password and enrols a second factor in a
+   supervised session while the operator waits.
+5. Only then is the account handed back, and the operator tells the person that
+   the run is over.
+
+If step 3 answers a factor request, someone enrolled in the window between steps
+2 and 3: the operator repeats the run and the confirmation.
+
+**The squatting path.** An owner who reports a reset asking for a code they never
+set up has found a factor a squatter enrolled. Verify the owner out of band, then
+follow the order above.
+
+**After the run.** The command prints one line on stdout:
+`mfa-reset operator=<id> approver=<id> user=<opaque user id> sessions_revoked=<n> notice=<sent|suppressed|failed>`.
+The operator attaches it to the PIM record. If `notice` is `suppressed` or
+`failed`, the person was not told by email and the operator tells them. A non-zero
+exit after the line means the final telemetry flush failed: the reset is
+committed and the audit event may be missing, so the completion line is the
+record. The run is reviewed afterwards from the audit event
+`catalog.audit.mfa_reset` (form `operator`), by someone other than the operator.
 
 ## Change procedure
 

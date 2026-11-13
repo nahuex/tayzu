@@ -39,7 +39,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRecordingEmailSender } from '@tayzu/auth';
 import { createMachineCredential } from '@tayzu/auth/machine-credentials';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapTestTenant,
@@ -50,7 +50,12 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
-import { enrolledAdminSession, freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
+import {
+  enrolledAdminSession,
+  enrollTotp,
+  freshMfaSessionCookie,
+  sessionTokenOfCookie,
+} from './__fixtures__/fresh-mfa.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
 import { createEmailTenantGate } from './identity/email-tenant-gate.js';
 import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
@@ -413,6 +418,25 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
         }),
       },
     },
+    'identity.users.resetMfa': {
+      request: async (admin) => ({
+        method: 'POST',
+        url: `/v1/users/${(await enrolledMember(admin, 'reset')).email}/mfa/reset`,
+        body: { reason: 'lost_both_factors' },
+      }),
+      target: {
+        foreign: async (other) => ({
+          method: 'POST',
+          url: `/v1/users/${(await enrolledMember(other, 'reset')).email}/mfa/reset`,
+          body: { reason: 'lost_both_factors' },
+        }),
+        unknown: () => ({
+          method: 'POST',
+          url: `/v1/users/nobody-${randomUUID()}@example.test/mfa/reset`,
+          body: { reason: 'lost_both_factors' },
+        }),
+      },
+    },
     'identity.credentials.create': {
       request: () =>
         Promise.resolve({
@@ -476,10 +500,56 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
     },
   };
 
+  /** A member of `admin`'s tenant with a real TOTP factor enrolled and one live session. */
+  async function enrolledMember(
+    admin: BootstrappedTenant,
+    label: string,
+    role: 'member' | 'admin' | 'owner' = 'member',
+  ): Promise<{ email: string; userId: string; cookie: string }> {
+    const created = await createAdminUser(app.auth, {
+      name: `Matrix Http ${label}`,
+      email: `matrix-http-${label}-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await (
+      app.auth.api as {
+        addMember(args: {
+          body: { userId: string; organizationId: string; role: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({
+      body: { userId: created.userId, organizationId: admin.organizationId, role },
+    });
+    const signedIn = await signInAdminUser(app.auth, {
+      email: created.email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    await enrollTotp(app, { password: TEST_PASSWORD, enrollmentCookie: signedIn.cookie });
+    return { ...created, cookie: signedIn.cookie };
+  }
+
+  async function countRows(sql: string, userId: string): Promise<number> {
+    const result = await pools.authPool.query<{ n: string }>(sql, [userId]);
+    return Number(result.rows[0]?.n ?? '0');
+  }
+
+  const factorRows = (userId: string): Promise<number> =>
+    countRows('select count(*) as n from auth.two_factor where user_id = $1', userId);
+
+  const sessionRows = (userId: string): Promise<number> =>
+    countRows('select count(*) as n from auth.session where user_id = $1', userId);
+
+  const resetOf = (user: string): RouteRequest => ({
+    method: 'POST',
+    url: `/v1/users/${user}/mfa/reset`,
+    body: { reason: 'lost_both_factors' },
+  });
+
   // ---- Completeness --------------------------------------------------------------------------
 
-  it('lists the thirteen router procedures, and every one has an entry in the matrix', () => {
-    expect(routeIds, 'the router has thirteen procedures').toHaveLength(13);
+  it('lists the fourteen router procedures, and every one has an entry in the matrix', () => {
+    expect(routeIds, 'the router has fourteen procedures').toHaveLength(14);
     const missing = routeIds.filter((id) => !(id in MATRIX));
     expect(missing, 'procedures of the router missing from the matrix').toEqual([]);
     const stale = Object.keys(MATRIX).filter((id) => !routeIds.includes(id));
@@ -568,4 +638,214 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
     expect(deleted.status, deleted.body).toBeLessThan(300);
     expect(deleted.code).not.toBe('AUTH_FORBIDDEN');
   }, 120_000);
+
+  // ---- identity.users.resetMfa (044 task 10.6) -----------------------------------------------
+
+  it("resetMfa: a member session and both machine member tokens get AUTH_FORBIDDEN for an unknown target and for an existing one, the same answer for every principal (A member cannot reset anyone's factor; Humans and agents take the same path)", async () => {
+    const fixtures = await buildFixtures();
+    const existing = await enrolledMember(fixtures.t1, 'forbid');
+    const callers: readonly [string, Caller][] = [
+      ['member session', { kind: 'cookie', cookie: fixtures.memberCookie }],
+      ['integration token', { kind: 'bearer', token: fixtures.integrationToken }],
+      ['service account token', { kind: 'bearer', token: fixtures.serviceAccountToken }],
+    ];
+    const targets = [existing.email, `nobody-${randomUUID()}@example.test`];
+    const answers: Answer[] = [];
+    for (const [name, caller] of callers) {
+      for (const target of targets) {
+        const answer = await send(caller, resetOf(target));
+        expect(answer.status, `${name} -> ${target}: ${answer.body}`).toBe(403);
+        expect(answer.code, name).toBe('AUTH_FORBIDDEN');
+        answers.push(answer);
+      }
+    }
+    expect(
+      new Set(answers.map((a) => a.body)).size,
+      'one answer for every principal and target',
+    ).toBe(1);
+    expect(await factorRows(existing.userId), 'nothing changed').toBe(1);
+    expect(await sessionRows(existing.userId), 'nothing changed').toBeGreaterThan(0);
+  }, 240_000);
+
+  it('resetMfa: an admin without a fresh MFA verification gets AUTH_STEP_UP_REQUIRED and nothing changes (Step-up is required)', async () => {
+    const admin = await freshAdmin('stepup');
+    const target = await enrolledMember(admin, 'stepup');
+    await pools.authPool.query('delete from auth.verification where identifier = $1', [
+      `step-up-verified:${sessionTokenOfCookie(admin.cookie)}`,
+    ]);
+    const sessionsBefore = await sessionRows(target.userId);
+
+    const answer = await send({ kind: 'cookie', cookie: admin.cookie }, resetOf(target.email));
+
+    expect(answer.status, answer.body).toBe(403);
+    expect(answer.code).toBe('AUTH_STEP_UP_REQUIRED');
+    expect(await factorRows(target.userId), 'the factor stays').toBe(1);
+    expect(await sessionRows(target.userId), 'the sessions stay').toBe(sessionsBefore);
+  }, 120_000);
+
+  it('resetMfa: with the bundle deployed, an admin on themselves, on a second admin and on an owner gets AUTH_FORBIDDEN and nothing changes (Self-target is refused; An admin or owner target is refused)', async () => {
+    const admin = await freshAdmin('refused');
+    const secondAdmin = await enrolledMember(admin, 'second-admin', 'admin');
+    const owner = await enrolledMember(admin, 'second-owner', 'owner');
+    const own = await pools.authPool.query<{ n: string }>(
+      'select count(*) as n from auth.two_factor where user_id = $1',
+      [admin.userId],
+    );
+    expect(Number(own.rows[0]?.n), 'precondition: the admin has a factor').toBe(1);
+    const tracked = [admin.userId, secondAdmin.userId, owner.userId];
+    const before = await Promise.all(
+      tracked.map(async (id) => [await factorRows(id), await sessionRows(id)]),
+    );
+
+    for (const [name, email] of [
+      ['self', admin.email],
+      ['a second admin', secondAdmin.email],
+      ['an owner', owner.email],
+    ] as const) {
+      const answer = await send({ kind: 'cookie', cookie: admin.cookie }, resetOf(email));
+      expect(answer.status, `${name}: ${answer.body}`).toBe(403);
+      expect(answer.code, name).toBe('AUTH_FORBIDDEN');
+    }
+
+    const after = await Promise.all(
+      tracked.map(async (id) => [await factorRows(id), await sessionRows(id)]),
+    );
+    expect(after, 'nothing changed').toEqual(before);
+  }, 180_000);
+});
+
+/**
+ * Task 10.6, "An admin resets a member's lost factor" over HTTP, on an app wired with the mailer
+ * (the `email` option, roomy caps) so the MFA-reset notice can arrive.
+ */
+describe('identity.users.resetMfa by an admin over HTTP (044 task 10.6)', () => {
+  let app: App;
+  let pools: HarnessPools;
+  let sender: ReturnType<typeof createRecordingEmailSender>;
+
+  beforeAll(async () => {
+    pools = await harnessPools();
+    sender = createRecordingEmailSender();
+    const roomy = { max: 1000, windowSeconds: 3600 };
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef',
+      email: {
+        sender,
+        invitationLinkBaseUrl: ORIGIN,
+        passwordResetLinkBaseUrl: ORIGIN,
+        disabledTenantIds: [] as string[],
+        killSwitch: false,
+        recipientKeySecret: TEST_SECRET,
+        tenantCap: roomy,
+        recipientCap: { max: 1000, windowSeconds: 86_400 },
+        passwordResetRecipientCap: roomy,
+        passwordResetIpCap: roomy,
+        passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+        recoveryNoticeRecipientCap: { max: 1000, windowSeconds: 86_400 },
+        noticeTenantCap: roomy,
+        noticeRecipientCap: { max: 1000, windowSeconds: 86_400 },
+        accountCreatedNoticeTenantCap: roomy,
+        accountCreatedNoticeGlobalCap: { max: 100_000, windowSeconds: 86_400 },
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 60_000);
+
+  it("removes the factor, rejects the member's sessions, writes the re-enrolment marker and sends the MfaResetNotice", async () => {
+    const suffix = randomUUID();
+    const admin = await enrolledAdminSession(
+      app,
+      await bootstrapTestTenant(app.auth, {
+        pool: testAppPool(),
+        name: 'Matrix Reset Admin',
+        email: `matrix-reset-admin-${suffix}@example.test`,
+        password: TEST_PASSWORD,
+        organizationName: `Matrix Reset ${suffix}`,
+        organizationSlug: `matrix-reset-${suffix}`,
+        ip: randomIp(),
+      }),
+      { password: TEST_PASSWORD, origin: ORIGIN },
+    );
+    const created = await createAdminUser(app.auth, {
+      name: 'Matrix Reset Member',
+      email: `matrix-reset-member-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+    });
+    await (
+      app.auth.api as {
+        addMember(args: {
+          body: { userId: string; organizationId: string; role: string };
+        }): Promise<unknown>;
+      }
+    ).addMember({
+      body: { userId: created.userId, organizationId: admin.organizationId, role: 'member' },
+    });
+    const signedIn = await signInAdminUser(app.auth, {
+      email: created.email,
+      password: TEST_PASSWORD,
+      ip: randomIp(),
+    });
+    await enrollTotp(app, { password: TEST_PASSWORD, enrollmentCookie: signedIn.cookie });
+    const count = async (sql: string, params: string[]): Promise<number> =>
+      Number((await pools.authPool.query<{ n: string }>(sql, params)).rows[0]?.n ?? '0');
+    expect(
+      await count('select count(*) as n from auth.two_factor where user_id = $1', [created.userId]),
+      'precondition: a factor',
+    ).toBe(1);
+    expect(
+      await count('select count(*) as n from auth.session where user_id = $1', [created.userId]),
+      'precondition: a session',
+    ).toBeGreaterThan(0);
+
+    const response = await app.app.inject({
+      method: 'POST',
+      url: `/v1/users/${created.email}/mfa/reset`,
+      headers: {
+        cookie: admin.cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('POST'),
+        'content-type': 'application/json',
+      },
+      payload: JSON.stringify({ reason: 'lost_both_factors' }),
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<Record<string, unknown>>()).toEqual({ reset: true });
+    expect(
+      await count('select count(*) as n from auth.two_factor where user_id = $1', [created.userId]),
+      'the factor is gone',
+    ).toBe(0);
+    expect(
+      await count('select count(*) as n from auth.session where user_id = $1', [created.userId]),
+      'the sessions are gone',
+    ).toBe(0);
+    expect(
+      await count('select count(*) as n from auth.verification where identifier = $1', [
+        `mfa-reenrol:${created.userId}`,
+      ]),
+      'the re-enrolment marker is written',
+    ).toBe(1);
+    const rejected = await app.app.inject({
+      method: 'GET',
+      url: '/v1/credentials',
+      headers: { cookie: signedIn.cookie, origin: ORIGIN, 'x-forwarded-for': randomIp() },
+    });
+    expect(rejected.statusCode, 'the old session is rejected').toBe(401);
+    await vi.waitFor(() => {
+      expect(
+        sender.sent.filter(
+          (mail) => mail.to === created.email && mail.template.kind === 'MfaResetNotice',
+        ),
+      ).toHaveLength(1);
+    });
+  }, 180_000);
 });

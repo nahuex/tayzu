@@ -41,6 +41,11 @@ const INVITATION_RETRY_AFTER_SECONDS = 3600;
 const TEMPLATE_NAMES: Record<EmailTemplate['kind'], string> = {
   InvitationEmail: 'invitation',
   AdminAcceptedNotice: 'admin_accepted',
+  PasswordResetEmail: 'password_reset',
+  PasswordChangedNotice: 'password_changed',
+  MfaChangedNotice: 'mfa_changed',
+  MfaResetNotice: 'mfa_reset',
+  AccountCreatedNotice: 'account_created',
 };
 
 export function createEmailTenantGate(deps: {

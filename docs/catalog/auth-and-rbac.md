@@ -68,6 +68,75 @@ no second "unauthenticated" code.
   gated by step-up. The marked operations are `blueprints.update`,
   `blueprints.delete` and `entities.delete`.
 
+### Password reset and account recovery (change 044)
+
+Tayzu owns both reset routes. Better Auth's own `/request-password-reset`,
+`/reset-password` and `/reset-password/:token` stay off the route allowlist and
+answer the same `404` as any unknown path (`auth-route-allowlist.test.ts`
+asserts it). Both Tayzu routes exist only when `MOUNT_IDENTITY_ROUTES` is
+`true`, require `x-csrf-token: orpc` and an allowed `Origin`, never read a
+session, and answer with `Cache-Control: no-store` and `Pragma: no-cache`.
+
+| Route                                  | Auth                        | Answer                                                      |
+| -------------------------------------- | --------------------------- | ----------------------------------------------------------- |
+| `POST /v1/auth/password-reset/request` | None (public)               | Always `200 { "accepted": true }` for a well-formed request |
+| `POST /v1/auth/password-reset/confirm` | The reset token in the body | `200 { "completed": true }`, or the refusals below          |
+
+- **Request.** The answer and its timing are the same whether the address is
+  known, unknown, banned, disabled or without a local password. Only an
+  eligible account whose send the mailer admits (kill switch, recipient-domain
+  allowlist, disabled tenants, then the recipient, IP and global caps) gets a
+  token and one `PasswordResetEmail`. A suppressed request issues and deletes
+  nothing, so an earlier link stays valid until it expires.
+- **The token** is a 22-character public id and a 43-character secret, both
+  from 16 and 32 random bytes. Only the sha256 digest is stored, in
+  `auth.verification` (`password-reset:<id>`), for 30 minutes, with a budget of
+  five failed attempts. The newest admitted token wins. It travels only in the
+  URL fragment of the emailed link and in the confirm body.
+- **Confirm.** Any account- or token-dependent refusal is the same
+  `404 CATALOG_NOT_FOUND`. A malformed body is `CATALOG_VALIDATION_FAILED`
+  (400), a password-policy or breach refusal names only the rule, and the IP
+  limiter answers `AUTH_RATE_LIMITED` (429). A user with a second factor
+  must send `factor` (`totp` or `backup_code`) with the new password; without
+  one, or with a wrong, locked or inconsistent factor, the answer is
+  `AUTH_STEP_UP_REQUIRED`, so a mailbox alone never changes the password of an
+  MFA-enrolled user. The policy and the breached-password check run before the
+  token or a backup code is spent.
+- **Effects.** One SQL transaction under the per-user lock writes the new
+  password hash, consumes the token, clears the temporary-password marker and
+  pending two-factor challenges, marks the email verified and deletes every
+  session of the user in every tenant. It never clears `banned`, never
+  re-enables a `_user` and creates no session. After the commit the user gets
+  a `PasswordChangedNotice`.
+- **Reset by an admin.** `identity.users.resetMfa` (`POST
+/v1/users/{user}/mfa/reset`, `x-tayzu-risk: high`, body `{ reason }` from a
+  closed set) removes the second factor of a plain member of the caller's own
+  tenant. An admin or owner target, a member of several organizations, the
+  caller themselves and a user with no enrolled factor are refused with the
+  same `CATALOG_VALIDATION_FAILED` (or `AUTH_FORBIDDEN` from Cerbos for the
+  self, admin and owner cases). Those users are recovered with the operator
+  CLI `recover:admin-mfa`, which needs a named approver different from the
+  operator and refuses to run with telemetry off.
+
+#### The re-enrolment gate
+
+An MFA reset (either form) writes `mfa-reenrol:<userId>` in
+`auth.verification`. While the marker exists:
+
+- a session may reach only `/two-factor/enable`, `/two-factor/verify-totp`,
+  `/get-session` and `/sign-out`; every other `/api/auth/*` route answers a
+  fixed refusal, and a failed marker lookup refuses (fail closed);
+- `resolveContext` rejects the session on `/v1` like a missing context, as it
+  does for the temporary-password marker;
+- the marker is deleted when `/two-factor/verify-totp` makes `twoFactorEnabled`
+  true. A password reset does not delete it.
+
+#### Closed Better Auth routes
+
+Better Auth's three reset routes are not in `ALLOWED_AUTH_ROUTES` and the drift
+test lists them as blocked. This change adds no allowlisted Better Auth route.
+The two public Tayzu routes are in `PUBLIC_ROUTE_ALLOWLIST`, each with a reason.
+
 ## Resource kinds
 
 Cerbos knows six fixed resource kinds (constants in
@@ -183,6 +252,7 @@ with `pnpm policy:compile`, and every policy change is a Checkpoint 3 review.
 | `identity.users.cancelInvitation`, `identity.users.resendInvitation` | `user`              | `invite`                                                  |
 | `identity.users.setStatus`                                           | `user`              | `updateStatus`                                            |
 | `identity.users.linkSsoAccount`, `identity.users.unlinkSsoAccount`   | `user`              | `update`                                                  |
+| `identity.users.resetMfa`                                            | `user`              | `resetMfa`                                                |
 | `identity.serviceAccounts.create`                                    | `service_account`   | `create`                                                  |
 | `identity.serviceAccounts.delete`                                    | `service_account`   | `delete`                                                  |
 | `identity.credentials.list`                                          | `credential`        | `list`                                                    |
@@ -191,8 +261,9 @@ with `pnpm policy:compile`, and every policy change is a Checkpoint 3 review.
 | `identity.credentials.revoke`                                        | `credential`        | `revoke`                                                  |
 
 The identity actions are all gated to the `admin` role. The public
-invitation acceptance is not an `identity.*` procedure and has no Cerbos
-check: it authenticates by the invitation token (change 043, D4).
+invitation acceptance and the two password-reset routes are not `identity.*`
+procedures and have no Cerbos check: they authenticate by the invitation or
+reset token (changes 043 D4 and 044 D2).
 
 The `identity.*` procedures are called in-process. Their routes are mounted
 over HTTP only when `MOUNT_IDENTITY_ROUTES` is `true` (off by default, 043

@@ -32,6 +32,7 @@ flowchart TB
         agent(["AI agent"])
         integ(["Integration<br/>GitHub, Jira Cloud, Azure DevOps, Aikido,<br/>Orca Security, Escape, CodeRabbit"])
         invitee(["Invitee (human)<br/>with their mailbox"])
+        mailClient(["Mail client (044)<br/>the end user's mailbox, receives reset and notice mail"])
     end
 
     subgraph delivery["Development and delivery (outside the product boundary)"]
@@ -60,6 +61,8 @@ flowchart TB
                 userApi["User lifecycle routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>PUT /v1/users/{user}/status<br/>POST /v1/users<br/>POST /v1/users/{user}/sso-account<br/>DELETE /v1/users/{user}/sso-account"]
                 saApi["Service account routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/service-accounts<br/>DELETE /v1/service-accounts/{user}"]
                 credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
+                resetRequestApi["Public reset request route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/request<br/>unauthenticated, uniform response"]
+                resetConfirmApi["Public reset confirm route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/confirm<br/>unauthenticated, reset token"]
             end
             authn["Better Auth (002)<br/>in-process library"]
             cerbos["Cerbos PDP sidecar (002)<br/>same ACA revision, loopback only<br/>no external arrow<br/>gRPC uses TLS on any other address"]
@@ -100,6 +103,7 @@ flowchart TB
         cerbosBackfill["Cerbos sidecar of the backfill job<br/>own container, loopback only"]
         reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
         cerbosReconcile["Cerbos sidecar of the reconcile job<br/>own container, loopback only"]
+        breakGlass["Break-glass CLI (044)<br/>recover:admin-mfa, named approver, telemetry required"]
     end
 
     subgraph legend["Legend"]
@@ -156,6 +160,19 @@ flowchart TB
     invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
     authn -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>haveIBeenPwned plugin on the BREACH_CHECKED_PATHS"| pwned
     acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>createUser of the new-account path, through Better Auth"| pwned
+    %% Current interactions (044)
+    user -->|"HTTPS/JSON (browser, request a reset link)"| resetRequestApi
+    user -->|"HTTPS/JSON (browser, confirm the reset with the token)"| resetConfirmApi
+    resetRequestApi -->|"HTTPS (ACS egress, Communication Services email API): reset email"| emailProvider
+    resetConfirmApi -->|"HTTPS (ACS egress, Communication Services email API): password and MFA change notices"| emailProvider
+    emailProvider -->|"SMTP (reset and notice mail delivered to the mailbox)"| mailClient
+    mailClient -->|"IMAP protocol (the user fetches the mail from the mailbox)"| emailProvider
+    resetRequestApi -->|"PostgreSQL wire protocol over TLS (role tayzu_auth): auth.verification writes (token digest)"| pg
+    resetConfirmApi -->|"PostgreSQL wire protocol over TLS (role tayzu_auth): auth.verification, auth.account, auth.session writes in one transaction"| pg
+    resetConfirmApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only)"| pwned
+    operator -->|"CLI (pnpm tsx, break-glass recover:admin-mfa)"| breakGlass
+    breakGlass -->|"PostgreSQL wire protocol over TLS (role tayzu_auth): auth.verification and auth.two_factor writes"| pg
+    breakGlass -->|"HTTPS (ACS egress, Communication Services email API): notice mail"| emailProvider
     api -->|"OTLP/HTTP (traces, metrics, logs), only when<br/>OTEL_EXPORTER_OTLP_ENDPOINT is set; collector chosen in 010"| monitor
     ci -->|"HTTPS (docker pull of the Cerbos and ZAP images by digest)"| ghcr
     dev -->|"HTTPS (docker pull of the Cerbos image:<br/>compose, start-cerbos.sh, policy:compile)"| ghcr
@@ -191,9 +208,9 @@ flowchart TB
     classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
     classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
 
-    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,userApi,saApi,credApi,backfillJob,reconcileJob,cerbosBackfill,cerbosReconcile,authn,cerbos,lgCurrent,lgStore current
+    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,resetRequestApi,resetConfirmApi,breakGlass,userApi,saApi,credApi,backfillJob,reconcileJob,cerbosBackfill,cerbosReconcile,authn,cerbos,lgCurrent,lgStore current
     class mcp,workers,intg,redis,monitor,acr,lgPlanned planned
-    class user,admin,agent,integ,invitee,operator,visma,kv,dev,ci,dast,system,lgActor actor
+    class user,admin,agent,integ,invitee,mailClient,operator,visma,kv,dev,ci,dast,system,lgActor actor
     class gh,npm,ghcr,llm,toolApis,emailProvider,pwned,lgExternal externalSys
 
     style tayzu fill:#fbfdff,stroke:#1f5f99,stroke-width:3px

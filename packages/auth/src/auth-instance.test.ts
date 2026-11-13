@@ -33,7 +33,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { createAuth } from './auth.js';
+import { createAuth, hashPasswordNfc } from './auth.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 // A `@better-auth/drizzle-adapter` `DB` handle is typed as `{[key: string]: any}`
@@ -138,5 +138,32 @@ describe('createAuth', () => {
     ).options;
 
     expect(options.emailAndPassword?.disableSignUp).toBe(true);
+  });
+  /**
+   * Task 1.5 (044 design D7, Q13): the one password-hash function (NFC, then
+   * `hashPassword`) is exported from `./auth.ts` as `hashPasswordNfc` and is the
+   * function `emailAndPassword.password.hash` uses.
+   */
+  it("the exported hasher's output verifies through the instance's password.verify, and NFC and non-NFC spellings of one password verify each other", async () => {
+    const auth = createAuth({ db: stubDb, secret: TEST_SECRET });
+    const context = (await (auth as unknown as { readonly $context: Promise<unknown> })
+      .$context) as {
+      readonly password: {
+        readonly verify: (data: { hash: string; password: string }) => Promise<boolean>;
+      };
+    };
+    const nfc = 'caf\u00e9-correct-horse-battery-staple';
+    const nfd = 'cafe\u0301-correct-horse-battery-staple';
+    expect(nfd).not.toBe(nfc);
+    expect(nfd.normalize('NFC')).toBe(nfc);
+
+    const hashOfNfc = await hashPasswordNfc(nfc);
+    const hashOfNfd = await hashPasswordNfc(nfd);
+
+    expect(await context.password.verify({ hash: hashOfNfc, password: nfc })).toBe(true);
+    expect(await context.password.verify({ hash: hashOfNfd, password: nfd })).toBe(true);
+    expect(await context.password.verify({ hash: hashOfNfc, password: nfd })).toBe(true);
+    expect(await context.password.verify({ hash: hashOfNfd, password: nfc })).toBe(true);
+    expect(await context.password.verify({ hash: hashOfNfc, password: `${nfc}x` })).toBe(false);
   });
 });

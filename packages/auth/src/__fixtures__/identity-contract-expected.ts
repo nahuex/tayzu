@@ -19,6 +19,8 @@ const SERVICE_ACCOUNT_ID = 'tayzu.identity.service_account.id';
 export interface ExpectedSpan {
   readonly name: string;
   readonly attributes: readonly string[];
+  /** Attributes that a span may omit (set only once a step has run). */
+  readonly conditional?: readonly string[];
 }
 
 export interface ExpectedMetric {
@@ -67,6 +69,14 @@ export const EXPECTED_SPANS: readonly ExpectedSpan[] = [
       'tayzu.identity.reconcile.orphans',
     ],
   },
+  // 044 (design D15). The confirm span sets `reset.mfa` only once the factor step has run.
+  { name: 'identity.password_reset.request', attributes: [] },
+  {
+    name: 'identity.password_reset.confirm',
+    attributes: [],
+    conditional: ['tayzu.identity.reset.mfa'],
+  },
+  { name: 'identity.mfa.reset', attributes: ['tayzu.identity.mfa_reset.path'] },
 ];
 
 export const EXPECTED_METRICS: readonly ExpectedMetric[] = [
@@ -89,6 +99,20 @@ export const EXPECTED_METRICS: readonly ExpectedMetric[] = [
   {
     name: 'tayzu.identity.principal_rejections',
     attributes: ['tayzu.identity.rejection.reason', ACTOR_TYPE],
+  },
+  // 044 (design D15).
+  {
+    name: 'tayzu.identity.password_reset_requests',
+    attributes: ['tayzu.identity.reset.request_outcome'],
+  },
+  {
+    name: 'tayzu.identity.password_reset_confirms',
+    attributes: ['tayzu.identity.reset.confirm_outcome'],
+  },
+  { name: 'tayzu.identity.mfa_resets', attributes: [TENANT, 'tayzu.identity.mfa_reset.path'] },
+  {
+    name: 'tayzu.identity.recovery_emails',
+    attributes: ['tayzu.identity.email.template', 'tayzu.identity.email.outcome'],
   },
 ];
 
@@ -289,6 +313,54 @@ export const EXPECTED_LOG_EVENTS: readonly ExpectedLogEvent[] = [
     severity: 'WARN',
     attributes: [TENANT, ACTOR_ID, 'tayzu.identity.conflict.reason', USER_ID],
   },
+  // 044 (design D15).
+  {
+    name: 'catalog.audit.password_reset_requested',
+    severity: 'INFO',
+    attributes: [USER_ID],
+  },
+  {
+    name: 'catalog.audit.password_reset_completed',
+    severity: 'INFO',
+    attributes: [USER_ID, 'tayzu.identity.reset.mfa', 'tayzu.identity.sessions.revoked'],
+  },
+  {
+    name: 'catalog.audit.mfa_reset',
+    severity: 'INFO',
+    forms: {
+      admin: [
+        TENANT,
+        ACTOR_ID,
+        USER_ID,
+        'tayzu.identity.mfa_reset.reason',
+        'tayzu.identity.sessions.revoked',
+      ],
+      operator: [
+        TENANT,
+        OPERATOR_ID,
+        'tayzu.identity.approver.id',
+        USER_ID,
+        'tayzu.identity.sessions.revoked',
+      ],
+    },
+  },
+  {
+    name: 'catalog.security.password_reset_denied',
+    severity: 'WARN',
+    attributes: ['tayzu.identity.reset.denial_reason'],
+    conditional: [USER_ID],
+  },
+  {
+    name: 'catalog.security.recovery_email_suppressed',
+    severity: 'WARN',
+    attributes: ['tayzu.identity.email.template', 'tayzu.identity.recovery.suppression'],
+    conditional: [USER_ID],
+  },
+  {
+    name: 'catalog.security.self_mfa_reset_denied',
+    severity: 'WARN',
+    attributes: [TENANT, ACTOR_ID],
+  },
 ];
 
 /**
@@ -357,7 +429,64 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
   ],
   'tayzu.identity.notice.template': ['admin_accepted'],
   'tayzu.identity.notice.suppression': ['global', 'tenant', 'recipient', 'truncated'],
-  'tayzu.identity.email.template': ['invitation', 'admin_accepted'],
+  'tayzu.identity.email.template': [
+    'invitation',
+    'admin_accepted',
+    'password_reset',
+    'password_changed',
+    'mfa_changed',
+    'mfa_reset',
+    'account_created',
+  ],
+  'tayzu.identity.reset.mfa': ['not_enrolled', 'totp', 'backup_code'],
+  'tayzu.identity.reset.request_outcome': ['issued', 'ineligible', 'suppressed'],
+  'tayzu.identity.reset.confirm_outcome': [
+    'completed',
+    'rejected',
+    'factor_required',
+    'policy_refused',
+    'breach_check_unavailable',
+  ],
+  'tayzu.identity.reset.denial_reason': [
+    'malformed_request',
+    'csrf_rejected',
+    'origin_rejected',
+    'not_found',
+    'expired',
+    'token_mismatch',
+    'not_eligible',
+    'factor_invalid',
+    'factor_state_inconsistent',
+    'attempts_exhausted',
+    'policy_violation',
+    'breached',
+    'breach_check_unavailable',
+    'consume_conflict',
+  ],
+  'tayzu.identity.recovery.suppression': [
+    'unknown_address',
+    'no_credential_account',
+    'banned',
+    'disabled_everywhere',
+    'no_membership',
+    'kill_switch',
+    'recipient_domain_blocked',
+    'tenants_email_disabled',
+    'recipient_cap',
+    'ip_cap',
+    'global_cap',
+    'tenant_cap',
+    'provider_failure',
+    'token_issue_failure',
+  ],
+  'tayzu.identity.mfa_reset.path': ['admin', 'operator'],
+  'tayzu.identity.mfa_reset.reason': [
+    'lost_both_factors',
+    'device_replaced',
+    'suspected_compromise',
+    'identity_verified_request',
+  ],
+  'tayzu.identity.email.outcome': ['sent', 'suppressed', 'failed'],
   'tayzu.identity.sign_in.channel': ['local', 'sso'],
   'tayzu.identity.sso_link.path': ['acceptance', 'membership_hook', 'reconcile'],
   'tayzu.identity.conflict.reason': [
@@ -365,7 +494,8 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'target_in_other_tenant',
     'sub_already_linked',
     'target_is_admin_or_owner',
+    'no_enrolled_factor',
   ],
   // The value this change adds to 002's `auth.security.session_revoked` reason.
-  'tayzu.auth.revocation.reason': ['sso_link_shed'],
+  'tayzu.auth.revocation.reason': ['sso_link_shed', 'password_reset', 'mfa_reset'],
 };
