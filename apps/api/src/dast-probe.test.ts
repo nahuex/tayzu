@@ -13,7 +13,8 @@
  * ## Harness
  *
  * A small in-process Fastify app (never a listener) that behaves like the three public routes
- * should: strict body shape, `415` for a wrong content type, `403` without the CSRF header or
+ * should: strict body shape, `415` for a wrong content type, `403` without the exact CSRF
+ * header `x-csrf-token: orpc` (any other value is refused like a missing one) or
  * with a foreign `Origin`, `413` for an oversized body, `Cache-Control: no-store`, and the
  * uniform `200 { accepted: true }` for the request route. `fetch` is a bridge to `app.inject`.
  * Switches make one route misbehave at a time.
@@ -52,6 +53,8 @@ const ACCEPT = '/v1/auth/invitations/accept';
 const REQUEST = '/v1/auth/password-reset/request';
 const CONFIRM = '/v1/auth/password-reset/confirm';
 const ROUTES = [ACCEPT, REQUEST, CONFIRM] as const;
+/** The only CSRF header value the production routes accept (`x-csrf-token: orpc`). */
+const CSRF_VALUE = 'orpc';
 const RESET_ROUTES: readonly string[] = [REQUEST, CONFIRM];
 
 interface Misbehavior {
@@ -145,7 +148,8 @@ function buildApp(knownEmail: string, misbehavior: Misbehavior, seen: Seen[]): F
         reply.status(status).send({ code, ...echoes(raw) });
       const origin = request.headers.origin;
       if (origin !== undefined && origin !== ORIGIN) return fail(403, 'AUTH_FORBIDDEN');
-      if (request.headers['x-csrf-token'] === undefined) return fail(403, 'AUTH_FORBIDDEN');
+      // Like production (043 design D13, `server.ts`): only the exact value `orpc` passes.
+      if (request.headers['x-csrf-token'] !== CSRF_VALUE) return fail(403, 'AUTH_FORBIDDEN');
       if (!(request.headers['content-type'] ?? '').startsWith('application/json')) {
         return fail(415, 'CATALOG_VALIDATION_FAILED');
       }
@@ -248,6 +252,43 @@ describe('The DAST probe (task 14.1, design D17)', () => {
       );
     },
   );
+
+  it('a well-formed request to each route carries x-csrf-token: orpc and the request route answers 2xx for it', async () => {
+    const { result, seen } = await probe({});
+    const wellFormed = (entry: Seen): boolean => {
+      if (entry.headers.origin !== ORIGIN) return false;
+      if (!(entry.headers['content-type'] ?? '').toString().startsWith('application/json')) {
+        return false;
+      }
+      if (!isJson(entry.raw)) return false;
+      const parsed: unknown = JSON.parse(entry.raw);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+      const shape = SHAPES[entry.path] ?? [];
+      const keys = Object.keys(parsed);
+      return keys.length === shape.length && shape.every((key) => keys.includes(key));
+    };
+
+    for (const path of ROUTES) {
+      const mine = seen.filter((entry) => entry.path === path && wellFormed(entry));
+      expect(
+        mine.some((entry) => entry.headers['x-csrf-token'] === CSRF_VALUE),
+        `${path} gets a well-formed request with x-csrf-token: orpc`,
+      ).toBe(true);
+      // The only well-formed request without the exact value is the "missing header" one.
+      expect(
+        mine.every(
+          (entry) =>
+            entry.headers['x-csrf-token'] === CSRF_VALUE ||
+            entry.headers['x-csrf-token'] === undefined,
+        ),
+        `${path} never gets another x-csrf-token value on a well-formed request`,
+      ).toBe(true);
+    }
+    expect(
+      result.responses.some((r) => r.path === REQUEST && r.status >= 200 && r.status < 300),
+      'the request route answers 2xx',
+    ).toBe(true);
+  });
 
   it.each([ACCEPT, CONFIRM])('%s receives the same token body twice (a replay)', async (path) => {
     const { seen } = await probe({});

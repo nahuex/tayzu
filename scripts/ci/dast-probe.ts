@@ -42,6 +42,8 @@ const ACCEPT = '/v1/auth/invitations/accept';
 const REQUEST = '/v1/auth/password-reset/request';
 const CONFIRM = '/v1/auth/password-reset/confirm';
 const RESET_ROUTES: readonly string[] = [REQUEST, CONFIRM];
+/** The only CSRF header value the production routes accept (`x-csrf-token: orpc`). */
+const CSRF_VALUE = 'orpc';
 
 /** Longer than the 1 MiB body limit. */
 const OVERSIZED_LENGTH = 2 * 1024 * 1024;
@@ -82,7 +84,7 @@ export async function runDastProbe(options: ProbeOptions): Promise<ProbeResult> 
       'content-type': request.contentType ?? 'application/json',
       origin: request.origin ?? options.origin,
     };
-    if (request.csrf !== false) headers['x-csrf-token'] = '1';
+    if (request.csrf !== false) headers['x-csrf-token'] = CSRF_VALUE;
     const response = await doFetch(`${options.baseUrl}${path}`, {
       method: 'POST',
       headers,
