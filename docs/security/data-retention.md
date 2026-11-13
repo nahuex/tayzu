@@ -164,6 +164,17 @@ the `EmailTemplate` union and the `tayzu.identity.email.template` set are
 extended by `044` first, so the `OrgDeletionNotice` of `045` rebases onto them.
 `verification-families.int.test.ts` is the early-warning list.
 
+## Security log retention
+
+Security events (the `catalog.security.*`, `catalog.audit.*` and
+`auth.security.*` log events, and the infrastructure security logs) are kept for
+1 year (`044` design, Resolved decision Q34). The application only emits them;
+the log backend that stores them, enforces the 1 year and exports them on
+request is defined by `010`, and until it exists the retention is a ticket
+(`044` design, Tickets, "Security log retention and IP forensics" and "Log
+export procedure"). The estimate to hand logs to the GSOC in an incident is 48
+hours.
+
 ## Email policy
 
 - **Provider.** `EMAIL_PROVIDER` is `acs` or `none` (the non-sending sender).

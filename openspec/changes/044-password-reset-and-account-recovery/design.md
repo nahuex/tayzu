@@ -127,8 +127,8 @@ archive of `002` (`e3f5771`):
 
 ## Decisions
 
-Decisions D1-D20 are this design's. Q1-Q33 at the end are the human's approved
-answers (Q1-Q11 on 2026-10-14, Q12-Q31 on 2026-10-15, Q32-Q33 on 2026-10-21); each D names
+Decisions D1-D20 are this design's. Q1-Q34 at the end are the human's approved
+answers (Q1-Q11 on 2026-10-14, Q12-Q31 on 2026-10-15, Q32-Q33 on 2026-10-21, Q34 on 2026-11-13); each D names
 the Q it implements.
 
 ### D1. Tayzu owns both reset routes; Better Auth's stay closed (Q2)
@@ -1226,9 +1226,17 @@ control, injection, secrets or logging would block.
 | `002` task 11.12 (TLS and HSTS on the ingress) | Becomes a Gate for turning on `MOUNT_IDENTITY_ROUTES` (Q25) |
 | `002` Q58 (configurable `TRUST_PROXY`) | Still a pending gate (D9); the new per-IP controls depend on it |
 
-- **Mode B items (Checkpoint 2).** SEC12 training and monitoring, the SEC13 access review,
-  and SEC16 log provision, incident hours, review of suspicious behavior and retention are
-  answered in Mode B at Checkpoint 2, in the VCDM re-run task (task 16.2).
+- **Mode B items (Checkpoint 2), answered by the human on 2026-11-13 (Q34).**
+
+| SSA item | Answer | Follow-up |
+| -------- | ------ | --------- |
+| SEC12 Q1, Q2: security testing and training | Security issues are looked for during testing (DAST with ZAP and the probe, gitleaks, the security-review agent, the VCDM pre-assessment, the Cerbos policy tests); formal security training is not on record | Ticket "Security training record" |
+| SEC12 Q3: post-launch monitoring | Weak: the security events exist, no alert or on-call yet | Ticket "Security alerts on denial events" (`010`) |
+| SEC13: access to the repository and CI | Only the necessary person has access today (the owner); no periodic review yet | Ticket "Periodic access review" |
+| SEC16 Q3: providing logs on request | Yes, by a manual process: an export from the log backend `010` defines | Ticket "Log export procedure" (`010`) |
+| SEC16 Q4: hours to provide logs to the GSOC | 48 | Revisited when `010` defines the backend |
+| SEC16 Q6: review of suspicious behavior | Not yet | Ticket "Security alerts on denial events" (`010`) |
+| SEC16 Q7: retention of security logs | 1 year, stated in `docs/security/data-retention.md` | Ticket "Security log retention and IP forensics" |
 
 ## Divergences from Port (deliberate)
 
@@ -1407,7 +1415,11 @@ on this change are restated, then this change's own.
 | Audit count of SSO links and credentials | Emit the count of a user's SSO links and live machine credentials at password-reset and MFA-reset time (Q21, Q30, SEC06). |
 | Per-tenant cap on `identity.users.create` | `043` Q147 O-10: partially closed by the account-created notice's caps (Q20); the cap on creation remains. |
 | `tayzu_auth` least privilege | `043` O-7, with the unauthenticated reset routes and the operator CLI now users of the role (SEC14). |
-| Security log retention and IP forensics | The retention of security events (12 months minimum) and the ingress-log source of IPs (SEC16); `043` O-11 on the Cerbos audit backend is related. |
+| Security log retention and IP forensics | The retention of security events (1 year, Q34) enforced in the backend `010` defines, and the ingress-log source of IPs (SEC16); `043` O-11 on the Cerbos audit backend is related. |
+| Security training record | Give the people who develop and test a security-testing training and record it (SEC12, Q34). |
+| Security alerts on denial events | Alerts and a reviewer for the `catalog.security.*` and `auth.security.*` events: post-launch monitoring and the active review of suspicious behavior (SEC12, SEC16, Q34; `010`). |
+| Periodic access review | Review repository, CI and deployment access on a schedule and record it (SEC13, Q34). |
+| Log export procedure | A written procedure to export infrastructure and application logs for a customer, the GSOC or an authority within 48 hours (SEC16, Q34; `010`). |
 | Admin MFA reset as a job | `010` may wrap the CLI of D12 in a Container Apps Job with the `045`-style reviewed workflow. |
 
 ## Hand-offs from `002` and `043` closed by this change
@@ -1432,10 +1444,10 @@ oracle" (the invitation gate's visible 429 stays; the reset path avoids it by de
 "Recipient-cap alias normalization", "Persistent per-tenant email-disable list" and
 "Bounce and complaint handling".
 
-## Resolved decisions (asked and approved in chat, 2026-10-14, 2026-10-15 and 2026-10-21)
+## Resolved decisions (asked and approved in chat, 2026-10-14, 2026-10-15, 2026-10-21 and 2026-11-13)
 
 Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q31 on
-2026-10-15 and Q32-Q33 on 2026-10-21, each with the recommended option. The text below is the approved text; Q12-Q31 amend
+2026-10-15, Q32-Q33 on 2026-10-21 and Q34 on 2026-11-13, each with the recommended option. The text below is the approved text; Q12-Q31 amend
 how Q1-Q11 are read where they say so. Where Q2, Q13 and Q19 say "the 8.1 password policy",
 that is `043`'s password policy (`043` task 8.1), not this change's own task 8.1.
 
@@ -1778,6 +1790,20 @@ with `symmetricDecrypt` from `better-auth/crypto` and a guarded JSON parse, whic
 the mode Tayzu's `twoFactor()` instance uses. D6 is corrected to say so; the code of task 8.1
 is unchanged. _Rejected:_ a vendored copy of the four-line function. _Implemented by:_ D6;
 task 8.1.
+
+### Q34. SSA Mode B answers (2026-11-13)
+
+The human answered the Mode B items that Q27 deferred to Checkpoint 2, each with the
+recommended option: security issues are looked for during testing but formal training is
+not on record (ticket); post-launch monitoring is weak (alerts on the security events are a
+ticket for `010`); only the owner has repository and CI access today and a periodic access
+review is a ticket; logs are provided on request by a manual export from the backend `010`
+defines (ticket), in an estimated 48 hours; suspicious behavior is not reviewed actively yet
+(ticket for `010`); security logs are kept 1 year (`docs/security/data-retention.md`). The
+table in "SSA notes (Q27)" holds each answer. _Rejected:_ attesting training, robust
+monitoring or an existing access review that do not exist yet; 90 days or 2 years of
+retention. _Implemented by:_ "SSA notes (Q27)", Tickets, `docs/security/data-retention.md`;
+task 16.2.
 
 ### Size (2026-10-15)
 

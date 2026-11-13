@@ -28,7 +28,7 @@ declared in design D15 exists for that task's code. Scenario names in _Verify_
 clauses are the `####` scenarios of
 `specs/password-reset-and-account-recovery/spec.md` (and, where stated, of the
 `identity-lifecycle-and-org-admin` delta spec). Tasks follow design D1-D20 and the
-Resolved decisions Q1-Q33. The design has no open question. There are 85 tasks in 16
+Resolved decisions Q1-Q34. The design has no open question. There are 85 tasks in 16
 groups; if the count would pass 85, stop and ask before adding more (design, Resolved
 decisions, "Size").
 
