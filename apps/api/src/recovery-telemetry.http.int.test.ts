@@ -20,6 +20,13 @@
  * - THEN the only signals are counters and a suppression event with the reason `unknown_address`,
  *   carrying no user id
  *
+ * #### Scenario: A known account that gets no mail is recorded by its opaque id
+ * - GIVEN an SSO-only account, a banned account, an account `Disabled` in its only tenant and an
+ *   account with no membership
+ * - WHEN a reset is requested for each
+ * - THEN each suppression event carries its own reason and the account's opaque user id, and no
+ *   address
+ *
  * #### Scenario: Audit and denial events carry the trace id
  * - WHEN a reset is completed, a confirm is denied and an MFA reset is performed
  * - THEN each of the audit and denial log records carries the trace id of its request or operation
@@ -45,6 +52,11 @@
  * - The reset id is a lookup key and part of the link, not a listed secret: only the token, the
  *   link (whole and in its fragment form) and, for the marker scenario, the address and the
  *   password are searched for.
+ * - A known but ineligible account (design D5 "and the user id when there is one", D15, Resolved
+ *   decision Q36 row N2): exactly one suppression event, with the reason of the state and the
+ *   account's user id; the request span and the request counter carry no user id (D15 declares no
+ *   attribute for the span and only the outcome for the counter); the address is in no exported
+ *   signal and no mail is sent. Whether other spans or metrics exist is not asserted.
  * - Trace correlation is asserted as: the audit or denial record has a valid non-zero trace id equal
  *   to the trace id of the span of its route or operation (the span names of design D15).
  *
@@ -66,6 +78,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import {
   bootstrapTestTenant,
+  seedUserRow,
   testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
@@ -84,6 +97,7 @@ const HMAC_SECRET = 'recovery-telemetry-test-only-secret-0123456789-abcdef';
 const SPAN_REQUEST = 'identity.password_reset.request';
 const SPAN_CONFIRM = 'identity.password_reset.confirm';
 const SPAN_MFA_RESET = 'identity.mfa.reset';
+const METRIC_REQUESTS = 'tayzu.identity.password_reset_requests';
 const EVENT_REQUESTED = 'catalog.audit.password_reset_requested';
 const EVENT_COMPLETED = 'catalog.audit.password_reset_completed';
 const EVENT_MFA_RESET = 'catalog.audit.mfa_reset';
@@ -536,6 +550,146 @@ describe('Recovery telemetry carries no sensitive data and correlates by trace i
       address.split('@')[0] ?? '',
     ]);
   }, 60_000);
+
+  describe('A known account that gets no mail is recorded by its opaque id', () => {
+    type IneligibleState =
+      'no_credential_account' | 'banned' | 'disabled_everywhere' | 'no_membership';
+
+    /** An account with a credential and one tenant, `Disabled` there when asked. */
+    async function createKnownAccount(
+      status: 'Active' | 'Disabled',
+    ): Promise<{ email: string; userId: string }> {
+      const suffix = randomUUID();
+      const email = `marker-known-${suffix}@example.com`;
+      const tenant = await bootstrapTestTenant(open.auth, {
+        pool: testAppPool(),
+        name: 'Recovery Telemetry User',
+        email,
+        password: TEST_PASSWORD,
+        organizationName: `Recovery Telemetry Org ${suffix}`,
+        organizationSlug: `recovtel-${suffix}`,
+        ip: randomIp(),
+        ...(status === 'Disabled' ? { writeUserRow: false } : {}),
+      });
+      if (status === 'Disabled') {
+        await seedUserRow(testAppPool(), {
+          tenantId: tenant.organizationId,
+          email,
+          name: 'Recovery Telemetry User',
+          status,
+          portRole: 'admin',
+        });
+        const client = await testAppPool().connect();
+        try {
+          await client.query('begin');
+          await client.query(`select set_config('app.tenant_id', $1, true)`, [
+            tenant.organizationId,
+          ]);
+          await client.query(
+            `update catalog_entity
+                set spec_properties = jsonb_set(spec_properties, '{status}', '"Disabled"')
+              where tenant_id = $1 and identifier = $2`,
+            [tenant.organizationId, email],
+          );
+          await client.query('commit');
+        } finally {
+          client.release();
+        }
+      }
+      return { email, userId: tenant.userId };
+    }
+
+    const cases: readonly {
+      readonly given: string;
+      readonly reason: IneligibleState;
+      readonly status?: 'Disabled';
+      readonly prepare: (account: { userId: string }) => Promise<void>;
+    }[] = [
+      {
+        given: 'an SSO-only account',
+        reason: 'no_credential_account',
+        prepare: async (account) => {
+          await authPool.query(
+            `delete from auth.account where user_id = $1 and provider_id = 'credential'`,
+            [account.userId],
+          );
+          await authPool.query(
+            `insert into auth.account (id, account_id, provider_id, user_id, created_at, updated_at)
+             values ($1, $2, 'visma-connect', $3, now(), now())`,
+            [`acc-${randomUUID()}`, `sso-${randomUUID()}`, account.userId],
+          );
+        },
+      },
+      {
+        given: 'a banned account',
+        reason: 'banned',
+        prepare: async (account) => {
+          await authPool.query('update auth."user" set banned = true where id = $1', [
+            account.userId,
+          ]);
+        },
+      },
+      {
+        given: 'an account Disabled in its only tenant',
+        reason: 'disabled_everywhere',
+        status: 'Disabled',
+        prepare: () => Promise.resolve(),
+      },
+      {
+        given: 'an account with no membership',
+        reason: 'no_membership',
+        prepare: async (account) => {
+          await authPool.query('delete from auth.member where user_id = $1', [account.userId]);
+        },
+      },
+    ];
+
+    for (const { given, reason, status, prepare } of cases) {
+      it(`${given}: exactly one suppression event with the reason ${reason} and the account's user id, and the address in no exported signal`, async () => {
+        const account = await createKnownAccount(status ?? 'Active');
+        await prepare(account);
+        await harness.reset();
+
+        const answer = await postRequest(open, account.email);
+        expect(answer.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const all = await signals();
+
+        const suppressed = onlyLog(all, EVENT_SUPPRESSED);
+        expect(suppressed.attributes[SUPPRESSION], 'the suppression carries its own reason').toBe(
+          reason,
+        );
+
+        // The account gets no mail, so no token was issued and nothing was sent.
+        expect(eventsNamed(all, EVENT_REQUESTED), 'no audit event without a token').toEqual([]);
+        expect(linksTo(openSender, account.email), 'no reset email was sent').toEqual([]);
+
+        // The span and the counter of the request carry no identifier (design D15).
+        expect(
+          Object.keys(onlySpan(all, SPAN_REQUEST).attributes),
+          'the request span carries no user id',
+        ).not.toContain(USER_ID);
+        const requestPoints = all.points.filter((point) => point.name === METRIC_REQUESTS);
+        expect(requestPoints.length, 'the request counter was recorded').toBeGreaterThan(0);
+        for (const point of requestPoints) {
+          expect(
+            Object.keys(point.attributes),
+            'the request counter carries no user id',
+          ).not.toContain(USER_ID);
+        }
+
+        const localPart = account.email.split('@')[0] ?? '';
+        expectNoneOf('a span, metric or log record', all.serialized, [account.email, localPart]);
+        expectNoneOf('the response', answer.everything, [account.email, localPart]);
+
+        // Last on purpose: every assertion above holds whether or not the id is recorded.
+        expect(
+          suppressed.attributes[USER_ID],
+          `the ${reason} suppression carries the account's opaque user id`,
+        ).toBe(account.userId);
+      }, 120_000);
+    }
+  });
 
   describe('Audit and denial events carry the trace id', () => {
     function expectTraceOf(all: Signals, eventName: string, spanName: string): void {

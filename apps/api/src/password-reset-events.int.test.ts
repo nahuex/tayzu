@@ -28,7 +28,9 @@
  *
  * - `tayzu.identity.user.id` is conditional on `password_reset_denied` and on
  *   `recovery_email_suppressed`: it is asserted absent only where the design says so (an unknown
- *   address, a token that matched no row) and present only where the account is known.
+ *   address, a token that matched no row) and present only where the account is known. A known but
+ *   ineligible account is known (D5, D15, Resolved decision Q36 row N2): its suppression carries
+ *   the user id, while the request span and the request counter carry none.
  * - The request outcome of `provider_failure` and `token_issue_failure` (decided after admission) and
  *   the denial reason of an enrolled user's request without a factor are not asserted.
  * - `tayzu.identity.reset.mfa` on the confirm span is asserted present on a completion and absent on
@@ -469,6 +471,18 @@ describe('Declared telemetry is emitted (task 12.2)', () => {
       ).toBe(1);
     }, 60_000);
 
+    /** The counters of the request carry the outcome only (design D15 "Metrics"), never an id. */
+    function expectNoUserIdOnRequestCounters(all: Signals): void {
+      const requestPoints = all.points.filter((point) => point.name === METRIC_REQUESTS);
+      expect(requestPoints.length, 'the request counter was recorded').toBeGreaterThan(0);
+      for (const point of requestPoints) {
+        expect(
+          Object.keys(point.attributes),
+          'the request counter carries no user id',
+        ).not.toContain(USER_ID);
+      }
+    }
+
     it('an unknown address: the span, the ineligible counter and a suppression with the reason unknown_address, no user id on any signal and no audit event', async () => {
       const answer = await postRequest(open, `ghost-${randomUUID()}@example.test`);
       expect(answer.status).toBe(200);
@@ -477,6 +491,7 @@ describe('Declared telemetry is emitted (task 12.2)', () => {
       const span = onlySpan(all, SPAN_REQUEST);
       expect(span).not.toHaveProperty(USER_ID);
       expect(counted(all, METRIC_REQUESTS, { [REQUEST_OUTCOME]: 'ineligible' })).toBe(1);
+      expectNoUserIdOnRequestCounters(all);
       const suppressed = onlyEvent(all, EVENT_SUPPRESSED);
       expect(suppressed).toMatchObject({
         [EMAIL_TEMPLATE]: 'password_reset',
@@ -538,14 +553,23 @@ describe('Declared telemetry is emitted (task 12.2)', () => {
             await new Promise((resolve) => setTimeout(resolve, 100));
             const all = await signals();
 
-            onlySpan(all, SPAN_REQUEST);
+            const span = onlySpan(all, SPAN_REQUEST);
             expect(counted(all, METRIC_REQUESTS, { [REQUEST_OUTCOME]: 'ineligible' })).toBe(1);
             expect(onlyEvent(all, EVENT_SUPPRESSED)).toMatchObject({
               [EMAIL_TEMPLATE]: 'password_reset',
               [SUPPRESSION]: reason,
             });
+            // The span and the counters of the request carry no identifier (design D15).
+            expect(Object.keys(span), 'the request span carries no user id').not.toContain(USER_ID);
+            expectNoUserIdOnRequestCounters(all);
             expect(eventsNamed(all, EVENT_REQUESTED)).toEqual([]);
             expect(sentTo(openSender, account.email)).toBe(0);
+            // Design D5, D15 and Q36 (N2): the suppression of a known account carries its opaque
+            // user id. Last on purpose: every assertion above holds whether or not it is recorded.
+            expect(
+              onlyEvent(all, EVENT_SUPPRESSED)[USER_ID],
+              `the ${reason} suppression carries the account's user id`,
+            ).toBe(account.userId);
           },
           60_000,
         );

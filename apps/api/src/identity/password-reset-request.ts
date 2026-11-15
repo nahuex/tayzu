@@ -75,13 +75,17 @@ export function createPasswordResetRequestFlow(options: {
         return;
       }
       if (result.status !== 'eligible' || result.userId === undefined) {
-        // No user id: the signal must not tell a known address from an unknown one.
+        // A known account is recorded by its opaque user id (design D5); an unknown address has
+        // none. Only the event carries it: the span and the counters never hold an identifier.
         emitIdentityEvent({
           name: 'catalog.security.recovery_email_suppressed',
           severity: 'WARN',
           attributes: {
             'tayzu.identity.email.template': 'password_reset',
             'tayzu.identity.recovery.suppression': result.status,
+            ...(result.knownUserId === undefined
+              ? {}
+              : { 'tayzu.identity.user.id': result.knownUserId }),
           },
         });
         recordOutcome('ineligible');
