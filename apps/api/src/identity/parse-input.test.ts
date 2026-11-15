@@ -46,7 +46,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { parseIdentityInput } from './parse-input.js';
+import { IdentityInputError, parseIdentityInput } from './parse-input.js';
 import type { InputSchema } from './parse-input.js';
 
 const schema: InputSchema = {
@@ -281,6 +281,64 @@ describe('parseIdentityInput', () => {
       const raw = validRaw();
       raw['params'] = { user: 'NOT VALID!' };
       expect(codeOf(() => parseIdentityInput(patterned, raw))).toBe('CATALOG_VALIDATION_FAILED');
+    });
+
+    /**
+     * Security-review fix-up of change 044 (task 16.3; 044 design D2 "Parsing": a malformed body
+     * answers `CATALOG_VALIDATION_FAILED`; root `CLAUDE.md` "Untrusted input": check limits
+     * before any expensive work). The depth is far beyond any sensible limit and beyond what a
+     * recursive walk survives, so the test names no particular limit.
+     */
+    describe('a value nested deeper than the limit is rejected as an IdentityInputError before any recursion overflow', () => {
+      const DEPTH = 200_000;
+
+      function thrownBy(fn: () => unknown): unknown {
+        try {
+          fn();
+        } catch (error) {
+          return error;
+        }
+        return undefined;
+      }
+
+      function nestedArrays(): unknown {
+        let value: unknown = 'x';
+        for (let level = 0; level < DEPTH; level += 1) value = [value];
+        return value;
+      }
+
+      function nestedObjects(): unknown {
+        let value: unknown = 'x';
+        for (let level = 0; level < DEPTH; level += 1) value = { a: value };
+        return value;
+      }
+
+      it.each([
+        ['arrays', nestedArrays],
+        ['objects', nestedObjects],
+      ])('%s nested 200 000 levels deep inside an object field', (_label, build) => {
+        const raw = validRaw();
+        raw['body'] = { ...raw['body'], meta: { kind: build() } };
+
+        const error = thrownBy(() => parseIdentityInput(schema, raw));
+
+        expect(error).not.toBeInstanceOf(RangeError);
+        expect(error).toBeInstanceOf(IdentityInputError);
+        expect((error as { code?: string }).code).toBe('CATALOG_VALIDATION_FAILED');
+      });
+
+      it('never calls the lookup', () => {
+        const lookup = vi.fn();
+        const raw = validRaw();
+        raw['body'] = { ...raw['body'], meta: { kind: nestedArrays() } };
+
+        const error = thrownBy(() => {
+          parseThenLookup(raw, lookup);
+        });
+
+        expect(error).toBeInstanceOf(IdentityInputError);
+        expect(lookup).not.toHaveBeenCalled();
+      });
     });
 
     it('does not echo the offending value in the error message', () => {

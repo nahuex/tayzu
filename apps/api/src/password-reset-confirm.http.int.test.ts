@@ -386,6 +386,62 @@ describe('POST /v1/auth/password-reset/confirm over HTTP (task 8.3)', () => {
     });
   });
 
+  /**
+   * Security-review fix-up of task 16.3 (design D2 "Parsing" and "Answers": a malformed confirm
+   * body, which depends only on the request, answers `CATALOG_VALIDATION_FAILED` (400) with the
+   * denial reason `malformed_request`; root `CLAUDE.md` "Untrusted input": check limits before any
+   * expensive work). The opaque `factor` field must not be walked without a depth limit: a body
+   * of about 400 KB (under the body limit) nested 200 000 levels deep is a malformed request, not
+   * an internal error. The token is a real, valid one, so "changes nothing" is observable.
+   */
+  describe('A deeply nested factor is a malformed request (security-review fix-up of 16.3)', () => {
+    const DEPTH = 200_000;
+
+    async function passwordHash(userId: string): Promise<string> {
+      const result = await authPool.query<{ password: string | null }>(
+        `select password from auth.account where user_id = $1 and provider_id = 'credential'`,
+        [userId],
+      );
+      return result.rows[0]?.password ?? '';
+    }
+
+    async function tokenRow(id: string): Promise<unknown[]> {
+      const result = await authPool.query<Record<string, unknown>>(
+        'select id, identifier, value, expires_at from auth.verification where identifier = $1',
+        [`password-reset:${id}`],
+      );
+      return result.rows;
+    }
+
+    it('a deeply nested factor answers 400 CATALOG_VALIDATION_FAILED (malformed request), never a 5xx, and changes nothing', async () => {
+      const account = await createAccount();
+      const issued = await store().issue(account.userId);
+      const hashBefore = await passwordHash(account.userId);
+      const rowBefore = await tokenRow(issued.id);
+      expect(rowBefore).toHaveLength(1);
+      const nested = `${'['.repeat(DEPTH)}${']'.repeat(DEPTH)}`;
+      const payload = `{"id":"${issued.id}","token":"${issued.token}","newPassword":"${NEW_PASSWORD}","factor":{"kind":${nested},"code":"123456"}}`;
+      expect(payload.length, 'the body stays under the 1 MiB body limit').toBeLessThan(1_048_576);
+      const before = statements.length;
+
+      const answer = await postRaw(payload);
+
+      expect(answer.status, 'never a 5xx').toBeLessThan(500);
+      expect(answer.status).toBe(400);
+      expect(answer.body).toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+      expectNotCacheable(answer);
+      const lookups = statements.slice(before).filter((sql) => ACCOUNT_TABLES.test(sql));
+      expect(lookups, 'refused before any lookup').toEqual([]);
+      expect(await passwordHash(account.userId), 'the password is unchanged').toBe(hashBefore);
+      expect(await tokenRow(issued.id), 'the token row is unchanged').toEqual(rowBefore);
+      expect(await store().lookup(issued.id, issued.token)).toEqual({
+        status: 'found',
+        userId: account.userId,
+        failures: 0,
+      });
+    });
+  });
+
   describe('Reset responses are not cacheable (confirm route)', () => {
     it('the uniform rejection (404): Cache-Control: no-store and Pragma: no-cache', async () => {
       const answer = await post({ id: randomId(), token: randomToken() });
