@@ -53,23 +53,23 @@ Settings, not secrets. Each one only tunes a limiter that is on by default
 `PASSWORD_RESET_*` and notice rows are `044` design D9; the Max and Window
 variables of one row are both read, and a missing one takes the default.
 
-| Variable                                                             | Default           | What it tunes                                                             |
-| -------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------- |
-| `PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`              | 10 per 60 s       | Sign-in, and the same budget for the two-factor verification routes.      |
-| `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`       | 10 per 60 s       | Routes that check the current password, per IP and per user.              |
-| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`                        | 600 per 60 s      | Per-principal budget on `/v1/*`.                                          |
-| `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`                | 30 per 60 s       | `POST /v1/auth/token`, per IP.                                            |
-| `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`                           | 600               | Back-channel logout, per source IP.                                       |
-| `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset request route, per IP.                                              |
-| `PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset confirm route, per IP.                                              |
-| `PASSWORD_RESET_RECIPIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`      | 5 per 3600 s      | Reset emails per recipient (HMAC key).                                    |
-| `PASSWORD_RESET_IP_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`             | 10 per 3600 s     | Reset emails per normalized IP.                                           |
-| `PASSWORD_RESET_GLOBAL_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`         | 600 per 3600 s    | Reset emails across the platform.                                         |
-| `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`     | 10 per 86 400 s   | The five notices, per recipient, apart from the other buckets.            |
-| `ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 20 per 86 400 s   | Account-created notices per creating tenant (Q20).                        |
-| `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 1000 per 86 400 s | Account-created notices across the platform (Q20, Q28).                   |
-| `PASSWORD_RESET_MIN_RESPONSE_MS`                                     | 400               | Minimum response time of the two reset routes, an integer from 1 to 5000. |
-| `BODY_LIMIT_BYTES`                                                   | 1,048,576         | Maximum request body.                                                     |
+| Variable                                                             | Default           | What it tunes                                                                                                  |
+| -------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`              | 10 per 60 s       | Sign-in, and the same budget for the two-factor verification routes.                                           |
+| `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`       | 10 per 60 s       | Routes that check the current password, per IP and per user.                                                   |
+| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`                        | 600 per 60 s      | Per-principal budget on `/v1/*`.                                                                               |
+| `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`                | 30 per 60 s       | `POST /v1/auth/token`, per IP.                                                                                 |
+| `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`                           | 600               | Back-channel logout, per source IP.                                                                            |
+| `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset request route, per IP.                                                                                   |
+| `PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset confirm route, per IP.                                                                                   |
+| `PASSWORD_RESET_RECIPIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`      | 5 per 3600 s      | Reset emails per recipient (HMAC key).                                                                         |
+| `PASSWORD_RESET_IP_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`             | 10 per 3600 s     | Reset emails per normalized IP.                                                                                |
+| `PASSWORD_RESET_GLOBAL_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`         | 600 per 3600 s    | Reset emails across the platform.                                                                              |
+| `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`     | 10 per 86 400 s   | The four `044` notices, per recipient, apart from the other buckets.                                           |
+| `ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 20 per 86 400 s   | Account-created notices per creating tenant (Q20).                                                             |
+| `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS` | 1000 per 86 400 s | Account-created notices across the platform (Q20, Q28).                                                        |
+| `PASSWORD_RESET_MIN_RESPONSE_MS`                                     | 400               | Minimum response time of the reset request route (the confirm route is not padded), an integer from 1 to 5000. |
+| `BODY_LIMIT_BYTES`                                                   | 1,048,576         | Maximum request body.                                                                                          |
 
 ### Migrations
 

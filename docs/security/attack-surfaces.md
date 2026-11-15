@@ -398,7 +398,8 @@ by `044` (D5, D8) for the reset email and the notices. The platform now sends
 several kinds of email.
 
 1. The platform sends email: yes. The invitation, the password-reset email and
-   four notices (password changed, MFA changed, MFA reset, account created).
+   five notices: the admin-accepted notice of `043` and the four of `044`
+   (password changed, MFA changed, MFA reset, account created).
 2. The invitation email and the reset email each hold one clickable link. The
    notices hold none.
    - The invitation link is unavoidable for an invitee who has no account yet.
@@ -414,7 +415,11 @@ several kinds of email.
 4. There are no attachments. The ACS adapter disables tracking and sets no
    Reply-To for every template.
 5. Each template is fixed and the recipient is validated. A notice goes to the
-   account's own address read from the auth schema, never from request input.
+   account's own address read from the auth schema, never from request input,
+   with one exception: the account-created notice goes to the address an admin
+   gave to `identity.users.create`. That is its purpose (it warns the owner of
+   an address an account was created for), so it has its own per-tenant and
+   global caps in front of the recipient cap (`044` Q20).
 6. Volume is bounded by the caps under
    [Controls](#controls-that-apply-before-a-route-runs), the recipient-domain
    allowlist, the disabled-tenant list and the kill switch.

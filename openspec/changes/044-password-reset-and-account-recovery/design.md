@@ -641,7 +641,10 @@ the same union after this change merges and rebases (D18).
 Fixed subject and body per template, no tenant, actor or organization text, one recipient,
 no attachment, plain address validated by the sender port. A notice is addressed to the
 user's canonical address read from the auth-schema repository module (never from request
-input) and goes through the mailer (D5), except the operator CLI's (D12).
+input) and goes through the mailer (D5), except the operator CLI's (D12). The one notice
+whose address comes from a request is the account-created notice: it goes to the address the
+admin gave to `identity.users.create`, which is its purpose, and that is why it alone has the
+per-tenant and global caps of Q20 (Q36, N6).
 
 - **Hook points.** `@tayzu/auth` has the `EmailSender` port but not the caps, so
   `CreateAuthOptions` gains an `accountNotices?: AccountNoticePort` (`notify(kind, { userId
@@ -1895,7 +1898,7 @@ large. They are listed so that Checkpoint 2 can overrule any of them.
 | N3: the admin MFA-reset predicates are read before the per-user lock | Fixed: they are read under the lock, on its connection, in the effects' transaction; the residual (a role change takes no lock) is in Risks | D10, Risks; the spec scenario "A change that lands while the reset waits for the lock is seen" |
 | N4: `createApp` with the routes mounted and no `email` option starts | Fixed: `createApp` itself fails the start, the test harness included, as `043` Q147 does for the recipient key secret | D9; the spec scenario "Mounting without the email path fails startup" |
 | N5: a cap-store error that is not a cap refusal is not uniform | Fixed by Q35 | D4, D5 |
-| N6: `attack-surfaces.md` and `secrets.md` misstate who a notice is addressed to, the number of notices and what the minimum response time covers | Fixed in both documents, and in D9's table, which said "all five notices" for a cap that covers the four notices of D8 | `docs/security/attack-surfaces.md`, `docs/security/secrets.md`, D9 |
+| N6: `attack-surfaces.md` and `secrets.md` misstate who a notice is addressed to, the number of notices and what the minimum response time covers | Fixed in both documents, in D9's table, which said "all five notices" for a cap that covers the four notices of D8, and in D8, which said no notice is addressed from request input | `docs/security/attack-surfaces.md`, `docs/security/secrets.md`, D8, D9 |
 
 Each code fix is one red-green-refactor cycle under task 16.2 or 16.3, whose Verify clauses
 already say that findings are fixed or recorded as tickets; they are committed with those task
