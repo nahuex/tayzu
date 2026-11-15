@@ -18,7 +18,7 @@
  *
  * `createApp` with the identity routes mounted over the harness pools, driven by
  * Fastify injection with a fresh random `x-forwarded-for` per request. The email
- * gate uses an in-memory cap store with a per-tenant cap of 2 and a per-recipient
+ * gate is the one `createApp` builds from `email`, with a per-tenant cap of 2 and a per-recipient
  * cap of 1, so the caps are reached with a few invitations from fresh tenants; the
  * accept limiter is 2 per window per IP.
  *
@@ -42,9 +42,8 @@ import {
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession, sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
-import { createEmailTenantGate } from './identity/email-tenant-gate.js';
-import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createApp, type App } from './server.js';
 
 const ORIGIN = 'https://app.tayzu.test';
@@ -89,18 +88,15 @@ describe('error mapping over HTTP with the identity routes mounted (task 14.5)',
         mountIdentityRoutes: true,
         ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
         invitationAcceptRateLimit: { max: ACCEPT_LIMIT, window: 60 },
-        identity: {
-          emailGate: createEmailTenantGate({
-            disabledTenantIds: [],
-            recipientKeySecret: TEST_SECRET,
-            capStore: createInMemoryEmailCapStore({
-              tenant: { max: 2, windowSeconds: 3600 },
-              recipient: { max: 1, windowSeconds: 3600 },
-            }),
-            sender,
-          }),
+        // 044 N4: the switch needs the email path, so the gate is the one `createApp` builds
+        // (the same caps, on the DB-backed cap store).
+        email: testEmailOptions({
+          sender,
           invitationLinkBaseUrl: ORIGIN,
-        },
+          recipientKeySecret: TEST_SECRET,
+          tenantCap: { max: 2, windowSeconds: 3600 },
+          recipientCap: { max: 1, windowSeconds: 3600 },
+        }),
       },
     });
   }, 60_000);

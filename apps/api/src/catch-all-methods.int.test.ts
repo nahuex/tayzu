@@ -38,6 +38,7 @@ import {
   testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
@@ -91,6 +92,8 @@ describe('the /v1/* catch-all accepts only the methods the merged router routes 
       allowedOrigins: [ORIGIN],
       mountIdentityRoutes: true,
       ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
+      // 044 N4: the switch needs the email path to start.
+      email: testEmailOptions(),
       ...{
         configureApp: (instance: FastifyInstance): void => {
           instance.addHook('onRoute', (route) => {

@@ -32,9 +32,8 @@ import {
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
 import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
-import { createEmailTenantGate } from './identity/email-tenant-gate.js';
-import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createApp, type App } from './server.js';
 
 const ORIGIN = 'https://app.tayzu.test';
@@ -73,18 +72,14 @@ describe('the DELETE identity routes read their target from the path (task 14.6b
       ...{
         mountIdentityRoutes: true,
         ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
-        identity: {
-          emailGate: createEmailTenantGate({
-            disabledTenantIds: [],
-            recipientKeySecret: TEST_SECRET,
-            capStore: createInMemoryEmailCapStore({
-              tenant: { max: 20, windowSeconds: 3600 },
-              recipient: { max: 20, windowSeconds: 3600 },
-            }),
-            sender: createRecordingEmailSender(),
-          }),
+        // 044 N4: the switch needs the email path, so the gate is the one `createApp` builds.
+        email: testEmailOptions({
+          sender: createRecordingEmailSender(),
           invitationLinkBaseUrl: ORIGIN,
-        },
+          recipientKeySecret: TEST_SECRET,
+          tenantCap: { max: 20, windowSeconds: 3600 },
+          recipientCap: { max: 20, windowSeconds: 3600 },
+        }),
       },
     });
   }, 60_000);

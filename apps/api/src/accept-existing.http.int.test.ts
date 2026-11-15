@@ -59,6 +59,7 @@ import {
   type BootstrappedTenant,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
 import { sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
 import { createAuthRepository } from './identity/auth-repository.js';
@@ -111,6 +112,8 @@ describe('Existing-account acceptance over HTTP (task 14.7, design D4 step 4, Q2
       ...{
         mountIdentityRoutes: true,
         identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef',
+        // 044 N4: the switch needs the email path to start.
+        email: testEmailOptions(),
       },
     });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });

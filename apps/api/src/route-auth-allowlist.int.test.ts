@@ -54,6 +54,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { PUBLIC_ROUTE_ALLOWLIST } from './public-routes.js';
 import { createApp, type App } from './server.js';
@@ -173,6 +174,8 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
       allowedOrigins: [ORIGIN],
       mountIdentityRoutes: true,
       ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
+      // 044 N4: the switch needs the email path to start.
+      email: testEmailOptions(),
     };
     // Spread so this file type-checks before `CreateAppOptions.configureApp` exists.
     app = await createApp({ ...base, ...{ configureApp: real.install } });

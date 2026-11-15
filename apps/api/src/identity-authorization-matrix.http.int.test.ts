@@ -56,9 +56,8 @@ import {
   freshMfaSessionCookie,
   sessionTokenOfCookie,
 } from './__fixtures__/fresh-mfa.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
-import { createEmailTenantGate } from './identity/email-tenant-gate.js';
-import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { generateIdentityOpenApiDocument } from './identity-openapi.js';
 import { createApp, type App } from './server.js';
 
@@ -130,18 +129,14 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
       ...{
         mountIdentityRoutes: true,
         ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
-        identity: {
-          emailGate: createEmailTenantGate({
-            disabledTenantIds: [],
-            recipientKeySecret: TEST_SECRET,
-            capStore: createInMemoryEmailCapStore({
-              tenant: { max: 1000, windowSeconds: 3600 },
-              recipient: { max: 1000, windowSeconds: 3600 },
-            }),
-            sender,
-          }),
+        // 044 N4: the switch needs the email path, so the gate is the one `createApp` builds.
+        email: testEmailOptions({
+          sender,
           invitationLinkBaseUrl: ORIGIN,
-        },
+          recipientKeySecret: TEST_SECRET,
+          tenantCap: { max: 1000, windowSeconds: 3600 },
+          recipientCap: { max: 1000, windowSeconds: 3600 },
+        }),
       },
     });
     const document = (await generateIdentityOpenApiDocument()) as {

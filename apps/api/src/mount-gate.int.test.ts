@@ -46,6 +46,7 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { generateIdentityOpenApiDocument } from './identity-openapi.js';
@@ -109,7 +110,12 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
     // Spread so this file type-checks before `CreateAppOptions.mountIdentityRoutes` exists.
     on = await createApp({
       ...base,
-      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
+      ...{
+        mountIdentityRoutes: true,
+        identityTokenHmacSecret: HMAC_SECRET,
+        // 044 N4: the switch needs the email path to start.
+        email: testEmailOptions(),
+      },
     });
     routes = await fifteenRoutes();
 
@@ -277,7 +283,12 @@ describe('createApp refuses to mount the identity routes without a secret (task 
   it('the start succeeds with the switch on and a secret', async () => {
     const app = await createApp({
       ...(await base()),
-      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
+      ...{
+        mountIdentityRoutes: true,
+        identityTokenHmacSecret: HMAC_SECRET,
+        // 044 N4: the switch needs the email path to start.
+        email: testEmailOptions(),
+      },
     });
     await app.close();
   }, 60_000);
@@ -285,6 +296,73 @@ describe('createApp refuses to mount the identity routes without a secret (task 
   it('the start succeeds with the switch off and no secret', async () => {
     const app = await createApp(await base());
     await app.close();
+  }, 60_000);
+});
+
+/**
+ * Fix cycle N4 under task 16.2 of openspec/changes/044-password-reset-and-account-recovery
+ * (design D9 "Startup failure rules"; Resolved decision Q36 row N4; the precedent is `043` Q147
+ * above). Spec requirement "The reset routes are public, API-only and behind the mount switch",
+ * scenario "A direct start without the email options fails too" (verbatim):
+ *
+ * - WHEN `createApp` is called with the switch on and no email options at all
+ * - THEN it fails naming `EMAIL_PROVIDER` and never a value, and with the switch off the email
+ *   options stay optional
+ *
+ * Production behavior expected (`./server.js`): with `mountIdentityRoutes: true` and
+ * `CreateAppOptions.email` omitted, `createApp` rejects with an error whose message names
+ * `EMAIL_PROVIDER` and carries no configured value. The recipient key secret is given here, so
+ * the Q147 rule (which runs first) is not what fails the start.
+ */
+describe('createApp refuses to mount the identity routes without the email path (044 task 16.2, N4)', () => {
+  async function base() {
+    const pools = await harnessPools();
+    return {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+  }
+
+  /** The error `createApp` rejects with, or `undefined` when it started (the app is closed). */
+  async function startError(options: Parameters<typeof createApp>[0]): Promise<unknown> {
+    try {
+      await (await createApp(options)).close();
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  it('A direct start without the email options fails too: the start fails with the switch on and no email option, naming EMAIL_PROVIDER and no value', async () => {
+    const options = {
+      ...(await base()),
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+    };
+
+    const error = await startError(options);
+
+    expect(error, 'createApp must refuse to start').toBeInstanceOf(Error);
+    const { message } = error as Error;
+    expect(message).toContain('EMAIL_PROVIDER');
+    // Never a value: nothing the host configured appears in the message.
+    for (const value of [HMAC_SECRET, TEST_SECRET, ORIGIN, options.cerbosAddress]) {
+      expect(message).not.toContain(value);
+    }
+  }, 60_000);
+
+  it('A direct start without the email options fails too: with the switch off the email option stays optional', async () => {
+    // Off by default, and off explicitly; with and without the recipient key secret.
+    expect(await startError(await base())).toBeUndefined();
+    expect(
+      await startError({
+        ...(await base()),
+        mountIdentityRoutes: false,
+        identityTokenHmacSecret: HMAC_SECRET,
+      }),
+    ).toBeUndefined();
   }, 60_000);
 });
 
@@ -572,7 +650,12 @@ describe('the admin MFA reset route is unreachable until mounted (044 task 10.5)
     off = await createApp(base);
     on = await createApp({
       ...base,
-      ...{ mountIdentityRoutes: true, identityTokenHmacSecret: HMAC_SECRET },
+      ...{
+        mountIdentityRoutes: true,
+        identityTokenHmacSecret: HMAC_SECRET,
+        // 044 N4: the switch needs the email path to start.
+        email: testEmailOptions(),
+      },
     });
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(off.auth, {
