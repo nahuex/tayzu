@@ -31,7 +31,10 @@ laptop with Docker, so that the project never depends on the cloud offering.
 > [`scripts/dev/start-cerbos.sh`](../../scripts/dev/start-cerbos.sh), which
 > starts `dockerd` if needed, then the Cerbos container, then waits for its
 > health endpoint on `localhost:3592`. Run the script by hand if the hook
-> reported that Cerbos did not start.
+> reported that Cerbos did not start. Cerbos reads `policies/` once
+> (`watchForChanges: false`): after you switch to a branch whose policies
+> differ, run `docker restart tayzu-cerbos`, or the authorization tests run
+> against the old bundle.
 
 ### Cloud-only conveniences
 

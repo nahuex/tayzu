@@ -861,6 +861,7 @@ session and a ZAP API scan of every catalog OpenAPI operation in safe mode
   ```
 
 - The SSA (SEC01) asks for a png. Render it with `-o docs/architecture/system-diagram.png`
+  (the full diagram with `-s 4`, so that it keeps its 3136-pixel width)
   and commit the result. mermaid-cli writes one file per Mermaid block of a
   Markdown input, numbered in document order: `system-diagram-1.png` is the full
   diagram, so rename it to `system-diagram.png`. The next blocks are the trust

@@ -797,7 +797,10 @@ enum** (`lost_both_factors`, `device_replaced`, `suspected_compromise`,
   waited for the lock re-reads: if the factor was removed meanwhile (a second reset of the
   same member), or the member joined another tenant or stopped being a plain member, it is
   refused through the same single path and nothing changes (the transaction rolls back).
-  The refusal's log event and error are unchanged. The precedent is `043`'s
+  The refusal's log event and error are unchanged; because the refusal is now decided
+  inside the operation, it ends the `identity.mfa.reset` span with `error.type`
+  `CATALOG_VALIDATION_FAILED` (no message, no free text), where before a refusal produced no
+  such span. The precedent is `043`'s
   `linkSsoAccount`, whose checks run inside the same lock (`043` task 8.5i). The lock
   serializes the operations that take it (this reset, the reset confirmation, the token
   issue, and `043`'s SSO link and link shed); a role change or a new membership written

@@ -279,9 +279,14 @@ unknown `/v1` path, see [Mount gate](#mount-gate).
   address, a banned user and a user with no local password look the same. Only
   an admitted request issues a token and sends mail (kill switch,
   recipient-domain allowlist, disabled tenants, then the recipient, IP and
-  global caps). A refused request changes no earlier token. Malformed,
-  cross-site and over-limit requests answer `400` or `429`, which depend on the
-  request alone.
+  global caps). A refused request changes no earlier token. A dependency that
+  fails while the account is checked or the caps are counted (a read, or the
+  cap store) gets the same padded `200`, issues no token and is logged as
+  `dependency_failure`, so an outage does not tell a known address from an
+  unknown one (`044` Q35). Malformed, cross-site and over-limit requests
+  answer `400` or `429`, which depend on the request alone. Mounting these
+  routes without the email path fails startup: `createApp` itself refuses a
+  start with the switch on and no email settings (`044` D9, Q36).
 - **Confirm route.** Body `{ "id", "token", "newPassword", "factor"? }`. The
   token, 256 bits of CSPRNG output stored as a digest, is the credential and
   travels in the body, never in a URL. Every account- or token-dependent

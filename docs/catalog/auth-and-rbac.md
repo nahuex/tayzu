@@ -88,6 +88,9 @@ session, and answer with `Cache-Control: no-store` and `Pragma: no-cache`.
   allowlist, disabled tenants, then the recipient, IP and global caps) gets a
   token and one `PasswordResetEmail`. A suppressed request issues and deletes
   nothing, so an earlier link stays valid until it expires.
+  A dependency failure while the account is checked or the caps are counted
+  gets the same answer and is logged with the suppression reason
+  `dependency_failure` (`044` Q35).
 - **The token** is a 22-character public id and a 43-character secret, both
   from 16 and 32 random bytes. Only the sha256 digest is stored, in
   `auth.verification` (`password-reset:<id>`), for 30 minutes, with a budget of
@@ -114,9 +117,12 @@ session, and answer with `Cache-Control: no-store` and `Pragma: no-cache`.
   tenant. An admin or owner target, a member of several organizations, the
   caller themselves and a user with no enrolled factor are refused with the
   same `CATALOG_VALIDATION_FAILED` (or `AUTH_FORBIDDEN` from Cerbos for the
-  self, admin and owner cases). Those users are recovered with the operator
-  CLI `recover:admin-mfa`, which needs a named approver different from the
-  operator and refuses to run with telemetry off.
+  self, admin and owner cases). The service reads these checks under the
+  target's per-user lock, in the transaction that applies the reset, so a
+  reset that waited for the lock decides on the state it finds (`044` Q36).
+  Those users are recovered with the operator CLI `recover:admin-mfa`, which
+  needs a named approver different from the operator and refuses to run with
+  telemetry off.
 
 #### The re-enrolment gate
 
