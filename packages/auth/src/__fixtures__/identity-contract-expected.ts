@@ -478,6 +478,8 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'tenant_cap',
     'provider_failure',
     'token_issue_failure',
+    // 044 Resolved decision Q35 (design D4 "Dependency failures", D15).
+    'dependency_failure',
   ],
   'tayzu.identity.mfa_reset.path': ['admin', 'operator'],
   'tayzu.identity.mfa_reset.reason': [

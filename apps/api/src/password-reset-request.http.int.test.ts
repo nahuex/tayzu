@@ -1401,3 +1401,477 @@ describe('Reset responses are not cacheable (task 6.7)', () => {
     }
   });
 });
+
+/**
+ * Fix cycle 16.3a under task 16.3 (design D4 "Dependency failures (Q35)" and "Padding", D5
+ * "Admission before issue", D15, Resolved decision Q35): scenario "A dependency failure is
+ * invisible to the caller" of `specs/password-reset-and-account-recovery/spec.md`.
+ *
+ * Scenario (verbatim from the spec): GIVEN an eligible account, and a status read of the
+ * eligibility check that fails, or a cap store that fails with an error that is not a full cap;
+ * WHEN the address is posted to the request route; THEN the answer is the uniform one, returned no
+ * sooner than the fixed minimum duration, no token is issued and no email is sent; AND
+ * `catalog.security.recovery_email_suppressed` is logged with the reason `dependency_failure` and
+ * no address.
+ *
+ * Design D4 (verbatim): "The request flow (`password-reset-request.ts`) therefore catches a
+ * failure of the eligibility check, and a failure of the admission that is not a cap refusal, logs
+ * `catalog.security.recovery_email_suppressed` once with the reason `dependency_failure`, counts
+ * the request as `suppressed`, issues no token, deletes none, sends nothing, and returns normally,
+ * so the handler pads and answers the uniform `200` like every other account-dependent branch. The
+ * event carries the user id when the admission failed (the user is known and eligible) and none
+ * when the eligibility check failed (the address may be unknown). The caught error itself goes to
+ * no signal and no response: only the closed reason leaves the flow."
+ *
+ * ## Harness
+ *
+ * One real server with the identity routes mounted, a 400 ms minimum, roomy caps and a recording
+ * sender, over two wrapped pools. A failure is armed for one request only, and injected at the
+ * statement level:
+ *
+ * - `status_read` (case a): on the `tayzu_app` pool, every statement that touches a `catalog_*`
+ *   table rejects, so `userSync.readStatus` fails. It is injected only after the user lookup was
+ *   seen on the `tayzu_auth` pool, so the first lookup succeeds.
+ * - `cap_store` (case b): on the `tayzu_auth` pool, every statement that touches
+ *   `auth.rate_limit` rejects, but only after the request's user lookup. The route limiter writes
+ *   the same table in its pre-handler, before any lookup, so it still passes: the failure hits
+ *   only the cap store of the mailer's admission. The control assertions (the lookup was seen and
+ *   the failure was injected) prove the request reached the handler, so the answer observed is
+ *   not the limiter's fail-closed `500`.
+ * - `membership_read` (case c): on the `tayzu_auth` pool, the read of `auth.member` rejects
+ *   after the user lookup.
+ *
+ * The injected error's message is a unique marker plus the recipient address. Each request is
+ * posted under the fake clock of task 6.4 (`setTimeout`, `clearTimeout` and `performance` only),
+ * and compared with an unknown address posted the same way to the same app. "No token is issued,
+ * none deleted" is observed as in task 6.3: the user's `password-reset:` rows are exactly the row
+ * of a link the user held before the failure, and that link is still found.
+ *
+ * ## Production symbols expected
+ *
+ * - `createPasswordResetRequestFlow(...).handle` (`./identity/password-reset-request.ts`) catches
+ *   a failure of `eligibility.check` and a failure of `mailer.admitResetEmail` that is not a cap
+ *   refusal, emits the suppression once (`tayzu.identity.email.template` = `password_reset`,
+ *   `tayzu.identity.recovery.suppression` = `dependency_failure`; `tayzu.identity.user.id` only
+ *   when the admission failed), records `tayzu.identity.password_reset_requests` with the outcome
+ *   `suppressed`, and returns normally. No new export.
+ * - `dependency_failure` joins `tayzu.identity.recovery.suppression` in
+ *   `packages/auth/src/telemetry/identity-contract.ts`.
+ */
+describe('A dependency failure is invisible to the caller (task 16.3, design D4, Q35)', () => {
+  const MIN_MS = 400;
+  const STEP_MS = 50;
+  const EVENT_SUPPRESSED = 'catalog.security.recovery_email_suppressed';
+  const EVENT_REQUESTED = 'catalog.audit.password_reset_requested';
+  const METRIC_REQUESTS = 'tayzu.identity.password_reset_requests';
+  const REQUEST_OUTCOME = 'tayzu.identity.reset.request_outcome';
+  const SUPPRESSION = 'tayzu.identity.recovery.suppression';
+  const EMAIL_TEMPLATE = 'tayzu.identity.email.template';
+  const USER_ID = 'tayzu.identity.user.id';
+
+  type Failure = 'status_read' | 'cap_store' | 'membership_read';
+  type Attributes = Readonly<Record<string, unknown>>;
+
+  interface TimedAnswer extends Answer {
+    /** The fake time (a multiple of STEP_MS) at which the response settled. */
+    readonly settledAtMs: number;
+    /** The header values and the raw body, to search for what must not leave the flow. */
+    readonly text: string;
+  }
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let app: App;
+  let sender: ReturnType<typeof createRecordingEmailSender>;
+
+  let armed: Failure | undefined;
+  let failureMessage = '';
+  let lookupSeen = false;
+  let injected = 0;
+
+  /** Rejects the statements `fails` selects, counting each injection; every other one passes. */
+  function failingPool(pool: Pool, fails: (sql: string) => boolean): Pool {
+    const guard = (first: unknown, run: () => unknown): unknown => {
+      if (!fails(statementText(first))) return run();
+      injected += 1;
+      return Promise.reject(new Error(failureMessage));
+    };
+    const wrapClient = (client: PoolClient): PoolClient =>
+      new Proxy(client, {
+        get(target, property): unknown {
+          const value: unknown = Reflect.get(target, property, target);
+          if (property === 'query') {
+            return (...args: unknown[]): unknown =>
+              guard(args[0], () => (value as QueryFunction).apply(target, args));
+          }
+          return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+        },
+      });
+    return new Proxy(pool, {
+      get(target, property): unknown {
+        const value: unknown = Reflect.get(target, property, target);
+        if (property === 'query') {
+          return (...args: unknown[]): unknown =>
+            guard(args[0], () => (value as QueryFunction).apply(target, args));
+        }
+        if (property === 'connect') {
+          return async (): Promise<PoolClient> => wrapClient(await target.connect());
+        }
+        return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+      },
+    });
+  }
+
+  /** The `tayzu_auth` pool: notes the user lookup, then fails what the armed failure names. */
+  function authStatementFails(sql: string): boolean {
+    if (armed === undefined) return false;
+    if (/from\s+auth\."user"/i.test(sql)) {
+      lookupSeen = true;
+      return false;
+    }
+    if (!lookupSeen) return false;
+    if (armed === 'cap_store') return /rate_limit/i.test(sql);
+    if (armed === 'membership_read') return /from\s+auth\.member\b/i.test(sql);
+    return false;
+  }
+
+  /** The `tayzu_app` pool: the `_user` status read fails, after the user lookup on the other pool. */
+  function appStatementFails(sql: string): boolean {
+    return armed === 'status_read' && lookupSeen && /catalog_/i.test(sql);
+  }
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    sender = createRecordingEmailSender();
+    const roomy = { max: 1000, windowSeconds: 3600 };
+    const email = {
+      sender,
+      invitationLinkBaseUrl: LINK_BASE_URL,
+      passwordResetLinkBaseUrl: LINK_BASE_URL,
+      passwordResetMinResponseMs: MIN_MS,
+      disabledTenantIds: [] as string[],
+      killSwitch: false,
+      recipientKeySecret: HMAC_SECRET,
+      tenantCap: roomy,
+      recipientCap: { max: 1000, windowSeconds: 86_400 },
+      passwordResetRecipientCap: roomy,
+      passwordResetIpCap: roomy,
+      passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+    };
+    app = await createApp({
+      appPool: failingPool(pools.appPool, appStatementFails),
+      authPool: failingPool(pools.authPool, authStatementFails),
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      ...{ email },
+    });
+  }, 60_000);
+
+  beforeEach(() => {
+    armed = undefined;
+  });
+
+  afterAll(async () => {
+    armed = undefined;
+    vi.useRealTimers();
+    await app.close();
+  }, 60_000);
+
+  async function createAccount(): Promise<{ email: string; userId: string }> {
+    const suffix = randomUUID();
+    const email = `dependency-${suffix}@example.test`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Dependency User',
+      email,
+      password: TEST_PASSWORD,
+      organizationName: `Dependency Org ${suffix}`,
+      organizationSlug: `dependency-${suffix}`,
+      ip: randomIp(),
+    });
+    return { email, userId: tenant.userId };
+  }
+
+  async function tokenRows(userId: string): Promise<{ identifier: string; value: string }[]> {
+    const result = await authPool.query<{ identifier: string; value: string }>(
+      `select identifier, value from auth.verification
+        where identifier like 'password-reset:%' and split_part(value, ':', 3) = $1
+        order by identifier`,
+      [userId],
+    );
+    return result.rows;
+  }
+
+  function linksTo(address: string): { id: string; token: string }[] {
+    const links: { id: string; token: string }[] = [];
+    for (const message of sender.sent) {
+      if (message.to !== address || message.template.kind !== 'PasswordResetEmail') continue;
+      const fragment = new URLSearchParams(new URL(message.template.link).hash.slice(1));
+      links.push({ id: fragment.get('reset') ?? '', token: fragment.get('token') ?? '' });
+    }
+    return links;
+  }
+
+  function store() {
+    return createResetTokenStore({ authPool, withUserLock: createWithUserLock(authPool) });
+  }
+
+  function headers(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      origin: ORIGIN,
+      'x-csrf-token': 'orpc',
+      'x-forwarded-for': randomIp(),
+    };
+  }
+
+  /** The GIVEN of an eligible account: its first request is admitted, mailed and its link works. */
+  async function holdAValidLink(account: { email: string; userId: string }) {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: REQUEST_PATH,
+      headers: headers(),
+      payload: JSON.stringify({ email: account.email }),
+    });
+    expect(response.statusCode).toBe(200);
+    await vi.waitFor(() => {
+      expect(linksTo(account.email)).toHaveLength(1);
+    });
+    const [link] = linksTo(account.email);
+    if (link === undefined) throw new Error('unreachable');
+    const rows = await tokenRows(account.userId);
+    expect(rows).toHaveLength(1);
+    expect(await store().lookup(link.id, link.token)).toMatchObject({ status: 'found' });
+    return { link, rows };
+  }
+
+  /** Yields real time (setImmediate is not faked) for `ms` milliseconds of wall clock. */
+  async function yieldReal(ms: number): Promise<void> {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    }
+  }
+
+  /**
+   * The technique of task 6.4: posts under the fake clock, lets the handler finish its real work
+   * with the clock standing still, then advances the clock in STEP_MS steps until the response
+   * settles, and reports the fake time at which it did.
+   */
+  async function timedPost(address: string): Promise<TimedAnswer> {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      let settled: TimedAnswer | undefined;
+      let fakeElapsed = 0;
+      const pending = app.app
+        .inject({
+          method: 'POST',
+          url: REQUEST_PATH,
+          headers: headers(),
+          payload: JSON.stringify({ email: address }),
+        })
+        .then((response) => {
+          let body: unknown;
+          try {
+            body = response.json();
+          } catch {
+            body = response.body;
+          }
+          settled = {
+            status: response.statusCode,
+            body,
+            headerNames: Object.keys(response.headers).sort(),
+            settledAtMs: fakeElapsed,
+            text: `${JSON.stringify(response.headers)}\n${response.body}`,
+          };
+        });
+
+      await yieldReal(500);
+      while (settled === undefined && fakeElapsed < MIN_MS * 5) {
+        fakeElapsed += STEP_MS;
+        await vi.advanceTimersByTimeAsync(STEP_MS);
+        await yieldReal(100);
+      }
+      await pending;
+      if (settled === undefined) throw new Error('the response never settled');
+      return settled;
+    } finally {
+      await vi.advanceTimersByTimeAsync(MIN_MS * 2);
+      await yieldReal(100);
+      vi.useRealTimers();
+    }
+  }
+
+  interface Signals {
+    readonly spans: readonly {
+      readonly name: string;
+      readonly attributes: Attributes;
+      readonly status: unknown;
+      readonly events: readonly { readonly name: string; readonly attributes: unknown }[];
+    }[];
+    readonly logs: readonly {
+      readonly name: string;
+      readonly body: unknown;
+      readonly attributes: Attributes;
+    }[];
+    readonly points: readonly {
+      readonly name: string;
+      readonly attributes: Attributes;
+      readonly value: number;
+    }[];
+  }
+
+  async function signals(): Promise<Signals> {
+    await harness.forceFlush();
+    const spans = harness.spanExporter.getFinishedSpans().map((span) => ({
+      name: span.name,
+      attributes: { ...span.attributes },
+      status: span.status,
+      events: span.events.map((event) => ({ name: event.name, attributes: event.attributes })),
+    }));
+    const logs = [...harness.logExporter.getFinishedLogRecords()].map((record) => ({
+      name: record.eventName ?? '',
+      body: record.body,
+      attributes: { ...record.attributes },
+    }));
+    const points: { name: string; attributes: Attributes; value: number }[] = [];
+    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
+      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+        for (const metric of scopeMetrics.metrics) {
+          for (const point of metric.dataPoints) {
+            const value: unknown = point.value;
+            points.push({
+              name: metric.descriptor.name,
+              attributes: { ...point.attributes },
+              value: typeof value === 'number' ? value : 0,
+            });
+          }
+        }
+      }
+    }
+    return { spans, logs, points };
+  }
+
+  function requestsCounted(all: Signals, outcome: string): number {
+    return all.points
+      .filter(
+        (point) => point.name === METRIC_REQUESTS && point.attributes[REQUEST_OUTCOME] === outcome,
+      )
+      .reduce((sum, point) => sum + point.value, 0);
+  }
+
+  /**
+   * GIVEN an eligible account that holds a valid link, and the armed dependency failure; WHEN the
+   * address is posted; THEN and AND are asserted here, for each of the three failures alike.
+   */
+  async function expectInvisibleToTheCaller(
+    failure: Failure,
+    userIdOnTheEvent: 'present' | 'absent',
+  ): Promise<void> {
+    const account = await createAccount();
+    const held = await holdAValidLink(account);
+    const reference = await timedPost(`ghost-${randomUUID()}@example.test`);
+    const sentBefore = sender.sent.length;
+    const marker = `dependency-failure-marker-${randomUUID()}`;
+    await harness.reset();
+
+    failureMessage = `${marker} for ${account.email}`;
+    lookupSeen = false;
+    injected = 0;
+    armed = failure;
+    let answer: TimedAnswer;
+    try {
+      answer = await timedPost(account.email);
+    } finally {
+      armed = undefined;
+    }
+
+    // Controls: the request passed the route limiter and reached the handler (the user lookup
+    // ran), and the armed dependency really failed after it.
+    expect(lookupSeen, 'control: the handler looked the user up').toBe(true);
+    expect(
+      injected,
+      'control: the armed dependency failed, after the user lookup',
+    ).toBeGreaterThanOrEqual(1);
+
+    // THEN the answer is the uniform one: that of an unknown address posted to the same app.
+    expect(reference.status).toBe(200);
+    expect(reference.body).toEqual({ accepted: true });
+    expect(answer.status).toBe(reference.status);
+    expect(answer.body).toEqual(reference.body);
+    expect(answer.headerNames).toEqual(reference.headerNames);
+
+    // ... returned no sooner than the fixed minimum duration.
+    expect(
+      reference.settledAtMs,
+      'the unknown address: not before the minimum',
+    ).toBeGreaterThanOrEqual(MIN_MS);
+    expect(answer.settledAtMs, 'not before the minimum duration').toBeGreaterThanOrEqual(MIN_MS);
+
+    // ... no email is sent (give a wrongly attempted detached send time to land).
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sender.sent, 'nothing reached the sender').toHaveLength(sentBefore);
+
+    // ... no token is issued, and none is deleted: the earlier link is still found.
+    expect(await tokenRows(account.userId), 'no token issued, none deleted or changed').toEqual(
+      held.rows,
+    );
+    expect(await store().lookup(held.link.id, held.link.token)).toMatchObject({
+      status: 'found',
+    });
+
+    // AND the suppression is logged once, with the closed reason and no address.
+    const all = await signals();
+    const suppressions = all.logs.filter((record) => record.name === EVENT_SUPPRESSED);
+    expect(suppressions, `exactly one "${EVENT_SUPPRESSED}"`).toHaveLength(1);
+    const suppression = suppressions[0]?.attributes ?? {};
+    expect(suppression[EMAIL_TEMPLATE]).toBe('password_reset');
+    expect(suppression[SUPPRESSION]).toBe('dependency_failure');
+    if (userIdOnTheEvent === 'present') {
+      expect(suppression[USER_ID], 'the admission failed: the user is known').toBe(account.userId);
+    } else {
+      expect(
+        Object.keys(suppression),
+        'the eligibility check failed: the address may be unknown',
+      ).not.toContain(USER_ID);
+    }
+    expect(JSON.stringify(suppressions)).not.toContain(account.email);
+
+    // The request counts once, as `suppressed`, and nothing was issued.
+    expect(requestsCounted(all, 'suppressed')).toBe(1);
+    expect(requestsCounted(all, 'issued')).toBe(0);
+    expect(requestsCounted(all, 'ineligible')).toBe(0);
+    expect(all.logs.filter((record) => record.name === EVENT_REQUESTED)).toEqual([]);
+
+    // The caught error goes to no signal and no response.
+    const exported = JSON.stringify(all);
+    expect(exported).not.toContain(marker);
+    expect(exported).not.toContain(failureMessage);
+    expect(answer.text).not.toContain(marker);
+    expect(answer.text).not.toContain(account.email);
+  }
+
+  it('a userSync.readStatus failure for an eligible address answers the uniform 200 after the minimum duration and logs a suppression', async () => {
+    await expectInvisibleToTheCaller('status_read', 'absent');
+  }, 120_000);
+
+  it('a cap-store error that is not a rate-limit refusal answers the same', async () => {
+    await expectInvisibleToTheCaller('cap_store', 'present');
+  }, 120_000);
+
+  it('an auth-schema read of the eligibility check that fails after the user lookup answers the same', async () => {
+    await expectInvisibleToTheCaller('membership_read', 'absent');
+  }, 120_000);
+});

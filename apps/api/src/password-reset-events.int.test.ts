@@ -177,17 +177,29 @@ describe('Declared telemetry is emitted (task 12.2)', () => {
   let open: App;
   let openSender: ReturnType<typeof createRecordingEmailSender>;
   let failTokenInsert = false;
+  let failCapStore = false;
+  let capStoreLookupSeen = false;
+  let capStoreFailures = 0;
   let consumeConflictFor: string | undefined;
 
   const roomy = { max: 100_000, windowSeconds: 3600 };
 
-  /** Fails the reset token's insert while `failTokenInsert` is on, and makes the consume of the
-   *  armed token find nothing (another completion "won") by deleting the row first. */
+  /** Fails the reset token's insert while `failTokenInsert` is on; while `failCapStore` is on,
+   *  fails every `auth.rate_limit` statement that follows the request's user lookup (the cap store
+   *  of the admission, never the route limiter, which runs before any lookup); and makes the
+   *  consume of the armed token find nothing (another completion "won") by deleting the row
+   *  first. */
   function instrumentedPool(pool: Pool): Pool {
     const run = async (target: Pool | PoolClient, args: unknown[]): Promise<unknown> => {
       const sql = statementText(args[0]);
       if (failTokenInsert && /insert\s+into\s+auth\.verification/i.test(sql)) {
         throw new Error('token store unavailable');
+      }
+      if (failCapStore && /from\s+auth\."user"/i.test(sql)) {
+        capStoreLookupSeen = true;
+      } else if (failCapStore && capStoreLookupSeen && /rate_limit/i.test(sql)) {
+        capStoreFailures += 1;
+        throw new Error('cap store unavailable');
       }
       if (
         consumeConflictFor !== undefined &&
@@ -274,6 +286,9 @@ describe('Declared telemetry is emitted (task 12.2)', () => {
 
   beforeEach(async () => {
     failTokenInsert = false;
+    failCapStore = false;
+    capStoreLookupSeen = false;
+    capStoreFailures = 0;
     consumeConflictFor = undefined;
     stubCleanRangeService();
     await harness.reset();
@@ -281,6 +296,7 @@ describe('Declared telemetry is emitted (task 12.2)', () => {
 
   afterEach(() => {
     failTokenInsert = false;
+    failCapStore = false;
     consumeConflictFor = undefined;
   });
 
@@ -685,6 +701,39 @@ describe('Declared telemetry is emitted (task 12.2)', () => {
         expect(onlyEvent(all, EVENT_SUPPRESSED)).toMatchObject({
           [EMAIL_TEMPLATE]: 'password_reset',
           [SUPPRESSION]: 'token_issue_failure',
+          [USER_ID]: account.userId,
+        });
+        expect(eventsNamed(all, EVENT_REQUESTED)).toEqual([]);
+        expect(sentTo(sender, account.email)).toBe(0);
+      }, 120_000);
+
+      // Resolved decision Q35 (design D4 "Dependency failures", D15): a failure, before any token
+      // is issued, of a dependency of the reset request. Here the cap store of the admission fails
+      // with an error that is not a cap refusal, so the account is known and the event carries
+      // the user id (D4: "The event carries the user id when the admission failed"), and "the
+      // request counts as `suppressed`" (D15).
+      it('dependency_failure: the cap store of the admission fails with an error that is not a cap refusal', async () => {
+        const sender = createRecordingEmailSender();
+        const app = await makeApp(sender, {}, instrumentedPool(authPool));
+        const account = await createAccount();
+        await harness.reset();
+
+        failCapStore = true;
+        const answer = await postRequest(app, account.email);
+        failCapStore = false;
+        // The route limiter passed and the handler ran: the failure came after the user lookup.
+        expect(
+          capStoreFailures,
+          'control: the cap store failed in the handler',
+        ).toBeGreaterThanOrEqual(1);
+        expect(answer.status).toBe(200);
+        const all = await signals();
+
+        onlySpan(all, SPAN_REQUEST);
+        expect(counted(all, METRIC_REQUESTS, { [REQUEST_OUTCOME]: 'suppressed' })).toBe(1);
+        expect(onlyEvent(all, EVENT_SUPPRESSED)).toMatchObject({
+          [EMAIL_TEMPLATE]: 'password_reset',
+          [SUPPRESSION]: 'dependency_failure',
           [USER_ID]: account.userId,
         });
         expect(eventsNamed(all, EVENT_REQUESTED)).toEqual([]);

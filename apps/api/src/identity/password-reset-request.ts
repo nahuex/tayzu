@@ -10,8 +10,8 @@ import { clientIpKey } from './client-ip-key.js';
 import { canonicalEmail, isValidIdentityEmail } from './email-canonical.js';
 import { IdentityInputError, parseIdentityInput, type InputSchema } from './parse-input.js';
 import { buildPasswordResetLink } from './password-reset-link.js';
-import type { RecoveryEligibilityChecker } from './recovery-eligibility.js';
-import type { RecoveryMailer } from './recovery-mailer.js';
+import type { RecoveryEligibility, RecoveryEligibilityChecker } from './recovery-eligibility.js';
+import type { RecoveryMailer, ResetEmailAdmission } from './recovery-mailer.js';
 import type { ResetTokenStore } from './reset-token-store.js';
 
 /** The longest address of RFC 5321. */
@@ -27,6 +27,25 @@ function recordOutcome(outcome: RequestOutcome): void {
   recordIdentityMetric('tayzu.identity.password_reset_requests', 1, {
     'tayzu.identity.reset.request_outcome': outcome,
   });
+}
+
+/**
+ * A dependency of the request failed before any token was issued (design D4 "Dependency
+ * failures", Q35): the request counts as `suppressed` and the caller still gets the uniform
+ * answer. The caught error is dropped on purpose; only the closed reason leaves the flow.
+ * Pass the user id only when the account is known and eligible (the admission failed).
+ */
+function suppressForDependencyFailure(userId?: string): void {
+  emitIdentityEvent({
+    name: 'catalog.security.recovery_email_suppressed',
+    severity: 'WARN',
+    attributes: {
+      'tayzu.identity.email.template': 'password_reset',
+      'tayzu.identity.recovery.suppression': 'dependency_failure',
+      ...(userId === undefined ? {} : { 'tayzu.identity.user.id': userId }),
+    },
+  });
+  recordOutcome('suppressed');
 }
 
 export interface PasswordResetRequestFlow {
@@ -47,7 +66,14 @@ export function createPasswordResetRequestFlow(options: {
       };
       const canonical = canonicalEmail(raw);
       if (!isValidIdentityEmail(canonical)) throw new IdentityInputError();
-      const result = await options.eligibility.check(canonical);
+      let result: RecoveryEligibility;
+      try {
+        result = await options.eligibility.check(canonical);
+      } catch {
+        // No user id: the failed read may be one that runs for an unknown address too.
+        suppressForDependencyFailure();
+        return;
+      }
       if (result.status !== 'eligible' || result.userId === undefined) {
         // No user id: the signal must not tell a known address from an unknown one.
         emitIdentityEvent({
@@ -61,12 +87,20 @@ export function createPasswordResetRequestFlow(options: {
         recordOutcome('ineligible');
         return;
       }
-      const admission = await options.mailer.admitResetEmail({
-        address: result.email,
-        userId: result.userId,
-        tenantIds: result.tenantIds ?? [],
-        ipKey: clientIpKey(clientIp),
-      });
+      const ipKey = clientIpKey(clientIp);
+      let admission: ResetEmailAdmission;
+      try {
+        admission = await options.mailer.admitResetEmail({
+          address: result.email,
+          userId: result.userId,
+          tenantIds: result.tenantIds ?? [],
+          ipKey,
+        });
+      } catch {
+        // A cap refusal returns normally, so whatever throws here is the cap store failing.
+        suppressForDependencyFailure(result.userId);
+        return;
+      }
       if (!admission.admitted) {
         recordOutcome('suppressed');
         return;

@@ -425,6 +425,7 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'tenant_cap',
     'provider_failure',
     'token_issue_failure',
+    'dependency_failure',
   ],
   [MFA_RESET_PATH]: ['admin', 'operator'],
   'tayzu.identity.mfa_reset.reason': [

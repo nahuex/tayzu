@@ -379,6 +379,8 @@ describe('the identity contract declares the 044 telemetry of design D15 (task 1
         'tenant_cap',
         'provider_failure',
         'token_issue_failure',
+        // Resolved decision Q35: design D15 gained the value (a superseded pin).
+        'dependency_failure',
       ]),
     );
     expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.conflict.reason'])).toEqual(
