@@ -18,7 +18,9 @@ their password or second factor changed.
 address, whatever the state of the account: no account, an account without a `credential`
 account (SSO-only), a banned account, an account `Disabled` in every tenant it belongs to,
 an eligible account, a send suppressed by a cap, the kill switch, the recipient-domain
-allowlist or the disabled-tenant list, and a provider failure. The status, the body and the
+allowlist or the disabled-tenant list, a provider failure, and a failure of a dependency of
+the eligibility check or of the email caps (a read that fails, or a cap store that fails for
+another reason than a full cap). The status, the body and the
 headers MUST NOT depend on that state, the send MUST NOT be awaited by the response, and the
 response MUST NOT be returned before a fixed minimum duration (a branch slower than that
 minimum is outside this requirement and is a recorded risk). A malformed body or address,
@@ -45,6 +47,13 @@ produced no mail MUST be recorded only on internal signals, never in the respons
 - **GIVEN** an eligible account and a sender that takes two seconds to answer
 - **WHEN** the address is posted to the request route
 - **THEN** the response is returned without waiting for the sender, and no sooner than the fixed minimum duration
+
+#### Scenario: A dependency failure is invisible to the caller
+
+- **GIVEN** an eligible account, and a status read of the eligibility check that fails, or a cap store that fails with an error that is not a full cap
+- **WHEN** the address is posted to the request route
+- **THEN** the answer is the uniform one, returned no sooner than the fixed minimum duration, no token is issued and no email is sent
+- **AND** `catalog.security.recovery_email_suppressed` is logged with the reason `dependency_failure` and no address
 
 #### Scenario: A cross-site request is refused before any lookup
 
@@ -374,8 +383,9 @@ with it off MUST answer exactly as an unknown `/v1` path does. Every response of
 routes MUST carry `Cache-Control: no-store` and `Pragma: no-cache`. Better Auth's
 `/request-password-reset`, `/reset-password` and `/reset-password/:token` MUST stay off
 the `/api/auth` allowlist and answer `404`. Mounting the routes MUST fail startup unless
-the email path, the recipient key secret and the reset link base URL are configured.
-The platform MUST NOT serve a reset page and MUST NOT accept a `redirectTo` from a
+the email path, the recipient key secret and the reset link base URL are configured, for
+every way the application is built: the production start and a direct `createApp` call
+alike. The platform MUST NOT serve a reset page and MUST NOT accept a `redirectTo` from a
 client.
 
 #### Scenario: Off by default
@@ -404,6 +414,11 @@ client.
 
 - **WHEN** the switch is on and the reset link base URL, the recipient key secret or the email sender is not configured
 - **THEN** startup fails naming the variable and never its value
+
+#### Scenario: A direct start without the email options fails too
+
+- **WHEN** `createApp` is called with the switch on and no email options at all
+- **THEN** it fails naming `EMAIL_PROVIDER` and never a value, and with the switch off the email options stay optional
 
 #### Scenario: The client cannot choose where the link points
 
@@ -537,7 +552,10 @@ target who also belongs to another tenant, and a target who is not a plain membe
 refused by the service with the same `CATALOG_VALIDATION_FAILED` answer, identical in status,
 code, message and body shape, decided after every check has been evaluated, so that neither
 the order nor the time of the refusal reveals which held; only the internal log carries the
-reason, and the response MUST NOT reveal a membership in another tenant. On success the
+reason, and the response MUST NOT reveal a membership in another tenant. The service MUST
+evaluate these checks while it holds the target's per-user lock, in the transaction that
+applies the effects, so that a reset that waited for the lock decides on the state it is
+about to change. On success the
 operation MUST delete the target's second factor, revoke every session of the target, mark the
 target for re-enrolment, send the fixed MFA-reset notice to the target's registered address,
 and emit the audit event. It MUST NOT revoke or change machine credentials, service accounts or
@@ -600,6 +618,12 @@ SSO links of the target.
 - **GIVEN** a member with no enrolled factor, a member of two tenants, and a member of two tenants with no factor
 - **WHEN** an admin calls the operation for each
 - **THEN** the three responses have the same status, code, message and body bytes, and the three internal records carry their own reasons
+
+#### Scenario: A change that lands while the reset waits for the lock is seen
+
+- **GIVEN** a member with a second factor, and another operation that holds that member's lock
+- **WHEN** an admin calls the operation and, before the lock is released, the member's factor is removed, or the member becomes an admin, or the member joins another tenant
+- **THEN** the answer is `CATALOG_VALIDATION_FAILED`, nothing changes, and no audit event or notice is produced
 
 #### Scenario: An MFA reset leaves credentials and linked sign-ins, and the notice says to review them
 
@@ -810,7 +834,9 @@ log record or error response MAY carry an email address, a reset token or link, 
 password, a backup code, an IP address, a tenant-supplied free text, or an identifier of
 a URL path; the exported path of a reset route MUST be its route template. Opaque user,
 tenant, operator and approver ids and enumerated values are permitted. An unknown address
-MUST produce no identifier on any signal. Every audit and denial event MUST be emitted in the
+MUST produce no identifier on any signal. A suppression recorded for an account that the
+request resolved, an ineligible account included, MUST carry that account's opaque user id.
+Every audit and denial event MUST be emitted in the
 active span of its request or operation, so that it carries the trace id.
 
 #### Scenario: Declared telemetry is emitted
@@ -827,6 +853,12 @@ active span of its request or operation, so that it carries the trace id.
 
 - **WHEN** a reset is requested for an address with no account
 - **THEN** the only signals are counters and a suppression event with the reason `unknown_address`, carrying no user id
+
+#### Scenario: A known account that gets no mail is recorded by its opaque id
+
+- **GIVEN** an SSO-only account, a banned account, an account `Disabled` in its only tenant and an account with no membership
+- **WHEN** a reset is requested for each
+- **THEN** each suppression event carries its own reason and the account's opaque user id, and no address
 
 #### Scenario: Audit and denial events carry the trace id
 

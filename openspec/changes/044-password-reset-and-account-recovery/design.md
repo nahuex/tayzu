@@ -127,8 +127,8 @@ archive of `002` (`e3f5771`):
 
 ## Decisions
 
-Decisions D1-D20 are this design's. Q1-Q34 at the end are the human's approved
-answers (Q1-Q11 on 2026-10-14, Q12-Q31 on 2026-10-15, Q32-Q33 on 2026-10-21, Q34 on 2026-11-13); each D names
+Decisions D1-D20 are this design's. Q1-Q36 at the end are the human's approved
+answers (Q1-Q11 on 2026-10-14, Q12-Q31 on 2026-10-15, Q32-Q33 on 2026-10-21, Q34 on 2026-11-13, Q35-Q36 on 2026-11-15); each D names
 the Q it implements.
 
 ### D1. Tayzu owns both reset routes; Better Auth's stay closed (Q2)
@@ -178,7 +178,9 @@ all apply.
   disabled tenants, then the recipient, IP and global caps, D5) → only for an admitted request, token issue (D3) and the
   detached send → pad the response to the minimum duration (D4) → the uniform answer. A
   request the mailer does not admit issues no token and deletes none (D5, review
-  correction C1): the user's earlier link stays valid until it expires.
+  correction C1): the user's earlier link stays valid until it expires. A dependency of the
+  eligibility check or of the admission that fails takes the same path to the uniform answer
+  (D4, Q35): past its limiter, the request route answers no `500`.
 - **Order of work, confirm route:** limiter → CSRF and `Origin` → strict parse → token
   lookup and constant-time check (D3) → eligibility re-check (D4) → an enrolled user with
   no `factor` in the body gets `AUTH_STEP_UP_REQUIRED` (D6) → password policy and
@@ -308,6 +310,22 @@ all apply.
   shutdown does not drop mail. A failure of the token store after admission is logged
   (reason `token_issue_failure`) and answered with the uniform `200`, like a provider
   failure, so an outage is not an oracle.
+- **Dependency failures (Q35).** The reads of the eligibility check past the first lookup
+  (`globalAccountsOf`, `globalUserBanned`, `globalMembershipTenantsOf`, `userSync.readStatus`)
+  and the cap store of the admission run only for an address that has a user, so a failure
+  there answered an error for a known address while an unknown one got the padded `200`: an
+  enumeration oracle for as long as the outage lasts. The request flow
+  (`password-reset-request.ts`) therefore catches a failure of the eligibility check, and a
+  failure of the admission that is not a cap refusal, logs
+  `catalog.security.recovery_email_suppressed` once with the reason `dependency_failure`,
+  counts the request as `suppressed`, issues no token, deletes none, sends nothing, and
+  returns normally, so the handler pads and answers the uniform `200` like every other
+  account-dependent branch. The event carries the user id when the admission failed (the
+  user is known and eligible) and none when the eligibility check failed (the address may
+  be unknown). The caught error itself goes to no signal and no response: only the closed
+  reason leaves the flow. A malformed or cross-site request is not caught (its `400`
+  depends only on the request, Q24), and a failure of the route limiter's own store still
+  fails closed with the sanitized `500` before any lookup, for every caller alike (D16).
 - **Padding.** The handler computes its answer, then waits until `PASSWORD_RESET_MIN_RESPONSE_MS`
   (default 400, D9) have elapsed since it started (`performance.now()`, a timer, no
   busy-wait) before replying, for every branch. A branch that exceeds the minimum (a slow
@@ -352,7 +370,10 @@ same HMAC key.
   changes no token**: the controls run before the issue transaction, so the earlier link
   the user already holds stays valid until it expires (review correction C1: issuing first let
   anyone who knows an address evict the victim's mailed link). The buckets are
-  consumed at admission even if the token store then fails.
+  consumed at admission even if the token store then fails. A cap store that fails with
+  anything other than a cap refusal is not a refusal: the request flow turns it into the
+  uniform answer with the reason `dependency_failure` (D4, Q35), and the buckets consumed
+  before the failure stay consumed.
 - **What a failed send leaves.** A provider failure happens after the token was issued: the
   new token exists and is unmailed, and the earlier one is already deleted. The mailer logs
   it as `provider_failure`. The user requests again; this is the only case where a request
@@ -659,7 +680,7 @@ they stand as drafted, with no configuration for the 30 minutes or the budget of
 | `PASSWORD_RESET_RECIPIENT_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`                    | 5 per 3600 s       | per recipient (HMAC key); the shared bucket semantics apply (a bucket resets only after a full window with no allowed request) |
 | `PASSWORD_RESET_IP_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`                           | 10 per 3600 s      | emails per normalized IP |
 | `PASSWORD_RESET_GLOBAL_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`                       | 600 per 3600 s     | emails across the platform |
-| `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`                   | 10 per 86 400 s    | per recipient, all five notices, apart from the other buckets |
+| `RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`                   | 10 per 86 400 s    | per recipient, the four notices of D8, apart from the other buckets |
 | `ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`               | 20 per 86 400 s    | account-created notices per creating tenant (Q20) |
 | `ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_MAX`, `_WINDOW_SECONDS`               | 1000 per 86 400 s  | account-created notices across the platform (Q20; the default 1000 is confirmed by Q28) |
 | `PASSWORD_RESET_MIN_RESPONSE_MS`                                                | 400                | a positive integer between 1 and 5000, else startup fails |
@@ -681,7 +702,11 @@ the Container Apps ingress peer range is a pending first-deployment gate (`002` 
 
 **Startup failure rules.** `createApp` throws (naming the variable only) when
 `mountIdentityRoutes` is on and any of these is missing: the recipient key secret
-(existing rule), `PASSWORD_RESET_LINK_BASE_URL`, an email sender. `createAppFromEnv` passes
+(existing rule), `PASSWORD_RESET_LINK_BASE_URL`, an email sender. The rule is `createApp`'s
+own, whoever calls it, the test harness included (the precedent is `043` Q147's rule for the
+recipient key secret): with the switch on, an omitted `email` option is a missing email
+sender and fails the start naming `EMAIL_PROVIDER`, so the reset routes and the notices can
+never be mounted without the path that sends them (Q36). `createAppFromEnv` passes
 every value above to `createApp`, and `createApp` applies the same defaults when an option
 is omitted, so no limiter or cap is ever off (the Q140 lesson of `043`). The DAST script's
 environment gains the new variables where `dast.sh` sets them. `docs/security/secrets.md`
@@ -763,6 +788,17 @@ enum** (`lost_both_factors`, `device_replaced`, `suspected_compromise`,
   learns that a member also belongs to another organization. **The multi-tenant refusal
   belongs to the admin path only** (Q12): the operator CLI recovers such users. Rejected: a
   global effect from one tenant's admin; requiring approval from the other tenants.
+- **The predicates are read under the lock (Q36).** The admin path reads its predicates
+  inside the per-user lock, on the lock's connection, in the transaction that then applies
+  the effects, so the state a reset is decided on is the state it changes. A reset that
+  waited for the lock re-reads: if the factor was removed meanwhile (a second reset of the
+  same member), or the member joined another tenant or stopped being a plain member, it is
+  refused through the same single path and nothing changes (the transaction rolls back).
+  The refusal's log event and error are unchanged. The precedent is `043`'s
+  `linkSsoAccount`, whose checks run inside the same lock (`043` task 8.5i). The lock
+  serializes the operations that take it (this reset, the reset confirmation, the token
+  issue, and `043`'s SSO link and link shed); a role change or a new membership written
+  through Better Auth's organization plugin does not take it, and that residual is in Risks.
 - **Effects, in one `authPool` transaction under the per-user lock, on the lock's
   connection:** delete the user's `two_factor` rows; set `two_factor_enabled` false; write
   `mfa-reenrol:<userId>` (D11); delete the user's sessions with `returning` and emit
@@ -992,7 +1028,7 @@ ids and allowed; an unknown address produces no identifier.
 | `catalog.audit.password_reset_completed`      | INFO     | `tayzu.identity.user.id`, `tayzu.identity.reset.mfa`, `tayzu.identity.sessions.revoked`                      |
 | `catalog.audit.mfa_reset`                     | INFO     | form `admin`: `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.identity.user.id`, `tayzu.identity.mfa_reset.reason`, `tayzu.identity.sessions.revoked`; form `operator`: `tayzu.tenant.id`, `tayzu.identity.operator.id`, `tayzu.identity.approver.id`, `tayzu.identity.user.id`, `tayzu.identity.sessions.revoked` |
 | `catalog.security.password_reset_denied`      | WARN     | `tayzu.identity.reset.denial_reason`; conditional `tayzu.identity.user.id` (absent when the id/token matched no row) |
-| `catalog.security.recovery_email_suppressed`  | WARN     | `tayzu.identity.email.template`, `tayzu.identity.recovery.suppression`; conditional `tayzu.identity.user.id` (absent for `unknown_address`) |
+| `catalog.security.recovery_email_suppressed`  | WARN     | `tayzu.identity.email.template`, `tayzu.identity.recovery.suppression`; conditional `tayzu.identity.user.id` (present whenever the account is known: every reason except `unknown_address` and a `dependency_failure` of the eligibility check) |
 | `catalog.security.self_mfa_reset_denied`      | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                           |
 
 For the operator form, `tayzu.tenant.id` is the tenant of the organization named on the
@@ -1017,7 +1053,7 @@ existing, and `no_enrolled_factor`, new), `catalog.security.authz_denied` and
 | `tayzu.identity.reset.request_outcome`     | `issued`, `ineligible`, `suppressed` |
 | `tayzu.identity.reset.confirm_outcome`     | `completed`, `rejected`, `factor_required`, `policy_refused`, `breach_check_unavailable` |
 | `tayzu.identity.reset.denial_reason`       | `malformed_request`, `csrf_rejected`, `origin_rejected`, `not_found`, `expired`, `token_mismatch`, `not_eligible`, `factor_invalid`, `factor_state_inconsistent`, `attempts_exhausted`, `policy_violation`, `breached`, `breach_check_unavailable`, `consume_conflict` |
-| `tayzu.identity.recovery.suppression`      | `unknown_address`, `no_credential_account`, `banned`, `disabled_everywhere`, `no_membership`, `kill_switch`, `recipient_domain_blocked`, `tenants_email_disabled`, `recipient_cap`, `ip_cap`, `global_cap`, `tenant_cap`, `provider_failure`, `token_issue_failure` |
+| `tayzu.identity.recovery.suppression`      | `unknown_address`, `no_credential_account`, `banned`, `disabled_everywhere`, `no_membership`, `kill_switch`, `recipient_domain_blocked`, `tenants_email_disabled`, `recipient_cap`, `ip_cap`, `global_cap`, `tenant_cap`, `provider_failure`, `token_issue_failure`, `dependency_failure` |
 | `tayzu.identity.mfa_reset.path`            | `admin`, `operator` |
 | `tayzu.identity.mfa_reset.reason`          | `lost_both_factors`, `device_replaced`, `suspected_compromise`, `identity_verified_request` |
 | `tayzu.identity.conflict.reason`           | the existing `account_exists`, `target_in_other_tenant`, `sub_already_linked`, `target_is_admin_or_owner`, plus `no_enrolled_factor` |
@@ -1029,7 +1065,13 @@ existing, and `no_enrolled_factor`, new), `catalog.security.authz_denied` and
 (D5; the mailer also logs the existing `email_recipient_blocked` with the template);
 `provider_failure` is a provider fault after the token was issued, and also covers the
 sender wrapper's own refusal if it ever fires at send time. `tenant_cap` and `global_cap` apply to the
-account-created notice as well as, for `global_cap`, the reset email.
+account-created notice as well as, for `global_cap`, the reset email. `dependency_failure`
+is a failure, before any token is issued, of a dependency of the reset request: a read of
+the eligibility check or the cap store of the admission (D4, Q35); the request counts as
+`suppressed` on `tayzu.identity.password_reset_requests`. The four ineligible reasons of a
+known account (`no_credential_account`, `banned`, `disabled_everywhere`, `no_membership`)
+carry `tayzu.identity.user.id`, like every admission reason: only `unknown_address` and an
+eligibility-check `dependency_failure` carry none (D5, Q36).
 `tayzu.identity.sessions.revoked` is an integer. `tayzu.identity.notice.template` is not
 extended (the recovery emails use `tayzu.identity.email.template`), so `045`'s extension of
 the notice set does not conflict with this change.
@@ -1158,7 +1200,11 @@ rebases onto them (a textual merge only). `044` lands first (`002 -> 043 -> 044 
   operator as an actor of the break-glass CLI, and the `auth.verification` writes. Every new
   arrow names its protocol (HTTPS/JSON, HTTPS to the ACS email API, SQL over TLS, SMTP/IMAP
   to the user's mail client), and the Pwned Passwords range call from the confirm route is
-  drawn as an external arrow. The `system-diagram.test.ts` check stays green.
+  drawn as an external arrow. The `system-diagram.test.ts` check stays green. The diagrams
+  per trust zone carry the same `044` nodes and arrows as the full diagram, the break-glass
+  CLI's telemetry export (OTLP, which the CLI refuses to run without, Q29 and Q31) is drawn
+  as an arrow to the monitoring backend, and every rendered image is regenerated from the
+  Mermaid source in the same commit (Q36).
 - `apps/api/CLAUDE.md` and `packages/auth/CLAUDE.md`: layout lines for the new modules and
   the rule that Better Auth's reset routes stay closed.
 
@@ -1257,8 +1303,21 @@ control, injection, secrets or logging would block.
   victim receive up to five reset emails an hour; each admitted one replaces the last.
 - **The minimum response duration is not constant work** → under a slow database, or under
   contention on the per-user lock, the eligible branch can exceed 400 ms and become
-  distinguishable. Mitigated by calibrating the value against the eligible branch's p99
+  distinguishable. A dependency that fails slowly (a timeout longer than the minimum) is the
+  same residual: its answer is the uniform `200` (Q35), but later than an unknown address's.
+  Mitigated by calibrating the value against the eligible branch's p99
   under concurrency in staging (a Gate) and a ticket for a constant-work path.
+- **A dependency outage is silent to the person** → while a status read or the cap store
+  fails, the request route answers the uniform `200` and sends nothing (Q35), so the page
+  says "check your mail" and no mail comes. Chosen over an error answer, which told a known
+  address from an unknown one. Mitigated by the alert on `dependency_failure` (Gate 6); the
+  person requests again once the dependency is back, and no token or link changed meanwhile.
+- **A role change or a new membership can land beside an admin MFA reset** → the admin
+  path reads its predicates under the per-user lock (D10, Q36), which closes the race
+  against every operation that takes that lock, but a role change or a membership written
+  through Better Auth's organization plugin takes no such lock, so a member promoted, or
+  added to a second tenant, in the instant between the in-lock read and the commit is still
+  reset. Residual, one transaction wide; the audit event names the admin and the target.
 - **A detached send can be lost on a crash or a provider fault** → the new token is valid and
   unmailed and the earlier one is gone; the user requests again. Graceful shutdown drains
   in-flight sends.
@@ -1381,7 +1440,8 @@ on this change are restated, then this change's own.
    (the CLI refuses to start without one, whatever `NODE_ENV` says, Q29 and Q31) and the operator attaches the completion line to
    the PIM record; `010` decides whether to wrap the CLI in a job.
 6. Alerts (with `010`) on `catalog.security.recovery_email_suppressed` with the reasons
-   `recipient_cap`, `ip_cap`, `global_cap` and `provider_failure`, on
+   `recipient_cap`, `ip_cap`, `global_cap`, `provider_failure` and `dependency_failure`
+   (Q35: an outage that the uniform answer hides from the person must reach an operator), on
    `catalog.security.password_reset_denied` with `attempts_exhausted`, `consume_conflict` and
    `factor_state_inconsistent`, and on `catalog.audit.mfa_reset`.
 7. `PASSWORD_RESET_MIN_RESPONSE_MS` is set above the p99 of the eligible request branch
@@ -1444,10 +1504,10 @@ oracle" (the invitation gate's visible 429 stays; the reset path avoids it by de
 "Recipient-cap alias normalization", "Persistent per-tenant email-disable list" and
 "Bounce and complaint handling".
 
-## Resolved decisions (asked and approved in chat, 2026-10-14, 2026-10-15, 2026-10-21 and 2026-11-13)
+## Resolved decisions (asked and approved in chat, 2026-10-14, 2026-10-15, 2026-10-21, 2026-11-13 and 2026-11-15)
 
 Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q31 on
-2026-10-15, Q32-Q33 on 2026-10-21 and Q34 on 2026-11-13, each with the recommended option. The text below is the approved text; Q12-Q31 amend
+2026-10-15, Q32-Q33 on 2026-10-21, Q34 on 2026-11-13 and Q35-Q36 on 2026-11-15, each with the recommended option. The text below is the approved text; Q12-Q31 amend
 how Q1-Q11 are read where they say so. Where Q2, Q13 and Q19 say "the 8.1 password policy",
 that is `043`'s password policy (`043` task 8.1), not this change's own task 8.1.
 
@@ -1805,10 +1865,50 @@ monitoring or an existing access review that do not exist yet; 90 days or 2 year
 retention. _Implemented by:_ "SSA notes (Q27)", Tickets, `docs/security/data-retention.md`;
 task 16.2.
 
+### Q35. A dependency failure on the request route (2026-11-15)
+
+Found by the security review of task 16.3 (a low finding) and by the VCDM re-run of task 16.2
+(N5). If a read of the eligibility check or the cap store of the admission failed, the request
+route answered an error for a known address while an unknown one got the padded `200`: an
+enumeration oracle during an outage, which D4 says an outage must not be. The request flow now
+catches both failures, logs `catalog.security.recovery_email_suppressed` with one new value of
+the closed set, `dependency_failure`, counts the request as `suppressed` and answers the
+uniform `200` after the minimum duration. The value joins the alert reasons of Gate 6.
+`token_issue_failure` and `provider_failure` keep their meaning. The human's answer in chat was
+to go ahead with the recommended option, which was this one. _Rejected:_ two values, one per
+failure; widening `token_issue_failure` to every dependency failure before the send.
+_Implemented by:_ D2, D4, D5, D15, Risks, Gate 6; the spec scenario "A dependency failure is
+invisible to the caller"; a red-green cycle under task 16.3.
+
+### Q36. The non-blocking gaps of the Checkpoint 2 VCDM re-run (2026-11-15)
+
+The VCDM Mode A re-run of task 16.2 left six non-blocking gaps (N1-N6), each to be fixed or
+recorded as a ticket. The human's answer in chat on 2026-11-15 was to go ahead with the
+recommended option for each; the orchestrator's recommendation was to fix every one, because
+each is a place where the code or a document departs from this approved design, and none is
+large. They are listed so that Checkpoint 2 can overrule any of them.
+
+| Gap | Disposition | Where |
+| --- | ----------- | ----- |
+| N1: the diagrams per trust zone lack the `044` nodes, the break-glass CLI has no OTLP arrow, and the images were not regenerated | Fixed: the zones, the arrow and the images | D19; task 16.2 cycle |
+| N2: a suppression for a known but ineligible account carries no user id | Fixed: the four ineligible reasons of a known account carry `tayzu.identity.user.id` | D5, D15; the spec scenario "A known account that gets no mail is recorded by its opaque id" |
+| N3: the admin MFA-reset predicates are read before the per-user lock | Fixed: they are read under the lock, on its connection, in the effects' transaction; the residual (a role change takes no lock) is in Risks | D10, Risks; the spec scenario "A change that lands while the reset waits for the lock is seen" |
+| N4: `createApp` with the routes mounted and no `email` option starts | Fixed: `createApp` itself fails the start, the test harness included, as `043` Q147 does for the recipient key secret | D9; the spec scenario "Mounting without the email path fails startup" |
+| N5: a cap-store error that is not a cap refusal is not uniform | Fixed by Q35 | D4, D5 |
+| N6: `attack-surfaces.md` and `secrets.md` misstate who a notice is addressed to, the number of notices and what the minimum response time covers | Fixed in both documents, and in D9's table, which said "all five notices" for a cap that covers the four notices of D8 | `docs/security/attack-surfaces.md`, `docs/security/secrets.md`, D9 |
+
+Each code fix is one red-green-refactor cycle under task 16.2 or 16.3, whose Verify clauses
+already say that findings are fixed or recorded as tickets; they are committed with those task
+numbers and add no row to `tasks.md`, so the count stays at 85 (Size). _Rejected:_ recording
+the gaps as tickets; for N3, recording only the residual in Risks; for N4, narrowing D9 to the
+production start and leaving the test harness able to mount the routes with no email path.
+_Implemented by:_ D5, D9, D10, D15, D19, Risks; red-green cycles under tasks 16.2 and 16.3.
+
 ### Size (2026-10-15)
 
 `044` stays one change (Q6). The task budget may go slightly over 80; the rule is to stop at
 85 and ask before adding more. `tasks.md` had 84; Q32 adds task 5.7, so it has 85, the limit.
+The fixes of Q35 and Q36 run inside tasks 16.2 and 16.3 and add no task.
 
 ### Review corrections folded in (not decisions)
 
