@@ -20,6 +20,11 @@
  * The refusal scenarios of the admin form are task 10.4's and are not tested here. The two new
  * repository functions are tested in `auth-repository.int.test.ts`.
  *
+ * The last section is the fix cycle "N3 in-lock predicates" of task 16.2 (design D10 "The
+ * predicates are read under the lock (Q36)"): the scenario "A change that lands while the reset
+ * waits for the lock is seen", the case "the predicate reads of the admin form run on the lock's
+ * connection" and the guard case "with a pool of one connection the admin reset completes".
+ *
  * ## Production symbols expected
  *
  * ```ts
@@ -67,13 +72,14 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 
 import { MARKER_EXPIRES_AT_SENTINEL } from '@tayzu/auth';
 
 import { harnessPools } from '../__fixtures__/pools.js';
 import { renderMfaResetNotice } from '../../../../packages/auth/src/identity/email/recovery-notice-templates.js';
 import { formatResetTokenValue } from '../../../../packages/auth/src/identity/reset-token-value.js';
+import { createAuthRepository } from './auth-repository.js';
 import {
   createMfaResetService,
   type MfaResetReason,
@@ -82,6 +88,7 @@ import {
   type NoticeOutcome,
   type RecoveryNoticePort,
 } from './mfa-reset.js';
+import { createWithUserLock } from './user-lock.js';
 
 const REVIEW_SENTENCE =
   'Review your service accounts, credentials and linked sign-ins, and revoke any you do not recognize.';
@@ -969,5 +976,423 @@ describe('The MFA reset service (task 10.3)', () => {
         'no refusal is logged',
       ).toHaveLength(0);
     }, 30_000);
+  });
+
+  // ---- fix cycle of task 16.2 (N3): the predicates are read under the lock (D10, Q36) ----
+  //
+  // design.md D10, "The predicates are read under the lock (Q36)": "The admin path reads its
+  // predicates inside the per-user lock, on the lock's connection, in the transaction that then
+  // applies the effects, so the state a reset is decided on is the state it changes. A reset that
+  // waited for the lock re-reads: if the factor was removed meanwhile (a second reset of the same
+  // member), or the member joined another tenant or stopped being a plain member, it is refused
+  // through the same single path and nothing changes (the transaction rolls back). The refusal's
+  // log event and error are unchanged."
+  //
+  // Spec scenario "A change that lands while the reset waits for the lock is seen":
+  // - GIVEN a member with a second factor, and another operation that holds that member's lock
+  // - WHEN an admin calls the operation and, before the lock is released, the member's factor is
+  //   removed, or the member becomes an admin, or the member joins another tenant
+  // - THEN the answer is `CATALOG_VALIDATION_FAILED`, nothing changes, and no audit event or
+  //   notice is produced
+  //
+  // The design leaves open whether a refusal runs inside the `identity.mfa.reset` span, so no case
+  // here asserts that span on a refusal, present or absent.
+
+  const REFUSED_EVENT = 'catalog.security.identity_conflict_refused';
+
+  type Db = Pick<Pool, 'query'>;
+  type AnyFn = (...args: unknown[]) => unknown;
+
+  const normalized = (first: unknown): string => {
+    const text = typeof first === 'string' ? first : (first as { text?: string } | undefined)?.text;
+    return (text ?? '').replace(/\s+/g, ' ').trim();
+  };
+
+  /**
+   * Everything a reset would change (factor rows, the flag, sessions, the marker) and the
+   * memberships the predicates read, by id, on the connection given. No timestamp is selected.
+   */
+  async function stateOn(db: Db, userId: string): Promise<string> {
+    const rows = async (sql: string, params: unknown[]): Promise<Record<string, unknown>[]> =>
+      (await db.query<Record<string, unknown>>(sql, params)).rows;
+    return JSON.stringify({
+      factors: await rows(
+        'select id, verified from auth.two_factor where user_id = $1 order by id',
+        [userId],
+      ),
+      flag: await rows('select two_factor_enabled from auth."user" where id = $1', [userId]),
+      sessions: await rows('select id from auth.session where user_id = $1 order by id', [userId]),
+      markers: await rows('select identifier, value from auth.verification where identifier = $1', [
+        `mfa-reenrol:${userId}`,
+      ]),
+      memberships: await rows(
+        'select organization_id, role from auth.member where user_id = $1 order by organization_id',
+        [userId],
+      ),
+    });
+  }
+
+  /** How many backends wait, not granted, for the advisory lock keyed by this user id. */
+  function lockWaiters(userId: string): Promise<number> {
+    return count(
+      `from pg_locks
+       where locktype = 'advisory' and granted = false and objsubid = 1
+         and database = (select oid from pg_database where datname = current_database())
+         and ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+      [userId],
+    );
+  }
+
+  interface Settled {
+    readonly completed: boolean;
+    readonly error?: unknown;
+  }
+
+  /**
+   * Another operation holds the member's lock (`createWithUserLock`, as production takes it). While
+   * it is held the admin call starts and is not awaited; the holder waits until that call is
+   * blocked on the advisory lock (`pg_locks`, not a delay), applies `change` on its own
+   * transaction and commits, which lands the change and releases the lock at once. Returns how the
+   * call settled and the state the change left, read on the holder's transaction.
+   */
+  async function changeWhileResetWaits(
+    userId: string,
+    call: () => Promise<unknown>,
+    change: (tx: PoolClient) => Promise<void>,
+  ): Promise<{ settled: Settled; left: string }> {
+    const holdLock = createWithUserLock(authPool);
+    const held = await holdLock(userId, async (tx) => {
+      const progress = { settled: false };
+      const outcome = call()
+        .then(
+          (): Settled => ({ completed: true }),
+          (error: unknown): Settled => ({ completed: false, error }),
+        )
+        .finally(() => {
+          progress.settled = true;
+        });
+      const deadline = Date.now() + 15_000;
+      while ((await lockWaiters(userId)) === 0) {
+        if (progress.settled) {
+          throw new Error('the admin reset settled without waiting for the per-user lock');
+        }
+        if (Date.now() > deadline) {
+          throw new Error('the admin reset never waited for the per-user lock');
+        }
+        // The pause between two polls of `pg_locks`; the condition, not the pause, synchronizes.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await change(tx);
+      return { outcome, left: await stateOn(tx, userId) };
+    });
+    return { settled: await held.outcome, left: held.left };
+  }
+
+  /**
+   * The scenario for one concurrent change: the reset that waited is refused like any other
+   * refusal, leaves the member exactly as the change left them, and produces no audit event, no
+   * notice and no revoked session; the internal record carries `reason`.
+   */
+  async function expectLateChangeSeen(
+    target: Target,
+    change: (tx: PoolClient) => Promise<void>,
+    reason: 'no_enrolled_factor' | 'target_is_admin_or_owner' | 'target_in_other_tenant',
+    leftByTheChange: Observed,
+  ): Promise<void> {
+    // An ordinary refusal, with no lock contention: what "the same error" means.
+    const ordinary = await refusalOf(
+      adminCall(buildService(fakeNotices()), await seedNoFactorTarget()),
+    );
+    const actorId = `admin-${randomUUID()}`;
+    const notices = fakeNotices();
+    expect(await observe(target.userId), 'precondition: a plain member with a factor').toEqual({
+      factors: 1,
+      flag: true,
+      sessions: 2,
+      markers: 0,
+      memberships: 1,
+    });
+
+    const { settled, left } = await changeWhileResetWaits(
+      target.userId,
+      adminCall(buildService(notices), target, actorId),
+      change,
+    );
+
+    expect(
+      settled.completed,
+      'the reset that waited for the lock decides on the state it finds: it must not complete',
+    ).toBe(false);
+    expect(settled.error).toBeInstanceOf(Error);
+    const error = settled.error as Error;
+    expectValidationFailed(error);
+    expect(error.message, 'the same message as the other refusals').toBe(ordinary.message);
+    expect(visible(error), 'the same single error as the other refusals').toBe(visible(ordinary));
+
+    expect(
+      await stateOn(authPool, target.userId),
+      'factor rows, the flag, sessions, the marker and memberships are as the change left them',
+    ).toBe(left);
+    expect(await observe(target.userId), 'nothing the reset would do happened').toEqual(
+      leftByTheChange,
+    );
+    expect(await eventsFor(AUDIT_EVENT, target.userId), 'no audit event of a reset').toHaveLength(
+      0,
+    );
+    expect(
+      (await linkLogEvents(harness, REVOKED_EVENT)).filter(
+        (record) => record.attributes['tayzu.actor.id'] === target.userId,
+      ),
+      'no session is revoked',
+    ).toHaveLength(0);
+    expect(notices.sent, 'the notice port saw no send').toEqual([]);
+
+    const refused = await eventsFor(REFUSED_EVENT, target.userId);
+    expect(refused, 'one internal record of the refusal').toHaveLength(1);
+    expect(refused[0]?.attributes).toMatchObject({
+      'tayzu.tenant.id': target.tenantId,
+      'tayzu.actor.id': actorId,
+      'tayzu.identity.conflict.reason': reason,
+      'tayzu.identity.user.id': target.userId,
+    });
+  }
+
+  describe('A change that lands while the reset waits for the lock is seen', () => {
+    it('the member’s factor is removed: CATALOG_VALIDATION_FAILED, nothing changes, no audit event or notice, logs no_enrolled_factor', async () => {
+      const target = await seedTarget();
+
+      await expectLateChangeSeen(
+        target,
+        async (tx) => {
+          // What a second reset of the same member does to the factor, and nothing else.
+          await tx.query('delete from auth.two_factor where user_id = $1', [target.userId]);
+          await tx.query('update auth."user" set two_factor_enabled = false where id = $1', [
+            target.userId,
+          ]);
+        },
+        'no_enrolled_factor',
+        // The sessions stay and no marker is written: the refused reset did neither.
+        { factors: 0, flag: false, sessions: 2, markers: 0, memberships: 1 },
+      );
+    }, 60_000);
+
+    it('the member becomes an admin: CATALOG_VALIDATION_FAILED, nothing changes, no audit event or notice, logs target_is_admin_or_owner', async () => {
+      const target = await seedTarget();
+
+      await expectLateChangeSeen(
+        target,
+        async (tx) => {
+          await tx.query(
+            'update auth.member set role = $3 where organization_id = $1 and user_id = $2',
+            [target.tenantId, target.userId, 'admin'],
+          );
+        },
+        'target_is_admin_or_owner',
+        { factors: 1, flag: true, sessions: 2, markers: 0, memberships: 1 },
+      );
+
+      const role = await authPool.query<{ role: string }>(
+        'select role from auth.member where organization_id = $1 and user_id = $2',
+        [target.tenantId, target.userId],
+      );
+      expect(
+        role.rows.map((row) => row.role),
+        'the promotion landed',
+      ).toEqual(['admin']);
+    }, 60_000);
+
+    it('the member joins another tenant: CATALOG_VALIDATION_FAILED, nothing changes, no audit event or notice, logs target_in_other_tenant', async () => {
+      const target = await seedTarget();
+      const otherTenantId = await seedTenant();
+
+      await expectLateChangeSeen(
+        target,
+        async (tx) => {
+          await tx.query(
+            'insert into auth.member (id, organization_id, user_id, role, created_at) values ($1, $2, $3, $4, now())',
+            [`mem-${randomUUID()}`, otherTenantId, target.userId, 'member'],
+          );
+        },
+        'target_in_other_tenant',
+        { factors: 1, flag: true, sessions: 2, markers: 0, memberships: 2 },
+      );
+
+      expect(
+        await count('from auth.member where organization_id = $1 and user_id = $2', [
+          otherTenantId,
+          target.userId,
+        ]),
+        'the second membership landed',
+      ).toBe(1);
+    }, 60_000);
+  });
+
+  describe('The predicates of the admin form are read under the lock (design D10, Q36)', () => {
+    interface Probed {
+      /** `'pool'` for `pool.query`; otherwise the ordinal of the client `pool.connect` gave. */
+      readonly via: 'pool' | number;
+      readonly text: string;
+    }
+
+    /** Wraps the pool so that a statement sent with `pool.query` is told from one sent on a client. */
+    function probedPool(): { pool: Pool; seen: Probed[] } {
+      const seen: Probed[] = [];
+      let clients = 0;
+      const probe = <T extends object>(subject: T, via: 'pool' | number): T =>
+        new Proxy(subject, {
+          get(target, property) {
+            const value: unknown = Reflect.get(target, property, target);
+            if (typeof value !== 'function') return value;
+            const fn = value as AnyFn;
+            if (property === 'query') {
+              return (...args: unknown[]) => {
+                seen.push({ via, text: normalized(args[0]) });
+                return fn.apply(target, args);
+              };
+            }
+            if (property === 'connect' && via === 'pool') {
+              return async (...args: unknown[]) => {
+                const connected = await (fn.apply(target, args) as Promise<object | undefined>);
+                if (connected === undefined) return connected;
+                clients += 1;
+                return probe(connected, clients);
+              };
+            }
+            return fn.bind(target);
+          },
+        });
+      return { pool: probe(authPool, 'pool'), seen };
+    }
+
+    /**
+     * The statements of the three predicate reads, as the repository itself sends them: the
+     * two-factor state, the membership tenants and the member row. Taken from the repository, so
+     * the case below depends on no SQL text of its own.
+     */
+    async function predicateStatements(
+      target: Target,
+    ): Promise<Record<'twoFactorState' | 'membershipTenants' | 'memberRow', string[]>> {
+      const texts: string[] = [];
+      const recorder = {
+        query: (...args: unknown[]): unknown => {
+          texts.push(normalized(args[0]));
+          return (authPool.query as AnyFn).apply(authPool, args);
+        },
+      } as unknown as Pool;
+      const repository = createAuthRepository(recorder);
+      await repository.globalTwoFactorStateOf(target.userId);
+      const twoFactorState = texts.splice(0);
+      await repository.globalMembershipTenantsOf(target.userId);
+      const membershipTenants = texts.splice(0);
+      await repository.memberOf(target.tenantId, target.userId);
+      const memberRow = texts.splice(0);
+      return { twoFactorState, membershipTenants, memberRow };
+    }
+
+    const ON_THE_LOCK_CLIENT = 'on the client that took the lock, after the lock statement';
+
+    it('the predicate reads of the admin form run on the lock’s connection', async () => {
+      const allowed = await seedTarget();
+      const refused = await seedTarget();
+      await addSecondTenant(refused.userId);
+
+      for (const { label, target, refusal } of [
+        { label: 'a reset that goes through', target: allowed, refusal: false },
+        { label: 'a refusal', target: refused, refusal: true },
+      ]) {
+        const reads = await predicateStatements(target);
+        for (const [name, texts] of Object.entries(reads)) {
+          expect(texts.length, `${label}: the ${name} read sends a statement`).toBeGreaterThan(0);
+        }
+        const { pool, seen } = probedPool();
+        const call = adminCall(createMfaResetService({ authPool: pool, notices: fakeNotices() }), {
+          tenantId: target.tenantId,
+          userId: target.userId,
+        });
+        if (refusal) await refusalOf(call);
+        else await call();
+
+        const lockAt = seen.findIndex((statement) => /pg_advisory_xact_lock/.test(statement.text));
+        const lockClient = seen[lockAt]?.via;
+        expect(typeof lockClient, `${label}: the lock is taken on a connected client`).toBe(
+          'number',
+        );
+
+        /** Where each occurrence of one predicate statement ran, without repeats. */
+        const placesOf = (text: string): string[] => [
+          ...new Set(
+            seen.flatMap((statement, index) => {
+              if (statement.text !== text) return [];
+              if (statement.via === 'pool') return ['on pool.query'];
+              if (statement.via !== lockClient) return ['on another client'];
+              return [
+                index > lockAt ? ON_THE_LOCK_CLIENT : 'on the client that took the lock, before it',
+              ];
+            }),
+          ),
+        ];
+        const where = Object.fromEntries(
+          Object.entries(reads).map(([name, texts]) => [name, texts.map(placesOf)]),
+        );
+        expect(where, `${label}: the three predicate reads, none of them on pool.query`).toEqual(
+          Object.fromEntries(
+            Object.entries(reads).map(([name, texts]) => [
+              name,
+              texts.map(() => [ON_THE_LOCK_CLIENT]),
+            ]),
+          ),
+        );
+        expect(
+          seen.filter(
+            (statement) =>
+              statement.via === 'pool' && Object.values(reads).flat().includes(statement.text),
+          ),
+          `${label}: pool.query sees no predicate read`,
+        ).toEqual([]);
+      }
+    }, 60_000);
+
+    it('with a pool of one connection the admin reset completes', async () => {
+      // A guard, green on arrival: today the predicates are read through the pool before the lock
+      // is taken, so one connection is enough. It stays green only if the in-lock reads run on the
+      // lock's connection: a read through `pool.query` while the lock's client is checked out
+      // would wait for a second connection that a pool of one never has.
+      const url = process.env['DATABASE_URL'];
+      if (url === undefined || url.trim() === '') throw new Error('DATABASE_URL is not set');
+      const single = new Pool({ connectionString: url, max: 1 });
+      single.on('error', () => undefined);
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const target = await seedTarget();
+        const notices = fakeNotices();
+        const service = createMfaResetService({ authPool: single, notices });
+
+        const outcome = await Promise.race([
+          adminCall(service, target)(),
+          new Promise<'hung'>((resolve) => {
+            timer = setTimeout(() => {
+              resolve('hung');
+            }, 20_000);
+          }),
+        ]);
+
+        expect(outcome, 'the reset did not wait for a second connection').not.toBe('hung');
+        if (outcome === 'hung') return;
+        expect(single.totalCount, 'the pool never grew past one').toBeLessThanOrEqual(1);
+        expect(outcome.sessionsRevoked).toBe(2);
+        expect(await observe(target.userId), 'the reset happened').toEqual({
+          factors: 0,
+          flag: false,
+          sessions: 0,
+          markers: 1,
+          memberships: 1,
+        });
+        expect(notices.sent).toEqual([{ kind: 'MfaResetNotice', userId: target.userId }]);
+      } finally {
+        clearTimeout(timer);
+        const giveUp = new Promise<void>((resolve) => setTimeout(resolve, 5000));
+        await Promise.race([single.end(), giveUp]);
+      }
+    }, 60_000);
   });
 });

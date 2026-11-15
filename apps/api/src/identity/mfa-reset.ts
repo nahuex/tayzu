@@ -10,7 +10,7 @@ import {
   recordIdentityMetric,
   withIdentitySpan,
 } from '@tayzu/auth';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 
 import { createAuthRepository } from './auth-repository.js';
 import { createWithUserLock } from './user-lock.js';
@@ -68,15 +68,20 @@ export function createMfaResetService(options: MfaResetServiceOptions): MfaReset
    * The single refusal path of the admin form (D10, Q12): every predicate is read, none
    * short-circuits, and one `refuse` throws the same error whatever held. The internal reason
    * goes only to the log, with opaque identifiers.
+   *
+   * The reads run on `tx`, the per-user lock's connection, in the transaction that then applies
+   * the effects (D10, Q36): a reset that waited for the lock decides on the state it finds, and
+   * the throw rolls that transaction back.
    */
   async function refuseUnlessAllowed(
     tenantId: string,
     actorId: string,
     userId: string,
+    tx: PoolClient,
   ): Promise<void> {
-    const twoFactor = await repository.globalTwoFactorStateOf(userId);
-    const tenants = await repository.globalMembershipTenantsOf(userId);
-    const member = await repository.memberOf(tenantId, userId);
+    const twoFactor = await repository.globalTwoFactorStateOf(userId, tx);
+    const tenants = await repository.globalMembershipTenantsOf(userId, tx);
+    const member = await repository.memberOf(tenantId, userId, tx);
     const hasFactor = twoFactor.twoFactorEnabled || twoFactor.rows.some((row) => row.verified);
     const inOtherTenant = tenants.some((id) => id !== tenantId);
     const notPlainMember = member?.role !== 'member';
@@ -108,17 +113,23 @@ export function createMfaResetService(options: MfaResetServiceOptions): MfaReset
     throw new MfaResetRefusedError();
   }
 
+  /**
+   * `guard`, when given, runs first inside the lock, on its connection; a throw from it rolls the
+   * transaction back before any effect. The operator form has no predicate and passes none.
+   */
   async function run(
     path: 'admin' | 'operator',
     tenantId: string,
     userId: string,
     audit: Readonly<Record<string, string>>,
+    guard?: (tx: PoolClient) => Promise<void>,
   ): Promise<MfaResetResult> {
     return withIdentitySpan(
       'identity.mfa.reset',
       { 'tayzu.identity.mfa_reset.path': path },
       async () => {
         const sessions = await withUserLock(userId, async (tx) => {
+          await guard?.(tx);
           await repository.deleteTwoFactorRows(userId, tx);
           await repository.setTwoFactorEnabled(userId, false, tx);
           await repository.writeMfaReenrolMarker(userId, tx);
@@ -157,13 +168,14 @@ export function createMfaResetService(options: MfaResetServiceOptions): MfaReset
   }
 
   return {
-    resetAdmin: async ({ tenantId, actorId, userId, reason }) => {
-      await refuseUnlessAllowed(tenantId, actorId, userId);
-      return run('admin', tenantId, userId, {
-        'tayzu.actor.id': actorId,
-        'tayzu.identity.mfa_reset.reason': reason,
-      });
-    },
+    resetAdmin: ({ tenantId, actorId, userId, reason }) =>
+      run(
+        'admin',
+        tenantId,
+        userId,
+        { 'tayzu.actor.id': actorId, 'tayzu.identity.mfa_reset.reason': reason },
+        (tx) => refuseUnlessAllowed(tenantId, actorId, userId, tx),
+      ),
     resetOperator: ({ tenantId, operatorId, approverId, userId }) =>
       run('operator', tenantId, userId, {
         'tayzu.identity.operator.id': operatorId,

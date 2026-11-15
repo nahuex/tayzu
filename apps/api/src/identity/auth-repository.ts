@@ -104,7 +104,12 @@ export interface AuthRepository {
   listMembers: (tenantId: string) => Promise<MemberRead[]>;
   /** The owners and admins of the tenant other than `excludeUserId`, with their membership dates. */
   adminRecipients: (tenantId: string, excludeUserId: string) => Promise<AdminRecipientRead[]>;
-  memberOf: (tenantId: string, userId: string) => Promise<MemberRead | undefined>;
+  /** `db` is the per-user lock's connection, for the in-lock predicate read (044 D10, Q36). */
+  memberOf: (
+    tenantId: string,
+    userId: string,
+    db?: Pick<Pool, 'query'>,
+  ) => Promise<MemberRead | undefined>;
   userInTenant: (tenantId: string, userId: string) => Promise<UserRead | undefined>;
   sessionsOf: (tenantId: string, userId: string) => Promise<SessionRead[]>;
   /** Deletes one membership of the tenant; true when a row went. */
@@ -134,8 +139,11 @@ export interface AuthRepository {
   globalAccountByKey: (providerId: string, accountId: string) => Promise<AccountRead | undefined>;
   globalAccountsOf: (userId: string, db?: Pick<Pool, 'query'>) => Promise<AccountRead[]>;
   globalInvitationById: (invitationId: string) => Promise<InvitationRead | undefined>;
-  /** Tenant ids only, one per membership of the user. */
-  globalMembershipTenantsOf: (userId: string) => Promise<string[]>;
+  /**
+   * Tenant ids only, one per membership of the user. `db` is the per-user lock's connection, for
+   * the in-lock predicate read (044 D10, Q36).
+   */
+  globalMembershipTenantsOf: (userId: string, db?: Pick<Pool, 'query'>) => Promise<string[]>;
 
   // Two-factor section (044 design D6): each statement runs on `db`, the lock's connection.
 
@@ -401,9 +409,9 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       return result.rows.map((r) => ({ email: r.email, memberSince: r.created_at }));
     },
 
-    async memberOf(tenantId, userId) {
+    async memberOf(tenantId, userId, db = authPool) {
       requireTenant(tenantId);
-      const result = await authPool.query<MemberRow>(
+      const result = await db.query<MemberRow>(
         `select ${MEMBER_COLUMNS} from auth.member where organization_id = $1 and user_id = $2`,
         [tenantId, userId],
       );
@@ -535,8 +543,8 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       return row === undefined ? undefined : toInvitation(row);
     },
 
-    async globalMembershipTenantsOf(userId) {
-      const result = await authPool.query<{ organization_id: string }>(
+    async globalMembershipTenantsOf(userId, db = authPool) {
+      const result = await db.query<{ organization_id: string }>(
         'select organization_id from auth.member where user_id = $1',
         [userId],
       );

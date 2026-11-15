@@ -1203,6 +1203,89 @@ describe('auth-repository', () => {
     await expect(repo.setTwoFactorEnabled('', false)).rejects.toThrow();
   });
 
+  /*
+   * Fix cycle "N3 in-lock predicates" of task 16.2 of `044-password-reset-and-account-recovery`
+   * (design D10, "The predicates are read under the lock (Q36)": "The admin path reads its
+   * predicates inside the per-user lock, on the lock's connection, in the transaction that then
+   * applies the effects").
+   *
+   * ## Production symbols expected
+   *
+   * - `auth-repository.ts`: `globalMembershipTenantsOf(userId, db?)` and
+   *   `memberOf(tenantId, userId, db?)` gain the optional `db: Pick<Pool, 'query'>` that
+   *   `globalTwoFactorStateOf` already has. No function is added: the list of `global*` functions
+   *   below is unchanged.
+   */
+  it('globalMembershipTenantsOf and memberOf run on the client passed as db (a probe client sees the statements, the pool sees none)', async () => {
+    const tenantA = await seedTenant();
+    const tenantB = await seedTenant();
+    const userId = await seedUser();
+    const memberA = await seedMember(tenantA, userId, 'admin');
+
+    // The repository's own pool is a stub that fails on any use.
+    let poolUses = 0;
+    const deadPool = {
+      query: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+      connect: () => {
+        poolUses += 1;
+        return Promise.reject(new Error('the pool must not be used'));
+      },
+    } as unknown as Pool;
+    const probeRepo = createAuthRepository(deadPool);
+
+    const client = await authPool.connect();
+    const statements: string[] = [];
+    const runOnClient = client.query.bind(client) as (...args: unknown[]) => unknown;
+    const probe = new Proxy(client, {
+      get(target, prop) {
+        if (prop === 'query') {
+          return (...args: unknown[]): unknown => {
+            statements.push(typeof args[0] === 'string' ? args[0] : '');
+            return runOnClient(...args);
+          };
+        }
+        return Reflect.get(target, prop) as unknown;
+      },
+    });
+    try {
+      // A second membership that only this client's open transaction can see.
+      await client.query('begin');
+      const memberB = `mem-${randomUUID()}`;
+      await client.query(
+        'insert into auth.member (id, organization_id, user_id, role, created_at) values ($1, $2, $3, $4, now())',
+        [memberB, tenantB, userId, 'member'],
+      );
+
+      const tenants = await probeRepo.globalMembershipTenantsOf(userId, probe);
+      expect([...tenants].sort(), 'the read sees the rows of the client’s transaction').toEqual(
+        [tenantA, tenantB].sort(),
+      );
+      expect(await probeRepo.memberOf(tenantA, userId, probe)).toMatchObject({
+        id: memberA,
+        organizationId: tenantA,
+        userId,
+        role: 'admin',
+      });
+      expect(
+        await probeRepo.memberOf(tenantB, userId, probe),
+        'the read sees the rows of the client’s transaction',
+      ).toMatchObject({ id: memberB, organizationId: tenantB, userId, role: 'member' });
+
+      // Without `db` the reads still go through the pool, which sees committed rows only.
+      expect(await repo.globalMembershipTenantsOf(userId)).toEqual([tenantA]);
+      expect(await repo.memberOf(tenantB, userId)).toBeUndefined();
+    } finally {
+      await client.query('rollback').catch(() => undefined);
+      client.release();
+    }
+
+    expect(poolUses, 'the pool sees none of the statements').toBe(0);
+    expect(statements.length, 'the probe client saw every statement').toBeGreaterThanOrEqual(3);
+  });
+
   it('only the global functions are callable without a tenantId', async () => {
     const names = Object.keys(repo);
     const globals = names.filter((name) => name.startsWith('global'));
