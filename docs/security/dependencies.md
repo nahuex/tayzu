@@ -86,7 +86,7 @@ touches it.
 | PostgreSQL  | 16              | Check `postgresql.org/support/versioning`                                                     |
 | TypeScript  | ~6.0.3 (pinned) | Pinned for typescript-eslint compatibility (root `CLAUDE.md`); re-check the pin every quarter |
 | Drizzle ORM | ^0.45.3         | Actively maintained; no published EOL                                                         |
-| re2js       | ^2.8.6          | Actively maintained; no published EOL                                                         |
+| re2js       | ^2.8.7          | Actively maintained; no published EOL                                                         |
 | Ajv         | ^8.20.0         | Actively maintained; no published EOL                                                         |
 
 | Review date                                                             | Reviewer | Outcome |
@@ -130,6 +130,22 @@ graph resolves to a patched version on its own.
 The `source-map-js` path enters through `vitest`, an optional peer of Better
 Auth that is test tooling and is not loaded at runtime; the override still
 fixes it so the `dependency-audit` job stays green without a waiver.
+
+## Security updates
+
+Updates made because `pnpm audit --prod --audit-level=high` reported an
+advisory. Each one moves to the first patched release, the smallest change that
+removes the vulnerable code, and the full test suite runs against it.
+
+| Date       | Package                                                                        | From → to       | Advisory                                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-11-15 | `better-auth`, `@better-auth/api-key`, `@better-auth/drizzle-adapter` (pinned) | 1.7.6 → 1.7.7   | GHSA-965c-763c-88jm (critical, OAuth state used as a magic link), GHSA-r4xp-prcw-77qf (high, OAuth Proxy sign-in as another user) |
+| 2026-11-15 | `zod`                                                                          | ^4.6.5 → ^4.6.6 | GHSA-mrhx-c7xc-m3w5 (high, memory exhaustion on oversized constrained collections)                                                |
+| 2026-11-15 | `re2js`                                                                        | ^2.8.6 → ^2.8.7 | GHSA-gg6h-894w-4m9c (high, quadratic lookbehind matching)                                                                         |
+| 2026-11-15 | `vite` (root devDependency; also `better-auth > vitest > vite`)                | ^8.3.1 → ^8.3.3 | GHSA-587h-7wmj-h5pm (high, `launch-editor` on Windows) and the two moderate `launch-editor` advisories                            |
+
+The `@better-auth/api-key` storage notes below were re-checked against 1.7.7:
+the cited lines are unchanged.
 
 ## Audited waiver path for `pnpm audit`
 
@@ -189,8 +205,8 @@ the table below:
 
 ## API key storage at rest (`@better-auth/api-key`)
 
-Checked against the installed source of `@better-auth/api-key@1.7.6`
-(`node_modules/.pnpm/@better-auth+api-key@1.7.6_*/node_modules/@better-auth/api-key/dist/index.mjs`),
+Checked against the installed source of `@better-auth/api-key@1.7.7`
+(`node_modules/.pnpm/@better-auth+api-key@1.7.7_*/node_modules/@better-auth/api-key/dist/index.mjs`),
 not the documentation site.
 
 - **Algorithm**: unsalted, unpeppered SHA-256 of the UTF-8 key, encoded as
