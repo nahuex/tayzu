@@ -63,11 +63,16 @@ interface Edge {
   dstId: string;
 }
 
-function readMermaid(): string {
+/** Every Mermaid block of the document, in order: the full diagram, then the zones. */
+function readMermaidBlocks(): string[] {
   const doc = readFileSync(DOC_PATH, 'utf8');
-  const match = /```mermaid\n([\s\S]*?)\n```/.exec(doc);
-  if (!match?.[1]) throw new Error('no mermaid block in system-diagram.md');
-  return match[1];
+  return [...doc.matchAll(/```mermaid\n([\s\S]*?)\n```/g)].map((m) => m[1] ?? '');
+}
+
+function readMermaid(): string {
+  const [first] = readMermaidBlocks();
+  if (!first) throw new Error('no mermaid block in system-diagram.md');
+  return first;
 }
 
 function flatten(text: string): string {
@@ -343,5 +348,200 @@ describe('system diagram, 044 password reset and account recovery (task 15.5)', 
     const fresh = find((e) => topic.test(e.text));
     expect(fresh.length).toBeGreaterThanOrEqual(8);
     for (const e of fresh) expect(e.label, e.text).toMatch(PROTOCOL);
+  });
+});
+
+/**
+ * `044` task 16.2 fix cycle, Resolved decision Q36 row N1 (design D19, last
+ * sentences): the diagrams per trust zone carry the same `044` nodes and arrows
+ * as the full diagram, and the break-glass CLI's telemetry export (OTLP, which
+ * the CLI refuses to run without, Q29 and Q31) is an arrow to the monitoring
+ * backend.
+ *
+ * Rules this suite derives from the document (none is hard-coded):
+ *
+ * - The first Mermaid block is the full diagram; every following block is one
+ *   trust zone, whose nodes sit in its single `subgraph zone[...]` box.
+ * - The zone of a node is the innermost subgraph that declares it in the full
+ *   diagram.
+ * - The zone block of a full-diagram subgraph is the one block whose zone box
+ *   declares nodes that the subgraph directly declares (by node id). So both
+ *   `acaEnv` and its nested `apiApp` map to the "API and sidecars" block.
+ * - Projection (the rule the blocks already follow for `043`, for example
+ *   `operator --> backfillJob` is in both the delivery block and the
+ *   identity-jobs block): an arrow of the full diagram appears, with the same
+ *   ends and the same label, in the zone block of each of its ends. An arrow
+ *   whose two ends share a zone block appears only in the full diagram.
+ *
+ * Production symbols expected: none (the change is the Markdown document).
+ *
+ * Why this fails right now: no zone block declares a `044` node or draws a
+ * `044` arrow, and the full diagram has no arrow from the break-glass CLI to
+ * the monitoring backend (assertion failures only).
+ */
+interface Block {
+  nodes: Map<string, string>;
+  edges: Edge[];
+  /** Node id to the id of the innermost subgraph that declares it. */
+  container: Map<string, string>;
+  /** Ids of the subgraphs themselves (not nodes). */
+  subgraphs: Set<string>;
+}
+
+function parseBlock(blockSource: string): Block {
+  const container = new Map<string, string>();
+  const subgraphs = new Set<string>();
+  const stack: string[] = [];
+  for (const raw of blockSource.split('\n')) {
+    const line = raw.trim();
+    const open = /^subgraph\s+(\w+)/.exec(line);
+    if (open?.[1] !== undefined) {
+      stack.push(open[1]);
+      subgraphs.add(open[1]);
+      continue;
+    }
+    if (line === 'end') {
+      stack.pop();
+      continue;
+    }
+    if (line.includes('-->') || line.includes('-.->')) continue;
+    const node = /^(\w+)(?:\(\[|\[\(|\[|\()"/.exec(line);
+    const parent = stack.at(-1);
+    if (node?.[1] !== undefined && parent !== undefined) container.set(node[1], parent);
+  }
+  const parsed = parse(blockSource);
+  return { nodes: parsed.nodes, edges: parsed.edges, container, subgraphs };
+}
+
+const [fullBlock, ...zoneBlocks] = readMermaidBlocks().map(parseBlock);
+const full: Block = fullBlock ?? parseBlock('');
+
+/** The nodes a zone block draws inside its zone box. */
+function zoneMembers(block: Block): string[] {
+  return [...block.container].filter(([, box]) => box === 'zone').map(([id]) => id);
+}
+
+/** The zone block of a full-diagram subgraph (see the rules above). */
+function blockOfSubgraph(subgraph: string): Block | undefined {
+  const members = [...full.container].filter(([, box]) => box === subgraph).map(([id]) => id);
+  const matches = zoneBlocks.filter((b) => zoneMembers(b).some((id) => members.includes(id)));
+  expect(matches.length, `zone blocks for subgraph ${subgraph}`).toBeLessThanOrEqual(1);
+  return matches[0];
+}
+
+/** The zone block of a full-diagram node, or undefined when it lies in no zone. */
+function blockOfNode(id: string): Block | undefined {
+  const subgraph = full.container.get(id);
+  return subgraph === undefined ? undefined : blockOfSubgraph(subgraph);
+}
+
+const is044Label = (label: string): boolean =>
+  isResetRoute(label) || isMailClient(label) || isBreakGlass(label);
+
+/** The four `044` nodes, found in the full diagram by their labels. */
+const NODES_044: [string, (label: string) => boolean][] = [
+  ['reset request route', (l) => l.includes('/v1/auth/password-reset/request')],
+  ['reset confirm route', (l) => l.includes('/v1/auth/password-reset/confirm')],
+  ['mail client', isMailClient],
+  ['break-glass CLI', isBreakGlass],
+];
+
+function fullNodeIds(pred: (label: string) => boolean): string[] {
+  return [...full.nodes]
+    .filter(([id, label]) => !full.subgraphs.has(id) && pred(label))
+    .map(([id]) => id);
+}
+
+const ids044 = new Set(NODES_044.flatMap(([, pred]) => fullNodeIds(pred)));
+const fullEdges044 = full.edges.filter((e) => ids044.has(e.srcId) || ids044.has(e.dstId));
+const arrow = (e: Edge): string => `${e.srcId} -->|${e.label}| ${e.dstId}`;
+
+/** A zone block's own `044` nodes and arrows, by id or by label. */
+function drawn044(block: Block): { nodeIds: string[]; edges: Edge[] } {
+  const nodeIds = [...block.nodes]
+    .filter(([id, label]) => !block.subgraphs.has(id) && (ids044.has(id) || is044Label(label)))
+    .map(([id]) => id);
+  const edges = block.edges.filter((e) => nodeIds.includes(e.srcId) || nodeIds.includes(e.dstId));
+  return { nodeIds, edges };
+}
+
+describe('system diagram, 044 trust zones and the break-glass telemetry (task 16.2, Q36 N1)', () => {
+  it('has the break-glass CLI exporting its telemetry over OTLP to the monitoring backend', () => {
+    const matches = full.edges.filter(
+      (e) => isBreakGlass(e.src) && /Azure Monitor|Application Insights|monitoring/i.test(e.dst),
+    );
+    expect(matches.map(arrow)).not.toEqual([]);
+    expect(matches.some((e) => /OTLP/.test(e.label))).toBe(true);
+  });
+
+  it.each(NODES_044)('every 044 node appears in the block of its zone: %s', (_name, pred) => {
+    const found = fullNodeIds(pred);
+    expect(found).toHaveLength(1);
+    const id = found[0] ?? '';
+    const subgraph = full.container.get(id);
+    expect(subgraph, `${id} is declared in a subgraph of the full diagram`).toBeDefined();
+    const block = blockOfSubgraph(subgraph ?? '');
+    expect(block, `a zone block for subgraph ${String(subgraph)}`).toBeDefined();
+    expect(
+      zoneMembers(block ?? full),
+      `${id} inside the zone box of ${String(subgraph)}`,
+    ).toContain(id);
+    expect(block?.nodes.get(id)).toBe(full.nodes.get(id));
+  });
+
+  it('every arrow of the full diagram that touches a 044 node appears with the same label in the zone block of each of its ends that lies in a zone', () => {
+    expect(ids044.size).toBe(NODES_044.length);
+    expect(fullEdges044.length).toBeGreaterThanOrEqual(12);
+    const missing: string[] = [];
+    for (const e of fullEdges044) {
+      const srcBlock = blockOfNode(e.srcId);
+      const dstBlock = blockOfNode(e.dstId);
+      // An arrow inside one zone appears only in the full diagram.
+      if (srcBlock !== undefined && srcBlock === dstBlock) continue;
+      for (const block of [srcBlock, dstBlock]) {
+        if (block === undefined) continue;
+        const drawn = block.edges.some(
+          (z) =>
+            z.srcId === e.srcId &&
+            z.dstId === e.dstId &&
+            z.label === e.label &&
+            // Both ends are declared in the block, with the full diagram's labels.
+            block.nodes.get(e.srcId) === e.src &&
+            block.nodes.get(e.dstId) === e.dst,
+        );
+        if (!drawn) missing.push(`[${block.nodes.get('zone') ?? '?'}] ${arrow(e)}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('no zone block draws a 044 node or a 044 arrow that the full diagram does not have', () => {
+    const extra: string[] = [];
+    let drawn = 0;
+    for (const block of zoneBlocks) {
+      const zone = block.nodes.get('zone') ?? '?';
+      const { nodeIds, edges: zoneEdges } = drawn044(block);
+      drawn += nodeIds.length + zoneEdges.length;
+      for (const id of nodeIds) {
+        if (!ids044.has(id) || block.nodes.get(id) !== full.nodes.get(id)) {
+          extra.push(`[${zone}] node ${id}: ${block.nodes.get(id) ?? ''}`);
+        }
+      }
+      for (const z of zoneEdges) {
+        const inFull = fullEdges044.some(
+          (e) => e.srcId === z.srcId && e.dstId === z.dstId && e.label === z.label,
+        );
+        if (!inFull) extra.push(`[${zone}] ${arrow(z)}`);
+      }
+    }
+    expect(extra).toEqual([]);
+    // Not vacuous: the zone blocks do draw 044 nodes and arrows.
+    expect(drawn).toBeGreaterThan(0);
+  });
+
+  it('every arrow of a zone block that touches a 044 node names a protocol', () => {
+    const touching = zoneBlocks.flatMap((block) => drawn044(block).edges);
+    expect(touching.length).toBeGreaterThan(0);
+    for (const e of touching) expect(e.label, e.text).toMatch(PROTOCOL);
   });
 });
