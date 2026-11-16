@@ -19,3 +19,12 @@ c2e94f55011ca699bdc7f69c74bac39905b8a462:packages/auth/src/sso-sign-in.int.test.
 21a2a9ef05d49dae3b098a4a44c70b05a0c5c412:apps/api/src/config.test.ts:generic-api-key:458
 e918b15d3872594c9e60ba035a5561d5b75476ed:packages/auth/src/identity/email/azure-email-sender.test.ts:generic-api-key:18
 41ebf13d82a5e10bbf29b1d97ebbdaafc0086bf7:apps/api/src/identity/invitation-link.test.ts:generic-api-key:27
+# The same five historical test literals as above, as they appear in commit 5e8d777
+# (already on master); the literals were replaced by generated values in 5b3d2c7.
+5e8d7772dfb204381106f385a181b1f317dac0ae:apps/api/src/identity/recipient-key.test.ts:generic-api-key:23
+5e8d7772dfb204381106f385a181b1f317dac0ae:apps/api/src/identity/invitation-link.test.ts:generic-api-key:27
+5e8d7772dfb204381106f385a181b1f317dac0ae:apps/api/src/config.test.ts:generic-api-key:460
+5e8d7772dfb204381106f385a181b1f317dac0ae:apps/api/src/password-policy.int.test.ts:generic-api-key:48
+5e8d7772dfb204381106f385a181b1f317dac0ae:packages/auth/src/identity/email/azure-email-sender.test.ts:generic-api-key:18
+# 044 task 8.6: a password-policy test input that must contain no digit, not a secret.
+2dc269f31b855b56c4cdcffc2715c46d3c9b702c:apps/api/src/password-reset-confirm.http.int.test.ts:generic-api-key:802

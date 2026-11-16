@@ -93,7 +93,7 @@ export async function hasExpiredTemporaryPasswordMarker(
 }
 
 /** Far-future `expiresAt` so Better Auth's cleanup of expired verification rows never reaches the marker. */
-const MARKER_EXPIRES_AT_SENTINEL = new Date('9999-12-31T23:59:59.000Z');
+export const MARKER_EXPIRES_AT_SENTINEL = new Date('9999-12-31T23:59:59.000Z');
 
 /** A temporary password stops working 48 hours after the creation (Resolved decision Q142). */
 const TEMPORARY_PASSWORD_TTL_MS = 48 * 60 * 60 * 1000;

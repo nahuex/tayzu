@@ -81,7 +81,66 @@ export function assertDastCoverage(report: unknown): DastCoverage {
   return coverage;
 }
 
+export interface ProbeCoverage {
+  /** Every response in the probe result. */
+  responses: number;
+  /** Of those, the 2xx answers of the password-reset request route. */
+  requestRouteSuccesses: number;
+}
+
+const PROBE_REQUEST_ROUTE = '/v1/auth/password-reset/request';
+
+/** Counts the DAST probe's responses (044 task 14.2); fails closed, with counts only. */
+export function assertProbeCoverage(result: unknown): ProbeCoverage {
+  const list =
+    typeof result === 'object' && result !== null
+      ? (result as Record<string, unknown>)['responses']
+      : undefined;
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error('DAST probe result has no responses');
+  }
+  let requestRouteSuccesses = 0;
+  for (const item of list as unknown[]) {
+    if (typeof item !== 'object' || item === null) continue;
+    const { path, status } = item as Record<string, unknown>;
+    if (
+      path === PROBE_REQUEST_ROUTE &&
+      typeof status === 'number' &&
+      status >= 200 &&
+      status < 300
+    ) {
+      requestRouteSuccesses += 1;
+    }
+  }
+  if (requestRouteSuccesses === 0) {
+    throw new Error(
+      `DAST probe saw no 2xx on the request route (${String(list.length)} responses, 0 successful)`,
+    );
+  }
+  return { responses: list.length, requestRouteSuccesses };
+}
+
+function mainProbe(path: string): void {
+  try {
+    const coverage = assertProbeCoverage(JSON.parse(readFileSync(path, 'utf8')));
+    console.log(
+      `DAST probe coverage: ${String(coverage.responses)} responses, ${String(coverage.requestRouteSuccesses)} 2xx on the request route.`,
+    );
+  } catch (error) {
+    console.error(
+      error instanceof Error && error.message.startsWith('DAST probe')
+        ? error.message
+        : 'DAST probe result could not be read',
+    );
+    process.exit(1);
+  }
+}
+
 function main(): void {
+  if (process.argv[2] === '--probe' && process.argv[3] !== undefined) {
+    mainProbe(process.argv[3]);
+    return;
+  }
   const path = process.argv[2];
   if (path === undefined) {
     console.error('usage: dast-coverage.ts <api_messages.json>');

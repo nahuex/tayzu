@@ -154,6 +154,7 @@ describe('step-up over HTTP with the switch on (task 14.4, spec "Every high-risk
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ORIGIN,
       MOUNT_IDENTITY_ROUTES: 'true',
+      PASSWORD_RESET_LINK_BASE_URL: ORIGIN,
       IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
       VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
       VISMA_CONNECT_CLIENT_ID: stub.clientId,

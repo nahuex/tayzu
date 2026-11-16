@@ -14,7 +14,13 @@ import {
 
 import type { Config } from './config.js';
 
-export function createEmailSender(config: Config): EmailSender {
+/** The four fields the sender reads, so a script needs no full `Config` (044 task 11.2). */
+export type EmailSenderConfig = Pick<
+  Config,
+  'emailProvider' | 'acsConnectionString' | 'emailSenderAddress' | 'emailRecipientDomainAllowlist'
+>;
+
+export function createEmailSender(config: EmailSenderConfig): EmailSender {
   const sender = selectEmailSender(config);
   // The allowlist wraps the provider's sender whenever it is set, in any environment (Q99, Q138).
   return config.emailRecipientDomainAllowlist.length > 0
@@ -22,7 +28,7 @@ export function createEmailSender(config: Config): EmailSender {
     : sender;
 }
 
-function selectEmailSender(config: Config): EmailSender {
+function selectEmailSender(config: EmailSenderConfig): EmailSender {
   switch (config.emailProvider) {
     case undefined:
       return createRecordingEmailSender();

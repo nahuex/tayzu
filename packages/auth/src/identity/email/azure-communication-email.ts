@@ -9,6 +9,13 @@ import { EmailClient } from '@azure/communication-email';
 
 import { renderAdminAcceptedNotice } from './admin-accepted-notice-template.js';
 import { renderInvitationEmail } from './invitation-email-template.js';
+import { renderPasswordResetEmail } from './password-reset-email-template.js';
+import {
+  renderAccountCreatedNotice,
+  renderMfaChangedNotice,
+  renderMfaResetNotice,
+  renderPasswordChangedNotice,
+} from './recovery-notice-templates.js';
 import { validateRecipient } from './sender.js';
 import type { EmailSender, EmailTemplate } from './sender.js';
 
@@ -74,10 +81,30 @@ export type AzureCommunicationEmailSenderOptions = { readonly senderAddress: str
 );
 
 function content(template: EmailTemplate): AcsEmailMessage['content'] {
-  const rendered =
-    template.kind === 'InvitationEmail'
-      ? renderInvitationEmail(template)
-      : renderAdminAcceptedNotice(template);
+  let rendered;
+  switch (template.kind) {
+    case 'InvitationEmail':
+      rendered = renderInvitationEmail(template);
+      break;
+    case 'AdminAcceptedNotice':
+      rendered = renderAdminAcceptedNotice(template);
+      break;
+    case 'PasswordResetEmail':
+      rendered = renderPasswordResetEmail(template);
+      break;
+    case 'PasswordChangedNotice':
+      rendered = renderPasswordChangedNotice(template);
+      break;
+    case 'MfaChangedNotice':
+      rendered = renderMfaChangedNotice(template);
+      break;
+    case 'MfaResetNotice':
+      rendered = renderMfaResetNotice(template);
+      break;
+    case 'AccountCreatedNotice':
+      rendered = renderAccountCreatedNotice(template);
+      break;
+  }
   return { subject: rendered.subject, plainText: rendered.text, html: rendered.html };
 }
 

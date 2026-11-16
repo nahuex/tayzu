@@ -101,6 +101,7 @@ const ENV: Record<string, string> = {
   CERBOS_ADDRESS: 'localhost:3593',
   ALLOWED_ORIGINS: ORIGIN,
   INVITATION_LINK_BASE_URL: ORIGIN,
+  PASSWORD_RESET_LINK_BASE_URL: ORIGIN,
   IDENTITY_TOKEN_HMAC_SECRET: 'wiring-hmac-test-only-secret-0123456789-abcdef',
 };
 

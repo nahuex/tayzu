@@ -114,6 +114,7 @@ import { SeverityNumber, type AnyValueMap } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Import order is load-bearing (task 2.4; design D1; `packages/observability/
@@ -434,5 +435,105 @@ describe('A banned user signs in exactly like any other failure (task 13.4b, D13
     expect(bannedLogs[0]?.attributes).toEqual({ 'tayzu.auth.failure_reason': 'account_disabled' });
     expect(wrongLogs).toHaveLength(1);
     expect(wrongLogs[0]?.attributes).toEqual({ 'tayzu.auth.failure_reason': 'bad_credentials' });
+  }, 60_000);
+});
+
+/**
+ * Task 8.13 (044 design D7, Q28). Spec scenario "The sign-in fence does not reveal an account":
+ * GIVEN an address with a password and an address with no account, WHEN each is submitted to the
+ * sign-in route, THEN both answers have the same status, code and body shape, and the fence
+ * performs the same single credential lookup for each.
+ *
+ * The counting adapter is a wrapper on the Postgres pool of the Drizzle handle. A credential-hash
+ * lookup is a SELECT on `"auth"."account"` that binds the provider id `credential`; Better Auth's
+ * own reads of a user's accounts filter by user id only, so they do not count. Both attempts use a
+ * wrong password, so the only lookup is the fence's `hooks.before` one.
+ *
+ * ## Production symbols expected
+ *
+ * None new: the `hooks.before` lookup on `/sign-in/email` in `auth.ts`.
+ */
+describe('The sign-in fence does not reveal an account (task 8.13, D7, Q28)', () => {
+  let pool: Pool;
+  let auth: AuthInstance;
+  let db: ReturnType<typeof drizzle<typeof authSchema>>;
+  let statements: { text: string; values: readonly unknown[] }[] = [];
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: databaseUrl() });
+    const originalQuery = pool.query.bind(pool) as (...args: unknown[]) => Promise<unknown>;
+    (pool as unknown as { query: (...args: unknown[]) => Promise<unknown> }).query = (
+      ...args: unknown[]
+    ): Promise<unknown> => {
+      const first = args[0];
+      const text =
+        typeof first === 'string' ? first : ((first as { text?: string } | undefined)?.text ?? '');
+      const values =
+        (Array.isArray(args[1]) ? (args[1] as unknown[]) : undefined) ??
+        (first as { values?: unknown[] } | undefined)?.values ??
+        [];
+      statements.push({ text, values });
+      return originalQuery(...args);
+    };
+    db = drizzle(pool, { schema: authSchema });
+    await runMigrations(pool);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      rateLimit: {
+        signIn: { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: SIGN_IN_RATE_LIMIT_MAX },
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(pool);
+  });
+
+  function credentialLookups(): number {
+    return statements.filter(
+      (s) =>
+        /^\s*select/i.test(s.text) &&
+        s.text.includes('"auth"."account"') &&
+        s.values.includes('credential'),
+    ).length;
+  }
+
+  it('a known and an unknown address answer sign-in with the same status, code and body shape, and one credential-hash lookup each', async () => {
+    const handler = handlerOf(auth);
+    const knownEmail = randomEmail();
+    await createAdminUser(auth, {
+      name: 'Fence Enumeration User',
+      email: knownEmail,
+      password: TEST_PASSWORD,
+    });
+    const unknownEmail = randomEmail();
+
+    statements = [];
+    const knownResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: knownEmail,
+      password: WRONG_PASSWORD,
+    });
+    const knownLookups = credentialLookups();
+
+    statements = [];
+    const unknownResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: unknownEmail,
+      password: WRONG_PASSWORD,
+    });
+    const unknownLookups = credentialLookups();
+
+    expect(knownResponse.status, 'control: a wrong password is a failure').toBeGreaterThanOrEqual(
+      400,
+    );
+    expect(unknownResponse.status, 'same status').toBe(knownResponse.status);
+    const knownBody = (await knownResponse.json()) as AuthErrorBody;
+    expect(typeof knownBody.code).toBe('string');
+    expect(await unknownResponse.json(), 'same code and body shape').toEqual(knownBody);
+
+    expect(knownLookups, 'one credential-hash lookup for the known address').toBe(1);
+    expect(unknownLookups, 'one credential-hash lookup for the unknown address').toBe(1);
   }, 60_000);
 });

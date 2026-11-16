@@ -48,6 +48,7 @@ function env(overrides: Record<string, string | undefined>): Record<string, stri
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
+    PASSWORD_RESET_LINK_BASE_URL: 'https://app.tayzu.test',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     IDENTITY_TOKEN_HMAC_SECRET: 'sender-hmac-test-only-secret-0123456789-abcdef',
     ...overrides,

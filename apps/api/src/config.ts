@@ -16,6 +16,7 @@ export interface Config {
   readonly betterAuthUrl?: string;
   /** Origin of invitation links (Q32): `https` and in `allowedOrigins` outside test; undefined only in test. */
   readonly invitationLinkBaseUrl?: string;
+  readonly passwordResetLinkBaseUrl?: string;
   /** Key of the per-recipient caps (Q93): at least 32 bytes outside test; undefined only in test when unset. */
   readonly identityTokenHmacSecret?: string;
   /** Email provider (Q96): required outside test; undefined only under test when unset. */
@@ -57,6 +58,30 @@ export interface Config {
     readonly max: number;
     readonly windowSeconds: number;
   };
+  /** Reset request route, per caller IP (044 D9); window in seconds. */
+  readonly passwordResetRequestRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Reset confirm route, per caller IP (044 D9); window in seconds. */
+  readonly passwordResetConfirmRateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Reset emails per recipient (044 D9, Q23); window in seconds. */
+  readonly passwordResetRecipientCap: { readonly max: number; readonly windowSeconds: number };
+  /** Reset emails per caller IP key (044 D9, Q28); window in seconds. */
+  readonly passwordResetIpCap: { readonly max: number; readonly windowSeconds: number };
+  /** Reset emails across the platform (044 D9); window in seconds. */
+  readonly passwordResetGlobalCap: { readonly max: number; readonly windowSeconds: number };
+  /** Recovery notice emails per recipient (044 D9); window in seconds. */
+  readonly recoveryNoticeRecipientCap: { readonly max: number; readonly windowSeconds: number };
+  /** Account-created notice emails per tenant (044 Q20); window in seconds. */
+  readonly accountCreatedNoticeTenantCap: {
+    readonly max: number;
+    readonly windowSeconds: number;
+  };
+  /** Account-created notice emails across the platform (044 Q20); window in seconds. */
+  readonly accountCreatedNoticeGlobalCap: {
+    readonly max: number;
+    readonly windowSeconds: number;
+  };
+  /** Minimum response time of the reset request route in milliseconds, 1..5000 (044 D9). */
+  readonly passwordResetMinResponseMs: number;
   /** `INVITATION_EMAIL_KILL_SWITCH` (Q15): stops every invitation email when on. */
   readonly invitationEmailKillSwitch: boolean;
   /** Maximum request body in bytes (D13). */
@@ -91,6 +116,16 @@ const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
 const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
 const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
 const DEFAULT_MACHINE_CREDENTIAL_LIMIT = { max: 60, windowSeconds: 3600 };
+const DEFAULT_PASSWORD_RESET_REQUEST_LIMIT = { max: 10, windowSeconds: 60 };
+const DEFAULT_PASSWORD_RESET_CONFIRM_LIMIT = { max: 10, windowSeconds: 60 };
+const DEFAULT_PASSWORD_RESET_RECIPIENT_CAP = { max: 5, windowSeconds: 3600 };
+const DEFAULT_PASSWORD_RESET_IP_CAP = { max: 10, windowSeconds: 3600 };
+const DEFAULT_PASSWORD_RESET_GLOBAL_CAP = { max: 600, windowSeconds: 3600 };
+const DEFAULT_RECOVERY_NOTICE_RECIPIENT_CAP = { max: 10, windowSeconds: 86_400 };
+const DEFAULT_ACCOUNT_CREATED_NOTICE_TENANT_CAP = { max: 20, windowSeconds: 86_400 };
+const DEFAULT_ACCOUNT_CREATED_NOTICE_GLOBAL_CAP = { max: 1000, windowSeconds: 86_400 };
+const DEFAULT_PASSWORD_RESET_MIN_RESPONSE_MS = 400;
+const MAX_PASSWORD_RESET_MIN_RESPONSE_MS = 5000;
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 const DEFAULT_CREDENTIAL_CAP = 200;
 const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
@@ -132,6 +167,17 @@ function limitWithDefaults(
     max: optionalPositiveInt(env, maxName) ?? defaults.max,
     windowSeconds: optionalPositiveInt(env, windowName) ?? defaults.windowSeconds,
   };
+}
+
+/** `PASSWORD_RESET_MIN_RESPONSE_MS` (044 D9): an integer in 1..5000. */
+function loadPasswordResetMinResponseMs(env: Env): number {
+  const value = optionalPositiveInt(env, 'PASSWORD_RESET_MIN_RESPONSE_MS');
+  if (value !== undefined && value > MAX_PASSWORD_RESET_MIN_RESPONSE_MS) {
+    throw new Error(
+      `PASSWORD_RESET_MIN_RESPONSE_MS is malformed (1 to ${String(MAX_PASSWORD_RESET_MIN_RESPONSE_MS)}).`,
+    );
+  }
+  return value ?? DEFAULT_PASSWORD_RESET_MIN_RESPONSE_MS;
 }
 
 const SSO_VARIABLES = [
@@ -187,33 +233,39 @@ function loadBetterAuthUrl(env: Env): string | undefined {
   return value;
 }
 
-/** `INVITATION_LINK_BASE_URL` (Q32): outside test it is required, `https` and one of `ALLOWED_ORIGINS`. */
-function loadInvitationLinkBaseUrl(
+/**
+ * A link base URL variable (`INVITATION_LINK_BASE_URL`, Q32, and
+ * `PASSWORD_RESET_LINK_BASE_URL`, 044 D9): outside test it is required, `https`
+ * and one of `ALLOWED_ORIGINS`; under test it is optional, `http` or `https`.
+ * An error names the variable and never its value.
+ */
+function loadLinkBaseUrl(
   env: Env,
+  name: string,
   allowedOrigins: readonly string[],
 ): string | undefined {
   const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
-  if (isTest && env['INVITATION_LINK_BASE_URL'] === undefined) {
+  if (isTest && env[name] === undefined) {
     return undefined;
   }
-  const value = required(env, 'INVITATION_LINK_BASE_URL').trim();
+  const value = required(env, name).trim();
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new Error('INVITATION_LINK_BASE_URL is malformed (an absolute URL is required).');
+    throw new Error(`${name} is malformed (an absolute URL is required).`);
   }
   if (isTest) {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+      throw new Error(`${name} is malformed (https is required).`);
     }
     return value;
   }
   if (url.protocol !== 'https:') {
-    throw new Error('INVITATION_LINK_BASE_URL is malformed (https is required).');
+    throw new Error(`${name} is malformed (https is required).`);
   }
   if (!allowedOrigins.includes(url.origin)) {
-    throw new Error('INVITATION_LINK_BASE_URL is malformed (it must be one of ALLOWED_ORIGINS).');
+    throw new Error(`${name} is malformed (it must be one of ALLOWED_ORIGINS).`);
   }
   return value;
 }
@@ -345,7 +397,12 @@ export function loadConfig(env: Env): Config {
     .filter((origin) => origin !== '');
   validateAllowedOrigins(env, allowedOrigins);
   const betterAuthUrl = loadBetterAuthUrl(env);
-  const invitationLinkBaseUrl = loadInvitationLinkBaseUrl(env, allowedOrigins);
+  const invitationLinkBaseUrl = loadLinkBaseUrl(env, 'INVITATION_LINK_BASE_URL', allowedOrigins);
+  const passwordResetLinkBaseUrl = loadLinkBaseUrl(
+    env,
+    'PASSWORD_RESET_LINK_BASE_URL',
+    allowedOrigins,
+  );
   const identityTokenHmacSecret = loadIdentityTokenHmacSecret(env);
   const email = loadEmail(env);
   const sso = loadSso(env);
@@ -409,6 +466,16 @@ export function loadConfig(env: Env): Config {
     'REAUTHORIZATION_CALLBACK_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_PUBLIC_ROUTE_LIMIT,
   );
+  const resetLimit = (
+    prefix: string,
+    defaults: { max: number; windowSeconds: number },
+  ): { max: number; windowSeconds: number } =>
+    limitWithDefaults(
+      env,
+      `${prefix}_RATE_LIMIT_MAX`,
+      `${prefix}_RATE_LIMIT_WINDOW_SECONDS`,
+      defaults,
+    );
   const bodyLimit = optionalPositiveInt(env, 'BODY_LIMIT_BYTES') ?? DEFAULT_BODY_LIMIT_BYTES;
   const credentialCap = optionalPositiveInt(env, 'CREDENTIAL_CAP') ?? DEFAULT_CREDENTIAL_CAP;
   const serviceAccountCap =
@@ -424,6 +491,7 @@ export function loadConfig(env: Env): Config {
     allowedOrigins,
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
     ...(invitationLinkBaseUrl === undefined ? {} : { invitationLinkBaseUrl }),
+    ...(passwordResetLinkBaseUrl === undefined ? {} : { passwordResetLinkBaseUrl }),
     ...(identityTokenHmacSecret === undefined ? {} : { identityTokenHmacSecret }),
     backchannelLogoutRateLimitPerMinute,
     ...email,
@@ -439,6 +507,33 @@ export function loadConfig(env: Env): Config {
     machineCredentialRateLimit,
     invitationAcceptRateLimit,
     reauthorizationCallbackRateLimit,
+    passwordResetRequestRateLimit: resetLimit(
+      'PASSWORD_RESET_REQUEST',
+      DEFAULT_PASSWORD_RESET_REQUEST_LIMIT,
+    ),
+    passwordResetConfirmRateLimit: resetLimit(
+      'PASSWORD_RESET_CONFIRM',
+      DEFAULT_PASSWORD_RESET_CONFIRM_LIMIT,
+    ),
+    passwordResetRecipientCap: resetLimit(
+      'PASSWORD_RESET_RECIPIENT',
+      DEFAULT_PASSWORD_RESET_RECIPIENT_CAP,
+    ),
+    passwordResetIpCap: resetLimit('PASSWORD_RESET_IP', DEFAULT_PASSWORD_RESET_IP_CAP),
+    passwordResetGlobalCap: resetLimit('PASSWORD_RESET_GLOBAL', DEFAULT_PASSWORD_RESET_GLOBAL_CAP),
+    recoveryNoticeRecipientCap: resetLimit(
+      'RECOVERY_NOTICE_RECIPIENT',
+      DEFAULT_RECOVERY_NOTICE_RECIPIENT_CAP,
+    ),
+    accountCreatedNoticeTenantCap: resetLimit(
+      'ACCOUNT_CREATED_NOTICE_TENANT',
+      DEFAULT_ACCOUNT_CREATED_NOTICE_TENANT_CAP,
+    ),
+    accountCreatedNoticeGlobalCap: resetLimit(
+      'ACCOUNT_CREATED_NOTICE_GLOBAL',
+      DEFAULT_ACCOUNT_CREATED_NOTICE_GLOBAL_CAP,
+    ),
+    passwordResetMinResponseMs: loadPasswordResetMinResponseMs(env),
     invitationEmailKillSwitch: loadInvitationEmailKillSwitch(env),
     bodyLimit,
     credentialCap,

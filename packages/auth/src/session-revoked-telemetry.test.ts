@@ -100,6 +100,26 @@ describe('emitSessionRevoked (task 8.5h)', () => {
     });
   });
 
+  // Task 1.4 (044): the reasons `password_reset` and `mfa_reset`. The type is
+  // erased at runtime, so the red step of this case is `pnpm typecheck`: the
+  // literals below do not belong to `SessionRevocationReason` until 1.4 is done.
+  it('emitSessionRevoked accepts password_reset and mfa_reset and the log event carries the reason', async () => {
+    const reasons: readonly authPackage.SessionRevocationReason[] = ['password_reset', 'mfa_reset'];
+    for (const reason of reasons) {
+      await harnessOf().reset();
+      authPackage.emitSessionRevoked({ actorId: 'user-4', tenantId: 'tenant-4', reason });
+
+      const records = await revokedRecords();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.severityNumber).toBe(SeverityNumber.INFO);
+      expect(records[0]?.attributes).toEqual({
+        'tayzu.tenant.id': 'tenant-4',
+        'tayzu.actor.id': 'user-4',
+        'tayzu.auth.revocation.reason': reason,
+      });
+    }
+  });
+
   it('emits one event per call', async () => {
     emitter()({ actorId: 'user-3', reason: 'sso_link_shed' });
     emitter()({ actorId: 'user-3', reason: 'sso_link_shed' });

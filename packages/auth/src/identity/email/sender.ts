@@ -13,7 +13,12 @@ const PLAIN_ADDRESS = /^[^\s@<>,;"]+@[^\s@<>,;"]+$/;
 /** The closed union of fixed templates; `045` adds `OrgDeletionNotice`. */
 export type EmailTemplate =
   | { readonly kind: 'InvitationEmail'; readonly link: string; readonly expiryText: string }
-  | { readonly kind: 'AdminAcceptedNotice' };
+  | { readonly kind: 'AdminAcceptedNotice' }
+  | { readonly kind: 'PasswordResetEmail'; readonly link: string; readonly expiryText: string }
+  | { readonly kind: 'PasswordChangedNotice' }
+  | { readonly kind: 'MfaChangedNotice' }
+  | { readonly kind: 'MfaResetNotice' }
+  | { readonly kind: 'AccountCreatedNotice' };
 
 export interface EmailSender {
   send(to: string, template: EmailTemplate): Promise<void>;

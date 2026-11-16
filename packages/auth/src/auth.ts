@@ -92,7 +92,13 @@ import {
   vismaConnect,
   type VismaConnectOptions,
 } from './sso/visma-connect.js';
+import type { EmailTemplate } from './identity/email/sender.js';
 import type { SsoLinkShedPort } from './identity/ports.js';
+import {
+  MFA_REENROL_ALLOWED_PATHS,
+  clearMfaReenrolMarker,
+  hasMfaReenrolMarker,
+} from './identity/mfa-reenrol-marker.js';
 import { validatePassword } from './identity/password-policy.js';
 import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 import { organizationAccess } from './org-access.js';
@@ -139,6 +145,7 @@ const SET_ACTIVE_ORGANIZATION_PATH = '/organization/set-active';
 const TWO_FACTOR_VERIFY_PATH_PREFIX = '/two-factor/verify';
 /** Q49: a successful password re-entry is the step-up for a user without MFA. */
 const VERIFY_PASSWORD_PATH = '/verify-password';
+const VERIFY_TOTP_PATH = '/two-factor/verify-totp';
 const GENERATE_BACKUP_CODES_PATH = '/two-factor/generate-backup-codes';
 /** Q61, Q43: the two-factor verification paths that must never set a trust-device cookie. */
 const VERIFY_TWO_FACTOR_PATHS: readonly string[] = [
@@ -195,6 +202,15 @@ const REVOCATION_REASON_ATTRIBUTE = 'tayzu.auth.revocation.reason';
 
 /** design.md, Log events table: `auth.security.session_revoked` -- the only reason task 3.3 emits. */
 const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
+
+/**
+ * The one password-hash function: NFC-normalize, then Better Auth's `hashPassword`.
+ * `emailAndPassword.password.hash` uses it, and so does the reset completion
+ * (044 design D7, Q13).
+ */
+export function hashPasswordNfc(password: string): Promise<string> {
+  return hashPassword(password.normalize('NFC'));
+}
 
 /**
  * Mirrors `@better-auth/core/utils/url`'s `normalizePathname` (also mirrored
@@ -262,7 +278,16 @@ interface ActiveOrganizationSnapshot {
   readonly previousActiveOrganizationId: string | null;
 }
 
+/** Task 7.2: calls whose `hooks.before` saw a session user without a verified factor on verify-totp. */
+const totpEnrolmentAttempts = new WeakSet<object>();
 const activeOrganizationBeforeAttempt = new WeakMap<object, ActiveOrganizationSnapshot>();
+/**
+ * Task 8.13, design D7, Q28: the credential hash `hooks.before` read for a sign-in, keyed by the
+ * per-request `ctx.context`. `null` stands for "no credential row" (an unknown address too).
+ */
+const signInCredentialHashBefore = new WeakMap<object, string | null>();
+/** The account id no row has, so an unknown address runs the same lookup as a known one. */
+const NO_SUCH_USER_ID = '';
 
 /** The `auth.session` row's tenant column, read back after `/sign-in/email` creates it. */
 interface ActiveOrganizationRow {
@@ -381,7 +406,8 @@ function emitBannedSignInAttempt(userId: string, channel: 'local' | 'sso'): void
 }
 
 /** The reasons of `auth.security.session_revoked` (043 Resolved decision Q86). */
-export type SessionRevocationReason = 'password_change' | 'admin_action' | 'sso_link_shed';
+export type SessionRevocationReason =
+  'password_change' | 'admin_action' | 'sso_link_shed' | 'password_reset' | 'mfa_reset';
 
 /**
  * design.md, Log events table: `auth.security.session_revoked`. Exported so
@@ -789,6 +815,23 @@ export interface CreateAuthOptions {
    * each key at creation. Defaults to 60 per hour.
    */
   readonly machineCredentialRateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /**
+   * Task 7.1 (044 design D8): sends the fixed account notices a Better Auth route triggers
+   * (a successful `/change-password` so far). Typed structurally; the host passes the mailer's
+   * notice path. Optional so earlier `createAuth({ db, secret })` calls keep working.
+   */
+  readonly accountNotices?: AccountNoticePort;
+}
+
+/** The notice kinds `@tayzu/auth` hooks can trigger (the `EmailTemplate` kinds of 044 D8). */
+export type AccountNoticeKind = Extract<
+  EmailTemplate['kind'],
+  'PasswordChangedNotice' | 'MfaChangedNotice'
+>;
+
+/** Sends one fixed notice to a user's canonical address. Never throws; carries only the user id. */
+export interface AccountNoticePort {
+  notify(kind: AccountNoticeKind, subject: { readonly userId: string }): Promise<void>;
 }
 
 /** The structural slice of `@tayzu/catalog`'s `UserSync` this package calls. */
@@ -957,7 +1000,7 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       // Task 8.1d (design Q22, Q132), layer 1: both functions NFC-normalize first, so
       // every verifying path is covered without a list of paths.
       password: {
-        hash: (password) => hashPassword(password.normalize('NFC')),
+        hash: hashPasswordNfc,
         verify: ({ hash, password }) =>
           verifyPassword({ hash, password: password.normalize('NFC') }),
       },
@@ -1244,6 +1287,18 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 message: 'PASSWORD_CHANGE_REQUIRED',
               });
             }
+            // 044 D11, Q17: a session of a user whose factor was reset reaches only
+            // second-factor enrolment, `/get-session` and `/sign-out`. A failed lookup refuses.
+            if (
+              peek &&
+              !MFA_REENROL_ALLOWED_PATHS.includes(ctx.path) &&
+              (await hasMfaReenrolMarker(ctx.context.adapter, peek.user.id))
+            ) {
+              throw new APIError('FORBIDDEN', {
+                code: 'MFA_ENROLMENT_REQUIRED',
+                message: 'MFA_ENROLMENT_REQUIRED',
+              });
+            }
             // Task 16.11a, Q36, Q146: once the marker has expired, a session opened
             // under it reaches only `/sign-out`; `/change-password` is refused too.
             if (
@@ -1296,6 +1351,17 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           if (VERIFY_TWO_FACTOR_PATHS.includes(ctx.path)) {
+            // Task 7.2, design D8: remember a TOTP verification that enrols a factor for a
+            // session user (never the sign-in challenge, which has no session).
+            if (ctx.path === VERIFY_TOTP_PATH) {
+              const session = await getSessionFromCtx(ctx).catch(() => null);
+              if (
+                session &&
+                (session.user as { twoFactorEnabled?: boolean | null }).twoFactorEnabled !== true
+              ) {
+                totpEnrolmentAttempts.add(ctx.context);
+              }
+            }
             // Q61, Q43: refuse `trustDevice: true` so every sign-in of an enrolled
             // user is MFA-checked; nothing is verified and no cookie is set.
             const body = ctx.body as { trustDevice?: unknown } | null | undefined;
@@ -1320,6 +1386,25 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 });
               }
             }
+            return undefined;
+          }
+          if (ctx.path === SIGN_IN_EMAIL_PATH) {
+            // Task 8.13, design D7, Q28: keep the credential hash the sign-in is about to verify.
+            // Two reads that run the same way for a known and an unknown address: no branch on
+            // existence, and the second one always runs, against a sentinel id when there is no user.
+            const email = (ctx.body as { email?: unknown } | null | undefined)?.email;
+            const user =
+              typeof email === 'string'
+                ? await ctx.context.internalAdapter.findUserByEmail(email.toLowerCase())
+                : null;
+            const credential = await ctx.context.adapter.findOne<{ password?: string | null }>({
+              model: 'account',
+              where: [
+                { field: 'userId', value: user?.user.id ?? NO_SUCH_USER_ID },
+                { field: 'providerId', value: 'credential' },
+              ],
+            });
+            signInCredentialHashBefore.set(ctx.context, credential?.password ?? null);
             return undefined;
           }
           if (ctx.path !== CHANGE_PASSWORD_PATH) {
@@ -1389,6 +1474,25 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           const response = ctx.context.returned as SignInEmailSuccessResponse;
+          // Task 8.13, design D7, Q28: a reset that committed since `hooks.before` overtook this
+          // sign-in. Refuse it like a wrong password; clearing the new-session slot also stops the
+          // two-factor plugin's after hook from opening a challenge.
+          const hashBefore = signInCredentialHashBefore.get(ctx.context);
+          signInCredentialHashBefore.delete(ctx.context);
+          const hashNow = await ctx.context.adapter.findOne<{ password?: string | null }>({
+            model: 'account',
+            where: [
+              { field: 'userId', value: response.user.id },
+              { field: 'providerId', value: 'credential' },
+            ],
+          });
+          if ((hashNow?.password ?? null) !== (hashBefore ?? null)) {
+            await ctx.context.internalAdapter.deleteSession(response.token);
+            ctx.context.setNewSession(null);
+            ctx.context.responseHeaders?.delete('set-cookie');
+            emitLoginFailed();
+            return wrongPasswordResponse();
+          }
           // Task 13.5d (Q36, Q97): an expired temporary password fails like a wrong one.
           // The sign-in already created its session, so delete it and drop its cookie.
           if (await hasExpiredTemporaryPasswordMarker(ctx.context.adapter, response.user.id)) {
@@ -1449,6 +1553,9 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             tenantId: sessionRow?.activeOrganizationId ?? undefined,
             reason: PASSWORD_CHANGE_REVOCATION_REASON,
           });
+          await options.accountNotices?.notify('PasswordChangedNotice', {
+            userId: response.user.id,
+          });
           return undefined;
         }
         if (ctx.path === VERIFY_PASSWORD_PATH) {
@@ -1471,7 +1578,19 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
           }
           return undefined;
         }
+        if (ctx.path === GENERATE_BACKUP_CODES_PATH) {
+          if (!isAPIError(ctx.context.returned)) {
+            const session = await getSessionFromCtx(ctx).catch(() => null);
+            if (session) {
+              await options.accountNotices?.notify('MfaChangedNotice', {
+                userId: session.user.id,
+              });
+            }
+          }
+          return undefined;
+        }
         if (ctx.path.startsWith(TWO_FACTOR_VERIFY_PATH_PREFIX)) {
+          const enrolling = totpEnrolmentAttempts.delete(ctx.context);
           // Task 4.2, design D4: record the freshness marker `./step-up.ts`'s
           // guard later reads, on every successful `/two-factor/verify-*`
           // completion (TOTP, backup code, or a future OTP factor alike).
@@ -1484,6 +1603,27 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             return undefined;
           }
           mfaEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'verified' });
+          if (ctx.path === VERIFY_TOTP_PATH) {
+            // 044 D11: a verified enrolment lifts the confinement. Better Auth rotates the
+            // session on a first verification, so the user comes from the new session first.
+            const verifiedUserId = ctx.context.newSession?.user.id ?? ctx.context.session?.user.id;
+            if (verifiedUserId !== undefined) {
+              const user = await ctx.context.adapter.findOne<{ twoFactorEnabled?: boolean | null }>(
+                { model: 'user', where: [{ field: 'id', value: verifiedUserId }] },
+              );
+              if (user?.twoFactorEnabled === true) {
+                await clearMfaReenrolMarker(ctx.context.adapter, verifiedUserId);
+              }
+            }
+          }
+          if (enrolling) {
+            const enrolled = await getSessionFromCtx(ctx).catch(() => null);
+            if (enrolled) {
+              await options.accountNotices?.notify('MfaChangedNotice', {
+                userId: enrolled.user.id,
+              });
+            }
+          }
           const response = ctx.context.returned as TwoFactorVerifySuccessResponse;
           if (response.token === undefined || response.token === null) {
             return undefined;

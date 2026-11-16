@@ -69,10 +69,19 @@ export type RateLimitScope =
   // Change 043 (task 6.12b): the notices' own per-recipient bucket, apart from invitation_recipient.
   | 'notice_recipient'
   // Change 043 (task 13.9): the public re-authorization callback's limiter.
-  | 'reauthorization_callback';
+  | 'reauthorization_callback'
+  // Change 044 (task 1.3, design D16): password reset routes, reset-email caps and notice caps.
+  | 'password_reset_request'
+  | 'password_reset_confirm'
+  | 'reset_email_recipient'
+  | 'reset_email_ip'
+  | 'reset_email_global'
+  | 'recovery_notice_recipient'
+  | 'account_created_notice_tenant'
+  | 'account_created_notice_global';
 
-/** The kinds a bucket key can be namespaced by; `tenant` was added by change 043 (task 6.10). */
-export type BucketKeyKind = 'ip' | 'email' | 'user' | 'tenant';
+/** The kinds a bucket key can be namespaced by; `tenant` was added by change 043 (task 6.10), `global` by change 044 (task 1.3). */
+export type BucketKeyKind = 'ip' | 'email' | 'user' | 'tenant' | 'global';
 
 /** design.md, Log events table: `auth.security.rate_limited`'s only attribute (design D20). */
 const RATE_LIMIT_SCOPE_ATTRIBUTE = 'tayzu.auth.rate_limit.scope';

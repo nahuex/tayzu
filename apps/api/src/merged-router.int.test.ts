@@ -24,8 +24,8 @@
  * `step-up-verified:<token>` row deleted (the pattern of
  * `bootstrap-wiring.int.test.ts`). Every mutating call carries the CSRF header.
  * The identity 429 is the invitation tenant cap (D5, 6.6): the email gate's cap
- * store is configured with a tenant maximum of zero, so the first `invite`
- * answers `AUTH_RATE_LIMITED` with a `Retry-After` of one hour.
+ * store is configured with a tenant maximum of one, so a priming `invite` spends it
+ * and the next answers `AUTH_RATE_LIMITED` with a `Retry-After` of one hour.
  *
  * ## Production symbols expected
  *
@@ -65,9 +65,8 @@ import {
   freshMfaSessionCookie,
   sessionTokenOfCookie,
 } from './__fixtures__/fresh-mfa.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools } from './__fixtures__/pools.js';
-import { createEmailTenantGate } from './identity/email-tenant-gate.js';
-import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createApp, type App } from './server.js';
 
 const TEST_PASSWORD = 'correct horse battery staple';
@@ -92,11 +91,6 @@ describe('the identity router is merged with the catalog router into one handler
   beforeAll(async () => {
     const pools = await harnessPools();
     authPool = pools.authPool;
-    // The tenant cap is zero: the first invitation email is refused with the cap's `Retry-After`.
-    const capStore = createInMemoryEmailCapStore({
-      tenant: { max: 0, windowSeconds: 3600 },
-      recipient: { max: 1000, windowSeconds: 86_400 },
-    });
     app = await createApp({
       ...pools,
       authSecret: TEST_SECRET,
@@ -107,15 +101,16 @@ describe('the identity router is merged with the catalog router into one handler
         // Task 14.3: the identity routes are off by default; this file exercises them.
         mountIdentityRoutes: true,
         ...{ identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef' },
-        identity: {
-          emailGate: createEmailTenantGate({
-            disabledTenantIds: [],
-            recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
-            capStore,
-            sender: createRecordingEmailSender(),
-          }),
+        // 044 N4: the switch needs the email path, so the gate is the one `createApp` builds.
+        // The tenant cap is one: a tenant's first invitation email spends it and the second
+        // is refused with the cap's `Retry-After`.
+        email: testEmailOptions({
+          sender: createRecordingEmailSender(),
           invitationLinkBaseUrl: LINK_BASE_URL,
-        },
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
+          tenantCap: { max: 1, windowSeconds: 3600 },
+          recipientCap: { max: 1000, windowSeconds: 86_400 },
+        }),
       },
     });
   }, 60_000);
@@ -232,7 +227,14 @@ describe('the identity router is merged with the catalog router into one handler
   it('Retry-After is set through ResponseHeadersPlugin on an identity 429 and absent from a catalog answer', async () => {
     const cookie = await freshAdminCookie();
 
-    // The tenant cap is zero, so the invitation is refused as rate limited.
+    // The tenant cap is one: this priming invitation spends it.
+    const primed = await send(cookie, 'POST', '/v1/users/invitations', {
+      email: `primed-${randomUUID()}@example.test`,
+      role: 'member',
+    });
+    expect(primed.statusCode).toBe(200);
+
+    // The cap is spent, so the next invitation is refused as rate limited.
     const limited = await send(cookie, 'POST', '/v1/users/invitations', {
       email: `limited-${randomUUID()}@example.test`,
       role: 'member',

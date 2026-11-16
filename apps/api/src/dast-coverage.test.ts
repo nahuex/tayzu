@@ -45,7 +45,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // The module under test. Does not exist yet.
-import { assertDastCoverage, measureDastCoverage } from '../../../scripts/ci/dast-coverage.js';
+import {
+  assertDastCoverage,
+  assertProbeCoverage,
+  measureDastCoverage,
+} from '../../../scripts/ci/dast-coverage.js';
 
 const ORIGIN = 'http://localhost:3000';
 
@@ -159,6 +163,73 @@ describe('DAST API scan: 2xx coverage check (task 13.13)', () => {
     expect(message).not.toContain('/v1/');
     expect(message).not.toContain('localhost');
     expect(message).not.toContain('content-type');
+  });
+});
+
+/**
+ * 044 task 14.2 (design D17): `dast-coverage.ts`'s rule counts the probe's
+ * responses. Expected production symbol, in `scripts/ci/dast-coverage.ts`:
+ *
+ * ```ts
+ * export interface ProbeCoverage {
+ *   responses: number;                // every response in the probe result
+ *   requestRouteSuccesses: number;    // of those, 2xx on /v1/auth/password-reset/request
+ * }
+ * // Input: the probe result `{ findings, responses: [{ path, status }] }`.
+ * // Throws when requestRouteSuccesses is 0 (fail closed on a malformed input);
+ * // the message starts with `DAST probe` (`DAST probe saw no 2xx ...` for the
+ * // rule) and carries counts only.
+ * export function assertProbeCoverage(result: unknown): ProbeCoverage;
+ * ```
+ *
+ * `main` accepts `--probe <file>` to check a probe result file with it.
+ */
+describe('probe coverage (044 task 14.2)', () => {
+  const REQUEST = '/v1/auth/password-reset/request';
+  const probeResult = (responses: { path: string; status: number }[]): unknown => ({
+    findings: [],
+    responses,
+  });
+
+  it('counts the probe responses and passes with a 2xx on the request route', () => {
+    const coverage = assertProbeCoverage(
+      probeResult([
+        { path: '/v1/auth/invitations/accept', status: 400 },
+        { path: REQUEST, status: 202 },
+        { path: REQUEST, status: 429 },
+        { path: '/v1/auth/password-reset/confirm', status: 400 },
+      ]),
+    );
+    expect(coverage.responses).toBe(4);
+    expect(coverage.requestRouteSuccesses).toBe(1);
+  });
+
+  it('coverage fails when the probe saw no 2xx on the request route', () => {
+    const refusals = probeResult([
+      { path: '/v1/auth/invitations/accept', status: 200 },
+      { path: '/v1/auth/password-reset/confirm', status: 200 },
+      { path: REQUEST, status: 403 },
+      { path: REQUEST, status: 429 },
+    ]);
+    expect(() => assertProbeCoverage(refusals)).toThrow(/^DAST probe saw no 2xx/);
+  });
+
+  it('fails closed on an empty or malformed probe result', () => {
+    for (const bad of [{}, null, 'oops', 42, probeResult([]), { responses: 'x' }]) {
+      expect(() => assertProbeCoverage(bad)).toThrow(/^DAST probe/);
+    }
+  });
+
+  it('the failure message carries counts only, never a path or value', () => {
+    let message = '';
+    try {
+      assertProbeCoverage(probeResult([{ path: REQUEST, status: 429 }]));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/^DAST probe/);
+    expect(message).not.toContain('/v1/');
+    expect(message).not.toContain('password-reset');
   });
 });
 

@@ -187,3 +187,67 @@ describe('buildIdentityResource resource id', () => {
     expect(resource.id).toBe('new');
   });
 });
+
+/**
+ * Task 10.2 of `044-password-reset-and-account-recovery`: `buildIdentityResource` passes the
+ * target's raw tenant role string to Cerbos as `memberRole`, for a user target only.
+ *
+ * Production symbols expected: operation `'users.resetMfa'` in `IdentityOperation` (kind
+ * `user`, the target id as resource id) and the optional input field `memberRole?: string`.
+ */
+describe('buildIdentityResource memberRole (044 task 10.2)', () => {
+  it('a user target carries the memberRole string and the target id', () => {
+    const resource = buildIdentityResource({
+      operation: 'users.resetMfa',
+      targetId: 'ba-user-11',
+      tenantId: TARGET_TENANT,
+      memberRole: 'member',
+    });
+
+    expect(resource.kind).toBe('user');
+    expect(resource.id).toBe('ba-user-11');
+    expect(resource.attr.tenantId).toBe(TARGET_TENANT);
+    expect(resource.attr.memberRole).toBe('member');
+  });
+
+  it('a composite role string arrives unmodified', () => {
+    for (const role of ['admin,owner', 'member,admin', 'owner']) {
+      const resource = buildIdentityResource({
+        operation: 'users.resetMfa',
+        targetId: 'ba-user-12',
+        tenantId: TARGET_TENANT,
+        memberRole: role,
+      });
+
+      expect(resource.attr.memberRole).toBe(role);
+    }
+  });
+
+  it('no memberRole key is sent when none was reported', () => {
+    const resource = buildIdentityResource({
+      operation: 'users.resetMfa',
+      targetId: 'ba-user-13',
+      tenantId: TARGET_TENANT,
+    });
+
+    expect('memberRole' in resource.attr).toBe(false);
+  });
+
+  it('a credential or service_account resource never carries memberRole', () => {
+    const credential = buildIdentityResource({
+      operation: 'credentials.rotate',
+      targetId: 'key-3',
+      tenantId: TARGET_TENANT,
+      memberRole: 'member',
+    });
+    const service = buildIdentityResource({
+      operation: 'serviceAccounts.delete',
+      targetId: 'svc-3',
+      tenantId: TARGET_TENANT,
+      memberRole: 'member',
+    });
+
+    expect('memberRole' in credential.attr).toBe(false);
+    expect('memberRole' in service.attr).toBe(false);
+  });
+});

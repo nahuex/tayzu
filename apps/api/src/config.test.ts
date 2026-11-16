@@ -63,6 +63,7 @@ function env(
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
+    PASSWORD_RESET_LINK_BASE_URL: 'https://app.tayzu.test',
     IDENTITY_TOKEN_HMAC_SECRET: HMAC_SECRET,
     ...overrides,
   };
@@ -392,6 +393,98 @@ describe('INVITATION_LINK_BASE_URL (043 task 6.3, Q32)', () => {
 
   it('is undefined in test when unset', () => {
     expect(loadConfig(link(undefined, 'test')).invitationLinkBaseUrl).toBeUndefined();
+  });
+});
+
+/**
+ * `044` task 4.1 (design D9 configuration table): `PASSWORD_RESET_LINK_BASE_URL`
+ * is parsed like `INVITATION_LINK_BASE_URL`. Production symbol:
+ * `Config.passwordResetLinkBaseUrl?: string` (`apps/api/src/config.ts`),
+ * undefined only in test when unset; `loadConfig` throws an `Error` naming the
+ * variable and never echoing the value.
+ */
+describe('PASSWORD_RESET_LINK_BASE_URL (044 task 4.1, D9)', () => {
+  const NAME = 'PASSWORD_RESET_LINK_BASE_URL';
+  const link = (value: string | undefined, nodeEnv: string): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      [NAME]: value,
+    });
+
+  describe('outside test it is required, https and one of ALLOWED_ORIGINS', () => {
+    it('accepts an https value on ALLOWED_ORIGINS', () => {
+      const config = loadConfig(link('https://app.tayzu.test', 'production'));
+      expect(config.passwordResetLinkBaseUrl).toBe('https://app.tayzu.test');
+    });
+
+    it('rejects a missing value', () => {
+      const error = thrown(() => loadConfig(link(undefined, 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects an empty value', () => {
+      const error = thrown(() => loadConfig(link('', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects a malformed value', () => {
+      const error = thrown(() => loadConfig(link('not a url', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects an http value', () => {
+      const error = thrown(() => loadConfig(link('http://app.tayzu.test', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects an https value outside ALLOWED_ORIGINS', () => {
+      const error = thrown(() => loadConfig(link('https://elsewhere.tayzu.invalid', 'production')));
+      expect(error.message).toContain(NAME);
+    });
+  });
+
+  describe('under test it is optional and http or https', () => {
+    it('is undefined when unset', () => {
+      expect(loadConfig(link(undefined, 'test')).passwordResetLinkBaseUrl).toBeUndefined();
+    });
+
+    it('accepts an http value', () => {
+      const config = loadConfig(link('http://localhost:3000', 'test'));
+      expect(config.passwordResetLinkBaseUrl).toBe('http://localhost:3000');
+    });
+
+    it('accepts an https value', () => {
+      const config = loadConfig(link('https://reset.tayzu.test', 'test'));
+      expect(config.passwordResetLinkBaseUrl).toBe('https://reset.tayzu.test');
+    });
+
+    it('rejects a value that is neither http nor https', () => {
+      const error = thrown(() => loadConfig(link('ftp://app.tayzu.test', 'test')));
+      expect(error.message).toContain(NAME);
+    });
+
+    it('rejects a malformed value', () => {
+      const error = thrown(() => loadConfig(link('not a url', 'test')));
+      expect(error.message).toContain(NAME);
+    });
+  });
+
+  describe('an error names the variable and never its value', () => {
+    const rejected: readonly (readonly [string, string, string])[] = [
+      ['an http value', 'http://secret-host.tayzu.test', 'production'],
+      ['a value outside ALLOWED_ORIGINS', 'https://secret-host.tayzu.invalid', 'production'],
+      ['a non-http scheme under test', 'ftp://secret-host.tayzu.test', 'test'],
+    ];
+
+    it.each(rejected)('%s', (_label, value, nodeEnv) => {
+      const error = thrown(() => loadConfig(link(value, nodeEnv)));
+      expect(error.message).toContain(NAME);
+      expect(error.message).not.toContain(value);
+      expect(error.message).not.toContain('secret-host');
+    });
   });
 });
 
@@ -982,5 +1075,126 @@ describe('accept and re-authorization callback limits (043 task 14.20, Q138, Q14
   )('%s=%j (malformed) fails startup naming the variable', (name, value) => {
     const error = thrown(() => loadConfig(env({ [name]: value })));
     expect(error.message).toContain(name);
+  });
+});
+
+/**
+ * `044` task 4.2 (design D9, Q20, Q23, Q28): the reset limits, the recovery caps and the
+ * minimum response time.
+ *
+ * Production symbols expected on `Config` (`apps/api/src/config.ts`), every limit shaped
+ * `{ max: number; windowSeconds: number }`:
+ * - `passwordResetRequestRateLimit` (`PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX` / `_WINDOW_SECONDS`)
+ * - `passwordResetConfirmRateLimit` (`PASSWORD_RESET_CONFIRM_RATE_LIMIT_*`)
+ * - `passwordResetRecipientCap` (`PASSWORD_RESET_RECIPIENT_RATE_LIMIT_*`)
+ * - `passwordResetIpCap` (`PASSWORD_RESET_IP_RATE_LIMIT_*`)
+ * - `passwordResetGlobalCap` (`PASSWORD_RESET_GLOBAL_RATE_LIMIT_*`)
+ * - `recoveryNoticeRecipientCap` (`RECOVERY_NOTICE_RECIPIENT_RATE_LIMIT_*`)
+ * - `accountCreatedNoticeTenantCap` (`ACCOUNT_CREATED_NOTICE_TENANT_RATE_LIMIT_*`)
+ * - `accountCreatedNoticeGlobalCap` (`ACCOUNT_CREATED_NOTICE_GLOBAL_RATE_LIMIT_*`)
+ * - `passwordResetMinResponseMs: number` (`PASSWORD_RESET_MIN_RESPONSE_MS`)
+ */
+describe('reset limits, recovery caps and minimum response (044 task 4.2, D9)', () => {
+  const LIMITS = [
+    {
+      key: 'passwordResetRequestRateLimit',
+      prefix: 'PASSWORD_RESET_REQUEST',
+      defaults: { max: 10, windowSeconds: 60 },
+    },
+    {
+      key: 'passwordResetConfirmRateLimit',
+      prefix: 'PASSWORD_RESET_CONFIRM',
+      defaults: { max: 10, windowSeconds: 60 },
+    },
+    {
+      key: 'passwordResetRecipientCap',
+      prefix: 'PASSWORD_RESET_RECIPIENT',
+      defaults: { max: 5, windowSeconds: 3600 },
+    },
+    {
+      key: 'passwordResetIpCap',
+      prefix: 'PASSWORD_RESET_IP',
+      defaults: { max: 10, windowSeconds: 3600 },
+    },
+    {
+      key: 'passwordResetGlobalCap',
+      prefix: 'PASSWORD_RESET_GLOBAL',
+      defaults: { max: 600, windowSeconds: 3600 },
+    },
+    {
+      key: 'recoveryNoticeRecipientCap',
+      prefix: 'RECOVERY_NOTICE_RECIPIENT',
+      defaults: { max: 10, windowSeconds: 86_400 },
+    },
+    {
+      key: 'accountCreatedNoticeTenantCap',
+      prefix: 'ACCOUNT_CREATED_NOTICE_TENANT',
+      defaults: { max: 20, windowSeconds: 86_400 },
+    },
+    {
+      key: 'accountCreatedNoticeGlobalCap',
+      prefix: 'ACCOUNT_CREATED_NOTICE_GLOBAL',
+      defaults: { max: 1000, windowSeconds: 86_400 },
+    },
+  ] as const;
+
+  const read = (config: Config, key: string): unknown =>
+    (config as unknown as Record<string, unknown>)[key];
+
+  describe('every default equals design D9', () => {
+    it.each(LIMITS)('$key defaults to its D9 value', ({ key, defaults }) => {
+      expect(read(loadConfig(env()), key)).toEqual(defaults);
+    });
+
+    it('PASSWORD_RESET_MIN_RESPONSE_MS defaults to 400', () => {
+      expect(read(loadConfig(env()), 'passwordResetMinResponseMs')).toBe(400);
+    });
+
+    it.each(LIMITS)('$key is tuned by its two variables', ({ key, prefix }) => {
+      const config = loadConfig(
+        env({ [`${prefix}_RATE_LIMIT_MAX`]: '7', [`${prefix}_RATE_LIMIT_WINDOW_SECONDS`]: '120' }),
+      );
+      expect(read(config, key)).toEqual({ max: 7, windowSeconds: 120 });
+    });
+  });
+
+  describe('a zero, negative or non-integer value fails startup', () => {
+    it.each(
+      LIMITS.flatMap(({ prefix }) =>
+        ['MAX', 'WINDOW_SECONDS'].flatMap((suffix) =>
+          ['0', '-1', 'abc', '', '1.5', 'off'].map(
+            (value) => [`${prefix}_RATE_LIMIT_${suffix}`, value] as const,
+          ),
+        ),
+      ),
+    )('%s=%j fails startup naming the variable and not the value', (name, value) => {
+      const error = thrown(() => loadConfig(env({ [name]: value })));
+      expect(error.message).toContain(name);
+      if (value !== '') {
+        expect(error.message).not.toContain(value);
+      }
+    });
+  });
+
+  describe('PASSWORD_RESET_MIN_RESPONSE_MS outside 1..5000 fails startup', () => {
+    it.each(['1', '400', '5000'])('%s is accepted', (value) => {
+      const config = loadConfig(env({ PASSWORD_RESET_MIN_RESPONSE_MS: value }));
+      expect(read(config, 'passwordResetMinResponseMs')).toBe(Number(value));
+    });
+
+    it.each(['0', '5001', '-1', '100000', 'abc', '', '1.5'])(
+      '%j fails startup naming the variable',
+      (value) => {
+        const error = thrown(() => loadConfig(env({ PASSWORD_RESET_MIN_RESPONSE_MS: value })));
+        expect(error.message).toContain('PASSWORD_RESET_MIN_RESPONSE_MS');
+      },
+    );
+  });
+
+  describe('scenario: A zero limit fails startup', () => {
+    it('PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX=0 fails startup', () => {
+      const error = thrown(() => loadConfig(env({ PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX: '0' })));
+      expect(error.message).toContain('PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX');
+    });
   });
 });

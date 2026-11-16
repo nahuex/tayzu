@@ -95,6 +95,19 @@
         ]
       }
     },
+    "/v1/users/{user}/mfa/reset": {
+      "post": {
+        "operationId": "identity.users.resetMfa",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user",
+            "required": true
+          }
+        ],
+        "x-tayzu-risk": "high"
+      }
+    },
     "/v1/users/{user}/sso-account": {
       "delete": {
         "operationId": "identity.users.unlinkSsoAccount",

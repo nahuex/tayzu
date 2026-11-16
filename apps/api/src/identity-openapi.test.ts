@@ -44,7 +44,7 @@ import {
 const run = promisify(execFile);
 const apiDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const THIRTEEN_ROUTES: readonly (readonly [string, string])[] = [
+const FOURTEEN_ROUTES: readonly (readonly [string, string])[] = [
   ['post', '/v1/credentials'],
   ['post', '/v1/credentials/{credential}/rotate'],
   ['post', '/v1/credentials/{credential}/revoke'],
@@ -58,6 +58,7 @@ const THIRTEEN_ROUTES: readonly (readonly [string, string])[] = [
   ['post', '/v1/users/{user}/sso-account'],
   ['put', '/v1/users/{user}/status'],
   ['delete', '/v1/users/{user}/sso-account'],
+  ['post', '/v1/users/{user}/mfa/reset'],
 ];
 
 const HIGH_RISK = new Set([
@@ -71,6 +72,7 @@ const HIGH_RISK = new Set([
   'post /v1/users/{user}/sso-account',
   'put /v1/users/{user}/status',
   'delete /v1/users/{user}/sso-account',
+  'post /v1/users/{user}/mfa/reset',
 ]);
 
 type Operation = Record<string, unknown> & {
@@ -144,11 +146,11 @@ describe('identity OpenAPI document (task 14.1c; design D10, Q43, Q52)', () => {
     expect(result.reasons.length).toBeGreaterThan(0);
   });
 
-  it('lists the thirteen routes with their methods and paths and not the accept route', async () => {
+  it('lists the fourteen routes with their methods and paths and not the accept route', async () => {
     const document = (await generateIdentityOpenApiDocument()) as unknown as Document;
     const listed = operations(document).map(([method, path]) => `${method} ${path}`);
 
-    expect(listed.sort()).toEqual(THIRTEEN_ROUTES.map(([m, p]) => `${m} ${p}`).sort());
+    expect(listed.sort()).toEqual(FOURTEEN_ROUTES.map(([m, p]) => `${m} ${p}`).sort());
     expect(Object.keys(document.paths)).not.toContain('/v1/auth/invitations/accept');
   });
 
@@ -189,5 +191,30 @@ describe('identity OpenAPI document (task 14.1c; design D10, Q43, Q52)', () => {
       expect(keys.has(forbidden), forbidden).toBe(false);
     }
     expect(serialized).not.toContain('"$ref"');
+  });
+});
+
+describe('identity OpenAPI document: the admin MFA reset route (044 task 10.5, design D10)', () => {
+  it('lists POST /v1/users/{user}/mfa/reset with x-tayzu-risk high and its path parameter', async () => {
+    const document = (await generateIdentityOpenApiDocument()) as unknown as Document;
+    const operation = document.paths['/v1/users/{user}/mfa/reset']?.['post'];
+
+    expect(operation).toBeDefined();
+    expect(operation?.['x-tayzu-risk']).toBe('high');
+    const inPath = (operation?.parameters ?? [])
+      .filter((parameter) => parameter.in === 'path')
+      .map((parameter) => parameter.name);
+    expect(inPath).toEqual(['user']);
+  });
+
+  it('declares the route for POST only', async () => {
+    const document = (await generateIdentityOpenApiDocument()) as unknown as Document;
+    expect(Object.keys(document.paths['/v1/users/{user}/mfa/reset'] ?? {})).toEqual(['post']);
+  });
+
+  it('the committed file lists the route (no drift)', () => {
+    const committed = JSON.parse(readFileSync(IDENTITY_OPENAPI_DOCUMENT_PATH, 'utf8')) as Document;
+    const operation = committed.paths['/v1/users/{user}/mfa/reset']?.['post'];
+    expect(operation?.['x-tayzu-risk']).toBe('high');
   });
 });

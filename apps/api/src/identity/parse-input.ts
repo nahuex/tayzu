@@ -3,7 +3,7 @@
  * "Input contract"). It takes the `inputStructure: 'detailed'` shape
  * `{ params, query, body }` and rebuilds it as null-prototype objects,
  * rejecting forbidden keys at every depth, undeclared sections and fields,
- * and over-length values before anything else is done with them. Errors
+ * over-deep values and over-length values before anything else is done with them. Errors
  * carry a fixed message: no offending key or value is ever echoed.
  */
 
@@ -48,7 +48,7 @@ export interface ParsedIdentityInput {
   readonly body: Record<string, unknown>;
 }
 
-class IdentityInputError extends Error {
+export class IdentityInputError extends Error {
   readonly code = 'CATALOG_VALIDATION_FAILED' as const;
 
   constructor() {
@@ -64,14 +64,25 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Copies a value into null-prototype objects, rejecting forbidden keys at every depth. */
-function cloneScreened(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(cloneScreened);
-  if (!isPlainRecord(value)) return value;
+/**
+ * The deepest nesting accepted inside an opaque object field. No declared input comes close;
+ * the limit keeps a hostile body from exhausting the stack of the recursive walk.
+ */
+const MAX_NESTING_DEPTH = 32;
+
+/**
+ * Copies a value into null-prototype objects, rejecting forbidden keys at every depth and
+ * any container nested deeper than `MAX_NESTING_DEPTH`, before recursing into it.
+ */
+function cloneScreened(value: unknown, depth = 0): unknown {
+  const isArray = Array.isArray(value);
+  if (!isArray && !isPlainRecord(value)) return value;
+  if (depth >= MAX_NESTING_DEPTH) throw new IdentityInputError();
+  if (isArray) return value.map((item: unknown) => cloneScreened(item, depth + 1));
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of Object.keys(value)) {
     if (FORBIDDEN_KEYS.has(key)) throw new IdentityInputError();
-    out[key] = cloneScreened(value[key]);
+    out[key] = cloneScreened(value[key], depth + 1);
   }
   return out;
 }

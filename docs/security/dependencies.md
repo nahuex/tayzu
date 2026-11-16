@@ -86,7 +86,7 @@ touches it.
 | PostgreSQL  | 16              | Check `postgresql.org/support/versioning`                                                     |
 | TypeScript  | ~6.0.3 (pinned) | Pinned for typescript-eslint compatibility (root `CLAUDE.md`); re-check the pin every quarter |
 | Drizzle ORM | ^0.45.3         | Actively maintained; no published EOL                                                         |
-| re2js       | ^2.8.6          | Actively maintained; no published EOL                                                         |
+| re2js       | ^2.8.7          | Actively maintained; no published EOL                                                         |
 | Ajv         | ^8.20.0         | Actively maintained; no published EOL                                                         |
 
 | Review date                                                             | Reviewer | Outcome |
@@ -130,6 +130,28 @@ graph resolves to a patched version on its own.
 The `source-map-js` path enters through `vitest`, an optional peer of Better
 Auth that is test tooling and is not loaded at runtime; the override still
 fixes it so the `dependency-audit` job stays green without a waiver.
+
+## Security updates
+
+Updates made because `pnpm audit --prod --audit-level=high` reported an
+advisory. Each one moves to the first patched release, the smallest change that
+removes the vulnerable code, and the full test suite runs against it.
+
+| Date       | Package                                                                        | From → to       | Advisory                                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-11-15 | `better-auth`, `@better-auth/api-key`, `@better-auth/drizzle-adapter` (pinned) | 1.7.6 → 1.7.7   | GHSA-965c-763c-88jm (critical, OAuth state used as a magic link), GHSA-r4xp-prcw-77qf (high, OAuth Proxy sign-in as another user) |
+| 2026-11-15 | `zod`                                                                          | ^4.6.5 → ^4.6.6 | GHSA-mrhx-c7xc-m3w5 (high, memory exhaustion on oversized constrained collections)                                                |
+| 2026-11-15 | `re2js`                                                                        | ^2.8.6 → ^2.8.7 | GHSA-gg6h-894w-4m9c (high, quadratic lookbehind matching)                                                                         |
+| 2026-11-15 | `vite` (root devDependency; also `better-auth > vitest > vite`)                | ^8.3.1 → ^8.3.3 | GHSA-587h-7wmj-h5pm (high, `launch-editor` on Windows) and the two moderate `launch-editor` advisories                            |
+
+The `@better-auth/api-key` storage notes below were re-checked against 1.7.7:
+the cited lines are unchanged. The three things `044` relies on were re-checked
+against 1.7.7 too: the two-factor plugin still exports only
+`TWO_FACTOR_ERROR_CODES`, `twoFactor` and `twoFactorClient` (so the reset's
+factor verifier keeps its own decryption, `044` Q33) and the drift test against
+the installed `/two-factor/verify-totp` passes; Better Auth's three reset
+routes are still off the allowlist (`auth-route-allowlist.test.ts`); and
+1.7.7 still resolves `@better-auth/utils` 0.4.2 (`044` Q18).
 
 ## Audited waiver path for `pnpm audit`
 
@@ -187,10 +209,19 @@ the table below:
 | ------------------------------ | ---- | ----- | -------------------- | --------------- | -------- |
 | _(pending — first deployment)_ |      |       |                      |                 |          |
 
+Since `044` (Q25, Gate 9) this check is also a gate for turning on
+`MOUNT_IDENTITY_ROUTES`, because the password-reset routes are public. Record in
+the same place the state of the DNS provider's DDoS protection for the origin of
+`PASSWORD_RESET_LINK_BASE_URL` and for the sender domain.
+
+| Check date                     | Origin and sender domain | DDoS protection state | Reviewer |
+| ------------------------------ | ------------------------ | --------------------- | -------- |
+| _(pending — first deployment)_ |                          |                       |          |
+
 ## API key storage at rest (`@better-auth/api-key`)
 
-Checked against the installed source of `@better-auth/api-key@1.7.6`
-(`node_modules/.pnpm/@better-auth+api-key@1.7.6_*/node_modules/@better-auth/api-key/dist/index.mjs`),
+Checked against the installed source of `@better-auth/api-key@1.7.7`
+(`node_modules/.pnpm/@better-auth+api-key@1.7.7_*/node_modules/@better-auth/api-key/dist/index.mjs`),
 not the documentation site.
 
 - **Algorithm**: unsalted, unpeppered SHA-256 of the UTF-8 key, encoded as
@@ -263,6 +294,26 @@ Reviewed on 2026-10-09:
   honors the standard `HTTPS_PROXY` and `NO_PROXY` variables, which is where
   `http-proxy-agent` and `https-proxy-agent` come from. No deployed
   environment sets them.
+
+## TOTP check of the reset confirmation (`@better-auth/utils`)
+
+Adopted by `044-password-reset-and-account-recovery` (task 1.2, design D6,
+resolved decision Q18) as a direct dependency of `@tayzu/auth`, pinned exactly
+to `0.4.2`. Reason: "TOTP check of the reset confirmation (044 D6)". The
+confirm route verifies a TOTP code with `createOTP` from
+`@better-auth/utils/otp`, the same call the installed Better Auth two-factor
+plugin makes, instead of a hand-written RFC 6238 implementation.
+
+- **Already locked**: `0.4.2` is the version Better Auth 1.7.6 (and 1.7.7) and its
+  adapters already resolve. Making it direct adds one importer entry to
+  `pnpm-lock.yaml` and no new package.
+- **License**: MIT, on the allowlist.
+- **Install scripts (`allowBuilds`)**: none; `allowBuilds` in
+  `pnpm-workspace.yaml` is unchanged.
+- **Advisories**: `pnpm audit --prod --audit-level=high` reports none.
+- **Upgrades**: a drift test (044 design D6) compares this verifier with the
+  installed Better Auth endpoint, so a Better Auth upgrade cannot silently
+  change one side. Keep this pin in step with the version Better Auth locks.
 
 ## Bundled data: common-password denylist
 

@@ -40,6 +40,58 @@ resources:
     id: new
     attr:
       tenantId: t1
+  # Task 10.1 (044 D10): `resetMfa` targets. `memberRole` is the target's raw
+  # tenant role string (comma-separated when composite). Opaque ids only.
+  user_reset_member_t1:
+    kind: user
+    id: reset-member
+    attr:
+      tenantId: t1
+      memberRole: member
+  user_reset_admin_t1:
+    kind: user
+    id: reset-admin
+    attr:
+      tenantId: t1
+      memberRole: admin
+  user_reset_owner_t1:
+    kind: user
+    id: reset-owner
+    attr:
+      tenantId: t1
+      memberRole: owner
+  user_reset_admin_owner_t1:
+    kind: user
+    id: reset-admin-owner
+    attr:
+      tenantId: t1
+      memberRole: admin,owner
+  user_reset_member_admin_t1:
+    kind: user
+    id: reset-member-admin
+    attr:
+      tenantId: t1
+      memberRole: member,admin
+  # A target check that arrives with no `memberRole` (fail closed).
+  user_reset_no_role_t1:
+    kind: user
+    id: reset-no-role
+    attr:
+      tenantId: t1
+  # Self-target whose role says `member`: only the self-deny can stop it.
+  user_reset_self_t1:
+    kind: user
+    id: admin_t1
+    attr:
+      tenantId: t1
+      memberRole: member
+  # A plain member of another tenant.
+  user_reset_member_t2:
+    kind: user
+    id: reset-member-t2
+    attr:
+      tenantId: t2
+      memberRole: member
   # Task 5.5 (design D3 ceiling): `user` resources carrying the resulting
   # accountKind, portRole and moderatedBlueprints. Opaque ids, never an admin's.
   # Compliant service account: member role, no moderation.

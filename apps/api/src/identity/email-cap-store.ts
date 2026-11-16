@@ -14,18 +14,42 @@ const BUCKETS: Readonly<Record<string, { readonly scope: string; readonly kind: 
   recipient: { scope: 'invitation_recipient', kind: 'email' },
   notice_tenant: { scope: 'notice_tenant', kind: 'tenant' },
   notice_recipient: { scope: 'notice_recipient', kind: 'email' },
+  // Change 044 (task 4.3, design D16): the reset and recovery buckets.
+  reset_recipient: { scope: 'reset_email_recipient', kind: 'email' },
+  reset_ip: { scope: 'reset_email_ip', kind: 'ip' },
+  reset_global: { scope: 'reset_email_global', kind: 'global' },
+  recovery_notice_recipient: { scope: 'recovery_notice_recipient', kind: 'email' },
+  account_created_tenant: { scope: 'account_created_notice_tenant', kind: 'tenant' },
+  account_created_global: { scope: 'account_created_notice_global', kind: 'global' },
 };
+
+/** The two global buckets that count in fixed windows (044 design D5, Q32). */
+export type FixedWindowScope = 'reset_global' | 'account_created_global';
 
 export function createDbEmailCapStore(options: {
   readonly store: RateLimitBucketStore;
+  /** The window of each global cap; a scope listed here counts in fixed windows. */
+  readonly globalWindowSeconds?: Readonly<Record<FixedWindowScope, number>>;
+  /** Epoch milliseconds; injectable for tests. */
+  readonly now?: () => number;
 }): EmailCapStore {
+  const now = options.now ?? Date.now;
+  const windows = options.globalWindowSeconds;
   return {
     async consume(scope, key) {
       const bucket = BUCKETS[scope];
       if (bucket === undefined) {
         throw new Error('Unsupported email cap scope.');
       }
-      const result = await options.store.consume({ ...bucket, value: key });
+      const windowSeconds =
+        scope === 'reset_global' || scope === 'account_created_global'
+          ? windows?.[scope]
+          : undefined;
+      const value =
+        windowSeconds === undefined
+          ? key
+          : `${key}:${String(Math.floor(now() / (windowSeconds * 1000)))}`;
+      const result = await options.store.consume({ ...bucket, value });
       if (!result.allowed) {
         throw new AuthRateLimitedError(result.retryAfterSeconds ?? 1);
       }

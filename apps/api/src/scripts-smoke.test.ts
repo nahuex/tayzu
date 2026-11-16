@@ -16,3 +16,11 @@ describe('@tayzu/api maintenance scripts smoke', () => {
     expect(module).toBeTypeOf('object');
   });
 });
+
+describe('@tayzu/api maintenance scripts smoke (044)', () => {
+  it('loads scripts/recover-admin-mfa.ts', async () => {
+    const module = await import('../scripts/recover-admin-mfa.js');
+
+    expect(module).toBeTypeOf('object');
+  });
+});

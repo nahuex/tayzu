@@ -49,6 +49,7 @@ import {
   testAppPool,
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
 import { createAuthRepository } from './identity/auth-repository.js';
 import { createEmailTenantGate } from './identity/email-tenant-gate.js';
@@ -89,6 +90,8 @@ describe('POST /v1/auth/invitations/accept over HTTP (task 14.1b, design D4, Q8,
       ...{
         mountIdentityRoutes: true,
         identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef',
+        // 044 N4: the switch needs the email path to start.
+        email: testEmailOptions(),
       },
     });
     const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });

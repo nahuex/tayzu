@@ -75,6 +75,10 @@ const VALID_INPUT: Readonly<Record<string, () => Input>> = {
     params: { user: `input-${randomUUID()}@example.test` },
     body: { status: 'Disabled' },
   }),
+  'identity.users.resetMfa': () => ({
+    params: { user: `input-${randomUUID()}@example.test` },
+    body: { reason: 'device_replaced' },
+  }),
   'identity.users.unlinkSsoAccount': () => ({
     params: { user: `input-${randomUUID()}@example.test` },
   }),
@@ -180,8 +184,8 @@ describe('every identity procedure parses untrusted input strictly (task 14.10)'
     );
   }
 
-  it('lists the thirteen router procedures, and every one has an entry here', () => {
-    expect(paths, 'the router has thirteen procedures').toHaveLength(13);
+  it('lists the fourteen router procedures, and every one has an entry here', () => {
+    expect(paths, 'the router has fourteen procedures').toHaveLength(14);
     const missing = paths.filter((path) => !(path in VALID_INPUT));
     expect(missing, 'procedures of the router missing from this test').toEqual([]);
     const stale = Object.keys(VALID_INPUT).filter((path) => !paths.includes(path));
@@ -227,5 +231,93 @@ describe('every identity procedure parses untrusted input strictly (task 14.10)'
         withSection(input, section, { ...fields, [first ?? 'limit']: overLength }),
       );
     });
+  });
+});
+
+/**
+ * 044 task 10.5, scenario "A reason code is required" (spec: WHEN an admin calls the operation
+ * with no reason, or with a value outside the closed set, THEN the answer is
+ * `CATALOG_VALIDATION_FAILED` and nothing changes). Same harness as above: recording spies for
+ * every port, the real Cerbos, an admin of a fresh tenant. "Nothing changes" is that no spy was
+ * called.
+ *
+ * Production symbol expected: `identity.users.resetMfa` on the router `createIdentityRouter`
+ * returns (`./identity-router.js`), body `{ reason }` from the closed set.
+ */
+describe('identity.users.resetMfa requires a reason code (044 task 10.5)', () => {
+  const calls: string[] = [];
+  let client: unknown;
+  let context: Record<string, unknown>;
+
+  beforeAll(() => {
+    const router = createIdentityRouter({
+      auth: { api: spy('auth.api', calls), $context: Promise.resolve(spy('auth.$context', calls)) },
+      authz: createCerbosClient({ address: 'localhost:3593', tls: false }),
+      authRepository: spy('authRepository', calls) as AuthRepository,
+      withUserLock: (userId: string) => {
+        calls.push('withUserLock');
+        return Promise.reject(new Error(`unexpected lock of ${userId}`));
+      },
+      emailGate: spy('emailGate', calls) as EmailTenantGate,
+      invitationLinkBaseUrl: 'https://app.tayzu.test',
+      appPool: spy('appPool', calls) as Pool,
+      userSync: spy('userSync', calls) as UserSyncAdapter,
+    });
+    client = createRouterClient(router, { context: (raw: Record<string, unknown>) => raw });
+    context = {
+      tenantId: randomUUID(),
+      actor: { type: 'user', id: `admin-${randomUUID()}` },
+      principal: { roles: ['admin'] },
+      __requestHeaders: new Headers(),
+    };
+  });
+
+  async function resetMfa(input: Input): Promise<unknown> {
+    const users = (client as { identity: { users: Record<string, unknown> } }).identity.users;
+    const procedure = users['resetMfa'] as (
+      input: Input,
+      options: { context: unknown },
+    ) => Promise<unknown>;
+    return await procedure(input, { context });
+  }
+
+  const target = (): string => `input-${randomUUID()}@example.test`;
+
+  it.each([
+    ['no reason', {}],
+    ['an empty reason', { reason: '' }],
+    ['a value outside the closed set', { reason: 'because' }],
+    ['a value with the right shape but a wrong case', { reason: 'LOST_BOTH_FACTORS' }],
+    ['a non-string reason', { reason: 7 }],
+  ] as const)(
+    'rejects %s with CATALOG_VALIDATION_FAILED and nothing changes',
+    async (_name, body) => {
+      calls.length = 0;
+      await expect(resetMfa({ params: { user: target() }, body })).rejects.toMatchObject({
+        code: 'CATALOG_VALIDATION_FAILED',
+      });
+      expect(calls, 'no lookup or write before the refusal').toEqual([]);
+    },
+  );
+
+  it('rejects a missing body with CATALOG_VALIDATION_FAILED and nothing changes', async () => {
+    calls.length = 0;
+    await expect(resetMfa({ params: { user: target() } })).rejects.toMatchObject({
+      code: 'CATALOG_VALIDATION_FAILED',
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    'lost_both_factors',
+    'device_replaced',
+    'suspected_compromise',
+    'identity_verified_request',
+  ])('control: the reason %s passes input validation', async (reason) => {
+    const outcome = await resetMfa({ params: { user: target() }, body: { reason } }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(outcome).not.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
   });
 });

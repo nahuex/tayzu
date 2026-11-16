@@ -6,7 +6,7 @@
  */
 import type { Pool } from 'pg';
 
-import { startTelemetry } from '../src/telemetry.js';
+import { startTelemetry, type Telemetry } from '../src/telemetry.js';
 
 export interface ScriptRoleCheck {
   /** Asked `SELECT current_user`. */
@@ -19,6 +19,8 @@ export interface RunScriptOptions {
   /** Defaults to `process.env`. */
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly roles?: readonly ScriptRoleCheck[];
+  /** When present, replaces `startTelemetry(env)`; a test seam and the CLI's flush wrapper. */
+  readonly telemetry?: Telemetry;
 }
 
 /** Refuses to run as a role the script did not declare. The message carries no role names. */
@@ -37,7 +39,7 @@ export async function runScript<T>(
   fn: () => Promise<T> | T,
   options: RunScriptOptions = {},
 ): Promise<T> {
-  const telemetry = startTelemetry(options.env ?? process.env);
+  const telemetry = options.telemetry ?? startTelemetry(options.env ?? process.env);
   try {
     await assertRoles(options.roles ?? []);
     return await fn();

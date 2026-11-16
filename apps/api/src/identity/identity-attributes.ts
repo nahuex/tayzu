@@ -8,6 +8,7 @@ export type IdentityOperation =
   | 'invitations.resend'
   | 'users.create'
   | 'users.setStatus'
+  | 'users.resetMfa'
   | 'users.linkSsoAccount'
   | 'users.unlinkSsoAccount'
   | 'serviceAccounts.create'
@@ -27,6 +28,8 @@ export interface IdentityResourceInput {
   readonly entity?: { readonly spec: { readonly properties: Record<string, unknown> } };
   readonly portRole?: string;
   readonly moderatedBlueprints?: readonly string[];
+  /** The target's raw tenant role string; sent for a user target only. */
+  readonly memberRole?: string;
 }
 
 export interface IdentityResource {
@@ -41,6 +44,7 @@ const KIND: Record<IdentityOperation, ResourceKind> = {
   'invitations.resend': RESOURCE_KINDS.user,
   'users.create': RESOURCE_KINDS.user,
   'users.setStatus': RESOURCE_KINDS.user,
+  'users.resetMfa': RESOURCE_KINDS.user,
   'users.linkSsoAccount': RESOURCE_KINDS.user,
   'users.unlinkSsoAccount': RESOURCE_KINDS.user,
   'serviceAccounts.create': RESOURCE_KINDS.serviceAccount,
@@ -73,6 +77,9 @@ export function buildIdentityResource(input: IdentityResourceInput): IdentityRes
         : typeof read === 'string'
           ? read
           : 'standard';
+  }
+  if (kind === RESOURCE_KINDS.user && input.memberRole !== undefined) {
+    extra['memberRole'] = input.memberRole;
   }
   if (input.portRole !== undefined) extra['portRole'] = input.portRole;
   if (input.moderatedBlueprints !== undefined) {

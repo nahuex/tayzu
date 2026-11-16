@@ -93,10 +93,81 @@ describe('dast.sh follows the moved bootstrap CLI (task 4.6b)', () => {
     expect(link).toBe(allowed);
   });
 
+  it('MOUNT_IDENTITY_ROUTES is exported on in up() so the probe reaches the public routes (044 task 14.2)', () => {
+    expect(upFunction()).toMatch(/^\s*export MOUNT_IDENTITY_ROUTES=["']?true["']?\s*$/m);
+  });
+
+  it('PASSWORD_RESET_LINK_BASE_URL is exported equal to the ALLOWED_ORIGINS value (044 task 14.2)', () => {
+    const up = upFunction();
+    const allowed = /^\s*export ALLOWED_ORIGINS="([^"\n]+)"\s*$/m.exec(up)?.[1];
+    const link = /^\s*export PASSWORD_RESET_LINK_BASE_URL="([^"\n]+)"\s*$/m.exec(up)?.[1];
+
+    expect(link).toBeDefined();
+    expect(link).toBe(allowed);
+  });
+
   it('the --refresh call of api-scan keeps DATABASE_URL=unused and gains no new variable', () => {
     const refresh = /DATABASE_URL=unused[^\n]*\n[^\n]*zap-seed\.ts --refresh/.exec(script);
 
     expect(refresh).not.toBeNull();
     expect(script).not.toMatch(/TAYZU_OPERATOR_ID=[^\n]*--refresh/);
+  });
+});
+
+/** The body of the `probe` shell function (044 task 14.2). */
+function probeFunction(): string {
+  const start = script.indexOf('\nprobe() {');
+  if (start === -1) return '';
+  const end = script.indexOf('\n}\n', start);
+  return end === -1 ? '' : script.slice(start, end);
+}
+
+/** The lines of the `all)` case of the dispatcher. */
+function allCase(): string {
+  const start = script.indexOf('\n  all)');
+  const end = script.indexOf(';;', start);
+  if (start === -1 || end === -1) return '';
+  return script.slice(start, end);
+}
+
+describe('dast.sh runs the DAST probe (044 task 14.2, design D17)', () => {
+  it('the script runs the probe after the ZAP scan', () => {
+    const body = probeFunction();
+    expect(body).not.toBe('');
+    expect(body).toContain('scripts/ci/dast-probe.ts');
+
+    // A `probe` subcommand exists.
+    expect(script).toMatch(/^\s*probe\) probe ;;\s*$/m);
+    expect(script).toMatch(/usage: dast\.sh [^"\n]*\bprobe\b/);
+
+    // `all` runs scan, then api_scan, then probe.
+    const all = allCase();
+    expect(all).not.toBe('');
+    const scanAt = all.search(/^\s*scan\s*$/m);
+    const apiScanAt = all.search(/^\s*api_scan\s*$/m);
+    const probeAt = all.search(/^\s*probe\s*$/m);
+    expect(scanAt).toBeGreaterThan(-1);
+    expect(apiScanAt).toBeGreaterThan(scanAt);
+    expect(probeAt).toBeGreaterThan(apiScanAt);
+  });
+
+  it('the probe step checks its own responses with dast-coverage.ts', () => {
+    const body = probeFunction();
+    expect(body).toContain('scripts/ci/dast-coverage.ts');
+    expect(body).toContain('--probe');
+  });
+
+  it('The probe sends no mail: it runs against the up() stack with EMAIL_PROVIDER=none and never changes it', () => {
+    const body = probeFunction();
+    expect(body).not.toBe('');
+    // The one stack of `up` (non-sending sender) is the target: no second API is started.
+    expect(body).not.toMatch(/@tayzu\/api\s+start/);
+    expect(body).not.toMatch(/EMAIL_PROVIDER/);
+
+    // Every assignment of EMAIL_PROVIDER in the whole script is `none`.
+    const assignments = [...script.matchAll(/EMAIL_PROVIDER=["']?([^"'\s]*)/g)].map((m) => m[1]);
+    expect(assignments.length).toBeGreaterThan(0);
+    for (const value of assignments) expect(value).toBe('none');
+    expect(upFunction()).toMatch(/^\s*export EMAIL_PROVIDER=["']?none["']?\s*$/m);
   });
 });

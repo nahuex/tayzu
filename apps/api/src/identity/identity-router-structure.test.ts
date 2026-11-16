@@ -92,3 +92,16 @@ describe('identity router structure (task 5.3b)', () => {
     expect(source).not.toContain('assertMayOnUser');
   });
 });
+
+describe('identity router structure: the admin MFA reset (044 task 10.5, design D10)', () => {
+  it('identity.users.resetMfa exists and is a branded procedure', () => {
+    const router = realRouter() as unknown as {
+      identity: { users: Record<string, unknown> };
+    };
+    const procedure = router.identity.users['resetMfa'];
+
+    expect(procedure, 'identity.users.resetMfa is declared').toBeDefined();
+    expect(defineOperation.isIdentityOperation(procedure)).toBe(true);
+    expect(findUnbrandedProcedures(router)).toEqual([]);
+  });
+});

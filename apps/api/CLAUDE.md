@@ -18,8 +18,15 @@ orchestration described below. When code and design disagree, stop and ask.
   with the catalog router into **one** router handed to the one
   `OpenAPIHandler`, so the interceptor chain (step-up, error mapping) reaches
   both (D10).
+- `src/identity/` also holds the recovery of change `044`: the public
+  password-reset request and confirm routes (`password-reset-request.ts`,
+  `password-reset-confirm.ts`), the token store (`reset-token-store.ts`), the
+  mailer with its caps (`recovery-mailer.ts`), the MFA reset service
+  (`mfa-reset.ts`, behind `identity.users.resetMfa`) and the auth repository
+  module (`auth-repository.ts`), the only place that writes `auth.*` SQL for
+  the reset. Both public routes sit behind `MOUNT_IDENTITY_ROUTES`.
 - `scripts/` holds the `tsx` scripts (`bootstrap-admin.ts`,
-  `backfill-user-blueprint.ts`, `reconcile-users.ts`, the identity contract
+  `backfill-user-blueprint.ts`, `reconcile-users.ts`, the break-glass `recover-admin-mfa.ts`, the identity contract
   generate and check scripts). Vitest includes only `src/**`, so a script has
   no test beside it: its tests live in `src/` and import `../scripts/<name>.js`.
 
@@ -38,7 +45,8 @@ orchestration described below. When code and design disagree, stop and ask.
   routes are **not reachable** through this app: a deny-by-default allowlist
   at the Fastify routing layer returns `404` for them (D18). Every membership
   or credential mutation instead goes through a Cerbos-gated oRPC procedure
-  calling `auth.api.*` in-process.
+  calling `auth.api.*` in-process. Better Auth's three password-reset routes
+  stay closed too: Tayzu's own routes replace them (044 D1).
 - `resolveContext` (from `@tayzu/auth`) is the only way a request becomes a
   `CatalogContext`. Nothing else in this app resolves `tenantId` or `actor`.
 - No HTTP listener existed before this change (ADR-0011) — this is genuinely
