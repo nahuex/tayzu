@@ -2,7 +2,7 @@
 
 SSA section SEC05, for `002-auth-and-rbac`. Every algorithm the system uses,
 and where. It is read from the code and from the installed library sources
-(`better-auth@1.7.6`, `@better-auth/api-key@1.7.6`, `@better-auth/utils@0.4.2`),
+(`better-auth@1.7.7`, `@better-auth/api-key@1.7.7`, `@better-auth/utils@0.4.2`),
 not from the design. Tayzu writes no cipher of its own: anything Better Auth
 provides is used as configured, and the only primitives `@tayzu/auth` and
 `apps/api` call from `node:crypto` are listed below. The keys and secrets

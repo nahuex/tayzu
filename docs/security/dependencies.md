@@ -145,7 +145,13 @@ removes the vulnerable code, and the full test suite runs against it.
 | 2026-11-15 | `vite` (root devDependency; also `better-auth > vitest > vite`)                | ^8.3.1 → ^8.3.3 | GHSA-587h-7wmj-h5pm (high, `launch-editor` on Windows) and the two moderate `launch-editor` advisories                            |
 
 The `@better-auth/api-key` storage notes below were re-checked against 1.7.7:
-the cited lines are unchanged.
+the cited lines are unchanged. The three things `044` relies on were re-checked
+against 1.7.7 too: the two-factor plugin still exports only
+`TWO_FACTOR_ERROR_CODES`, `twoFactor` and `twoFactorClient` (so the reset's
+factor verifier keeps its own decryption, `044` Q33) and the drift test against
+the installed `/two-factor/verify-totp` passes; Better Auth's three reset
+routes are still off the allowlist (`auth-route-allowlist.test.ts`); and
+1.7.7 still resolves `@better-auth/utils` 0.4.2 (`044` Q18).
 
 ## Audited waiver path for `pnpm audit`
 
@@ -298,7 +304,7 @@ confirm route verifies a TOTP code with `createOTP` from
 `@better-auth/utils/otp`, the same call the installed Better Auth two-factor
 plugin makes, instead of a hand-written RFC 6238 implementation.
 
-- **Already locked**: `0.4.2` is the version Better Auth 1.7.6 and its
+- **Already locked**: `0.4.2` is the version Better Auth 1.7.6 (and 1.7.7) and its
   adapters already resolve. Making it direct adds one importer entry to
   `pnpm-lock.yaml` and no new package.
 - **License**: MIT, on the allowlist.

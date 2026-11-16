@@ -28,7 +28,7 @@ declared in design D15 exists for that task's code. Scenario names in _Verify_
 clauses are the `####` scenarios of
 `specs/password-reset-and-account-recovery/spec.md` (and, where stated, of the
 `identity-lifecycle-and-org-admin` delta spec). Tasks follow design D1-D20 and the
-Resolved decisions Q1-Q36. The design has no open question. There are 85 tasks in 16
+Resolved decisions Q1-Q37. The design has no open question. There are 85 tasks in 16
 groups; if the count would pass 85, stop and ask before adding more (design, Resolved
 decisions, "Size"). The fixes of Q35 and Q36 are red-green cycles inside tasks 16.2 and
 16.3 and add no task.
@@ -169,7 +169,7 @@ other cases carry its red step.
 ## 16. Final checks (Checkpoint 2 readiness)
 
 - [x] 16.1 _(setup)_ Run `pnpm ci:local` (lint, typecheck, unit and integration tests, contract check, otel-smoke-check, policy compile). Verify: the command exits 0 and its output is attached to the PR.
-- [ ] 16.2 _(setup)_ Re-run the VCDM pre-assessment with the `vcdm-ssa-validator` subagent in Mode A over `proposal.md`, `specs/`, `design.md`, `tasks.md` and the code, and run Mode B with the human for the items design "SSA notes (Q27)" defers: SEC12 training and monitoring, the SEC13 access review, and SEC16 log provision, incident hours, review of suspicious behavior and retention. Verify: the report lists every SEC section as APPLIES/PARTIAL/N/A with a reason and has no open blocking GAP; any HUMAN item goes to the human in chat and its answer is recorded.
-- [ ] 16.3 _(setup)_ Run `/security-review` on the branch. Verify: no unresolved finding of severity medium or higher; findings are fixed by new red-green tasks or recorded as tickets in design.md.
+- [x] 16.2 _(setup)_ Re-run the VCDM pre-assessment with the `vcdm-ssa-validator` subagent in Mode A over `proposal.md`, `specs/`, `design.md`, `tasks.md` and the code, and run Mode B with the human for the items design "SSA notes (Q27)" defers: SEC12 training and monitoring, the SEC13 access review, and SEC16 log provision, incident hours, review of suspicious behavior and retention. Verify: the report lists every SEC section as APPLIES/PARTIAL/N/A with a reason and has no open blocking GAP; any HUMAN item goes to the human in chat and its answer is recorded.
+- [x] 16.3 _(setup)_ Run `/security-review` on the branch. Verify: no unresolved finding of severity medium or higher; findings are fixed by new red-green tasks or recorded as tickets in design.md.
 - [x] 16.4 _(setup)_ Run `npx -y @fission-ai/openspec@1.13.2 validate 044-password-reset-and-account-recovery --strict`. Verify: it reports the change valid.
 - [ ] 16.5 _(setup)_ Prepare the PR for Checkpoint 2: the summary, the evidence of 16.1-16.4, the approved policy of 10.1, the Gates list of the design (including that `MOUNT_IDENTITY_ROUTES` stays off until they hold), the hand-off note to `045` (the two identifier families, no migration, `0012`-`0014` untouched), and a check that every row of the design's hand-off table points at a ticked task. Verify: the PR description contains each item and the checklist of this file is fully ticked.

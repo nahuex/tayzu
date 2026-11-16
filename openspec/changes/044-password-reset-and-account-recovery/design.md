@@ -1486,6 +1486,8 @@ on this change are restated, then this change's own.
 | Security alerts on denial events | Alerts and a reviewer for the `catalog.security.*` and `auth.security.*` events: post-launch monitoring and the active review of suspicious behavior (SEC12, SEC16, Q34; `010`). |
 | Periodic access review | Review repository, CI and deployment access on a schedule and record it (SEC13, Q34). |
 | Log export procedure | A written procedure to export infrastructure and application logs for a customer, the GSOC or an authority within 48 hours (SEC16, Q34; `010`). |
+| Moderate and low dependency advisories | `pnpm audit --prod` leaves 7 moderate and 5 low below the gate (`fastify`, `ip-address` through `@fastify/rate-limit`, `fast-uri`, `@vitest/mocker`), and `markdown-it` (dev only) has two high; the `ip-address` one matters once the trust-proxy gate makes the address client-influenced (SEC07, Q37). |
+| Request flow after the token issue | The three statements after the token issue (the audit event, the link builder, the start of the send) sit outside a catch; none can throw with a validated configuration and the current senders, but a throw there would be an unpadded error for a known address. Wrap them or parse the base URL once at construction (SEC06, Q37). |
 | Admin MFA reset as a job | `010` may wrap the CLI of D12 in a Container Apps Job with the `045`-style reviewed workflow. |
 
 ## Hand-offs from `002` and `043` closed by this change
@@ -1513,7 +1515,7 @@ oracle" (the invitation gate's visible 429 stays; the reset path avoids it by de
 ## Resolved decisions (asked and approved in chat, 2026-10-14, 2026-10-15, 2026-10-21, 2026-11-13 and 2026-11-15)
 
 Q1-Q11 were approved by the human on 2026-10-14 with the recommended option, Q12-Q31 on
-2026-10-15, Q32-Q33 on 2026-10-21, Q34 on 2026-11-13 and Q35-Q36 on 2026-11-15, each with the recommended option. The text below is the approved text; Q12-Q31 amend
+2026-10-15, Q32-Q33 on 2026-10-21, Q34 on 2026-11-13, Q35-Q36 on 2026-11-15 and Q37 (under the same answer) on 2026-11-16, each with the recommended option. The text below is the approved text; Q12-Q31 amend
 how Q1-Q11 are read where they say so. Where Q2, Q13 and Q19 say "the 8.1 password policy",
 that is `043`'s password policy (`043` task 8.1), not this change's own task 8.1.
 
@@ -1909,6 +1911,21 @@ numbers and add no row to `tasks.md`, so the count stays at 85 (Size). _Rejected
 the gaps as tickets; for N3, recording only the residual in Risks; for N4, narrowing D9 to the
 production start and leaving the test harness able to mount the routes with no email path.
 _Implemented by:_ D5, D9, D10, D15, D19, Risks; red-green cycles under tasks 16.2 and 16.3.
+
+### Q37. The findings of the final re-runs (2026-11-16)
+
+After the fixes of Q35 and Q36 the VCDM Mode A re-run (task 16.2) reports N1-N6 closed and no
+blocking gap, and three new non-blocking gaps; the security review of the new commits (task
+16.3) reports nothing of medium or higher and one low. Under the human's answer of 2026-11-15
+(go ahead with the recommended option) the recommended disposition of each was taken: N8 (the
+documents cited Better Auth 1.7.6 after the update to 1.7.7) is fixed, with the three things
+this change relies on re-checked against 1.7.7 in `docs/security/dependencies.md`; N9
+(`pnpm ci:local` after the fixes) is done at the final head; N7 (moderate and low dependency
+advisories, below the project's gate) and the low finding (three statements after the token
+issue outside a catch, not reachable with a validated configuration) are tickets. The design's
+Context keeps 1.7.6 as the version the design was written against. _Rejected:_ another
+dependency update this close to Checkpoint 2; leaving N8 as a ticket. _Implemented by:_
+Tickets, `docs/security/dependencies.md`, `docs/security/crypto-inventory.md`; tasks 16.2, 16.3.
 
 ### Size (2026-10-15)
 
