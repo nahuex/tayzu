@@ -18,12 +18,18 @@ A task marked **(Checkpoint 3)** adds or changes a database migration or a
 Cerbos policy: stop before it and present the SQL or the policy, with its
 `cerbos compile` output, for the human's separate approval (root `CLAUDE.md`).
 
-Tasks follow the Resolved decisions in `design.md`, which are carried from
-`043` (Q1-Q103); there are no open questions.
+Tasks follow the Resolved decisions in `design.md`: the rows carried from `043`
+(Q1-Q103; `043`'s Q104 and Q109 also concern this change, the first reserving ADR-0019
+and the second moving the `machine_credential_revocation` case of task 2.4 into `043`)
+and this change's own rows Q150-Q157, answered on 2026-11-16. There are no open
+questions.
 
 This change depends on `002` and on `043` and executes after `044`. A reference
 to a task of `043` is to that change's `tasks.md` as it stands after the split
-(its old group 12, the org-deletion group, is this change). Migrations run from
+(its old group 12, the org-deletion group, is this change). The three changes are
+archived: `openspec/changes/archive/2026-10-15-002-auth-and-rbac/`,
+`openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/` and
+`openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery/`. Migrations run from
 `0012` to `0014` (`043` owns `0011`; nothing is renumbered), follow the repo's
 pairing of a table migration with a hand-written grants migration, and every
 migration and every Cerbos task is marked **(Checkpoint 3)** and stops for the
@@ -41,19 +47,20 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 1. Setup and coordination with `002` and `043`
 
-- [ ] 1.1 _(setup)_ Before Checkpoint 1, run the `vcdm-ssa-validator`
+- [x] 1.1 _(setup)_ Before Checkpoint 1, run the `vcdm-ssa-validator`
       pre-assessment (Mode A) of this change's proposal, spec, design and tasks
       against SEC01-SEC16, and a drift-check of the files the design names
       (`context-resolver.ts`, `token-exchange.ts`, `identity-router.ts` and its
       wrapper, `server.ts` and the mount switch, the identity contract module,
       `bootstrap.ts`, `packages/db/src/harness.ts` and the migrations journal)
-      against the merged `002` and, as far as it is built, `043`. Mechanical drift
+      against the merged `002`, `043` and `044`. Mechanical drift
       is fixed in place in the Context of `design.md`; every scope or design
       conflict and every open question is asked in chat with 2 to 4 options and a
-      recommendation and recorded in "Resolved decisions" as a row after Q103 (root
-      `CLAUDE.md`). The human approves the proposal only after this task. At
-      implementation time it is repeated as a last drift-check against `043` as
-      merged, and adjusts import paths and attribute names only if drift is found,
+      recommendation and recorded in "Resolved decisions" as a row from Q150 on (`043`'s own
+      rows run to Q149; root `CLAUDE.md`). The run of 2026-11-16 is recorded in the
+      Context of `design.md` (16 mechanical items corrected, 3 conflicts and 5 VCDM
+      questions decided as Q150-Q157, no blocking gap). The human approves the proposal only after this task. At
+      implementation time it is repeated as a last drift-check against `master`, and adjusts import paths and attribute names only if drift is found,
       with no scope change. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded, and a short note in the PR
       description states what, if anything, was adjusted.
@@ -182,12 +189,18 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       user-keyed row only for a user whose memberships are all in due tenants and
       who has at least one; and on an `auth.verification` row by its identifier
       family, joined to the row it names: an `invitation-accept:<invitationId>` row
-      when that invitation's organization is due, a
+      when that invitation's organization is due, an
+      `invitation-shed:<invitationId>` row (the record `043` keeps of the session an
+      acceptance's shed kept) under the same join, a
       `step-up-verified:<sessionToken>` row when that session is deleted by the
-      step, a `temp-password:<userId>` row and an `sso-link:<accountId>` row by the
-      user predicate. A verification row is therefore deleted before the row its
+      step, a `temp-password:<userId>` row, a `mfa-reenrol:<userId>` row (`044`'s
+      marker, with a far-future expiry) and an `sso-link:<accountId>` row by the
+      user predicate (Resolved decision Q150). A verification row is therefore deleted before the row its
       policy joins (an `sso-link:<accountId>` row, keyed by the `account` row's id, before
-      the account, and a `temp-password:<userId>` row before the user; 6.2). The migration also grants a **read-only `SELECT` policy
+      the account, a `temp-password:<userId>` or `mfa-reenrol:<userId>` row before the
+      user, and an invitation's token and shed record before the invitation; 6.2). A
+      `password-reset:<id>` row gets **no** policy: it is exempt (Q150, 6.7), and
+      `auth.rate_limit` gets no grant (Resolved decision Q151). The migration also grants a **read-only `SELECT` policy
       over every `auth.member` row**, so that the user predicate can see a user's
       memberships in tenants that are not due while the `DELETE` on `member` stays
       limited to due tenants. `tayzu_purge` gets nothing else on the `auth` schema.
@@ -196,7 +209,9 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `meta/0014_snapshot.json` and its `_journal.json` entry. Verify:
       `tenant-deletion-auth-grants.int.test.ts` covers that `tayzu_purge` deletes
       the Better Auth rows of a due tenant and of a user whose memberships are all
-      in due tenants, and the verification rows by family; can read but not delete a
+      in due tenants, and the verification rows by family (a `mfa-reenrol:` and an
+      `invitation-shed:` row included); cannot read or delete a `password-reset:` row or
+      any `auth.rate_limit` row; can read but not delete a
       `member` row of a tenant that is not due; cannot delete the rows of a tenant
       that is not due, of a user who also belongs to a tenant that is not due (the
       predicate sees the other membership), or of a user with no membership; cannot
@@ -205,10 +220,11 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       tenant's rows, so `pnpm --filter @tayzu/auth test` stays green. ⛔ **Stop for
       Checkpoint 3 approval of the SQL before continuing.**
 - [ ] 2.4 The runtime-role assertion at startup covers the new tables.
-      `assertRuntimeRole` in `apps/api/src/bootstrap.ts` checks ownership only for
-      relations whose name matches `catalog\_%`, which `tenant_deletion_marker` and
-      `machine_credential_revocation` do not, so a runtime role that owned either
-      would pass. `043`'s task 11.1c (its Resolved decision Q109) already adds `machine_credential_revocation` to the check, so this task adds only `tenant_deletion_marker`, and the `machine_credential_revocation` case of its Verify stays as a regression check. The check lists them by name as well, and the assertion is exported as a function the
+      `assertRuntimeRole` in `apps/api/src/bootstrap.ts` checks ownership for the
+      relations whose name matches `catalog\_%` and, since `043`'s task 11.1c (its
+      Resolved decision Q109), for `machine_credential_revocation` by name;
+      `tenant_deletion_marker` matches neither, so a runtime role that owned it
+      would pass. This task adds only `tenant_deletion_marker`, by name as well, and the `machine_credential_revocation` case of its Verify stays as a regression check (the suite of `043`'s 11.1c in the same file already covers it). The assertion is still private, so it is exported as a function the
       test can call, because the startup call is skipped under `NODE_ENV=test`
       (`bootstrap.ts`). Verify: `bootstrap-wiring.int.test.ts` (in `apps/api/src/`, whose
       runtime-role suite already exists; `bootstrap.test.ts` is the unit file) calls it
@@ -220,7 +236,10 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 - [ ] 3.1 `RESOURCE_KINDS` (`packages/authz/src/resource-kinds.ts`) gains `organization`,
       and the Cerbos attributes of the identity wrapper (`043`'s tasks 5.1 and 5.3b) are
-      built for it: the target of `organization.delete` is the host tenant, so the real
+      built for it. The wrapper's target kinds are `invitation`, `credential` and `user`
+      today, so `IdentityTargetKind` (`apps/api/src/identity/identity-target.ts`) and the
+      per-kind operation name of `apps/api/src/identity/define-operation.ts` gain
+      `organization`, which resolves to the host tenant with no lookup: the target of `organization.delete` is the host tenant, so the real
       tenant and the opaque resource id are both the tenant id (never the organization's
       name or any value read from input). Verify: `resource-kinds.test.ts` covers the kind
       existing, and `identity-attributes.test.ts` covers the resource tenant and the
@@ -247,12 +266,16 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 ## 4. Deletion notice
 
 - [ ] 4.1 The `OrgDeletionNotice` template (Resolved decision Q27) joins the closed
-      `EmailTemplate` union of `043`'s task 6.1 (`InvitationEmail` and
-      `AdminAcceptedNotice`) and has a fixed subject and body, interpolates only the
+      `EmailTemplate` union of `043`'s task 6.1, as its eighth kind (the two of `043`,
+      `InvitationEmail` and `AdminAcceptedNotice`, and the five of `044`), with its case
+      in the renderer of `packages/auth/src/identity/email/azure-communication-email.ts`,
+      and has a fixed subject and body, interpolates only the
       purge date, and contains no link and no tenant or actor free text. Verify:
       `org-deletion-notice-template.test.ts` covers "The deletion notice carries no free
       text" (an organization named `<b>Pay now</b>` and a markup-bearing actor name never
-      appear) by parsing the rendered HTML and text, and `email-sender.test.ts` (extended)
+      appear) by parsing the rendered HTML and text, and
+      `packages/auth/src/identity/email/email-sender.test.ts` (extended; not the provider
+      wiring test of the same name in `apps/api/src/`)
       covers the union accepting the template while the port still takes exactly one
       recipient.
 
@@ -288,14 +311,19 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       admin as actor. Verify: `org-deletion.int.test.ts` covers the event on the second
       request and not on the first, with no email or free text in it.
 - [ ] 5.5 Phase 1 sends the fixed `OrgDeletionNotice` through the dispatcher of
-      `043`'s task 6.12 to the administrators of the organization (at most 20), one email per
+      `043`'s task 6.12 (`apps/api/src/identity/notices.ts`), which is typed for
+      `AdminAcceptedNotice` alone and names its template with a constant, so it is
+      widened to accept `OrgDeletionNotice` and to derive the template name
+      (`org_deletion`) from the kind, with its controls unchanged (the kill switch, the
+      disabled tenants, the `notice_tenant` cap and the notices' own `notice_recipient`
+      bucket of `043`'s task 6.12b), to the administrators of the organization (at most 20), one email per
       recipient, resolved on the server from the tenant's memberships; a send failure
       never blocks the request and logs `catalog.security.org_deletion_notice_failed`,
       and a suppression logs `catalog.security.notice_suppressed` (Resolved decisions
       Q27 and Q53). Verify:
       `org-deletion-notice.int.test.ts` covers "Every admin is notified of a pending
       deletion" with the recording fake (an owner and two admins each receive exactly
-      one email, a plain member none) a failing sender and a suppressed notice not stopping the request.
+      one email, a plain member none) a failing sender and a suppressed notice not stopping the request, the suppression being logged with the template `org_deletion`, and `notices.test.ts` (extended) covers the dispatcher still naming `admin_accepted` for the notice of `043`.
 - [ ] 5.6 `resolveContext` and token exchange reject every principal, human or
       machine, of a tenant with a **pending** or a **purged** deletion marker (a
       cancelled marker does not reject), logging `catalog.security.principal_rejected`
@@ -306,7 +334,11 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       already-issued machine token, a tenant whose marker is `purged` being rejected
       too and a cancelled one accepted, `token-exchange.int.test.ts` a **fresh** exchange of a credential of a pending and of a
       purged tenant being refused (not only an already-issued token being rejected), and
-      `invitation-accept.int.test.ts` the rejected acceptance.
+      `invitation-accept.int.test.ts` the rejected acceptance. The password-reset routes
+      of `044` are left untouched (Resolved decision Q152), and `org-deletion.int.test.ts`
+      also covers "A password reset during the window does not reopen the tenant": a
+      member of a tenant with a pending marker completes a reset, and the session of the
+      sign-in that follows is still rejected with `tenant_pending_deletion`.
 
 ## 6. Phase 2: the purge
 
@@ -320,8 +352,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 - [ ] 6.2 Purge step 2 (`tayzu_purge`, under the policies of 2.3): each user with
       no other membership together with their `account`, `session` and `two_factor`
       rows and the `auth.verification` rows keyed by that user
-      (`temp-password:<userId>`, and `sso-link:<accountId>` keyed by the `account` row's
-      id; the verification rows go first, because their policies join the user and the
+      (`temp-password:<userId>`, `mfa-reenrol:<userId>`, and `sso-link:<accountId>` keyed
+      by the `account` row's id; Resolved decision Q150; the verification rows go first, because their policies join the user and the
       account), deleted while their
       membership still exists so that the policy can evaluate it, each user in **one
       transaction that re-checks the user's memberships** (the read-only `member`
@@ -329,15 +361,17 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `step-up-verified:<sessionToken>` markers, which are keyed by the **session
       token** and not by the user (`packages/auth/src/step-up.ts`), so the step
       collects the tokens of those sessions first and deletes the markers before the
-      sessions; then, in this order, the tenant's invitation tokens in
+      sessions; then, in this order, the tenant's invitation tokens and shed records
+      (`invitation-accept:<invitationId>` and `invitation-shed:<invitationId>`) in
       `auth.verification` **before** the invitations (their policy joins
       `invitation`, so the invitation must still exist), the invitations, the API
       keys (`referenceId`), the sessions whose `active_organization_id` is the
       tenant (those of users who stay), the members, and the organization row last.
       Verify: `org-purge-auth.int.test.ts` covers "Users with no other membership
-      are removed, others are kept", including their verification rows (an `sso-link:` row going before its account), a
+      are removed, others are kept", including their verification rows (an `sso-link:` row going before its account and a `mfa-reenrol:` row before its user), a
       `step-up-verified:` marker of one of their sessions being gone, an invitation
-      token being gone and a user with a second membership keeping theirs, including
+      token and an `invitation-shed:` record being gone, a `password-reset:` row of a
+      removed user being left alone (exempt) and a user with a second membership keeping theirs, including
       a membership added between the check and the delete (a seam) keeping the user,
       and a remaining session of a staying user whose active organization is the
       purged tenant being deleted.
@@ -377,23 +411,28 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       foreign key **or by column** (`apikey.reference_id` and
       `session.active_organization_id` have no foreign key) and the
       `auth.verification` rows by identifier pattern (`invitation-accept:`,
-      `temp-password:`, `sso-link:` and `step-up-verified:`, which are keyed by
-      string) is deleted by a purge step or explicitly exempted with a reason, so a
+      `invitation-shed:`, `temp-password:`, `mfa-reenrol:`, `sso-link:` and
+      `step-up-verified:`, which are keyed by string; Resolved decision Q150) is deleted by a purge step or explicitly exempted with a reason, so a
       later change that adds a table or a pattern cannot escape the purge. Verify:
       `purge-coverage.int.test.ts` enumerates the tables from the database catalog,
       fails for a table added in a scratch migration that no step covers and for an
       unlisted identifier pattern, and passes on the real schema. The test's table
-      also classifies every identifier family and table `002` and Better Auth write,
+      also classifies every identifier family and table `002`, `044` and Better Auth write,
       so that it passes on the real schema (design D2): `sso-reauth-state:` and
       `sso-reauth-result:` (deleted by step 2 or exempt, each with its reason),
       `backchannel-logout:<client>:<jti>` (exempt), `2fa-<random>` and
       `2fa-attempts-2fa-<random>` (written by Better Auth's two-factor plugin on
       every enrolled sign-in; exempt as short-lived state keyed by a random value,
-      with its own expiry), the OAuth state identifiers if an SSO sign-in in the
+      with its own expiry), `password-reset:<id>` (`044`'s reset token; exempt as
+      30-minute state whose identifier holds neither a tenant nor a user, Q150), the
+      OAuth state identifiers if an SSO sign-in in the
       test shows Better Auth writes any to `auth.verification`, `auth.rate_limit`
-      (exempt: hashed keys with no tenant, which can include a pseudonymous email
-      hash that persists, stated in the erasure statement of 10.3) and `auth.jwks`
-      (exempt).
+      (exempt, Resolved decision Q151: a count and a timestamp under an unsalted SHA-256
+      of a tenant id, a user id, an IP or a keyed email hash, with no personal data in
+      clear and no grant for `tayzu_purge`; the rows persist, which the erasure statement
+      of 10.3 says) and `auth.jwks` (exempt). The test also fails when a prefix declared
+      by `044`'s `apps/api/src/identity/verification-families.int.test.ts`
+      (`password-reset:`, `mfa-reenrol:`) is missing from its table.
 
 ## 7. Reversal and the maintenance workflow
 
@@ -402,13 +441,17 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       started through the helper of `043`'s task 2.0) tombstones a pending marker (`state =
       'cancelled'`, `cancelled_at` and `cancelled_by`; the row is never deleted) and refuses a tenant with no pending marker, a tenant whose purge has begun (a step
       timestamp is recorded) and a tenant whose purge date has passed (the reversal
-      role's policy of 2.2 enforces the same). The operator's opaque id
+      role's policy of 2.2 enforces the same). Each refusal logs
+      `catalog.security.org_deletion_cancel_refused` (declared in 9.1) with the operator's
+      opaque id, the tenant when its id passed the shape check, and the reason
+      (`invalid_tenant`, `no_pending_marker`, `purge_begun` or `purge_date_passed`),
+      flushed before the script exits. The operator's opaque id
       comes from the environment the maintenance workflow of 7.3 sets from its
       authenticated actor, never from an argument, and the script refuses to run
       without it (Resolved decision Q41). Verify: `cancel-org-deletion.int.test.ts`
       (in `apps/api/src/`, importing `../scripts/cancel-org-deletion.js`, 1.2) covers
       "A reversal is refused once the purge has begun" (a recorded step and a passed
-      date, the marker unchanged) and "A platform operator reverses a pending deletion": the tenant's
+      date, the marker unchanged), the refusal event with its reason for each of the four refusals (no tenant attribute for a malformed tenant id, and no event for a missing operator id, which fails at the configuration load), and "A platform operator reverses a pending deletion": the tenant's
       principals are accepted again, the row is still present as a tombstone, the
       script's role cannot delete or read tenant data, and the script refuses to run
       with no operator id.
@@ -422,7 +465,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 - [ ] 7.3 The maintenance workflow, `.github/workflows/identity-maintenance.yml`
       (Resolved decision Q41): the only way the reversal script reaches
       production and, from this task on, the way `043`'s `_user` blueprint backfill
-      (`043`'s task 2.2) and reconcile (`043`'s task 2.2b) are started, which `043` runs as
+      (`043`'s task 2.2) and reconcile (`043`'s task 4.2b) are started, which `043` runs as
       operator-started Container Apps Jobs, with the operator id set by hand, until
       then. It is one Container Apps Job per script, chosen by a `choice` input, and it
       **extends** that mechanism by deriving the operator id of all three from the
@@ -437,15 +480,18 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       pattern rejects) to the job through `env` as the operator id (Q70). It has
       **no checkout and no setup step**: its only steps are a SHA-pinned Azure login
       and the `az` call that starts the job, so no repository code runs on a runner
-      that holds the OIDC token. The bootstrap CLI is **not** started by it (Resolved
-      decision Q91): an operator runs it out of band, as `002` designed. Verify: `identity-maintenance-workflow.test.ts` (in
+      that holds the OIDC token. Two CLIs are **not** started by it: the bootstrap CLI
+      (Resolved decision Q91), which an operator runs out of band as `002` designed, and
+      `044`'s break-glass `recover-admin-mfa` (Resolved decision Q155), which stays out of
+      band under just-in-time access (Azure PIM). The environment's required reviewer is a
+      second human (Resolved decision Q153, 10.6). Verify: `identity-maintenance-workflow.test.ts` (in
       `apps/api/src`, like `zap-seed.test.ts`, because `.github` is outside every
       package) reads the file as text and fails unless the only trigger is
       `workflow_dispatch`, a condition restricts the job to `refs/heads/master`, an
       `environment` is declared, `id-token: write` is the only elevated permission,
       no `secrets.` value other than the environment's is referenced, there is no
       checkout or setup step, and the operator id is `gh:` plus `github.actor_id`,
-      passed through `env`, and the `choice` input listing exactly the reversal, the blueprint backfill and the reconcile (no bootstrap CLI, which is out of band, and no purge, which is scheduled).
+      passed through `env`, and the `choice` input listing exactly the reversal, the blueprint backfill and the reconcile: neither out-of-band CLI (a case each asserts that no option and no line of the file names `bootstrap-admin` or `recover-admin-mfa`), and no purge, which is scheduled.
 - [ ] 7.4 The workflow's inputs and supply chain are hardened (Resolved decision
       Q64; design D3): every input is a `choice` (the job) or validated against the
       catalog's tenant-id regular expression (the tenant id, checked in a first step
@@ -487,11 +533,24 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       "The route is marked high-risk and documented" (the committed document lists it
       with the marker), and `identity-openapi.test.ts` covers `contract:check` failing
       after the route's path or risk spec is changed in a scratch edit and passing on the
-      regenerated file.
+      regenerated file. The DAST scan is driven by that document, so the route, which is
+      destructive, goes on an explicit exclusion list of the scan (`scripts/ci/`, read by
+      `dast.sh`), as an entry with its method, its path and a reason; `dast-script.test.ts`
+      (extended) covers the scan excluding `DELETE /v1/organization`, every entry of the
+      list carrying a non-empty reason and naming a route of a committed OpenAPI document,
+      and `dast-coverage.test.ts` (extended) covers the exclusion not counting as a missing
+      2xx operation.
 - [ ] 8.3 The route is registered only behind the mount switch (`043`'s task 14.3): with
       it off it answers exactly as an unknown `/v1` path does, for an unauthenticated and
       for an authenticated caller, and the route table and the procedure list that the
-      gate's test enumerates include it. Verify: `mount-gate.int.test.ts` (extended)
+      gate's test enumerates include it. After `044` the switch gates fourteen oRPC
+      procedures and three plain routes (the accept route and the two password-reset
+      routes); this is the fifteenth procedure, so the counts written into
+      `mount-gate.int.test.ts` (its fourteen procedures and fifteen routes),
+      `identity-openapi.test.ts` and the route list of `system-diagram.test.ts` move by
+      one. Every test of this group that mounts the routes passes `testEmailOptions()`
+      (`apps/api/src/__fixtures__/email-options.ts`), because `createApp` refuses to mount
+      them without the email path since `044`. Verify: `mount-gate.int.test.ts` (extended)
       covers "The route does not exist until mounted" for `DELETE /v1/organization`, and
       fails when the procedure is registered outside the switch (a scratch registration).
 - [ ] 8.4 Over HTTP the confirmation of `DELETE /v1/organization` is read from the query
@@ -529,12 +588,17 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       counter `tayzu.identity.org_deletions`, the log events
       `catalog.audit.org_deletion_requested`, `catalog.audit.org_deletion_cancelled`,
       `catalog.audit.org_deletion_completed`, `catalog.security.org_deletion_notice_failed`,
-      `catalog.security.org_deletion_failed` and `catalog.security.org_deletion_repeated`,
+      `catalog.security.org_deletion_failed`, `catalog.security.org_deletion_repeated`
+      and `catalog.security.org_deletion_cancel_refused` (the operator id and
+      `tayzu.identity.org_deletion.cancel_refusal`, with the tenant conditional), the
+      purge span carrying `tayzu.tenant.id` as a required attribute,
       and the new attribute values (the rejection reason `tenant_pending_deletion`, the
       denial reason `tenant_pending_deletion`, the invitation cancel reason `org_deletion`,
-      the email and notice template `org_deletion`, `tayzu.identity.org_deletion.outcome`
-      and `tayzu.identity.org_deletion.step`). `otel-smoke-check` already imports the
-      module. Verify: `identity-contract.test.ts` snapshot-asserts every added name, and
+      the email and notice template `org_deletion`, appended after `044`'s five email
+      templates, `tayzu.identity.org_deletion.outcome`, `tayzu.identity.org_deletion.step`
+      and the four values of `tayzu.identity.org_deletion.cancel_refusal`). `otel-smoke-check` already imports the
+      module. Verify: `identity-contract.test.ts` snapshot-asserts every added name against
+      the fixture `packages/auth/src/__fixtures__/identity-contract-expected.ts` (extended), and
       `otel-smoke-check.int.test.ts` fails when a declared name is missing from the
       module.
 - [ ] 9.2 `otel-smoke-check` runs the request, the repeated request, the reversal and the
@@ -566,29 +630,46 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       migrations `0013` and `0014` carry the grants. The amendment is a dated addendum that
       links ADR-0019. Verify: `pnpm lint` passes and the ADR names the five roles and the
       Better Auth row-level security, with a link to ADR-0019.
-- [ ] 10.3 Extend `docs/security/data-retention.md` (which `043` creates for its own
-      operational policies) with the retention policy and the erasure statement: the purge
-      window; what a purge does not remove by itself (backups, Cerbos decision logs, Azure
-      Monitor data, Azure Communication Services records, for which `043`'s file states the ACS data location and retention), and `auth.rate_limit`, whose hashed keys have no tenant, can include a
-      keyed hash (the HMAC of `043`'s task 6.7b) of an invited email and are exempt from the
-      purge, so they persist; the operator runbook to reverse a pending deletion (the
+- [ ] 10.3 Extend `docs/security/data-retention.md` (which `043` created for its own
+      operational policies and `044` extended, with its hand-off note to this change) with
+      the retention policy and the erasure statement, replacing its sentence that nothing
+      about org deletion is stated yet and marking `044`'s hand-off note as closed by
+      Resolved decision Q150: the purge window; the PostgreSQL backup retention of 7 days,
+      so purged data is gone from the backups at most 21 days after the request with the
+      default window (Resolved decision Q156); what a purge does not remove by itself
+      (backups until that retention expires, Cerbos decision logs, Azure
+      Monitor data, Azure Communication Services records, for which `043`'s file states the ACS data location and retention, the 30-minute `password-reset:<id>` rows), and `auth.rate_limit`, whose rows hold a count and a timestamp under an
+      unsalted SHA-256 of a tenant id, a user id, an IP or a keyed email hash (the HMAC of
+      `043`'s task 6.7b), with no personal data in clear, and are exempt from the
+      purge, so they persist until `044`'s ticket "Prune `auth.rate_limit`", which the file
+      links (Resolved decision Q151); the operator runbook to reverse a pending deletion (the
       maintenance workflow of 7.3 with its environment reviewers as the named second
       approver, just-in-time access through Azure PIM with a personal account for any other
       operator access, the script of 7.1, which refuses a tenant whose purge has begun and
       does not restore the credentials phase 1 revoked, so the admins rotate each one); the
       note that `043`'s `_user` backfill and reconcile are now started through the same
-      workflow; and the retention of audit and security logs (at least 12 months,
-      independent of tenant deletion, cross-referencing `010`/`015`). Verify: `pnpm lint`
-      passes and the runbook is reachable from the file.
+      workflow; and the retention of audit and security logs (12 months, independent of
+      tenant deletion, stated as the target `010` implements, Q156, cross-referencing
+      `010`/`015`). Verify: `pnpm lint` passes, the runbook is reachable from the file, and
+      the file states the 7 days, the 21 days and the 12 months.
 - [ ] 10.4 Update `docs/security/attack-surfaces.md`: the route `DELETE /v1/organization`
       with its actor, authentication (a step-up-verified session), Cerbos check and the
-      mount gate state. Verify: `pnpm lint` passes and the route has a row.
-- [ ] 10.5 Update `docs/architecture/system-diagram.md`: the platform operator's reversal,
+      mount gate state, the route count (fifteen oRPC procedures), and a row for the
+      `workflow_dispatch` entry point of the maintenance workflow of 7.3 (its actor, a
+      repository member approved by the second human; its authentication, GitHub and the
+      environment review; what it can start). Verify: `pnpm lint` passes and the route and
+      the workflow entry point each have a row.
+- [ ] 10.5 Update `docs/architecture/system-diagram.md`: the platform operator's reversal
+      (the operator is already an actor of the diagram since `043`),
       the purge job with its one database connection (`tayzu_purge`), the reversal script
-      and the GitHub Actions maintenance workflow that starts it through OIDC, and render
-      it again for the SSA (`043`'s task 16.13). Verify: the Mermaid block still renders
+      and the GitHub Actions maintenance workflow that starts it through OIDC, in the full
+      diagram and in the diagram of each trust zone they touch (the document has one
+      Mermaid block per zone since `044`), and render each image
+      again for the SSA (`043`'s task 16.13). Verify: every Mermaid block still renders
       with `npx -y @mermaid-js/mermaid-cli`, every new arrow carries its protocol
-      (SEC01), asserted by the test of `043`'s task 16.7 that reads the Mermaid source.
+      (SEC01), asserted by `apps/api/src/system-diagram.test.ts` (the test of `043`'s task
+      16.7, extended), whose zone-projection suite of `044`'s task 16.2 also covers the
+      nodes and arrows of this change.
 - [ ] 10.6 Update `docs/security/secrets.md`: the `tayzu_purge` secret of the purge job and
       the reversal role's secret, each job with its own identity, with owner and rotation;
       the telemetry environment names every script reads (`OTEL_EXPORTER_OTLP_ENDPOINT` and
@@ -600,10 +681,17 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       the named jobs and scoped to those job resources only, with `@nahuex` as the
       `CODEOWNERS` owner (Resolved decisions Q64 and Q72), and branch protection on
       `master` with "Require review from Code Owners", without which `CODEOWNERS` has no
-      effect; the checklist also records that the human confirms whether a job start can
-      override the job's command, arguments or image and narrows the role if it can.
+      effect; the checklist also records that the reviewer of the environment and the
+      second code owner is a **second human**, added before the first deployment, and that
+      the workflow cannot be enabled until then (Resolved decision Q153), and that whether
+      a job start can override the job's command, arguments or image is confirmed in
+      `010`'s sandbox rehearsal and, if it can, recorded as an accepted risk covered by
+      `CODEOWNERS`, the environment approval and the workflow's text tests (Resolved
+      decision Q157). It also notes that the bootstrap CLI and `recover-admin-mfa` stay
+      out of band (Q91, Q155).
       Verify: `pnpm lint` passes, each secret names its owner and rotation procedure, and
-      the settings checklist lists the five settings.
+      the settings checklist lists the five settings, the second human and the rehearsal
+      item.
 - [ ] 10.7 Update `docs/catalog/auth-and-rbac.md` (`002` D17): the `organization` kind
       and its action in the taxonomy, and the new spans, metric and log events in the
       telemetry reference (with a pointer to the identity contract module). Verify: `pnpm

@@ -22,7 +22,9 @@ the identity telemetry contract module, the script helpers and the status
 state machine). Every decision about deletion that `043` recorded
 (Q14, Q21, Q26-Q27, Q35, Q41, Q48-Q49, Q55, Q59, Q64-Q65, Q68, Q82 and the
 deletion parts of others) carries over unchanged; the table in `design.md`
-copies each one verbatim.
+copies each one verbatim. The drift-check and the VCDM pre-assessment of
+2026-11-16, run after `044` was merged, added this change's own decisions,
+Q150 to Q157, at the end of that table (`043`'s rows run to Q149).
 
 ## What Changes
 
@@ -50,32 +52,41 @@ copies each one verbatim.
   (extended from `043`'s checks) reject every principal, human or machine, of a
   tenant with a pending or purged marker, through the existing 5-second cache,
   failing closed, and an invitation of such a tenant answers the uniform
-  acceptance rejection.
-- **Deletion notice.** The third fixed template, `OrgDeletionNotice`, joins
-  the two of `043` (only the purge date is interpolated, no link, no free text) and goes to the
+  acceptance rejection. `044`'s password-reset routes are left untouched: a
+  reset grants no access to the closed tenant (Q152).
+- **Deletion notice.** The eighth fixed template, `OrgDeletionNotice`, joins
+  the two of `043` and the five of `044` (only the purge date is interpolated, no link, no free text) and goes to the
   administrators of the organization (at most 20) once per request through
-  `043`'s notice controls (kill switch, per-recipient bucket, per-tenant notice
-  cap, the demo-tenant list).
+  `043`'s notice controls (kill switch, the notices' own per-recipient bucket,
+  per-tenant notice cap, the demo-tenant list). The notice dispatcher of `043`,
+  typed for one template, is widened to accept it.
 - **Reversal.** An audited operator script that tombstones the marker (never
   deletes it), refuses a tenant whose purge has begun or whose date has
   passed, and runs as `tayzu_deletion_admin`. It starts only through a
   reviewed manual `workflow_dispatch` workflow (`identity-maintenance`) that
   runs from `master`, requires a second approver, reaches Azure through OIDC
   and derives the operator id from the workflow's authenticated actor. The
+  second approver is a second human, added before the first deployment (Q153);
+  the bootstrap CLI and `044`'s `recover-admin-mfa` stay out of band (Q155). The
   workflow's inputs reach the job only through `env`, its actions are pinned
   by SHA, it has no checkout, and `CODEOWNERS` covers it; its GitHub and Azure
   settings are a checklist the human applies. The same workflow takes over
   starting `043`'s `_user` backfill and reconcile, which `043` runs as
   operator-started jobs in the meantime.
-- **Retention policy and erasure statement.** The purge window, what a purge
-  does not remove by itself (backups, Cerbos decision logs, Azure Monitor
-  data, Azure Communication Services records, `auth.rate_limit` hashes) and
-  the reversal runbook, in `docs/security/data-retention.md`, which `043`
-  creates for its own operational policies and `045` extends.
+- **Retention policy and erasure statement.** The purge window, 7 days of
+  PostgreSQL backup retention (Q156), what a purge does not remove by itself
+  (backups, Cerbos decision logs, Azure Monitor data, Azure Communication
+  Services records, the 30-minute `password-reset:` rows and the
+  `auth.rate_limit` buckets, which hold a count and a timestamp under a hash;
+  Q150, Q151) and the reversal runbook, in `docs/security/data-retention.md`,
+  which `043` created for its own operational policies, `044` extended and
+  `045` extends. The purge also removes two identifier families added since
+  this change was written: `044`'s `mfa-reenrol:` and `043`'s
+  `invitation-shed:` (Q150).
 - **Security logging.** `catalog.audit.org_deletion_requested`,
   `org_deletion_cancelled` and `org_deletion_completed`, and
-  `catalog.security.org_deletion_notice_failed`, `org_deletion_failed` and
-  `org_deletion_repeated`, with the `tayzu.identity.org_deletions` counter, the
+  `catalog.security.org_deletion_notice_failed`, `org_deletion_failed`,
+  `org_deletion_repeated` and `org_deletion_cancel_refused`, with the `tayzu.identity.org_deletions` counter, the
   purge, reversal and request spans and the new attribute values, in `043`'s
   identity contract module. Each maintenance script starts telemetry and
   flushes it before it exits, through `043`'s helper.
@@ -106,10 +117,10 @@ by `010`), and the org-wide audit-log product surface (`015`).
 
 ### Modified Capabilities
 
-<!-- None. 002-auth-and-rbac and 043-identity-lifecycle-and-org-admin have not
-     been archived yet at the time this change is authored, so there is no
-     existing `openspec/specs/` capability path to target with a MODIFIED delta.
-     045 only ever ADDs. Where it extends a behavior that 043 specifies (the
+<!-- None. 002-auth-and-rbac and 043-identity-lifecycle-and-org-admin had not
+     been archived when this change was authored, so there was no
+     `openspec/specs/` capability path to target with a MODIFIED delta. They
+     and 044 are archived now (drift-check of 2026-11-16); 045 still only ADDs. Where it extends a behavior that 043 specifies (the
      resolver checks, the acceptance rejection, the notice templates, the
      telemetry contract, the OpenAPI document), the extension is an ADDED
      requirement of its own; design.md Context says which 043 requirement each
@@ -119,16 +130,20 @@ by `010`), and the org-wide audit-log product surface (`015`).
 
 - **New code**: in `apps/api`, `src/identity/org-deletion.ts` (the request, its
   revocations and the notice), the `identity.organization.delete` procedure in
-  the identity router `043` creates, `scripts/purge-job.ts` and
+  the identity router of `043`, `scripts/purge-job.ts` and
   `scripts/cancel-org-deletion.ts` (and their package scripts), and the
   maintenance workflow `.github/workflows/identity-maintenance.yml` plus a
   `CODEOWNERS` file. It edits `packages/auth/src/identity/email/` (the
-  `OrgDeletionNotice` template joins the `EmailTemplate` union),
+  `OrgDeletionNotice` template joins the `EmailTemplate` union and its
+  renderer), `apps/api/src/identity/notices.ts` (the dispatcher accepts the new
+  template), `apps/api/src/identity/identity-target.ts` and
+  `define-operation.ts` (the `organization` target kind), the DAST scan's
+  exclusion list under `scripts/ci/`,
   `packages/auth/src/context-resolver.ts` and `token-exchange.ts` (the marker
   lookup), `packages/authz/src/resource-kinds.ts` (the `organization` kind),
   `packages/catalog/src/persistence/schema.ts` (the marker table),
   `apps/api/src/bootstrap.ts` (the runtime-role assertion), the identity
-  contract module `043` creates, the test harness `packages/db/src/harness.ts`
+  contract module of `043`, the test harness `packages/db/src/harness.ts`
   and `apps/api/scripts/script-config.ts`.
 - **Database**: **three migrations, each a Checkpoint 3 item** (`043` keeps
   `0011`; nothing is renumbered). `0012` adds the tenant-deletion marker table;
@@ -143,7 +158,8 @@ by `010`), and the org-wide audit-log product surface (`015`).
 - **Dependencies**: none. The design names no new dependency.
 - **Security**: pre-assessed against SSA SEC01-SEC16 by the
   `vcdm-ssa-validator` agent as the first task of this change, before
-  Checkpoint 1. The findings that the seven passes over `043` recorded about
+  Checkpoint 1 (2026-11-16: no blocking gap; its questions are Q153 to Q157
+  and its non-blocking gaps are folded into the design and the tasks). The findings that the seven passes over `043` recorded about
   deletion (B5, NB3, NB4, G7, G8, NB-3, G6-2, Q-C and the related ones) are
   carried into `design.md` under "Security considerations". New surface: a
   privileged purge role, row-level security on tables `002` owns, and a
