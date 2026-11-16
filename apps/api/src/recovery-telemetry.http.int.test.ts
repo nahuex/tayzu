@@ -1,5 +1,5 @@
 /**
- * Task 12.4 of openspec/changes/044-password-reset-and-account-recovery (design D15 "Observability
+ * Task 12.4 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D15 "Observability
  * contract": "No signal carries an email, a token, a link, a password, a backup code, an IP ...; an
  * unknown address produces no identifier" and "Correlation for forensics").
  *

@@ -3129,7 +3129,7 @@ describe('otel-smoke-check, 043: every identity operation is driven (task 15.2)'
 });
 
 /**
- * `otel-smoke-check`, 044 extension (task 12.3, openspec/changes/044-password-reset-and-account-recovery;
+ * `otel-smoke-check`, 044 extension (task 12.3, openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery;
  * design D15 "Enforcement": "`otel-smoke-check` is extended to drive every operation once with each
  * denial reason under an in-memory exporter and to assert every declared name is observed and none
  * undeclared").

@@ -248,7 +248,7 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
 });
 
 /**
- * Task 6.1 of openspec/changes/044-password-reset-and-account-recovery, scenario "A route
+ * Task 6.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery, scenario "A route
  * outside the allowlist cannot be public" (spec requirement "The reset routes are public,
  * API-only and behind the mount switch"): with the switch on, the request route is a new
  * public entry with a reason, and any other route outside the allowlist still answers an
@@ -314,7 +314,7 @@ describe('the password reset request route is a reviewed public route (044 task 
 });
 
 /**
- * Task 8.3 of openspec/changes/044-password-reset-and-account-recovery, scenario "A route
+ * Task 8.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery, scenario "A route
  * outside the allowlist cannot be public" (spec requirement "The reset routes are public,
  * API-only and behind the mount switch"), now covering both reset routes: they are the only new
  * public entries, each with a reason, and any other route outside the allowlist still answers an

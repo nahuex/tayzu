@@ -1,5 +1,5 @@
 /**
- * Task 12.2 of openspec/changes/044-password-reset-and-account-recovery (design D15 "Observability
+ * Task 12.2 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D15 "Observability
  * contract": spans, metrics, log events and closed value sets; D2 "Order of work, confirm route";
  * D5 and D10).
  *

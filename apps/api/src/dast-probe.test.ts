@@ -1,5 +1,5 @@
 /**
- * Task 14.1 of openspec/changes/044-password-reset-and-account-recovery (design D17).
+ * Task 14.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D17).
  *
  * Scenario "The probe covers the three routes" (spec `password-reset-and-account-recovery`):
  * WHEN the DAST script runs against the sandbox, THEN the probe sends malformed, oversized,

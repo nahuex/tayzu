@@ -1,5 +1,5 @@
 /**
- * Task 5.3 of openspec/changes/044-password-reset-and-account-recovery (design D5, "The email
+ * Task 5.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D5, "The email
  * path of an anonymous reset"): `admitResetEmail`, first half. The controls that need no
  * counter run in this order: kill switch, recipient-domain allowlist, every tenant of the user
  * on the disabled list. A refusal returns normally, is logged once as

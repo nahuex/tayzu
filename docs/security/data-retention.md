@@ -85,7 +85,7 @@ revision**; there is no runtime toggle. The emergency procedure is in
 ## Password reset and recovery
 
 Design D3, D5, D11, D16 and D18 of
-`openspec/changes/044-password-reset-and-account-recovery/design.md`. The change
+`openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery/design.md`. The change
 adds no table, no column and no migration; `0012`-`0014` stay reserved for `045`.
 
 ### Identifier families in `auth.verification`

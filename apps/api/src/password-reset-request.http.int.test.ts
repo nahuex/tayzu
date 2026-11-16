@@ -1,5 +1,5 @@
 /**
- * Task 6.1 of openspec/changes/044-password-reset-and-account-recovery (design D2 "The routes"
+ * Task 6.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D2 "The routes"
  * and "Order of work, request route", D4 "Uniform answer", Resolved decision Q24).
  *
  * Task 6.1 Verify (the part of this file): scenarios "An unknown address and an eligible account

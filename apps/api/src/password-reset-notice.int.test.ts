@@ -1,5 +1,5 @@
 /**
- * Task 8.12 of openspec/changes/044-password-reset-and-account-recovery (design D7 "After the
+ * Task 8.12 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D7 "After the
  * commit", D8 "The notices").
  *
  * The password-changed notice of a completed reset. Scenarios of

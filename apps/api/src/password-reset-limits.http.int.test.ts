@@ -1,5 +1,5 @@
 /**
- * Task 6.6 of openspec/changes/044-password-reset-and-account-recovery (design D2 "Order of work,
+ * Task 6.6 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D2 "Order of work,
  * request route", D16 "Rate-limit scopes and the client key").
  *
  * Scenarios (verbatim from `specs/password-reset-and-account-recovery/spec.md`, requirement

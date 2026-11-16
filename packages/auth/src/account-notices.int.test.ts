@@ -1,5 +1,5 @@
 /**
- * Task 7.1 of openspec/changes/044-password-reset-and-account-recovery (design D8,
+ * Task 7.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D8,
  * "Hook points"). Spec scenario, quoted from
  * `specs/password-reset-and-account-recovery/spec.md`:
  *
@@ -204,7 +204,7 @@ describe('A password change is announced (task 7.1, D8)', () => {
 });
 
 /**
- * Task 7.2 of openspec/changes/044-password-reset-and-account-recovery (design D8,
+ * Task 7.2 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D8,
  * "Hook points"). Spec scenario, quoted from
  * `specs/password-reset-and-account-recovery/spec.md`:
  *

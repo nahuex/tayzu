@@ -1,5 +1,5 @@
 /**
- * Task 8.9 of openspec/changes/044-password-reset-and-account-recovery (design D7 "The completed
+ * Task 8.9 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D7 "The completed
  * reset: policy, hash, one transaction", D6 "What enrolled means", D2 "Answers").
  *
  * The completion transaction on the lock's connection, for a user whose factor is a TOTP code or
@@ -726,7 +726,7 @@ describe('The completion transaction of a password reset (task 8.9)', () => {
 });
 
 /**
- * Task 8.10 of openspec/changes/044-password-reset-and-account-recovery (design D7 steps 10-12,
+ * Task 8.10 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D7 steps 10-12,
  * D6 "Enrolled and a `factor`", Q19). Scenarios of `specs/password-reset-and-account-recovery/spec.md`,
  * quoted:
  *
@@ -1281,7 +1281,7 @@ describe('Atomicity and the backup code of a password reset (task 8.10)', () => 
 });
 
 /**
- * Task 8.11 of openspec/changes/044-password-reset-and-account-recovery (design D7, Resolved
+ * Task 8.11 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D7, Resolved
  * decision on single use). Scenarios of `specs/password-reset-and-account-recovery/spec.md`, quoted:
  *
  * - "A token is single use": WHEN a valid token completes a reset and is submitted again; THEN the
@@ -1491,7 +1491,7 @@ describe('Concurrency of a password reset (task 8.11)', () => {
 });
 
 /**
- * Task 8.14 of openspec/changes/044-password-reset-and-account-recovery (design D7, D8, Resolved
+ * Task 8.14 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D7, D8, Resolved
  * decisions Q21 and the squatted-account recovery of D12). Scenarios of
  * `specs/password-reset-and-account-recovery/spec.md`, quoted:
  *

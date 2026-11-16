@@ -1,5 +1,5 @@
 /**
- * Task 8.1 of openspec/changes/044-password-reset-and-account-recovery (design D6,
+ * Task 8.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D6,
  * "Enrolled and a `factor`" and "Drift guard"; D7 step 10).
  *
  * The pure factor verifier `./reset-factor.ts`: no database. Cases named by the

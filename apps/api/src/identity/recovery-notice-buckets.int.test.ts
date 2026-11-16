@@ -1,5 +1,5 @@
 /**
- * Task 7.4 of openspec/changes/044-password-reset-and-account-recovery.
+ * Task 7.4 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery.
  *
  * Scenarios (verbatim from the specs):
  * - `identity-lifecycle-and-org-admin` delta, "Creating a user sends the account-created notice

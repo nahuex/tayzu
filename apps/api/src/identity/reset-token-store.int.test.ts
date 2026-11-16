@@ -1,5 +1,5 @@
 /**
- * Task 2.3 of openspec/changes/044-password-reset-and-account-recovery (design D3 "Storage" and
+ * Task 2.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D3 "Storage" and
  * "Newest wins", Resolved decision Q13).
  *
  * Cases: scenario "The newest link wins" (store level), scenario "Only a digest is stored",

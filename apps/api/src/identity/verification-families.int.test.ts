@@ -1,5 +1,5 @@
 /**
- * Task 2.7 of openspec/changes/044-password-reset-and-account-recovery (design D3 "Identifier
+ * Task 2.7 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D3 "Identifier
  * families" and D18).
  *
  * Cases: "the writers that exist produce only declared prefixes" and "no row's identifier or

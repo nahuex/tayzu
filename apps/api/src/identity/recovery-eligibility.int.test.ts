@@ -1,5 +1,5 @@
 /**
- * Task 5.2 of openspec/changes/044-password-reset-and-account-recovery (design D4, Resolved
+ * Task 5.2 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D4, Resolved
  * decision Q4).
  *
  * Scenarios (specs/password-reset-and-account-recovery/spec.md, requirement "Only a

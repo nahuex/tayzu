@@ -272,7 +272,7 @@ describe('identity.users.create (task 18.3, design D22)', () => {
 });
 
 /**
- * Task 7.3 of openspec/changes/044-password-reset-and-account-recovery.
+ * Task 7.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery.
  *
  * Scenario "A squatted address is warned" (specs/password-reset-and-account-recovery/spec.md,
  * requirement "Recovery notices are fixed and carry no link"): WHEN an admin creates an account

@@ -1,5 +1,5 @@
 /**
- * Task 9.1 of openspec/changes/044-password-reset-and-account-recovery (design D11, Resolved
+ * Task 9.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D11, Resolved
  * decision Q17): the `mfa-reenrol:<userId>` marker constants and the adapter-based reader and
  * clearer the hooks use. Rows are seeded with the module's constants through the adapter (test
  * seeding only; the one production writer is `writeMfaReenrolMarker` in `apps/api`).

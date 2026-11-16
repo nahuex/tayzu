@@ -1,5 +1,5 @@
 /**
- * Task 13.1 of openspec/changes/044-password-reset-and-account-recovery (design D9 "Configuration",
+ * Task 13.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D9 "Configuration",
  * D2 "The routes", D4 "Detached send": "the mailer tracks in-flight sends and `app.close` drains
  * them").
  *
@@ -314,7 +314,7 @@ describe('password reset wiring through createAppFromEnv (task 13.1)', () => {
 });
 
 /**
- * Task 13.2 of openspec/changes/044-password-reset-and-account-recovery (design D5 "The email path
+ * Task 13.2 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D5 "The email path
  * of an anonymous reset", D9 "Configuration").
  *
  * Spec clauses behind the cases (`specs/password-reset-and-account-recovery/spec.md`):
@@ -674,7 +674,7 @@ describe('password reset controls through createAppFromEnv (task 13.2)', () => {
 });
 
 /**
- * Task 13.3 of openspec/changes/044-password-reset-and-account-recovery (design D9 "Startup
+ * Task 13.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D9 "Startup
  * failure rules").
  *
  * Spec scenario "Mounting without the email path fails startup" (`specs/password-reset-and-account-recovery/spec.md`):
