@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-10-14 (Amended 2026-10-15)
-- **Change**: [`044-password-reset-and-account-recovery`](../../openspec/changes/044-password-reset-and-account-recovery/design.md) (design D1, D4, D6, D7, D10, D12; Resolved decisions Q1, Q2, Q6, Q13, Q29)
+- **Change**: [`044-password-reset-and-account-recovery`](../../openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery/design.md) (design D1, D4, D6, D7, D10, D12; Resolved decisions Q1, Q2, Q6, Q13, Q29)
 
 Amended 2026-10-15: Q12 to Q30 refined the decisions below (the SQL
 transaction, the members-only admin reset, the approver and the telemetry

@@ -1,5 +1,5 @@
 /**
- * Task 8.3 of openspec/changes/044-password-reset-and-account-recovery (design D2 "The routes",
+ * Task 8.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D2 "The routes",
  * "Order of work, confirm route", "Answers", "No caching"; D3 "Consumption"; D4 "Eligibility").
  *
  * Task 8.3 Verify (the part of this file): scenarios "Every token problem looks the same", "Cheap

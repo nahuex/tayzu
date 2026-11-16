@@ -1,5 +1,5 @@
 /**
- * Task 11.2 of openspec/changes/044-password-reset-and-account-recovery (design D12, Resolved
+ * Task 11.2 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D12, Resolved
  * decisions Q14, Q15, Q16): the break-glass command `apps/api/scripts/recover-admin-mfa.ts`.
  *
  * Scenarios of `specs/password-reset-and-account-recovery/spec.md`, requirement "Operator recovery

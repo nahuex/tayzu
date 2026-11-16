@@ -222,7 +222,7 @@ describe('the identity contract declares every remaining span, metric and log ev
 });
 
 /*
- * Task 12.1 of openspec/changes/044-password-reset-and-account-recovery (design D15).
+ * Task 12.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D15).
  *
  * ## Production symbols expected (`./identity-contract.js`)
  *

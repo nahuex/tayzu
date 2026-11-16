@@ -799,7 +799,7 @@ describe('the configured caps reach the identity router (task 14.18)', () => {
 });
 
 /**
- * Task 13.4 of openspec/changes/044-password-reset-and-account-recovery (design D8 "The notices",
+ * Task 13.4 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D8 "The notices",
  * hook points; spec "Recovery notices are fixed and carry no link": "A user is told when their
  * password changes", "A user is told when an admin resets their second factor", "Creating a user
  * sends the account-created notice"; "The account-created notice has its own tenant and global

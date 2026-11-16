@@ -305,7 +305,7 @@ describe('the email caps on the shared DB-backed store (task 14.12, Q138)', () =
 });
 
 /**
- * Task 4.3 of openspec/changes/044-password-reset-and-account-recovery (design D16 and the
+ * Task 4.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D16 and the
  * "Caps" bullet of D7; scenario "Reset caps and invitation caps are counted apart").
  *
  * ## Production symbols expected
@@ -515,7 +515,7 @@ describe('the reset and recovery caps on the shared DB-backed store (044 task 4.
 });
 
 /**
- * Task 5.7 of openspec/changes/044-password-reset-and-account-recovery (design D5 "Fixed
+ * Task 5.7 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D5 "Fixed
  * windows for the two global caps", Resolved decision Q32).
  *
  * ## Production symbols expected

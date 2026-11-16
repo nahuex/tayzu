@@ -1,5 +1,5 @@
 /**
- * Task 11.3 of openspec/changes/044-password-reset-and-account-recovery (design D12, Resolved
+ * Task 11.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery (design D12, Resolved
  * decisions Q29 and Q31): the evidence and the telemetry guard of `scripts/recover-admin-mfa.ts`.
  *
  * Scenarios of `specs/password-reset-and-account-recovery/spec.md`, requirement "Operator recovery

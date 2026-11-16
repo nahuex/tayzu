@@ -817,10 +817,15 @@ other tenant or inviter free text appears. The link origin MUST come from
 the dedicated trusted setting `INVITATION_LINK_BASE_URL` (`https` outside test and
 one of the allowed origins), never from `BETTER_AUTH_URL`, the request `Host` or a
 forwarded header, and the link MUST carry the invitation id and token in the
-URL fragment, on a fixed path. The only other email this capability sends is the notice to the other admins when an
-`admin` invitation is accepted, a fixed template with no interpolated value, with no link
-or any tenant, actor or invitee free text (`045` adds the org-deletion notice to the
-same controls). Every notice MUST go through the same global kill switch as the
+URL fragment, on a fixed path. The only other email this capability sends through these controls is the notice to the
+other admins when an `admin` invitation is accepted, a fixed template with no interpolated
+value, with no link or any tenant, actor or invitee free text (`045` adds the org-deletion
+notice to the same controls). `identity.users.create` also sends the fixed account-created
+notice to the address of the account it creates; that notice, like the password-reset email
+and the password and second-factor notices, belongs to the
+`password-reset-and-account-recovery` capability and is counted in buckets of its own (per
+recipient, per tenant and global), so it neither consumes nor is limited by the buckets of this
+requirement. Every notice MUST go through the same global kill switch as the
 invitation email and through a per-recipient cap of its own, with the same limit of 3 per
 24 hours and the same keyed hash of the normalized email, counted apart from the
 invitation cap, so that invitations cannot exhaust a person's notice budget and notices
@@ -939,6 +944,12 @@ template.
 - **GIVEN** `INVITATION_EMAIL_KILL_SWITCH` is on
 - **WHEN** any invite or resend is attempted
 - **THEN** it fails with `AUTH_RATE_LIMITED` and no email is sent
+
+#### Scenario: Creating a user sends the account-created notice outside these buckets
+
+- **GIVEN** an address whose invitation bucket and admin-notice bucket are both full
+- **WHEN** an admin creates a user for that address through `identity.users.create`
+- **THEN** the operation succeeds and the fixed account-created notice is sent, because it is counted in the recovery-notice buckets
 
 ### Requirement: Service accounts are non-human users created API-only
 

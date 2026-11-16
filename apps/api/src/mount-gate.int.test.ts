@@ -300,7 +300,7 @@ describe('createApp refuses to mount the identity routes without a secret (task 
 });
 
 /**
- * Fix cycle N4 under task 16.2 of openspec/changes/044-password-reset-and-account-recovery
+ * Fix cycle N4 under task 16.2 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery
  * (design D9 "Startup failure rules"; Resolved decision Q36 row N4; the precedent is `043` Q147
  * above). Spec requirement "The reset routes are public, API-only and behind the mount switch",
  * scenario "A direct start without the email options fails too" (verbatim):
@@ -367,7 +367,7 @@ describe('createApp refuses to mount the identity routes without the email path 
 });
 
 /**
- * Task 6.1 of openspec/changes/044-password-reset-and-account-recovery, scenario "Off by
+ * Task 6.1 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery, scenario "Off by
  * default" for the request route (spec requirement "The reset routes are public, API-only and
  * behind the mount switch").
  *
@@ -494,7 +494,7 @@ describe('the password reset request route is unreachable until mounted (044 tas
 });
 
 /**
- * Task 8.3 of openspec/changes/044-password-reset-and-account-recovery, scenario "Off by
+ * Task 8.3 of openspec/changes/archive/2026-11-16-044-password-reset-and-account-recovery, scenario "Off by
  * default" for the confirm route (spec requirement "The reset routes are public, API-only and
  * behind the mount switch"), now covering both reset routes.
  *
