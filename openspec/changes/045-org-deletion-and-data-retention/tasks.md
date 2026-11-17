@@ -281,7 +281,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 5. Phase 1: the deletion request
 
-- [ ] 5.1 `identity.organization.delete` requires the caller to send the
+- [x] 5.1 `identity.organization.delete` requires the caller to send the
       organization's identifier, which must equal the host `ctx.tenantId`; over HTTP it
       travels in the query string (`DELETE` routes use `inputStructure: 'detailed'`,
       design D6). Verify: `org-deletion.int.test.ts` covers "Org deletion targets only

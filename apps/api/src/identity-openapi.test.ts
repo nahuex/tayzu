@@ -44,7 +44,7 @@ import {
 const run = promisify(execFile);
 const apiDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const FOURTEEN_ROUTES: readonly (readonly [string, string])[] = [
+const FIFTEEN_ROUTES: readonly (readonly [string, string])[] = [
   ['post', '/v1/credentials'],
   ['post', '/v1/credentials/{credential}/rotate'],
   ['post', '/v1/credentials/{credential}/revoke'],
@@ -59,6 +59,8 @@ const FOURTEEN_ROUTES: readonly (readonly [string, string])[] = [
   ['put', '/v1/users/{user}/status'],
   ['delete', '/v1/users/{user}/sso-account'],
   ['post', '/v1/users/{user}/mfa/reset'],
+  // 045 task 5.1 (design D6): the org-deletion request.
+  ['delete', '/v1/organization'],
 ];
 
 const HIGH_RISK = new Set([
@@ -73,6 +75,7 @@ const HIGH_RISK = new Set([
   'put /v1/users/{user}/status',
   'delete /v1/users/{user}/sso-account',
   'post /v1/users/{user}/mfa/reset',
+  'delete /v1/organization',
 ]);
 
 type Operation = Record<string, unknown> & {
@@ -146,11 +149,11 @@ describe('identity OpenAPI document (task 14.1c; design D10, Q43, Q52)', () => {
     expect(result.reasons.length).toBeGreaterThan(0);
   });
 
-  it('lists the fourteen routes with their methods and paths and not the accept route', async () => {
+  it('lists the fifteen routes with their methods and paths and not the accept route', async () => {
     const document = (await generateIdentityOpenApiDocument()) as unknown as Document;
     const listed = operations(document).map(([method, path]) => `${method} ${path}`);
 
-    expect(listed.sort()).toEqual(FOURTEEN_ROUTES.map(([m, p]) => `${m} ${p}`).sort());
+    expect(listed.sort()).toEqual(FIFTEEN_ROUTES.map(([m, p]) => `${m} ${p}`).sort());
     expect(Object.keys(document.paths)).not.toContain('/v1/auth/invitations/accept');
   });
 

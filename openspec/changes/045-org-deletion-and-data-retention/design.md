@@ -17,7 +17,7 @@
   is carried whole. A reference inside a carried row to "this change", to a
   design section such as D9 or D13, or to a task of `043`'s old group 12 is to `043`
   as it was before the split: the table at the start of that section says where each
-  one landed. The rows Q150 to Q165 are this change's own: the human answered them in
+  one landed. The rows Q150 to Q166 are this change's own: the human answered them in
   chat on 2026-11-16 (Q150-Q157, after the drift-check and the VCDM pre-assessment of
   task 1.1) and 2026-11-17 (Q158-Q165, at the Checkpoint 3 of migrations `0012`, `0013` and `0014` and of the policy of task 3.3)
   (`043`'s own rows run to Q149, so this change's rows start at Q150). This change has
@@ -1054,6 +1054,7 @@ points at `043` as it was before the split, this is where it landed:
 | Q163 | (Checkpoint 3 of migration `0014`, 2026-11-17) Order of purge step 2 | The tenant's invitation tokens and shed records, then its invitations, are deleted **before any user**, because a user's deletion cascades to the invitations that user sent and would leave their tokens unjoinable by their policy. D2 and task 6.2 say so. _Rejected:_ keeping the earlier order and accepting orphaned verification rows until they expire. |
 | Q164 | (Checkpoint 3 of migration `0014`, 2026-11-17) A purged user's invitation in a tenant that is not due | Accepted and documented in Risks: Better Auth's `invitation_inviter_id_fk ON DELETE CASCADE` removes it, as on any user deletion. _Rejected:_ a ticket to change the foreign key to `SET NULL` (Better Auth's schema is outside this change); excluding such users from the purge, which would leave their account. |
 | Q165 | (Checkpoint 3 of the Cerbos policy of task 3.3, 2026-11-17) `has()` guards on `tenantId` in `organization.yaml` | The cross-tenant deny reads `R.attr.tenantId != P.attr.tenantId` unguarded, the form every existing resource policy and the `same_tenant` derived role use; a missing tenant still ends in deny under strict evaluation, which `organization_test.yaml` asserts ("Admin without a tenant attribute fails closed"). D6's general rule of guarding attribute references with `has()` is read as satisfied by that tested fail-closed behaviour for this attribute. The human approved the policy diffs of tasks 3.2 and 3.3. _Rejected:_ the guarded form `!has(R.attr.tenantId) \|\| !has(P.attr.tenantId) \|\| R.attr.tenantId != P.attr.tenantId`, the same decision written differently from the other policies. |
+| Q166 | (Implementation, task 5.1, 2026-11-17) When the procedure joins the router's pinned lists | Task 5.1 registers `identity.organization.delete` in the identity router, because groups 1 to 7 exercise it through `createRouterClient`; the tests that pin the router's procedure list (`identity-input.int.test.ts`, `identity-authorization-matrix.http.int.test.ts`, `mount-gate.int.test.ts`, `identity-openapi.test.ts`) and the committed `openapi/identity.openapi.json` therefore move with it in 5.1, with the new procedure's entry and no assertion loosened, so every commit stays green. Group 8 adds its own assertions (8.1-8.7) on top. **Taken by the orchestrator, not asked in chat; the human may overrule it at Checkpoint 2.** _Rejected:_ keeping the pins at fourteen until group 8, which would leave the suite red between 5.1 and 8.3. |
 
 ## Open Questions
 

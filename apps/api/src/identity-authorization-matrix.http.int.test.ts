@@ -15,6 +15,12 @@
  * target, a target of another tenant gets exactly the unknown-target answer (404
  * `CATALOG_NOT_FOUND`, same body).
  *
+ * `045` task 5.1 adds the fifteenth route, `identity.organization.delete` (`DELETE
+ * /v1/organization?confirmation=<host tenant>`, design D6; any admin may request it, Resolved
+ * decision Q27). An allowed request revokes every session and credential of the tenant, so its
+ * admin-allowed case runs in a tenant of its own (`ownTenant`), and the member, machine and
+ * unauthenticated cases, which are refused before the handler, keep the shared fixtures.
+ *
  * ## Built from the router's own procedure list
  *
  * The routes come from `generateIdentityOpenApiDocument` (it walks `createIdentityRouter`'s
@@ -101,6 +107,11 @@ interface Fixtures {
 interface MatrixEntry {
   /** The admin's own request: valid, and allowed for an admin of `t1`. */
   readonly request: (admin: BootstrappedTenant) => Promise<RouteRequest>;
+  /**
+   * The allowed request closes the whole tenant (`organization.delete`): the admin-allowed case
+   * runs as the admin of a fresh tenant of its own, so the shared `t1` stays usable.
+   */
+  readonly ownTenant?: true;
   /** For a route with a path target: the request aimed at `t2`'s target, and at an unknown one. */
   readonly target?: {
     readonly foreign: (other: BootstrappedTenant) => Promise<RouteRequest>;
@@ -493,6 +504,15 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
         }),
       },
     },
+    // 045 task 5.1: the target is the host tenant, so there is no foreign-target case.
+    'identity.organization.delete': {
+      request: (admin) =>
+        Promise.resolve({
+          method: 'DELETE',
+          url: `/v1/organization?confirmation=${encodeURIComponent(admin.organizationId)}`,
+        }),
+      ownTenant: true,
+    },
   };
 
   /** A member of `admin`'s tenant with a real TOTP factor enrolled and one live session. */
@@ -543,8 +563,8 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
 
   // ---- Completeness --------------------------------------------------------------------------
 
-  it('lists the fourteen router procedures, and every one has an entry in the matrix', () => {
-    expect(routeIds, 'the router has fourteen procedures').toHaveLength(14);
+  it('lists the fifteen router procedures, and every one has an entry in the matrix', () => {
+    expect(routeIds, 'the router has fifteen procedures').toHaveLength(15);
     const missing = routeIds.filter((id) => !(id in MATRIX));
     expect(missing, 'procedures of the router missing from the matrix').toEqual([]);
     const stale = Object.keys(MATRIX).filter((id) => !routeIds.includes(id));
@@ -561,8 +581,9 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
     }, 180_000);
 
     it(`${id}: the admin with a fresh step-up is allowed`, async () => {
-      const request = await entry.request(fixtures.t1);
-      const answer = await send({ kind: 'cookie', cookie: fixtures.t1.cookie }, request);
+      const admin = entry.ownTenant === true ? await freshAdmin('own') : fixtures.t1;
+      const request = await entry.request(admin);
+      const answer = await send({ kind: 'cookie', cookie: admin.cookie }, request);
       expect(answer.status, answer.body).toBeGreaterThanOrEqual(200);
       expect(answer.status, answer.body).toBeLessThan(300);
     }, 120_000);

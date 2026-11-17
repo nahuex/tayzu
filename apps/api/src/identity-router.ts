@@ -1,7 +1,8 @@
 /**
  * The `identity.*` oRPC router (`043` design D10, Resolved decisions Q16 and Q45):
- * the thirteen procedures of `identity.users`, `identity.serviceAccounts` and
- * `identity.credentials`, each built with `defineIdentityOperation`.
+ * the procedures of `identity.users`, `identity.serviceAccounts`,
+ * `identity.credentials` and `identity.organization` (`045` design D6), each built
+ * with `defineIdentityOperation`.
  * `identity.users.create` is the only way an org admin creates a user: Better
  * Auth's own `POST /admin/create-user` stays off D18's allowlist, and
  * self sign-up is disabled.
@@ -60,6 +61,7 @@ import {
 } from './identity/identity-target.js';
 import { readUserAttributes } from './identity/user-attributes.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
+import { ORG_DELETION_INPUT_SCHEMA, requestOrgDeletion } from './identity/org-deletion.js';
 import {
   parseIdentityInput,
   type InputSchema,
@@ -294,6 +296,7 @@ const SCHEMAS = {
   },
   listCredentials: { query: {} },
   credential: { params: CREDENTIAL_PARAM },
+  deleteOrganization: ORG_DELETION_INPUT_SCHEMA,
 } satisfies Record<string, InputSchema>;
 
 /**
@@ -733,6 +736,28 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 identifier: user,
               });
             }),
+        }),
+      },
+      organization: {
+        // Step-up applies (D4); the target is the host tenant itself, never a value read from input
+        // (045 design D6), so the declared id is a fixed placeholder the resolver ignores.
+        delete: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.organization,
+            action: 'delete',
+            resolveTarget: (raw) => {
+              parseDetailedInput(SCHEMAS.deleteOrganization, raw);
+              return { kind: 'organization', id: 'host-tenant' };
+            },
+          },
+          route: identityRoute('DELETE', '/v1/organization', { highRisk: true }),
+          handler: ({ context, input: rawInput }): Promise<void> => {
+            const { query } = parseDetailedInput(SCHEMAS.deleteOrganization, rawInput);
+            return requestOrgDeletion({
+              tenantId: rawTenantId(context),
+              confirmation: query['confirmation'] as string,
+            });
+          },
         }),
       },
       users: {

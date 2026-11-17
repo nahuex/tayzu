@@ -19,7 +19,8 @@
  * The procedures are found by walking the router `createIdentityRouter` returns (`isProcedure`),
  * keyed by dotted path. The completeness test fails when a procedure of the router has no entry in
  * `VALID_INPUT` (so a new procedure cannot be forgotten) and when `VALID_INPUT` names a procedure
- * the router no longer has.
+ * the router no longer has. `045` task 5.1 adds the fifteenth, `identity.organization.delete`
+ * (its confirmation, in the query, is the host tenant of the admin context).
  *
  * ## Harness
  *
@@ -57,6 +58,12 @@ type Section = (typeof SECTIONS)[number];
 
 type Input = Partial<Record<Section, Record<string, unknown>>>;
 
+/**
+ * The host tenant of the first suite's admin context. `identity.organization.delete` (045 task
+ * 5.1) is valid only when its confirmation names the host tenant, so its entry needs the id.
+ */
+const HOST_TENANT_ID = randomUUID();
+
 /** A valid input per procedure of the router, by dotted path. */
 const VALID_INPUT: Readonly<Record<string, () => Input>> = {
   'identity.users.create': () => ({
@@ -92,6 +99,7 @@ const VALID_INPUT: Readonly<Record<string, () => Input>> = {
   'identity.serviceAccounts.delete': () => ({
     params: { user: `svc-in-${randomUUID().slice(0, 8)}` },
   }),
+  'identity.organization.delete': () => ({ query: { confirmation: HOST_TENANT_ID } }),
 };
 
 /** Dotted paths of every procedure in a router tree. */
@@ -166,7 +174,7 @@ describe('every identity procedure parses untrusted input strictly (task 14.10)'
     paths = procedurePaths(router);
     client = createRouterClient(router, { context: (raw: Record<string, unknown>) => raw });
     context = {
-      tenantId: randomUUID(),
+      tenantId: HOST_TENANT_ID,
       actor: { type: 'user', id: `admin-${randomUUID()}` },
       principal: { roles: ['admin'] },
       __requestHeaders: new Headers(),
@@ -184,8 +192,8 @@ describe('every identity procedure parses untrusted input strictly (task 14.10)'
     );
   }
 
-  it('lists the fourteen router procedures, and every one has an entry here', () => {
-    expect(paths, 'the router has fourteen procedures').toHaveLength(14);
+  it('lists the fifteen router procedures, and every one has an entry here', () => {
+    expect(paths, 'the router has fifteen procedures').toHaveLength(15);
     const missing = paths.filter((path) => !(path in VALID_INPUT));
     expect(missing, 'procedures of the router missing from this test').toEqual([]);
     const stale = Object.keys(VALID_INPUT).filter((path) => !paths.includes(path));

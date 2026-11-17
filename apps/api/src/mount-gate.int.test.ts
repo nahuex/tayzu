@@ -21,10 +21,12 @@
  * `createApp` over the real pools, Cerbos and Better Auth, driven with
  * `app.app.inject`. Two apps: one with the switch left at its default (off) and
  * one with it on, the control that proves the same requests do reach the routes
- * when it is on. The fourteen procedures are the router's own list, read from
+ * when it is on. The fifteen procedures (`045` task 5.1 adds `identity.organization.delete`,
+ * `DELETE /v1/organization`) are the router's own list, read from
  * `generateIdentityOpenApiDocument` (it walks `createIdentityRouter`'s procedures),
- * so a new procedure is covered without editing this file; the fifteenth route is
- * the plain accept route. The authenticated caller is an MFA-enrolled admin with a
+ * so a new procedure is covered without editing this file; the sixteenth route is
+ * the plain accept route. The two plain password-reset routes of `044` are not in this
+ * list: their own suites below cover them. The authenticated caller is an MFA-enrolled admin with a
  * fresh verification (so the catch-all's enrollment gate lets it through). The
  * baseline is an unknown `/v1` path with the same method and caller.
  *
@@ -73,8 +75,8 @@ interface Answer {
   readonly body: unknown;
 }
 
-/** The fourteen oRPC routes, from the router's own procedures, plus the plain accept route. */
-async function fifteenRoutes(): Promise<readonly Route[]> {
+/** The fifteen oRPC routes, from the router's own procedures, plus the plain accept route. */
+async function sixteenRoutes(): Promise<readonly Route[]> {
   const document = (await generateIdentityOpenApiDocument()) as {
     paths: Record<string, Record<string, unknown>>;
   };
@@ -117,7 +119,7 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
         email: testEmailOptions(),
       },
     });
-    routes = await fifteenRoutes();
+    routes = await sixteenRoutes();
 
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(off.auth, {
@@ -169,9 +171,13 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
     return { status: response.statusCode, body };
   }
 
-  it('lists the fourteen router procedures and the accept route as the fifteen routes', () => {
-    expect(routes).toHaveLength(15);
-    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(14);
+  it('lists the fifteen router procedures and the accept route as the sixteen routes', () => {
+    expect(routes).toHaveLength(16);
+    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(15);
+    expect(routes, '045 task 5.1: the org-deletion request').toContainEqual({
+      method: 'DELETE',
+      path: '/v1/organization',
+    });
   });
 
   it('Routes answer like an unknown path while the switch is off: unauthenticated, 401 CATALOG_CONTEXT_REQUIRED', async () => {
