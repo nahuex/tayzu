@@ -64,7 +64,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       with no scope change. Verify: the report is attached to the PR with zero open
       blocking gaps or an explicit deferral recorded, and a short note in the PR
       description states what, if anything, was adjusted.
-- [ ] 1.2 _(setup)_ Scaffold the homes of the deletion code:
+- [x] 1.2 _(setup)_ Scaffold the homes of the deletion code:
       `apps/api/src/identity/org-deletion.ts` (an empty module) and, in
       `apps/api/scripts/`, `purge-job.ts` and `cancel-org-deletion.ts`, with the
       package scripts `identity:purge` and `identity:cancel-org-deletion`. Vitest
