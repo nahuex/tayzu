@@ -829,6 +829,15 @@ task. This change's own pre-assessment is its task 1.1.
 
 ## Risks / Trade-offs
 
+- **A membership added while purge step 2 deletes its user** → step 2 re-checks a leaving
+  user's memberships inside the user's own transaction, and rolls back if the user delete
+  then removes nothing, but `tayzu_purge` holds no `UPDATE` grant and so cannot lock the
+  user row. A membership in another tenant whose insert is still in flight at the instant of
+  the user delete would be removed by the user's cascade. Residual, one statement wide; the
+  hardening is the per-user advisory lock of `apps/api/src/identity/user-lock.ts` taken by
+  the purge and by every path that adds a membership (ticket "Purge and membership
+  serialization").
+
 - **A purged user's invitation in another tenant goes with the user** → deleting a user
   cascades, outside row-level security, to every invitation that user sent
   (`invitation_inviter_id_fk ON DELETE CASCADE`, Better Auth's own schema). A user is
@@ -941,6 +950,7 @@ own:
 
 | Ticket | Item |
 | ------ | ---- |
+| Purge and membership serialization | Take the per-user advisory lock of `apps/api/src/identity/user-lock.ts` in purge step 2 and in every path that adds a membership (invitation acceptance, `identity.users.create`), so a membership whose insert is in flight cannot be removed by the cascade of a purged user (Risks; found in task 6.2). |
 | Last-active-admin protection for deletion | Any admin can request deletion of an organization with an `owner` (Q27). `043` has the ticket for the rest: two admins can disable each other, and the last admin can be disabled. |
 | Retention windows | Accepted, expired and cancelled `invitation` rows keep the invitee's email; a `_user` left at `Invited` after expiry stays; define windows. |
 | Cerbos decision logs | `decisionLogsEnabled: true` records the resource id and attributes; `043` sends only opaque ids (D3 there), but the content and retention of those logs need a policy, and the erasure statement names them (SEC16). |

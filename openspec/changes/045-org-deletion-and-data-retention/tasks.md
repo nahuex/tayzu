@@ -349,7 +349,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       recording progress on the marker. Verify: `org-purge-catalog.int.test.ts` covers
       "Purge removes tenant data after the window" for the catalog side on a tenant
       seeded with relations, entities, blueprints and change events.
-- [ ] 6.2 Purge step 2 (`tayzu_purge`, under the policies of 2.3): first the
+- [x] 6.2 Purge step 2 (`tayzu_purge`, under the policies of 2.3): first the
       tenant's invitation tokens and shed records (`invitation-accept:<invitationId>`
       and `invitation-shed:<invitationId>`) in `auth.verification`, then the
       invitations, **before any user** (Resolved decision Q163: deleting a user

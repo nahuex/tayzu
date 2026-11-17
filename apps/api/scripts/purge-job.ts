@@ -3,7 +3,7 @@
  * tenant's window has passed, in two idempotent steps (catalog rows, then Better Auth
  * rows). Filled in by the tasks of group 6; started by the `identity:purge` package script.
  */
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 
 /** The seven tenant tables step 1 empties (migration `0013` names them one by one). */
 export type CatalogPurgeTable =
@@ -101,4 +101,188 @@ export async function purgeCatalogStep(
     [tenantId],
   );
   return { entitiesRemoved };
+}
+
+export interface PurgeAuthOptions {
+  /**
+   * Failure seam (design "Failure seams ... between a membership check and a delete"):
+   * awaited for each user found with no membership outside due tenants, after that check
+   * and before the user's own transaction begins, outside any transaction and holding no
+   * lock. A throw interrupts the step before the marker is written.
+   */
+  readonly beforeUserDeleted?: (userId: string) => void | Promise<void>;
+}
+
+/**
+ * The user predicate of migration `0014`, written out for one user (`$1`): at least one
+ * membership, and none in a tenant without a due pending marker. `auth.member` is fully
+ * readable by `tayzu_purge` (`purge_read_all`), so a membership elsewhere is always seen.
+ */
+const USER_IS_LEAVING_SQL = `select exists (select 1 from auth.member mb where mb.user_id = $1)
+   and not exists (
+     select 1 from auth.member mb
+      where mb.user_id = $1
+        and not exists (
+          select 1 from tenant_deletion_marker m
+           where m.tenant_id = mb.organization_id
+             and m.state = 'pending' and m.purge_after <= now()
+        )
+   ) as leaving`;
+
+/**
+ * The deletes of one leaving user (`$1`), in the order `0014`'s policies need: the
+ * verification rows before the account and the user they join, the `step-up-verified:`
+ * markers (keyed by session token) before the sessions, and the user last, while its
+ * membership still exists so that the user predicate holds. Fixed literals only.
+ */
+const USER_DELETES: readonly string[] = [
+  `delete from auth.verification
+    where identifier in ('temp-password:' || $1, 'mfa-reenrol:' || $1)`,
+  `delete from auth.verification
+    where identifier in (select 'sso-link:' || a.id from auth.account a where a.user_id = $1)`,
+  `delete from auth.verification
+    where identifier in (
+      select 'step-up-verified:' || s.token from auth.session s where s.user_id = $1
+    )`,
+  'delete from auth.session where user_id = $1',
+  'delete from auth.account where user_id = $1',
+  'delete from auth.two_factor where user_id = $1',
+];
+
+/**
+ * The organization-keyed deletes after the users (`$1` is the tenant id): API keys, the
+ * step-up markers and sessions still active in the tenant (those of users who stay), the
+ * members, and the organization row last. Each commits on its own; a rerun finds the rest.
+ */
+const ORGANIZATION_DELETES: readonly string[] = [
+  'delete from auth.apikey where reference_id = $1',
+  `delete from auth.verification
+    where identifier in (
+      select 'step-up-verified:' || s.token from auth.session s
+       where s.active_organization_id = $1
+    )`,
+  'delete from auth.session where active_organization_id = $1',
+  'delete from auth.member where organization_id = $1',
+  'delete from auth.organization where id = $1',
+];
+
+/**
+ * Runs `fn` in one transaction on a dedicated client: commits when it resolves `true`, rolls
+ * back when it resolves `false` or throws (and rethrows).
+ */
+async function inTransaction(pool: Pool, fn: (tx: PoolClient) => Promise<boolean>): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const commit = await fn(client);
+    await client.query(commit ? 'commit' : 'rollback');
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Deletes one leaving user in one transaction that first re-checks the user's memberships
+ * (a membership committed since the candidate query is seen and keeps the user). If the
+ * final user delete removes nothing, a membership appeared in between: the transaction is
+ * rolled back, so the user keeps every row.
+ */
+async function purgeUser(pool: Pool, userId: string): Promise<void> {
+  await inTransaction(pool, async (tx) => {
+    const check = await tx.query<{ leaving: boolean }>(USER_IS_LEAVING_SQL, [userId]);
+    if (check.rows[0]?.leaving !== true) {
+      return true;
+    }
+    for (const sql of USER_DELETES) {
+      await tx.query(sql, [userId]);
+    }
+    const deleted = await tx.query('delete from auth."user" where id = $1', [userId]);
+    return deleted.rowCount === 1;
+  });
+}
+
+/**
+ * Purge step 2 (design D2, Resolved decisions Q150, Q161, Q163 and Q164): deletes the due
+ * tenant's Better Auth rows under `0014`'s policies, then records `auth_purged_at = now()`
+ * and `state = 'purged'` together. `password-reset:` rows are never touched (exempt, Q150).
+ *
+ * Order: the tenant's `invitation-accept:` and `invitation-shed:` rows, then its
+ * invitations, before any user (a user's deletion cascades to the invitations it sent,
+ * Q163); then each user with no membership outside due tenants, one transaction per user;
+ * then the organization-keyed rows, the organization last; then the marker. Every auth
+ * delete precedes the `purged` write, after which `0014` admits no auth row.
+ *
+ * A tenant already purged, or with no visible due pending marker, is a no-op. Fails closed,
+ * deleting nothing, when step 1 is not recorded (`pool` must be a `tayzu_purge` pool).
+ */
+export async function purgeAuthStep(
+  pool: Pool,
+  tenantId: string,
+  options: PurgeAuthOptions = {},
+): Promise<void> {
+  const marker = await pool.query<{ catalog_recorded: boolean }>(
+    `select catalog_purged_at is not null as catalog_recorded
+       from tenant_deletion_marker
+      where tenant_id = $1 and state = 'pending' and purge_after <= now()`,
+    [tenantId],
+  );
+  const [due] = marker.rows;
+  if (due === undefined) {
+    return;
+  }
+  if (!due.catalog_recorded) {
+    throw new Error('purge step 2: step 1 is not recorded on the deletion marker');
+  }
+
+  await inTransaction(pool, async (tx) => {
+    await tx.query(
+      `delete from auth.verification
+        where identifier in (
+          select 'invitation-accept:' || i.id from auth.invitation i where i.organization_id = $1
+          union all
+          select 'invitation-shed:' || i.id from auth.invitation i where i.organization_id = $1
+        )`,
+      [tenantId],
+    );
+    await tx.query('delete from auth.invitation where organization_id = $1', [tenantId]);
+    return true;
+  });
+
+  const leaving = await pool.query<{ user_id: string }>(
+    `select distinct mb.user_id
+       from auth.member mb
+      where mb.organization_id = $1
+        and not exists (
+          select 1 from auth.member other
+           where other.user_id = mb.user_id
+             and not exists (
+               select 1 from tenant_deletion_marker m
+                where m.tenant_id = other.organization_id
+                  and m.state = 'pending' and m.purge_after <= now()
+             )
+        )
+      order by mb.user_id`,
+    [tenantId],
+  );
+  for (const { user_id: userId } of leaving.rows) {
+    await options.beforeUserDeleted?.(userId);
+    await purgeUser(pool, userId);
+  }
+
+  for (const sql of ORGANIZATION_DELETES) {
+    await pool.query(sql, [tenantId]);
+  }
+
+  const recorded = await pool.query(
+    `update tenant_deletion_marker
+        set auth_purged_at = now(), state = 'purged'
+      where tenant_id = $1 and state = 'pending' and catalog_purged_at is not null`,
+    [tenantId],
+  );
+  if (recorded.rowCount !== 1) {
+    throw new Error('purge step 2: the deletion marker could not be recorded');
+  }
 }
