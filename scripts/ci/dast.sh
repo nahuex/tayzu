@@ -2,7 +2,7 @@
 # DAST stack for the OWASP ZAP baseline scan (task 15.1, design D16), shared
 # by the `dast-zap` CI job and `pnpm ci:local`.
 #
-#   dast.sh up     PostgreSQL 16 behind verified TLS, migrations, apps/api
+#   dast.sh up     PostgreSQL 18 behind verified TLS, migrations, apps/api
 #                  (main.ts) and one seeded organization and session
 #   dast.sh scan   the ZAP baseline scan, with the same image and command
 #                  the pinned zaproxy/action-baseline runs in CI
@@ -95,7 +95,7 @@ generate_tls() {
   rm -f "$dir/ca.key" "$dir/server.csr" "$dir/server.ext" "$dir/ca.srl"
 }
 
-# PostgreSQL 16 with ssl=on. The key is copied inside the container so it is
+# PostgreSQL 18 with ssl=on. The key is copied inside the container so it is
 # owned by the postgres user with mode 0600, which the server requires.
 start_postgres() {
   local password="$1"

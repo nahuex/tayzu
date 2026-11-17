@@ -131,12 +131,15 @@ defines them.
 ## Running tests
 
 - Unit tests are `*.test.ts` next to the code. Integration tests are
-  `*.int.test.ts` and run against a real PostgreSQL 16 through `DATABASE_URL`.
+  `*.int.test.ts` and run against a real PostgreSQL 18 through `DATABASE_URL`.
+  The project runs the latest PostgreSQL major that Azure Flexible Server
+  offers in GA (ADR-0024); CI, `compose.yaml`, the sandbox and the docs move
+  together.
 - Each package has two Vitest projects, `<pkg> (unit)` and `<pkg> (int)`.
 - A run that includes integration tests fails fast, with an explicit message,
   when `DATABASE_URL` is missing. Export it first, for example
   `export DATABASE_URL=postgres://<user>:<password>@localhost:5432/tayzu_test`.
-  Cloud sandbox: cluster `16 main` on `localhost:5432`. Laptop: `docker compose
+  Cloud sandbox: cluster `18 main` on `localhost:5432`. Laptop: `docker compose
 up -d --wait db`. Both are described in `docs/dev-environment/README.md`.
 - Isolation is tenant-per-test: each test uses a fresh random `tenantId`, so
   tests run in parallel without truncating tables.

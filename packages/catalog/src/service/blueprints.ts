@@ -58,8 +58,8 @@ import {
   type RelationDefinitionRow,
 } from '../persistence/blueprints-repository.js';
 import {
-  FOREIGN_KEY_VIOLATION_SQLSTATE,
   UNIQUE_VIOLATION_SQLSTATE,
+  isForeignKeyViolationCode,
   pgErrorInfo,
 } from '../persistence/db-errors.js';
 import { blueprintMutationsCounter, logger, tracer } from '../telemetry/instruments.js';
@@ -191,7 +191,7 @@ function throwMappedCreateError(error: unknown): never {
   throw error;
 }
 
-/** design D9: `23503` on a known `RESTRICT` FK targeting this blueprint -> `CATALOG_REFERENCE_VIOLATION`; else unchanged. */
+/** design D9: a foreign-key violation (`23503`, or `23001` for a `RESTRICT` action on PostgreSQL 18+) on a known `RESTRICT` FK targeting this blueprint -> `CATALOG_REFERENCE_VIOLATION`; else unchanged. */
 const DELETE_REFERENCE_VIOLATION_CONSTRAINTS: ReadonlySet<string> = new Set([
   'catalog_entity_blueprint_fk',
   'catalog_relation_definition_target_blueprint_fk',
@@ -200,7 +200,7 @@ const DELETE_REFERENCE_VIOLATION_CONSTRAINTS: ReadonlySet<string> = new Set([
 function throwMappedDeleteError(error: unknown): never {
   const info = pgErrorInfo(error);
   if (
-    info.code === FOREIGN_KEY_VIOLATION_SQLSTATE &&
+    isForeignKeyViolationCode(info.code) &&
     info.constraint !== undefined &&
     DELETE_REFERENCE_VIOLATION_CONSTRAINTS.has(info.constraint)
   ) {

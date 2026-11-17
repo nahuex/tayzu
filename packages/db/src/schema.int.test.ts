@@ -131,7 +131,7 @@ async function dropScratchDatabase(admin: Client, name: string): Promise<void> {
  * connected to it, and returns a cleanup function that closes the pool and
  * drops the database. The scratch database is created through the
  * `DATABASE_URL` role, which therefore needs the `CREATEDB` privilege (true
- * of the CI `postgres:16` service's superuser, same precondition
+ * of the CI `postgres:18` service's superuser, same precondition
  * `harness.int.test.ts` documents).
  */
 async function createMigratedScratchDatabase(): Promise<{

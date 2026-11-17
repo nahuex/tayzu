@@ -12,7 +12,7 @@
  * are provisioned out of band in a deployed environment (design D15); here,
  * the test-only bootstrap below (never a migration, never production code)
  * creates them if missing and grants the *test cluster's* `DATABASE_URL` role
- * (`tayzu` locally, the `postgres:16` service's superuser in CI) the
+ * (`tayzu` locally, the `postgres:18` service's superuser in CI) the
  * membership it needs to reach them:
  *
  * - `tayzu_migrator` gets a test-only `CREATEROLE` (so it can itself run
@@ -38,7 +38,7 @@
  *
  * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28): plain membership is
  * not enough on its own — a `DATABASE_URL` role that is itself a superuser
- * (the CI `postgres:16` service) or holds `BYPASSRLS` (the sandbox) skips
+ * (the CI `postgres:18` service) or holds `BYPASSRLS` (the sandbox) skips
  * `tenant_isolation` regardless of what it is a member of. `getTestDatabase()`
  * therefore hands back a pool that runs every query *as* `tayzu_app`
  * (`SET ROLE tayzu_app`, a fixed literal queued on every new connection,
@@ -55,7 +55,7 @@ import { assertVerifiedTlsOrLocal } from './connection-security.js';
 import { runMigrations } from './index.js';
 
 const MISSING_DATABASE_URL_MESSAGE = [
-  'DATABASE_URL is not set: the test harness needs a real PostgreSQL 16 database.',
+  'DATABASE_URL is not set: the test harness needs a real PostgreSQL 18 database.',
   'Export a connection string before running it, for example:',
   '  export DATABASE_URL=postgres://<user>:<password>@localhost:5432/tayzu_test',
   'To run only the unit tests instead, use `pnpm test:unit`. See CLAUDE.md, "Running tests".',

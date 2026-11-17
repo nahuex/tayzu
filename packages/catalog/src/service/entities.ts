@@ -42,8 +42,8 @@ import {
   selectBlueprintRow,
 } from '../persistence/blueprints-repository.js';
 import {
-  FOREIGN_KEY_VIOLATION_SQLSTATE,
   UNIQUE_VIOLATION_SQLSTATE,
+  isForeignKeyViolationCode,
   pgErrorInfo,
 } from '../persistence/db-errors.js';
 import {
@@ -415,7 +415,7 @@ function parseStatusSource(value: string, limits: CatalogLimits): string {
   return value;
 }
 
-/** design D9: `23505` on the entity identifier uniqueness constraint -> `CATALOG_ALREADY_EXISTS`; known edge/blueprint/relation-definition FKs -> `CATALOG_REFERENCE_VIOLATION`; anything else propagates unchanged. */
+/** design D9: `23505` on the entity identifier uniqueness constraint -> `CATALOG_ALREADY_EXISTS`; a foreign-key violation (`23503`, or `23001` for a `RESTRICT` action on PostgreSQL 18+) on known edge/blueprint/relation-definition FKs -> `CATALOG_REFERENCE_VIOLATION`; anything else propagates unchanged. */
 const ENTITY_REFERENCE_VIOLATION_CONSTRAINTS: ReadonlySet<string> = new Set([
   'catalog_entity_relation_target_fk',
   'catalog_entity_blueprint_fk',
@@ -431,7 +431,7 @@ function throwMappedEntityWriteError(error: unknown): never {
     throw new CatalogError('CATALOG_ALREADY_EXISTS', 'Entity identifier already exists');
   }
   if (
-    info.code === FOREIGN_KEY_VIOLATION_SQLSTATE &&
+    isForeignKeyViolationCode(info.code) &&
     info.constraint !== undefined &&
     ENTITY_REFERENCE_VIOLATION_CONSTRAINTS.has(info.constraint)
   ) {

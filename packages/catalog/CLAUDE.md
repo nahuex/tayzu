@@ -78,7 +78,7 @@ imports from another layer.
 
 - Unit tests (`*.test.ts`) sit next to the code. Integration tests
   (`*.int.test.ts`) cover `persistence`, `service` and `api` against a real
-  PostgreSQL 16.
+  PostgreSQL 18.
 - Name tests after the spec scenarios that `tasks.md` quotes.
 - Integration tests use a fresh random `tenantId` per test, and assert
   telemetry through the harness from `@tayzu/observability`.

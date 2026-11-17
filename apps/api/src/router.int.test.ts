@@ -17,7 +17,7 @@
  * ## Harness
  *
  * Real Better Auth with the Q30 adapter, a real Cerbos container and a real
- * PostgreSQL 16. Every test uses a fresh organization (the tenant) and its
+ * PostgreSQL 18. Every test uses a fresh organization (the tenant) and its
  * admin, minted through `bootstrapTestTenant`; the admin's session cookie is the
  * `Headers` the context carries for `invite` (D4). The client is called with the
  * input shape of `inputStructure: 'detailed'`: `{ params, query, body }`.

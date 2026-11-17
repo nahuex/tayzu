@@ -630,7 +630,7 @@ confirmation that does not name the host tenant. The change introduces no new co
 
 ### D7. Testing strategy
 
-Integration tests run against a real PostgreSQL 16 and a real Cerbos test container
+Integration tests run against a real PostgreSQL 18 (ADR-0024) and a real Cerbos test container
 (`002`'s harness): the purge tests connect as `tayzu_purge`, the reversal tests as
 `tayzu_deletion_admin` and the request tests as `tayzu_app`, so that the privilege
 boundaries of D1 are exercised by the roles themselves and not by code (the harness

@@ -70,7 +70,7 @@ orchestration described below. When code and design disagree, stop and ask.
 
 ## Tests
 
-- Integration tests (`*.int.test.ts`) need a real PostgreSQL 16
+- Integration tests (`*.int.test.ts`) need a real PostgreSQL 18
   (`DATABASE_URL`) and a running Cerbos container (`compose.yaml`'s `cerbos`
   service, or CI's).
 - The allowlist-drift test (`auth-route-allowlist.test.ts`) enumerates Better

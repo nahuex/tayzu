@@ -20,7 +20,7 @@ import { runMigrations } from './index.js';
 
 /**
  * Integration tests for the Postgres harness of `@tayzu/db` (task 1.5; design
- * D5 and D12). They run against the real PostgreSQL 16 database named by
+ * D5 and D12). They run against the real PostgreSQL 18 database named by
  * `DATABASE_URL`, which the `int` project's global setup requires.
  *
  * Task 1.5: "`createPool(url)` and `runMigrations(pool)`", and "A test helper
@@ -53,7 +53,7 @@ import { runMigrations } from './index.js';
  * Scratch databases. The tests that need a fresh database create a private
  * one with a random name through the `DATABASE_URL` role, and drop it
  * afterwards. They never touch shared tables. The role therefore needs the
- * `CREATEDB` privilege (the user of the CI `postgres:16` service is a
+ * `CREATEDB` privilege (the user of the CI `postgres:18` service is a
  * superuser).
  *
  * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28): `getTestDatabase()`
@@ -118,7 +118,7 @@ async function expectTargets(pool: Pool, url: string): Promise<void> {
  * must hand back a pool that runs every query *as* `tayzu_app` (`SET ROLE` on
  * every connection), not merely a role that happens to inherit `tayzu_app`'s
  * privileges through plain membership — a `DATABASE_URL` role that is itself
- * a superuser (the CI `postgres:16` service) or holds `BYPASSRLS` (the
+ * a superuser (the CI `postgres:18` service) or holds `BYPASSRLS` (the
  * sandbox) would silently skip every `tenant_isolation` policy check
  * otherwise, defeating the whole point of 001's isolation tests becoming real
  * RLS tests (design D6). So `current_user` on this pool must read back as
@@ -519,7 +519,7 @@ describe('getTestDatabase() and getOwnerPool() run as different Postgres roles',
   });
 });
 
-describe('runMigrations against a real PostgreSQL 16', () => {
+describe('runMigrations against a real PostgreSQL 18', () => {
   it(
     'applies exactly the shipped migrations to a fresh database when several runners start at once, as parallel test files and packages do, and a later run changes nothing',
     { timeout: 60_000 },

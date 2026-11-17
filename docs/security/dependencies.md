@@ -24,12 +24,19 @@ Dependabot opens weekly pull requests for three ecosystems
 
 | Image                     | Pinned in                                                                            | Tracking mechanism                                                | Owner    |
 | ------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- | -------- |
-| `postgres:16`             | `scripts/ci/Dockerfile.images` (read by `dast.sh`), `ci.yml` services                | Dependabot `docker`, `/scripts/ci`; `ci.yml` copy updated by hand | Platform |
+| `postgres:18`             | `scripts/ci/Dockerfile.images` (read by `dast.sh`), `ci.yml` services                | Dependabot `docker`, `/scripts/ci`; `ci.yml` copy updated by hand | Platform |
 | `ghcr.io/cerbos/cerbos`   | `compose.yaml`, `ci.yml`, `scripts/dev/start-cerbos.sh`, `scripts/policy-compile.sh` | Dependabot `docker`, `/`; the other copies updated by hand        | Platform |
 | `ghcr.io/zaproxy/zaproxy` | `scripts/ci/Dockerfile.images` (read by `dast.sh`), `ci.yml` `docker_name`           | Dependabot `docker`, `/scripts/ci`; `ci.yml` copy updated by hand | Platform |
 
 `apps/api/src/dependabot-config.test.ts` fails when a digest is pinned only
 where no `docker` entry reads it.
+
+The PostgreSQL major version follows
+[ADR-0024](../adr/0024-postgresql-tracks-latest-azure-ga-major.md): the latest
+major that Azure Database for PostgreSQL Flexible Server offers in GA (18
+today). Digest bumps within that major are routine. A pull request that moves
+`postgres` to a new major is merged only once Azure offers that major in GA,
+together with `compose.yaml`, the sandbox's SessionStart hook and the docs.
 
 Runtime-coupled versions are held on purpose. `@types/node` stays on the
 major version of the Node runtime (22), so Dependabot ignores its major

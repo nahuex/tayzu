@@ -107,7 +107,7 @@ function digestOf(image: string): string {
 describe('Dependabot tracks the pinned image digests (task 13.12)', () => {
   it('finds the pinned digests of postgres, Cerbos and ZAP', () => {
     const images = pins.map((pin) => pin.image);
-    expect(images.some((i) => i.startsWith('postgres:16@sha256:'))).toBe(true);
+    expect(images.some((i) => i.startsWith('postgres:18@sha256:'))).toBe(true);
     expect(images.some((i) => i.startsWith('ghcr.io/cerbos/cerbos@sha256:'))).toBe(true);
     expect(images.some((i) => i.startsWith('ghcr.io/zaproxy/zaproxy@sha256:'))).toBe(true);
   });

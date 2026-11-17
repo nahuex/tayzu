@@ -86,7 +86,8 @@ const ACTOR_TYPE_ALLOWLIST = [
 ];
 
 export default defineConfig(
-  globalIgnores(['**/dist/', '**/coverage/', '**/.turbo/']),
+  // Agent worktrees are full copies of the repository (Claude Code, `.claude/worktrees/`).
+  globalIgnores(['**/dist/', '**/coverage/', '**/.turbo/', '.claude/worktrees/']),
   {
     files: ['**/*.{js,ts}'],
     extends: [js.configs.recommended, tseslint.configs.strictTypeChecked],

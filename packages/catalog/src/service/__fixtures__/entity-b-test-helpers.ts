@@ -213,7 +213,7 @@ export async function blueprintRowLocation(
  * SHARE` hold, in queue order.
  *
  * Counts every `pg_locks` row of `locktype = 'tuple'` at that exact
- * `(page, tuple)`, **granted or not**. On PostgreSQL 16, `heap_lock_tuple`
+ * `(page, tuple)`, **granted or not**. On PostgreSQL 16 and 18, `heap_lock_tuple`
  * (`heapam.c`) makes every backend that finds the tuple already locked by
  * another in-progress transaction acquire this same per-tuple heavyweight
  * lock *before* it waits on the specific blocking transaction id: the first
@@ -225,7 +225,7 @@ export async function blueprintRowLocation(
  * later backend queues, ungranted, on this very same tuple lock instead, so
  * counting *every* row at this `(page, tuple)` regardless of `granted` -- not
  * just the ungranted ones -- gives the exact number of contending backends.
- * Verified empirically against a live PostgreSQL 16 instance with one, two
+ * Verified empirically against live PostgreSQL 16 and 18 instances with one, two
  * and three concurrent waiters.
  */
 export async function countBlueprintRowWaiters(

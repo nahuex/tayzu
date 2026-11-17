@@ -6,7 +6,7 @@ SSA SEC01. It is maintained as docs-as-code (decision R6 of
 network interaction updates it in the same pull request.
 
 **Current state: `002-auth-and-rbac`.** Tayzu is a set of TypeScript
-libraries, a PostgreSQL 16 schema and, since 002, the first application:
+libraries, a PostgreSQL 18 schema and, since 002, the first application:
 `apps/api`, a Fastify listener that serves the catalog API and Better Auth's
 allowlisted routes, with Cerbos as the only authorization engine. The
 catalog libraries are still also called in-process by tests. Nothing is
@@ -37,7 +37,7 @@ flowchart TB
 
     subgraph delivery["Development and delivery (outside the product boundary)"]
         dev(["Developer<br/>humans and their Claude Code sessions"])
-        ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+        ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:18 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
         dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
         gh["GitHub repository<br/>nahuex/tayzu"]
         npm["npm registry"]
@@ -77,7 +77,7 @@ flowchart TB
             catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
             db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
             obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
-            pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+            pg[("PostgreSQL 18<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
         end
 
         subgraph azure["Azure platform services (010)"]
@@ -323,7 +323,7 @@ flowchart TB
     subgraph zone["Development and delivery (outside the product boundary)"]
         direction TB
         dev(["Developer<br/>humans and their Claude Code sessions"])
-        ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+        ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:18 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
         dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
         gh["GitHub repository<br/>nahuex/tayzu"]
         npm["npm registry"]
@@ -338,7 +338,7 @@ flowchart TB
     catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
     db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
     api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
-    pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+    pg[("PostgreSQL 18<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
     ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
     backfillJob["Backfill job<br/>scripts/backfill-user-blueprint.ts"]
     reconcileJob["Reconcile job<br/>scripts/reconcile-users.ts"]
@@ -446,8 +446,8 @@ flowchart TB
     kv(["Azure Key Vault (002/010)<br/>external secret store<br/>feeds the deployment pipeline and the running container"])
     acr["Azure Container Registry (010)"]
     ghcr(["ghcr.io container registry<br/>Cerbos and ZAP images, pinned by digest"])
-    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
-    pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:18 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    pg[("PostgreSQL 18<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
 
     user -->|"HTTPS (browser, session cookie)"| catalogApi
     user -->|"HTTPS (browser, sign-in, session, MFA; anonymous JWKS read)"| authApi
@@ -521,7 +521,7 @@ flowchart TB
         catalog["@tayzu/catalog (library)<br/>domain · persistence · service pipeline<br/>oRPC router + OpenAPI contract (in-process only)"]
         db["@tayzu/db<br/>pg pool · tenant transaction (app.tenant_id)<br/>migration runner · migrations"]
         obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
-        pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+        pg[("PostgreSQL 18<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
         system ~~~ catalog
         catalog ~~~ db
         db ~~~ obs
@@ -529,7 +529,7 @@ flowchart TB
     end
 
     dev(["Developer<br/>humans and their Claude Code sessions"])
-    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:18 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
     authn["Better Auth (002)<br/>in-process library"]
     api["Fastify + oRPC API server<br/>onRequest allowlist · CORS · helmet · CSRF · body limit<br/>rate limits · resolveContext · error mapping<br/>Web UI (003)"]
     dast(["CI: DAST job dast-zap<br/>scripts/ci/dast.sh, throwaway stack per run<br/>ZAP baseline (authenticated, seeded session)<br/>ZAP OpenAPI API scan (safe mode, passive)"])
@@ -591,7 +591,7 @@ flowchart TB
     workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
     obs["@tayzu/observability<br/>OTel test harness (in-memory exporters)<br/>SDK bootstrap helper for host apps"]
     acaEnv["Azure Container Apps environment (010)"]
-    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:18 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
     dev(["Developer<br/>humans and their Claude Code sessions"])
     breakGlass["Break-glass CLI (044)<br/>recover:admin-mfa, named approver, telemetry required"]
 
@@ -650,7 +650,7 @@ flowchart TB
     invitee(["Invitee (human)<br/>with their mailbox"])
     authn["Better Auth (002)<br/>in-process library"]
     acceptApi["Public accept route (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/invitations/accept<br/>unauthenticated, invitation token"]
-    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:16 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
+    ci(["CI: GitHub Actions CI<br/>.github/workflows/ci.yml<br/>lint · typecheck · test (postgres:18 service)<br/>contract:check · otel-smoke-check · pnpm audit · gitleaks"])
     dev(["Developer<br/>humans and their Claude Code sessions"])
     intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
     workers["BullMQ workers (004)<br/>workflow engine, outbox consumer"]
@@ -720,7 +720,7 @@ flowchart TB
     end
 
     operator(["Platform operator (human)<br/>starts the identity jobs, not an Administrator"])
-    pg[("PostgreSQL 16<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
+    pg[("PostgreSQL 18<br/>catalog_blueprint · catalog_relation_definition<br/>catalog_entity · catalog_entity_relation<br/>catalog_change_event (append-only) · catalog_tenant_sequence<br/>001: ephemeral test databases only<br/>010: Azure Database for PostgreSQL Flexible Server")]
     emailProvider(["Email provider (043)<br/>Azure Communication Services Email, send-only"])
     monitor["Azure Monitor / Application Insights (010)<br/>centralized logging and telemetry"]
 
@@ -765,7 +765,7 @@ flowchart TB
 | `@tayzu/catalog (library)`                                                                             | Current (001)               | Domain, persistence, the operation pipeline and the oRPC router. Invoked in-process only.                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `@tayzu/db`                                                                                            | Current (001)               | Pool (TLS required outside the test harness), `withTenantTransaction`, migrations.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `@tayzu/observability`                                                                                 | Current (001)               | OTel test harness. The catalog depends on the OTel API only; host apps wire the SDK and exporter.                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `PostgreSQL 16`                                                                                        | Current (001)               | The six catalog tables. `catalog_change_event` is protected by an append-only trigger. In 001 it runs only as ephemeral test databases (CI `postgres:16` service container, local sandbox cluster), both bound to localhost.                                                                                                                                                                                                                                                                                             |
+| `PostgreSQL 18`                                                                                        | Current (001)               | The six catalog tables. `catalog_change_event` is protected by an append-only trigger. In 001 it runs only as ephemeral test databases (CI `postgres:18` service container, local sandbox cluster), both bound to localhost.                                                                                                                                                                                                                                                                                             |
 | `GitHub Actions CI`                                                                                    | Current (001)               | Pipeline-as-Code in `.github/workflows/ci.yml`, with `permissions: contents: read` and actions pinned by SHA. It is Tayzu's component, but GitHub-hosted runners execute it outside the product boundary, so it is drawn as the CI actor.                                                                                                                                                                                                                                                                                |
 | `Fastify + oRPC API server` (`apps/api`)                                                               | Current (002)               | The first listener. `createApp` mounts Better Auth behind a deny-by-default route allowlist and the catalog `OpenAPIHandler`, and adds CORS, helmet, CSRF, a body limit, rate limits and the back-channel logout route. `main.ts` is the process entry point; nothing runs it outside tests and the DAST job until 010.                                                                                                                                                                                                  |
 | `Better Auth` (`@tayzu/auth`)                                                                          | Current (002)               | In-process library on its own `auth` schema and pool (role `tayzu_auth`). Local email and password, MFA, sessions, machine credentials and Visma Connect through `genericOAuth`.                                                                                                                                                                                                                                                                                                                                         |
@@ -773,7 +773,7 @@ flowchart TB
 | `Visma Connect`                                                                                        | Current (002), external     | Tayzu's primary human identity provider. Outside the boundary. Two interaction kinds: the sign-in and callback round trip that `apps/api` initiates, and an inbound-only back-channel logout POST that Visma Connect initiates.                                                                                                                                                                                                                                                                                          |
 | `Identity lifecycle surfaces and jobs`                                                                 | Current (043)               | Invitation, accept, user, service-account and credential routes in `apps/api` (mounted only when `MOUNT_IDENTITY_ROUTES=true`, off by default); invitation email through Azure Communication Services over HTTPS; Pwned Passwords range query made by Better Auth (the `haveIBeenPwned` plugin and the `createUser` of the accept path); backfill and reconcile jobs started by the platform operator, each with its own loopback Cerbos sidecar (gRPC, no TLS) and the roles `tayzu_auth` and `tayzu_app`.              |
 | `Password reset and account recovery`                                                                  | Current (044)               | The two public reset routes in `apps/api` (mounted only when `MOUNT_IDENTITY_ROUTES=true`, off by default); reset and notice mail through Azure Communication Services over HTTPS, delivered to the end user's mail client; Pwned Passwords range query from the confirm route; the break-glass CLI `recover:admin-mfa`, started by the platform operator, which connects as `tayzu_auth`, sends a notice mail and refuses to start without an OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`) or with telemetry disabled. |
-| `GitHub Actions DAST job` (`dast-zap`)                                                                 | Current (002)               | `.github/workflows/ci.yml` and `scripts/ci/dast.sh`. Per run: a throwaway PostgreSQL 16 behind verified TLS (a per-run CA), migrations as the owner, `apps/api` as the runtime roles `tayzu_app` and `tayzu_auth`. Then an authenticated ZAP baseline scan with one seeded session and a ZAP API scan of the catalog OpenAPI document in safe mode (passive). Any alert fails the job.                                                                                                                                   |
+| `GitHub Actions DAST job` (`dast-zap`)                                                                 | Current (002)               | `.github/workflows/ci.yml` and `scripts/ci/dast.sh`. Per run: a throwaway PostgreSQL 18 behind verified TLS (a per-run CA), migrations as the owner, `apps/api` as the runtime roles `tayzu_app` and `tayzu_auth`. Then an authenticated ZAP baseline scan with one seeded session and a ZAP API scan of the catalog OpenAPI document in safe mode (passive). Any alert fails the job.                                                                                                                                   |
 | `Azure Key Vault`                                                                                      | Planned (002/010), external | Secret store outside the boundary. It feeds the deployment pipeline and, through Container Apps secret references, the running container. The application reads environment variables only and uses no Key Vault SDK.                                                                                                                                                                                                                                                                                                    |
 | `BullMQ workers`, `Redis`                                                                              | Planned (004)               | Workflow engine and change-event outbox consumer. Redis is Azure Cache for Redis from 010.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `Integration adapters`                                                                                 | Planned (008/009)           | Webhook receivers and pollers that write `status` through the catalog.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |

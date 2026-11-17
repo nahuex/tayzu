@@ -4,7 +4,7 @@ import { configDefaults, defineProject, type UserWorkspaceConfig } from 'vitest/
 /** Unit tests: pure, no database. */
 export const UNIT_TEST_GLOB = 'src/**/*.test.ts';
 
-/** Integration tests: need a real PostgreSQL 16 through `DATABASE_URL`. */
+/** Integration tests: need a real PostgreSQL 18 through `DATABASE_URL`. */
 export const INTEGRATION_TEST_GLOB = 'src/**/*.int.test.ts';
 
 const integrationGlobalSetup = fileURLToPath(new URL('./vitest.int.setup.ts', import.meta.url));
