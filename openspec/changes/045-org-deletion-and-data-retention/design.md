@@ -17,9 +17,9 @@
   is carried whole. A reference inside a carried row to "this change", to a
   design section such as D9 or D13, or to a task of `043`'s old group 12 is to `043`
   as it was before the split: the table at the start of that section says where each
-  one landed. The rows Q150 to Q160 are this change's own: the human answered them in
+  one landed. The rows Q150 to Q161 are this change's own: the human answered them in
   chat on 2026-11-16 (Q150-Q157, after the drift-check and the VCDM pre-assessment of
-  task 1.1) and 2026-11-17 (Q158-Q160, at the Checkpoint 3 of migration `0012`)
+  task 1.1) and 2026-11-17 (Q158-Q161, at the Checkpoint 3 of migrations `0012` and `0013`)
   (`043`'s own rows run to Q149, so this change's rows start at Q150). This change has
   no Open Questions.
 - **Authored from `043`'s plan, not yet reconciled as a change of its own.** The
@@ -1038,6 +1038,7 @@ points at `043` as it was before the split, this is where it landed:
 | Q158 | (Checkpoint 3 of migration `0012`, 2026-11-17) Names of the two purge-step timestamps of `tenant_deletion_marker` | `catalog_purged_at` (step 1, the catalog rows) and `auth_purged_at` (step 2, the Better Auth rows); tasks 2.2, 6.1 and 6.2 use them. The human approved the SQL of `0012` in the same answer. _Rejected:_ `step1_at` and `step2_at`, which say nothing of what was removed. |
 | Q159 | (Checkpoint 3 of migration `0012`, 2026-11-17) Where the marker's row-level security lives | In `0013`, as D1 and the Migration Plan say: `0012` creates the table with no row-level security, and `0013` runs `ENABLE` and `FORCE ROW LEVEL SECURITY` and creates the `tenant_isolation` policy `TO tayzu_app` with the grants, so the whole access model of the table is one Checkpoint 3 review. _Rejected:_ the policy in `0012`, as `0008` did. |
 | Q160 | (Checkpoint 3 of migration `0012`, 2026-11-17) A primary key on `tenant_deletion_marker` | None. A row is addressed by `tenant_id` with `state = 'pending'`, which the partial unique index makes unique; cancelled and purged rows are tombstones read by tenant. _Rejected:_ a surrogate `uuid` with `DEFAULT gen_random_uuid()`, against the catalog's rule of UUIDv7 ids generated in the application, and outside the column-level `INSERT` grant of 2.2. |
+| Q161 | (Checkpoint 3 of migration `0013`, 2026-11-17) The access model of the marker and the purge on the catalog side | The human approved the SQL of `0013` with these choices, none of which the design had fixed: (1) a `SELECT` policy is also checked against the new row of an `UPDATE` with `WHERE` or `RETURNING`, so `purge_due_select` also admits `state = 'purged' AND auth_purged_at = now()` and `deletion_admin_select` also admits `state = 'cancelled' AND cancelled_at = now()`, the row the transaction itself writes (another transaction has another `now()`); (2) the purge therefore writes `auth_purged_at = now()` and `state = 'purged'` in one transaction, only after `catalog_purged_at`, and the reversal writes `cancelled_at = now()` with a non-null `cancelled_by`; (3) both roles are created `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS` with no password, and `createrole_self_grant` is cleared during their creation so the creating role keeps an admin-only membership; (4) the catalog tables' purge policies restate the due predicate instead of relying on the marker's visibility; (5) the down script ends with `DROP ROLE`, as `0006`. Validated on PostgreSQL 18.7 (ADR-0024). _Rejected:_ matching `xmin` against the current transaction id, since system columns are not reliable in a `WITH CHECK`. |
 
 ## Open Questions
 

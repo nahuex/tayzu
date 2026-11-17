@@ -117,7 +117,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       (`requested_at` now, `state` `pending`) applying to an insert that omits them,
       and the harness table lists and `schema.int.test.ts` updated for the new table
       (1.3). ⛔ **Stop for Checkpoint 3 approval of the SQL before continuing.**
-- [ ] 2.2 (Checkpoint 3) Migration `0013_tenant_deletion_grants` (hand-written,
+- [x] 2.2 (Checkpoint 3) Migration `0013_tenant_deletion_grants` (hand-written,
       like `0009`), catalog side (Resolved decision Q48): creates the `tayzu_purge`
       role (own pool and secret, used only by the purge job; guarded and with no
       password, like `0006`) and the `tayzu_deletion_admin` role (Q35, only able to
