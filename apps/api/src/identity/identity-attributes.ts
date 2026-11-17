@@ -16,7 +16,8 @@ export type IdentityOperation =
   | 'credentials.create'
   | 'credentials.list'
   | 'credentials.rotate'
-  | 'credentials.revoke';
+  | 'credentials.revoke'
+  | 'organization.delete';
 
 export interface IdentityResourceInput {
   readonly operation: IdentityOperation;
@@ -53,6 +54,7 @@ const KIND: Record<IdentityOperation, ResourceKind> = {
   'credentials.list': RESOURCE_KINDS.credential,
   'credentials.rotate': RESOURCE_KINDS.credential,
   'credentials.revoke': RESOURCE_KINDS.credential,
+  'organization.delete': RESOURCE_KINDS.organization,
 };
 
 /** Operations whose resource does not exist yet, or has no target: a fixed literal id. */

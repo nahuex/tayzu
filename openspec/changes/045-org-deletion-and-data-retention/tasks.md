@@ -234,7 +234,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 3. Cerbos foundations, ⛔ Checkpoint 3
 
-- [ ] 3.1 `RESOURCE_KINDS` (`packages/authz/src/resource-kinds.ts`) gains `organization`,
+- [x] 3.1 `RESOURCE_KINDS` (`packages/authz/src/resource-kinds.ts`) gains `organization`,
       and the Cerbos attributes of the identity wrapper (`043`'s tasks 5.1 and 5.3b) are
       built for it. The wrapper's target kinds are `invitation`, `credential` and `user`
       today, so `IdentityTargetKind` (`apps/api/src/identity/identity-target.ts`) and the
