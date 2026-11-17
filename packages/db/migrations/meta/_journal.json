@@ -99,6 +99,13 @@
       "when": 1794919855619,
       "tag": "0013_tenant_deletion_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794923306032,
+      "tag": "0014_tenant_deletion_auth_grants",
+      "breakpoints": true
     }
   ]
 }

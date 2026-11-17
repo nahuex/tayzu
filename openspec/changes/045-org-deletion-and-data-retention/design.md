@@ -17,9 +17,9 @@
   is carried whole. A reference inside a carried row to "this change", to a
   design section such as D9 or D13, or to a task of `043`'s old group 12 is to `043`
   as it was before the split: the table at the start of that section says where each
-  one landed. The rows Q150 to Q161 are this change's own: the human answered them in
+  one landed. The rows Q150 to Q164 are this change's own: the human answered them in
   chat on 2026-11-16 (Q150-Q157, after the drift-check and the VCDM pre-assessment of
-  task 1.1) and 2026-11-17 (Q158-Q161, at the Checkpoint 3 of migrations `0012` and `0013`)
+  task 1.1) and 2026-11-17 (Q158-Q164, at the Checkpoint 3 of migrations `0012`, `0013` and `0014`)
   (`043`'s own rows run to Q149, so this change's rows start at Q150). This change has
   no Open Questions.
 - **Authored from `043`'s plan, not yet reconciled as a change of its own.** The
@@ -326,7 +326,13 @@ idempotent steps with safe resume (progress is recorded on the marker):
    other `catalog_*` rows (the order respects the `RESTRICT` FKs), the append-only
    rows included, because the trigger and the policies admit `tayzu_purge` for a
    due tenant.
-2. **Better Auth data**, under the due-marker policies of Resolved decision Q49:
+2. **Better Auth data**, under the due-marker policies of Resolved decision Q49.
+   First the org's invitation tokens and shed records in `auth.verification`
+   (`invitation-accept:<invitationId>` and `invitation-shed:<invitationId>`, Q150)
+   and then the invitations themselves, **before any user** (Resolved decision Q163):
+   deleting a user cascades, outside row-level security, to every invitation that
+   user sent (`invitation_inviter_id_fk ON DELETE CASCADE`), and a token or shed
+   record whose invitation is gone can no longer be joined by its policy. Then
    each user who has no membership in any other org (deleted while their
    membership in this org still exists, so the policy can evaluate it) together
    with that user's `account`, `session` and `two_factor` rows and the
@@ -334,10 +340,7 @@ idempotent steps with safe resume (progress is recorded on the marker):
    `mfa-reenrol:<userId>` and `sso-link:<accountId>`; the verification rows go first, because their policies join
    the user and the account), **in one transaction per user that re-checks the user's
    memberships**, so a membership added between the check and the delete is seen;
-   then, in this order, the org's invitation tokens and shed records in
-   `auth.verification` (`invitation-accept:<invitationId>` and
-   `invitation-shed:<invitationId>`, Q150) **before** the invitations (their policy
-   joins `invitation`, so the invitation must still exist), the invitations, the API keys (`referenceId`), the sessions
+   then, in this order, the API keys (`referenceId`), the sessions
    whose `active_organization_id` is the tenant (those of users who stay) and the
    members; and the organization row last. The step-up
    marker is keyed by the **session token**, not by the user
@@ -826,6 +829,14 @@ task. This change's own pre-assessment is its task 1.1.
 
 ## Risks / Trade-offs
 
+- **A purged user's invitation in another tenant goes with the user** → deleting a user
+  cascades, outside row-level security, to every invitation that user sent
+  (`invitation_inviter_id_fk ON DELETE CASCADE`, Better Auth's own schema). A user is
+  purged only when every membership is in a due tenant, so such an invitation belongs to
+  a tenant the user no longer belongs to. Accepted (Resolved decision Q164): it is the
+  foreign key's behaviour on any user deletion, and the invitation would point at a user
+  who no longer exists. The completeness test of 6.7 sees the cascade.
+
 - [A pending org deletion is reversible only through the operator script (D3,
   Resolved decisions Q21 and Q27), and the purge removes the data for good; backups
   keep it until their own retention expires] → The erasure statement in
@@ -1039,6 +1050,9 @@ points at `043` as it was before the split, this is where it landed:
 | Q159 | (Checkpoint 3 of migration `0012`, 2026-11-17) Where the marker's row-level security lives | In `0013`, as D1 and the Migration Plan say: `0012` creates the table with no row-level security, and `0013` runs `ENABLE` and `FORCE ROW LEVEL SECURITY` and creates the `tenant_isolation` policy `TO tayzu_app` with the grants, so the whole access model of the table is one Checkpoint 3 review. _Rejected:_ the policy in `0012`, as `0008` did. |
 | Q160 | (Checkpoint 3 of migration `0012`, 2026-11-17) A primary key on `tenant_deletion_marker` | None. A row is addressed by `tenant_id` with `state = 'pending'`, which the partial unique index makes unique; cancelled and purged rows are tombstones read by tenant. _Rejected:_ a surrogate `uuid` with `DEFAULT gen_random_uuid()`, against the catalog's rule of UUIDv7 ids generated in the application, and outside the column-level `INSERT` grant of 2.2. |
 | Q161 | (Checkpoint 3 of migration `0013`, 2026-11-17) The access model of the marker and the purge on the catalog side | The human approved the SQL of `0013` with these choices, none of which the design had fixed: (1) a `SELECT` policy is also checked against the new row of an `UPDATE` with `WHERE` or `RETURNING`, so `purge_due_select` also admits `state = 'purged' AND auth_purged_at = now()` and `deletion_admin_select` also admits `state = 'cancelled' AND cancelled_at = now()`, the row the transaction itself writes (another transaction has another `now()`); (2) the purge therefore writes `auth_purged_at = now()` and `state = 'purged'` in one transaction, only after `catalog_purged_at`, and the reversal writes `cancelled_at = now()` with a non-null `cancelled_by`; (3) both roles are created `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS` with no password, and `createrole_self_grant` is cleared during their creation so the creating role keeps an admin-only membership; (4) the catalog tables' purge policies restate the due predicate instead of relying on the marker's visibility; (5) the down script ends with `DROP ROLE`, as `0006`. Validated on PostgreSQL 18.7 (ADR-0024). _Rejected:_ matching `xmin` against the current transaction id, since system columns are not reliable in a `WITH CHECK`. |
+| Q162 | (Checkpoint 3 of migration `0014`, 2026-11-17) The Better Auth side of the purge | The human approved the SQL of `0014`: row-level security on the nine tables, a permissive `auth_full_access` policy `TO tayzu_auth` on each (Better Auth unchanged), `USAGE` on `auth` and an explicit `SELECT, DELETE` per table for `tayzu_purge` and nothing else, the organization predicate, the user predicate (at least one membership and none in a tenant that is not due, read through `purge_read_all` on `member`), the session rule (a due active organization or the user predicate), and one disjunct per `auth.verification` family by exact prefix with `password-reset:` exempt. Each table's policies are created before its row-level security is enabled; no `FORCE ROW LEVEL SECURITY` on the `auth` tables, because `tayzu_auth` is unrestricted by design; tables and the marker are schema-qualified. Validated on PostgreSQL 18.7. _Rejected:_ a policy per family on `verification`; `FORCE ROW LEVEL SECURITY` on the `auth` tables. |
+| Q163 | (Checkpoint 3 of migration `0014`, 2026-11-17) Order of purge step 2 | The tenant's invitation tokens and shed records, then its invitations, are deleted **before any user**, because a user's deletion cascades to the invitations that user sent and would leave their tokens unjoinable by their policy. D2 and task 6.2 say so. _Rejected:_ keeping the earlier order and accepting orphaned verification rows until they expire. |
+| Q164 | (Checkpoint 3 of migration `0014`, 2026-11-17) A purged user's invitation in a tenant that is not due | Accepted and documented in Risks: Better Auth's `invitation_inviter_id_fk ON DELETE CASCADE` removes it, as on any user deletion. _Rejected:_ a ticket to change the foreign key to `SET NULL` (Better Auth's schema is outside this change); excluding such users from the purge, which would leave their account. |
 
 ## Open Questions
 

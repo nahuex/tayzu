@@ -171,7 +171,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       (the tombstone's `UPDATE ... WHERE ... RETURNING` working), cannot read or delete
       tenant data and has no `USAGE` on `auth`; and that the migration creates no `SECURITY DEFINER` function. ⛔
       **Stop for Checkpoint 3 approval of the SQL before continuing.**
-- [ ] 2.3 (Checkpoint 3) Migration `0014_tenant_deletion_auth_grants`
+- [x] 2.3 (Checkpoint 3) Migration `0014_tenant_deletion_auth_grants`
       (hand-written), Better Auth side (Resolved decisions Q49, Q59 and Q65):
       row-level security on the Better Auth tables that purge step 2 deletes from,
       **named one by one** (`organization`, `member`, `invitation`, `apikey`, `session`,
@@ -349,7 +349,12 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       recording progress on the marker. Verify: `org-purge-catalog.int.test.ts` covers
       "Purge removes tenant data after the window" for the catalog side on a tenant
       seeded with relations, entities, blueprints and change events.
-- [ ] 6.2 Purge step 2 (`tayzu_purge`, under the policies of 2.3): each user with
+- [ ] 6.2 Purge step 2 (`tayzu_purge`, under the policies of 2.3): first the
+      tenant's invitation tokens and shed records (`invitation-accept:<invitationId>`
+      and `invitation-shed:<invitationId>`) in `auth.verification`, then the
+      invitations, **before any user** (Resolved decision Q163: deleting a user
+      cascades, outside row-level security, to the invitations that user sent, which
+      would leave their tokens unjoinable); then each user with
       no other membership together with their `account`, `session` and `two_factor`
       rows and the `auth.verification` rows keyed by that user
       (`temp-password:<userId>`, `mfa-reenrol:<userId>`, and `sso-link:<accountId>` keyed
@@ -361,10 +366,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `step-up-verified:<sessionToken>` markers, which are keyed by the **session
       token** and not by the user (`packages/auth/src/step-up.ts`), so the step
       collects the tokens of those sessions first and deletes the markers before the
-      sessions; then, in this order, the tenant's invitation tokens and shed records
-      (`invitation-accept:<invitationId>` and `invitation-shed:<invitationId>`) in
-      `auth.verification` **before** the invitations (their policy joins
-      `invitation`, so the invitation must still exist), the invitations, the API
+      sessions; then, in this order, the API
       keys (`referenceId`), the sessions whose `active_organization_id` is the
       tenant (those of users who stay), the members, and the organization row last.
       Verify: `org-purge-auth.int.test.ts` covers "Users with no other membership
@@ -373,6 +375,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       token and an `invitation-shed:` record being gone, a `password-reset:` row of a
       removed user being left alone (exempt) and a user with a second membership keeping theirs, including
       a membership added between the check and the delete (a seam) keeping the user,
+      an invitation the removed user sent leaving no token or shed record behind,
       and a remaining session of a staying user whose active organization is the
       purged tenant being deleted.
 - [ ] 6.3 `catalog.audit.org_deletion_completed` is emitted by the purge
