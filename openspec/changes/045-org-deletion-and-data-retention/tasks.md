@@ -265,7 +265,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 4. Deletion notice
 
-- [ ] 4.1 The `OrgDeletionNotice` template (Resolved decision Q27) joins the closed
+- [x] 4.1 The `OrgDeletionNotice` template (Resolved decision Q27) joins the closed
       `EmailTemplate` union of `043`'s task 6.1, as its eighth kind (the two of `043`,
       `InvitationEmail` and `AdminAcceptedNotice`, and the five of `044`), with its case
       in the renderer of `packages/auth/src/identity/email/azure-communication-email.ts`,

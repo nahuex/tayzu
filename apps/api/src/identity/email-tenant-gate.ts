@@ -46,6 +46,7 @@ const TEMPLATE_NAMES: Record<EmailTemplate['kind'], string> = {
   MfaChangedNotice: 'mfa_changed',
   MfaResetNotice: 'mfa_reset',
   AccountCreatedNotice: 'account_created',
+  OrgDeletionNotice: 'org_deletion',
 };
 
 export function createEmailTenantGate(deps: {

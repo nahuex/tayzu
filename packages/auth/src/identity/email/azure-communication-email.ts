@@ -9,6 +9,7 @@ import { EmailClient } from '@azure/communication-email';
 
 import { renderAdminAcceptedNotice } from './admin-accepted-notice-template.js';
 import { renderInvitationEmail } from './invitation-email-template.js';
+import { renderOrgDeletionNotice } from './org-deletion-notice-template.js';
 import { renderPasswordResetEmail } from './password-reset-email-template.js';
 import {
   renderAccountCreatedNotice,
@@ -103,6 +104,9 @@ function content(template: EmailTemplate): AcsEmailMessage['content'] {
       break;
     case 'AccountCreatedNotice':
       rendered = renderAccountCreatedNotice(template);
+      break;
+    case 'OrgDeletionNotice':
+      rendered = renderOrgDeletionNotice(template);
       break;
   }
   return { subject: rendered.subject, plainText: rendered.text, html: rendered.html };

@@ -144,3 +144,35 @@ describe('The Azure sender and the five recovery kinds', () => {
     }
   });
 });
+
+/**
+ * `045` task 4.1 (design D5): the eighth kind, `OrgDeletionNotice`, has its case in the
+ * renderer and goes through the shared render function. The template module is imported
+ * where it is used so that the cases above do not depend on it.
+ */
+describe('The Azure sender and the org-deletion notice', () => {
+  const template = { kind: 'OrgDeletionNotice', purgeDate: '2026-12-01' } as const;
+
+  it('the sent OrgDeletionNotice body is the output of renderOrgDeletionNotice', async () => {
+    const { renderOrgDeletionNotice } = await import('./org-deletion-notice-template.js');
+    const rendered = renderOrgDeletionNotice(template);
+
+    const message = await sentMessage(template);
+
+    expect(message.content.subject).toBe(rendered.subject);
+    expect(message.content.plainText).toBe(rendered.text);
+    expect(message.content.html).toBe(rendered.html);
+  });
+
+  it('engagement and click tracking are off, no Reply-To is set and there is one recipient', async () => {
+    const message = await sentMessage(template);
+
+    expect(message.disableUserEngagementTracking).toBe(true);
+    expect(message.replyTo).toBeUndefined();
+    expect(message.headers).toBeUndefined();
+    expect(message.recipients.to).toEqual([{ address: RECIPIENT }]);
+    expect(message.recipients.cc).toBeUndefined();
+    expect(message.recipients.bCC).toBeUndefined();
+    expect(message.attachments).toBeUndefined();
+  });
+});
