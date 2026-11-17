@@ -10,6 +10,7 @@ import type { Pool } from 'pg';
 
 import type { AuthRepository } from './auth-repository.js';
 import { readAllApiKeys } from './credentials.js';
+import type { NoticeDispatcher } from './notices.js';
 import { IdentityInputError, type InputSchema } from './parse-input.js';
 
 /**
@@ -38,6 +39,8 @@ export interface RequestOrgDeletionOptions {
   readonly authRepository: AuthRepository;
   /** Cancels one pending invitation of the tenant the way `043` does (reason `org_deletion`). */
   readonly cancelInvitation: (invitationId: string) => Promise<void>;
+  /** The notice dispatcher of `043` for the deletion notice (design D5); without it, none is sent. */
+  readonly notices?: NoticeDispatcher;
 }
 
 /**
@@ -97,7 +100,9 @@ async function recordPendingMarker(options: RequestOrgDeletionOptions): Promise<
  * so it commits first, and the event follows it at once so that no marker exists without its
  * `requested` event. A repeat while pending inserts nothing, logs
  * `catalog.security.org_deletion_repeated` instead, and returns the pending date, but re-runs
- * the idempotent revocations, completing a first request that failed half-way.
+ * the idempotent revocations, completing a first request that failed half-way. Last, and only
+ * when this call inserted the marker, the deletion notice goes to every owner and admin of the
+ * tenant (design D5); a failed send never fails the request.
  */
 export async function requestOrgDeletion(
   options: RequestOrgDeletionOptions,
@@ -135,5 +140,41 @@ export async function requestOrgDeletion(
   for (const invitation of await options.authRepository.pendingInvitationsOf(tenantId)) {
     await options.cancelInvitation(invitation.id);
   }
+  if (marker.inserted) {
+    await sendDeletionNotice(options, marker.purgeAfter);
+  }
   return { purgeAfter: marker.purgeAfter };
+}
+
+/**
+ * Sends the fixed `OrgDeletionNotice` to every owner and admin of the tenant, the requester
+ * included, resolved here from the memberships (design D5, Resolved decisions Q27, Q53). The
+ * dispatcher applies the notice controls; every failure, including the recipients' read, is
+ * logged as `catalog.security.org_deletion_notice_failed` with the tenant alone and never
+ * fails the request, whose access revocation has already happened.
+ */
+async function sendDeletionNotice(
+  options: RequestOrgDeletionOptions,
+  purgeDate: string,
+): Promise<void> {
+  const { notices, tenantId } = options;
+  if (notices === undefined) return;
+  const reportFailure = () => {
+    emitIdentityEvent({
+      name: 'catalog.security.org_deletion_notice_failed',
+      severity: 'WARN',
+      attributes: { 'tayzu.tenant.id': tenantId },
+    });
+  };
+  try {
+    const recipients = await options.authRepository.administratorsOf(tenantId);
+    await notices.send({
+      tenantId,
+      template: { kind: 'OrgDeletionNotice', purgeDate },
+      recipients,
+      onSendFailure: reportFailure,
+    });
+  } catch {
+    reportFailure();
+  }
 }

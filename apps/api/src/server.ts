@@ -462,6 +462,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           appPool,
           userSync,
           emailGate: identityEmail.emailGate,
+          notices: identityEmail.notices,
           ...(identityEmail.settings.invitationLinkBaseUrl === undefined
             ? {}
             : { invitationLinkBaseUrl: identityEmail.settings.invitationLinkBaseUrl }),

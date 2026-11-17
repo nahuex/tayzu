@@ -3,7 +3,8 @@
  * Q53, Q58, Q101). The tenant list comes first, then the kill switch, the per-tenant notice
  * cap and the notices' own per-recipient bucket. At most 20 recipients, the longest-standing
  * members, are notified, and `send` never throws into its caller. A suppressed or truncated
- * notice is logged with the reason and a count, never an address.
+ * notice is logged with the reason and a count, never an address. The template name of every
+ * event is derived from the kind (`045` design D5).
  */
 import {
   AuthRateLimitedError,
@@ -24,16 +25,42 @@ export interface NoticeRecipient {
   readonly status?: 'Active' | 'Disabled';
 }
 
+/** The templates the dispatcher sends: `043`'s admin notice and `045`'s deletion notice. */
+export type NoticeTemplate = Extract<
+  EmailTemplate,
+  { kind: 'AdminAcceptedNotice' | 'OrgDeletionNotice' }
+>;
+
 export interface NoticeDispatcher {
   send(input: {
     readonly tenantId: string;
-    readonly template: Extract<EmailTemplate, { kind: 'AdminAcceptedNotice' }>;
+    readonly template: NoticeTemplate;
     readonly recipients: readonly NoticeRecipient[];
+    /**
+     * Called once per recipient whose email the provider refused, or once when the dispatch
+     * itself failed; never for a suppression. It must not throw; if it does, the error
+     * is swallowed like any other, so `send` still never throws.
+     */
+    readonly onSendFailure?: () => void;
   }): Promise<void>;
 }
 
 const MAX_RECIPIENTS = 20;
-const TEMPLATE_NAME = 'admin_accepted';
+
+/** The telemetry name of each template (`tayzu.identity.notice.template`). */
+const TEMPLATE_NAMES = {
+  AdminAcceptedNotice: 'admin_accepted',
+  OrgDeletionNotice: 'org_deletion',
+} as const satisfies Record<NoticeTemplate['kind'], string>;
+
+/** Tells the caller a send failed; the callback's own failure is swallowed too. */
+function reportFailure(onSendFailure: (() => void) | undefined): void {
+  try {
+    onSendFailure?.();
+  } catch {
+    // The callback is the caller's; it never turns into a throw from `send`.
+  }
+}
 
 type Suppression = 'global' | 'tenant' | 'recipient' | 'truncated';
 
@@ -46,14 +73,19 @@ export function createNoticeDispatcher(deps: {
 }): NoticeDispatcher {
   const disabled = new Set(deps.disabledTenantIds);
 
-  function emitSuppressed(tenantId: string, suppression: Suppression, dropped: number) {
+  function emitSuppressed(
+    tenantId: string,
+    templateName: string,
+    suppression: Suppression,
+    dropped: number,
+  ) {
     if (dropped === 0) return;
     emitIdentityEvent({
       name: 'catalog.security.notice_suppressed',
       severity: 'WARN',
       attributes: {
         'tayzu.tenant.id': tenantId,
-        'tayzu.identity.notice.template': TEMPLATE_NAME,
+        'tayzu.identity.notice.template': templateName,
         'tayzu.identity.notice.suppression': suppression,
         'tayzu.identity.notice.dropped': dropped,
       },
@@ -61,14 +93,15 @@ export function createNoticeDispatcher(deps: {
   }
 
   async function dispatch(input: Parameters<NoticeDispatcher['send']>[0]) {
-    const { tenantId, template } = input;
+    const { tenantId, template, onSendFailure } = input;
+    const templateName = TEMPLATE_NAMES[template.kind];
     if (disabled.has(tenantId)) {
       emitIdentityEvent({
         name: 'catalog.security.email_tenant_blocked',
         severity: 'WARN',
         attributes: {
           'tayzu.tenant.id': tenantId,
-          'tayzu.identity.email.template': TEMPLATE_NAME,
+          'tayzu.identity.email.template': templateName,
         },
       });
       return;
@@ -77,9 +110,9 @@ export function createNoticeDispatcher(deps: {
       (a, b) => a.memberSince.getTime() - b.memberSince.getTime(),
     );
     const selected = ordered.slice(0, MAX_RECIPIENTS);
-    emitSuppressed(tenantId, 'truncated', ordered.length - selected.length);
+    emitSuppressed(tenantId, templateName, 'truncated', ordered.length - selected.length);
     if (deps.killSwitch === true) {
-      emitSuppressed(tenantId, 'global', selected.length);
+      emitSuppressed(tenantId, templateName, 'global', selected.length);
       return;
     }
     let tenantDropped = 0;
@@ -103,11 +136,12 @@ export function createNoticeDispatcher(deps: {
       try {
         await deps.sender.send(recipient.email, template);
       } catch {
-        // A failing provider never reaches the caller of the notice.
+        // A failing provider never reaches the caller of the notice, only its callback.
+        reportFailure(onSendFailure);
       }
     }
-    emitSuppressed(tenantId, 'tenant', tenantDropped);
-    emitSuppressed(tenantId, 'recipient', recipientDropped);
+    emitSuppressed(tenantId, templateName, 'tenant', tenantDropped);
+    emitSuppressed(tenantId, templateName, 'recipient', recipientDropped);
   }
 
   return {
@@ -116,6 +150,7 @@ export function createNoticeDispatcher(deps: {
         await dispatch(input);
       } catch {
         // Fail quiet: a notice must never break the operation that triggered it.
+        reportFailure(input.onSendFailure);
       }
     },
   };

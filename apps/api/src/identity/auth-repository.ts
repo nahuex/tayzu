@@ -106,6 +106,8 @@ export interface AuthRepository {
   listMembers: (tenantId: string) => Promise<MemberRead[]>;
   /** The owners and admins of the tenant other than `excludeUserId`, with their membership dates. */
   adminRecipients: (tenantId: string, excludeUserId: string) => Promise<AdminRecipientRead[]>;
+  /** Every owner and admin of the tenant, with their membership dates (045 D5, the deletion notice). */
+  administratorsOf: (tenantId: string) => Promise<AdminRecipientRead[]>;
   /** `db` is the per-user lock's connection, for the in-lock predicate read (044 D10, Q36). */
   memberOf: (
     tenantId: string,
@@ -423,6 +425,18 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
          where m.organization_id = $1 and m.user_id <> $2 and m.role in ('owner', 'admin')
          order by m.created_at, m.id`,
         [tenantId, excludeUserId],
+      );
+      return result.rows.map((r) => ({ email: r.email, memberSince: r.created_at }));
+    },
+
+    async administratorsOf(tenantId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<{ email: string; created_at: Date }>(
+        `select u.email, m.created_at from auth.member m
+         join auth."user" u on u.id = m.user_id
+         where m.organization_id = $1 and m.role in ('owner', 'admin')
+         order by m.created_at, m.id`,
+        [tenantId],
       );
       return result.rows.map((r) => ({ email: r.email, memberSince: r.created_at }));
     },

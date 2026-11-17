@@ -310,7 +310,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `catalog.security.org_deletion_repeated` (declared in 9.1) with the tenant and the
       admin as actor. Verify: `org-deletion.int.test.ts` covers the event on the second
       request and not on the first, with no email or free text in it.
-- [ ] 5.5 Phase 1 sends the fixed `OrgDeletionNotice` through the dispatcher of
+- [x] 5.5 Phase 1 sends the fixed `OrgDeletionNotice` through the dispatcher of
       `043`'s task 6.12 (`apps/api/src/identity/notices.ts`), which is typed for
       `AdminAcceptedNotice` alone and names its template with a constant, so it is
       widened to accept `OrgDeletionNotice` and to derive the template name

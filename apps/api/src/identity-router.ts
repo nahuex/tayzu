@@ -48,6 +48,7 @@ import { withMutationSlot } from './identity/mutation-semaphore.js';
 import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import type { NoticeDispatcher } from './identity/notices.js';
 import type { WithUserLock } from './identity/user-lock.js';
 import type { MfaResetReason, MfaResetService } from './identity/mfa-reset.js';
 import type { RecoveryMailer } from './identity/recovery-mailer.js';
@@ -180,6 +181,8 @@ export interface CreateIdentityRouterOptions {
   readonly mfaReset?: MfaResetService;
   /** Days from an org-deletion request to its purge (045 D1, Q21). Default 14. */
   readonly orgDeletionWindowDays?: number;
+  /** The notice dispatcher the org-deletion notice goes through (045 D5, task 5.5). */
+  readonly notices?: NoticeDispatcher;
 }
 
 export interface CreateUserInput {
@@ -781,6 +784,7 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 recordInvitationCancel(tenantId, adminId, invitationId, 'org_deletion', () =>
                   options.authRepository.markInvitationCancelled(tenantId, invitationId),
                 ),
+              ...(options.notices === undefined ? {} : { notices: options.notices }),
             });
           },
         }),
