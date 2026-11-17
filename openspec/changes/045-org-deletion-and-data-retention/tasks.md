@@ -95,7 +95,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 2. Deletion marker and database roles, ⛔ Checkpoint 3 (migrations `0012`, `0013` and `0014`)
 
-- [ ] 2.1 (Checkpoint 3) Migration `0012_tenant_deletion`: the
+- [x] 2.1 (Checkpoint 3) Migration `0012_tenant_deletion`: the
       `tenant_deletion_marker` table (tenant id, `requested_at` with `DEFAULT
       now()`, `purge_after`, the requesting actor's opaque id, `state` in
       `pending`/`cancelled`/`purged` defaulting to `pending`, the timestamps of the

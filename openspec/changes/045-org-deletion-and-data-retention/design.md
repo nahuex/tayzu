@@ -17,8 +17,9 @@
   is carried whole. A reference inside a carried row to "this change", to a
   design section such as D9 or D13, or to a task of `043`'s old group 12 is to `043`
   as it was before the split: the table at the start of that section says where each
-  one landed. The rows Q150 to Q157 are this change's own: the human answered them in
-  chat on 2026-11-16, after the drift-check and the VCDM pre-assessment of task 1.1
+  one landed. The rows Q150 to Q160 are this change's own: the human answered them in
+  chat on 2026-11-16 (Q150-Q157, after the drift-check and the VCDM pre-assessment of
+  task 1.1) and 2026-11-17 (Q158-Q160, at the Checkpoint 3 of migration `0012`)
   (`043`'s own rows run to Q149, so this change's rows start at Q150). This change has
   no Open Questions.
 - **Authored from `043`'s plan, not yet reconciled as a change of its own.** The
@@ -1034,6 +1035,9 @@ points at `043` as it was before the split, this is where it landed:
 | Q155 | (VCDM pre-assessment, 2026-11-16) `044`'s `recover-admin-mfa` break-glass CLI and the maintenance workflow | It stays out of band under just-in-time access (Azure PIM). The spec, D3, the SEC13 row and task 7.3 name two out-of-band CLIs (the bootstrap CLI and `recover-admin-mfa`), and the workflow's `choice` input lists neither. _Rejected:_ moving it into the workflow; a ticket to revisit. |
 | Q156 | (VCDM pre-assessment, 2026-11-16) Backup and security-log retention in the erasure statement | 7 days of PostgreSQL backup retention, so purged data is gone at most 21 days after the request with the default window, and 12 months of security-log retention as the target `010` implements. _Rejected:_ 14 days; 35 days. |
 | Q157 | (VCDM pre-assessment, 2026-11-16) The start-template override of a Container Apps Job | Confirmed in `010`'s sandbox rehearsal and, if it holds, recorded as an accepted risk covered by `CODEOWNERS`, the environment approval and the workflow's text tests; a gate and a ticket. _Rejected:_ a custom Azure role first; accepting now without a rehearsal. |
+| Q158 | (Checkpoint 3 of migration `0012`, 2026-11-17) Names of the two purge-step timestamps of `tenant_deletion_marker` | `catalog_purged_at` (step 1, the catalog rows) and `auth_purged_at` (step 2, the Better Auth rows); tasks 2.2, 6.1 and 6.2 use them. The human approved the SQL of `0012` in the same answer. _Rejected:_ `step1_at` and `step2_at`, which say nothing of what was removed. |
+| Q159 | (Checkpoint 3 of migration `0012`, 2026-11-17) Where the marker's row-level security lives | In `0013`, as D1 and the Migration Plan say: `0012` creates the table with no row-level security, and `0013` runs `ENABLE` and `FORCE ROW LEVEL SECURITY` and creates the `tenant_isolation` policy `TO tayzu_app` with the grants, so the whole access model of the table is one Checkpoint 3 review. _Rejected:_ the policy in `0012`, as `0008` did. |
+| Q160 | (Checkpoint 3 of migration `0012`, 2026-11-17) A primary key on `tenant_deletion_marker` | None. A row is addressed by `tenant_id` with `state = 'pending'`, which the partial unique index makes unique; cancelled and purged rows are tombstones read by tenant. _Rejected:_ a surrogate `uuid` with `DEFAULT gen_random_uuid()`, against the catalog's rule of UUIDv7 ids generated in the application, and outside the column-level `INSERT` grant of 2.2. |
 
 ## Open Questions
 

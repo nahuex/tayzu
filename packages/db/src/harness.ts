@@ -291,9 +291,10 @@ async function reassignCatalogTableOwnership(bootstrap: Client): Promise<void> {
 
 /**
  * Task 23.17 (design Q47, D6): also reassigns schema `auth`, its tables and
- * sequences, and `machine_credential_revocation` to `tayzu_migrator`, so a
- * later `ALTER TABLE auth.*` migration run as `tayzu_migrator` succeeds on a
- * database first migrated under the bootstrap role. Tables go first: a
+ * sequences, `machine_credential_revocation` and `tenant_deletion_marker` (045
+ * task 2.1) to `tayzu_migrator`, so a later `ALTER TABLE auth.*` migration run
+ * as `tayzu_migrator` succeeds on a database first migrated under the
+ * bootstrap role. Tables go first: a
  * sequence owned by a table column follows its table's owner, and cannot be
  * reassigned on its own. Fixed literals only; idempotent.
  */
@@ -316,7 +317,8 @@ async function reassignAuthOwnership(bootstrap: Client): Promise<void> {
         WHERE c.relkind IN ('r', 'p')
           AND c.relowner <> '${MIGRATOR_ROLE}'::regrole
           AND (n.nspname = 'auth'
-               OR (n.nspname = 'public' AND c.relname = 'machine_credential_revocation'))
+               OR (n.nspname = 'public'
+                   AND c.relname IN ('machine_credential_revocation', 'tenant_deletion_marker')))
       LOOP
         EXECUTE format('ALTER TABLE %I.%I OWNER TO ${MIGRATOR_ROLE}', obj.schema_name, obj.rel_name);
       END LOOP;

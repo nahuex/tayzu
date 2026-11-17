@@ -91,7 +91,9 @@ async function readAuthObjectOwners(client: Client): Promise<OwnedObject[]> {
        from pg_class c
        join pg_namespace n on n.oid = c.relnamespace
       where c.relkind in ('r', 'p', 'S')
-        and (n.nspname = 'auth' or (n.nspname = 'public' and c.relname = 'machine_credential_revocation'))
+        and (n.nspname = 'auth'
+             or (n.nspname = 'public'
+                 and c.relname in ('machine_credential_revocation', 'tenant_deletion_marker')))
       order by 1`,
   );
   return rows;
@@ -149,6 +151,9 @@ describe('harness ownership of the auth schema (task 23.17)', () => {
           expect(after.map((object) => object.name)).toContain(
             'public.machine_credential_revocation (r)',
           );
+          // Change 045 task 2.1 (task 1.3): the by-name list gains the
+          // deletion marker of migration `0012_tenant_deletion`.
+          expect(after.map((object) => object.name)).toContain('public.tenant_deletion_marker (r)');
           expect(after.map((object) => object.name)).toContain('auth.session (r)');
 
           // AND a later ALTER TABLE auth.session migration succeeds as tayzu_migrator.

@@ -410,7 +410,7 @@ describe('0000_catalog_core migration (design D4)', () => {
     await endQuietly(admin.$client);
   }, 60_000);
 
-  it('creates exactly the seven catalog tables in the public schema', async () => {
+  it('creates exactly the eight catalog tables in the public schema', async () => {
     const result = await db.execute<{ name: string }>(sql`
       select table_name as name
         from information_schema.tables
@@ -422,7 +422,10 @@ describe('0000_catalog_core migration (design D4)', () => {
     // `public` (task 5.5), granted the same `tenant_isolation`/`FORCE ROW
     // LEVEL SECURITY` treatment as the six D4 tables below, but its own
     // columns/policy/FORCE flag are asserted separately in
-    // `revocation-schema.int.test.ts`, not here.
+    // `revocation-schema.int.test.ts`, not here. Change 045 (task 2.1,
+    // migration `0012_tenant_deletion`) adds `tenant_deletion_marker` as an
+    // eighth; its CHECK, defaults and partial unique index are asserted in
+    // `tenant-deletion-migration.int.test.ts`.
     expect(result.rows.map((row) => row.name)).toEqual([
       'catalog_blueprint',
       'catalog_change_event',
@@ -431,6 +434,7 @@ describe('0000_catalog_core migration (design D4)', () => {
       'catalog_relation_definition',
       'catalog_tenant_sequence',
       'machine_credential_revocation',
+      'tenant_deletion_marker',
     ]);
   });
 

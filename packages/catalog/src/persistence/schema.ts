@@ -35,6 +35,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -331,5 +332,48 @@ export const machineCredentialRevocation = pgTable(
       columns: [t.tenantId, t.credentialId],
     }),
     tenantIsolationPolicy(t.tenantId),
+  ],
+);
+
+/**
+ * The org-deletion marker (045 design D1, task 2.1): one row per deletion
+ * request, kept as a tombstone after a cancellation or a purge. It is a trust
+ * boundary. `requested_at` is set by the database, and `purge_after` is
+ * computed in SQL from the same transaction clock (`now() + make_interval(days
+ * => $1)`), so the `CHECK` below can bound the window to 7 to 14 days and a
+ * request-path compromise cannot insert a past-dated marker. A `DEFAULT` does
+ * not ignore an explicit value: what keeps the request role to the tenant id,
+ * `purge_after` and `requested_by` is the column-level `INSERT` grant of
+ * migration `0013`, which also carries the row-level security of this table.
+ * `catalog_purged_at` and `auth_purged_at` record the two purge steps (D2),
+ * and `cancelled_at`/`cancelled_by` (the operator's opaque id) the reversal.
+ */
+export const tenantDeletionMarker = pgTable(
+  'tenant_deletion_marker',
+  {
+    tenantId: text('tenant_id').notNull(),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    purgeAfter: timestamp('purge_after', { withTimezone: true }).notNull(),
+    requestedBy: text('requested_by').notNull(),
+    state: text('state').notNull().default('pending'),
+    catalogPurgedAt: timestamp('catalog_purged_at', { withTimezone: true }),
+    authPurgedAt: timestamp('auth_purged_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancelledBy: text('cancelled_by'),
+  },
+  (t) => [
+    check(
+      'tenant_deletion_marker_state_check',
+      sql`${t.state} in ('pending', 'cancelled', 'purged')`,
+    ),
+    // Both bounds are inclusive: a 7-day and a 14-day window are accepted.
+    check(
+      'tenant_deletion_marker_purge_window_check',
+      sql`${t.purgeAfter} >= ${t.requestedAt} + interval '7 days' and ${t.purgeAfter} <= ${t.requestedAt} + interval '14 days'`,
+    ),
+    // One pending marker per tenant; cancelled and purged tombstones do not count.
+    uniqueIndex('tenant_deletion_marker_one_pending_uq')
+      .on(t.tenantId)
+      .where(sql`${t.state} = 'pending'`),
   ],
 );
