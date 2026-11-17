@@ -73,7 +73,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `scripts-smoke.test.ts` of `043` gains the two modules. Verify: `pnpm --filter
       @tayzu/api test` runs the smoke test green, and `pnpm lint` and `pnpm
       typecheck` cover the new modules.
-- [ ] 1.3 _(setup)_ Extend the test harness and the script configuration for the two
+- [x] 1.3 _(setup)_ Extend the test harness and the script configuration for the two
       new roles. `packages/db/src/harness.ts` (which `043`'s task 2.0b extends with the
       `tayzu_auth` login role) sets up neither `tayzu_purge` nor `tayzu_deletion_admin`,
       so tests that run as them need login roles, pools and membership grants of their

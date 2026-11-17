@@ -277,3 +277,81 @@ describe('recover-admin-mfa script configuration (044 task 11.1)', () => {
     );
   });
 });
+
+describe('purge and reversal script configuration (045 task 1.3)', () => {
+  const DELETION_ENV = {
+    ...FULL_ENV,
+    PURGE_DATABASE_URL: 'postgres://purge@localhost:5432/purge-db',
+    REVERSAL_DATABASE_URL: 'postgres://reversal@localhost:5432/reversal-db',
+  } as const;
+
+  function deletionWithout(name: keyof typeof DELETION_ENV): Record<string, string> {
+    return Object.fromEntries(Object.entries(DELETION_ENV).filter(([key]) => key !== name));
+  }
+
+  it('the two new variables are read by their scripts', () => {
+    const purge = recordingEnv({ ...DELETION_ENV });
+    expect(loadScriptConfig('purge-job', purge.env)).toEqual({
+      PURGE_DATABASE_URL: DELETION_ENV.PURGE_DATABASE_URL,
+    });
+    expect([...purge.reads]).toEqual(['PURGE_DATABASE_URL']);
+
+    const reversal = recordingEnv({ ...DELETION_ENV });
+    expect(loadScriptConfig('cancel-org-deletion', reversal.env)).toEqual({
+      REVERSAL_DATABASE_URL: DELETION_ENV.REVERSAL_DATABASE_URL,
+      TAYZU_OPERATOR_ID: DELETION_ENV.TAYZU_OPERATOR_ID,
+    });
+    expect([...reversal.reads].sort()).toEqual(['REVERSAL_DATABASE_URL', 'TAYZU_OPERATOR_ID']);
+  });
+
+  it('a script reads only its own variables', () => {
+    const purge = recordingEnv({ ...DELETION_ENV });
+    loadScriptConfig('purge-job', purge.env);
+    expect(purge.reads.has('REVERSAL_DATABASE_URL')).toBe(false);
+    expect(purge.reads.has('DATABASE_URL')).toBe(false);
+
+    const reversal = recordingEnv({ ...DELETION_ENV });
+    loadScriptConfig('cancel-org-deletion', reversal.env);
+    expect(reversal.reads.has('PURGE_DATABASE_URL')).toBe(false);
+    expect(reversal.reads.has('DATABASE_URL')).toBe(false);
+
+    for (const script of Object.keys(SCRIPT_VARIABLES) as (keyof typeof SCRIPT_VARIABLES)[]) {
+      const declared = SCRIPT_VARIABLES[script] as readonly string[];
+      expect(declared.includes('PURGE_DATABASE_URL')).toBe(script === 'purge-job');
+      expect(declared.includes('REVERSAL_DATABASE_URL')).toBe(script === 'cancel-org-deletion');
+    }
+  });
+
+  it('a missing one fails only the script that needs it', () => {
+    const noPurge = deletionWithout('PURGE_DATABASE_URL');
+    expect(() => loadScriptConfig('purge-job', noPurge)).toThrow('PURGE_DATABASE_URL is required');
+    expect(() => loadScriptConfig('cancel-org-deletion', noPurge)).not.toThrow();
+    expect(() => loadScriptConfig('reconcile-users', noPurge)).not.toThrow();
+
+    const noReversal = deletionWithout('REVERSAL_DATABASE_URL');
+    expect(() => loadScriptConfig('cancel-org-deletion', noReversal)).toThrow(
+      'REVERSAL_DATABASE_URL is required',
+    );
+    expect(() => loadScriptConfig('purge-job', noReversal)).not.toThrow();
+    expect(() => loadScriptConfig('reconcile-users', noReversal)).not.toThrow();
+
+    expect(() =>
+      loadScriptConfig('cancel-org-deletion', deletionWithout('TAYZU_OPERATOR_ID')),
+    ).toThrow('TAYZU_OPERATOR_ID is required');
+  });
+
+  it.each(['PURGE_DATABASE_URL', 'REVERSAL_DATABASE_URL'] as const)(
+    'a missing %s names the variable and never a value',
+    (name) => {
+      const script = name === 'PURGE_DATABASE_URL' ? 'purge-job' : 'cancel-org-deletion';
+      let message = '';
+      try {
+        loadScriptConfig(script, deletionWithout(name));
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain(`${name} is required`);
+      for (const value of Object.values(DELETION_ENV)) expect(message).not.toContain(value);
+    },
+  );
+});

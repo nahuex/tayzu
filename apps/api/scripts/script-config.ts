@@ -11,6 +11,8 @@ type Env = Readonly<Record<string, string | undefined>>;
 export type ScriptVariable =
   | 'DATABASE_URL'
   | 'AUTH_DATABASE_URL'
+  | 'PURGE_DATABASE_URL'
+  | 'REVERSAL_DATABASE_URL'
   | 'BETTER_AUTH_SECRET'
   | 'CERBOS_ADDRESS'
   | 'TAYZU_OPERATOR_ID'
@@ -29,6 +31,12 @@ export type ScriptVariable =
  * Auth, so it alone declares the secret. The break-glass `recover-admin-mfa`
  * CLI (`044` task 11.1) holds `tayzu_auth` only and no signing key; it
  * declares the email variables of its notice (see `OPTIONAL_VARIABLES`).
+ * `045` task 1.3 (design D2 and D3): the purge job holds one database secret,
+ * `tayzu_purge` (`PURGE_DATABASE_URL`), and the reversal holds
+ * `tayzu_deletion_admin` (`REVERSAL_DATABASE_URL`) and the operator's opaque
+ * id; no other script reads either URL. Like every database URL here, neither
+ * is ever printed, and `createPool` (`@tayzu/db`) refuses one without
+ * `sslmode=verify-full` before connecting.
  */
 export const SCRIPT_VARIABLES = {
   'backfill-user-blueprint': ['DATABASE_URL', 'AUTH_DATABASE_URL', 'CERBOS_ADDRESS'],
@@ -50,6 +58,8 @@ export const SCRIPT_VARIABLES = {
     'EMAIL_DISABLED_TENANT_IDS',
     'INVITATION_EMAIL_KILL_SWITCH',
   ],
+  'purge-job': ['PURGE_DATABASE_URL'],
+  'cancel-org-deletion': ['REVERSAL_DATABASE_URL', 'TAYZU_OPERATOR_ID'],
 } as const satisfies Record<string, readonly ScriptVariable[]>;
 
 export type ScriptName = keyof typeof SCRIPT_VARIABLES;

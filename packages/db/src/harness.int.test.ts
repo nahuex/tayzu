@@ -9,7 +9,13 @@ import { fileURLToPath } from 'node:url';
 import { Client, escapeIdentifier, Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
-import { getAuthTestDatabase, getOwnerPool, getTestDatabase } from './harness.js';
+import {
+  getAuthTestDatabase,
+  getDeletionAdminTestDatabase,
+  getOwnerPool,
+  getPurgeTestDatabase,
+  getTestDatabase,
+} from './harness.js';
 import { runMigrations } from './index.js';
 
 /**
@@ -594,5 +600,32 @@ describe('getAuthTestDatabase (043 task 2.0b)', () => {
     ]);
     expect(auth).not.toBe(app);
     expect(auth).not.toBe(owner);
+  });
+});
+
+describe.each([
+  ['getPurgeTestDatabase', 'tayzu_purge', getPurgeTestDatabase],
+  ['getDeletionAdminTestDatabase', 'tayzu_deletion_admin', getDeletionAdminTestDatabase],
+] as const)('%s (045 task 1.3)', (_name, role, getDatabase) => {
+  async function roleExists(): Promise<boolean> {
+    const owner = await getOwnerPool();
+    const { rows } = await owner.query<{ exists: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1) AS exists',
+      [role],
+    );
+    return rows[0]?.exists === true;
+  }
+
+  it(`runs as ${role} once the role exists, and names the role while it does not`, async () => {
+    if (await roleExists()) {
+      const { pool } = await getDatabase();
+      const { rows } = await pool.query<{ current_user: string }>('select current_user');
+      expect(rows[0]?.current_user).toBe(role);
+      const [{ pool: app }, owner] = await Promise.all([getTestDatabase(), getOwnerPool()]);
+      expect(pool).not.toBe(app);
+      expect(pool).not.toBe(owner);
+    } else {
+      await expect(getDatabase()).rejects.toThrow(`The ${role} role does not exist`);
+    }
   });
 });
