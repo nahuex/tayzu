@@ -87,7 +87,7 @@ vi.mock('@tayzu/db', async (importActual) => {
 });
 
 import { enrolledAdminSession, sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
-import { createAppFromEnv } from './bootstrap.js';
+import { assertRuntimeRole, createAppFromEnv } from './bootstrap.js';
 import type { App } from './server.js';
 
 const ORIGIN = 'https://app.tayzu.test';
@@ -1755,5 +1755,204 @@ describe('production app wiring: a runtime role owning machine_credential_revoca
       started: true,
       message: '',
     });
+  }, 60_000);
+});
+
+/**
+ * Task 2.4 of change `045` (Verify clause): the startup assertion on the runtime
+ * database roles is exported as `assertRuntimeRole` so that a test can call it
+ * directly (the startup call is skipped under `NODE_ENV=test`), and it also
+ * fails when a runtime role owns `tenant_deletion_marker`, which neither the
+ * `catalog\_%` pattern nor the `machine_credential_revocation` name matches.
+ * The `machine_credential_revocation` case is a regression check, and the real
+ * roles still pass. The task cites no spec scenario.
+ *
+ * ## Harness
+ *
+ * Same as the suite of `043`'s task 11.1c above: a private scratch database is
+ * migrated, a throwaway `nologin` role is created there and a pool acts as it
+ * (`SET ROLE`). Each case hands one table to that role and gives it back to its
+ * original owner in `finally`, so the role owns nothing between cases. The
+ * scratch database and the role are dropped afterwards.
+ *
+ * ## Production symbols expected
+ *
+ * `export async function assertRuntimeRole(pool)` in `./bootstrap.ts`, which
+ * rejects with the fixed message `A runtime database role is privileged:
+ * startup aborted` and resolves for an unprivileged role.
+ *
+ * ## Why this fails right now
+ *
+ * `assertRuntimeRole` is not exported, so the import is `undefined` and every
+ * direct call throws a TypeError. Once exported, only the
+ * `tenant_deletion_marker` case should still fail (the role passes).
+ */
+describe('runtime-role assertion covers tenant_deletion_marker (045 task 2.4)', () => {
+  const FIXED_MESSAGE = 'A runtime database role is privileged: startup aborted';
+  const suffix = randomUUID().replaceAll('-', '');
+  const scratchName = `tayzu_api_tdm_${suffix}`;
+  const roleName = `tayzu_test_tdm_${suffix}`;
+  const ownPools: Pool[] = [];
+  let scratchOwnerPool: Pool;
+  let runtimeOwner: Pool;
+  let appRole: Pool;
+  let authRole: Pool;
+
+  function baseUrl(): string {
+    const url = process.env['DATABASE_URL'];
+    if (url === undefined || url.trim() === '') {
+      throw new Error(
+        'DATABASE_URL is not set: the int project global setup should stop this run.',
+      );
+    }
+    return url;
+  }
+
+  function poolOn(database: string | undefined, role: string | undefined): Pool {
+    const url = new URL(baseUrl());
+    if (database !== undefined) {
+      url.pathname = `/${database}`;
+    }
+    const pool = new Pool({ connectionString: url.href, max: 2 });
+    if (role !== undefined) {
+      pool.on('connect', (client) => {
+        void client.query(`SET ROLE ${role}`).catch(() => undefined);
+      });
+    }
+    pool.on('error', () => undefined);
+    ownPools.push(pool);
+    return pool;
+  }
+
+  async function ownership(): Promise<{
+    who: string;
+    privileged: boolean;
+    owns_catalog: boolean;
+    owns_revocation: boolean;
+    owns_marker: boolean;
+  }> {
+    const facts = await runtimeOwner.query<{
+      who: string;
+      privileged: boolean;
+      owns_catalog: boolean;
+      owns_revocation: boolean;
+      owns_marker: boolean;
+    }>(
+      `select r.rolname as who,
+              (r.rolsuper or r.rolbypassrls) as privileged,
+              exists (select 1 from pg_class c where c.relowner = r.oid
+                        and c.relkind in ('r', 'p') and c.relname like 'catalog\\_%') as owns_catalog,
+              exists (select 1 from pg_class c where c.relowner = r.oid
+                        and c.relname = 'machine_credential_revocation') as owns_revocation,
+              exists (select 1 from pg_class c where c.relowner = r.oid
+                        and c.relname = 'tenant_deletion_marker') as owns_marker
+         from pg_roles r where r.rolname = current_user`,
+    );
+    const row = facts.rows[0];
+    if (row === undefined) {
+      throw new Error('precondition: the runtime role is visible in pg_roles');
+    }
+    return row;
+  }
+
+  /** Hands `table` to the throwaway role, runs `body`, then gives the table back. */
+  async function whileOwning(
+    table: 'tenant_deletion_marker' | 'machine_credential_revocation',
+    body: () => Promise<void>,
+  ): Promise<void> {
+    const before = await scratchOwnerPool.query<{ owner: string }>(
+      `select pg_get_userbyid(c.relowner) as owner
+         from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relname = $1`,
+      [table],
+    );
+    const originalOwner = before.rows[0]?.owner;
+    if (originalOwner === undefined) {
+      throw new Error(`precondition: public.${table} exists in the scratch database`);
+    }
+    await scratchOwnerPool.query(`alter table public.${table} owner to ${roleName}`);
+    try {
+      await body();
+    } finally {
+      await scratchOwnerPool.query(`alter table public.${table} owner to "${originalOwner}"`);
+    }
+  }
+
+  beforeAll(async () => {
+    const { authPool } = await harnessPools();
+    // Test-only: acting as tayzu_auth needs the SET option on the cluster role.
+    await authPool.query(
+      `do $$ begin execute format('grant tayzu_auth to %I with set true', current_user); end $$`,
+    );
+    appRole = poolOn(undefined, 'tayzu_app');
+    authRole = poolOn(undefined, 'tayzu_auth');
+
+    const adminPool = poolOn(undefined, undefined);
+    await adminPool.query(`create database ${scratchName}`);
+    scratchOwnerPool = poolOn(scratchName, undefined);
+    await runMigrations(scratchOwnerPool);
+    await scratchOwnerPool.query(`create role ${roleName} nologin`);
+    await scratchOwnerPool.query(
+      `do $$ begin execute format('grant ${roleName} to %I with set true', current_user); end $$`,
+    );
+    // ALTER TABLE ... OWNER TO requires the new owner to hold CREATE on the schema.
+    await scratchOwnerPool.query(`grant create on schema public to ${roleName}`);
+    runtimeOwner = poolOn(scratchName, roleName);
+
+    expect(await ownership(), 'precondition: the throwaway role owns nothing checked').toEqual({
+      who: roleName,
+      privileged: false,
+      owns_catalog: false,
+      owns_revocation: false,
+      owns_marker: false,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await Promise.all(ownPools.map((pool) => pool.end()));
+    const cleanup = new Pool({ connectionString: baseUrl(), max: 1 });
+    cleanup.on('error', () => undefined);
+    try {
+      await cleanup.query(`drop database if exists ${scratchName} with (force)`);
+      await cleanup.query(`drop role if exists ${roleName}`);
+    } finally {
+      await cleanup.end();
+    }
+  }, 120_000);
+
+  it('fails when the runtime role owns tenant_deletion_marker', async () => {
+    await whileOwning('tenant_deletion_marker', async () => {
+      expect(await ownership(), 'precondition: only tenant_deletion_marker is owned').toEqual({
+        who: roleName,
+        privileged: false,
+        owns_catalog: false,
+        owns_revocation: false,
+        owns_marker: true,
+      });
+
+      await expect(assertRuntimeRole(runtimeOwner)).rejects.toThrow(FIXED_MESSAGE);
+    });
+  }, 60_000);
+
+  it('fails when the runtime role owns machine_credential_revocation (regression)', async () => {
+    await whileOwning('machine_credential_revocation', async () => {
+      expect(
+        await ownership(),
+        'precondition: only machine_credential_revocation is owned',
+      ).toEqual({
+        who: roleName,
+        privileged: false,
+        owns_catalog: false,
+        owns_revocation: true,
+        owns_marker: false,
+      });
+
+      await expect(assertRuntimeRole(runtimeOwner)).rejects.toThrow(FIXED_MESSAGE);
+    });
+  }, 60_000);
+
+  it('still passes for the real tayzu_app and tayzu_auth roles', async () => {
+    await expect(assertRuntimeRole(appRole)).resolves.toBeUndefined();
+    await expect(assertRuntimeRole(authRole)).resolves.toBeUndefined();
   }, 60_000);
 });

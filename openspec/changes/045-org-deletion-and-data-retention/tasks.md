@@ -219,7 +219,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       grant); and that `tayzu_auth` keeps full access to every
       tenant's rows, so `pnpm --filter @tayzu/auth test` stays green. ⛔ **Stop for
       Checkpoint 3 approval of the SQL before continuing.**
-- [ ] 2.4 The runtime-role assertion at startup covers the new tables.
+- [x] 2.4 The runtime-role assertion at startup covers the new tables.
       `assertRuntimeRole` in `apps/api/src/bootstrap.ts` checks ownership for the
       relations whose name matches `catalog\_%` and, since `043`'s task 11.1c (its
       Resolved decision Q109), for `machine_credential_revocation` by name;
