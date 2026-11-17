@@ -49,28 +49,41 @@
 // Load-bearing import order (design D1 of `043`): the telemetry harness registers before
 // anything that loads `@tayzu/auth` creates its logger.
 import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
-import { authSchema, createAuth, createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
+import {
+  authSchema,
+  createAuth,
+  createContextResolver,
+  createRecordingEmailSender,
+  exchangeMachineToken,
+  type AuthInstance,
+} from '@tayzu/auth';
 import { createMachineCredential } from '@tayzu/auth/machine-credentials';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 
-import { createAdminUser } from '../../../../packages/auth/src/__fixtures__/admin-user.js';
+import {
+  bootstrapTestTenant,
+  createAdminUser,
+  signInAdminUser,
+} from '../../../../packages/auth/src/__fixtures__/admin-user.js';
 import {
   TEST_PASSWORD,
   TEST_SECRET,
 } from '../../../../packages/auth/src/__fixtures__/test-secret.js';
 import { harnessPools } from '../__fixtures__/pools.js';
 import { createIdentityRouter } from '../identity-router.js';
+import { createApp, type App } from '../server.js';
 import { createAuthRepository, type AuthRepository } from './auth-repository.js';
 import { createEmailTenantGate } from './email-tenant-gate.js';
 import { createInMemoryEmailCapStore } from './invitation-caps.js';
+import { createResetTokenStore } from './reset-token-store.js';
 import { createWithUserLock } from './user-lock.js';
 import { createUserSyncAdapter } from './user-sync-adapter.js';
 
@@ -182,6 +195,63 @@ describe('identity.organization.delete requires the host tenant as confirmation 
       context: (raw: Record<string, unknown>) => raw,
     }) as unknown as OrgDeleteClient;
     return { client, sender };
+  }
+
+  const REVOCATION_INSERT = /insert\s+into\s+machine_credential_revocation/i;
+
+  /**
+   * The `tayzu_app` pool whose clients fail the first revocation-list insert they see, then
+   * behave normally. `fired` records that the seam was reached.
+   */
+  function poolFailingFirstRevocation(pool: Pool): { pool: Pool; fired: () => boolean } {
+    let armed = true;
+    let didFire = false;
+    const seamQuery =
+      (target: object) =>
+      async (...args: unknown[]): Promise<unknown> => {
+        const first = args[0];
+        const text =
+          typeof first === 'string'
+            ? first
+            : typeof first === 'object' && first !== null && 'text' in first
+              ? String(first.text)
+              : '';
+        if (armed && REVOCATION_INSERT.test(text)) {
+          armed = false;
+          didFire = true;
+          throw new Error('injected failure: credential revocation (task 5.3 seam)');
+        }
+        const query = Reflect.get(target, 'query', target) as (...a: unknown[]) => Promise<unknown>;
+        return await Reflect.apply(query, target, args);
+      };
+    const bindAll = <T extends object>(target: T, wrap: (property: string | symbol) => unknown) =>
+      new Proxy(target, {
+        get(inner, property) {
+          const wrapped = wrap(property);
+          if (wrapped !== undefined) {
+            return wrapped;
+          }
+          const value: unknown = Reflect.get(inner, property, inner);
+          return typeof value === 'function'
+            ? (value as (...a: unknown[]) => unknown).bind(inner)
+            : value;
+        },
+      });
+    const seamed = bindAll(pool, (property) => {
+      if (property === 'query') {
+        return seamQuery(pool);
+      }
+      if (property === 'connect') {
+        return async (): Promise<unknown> => {
+          const client = await pool.connect();
+          return bindAll(client, (clientProperty) =>
+            clientProperty === 'query' ? seamQuery(client) : undefined,
+          );
+        };
+      }
+      return undefined;
+    });
+    return { pool: seamed, fired: () => didFire };
   }
 
   function adminContext(tenant: Tenant): Record<string, unknown> {
@@ -667,7 +737,6 @@ describe('identity.organization.delete requires the host tenant as confirmation 
    */
   describe('a repeated request while pending (task 5.3)', () => {
     const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
-    const REVOCATION_INSERT = /insert\s+into\s+machine_credential_revocation/i;
 
     interface PendingMarker {
       readonly state: string;
@@ -757,63 +826,6 @@ describe('identity.organization.delete requires the host tenant as confirmation 
         metadata: { createdBy: tenant.adminId },
       });
       return credential.id;
-    }
-
-    /**
-     * The `tayzu_app` pool whose clients fail the first revocation-list insert they see, then
-     * behave normally. `fired` records that the seam was reached.
-     */
-    function poolFailingFirstRevocation(pool: Pool): { pool: Pool; fired: () => boolean } {
-      let armed = true;
-      let didFire = false;
-      const seamQuery =
-        (target: object) =>
-        async (...args: unknown[]): Promise<unknown> => {
-          const first = args[0];
-          const text =
-            typeof first === 'string'
-              ? first
-              : typeof first === 'object' && first !== null && 'text' in first
-                ? String(first.text)
-                : '';
-          if (armed && REVOCATION_INSERT.test(text)) {
-            armed = false;
-            didFire = true;
-            throw new Error('injected failure: credential revocation (task 5.3 seam)');
-          }
-          const query = Reflect.get(target, 'query', target) as (
-            ...a: unknown[]
-          ) => Promise<unknown>;
-          return await Reflect.apply(query, target, args);
-        };
-      const bindAll = <T extends object>(target: T, wrap: (property: string | symbol) => unknown) =>
-        new Proxy(target, {
-          get(inner, property) {
-            const wrapped = wrap(property);
-            if (wrapped !== undefined) {
-              return wrapped;
-            }
-            const value: unknown = Reflect.get(inner, property, inner);
-            return typeof value === 'function'
-              ? (value as (...a: unknown[]) => unknown).bind(inner)
-              : value;
-          },
-        });
-      const seamed = bindAll(pool, (property) => {
-        if (property === 'query') {
-          return seamQuery(pool);
-        }
-        if (property === 'connect') {
-          return async (): Promise<unknown> => {
-            const client = await pool.connect();
-            return bindAll(client, (clientProperty) =>
-              clientProperty === 'query' ? seamQuery(client) : undefined,
-            );
-          };
-        }
-        return undefined;
-      });
-      return { pool: seamed, fired: () => didFire };
     }
 
     async function deleteAs(client: OrgDeleteClient, tenant: Tenant): Promise<unknown> {
@@ -1003,6 +1015,430 @@ describe('identity.organization.delete requires the host tenant as confirmation 
         await logRecordsFor(REPEATED_EVENT, [t1.tenantId]),
         'the repeat is logged as repeated instead',
       ).toHaveLength(1);
+    }, 60_000);
+  });
+
+  /**
+   * Task 5.6 (design D4, Resolved decision Q152; spec requirement "A tenant with a pending or
+   * purged deletion is closed to every principal").
+   *
+   * Scenario "Requesting deletion revokes access at once" (spec, quoted; 5.6 asserts its access
+   * part):
+   * - GIVEN organization `t1` with blueprints, entities, members and API credentials
+   * - WHEN an admin with a fresh step-up verification confirms deletion of `t1` by its identifier
+   * - THEN every member's session and every `t1` credential, human or machine, is rejected within
+   *   seconds, a marker with a purge date 7 to 14 days away exists, and the data is still there
+   *
+   * Scenario "An already-issued machine token and a fresh exchange are refused" (spec, quoted):
+   * - GIVEN a tenant with a pending marker, a machine token issued before the request and a
+   *   credential that was not revoked
+   * - WHEN the token is used, and the credential is exchanged for a new token
+   * - THEN both are refused, and the rejection is logged with the reason `tenant_pending_deletion`
+   *
+   * Scenario "A purged tenant stays rejected" (spec, quoted):
+   * - GIVEN `t1` was purged and its marker remains as a tombstone in state `purged`
+   * - WHEN a principal of `t1` is resolved
+   * - THEN it is rejected, while a tenant whose marker is `cancelled` is accepted
+   *
+   * Scenario "A password reset during the window does not reopen the tenant" (spec, quoted):
+   * - GIVEN a tenant with a pending marker and a member who completes a password reset
+   * - WHEN that member signs in and the session is resolved
+   * - THEN it is rejected with the reason `tenant_pending_deletion`, exactly as before the reset
+   *
+   * Observability (design D4 and the 043 Log events row): each rejection emits
+   * `catalog.security.principal_rejected` (WARN) with exactly `tayzu.identity.rejection.reason`
+   * `tenant_pending_deletion` and `tayzu.actor.type`. The event carries no tenant id, so the
+   * records are read as the ones emitted during the resolution under test (tests in one file run
+   * sequentially).
+   *
+   * ## Harness
+   *
+   * Phase 1 revokes the sessions and the credentials it finds, so the principals under test are
+   * the ones phase 1 cannot reach: a session opened by a sign-in after the request, and a machine
+   * token whose credential a half-failed first request (the 5.3 failure seam on the revocation
+   * insert) left live, which is exactly the GIVEN of "An already-issued machine token and a fresh
+   * exchange are refused". Every resolution uses a fresh `createContextResolver` (empty 5-second
+   * caches), the pattern of `043`'s resolver tests after a status change. The `purged` and
+   * `cancelled` markers are seeded through the owner pool. The fresh exchange through
+   * `POST /v1/auth/token` and 044's password reset (`POST /v1/auth/password-reset/confirm`, a token
+   * issued by the real `createResetTokenStore`) go through the real server (`createApp`, injected
+   * requests, never a listener), configured as 044's `password-reset-effects.int.test.ts` does.
+   *
+   * ## Production symbols expected
+   *
+   * - `createContextResolver({ auth, revocationPool })` (`@tayzu/auth`), unchanged in signature,
+   *   reads `tenant_deletion_marker` as `tayzu_app` through `revocationPool` under the tenant
+   *   (session branch: the active organization; bearer branch: the token's `tenantId` claim),
+   *   cached at most 5 s per tenant, failing closed. A `pending` or `purged` marker rejects with
+   *   `AuthContextError` (`CATALOG_CONTEXT_REQUIRED`) and emits the event and the counter above; a
+   *   `cancelled` marker does not.
+   * - `createApp` wires the same check into the token route: `exchangeMachineToken` gets the
+   *   marker port (`ports.tenantDeletionLookup`, see `token-exchange.int.test.ts`).
+   * - The password-reset routes of `044` are unchanged (Q152).
+   *
+   * ## Why this fails right now
+   *
+   * The resolver never reads the marker, so the post-request session, the live token and the
+   * `purged` tenant's principals all resolve, and the token route mints a token.
+   */
+  describe('a tenant with a pending or purged marker is closed to every principal (task 5.6)', () => {
+    const REJECTED_EVENT = 'catalog.security.principal_rejected';
+    const ORIGIN = 'https://app.tayzu.test';
+    const HMAC_SECRET = `org-deletion-56-test-only-secret-${randomUUID()}`;
+    const NEW_PASSWORD = `Org-Deletion-Reset-${randomUUID()}-Aa1!`;
+    let app: App;
+
+    beforeAll(async () => {
+      const pools = await harnessPools();
+      app = await createApp({
+        appPool: pools.appPool,
+        authPool: pools.authPool,
+        authSecret: TEST_SECRET,
+        cerbosAddress: 'localhost:3593',
+        allowedOrigins: [ORIGIN],
+        mountIdentityRoutes: true,
+        identityTokenHmacSecret: HMAC_SECRET,
+        email: {
+          sender: createRecordingEmailSender(),
+          invitationLinkBaseUrl: ORIGIN,
+          passwordResetLinkBaseUrl: ORIGIN,
+          passwordResetMinResponseMs: 0,
+          disabledTenantIds: [],
+          killSwitch: false,
+          recipientKeySecret: HMAC_SECRET,
+          tenantCap: { max: 1000, windowSeconds: 3600 },
+          recipientCap: { max: 1000, windowSeconds: 86_400 },
+          passwordResetRecipientCap: { max: 1000, windowSeconds: 3600 },
+          passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+          passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+          accountCreatedNoticeGlobalCap: { max: 100_000, windowSeconds: 86_400 },
+        },
+      });
+    }, 60_000);
+
+    afterAll(async () => {
+      await app.close();
+    }, 60_000);
+
+    function randomIp(): string {
+      const octet = (): string => randomInt(1, 255).toString(10);
+      return `10.${octet()}.${octet()}.${octet()}`;
+    }
+
+    interface ClosedTenantMember {
+      readonly tenant: Tenant;
+      readonly email: string;
+      readonly cookie: string;
+      readonly secret: string;
+    }
+
+    /** An owner (an admin of the tenant) with an `Active` `_user`, signed in, and a live credential. */
+    async function freshMember(): Promise<ClosedTenantMember> {
+      const suffix = randomUUID();
+      const email = `org-del-56m-${suffix}@example.test`;
+      const bootstrapped = await bootstrapTestTenant(auth, {
+        pool: appPool,
+        name: `Org Deletion 56 ${suffix}`,
+        email,
+        password: TEST_PASSWORD,
+        organizationName: `Org Deletion 56 ${suffix}`,
+        organizationSlug: `org-del-56m-${suffix}`,
+        ip: randomIp(),
+      });
+      const credential = await createMachineCredential(auth, {
+        userId: bootstrapped.userId,
+        organizationId: bootstrapped.organizationId,
+        name: `org-del-56-cred-${randomUUID().slice(0, 8)}`,
+        actorKind: 'integration',
+        metadata: { createdBy: bootstrapped.userId },
+      });
+      return {
+        tenant: {
+          tenantId: bootstrapped.organizationId,
+          adminId: bootstrapped.userId,
+          freeText: [email, `Org Deletion 56 ${suffix}`, `org-del-56m-${suffix}`],
+          sessionIds: [],
+          credentialIds: [credential.id],
+          invitationIds: [],
+        },
+        email,
+        cookie: bootstrapped.cookie,
+        secret: credential.secret,
+      };
+    }
+
+    function onlyCredentialOf(member: ClosedTenantMember): string {
+      const [credentialId] = member.tenant.credentialIds;
+      if (credentialId === undefined) {
+        throw new Error('the member fixture seeds one credential');
+      }
+      return credentialId;
+    }
+
+    /** Seeds a terminal marker (`purged` or `cancelled`) through the owner pool. */
+    async function seedMarker(tenantId: string, state: 'purged' | 'cancelled'): Promise<void> {
+      await authPool.query(
+        `insert into tenant_deletion_marker
+           (tenant_id, purge_after, requested_by, state,
+            catalog_purged_at, auth_purged_at, cancelled_at, cancelled_by)
+         values ($1, now() + interval '14 days', $2, $3::text,
+                 case when $3::text = 'purged' then now() end,
+                 case when $3::text = 'purged' then now() end,
+                 case when $3::text = 'cancelled' then now() end,
+                 case when $3::text = 'cancelled' then $4::text end)`,
+        [tenantId, `usr-${randomUUID()}`, state, `gh:${String(randomInt(1, 1_000_000_000))}`],
+      );
+    }
+
+    async function markerStatesOf(tenantId: string): Promise<readonly string[]> {
+      return await withTenantTransaction(appPool, { tenantId }, async (client) => {
+        const result = await client.query<{ state: string }>(
+          'select state from tenant_deletion_marker where tenant_id = $1 order by requested_at',
+          [tenantId],
+        );
+        return result.rows.map((row) => row.state);
+      });
+    }
+
+    async function requestDeletion(member: ClosedTenantMember, pool?: Pool): Promise<unknown> {
+      const { client } = freshClient(pool === undefined ? {} : { appPool: pool });
+      return await client.identity.organization.delete(
+        { query: { confirmation: member.tenant.tenantId } },
+        { context: adminContext(member.tenant) },
+      );
+    }
+
+    /** A fresh resolver: empty 5-second caches. */
+    async function resolveFresh(headers: Headers): Promise<unknown> {
+      return await createContextResolver({ auth, revocationPool: appPool })(headers);
+    }
+
+    async function principalRejectionCount(): Promise<number> {
+      await harness.forceFlush();
+      return [...harness.logExporter.getFinishedLogRecords()].filter(
+        (record) => record.eventName === REJECTED_EVENT,
+      ).length;
+    }
+
+    /**
+     * Resolves `headers` with a fresh resolver, expects the missing-context rejection, and returns
+     * the `principal_rejected` records the resolution emitted (severity and attributes).
+     */
+    async function expectRejected(
+      headers: Headers,
+    ): Promise<readonly { severityText: unknown; attributes: unknown }[]> {
+      const before = await principalRejectionCount();
+      await expect(resolveFresh(headers), 'rejected as a missing context').rejects.toMatchObject({
+        code: 'CATALOG_CONTEXT_REQUIRED',
+      });
+      await harness.forceFlush();
+      return [...harness.logExporter.getFinishedLogRecords()]
+        .filter((record) => record.eventName === REJECTED_EVENT)
+        .slice(before)
+        .map((record) => ({ severityText: record.severityText, attributes: record.attributes }));
+    }
+
+    function pendingDeletionRejection(actorType: 'user' | 'integration'): unknown {
+      return {
+        severityText: 'WARN',
+        attributes: {
+          'tayzu.identity.rejection.reason': 'tenant_pending_deletion',
+          'tayzu.actor.type': actorType,
+        },
+      };
+    }
+
+    function bearer(accessToken: string): Headers {
+      return new Headers({ authorization: `Bearer ${accessToken}` });
+    }
+
+    async function exchangeThroughRoute(
+      clientId: string,
+      clientSecret: string,
+    ): Promise<{ status: number; body: Record<string, unknown> }> {
+      const response = await app.app.inject({
+        method: 'POST',
+        url: '/v1/auth/token',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': randomIp() },
+        payload: JSON.stringify({ clientId, clientSecret }),
+      });
+      return { status: response.statusCode, body: response.json<Record<string, unknown>>() };
+    }
+
+    async function signIn(email: string, password: string): Promise<string> {
+      const signedIn = await signInAdminUser(auth, { email, password, ip: randomIp() });
+      return signedIn.cookie;
+    }
+
+    it("Requesting deletion revokes access at once: after a confirmed request a member's session, also one opened by a sign-in after the request, is rejected as a missing context and logged with tenant_pending_deletion", async () => {
+      const member = await freshMember();
+      // Precondition: the member's session resolves to t1 before the request.
+      await expect(resolveFresh(new Headers({ cookie: member.cookie }))).resolves.toMatchObject({
+        tenantId: member.tenant.tenantId,
+      });
+
+      // WHEN an admin confirms deletion of t1 by its identifier.
+      await requestDeletion(member);
+      expect(await markerStatesOf(member.tenant.tenantId), 'a pending marker').toEqual(['pending']);
+
+      // THEN the session that existed before the request is rejected.
+      await expect(resolveFresh(new Headers({ cookie: member.cookie }))).rejects.toMatchObject({
+        code: 'CATALOG_CONTEXT_REQUIRED',
+      });
+      // AND a session the member opens after the request (phase 1 cannot have revoked it) is
+      // rejected as a missing context, logged once with the reason tenant_pending_deletion.
+      const lateCookie = await signIn(member.email, TEST_PASSWORD);
+      expect(await expectRejected(new Headers({ cookie: lateCookie }))).toEqual([
+        pendingDeletionRejection('user'),
+      ]);
+    }, 60_000);
+
+    it('An already-issued machine token and a fresh exchange are refused: a token issued before a request that left its credential live is rejected with tenant_pending_deletion, and a fresh exchange through POST /v1/auth/token is refused', async () => {
+      const member = await freshMember();
+      const credentialId = onlyCredentialOf(member);
+      // GIVEN a machine token issued before the request, and the token route working.
+      const { accessToken } = await exchangeMachineToken(auth, {
+        clientId: credentialId,
+        clientSecret: member.secret,
+      });
+      await expect(resolveFresh(bearer(accessToken))).resolves.toMatchObject({
+        tenantId: member.tenant.tenantId,
+      });
+      const control = await exchangeThroughRoute(credentialId, member.secret);
+      expect(control.status, 'precondition: the token route exchanges the credential').toBe(200);
+
+      // AND a pending marker whose request failed before revoking the credential.
+      const seam = poolFailingFirstRevocation(appPool);
+      await expect(requestDeletion(member, seam.pool), 'the request fails').rejects.toBeDefined();
+      expect(seam.fired(), 'the failure seam on the credential revocation was reached').toBe(true);
+      expect(await markerStatesOf(member.tenant.tenantId), 'a pending marker').toEqual(['pending']);
+      const revoked = await withTenantTransaction(
+        appPool,
+        { tenantId: member.tenant.tenantId },
+        async (client) =>
+          (
+            await client.query(
+              'select 1 from machine_credential_revocation where tenant_id = $1 and credential_id = $2',
+              [member.tenant.tenantId, credentialId],
+            )
+          ).rows.length,
+      );
+      expect(revoked, 'precondition: the credential was not revoked').toBe(0);
+
+      // WHEN the token is used THEN it is rejected as a missing context, logged with the reason.
+      expect(await expectRejected(bearer(accessToken))).toEqual([
+        pendingDeletionRejection('integration'),
+      ]);
+
+      // WHEN the credential is exchanged for a new token THEN the exchange is refused.
+      const fresh = await exchangeThroughRoute(credentialId, member.secret);
+      expect(fresh.status, 'the fresh exchange is refused').toBe(401);
+      expect(fresh.body).toMatchObject({ code: 'AUTH_INVALID_CREDENTIALS' });
+      expect(fresh.body, 'no token is minted').not.toHaveProperty('accessToken');
+    }, 60_000);
+
+    it('A purged tenant stays rejected: a session and a machine token of a tenant whose marker is purged are rejected with tenant_pending_deletion', async () => {
+      const member = await freshMember();
+      const { accessToken } = await exchangeMachineToken(auth, {
+        clientId: onlyCredentialOf(member),
+        clientSecret: member.secret,
+      });
+      await expect(resolveFresh(new Headers({ cookie: member.cookie }))).resolves.toMatchObject({
+        tenantId: member.tenant.tenantId,
+      });
+
+      // GIVEN the marker remains as a tombstone in state `purged`.
+      await seedMarker(member.tenant.tenantId, 'purged');
+
+      // WHEN a principal of the tenant is resolved THEN it is rejected.
+      expect(await expectRejected(new Headers({ cookie: member.cookie }))).toEqual([
+        pendingDeletionRejection('user'),
+      ]);
+      expect(await expectRejected(bearer(accessToken))).toEqual([
+        pendingDeletionRejection('integration'),
+      ]);
+    }, 60_000);
+
+    it('a tenant whose marker is cancelled is accepted: its session and its machine token resolve, with no principal_rejected', async () => {
+      const member = await freshMember();
+      const { accessToken } = await exchangeMachineToken(auth, {
+        clientId: onlyCredentialOf(member),
+        clientSecret: member.secret,
+      });
+
+      // GIVEN the tenant's marker is a `cancelled` tombstone.
+      await seedMarker(member.tenant.tenantId, 'cancelled');
+
+      // THEN both principals are accepted.
+      const before = await principalRejectionCount();
+      await expect(resolveFresh(new Headers({ cookie: member.cookie }))).resolves.toMatchObject({
+        tenantId: member.tenant.tenantId,
+        actor: { type: 'user', id: member.tenant.adminId },
+      });
+      await expect(resolveFresh(bearer(accessToken))).resolves.toMatchObject({
+        tenantId: member.tenant.tenantId,
+        actor: { type: 'integration', id: onlyCredentialOf(member) },
+      });
+      expect(await principalRejectionCount(), 'no principal is rejected').toBe(before);
+    }, 60_000);
+
+    it('A password reset during the window does not reopen the tenant: a member of a tenant with a pending marker completes the reset, and the session of the sign-in that follows is rejected with tenant_pending_deletion, exactly as before the reset', async () => {
+      const member = await freshMember();
+
+      // GIVEN a tenant with a pending marker.
+      await requestDeletion(member);
+      expect(await markerStatesOf(member.tenant.tenantId), 'a pending marker').toEqual(['pending']);
+      // Before the reset: a sign-in's session is rejected with the reason.
+      const beforeReset = await expectRejected(
+        new Headers({ cookie: await signIn(member.email, TEST_PASSWORD) }),
+      );
+      expect(beforeReset).toEqual([pendingDeletionRejection('user')]);
+
+      // AND the member completes 044's password reset (the routes are untouched, Q152).
+      const issued = await createResetTokenStore({
+        authPool,
+        withUserLock: createWithUserLock(authPool),
+      }).issue(member.tenant.adminId);
+      vi.stubGlobal('fetch', (): Promise<Response> => {
+        // The breached-password range service reports nothing as breached.
+        return Promise.resolve(
+          new Response('0000000000000000000000000000000000A:3\r\n', { status: 200 }),
+        );
+      });
+      let completed: { status: number; body: unknown };
+      try {
+        const response = await app.app.inject({
+          method: 'POST',
+          url: '/v1/auth/password-reset/confirm',
+          headers: {
+            'content-type': 'application/json',
+            origin: ORIGIN,
+            'x-csrf-token': 'orpc',
+            'x-forwarded-for': randomIp(),
+          },
+          payload: JSON.stringify({
+            id: issued.id,
+            token: issued.token,
+            newPassword: NEW_PASSWORD,
+          }),
+        });
+        completed = { status: response.statusCode, body: response.json() };
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(completed, 'the reset completes').toEqual({
+        status: 200,
+        body: { completed: true },
+      });
+
+      // WHEN that member signs in (with the new password) and the session is resolved.
+      const afterResetCookie = await signIn(member.email, NEW_PASSWORD);
+
+      // THEN it is rejected with the reason tenant_pending_deletion, exactly as before the reset.
+      const afterReset = await expectRejected(new Headers({ cookie: afterResetCookie }));
+      expect(afterReset).toEqual([pendingDeletionRejection('user')]);
+      expect(afterReset).toEqual(beforeReset);
+      expect(await markerStatesOf(member.tenant.tenantId), 'still pending').toEqual(['pending']);
     }, 60_000);
   });
 });

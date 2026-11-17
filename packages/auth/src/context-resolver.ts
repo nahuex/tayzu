@@ -77,6 +77,9 @@
  * Revocation-list consultation (task 5.7, design D21) is described at
  * `isCredentialRevoked` below.
  *
+ * Both branches also reject a tenant with a `pending` or `purged` deletion
+ * marker (`045` design D4), read through `revocationPool`: see `tenantIsOpen`.
+ *
  * The `onBehalfOf` non-read guarantee this function already upholds by
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
@@ -97,6 +100,10 @@ import {
 } from './telemetry/instruments.js';
 import { AuthContextError } from './errors.js';
 import { isIdle } from './session-idle.js';
+import {
+  createTenantDeletionLookup,
+  emitTenantPendingDeletionRejection,
+} from './tenant-deletion-lookup.js';
 
 export interface ContextResolverOptions {
   /** The Better Auth instance whose session cookie `resolveContext` resolves against. */
@@ -310,6 +317,12 @@ interface HumanStatusCacheEntry {
   readonly expiresAt: number;
 }
 
+interface TenantDeletionCacheEntry {
+  /** `true` for a tenant with a `pending` or `purged` deletion marker. */
+  readonly closed: boolean;
+  readonly expiresAt: number;
+}
+
 interface MembershipCacheEntry {
   /** The Better Auth member role, or `null` for a non-member. */
   readonly role: string | null;
@@ -421,6 +434,32 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
   const revocationCache = new Map<string, RevocationCacheEntry>();
   const serviceAccountCache = new Map<string, ServiceAccountCacheEntry>();
   const humanStatusCache = new Map<string, HumanStatusCacheEntry>();
+  const tenantDeletionCache = new Map<string, TenantDeletionCacheEntry>();
+  const lookupTenantDeletion = createTenantDeletionLookup(options.revocationPool);
+
+  // `045` design D4: a tenant with a `pending` or `purged` deletion marker is
+  // closed to every principal. Cached at most 5 s per tenant; a lookup failure
+  // is never cached and counts as closed, without a reason it cannot know.
+  // Resolves `true` when the principal may proceed.
+  async function tenantIsOpen(tenantId: string, actorType: string): Promise<boolean> {
+    const now = Date.now();
+    const cached = tenantDeletionCache.get(tenantId);
+    let closed: boolean;
+    if (cached !== undefined && cached.expiresAt > now) {
+      closed = cached.closed;
+    } else {
+      try {
+        closed = await lookupTenantDeletion(tenantId);
+      } catch {
+        return false;
+      }
+      tenantDeletionCache.set(tenantId, { closed, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+    }
+    if (closed) {
+      emitTenantPendingDeletionRejection(actorType);
+    }
+    return !closed;
+  }
 
   // Task 5.7, design D21: consults `machine_credential_revocation` through
   // an in-process cache keyed by `credential_id` (TTL 5 s). Read under the
@@ -587,6 +626,10 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       ) {
         rejectMissingContext();
       }
+      // `045` D4: the bearer branch checks the token's own tenant claim.
+      if (!(await tenantIsOpen(resolved.tenantId, resolved.actor.type))) {
+        rejectMissingContext();
+      }
       // Task 11.6: chosen by the credential branch (a bound machine token),
       // never by comparing `actor.type`.
       const serviceAccountId = serviceAccountIdOf(verified.payload);
@@ -686,9 +729,16 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       rejectMissingContext();
     }
 
+    const actor = { type: 'user', id: result.user.id } as const;
+
+    // `045` D4: the session branch checks the active organization, once the
+    // membership is confirmed, so the reason is logged for its members only.
+    if (!(await tenantIsOpen(tenantId, actor.type))) {
+      rejectMissingContext();
+    }
+
     // Task 11.8, Q105: the `_user` of the active tenant must be `Active`.
     // Without an email the row cannot be looked up, which fails closed.
-    const actor = { type: 'user', id: result.user.id } as const;
     const email = result.user.email;
     if (typeof email !== 'string' || email.length === 0) {
       rejectMissingContext();

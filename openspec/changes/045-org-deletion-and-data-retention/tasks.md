@@ -324,7 +324,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `org-deletion-notice.int.test.ts` covers "Every admin is notified of a pending
       deletion" with the recording fake (an owner and two admins each receive exactly
       one email, a plain member none) a failing sender and a suppressed notice not stopping the request, the suppression being logged with the template `org_deletion`, and `notices.test.ts` (extended) covers the dispatcher still naming `admin_accepted` for the notice of `043`.
-- [ ] 5.6 `resolveContext` and token exchange reject every principal, human or
+- [x] 5.6 `resolveContext` and token exchange reject every principal, human or
       machine, of a tenant with a **pending** or a **purged** deletion marker (a
       cancelled marker does not reject), logging `catalog.security.principal_rejected`
       with reason `tenant_pending_deletion`, and the acceptance of an invitation of

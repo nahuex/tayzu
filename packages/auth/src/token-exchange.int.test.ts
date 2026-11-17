@@ -216,7 +216,14 @@ import * as authSchema from './persistence/schema.js';
 // exists with exactly that shape (see "Why the `as ExchangeMachineTokenFn`
 // cast is gone").
 import { exchangeMachineToken } from './token-exchange.js';
-import type { ExchangeMachineTokenParams, ExchangedMachineToken } from './token-exchange.js';
+import type {
+  ExchangeMachineTokenParams,
+  ExchangeMachineTokenPorts,
+  ExchangedMachineToken,
+} from './token-exchange.js';
+// `045` task 5.6: the marker port's factory is read off the package entry point, so that this
+// file still loads (and its other tests still run) before the factory exists.
+import * as authPackage from './index.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 /** Same fail-fast pattern as every other int test file in this repo. */
@@ -1012,6 +1019,148 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
         clientSecret: created.secret,
       });
       expect(exchanged.accessToken).toEqual(expect.any(String));
+    });
+  });
+
+  /**
+   * Task 5.6 of openspec/changes/045-org-deletion-and-data-retention (design D4; spec requirement
+   * "A tenant with a pending or purged deletion is closed to every principal": "Token exchange
+   * MUST refuse to mint a token for a credential of such a tenant", "failing closed on any lookup
+   * failure", "A `cancelled` marker MUST NOT reject").
+   *
+   * Scenario "An already-issued machine token and a fresh exchange are refused" (spec, quoted):
+   * - GIVEN a tenant with a pending marker, a machine token issued before the request and a
+   *   credential that was not revoked
+   * - WHEN the token is used, and the credential is exchanged for a new token
+   * - THEN both are refused, and the rejection is logged with the reason `tenant_pending_deletion`
+   * (the already-issued token is `org-deletion.int.test.ts`'s; this block is the fresh exchange,
+   * of a `pending` and of a `purged` tenant.)
+   *
+   * Observability (design D4, 043 Log events and Metrics rows): the refusal emits
+   * `catalog.security.principal_rejected` (WARN) with exactly `tayzu.identity.rejection.reason`
+   * `tenant_pending_deletion` and `tayzu.actor.type`, and increments
+   * `tayzu.identity.principal_rejections` with the same attributes.
+   *
+   * Markers are seeded through the owner pool (`db`); every tenant, credential and actor is random.
+   *
+   * ## Production symbols expected
+   *
+   * - `./tenant-deletion-lookup.ts`, re-exported by `./index.ts`:
+   *   `export type TenantDeletionLookup = (tenantId: string) => Promise<boolean>` (resolves `true`
+   *   when the tenant has a `pending` or a `purged` marker, `false` for none or only `cancelled`
+   *   ones, rejects on a lookup failure) and `createTenantDeletionLookup(pool)`, which reads
+   *   `tenant_deletion_marker` on a `tayzu_app` pool under `withTenantTransaction`.
+   * - `ExchangeMachineTokenPorts` gains `tenantDeletionLookup?: TenantDeletionLookup`, consulted
+   *   with the credential's tenant (`key.referenceId`) for every credential, bound or not, before
+   *   signing: `true` or a rejected lookup refuses with `AuthInvalidCredentialsError`, no token.
+   *
+   * ## Why this fails right now
+   *
+   * `createTenantDeletionLookup` is not exported, and the exchange ignores the port.
+   */
+  describe('a fresh exchange of a credential of a closed tenant is refused (045 task 5.6)', () => {
+    type TenantDeletionLookup = (tenantId: string) => Promise<boolean>;
+    type PortsWithMarker = ExchangeMachineTokenPorts & {
+      readonly tenantDeletionLookup: TenantDeletionLookup;
+    };
+
+    function markerPorts(lookup?: TenantDeletionLookup): PortsWithMarker {
+      if (lookup !== undefined) {
+        return { tenantDeletionLookup: lookup };
+      }
+      const factory = (
+        authPackage as unknown as {
+          readonly createTenantDeletionLookup?: (pool: TestDb['$client']) => TenantDeletionLookup;
+        }
+      ).createTenantDeletionLookup;
+      if (factory === undefined) {
+        throw new Error('@tayzu/auth does not export createTenantDeletionLookup');
+      }
+      return { tenantDeletionLookup: factory(appPool) };
+    }
+
+    async function seedMarker(
+      tenantId: string,
+      state: 'pending' | 'purged' | 'cancelled',
+    ): Promise<void> {
+      await db.$client.query(
+        `insert into tenant_deletion_marker
+           (tenant_id, purge_after, requested_by, state,
+            catalog_purged_at, auth_purged_at, cancelled_at, cancelled_by)
+         values ($1, now() + interval '14 days', $2, $3::text,
+                 case when $3::text = 'purged' then now() end,
+                 case when $3::text = 'purged' then now() end,
+                 case when $3::text = 'cancelled' then now() end,
+                 case when $3::text = 'cancelled' then $4::text end)`,
+        [tenantId, `usr-${randomUUID()}`, state, `gh:${String(randomInt(1, 1_000_000_000))}`],
+      );
+    }
+
+    const PENDING_DELETION = {
+      'tayzu.identity.rejection.reason': 'tenant_pending_deletion',
+      'tayzu.actor.type': 'integration',
+    };
+
+    it.each(['pending', 'purged'] as const)(
+      'A fresh exchange of a credential of a tenant with a %s marker is refused with no token, logged with tenant_pending_deletion',
+      async (state) => {
+        const harness = registeredHarness();
+        const admin = await bootstrapAdmin();
+        const created = await createIntegrationCredential(admin);
+        const params = { clientId: created.id, clientSecret: created.secret };
+        const ports = markerPorts();
+        // Precondition: the credential exchanges while the tenant is open.
+        await expect(exchangeMachineToken(auth, params, ports)).resolves.toEqual({
+          accessToken: expect.any(String) as unknown,
+        });
+
+        // GIVEN the tenant has a marker in state `state`.
+        await seedMarker(admin.organizationId, state);
+        await harness.reset();
+
+        // WHEN the credential is exchanged for a new token THEN it is refused.
+        await expect(exchangeMachineToken(auth, params, ports)).rejects.toBeInstanceOf(
+          AuthInvalidCredentialsError,
+        );
+
+        // AND the rejection is logged once with the reason, and counted.
+        await harness.forceFlush();
+        const logs = finishedLogRecords(harness.logExporter, 'catalog.security.principal_rejected');
+        expect(logs, 'exactly one principal_rejected record').toHaveLength(1);
+        expect(logs[0]?.severityNumber).toBe(SeverityNumber.WARN);
+        expect(logs[0]?.attributes).toEqual(PENDING_DELETION);
+        const points = sumDataPoints(harness.metricExporter, 'tayzu.identity.principal_rejections');
+        expect(points.map((point) => [point.attributes, point.value])).toEqual([
+          [PENDING_DELETION, 1],
+        ]);
+        expectNoSecretsInTelemetry(harness, [created.id, created.secret, admin.organizationId]);
+      },
+    );
+
+    it('a credential of a tenant whose only marker is cancelled still exchanges', async () => {
+      const admin = await bootstrapAdmin();
+      const created = await createIntegrationCredential(admin);
+      await seedMarker(admin.organizationId, 'cancelled');
+
+      const exchanged = await exchangeMachineToken(
+        auth,
+        { clientId: created.id, clientSecret: created.secret },
+        markerPorts(),
+      );
+      expect(exchanged.accessToken).toEqual(expect.any(String));
+    });
+
+    it('a failed marker lookup refuses the exchange (fail closed) with no token', async () => {
+      const admin = await bootstrapAdmin();
+      const created = await createIntegrationCredential(admin);
+
+      await expect(
+        exchangeMachineToken(
+          auth,
+          { clientId: created.id, clientSecret: created.secret },
+          markerPorts(() => Promise.reject(new Error('marker lookup unavailable'))),
+        ),
+      ).rejects.toBeInstanceOf(AuthInvalidCredentialsError);
     });
   });
 });

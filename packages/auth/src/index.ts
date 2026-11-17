@@ -42,9 +42,11 @@ export { AuthContextError, AuthRateLimitedError, AuthStepUpError } from './error
 export {
   exchangeMachineToken,
   type ExchangeMachineTokenParams,
+  type ExchangeMachineTokenPorts,
   type ExchangedMachineToken,
 } from './token-exchange.js';
 export { createServiceAccountLookup } from './service-account-lookup.js';
+export { createTenantDeletionLookup, type TenantDeletionLookup } from './tenant-deletion-lookup.js';
 export {
   createEnrolledStepUpCheck,
   createStepUpGuard,

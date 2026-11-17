@@ -25,6 +25,7 @@ import {
   createRateLimitBucketStore,
   createServiceAccountLookup,
   createStepUpGuard,
+  createTenantDeletionLookup,
   emitInternalError,
   emitRateLimited,
   exchangeMachineToken,
@@ -341,6 +342,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
   const serviceAccountLookup = createServiceAccountLookup(appPool);
+  const tenantDeletionLookup = createTenantDeletionLookup(appPool);
 
   const { email } = options;
   const recipientKeySecret =
@@ -964,7 +966,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       const { accessToken } = await exchangeMachineToken(
         auth,
         { clientId: body.clientId, clientSecret: body.clientSecret },
-        { serviceAccountLookup },
+        { serviceAccountLookup, tenantDeletionLookup },
       );
       return await reply.status(200).send({ accessToken });
     } catch (error) {
@@ -986,6 +988,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       ssoLinkShed,
       notices,
       stepUp: stepUpGuard,
+      tenantDeletionLookup,
       ...(reauthorization === undefined ? {} : { reauthorization }),
     });
     app.post(

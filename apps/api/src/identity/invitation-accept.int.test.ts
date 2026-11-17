@@ -32,6 +32,9 @@ import { registration, type TelemetryTestHarness } from '../__fixtures__/link-te
 import { createHash, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { authSchema, createAuth, createStepUpGuard, type AuthInstance } from '@tayzu/auth';
+// `045` task 5.6: the marker port's factory is read off the namespace, so that this file still
+// loads (and its other tests still run) before the factory exists.
+import * as authPackage from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
@@ -4655,5 +4658,242 @@ describe('A compensated new-account acceptance deletes the _user row it created 
       await catalogSync.getUser({ tenantId: tenant.tenantId, email }),
       'a row that existed before the attempt is never deleted',
     ).not.toBeNull();
+  }, 60_000);
+});
+
+/**
+ * Task 5.6 of openspec/changes/045-org-deletion-and-data-retention (design D4: "An invitation of
+ * such a tenant is no longer acceptable: it answers the same uniform rejection as every other dead
+ * invitation (`CATALOG_NOT_FOUND`, `043` D4 step 5), with the denial reason
+ * `tenant_pending_deletion` only in `catalog.security.invitation_acceptance_denied`").
+ *
+ * Scenario "Accepting an invitation of a tenant pending deletion fails" (spec, quoted):
+ * - GIVEN a pending invitation with a valid token in a tenant with a pending marker
+ * - WHEN the invitation is accepted
+ * - THEN the answer is the same uniform rejection as for a nonexistent invitation, and the reason
+ *   `tenant_pending_deletion` appears only in `catalog.security.invitation_acceptance_denied`
+ *
+ * The requirement also closes a tenant whose marker is `purged`, and "A `cancelled` marker MUST
+ * NOT reject" (the control). The marker is seeded through the owner pool, so the invitation stays
+ * `pending` (phase 1 would cancel it): this is the acceptance check, the second layer.
+ *
+ * ## Production symbols expected
+ *
+ * - `createTenantDeletionLookup(pool)` exported by `@tayzu/auth` (see `token-exchange.int.test.ts`
+ *   in `packages/auth`): `(tenantId) => Promise<boolean>`, `true` for a `pending` or `purged`
+ *   marker, read on the `tayzu_app` pool.
+ * - `AcceptFlowOptions` (`./accept-flow.js`) gains `tenantDeletionLookup?: TenantDeletionLookup`
+ *   (`createApp` passes it). After the token verifies, a `true` (or a failed lookup) answers
+ *   `deny(invitationId, 'tenant_pending_deletion')`: `CATALOG_NOT_FOUND`, no user, no member, the
+ *   token row and the `pending` status untouched.
+ *
+ * ## Why this fails right now
+ *
+ * `createTenantDeletionLookup` is not exported, and the flow never reads the marker.
+ */
+describe('An invitation of a tenant pending deletion is not acceptable (045 task 5.6)', () => {
+  const DENIED_EVENT = 'catalog.security.invitation_acceptance_denied';
+  const REASON = 'tayzu.identity.invitation.denial_reason';
+
+  type TenantDeletionLookup = (tenantId: string) => Promise<boolean>;
+
+  let harness: TelemetryTestHarness;
+  let authPool: Pool;
+  let appPool: Pool;
+  let auth: AuthInstance;
+  let repository: AuthRepository;
+  let adapter: ReturnType<typeof createUserSyncAdapter>;
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    appPool = pools.appPool;
+    await runMigrations(authPool);
+    adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: pools.appPool, authz: sharedCerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    repository = createAuthRepository(authPool);
+  }, 60_000);
+
+  function tenantDeletionLookup(): TenantDeletionLookup {
+    const factory = (
+      authPackage as unknown as {
+        readonly createTenantDeletionLookup?: (pool: Pool) => TenantDeletionLookup;
+      }
+    ).createTenantDeletionLookup;
+    if (factory === undefined) {
+      throw new Error('@tayzu/auth does not export createTenantDeletionLookup');
+    }
+    return factory(appPool);
+  }
+
+  function flow() {
+    const options: Parameters<typeof createAcceptFlow>[0] & {
+      readonly tenantDeletionLookup: TenantDeletionLookup;
+    } = {
+      auth,
+      authz: sharedCerbos,
+      authRepository: repository,
+      authPool,
+      userSync: adapter,
+      tenantDeletionLookup: tenantDeletionLookup(),
+    };
+    return createAcceptFlow(options);
+  }
+
+  async function freshTenant(): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: 'Accept Admin',
+      email: `accept-56-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Accept Org ${id}`,
+      organizationSlug: `accept-56-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  async function invite(tenant: Tenant, email: string): Promise<Invitation> {
+    const api = auth.api as InviteApiSurface;
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at)
+       values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+    return { invitationId: invitation.id, token };
+  }
+
+  /** Seeds a marker through the owner pool. */
+  async function seedMarker(
+    tenantId: string,
+    state: 'pending' | 'purged' | 'cancelled',
+  ): Promise<void> {
+    await authPool.query(
+      `insert into tenant_deletion_marker
+         (tenant_id, purge_after, requested_by, state,
+          catalog_purged_at, auth_purged_at, cancelled_at, cancelled_by)
+       values ($1, now() + interval '14 days', $2, $3::text,
+               case when $3::text = 'purged' then now() end,
+               case when $3::text = 'purged' then now() end,
+               case when $3::text = 'cancelled' then now() end,
+               case when $3::text = 'cancelled' then $4::text end)`,
+      [tenantId, `usr-${randomUUID()}`, state, `gh:${String(randomInt(1, 1_000_000_000))}`],
+    );
+  }
+
+  /** The rejection exactly as the route would answer it (status, code, message, data). */
+  async function answerOf(attempt: Promise<unknown>): Promise<unknown> {
+    try {
+      await attempt;
+      return undefined;
+    } catch (error) {
+      return toOrpcError(error).toJSON();
+    }
+  }
+
+  async function deniedRecords(invitationId: string) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === DENIED_EVENT &&
+        record.attributes['tayzu.identity.invitation.id'] === invitationId,
+    );
+  }
+
+  async function count(sql: string, params: readonly unknown[]): Promise<number> {
+    const result = await authPool.query(sql, [...params]);
+    return result.rowCount ?? 0;
+  }
+
+  it.each(['pending', 'purged'] as const)(
+    'Accepting an invitation of a tenant pending deletion fails: with a %s marker the answer is the uniform rejection of a nonexistent invitation, tenant_pending_deletion is only in invitation_acceptance_denied, and nothing changes',
+    async (state) => {
+      const tenant = await freshTenant();
+      const email = `accept-56-${randomUUID()}@example.test`;
+      // GIVEN a pending invitation with a valid token in a tenant with a marker.
+      const invitation = await invite(tenant, email);
+      await seedMarker(tenant.tenantId, state);
+      const nonexistent = await answerOf(
+        flow().accept({
+          invitationId: `inv-${randomUUID()}`,
+          token: generateInvitationToken(),
+          password: PASSWORD_NFC,
+        }),
+      );
+      expect(nonexistent, 'the uniform rejection').toMatchObject({ code: 'CATALOG_NOT_FOUND' });
+
+      // WHEN the invitation is accepted.
+      const answer = await answerOf(flow().accept({ ...invitation, password: PASSWORD_NFC }));
+
+      // THEN the same uniform rejection as for a nonexistent invitation.
+      expect(answer).toEqual(nonexistent);
+      expect(JSON.stringify(answer), 'the reason is not in the answer').not.toContain(
+        'tenant_pending_deletion',
+      );
+      // AND the reason appears in catalog.security.invitation_acceptance_denied.
+      const denied = await deniedRecords(invitation.invitationId);
+      expect(denied.map((record) => record.attributes[REASON])).toEqual([
+        'tenant_pending_deletion',
+      ]);
+      expect(denied[0]?.severityText).toBe('WARN');
+      // AND nothing changes: no account, no member, the token and the pending status stay.
+      expect(await count('select 1 from auth."user" where email = $1', [email]), 'no user').toBe(0);
+      expect(
+        await count('select 1 from auth.member where organization_id = $1', [tenant.tenantId]),
+        'only the admin is a member',
+      ).toBe(1);
+      expect(
+        await count('select 1 from auth.verification where identifier = $1', [
+          `invitation-accept:${invitation.invitationId}`,
+        ]),
+        'the token row stays',
+      ).toBe(1);
+      expect(
+        (
+          await authPool.query<{ status: string }>(
+            'select status from auth.invitation where id = $1',
+            [invitation.invitationId],
+          )
+        ).rows[0]?.status,
+      ).toBe('pending');
+    },
+    60_000,
+  );
+
+  it('an invitation of a tenant whose only marker is cancelled is still accepted', async () => {
+    const tenant = await freshTenant();
+    const email = `accept-56-${randomUUID()}@example.test`;
+    const invitation = await invite(tenant, email);
+    await seedMarker(tenant.tenantId, 'cancelled');
+
+    const { userId } = await flow().accept({ ...invitation, password: PASSWORD_NFC });
+
+    expect(userId).toEqual(expect.any(String));
+    expect(await deniedRecords(invitation.invitationId), 'no denial').toEqual([]);
   }, 60_000);
 });
