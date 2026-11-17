@@ -252,7 +252,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `policies/resource_policies/role_policies_test.yaml` showing a member denied on
       `organization.delete` and the admin ceiling accepted by the compiler. ⛔ **Stop for
       Checkpoint 3 approval of the policy diff before continuing.**
-- [ ] 3.3 (Checkpoint 3) Cerbos policy: `organization.delete` on resource kind
+- [x] 3.3 (Checkpoint 3) Cerbos policy: `organization.delete` on resource kind
       `organization`, importing `002`'s `same_tenant` derived role and carrying the
       explicit cross-tenant `EFFECT_DENY` of `002` D8, `admin`-only (any admin may
       request it, Resolved decision Q27). Verify: `cerbos compile` runs

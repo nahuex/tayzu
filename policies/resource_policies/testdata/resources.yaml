@@ -258,6 +258,13 @@ resources:
     id: t1
     attr:
       tenantId: t1
+  # 045 task 3.3: the host tenant t2 as an `organization.delete` target, so the
+  # suite checks both directions of the cross-tenant deny and t2's own admin.
+  organization_t2:
+    kind: organization
+    id: t2
+    attr:
+      tenantId: t2
   # No ownership configured.
   entity_service_unowned_t1:
     kind: catalog_entity
