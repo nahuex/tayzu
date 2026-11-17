@@ -95,8 +95,9 @@ async function recordPendingMarker(options: RequestOrgDeletionOptions): Promise<
  * call inserted the marker, the sessions, the machine credentials and the pending invitations.
  * The marker cannot share a transaction with the `auth` schema writes (another role and pool),
  * so it commits first, and the event follows it at once so that no marker exists without its
- * `requested` event. A repeat while pending inserts nothing and returns the pending date, but
- * re-runs the idempotent revocations, completing a first request that failed half-way.
+ * `requested` event. A repeat while pending inserts nothing, logs
+ * `catalog.security.org_deletion_repeated` instead, and returns the pending date, but re-runs
+ * the idempotent revocations, completing a first request that failed half-way.
  */
 export async function requestOrgDeletion(
   options: RequestOrgDeletionOptions,
@@ -110,6 +111,12 @@ export async function requestOrgDeletion(
     emitIdentityEvent({
       name: 'catalog.audit.org_deletion_requested',
       severity: 'INFO',
+      attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': actorId },
+    });
+  } else {
+    emitIdentityEvent({
+      name: 'catalog.security.org_deletion_repeated',
+      severity: 'WARN',
       attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': actorId },
     });
   }

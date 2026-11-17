@@ -76,6 +76,7 @@ import { createUserSyncAdapter } from './user-sync-adapter.js';
 
 const REQUESTED_EVENT = 'catalog.audit.org_deletion_requested';
 const REVOKED_EVENT = 'auth.security.session_revoked';
+const REPEATED_EVENT = 'catalog.security.org_deletion_repeated';
 
 interface OrganizationSurface {
   createOrganization(args: {
@@ -917,6 +918,91 @@ describe('identity.organization.delete requires the host tenant as confirmation 
       );
       expectPurgeDateOf(repeat, marker);
       expect(await markerRowsOf(t1.tenantId), 'still one marker').toHaveLength(1);
+    }, 60_000);
+  });
+
+  /**
+   * Task 5.4: "A repeated deletion request is logged as `catalog.security.org_deletion_repeated`
+   * (declared in 9.1) with the tenant and the admin as actor. Verify: `org-deletion.int.test.ts`
+   * covers the event on the second request and not on the first, with no email or free text in
+   * it."
+   *
+   * Scenario "Requesting deletion twice returns the original date" (spec, quoted):
+   * - GIVEN `t1` has a pending deletion
+   * - WHEN the deletion is requested again, in process
+   * - THEN no second marker or notice is created, the original purge date is returned, and
+   *   `catalog.security.org_deletion_repeated` is logged
+   * (The marker, date and notice clauses are asserted by task 5.3 above; this block asserts the
+   * event.)
+   *
+   * Observability contract row (design.md): `catalog.security.org_deletion_repeated` | WARN |
+   * `tayzu.tenant.id`, `tayzu.actor.id` | "A deletion was requested again while one was pending;
+   * the idempotent revocations were re-run (D1, new)".
+   *
+   * Resolved decision Q168: `catalog.audit.org_deletion_requested` is emitted by the request that
+   * inserts the marker; "a repeat emits none (its event is 5.4's)".
+   *
+   * ## Why this fails right now
+   *
+   * The repeat path of `requestOrgDeletion` emits no `catalog.security.org_deletion_repeated`.
+   */
+  describe('a repeated request is logged as catalog.security.org_deletion_repeated (task 5.4)', () => {
+    async function deleteAs(client: OrgDeleteClient, tenant: Tenant): Promise<unknown> {
+      return await client.identity.organization.delete(
+        { query: { confirmation: tenant.tenantId } },
+        { context: adminContext(tenant) },
+      );
+    }
+
+    it('Requesting deletion twice returns the original date: the first request logs no org_deletion_repeated, the repeat logs exactly one WARN with tayzu.tenant.id and the admin as tayzu.actor.id and no free text', async () => {
+      const t1 = await freshTenant();
+      const t2 = await freshTenant();
+      const { client } = freshClient();
+
+      // GIVEN `t1` has a pending deletion: the first request logs no repeated event.
+      await deleteAs(client, t1);
+      expect(
+        await logRecordsFor(REPEATED_EVENT, [t1.tenantId, t2.tenantId]),
+        'the first request is not a repeat',
+      ).toEqual([]);
+
+      // WHEN the deletion is requested again, in process.
+      await deleteAs(client, t1);
+
+      // THEN `catalog.security.org_deletion_repeated` is logged, once, for t1 only.
+      const repeated = await logRecordsFor(REPEATED_EVENT, [t1.tenantId, t2.tenantId]);
+      expect(repeated, 'exactly one repeated event').toHaveLength(1);
+      const record = repeated[0];
+      expect(record?.severityText, 'the declared severity').toBe('WARN');
+      expect(record?.attributes, 'exactly the declared attributes').toEqual({
+        'tayzu.tenant.id': t1.tenantId,
+        'tayzu.actor.id': t1.adminId,
+      });
+      const serialized = JSON.stringify({ body: record?.body, attributes: record?.attributes });
+      for (const text of t1.freeText) {
+        expect(serialized, 'no organization name, slug or email').not.toContain(text);
+      }
+    }, 60_000);
+
+    it('the first request still logs catalog.audit.org_deletion_requested once and the repeat logs no second one (Q168)', async () => {
+      const t1 = await freshTenant();
+      const { client } = freshClient();
+
+      await deleteAs(client, t1);
+      expect(
+        await logRecordsFor(REQUESTED_EVENT, [t1.tenantId]),
+        'the first request logs the audit event once',
+      ).toHaveLength(1);
+
+      await deleteAs(client, t1);
+      expect(
+        await logRecordsFor(REQUESTED_EVENT, [t1.tenantId]),
+        'the repeat logs no second audit event',
+      ).toHaveLength(1);
+      expect(
+        await logRecordsFor(REPEATED_EVENT, [t1.tenantId]),
+        'the repeat is logged as repeated instead',
+      ).toHaveLength(1);
     }, 60_000);
   });
 });

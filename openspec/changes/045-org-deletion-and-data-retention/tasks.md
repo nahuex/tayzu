@@ -306,7 +306,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       half-failed first one": a first request that failed after the marker was recorded
       (a failure seam on the credential revocation) leaves a live credential, and the
       repeat revokes it.
-- [ ] 5.4 A repeated deletion request is logged as
+- [x] 5.4 A repeated deletion request is logged as
       `catalog.security.org_deletion_repeated` (declared in 9.1) with the tenant and the
       admin as actor. Verify: `org-deletion.int.test.ts` covers the event on the second
       request and not on the first, with no email or free text in it.
