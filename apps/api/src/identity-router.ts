@@ -65,6 +65,7 @@ import {
   DEFAULT_ORG_DELETION_WINDOW_DAYS,
   ORG_DELETION_INPUT_SCHEMA,
   requestOrgDeletion,
+  type OrgDeletionRequested,
 } from './identity/org-deletion.js';
 import {
   parseIdentityInput,
@@ -763,12 +764,12 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             },
           },
           route: identityRoute('DELETE', '/v1/organization', { highRisk: true }),
-          handler: async ({ context, input: rawInput }): Promise<void> => {
+          handler: async ({ context, input: rawInput }): Promise<OrgDeletionRequested> => {
             const { query } = parseDetailedInput(SCHEMAS.deleteOrganization, rawInput);
             if (options.appPool === undefined) throw new IdentityInputError();
             const tenantId = rawTenantId(context);
             const adminId = (context['actor'] as { id: string }).id;
-            await requestOrgDeletion({
+            return await requestOrgDeletion({
               tenantId,
               actorId: adminId,
               confirmation: query['confirmation'] as string,

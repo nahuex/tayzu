@@ -296,7 +296,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `tayzu.actor.id`. Verify: `org-deletion.int.test.ts` covers the data-still-present
       and marker parts of "Requesting deletion revokes access at once", the `auth.security.session_revoked` event for each revoked session, and a window
       outside 7 to 14 failing startup.
-- [ ] 5.3 Requesting deletion again while pending inserts no second marker, sends no
+- [x] 5.3 Requesting deletion again while pending inserts no second marker, sends no
       second notice and returns the original date, but **re-runs the idempotent
       revocations** of phase 1 (sessions, credentials, invitations), so that a first
       request that failed half-way is completed and a later reversal cannot leave a

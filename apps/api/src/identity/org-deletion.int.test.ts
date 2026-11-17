@@ -150,7 +150,11 @@ describe('identity.organization.delete requires the host tenant as confirmation 
     authRepository = createAuthRepository(authPool);
   }, 60_000);
 
-  function freshClient(window: { orgDeletionWindowDays?: number } = {}): {
+  /**
+   * `appPool` replaces the `tayzu_app` pool the router writes through (task 5.3 passes a pool
+   * with a failure seam on the credential revocation).
+   */
+  function freshClient(overrides: { orgDeletionWindowDays?: number; appPool?: Pool } = {}): {
     client: OrgDeleteClient;
     sender: ReturnType<typeof createRecordingEmailSender>;
   } {
@@ -171,7 +175,7 @@ describe('identity.organization.delete requires the host tenant as confirmation 
       }),
       invitationLinkBaseUrl: 'https://app.tayzu.test',
       appPool,
-      ...window,
+      ...overrides,
     });
     const client = createRouterClient(router, {
       context: (raw: Record<string, unknown>) => raw,
@@ -612,6 +616,307 @@ describe('identity.organization.delete requires the host tenant as confirmation 
       for (const text of t1.freeText) {
         expect(serialized, 'no organization name, slug or email').not.toContain(text);
       }
+    }, 60_000);
+  });
+
+  /**
+   * Task 5.3 (design D1: "Requesting it again while pending inserts no second marker, sends no
+   * second notice and returns the original date, but **re-runs the idempotent revocations**
+   * (sessions, credentials, invitations)").
+   *
+   * Scenario "Requesting deletion twice returns the original date" (spec, quoted):
+   * - GIVEN `t1` has a pending deletion
+   * - WHEN the deletion is requested again, in process
+   * - THEN no second marker or notice is created, the original purge date is returned, and
+   *   `catalog.security.org_deletion_repeated` is logged
+   * (The `org_deletion_repeated` event is task 5.4 and is asserted there, not here.)
+   *
+   * Scenario "A repeated request completes a half-failed first one" (spec, quoted):
+   * - GIVEN a first request that recorded the marker but failed before revoking a credential
+   * - WHEN the deletion is requested again
+   * - THEN the credential is revoked
+   *
+   * ## Expected response shape (named by this test; neither D6 nor the committed OpenAPI
+   * document, which carries paths, methods and `x-tayzu-risk` only, names an output)
+   *
+   * `identity.organization.delete` resolves to `{ purgeAfter: string }`: the marker's
+   * `purge_after` as an ISO 8601 timestamp with an explicit offset (`Date#toISOString()` form, or
+   * any ISO 8601 string denoting the same instant). The first request returns its own new
+   * marker's date; a repeat while pending returns the date of the pending marker. No other key.
+   *
+   * ## Failure seam
+   *
+   * No production seam is needed: the router's `appPool` option is a proxy of the `tayzu_app` pool
+   * whose clients fail the first `insert into machine_credential_revocation` (the revocation-list
+   * write of `revokeMachineCredential`, which runs before the `apikey` disable), so the marker is
+   * already committed and the credential is left live. The repeat runs on the real pool.
+   *
+   * ## Production symbols expected
+   *
+   * - `requestOrgDeletion` (`./org-deletion.ts`) returns `Promise<{ purgeAfter: string }>`, and
+   *   the handler of `identity.organization.delete` returns it. With a pending marker for the
+   *   tenant it inserts nothing (no unique-index violation reaches the caller), reads the pending
+   *   marker's `purge_after`, and still re-runs the session, credential and invitation
+   *   revocations.
+   *
+   * ## Why this fails right now
+   *
+   * The handler returns nothing, and a second request hits the one-pending-marker partial unique
+   * index, so it rejects before any revocation is re-run.
+   */
+  describe('a repeated request while pending (task 5.3)', () => {
+    const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+    const REVOCATION_INSERT = /insert\s+into\s+machine_credential_revocation/i;
+
+    interface PendingMarker {
+      readonly state: string;
+      readonly purge_after: Date;
+    }
+
+    async function markerRowsOf(tenantId: string): Promise<readonly PendingMarker[]> {
+      return await withTenantTransaction(appPool, { tenantId }, async (client) => {
+        const result = await client.query<PendingMarker>(
+          'select state, purge_after from tenant_deletion_marker where tenant_id = $1',
+          [tenantId],
+        );
+        return result.rows;
+      });
+    }
+
+    async function onlyMarkerOf(tenantId: string): Promise<PendingMarker> {
+      const rows = await markerRowsOf(tenantId);
+      expect(rows, 'exactly one deletion marker for the tenant').toHaveLength(1);
+      const [row] = rows;
+      if (row === undefined) {
+        throw new Error('no marker');
+      }
+      expect(row.state).toBe('pending');
+      return row;
+    }
+
+    /** The response carries the purge date of `marker`, as ISO 8601, and nothing else. */
+    function expectPurgeDateOf(response: unknown, marker: PendingMarker): void {
+      expect(response, 'the response is { purgeAfter }').toEqual({
+        purgeAfter: expect.any(String) as unknown,
+      });
+      const { purgeAfter } = response as { purgeAfter: string };
+      expect(purgeAfter, 'purgeAfter is an ISO 8601 timestamp').toMatch(ISO_8601);
+      expect(new Date(purgeAfter).getTime(), "purgeAfter is the marker's purge_after").toBe(
+        marker.purge_after.getTime(),
+      );
+    }
+
+    async function liveSessionIds(ids: readonly string[]): Promise<readonly string[]> {
+      const result = await authPool.query<{ id: string }>(
+        'select id from auth.session where id = any($1) and expires_at > now() order by id',
+        [ids],
+      );
+      return result.rows.map((row) => row.id);
+    }
+
+    /** The credential's `enabled` flag and whether it is on the revocation list. */
+    async function credentialState(
+      tenantId: string,
+      credentialId: string,
+    ): Promise<{ enabled: unknown; onRevocationList: boolean }> {
+      const enabled: unknown = (
+        await authPool.query<{ enabled: unknown }>(
+          'select enabled from auth.apikey where id = $1 and reference_id = $2',
+          [credentialId, tenantId],
+        )
+      ).rows[0]?.enabled;
+      const onRevocationList = await withTenantTransaction(
+        appPool,
+        { tenantId },
+        async (client) =>
+          (
+            await client.query(
+              'select 1 from machine_credential_revocation where tenant_id = $1 and credential_id = $2',
+              [tenantId, credentialId],
+            )
+          ).rows.length === 1,
+      );
+      return { enabled, onRevocationList };
+    }
+
+    async function invitationStatus(invitationId: string): Promise<unknown> {
+      const result = await authPool.query<{ status: unknown }>(
+        'select status from auth.invitation where id = $1',
+        [invitationId],
+      );
+      return result.rows[0]?.status;
+    }
+
+    async function seedCredential(tenant: Tenant): Promise<string> {
+      const credential = await createMachineCredential(auth, {
+        userId: tenant.adminId,
+        organizationId: tenant.tenantId,
+        name: `org-del-cred-${randomUUID().slice(0, 8)}`,
+        actorKind: 'integration',
+        metadata: { createdBy: tenant.adminId },
+      });
+      return credential.id;
+    }
+
+    /**
+     * The `tayzu_app` pool whose clients fail the first revocation-list insert they see, then
+     * behave normally. `fired` records that the seam was reached.
+     */
+    function poolFailingFirstRevocation(pool: Pool): { pool: Pool; fired: () => boolean } {
+      let armed = true;
+      let didFire = false;
+      const seamQuery =
+        (target: object) =>
+        async (...args: unknown[]): Promise<unknown> => {
+          const first = args[0];
+          const text =
+            typeof first === 'string'
+              ? first
+              : typeof first === 'object' && first !== null && 'text' in first
+                ? String(first.text)
+                : '';
+          if (armed && REVOCATION_INSERT.test(text)) {
+            armed = false;
+            didFire = true;
+            throw new Error('injected failure: credential revocation (task 5.3 seam)');
+          }
+          const query = Reflect.get(target, 'query', target) as (
+            ...a: unknown[]
+          ) => Promise<unknown>;
+          return await Reflect.apply(query, target, args);
+        };
+      const bindAll = <T extends object>(target: T, wrap: (property: string | symbol) => unknown) =>
+        new Proxy(target, {
+          get(inner, property) {
+            const wrapped = wrap(property);
+            if (wrapped !== undefined) {
+              return wrapped;
+            }
+            const value: unknown = Reflect.get(inner, property, inner);
+            return typeof value === 'function'
+              ? (value as (...a: unknown[]) => unknown).bind(inner)
+              : value;
+          },
+        });
+      const seamed = bindAll(pool, (property) => {
+        if (property === 'query') {
+          return seamQuery(pool);
+        }
+        if (property === 'connect') {
+          return async (): Promise<unknown> => {
+            const client = await pool.connect();
+            return bindAll(client, (clientProperty) =>
+              clientProperty === 'query' ? seamQuery(client) : undefined,
+            );
+          };
+        }
+        return undefined;
+      });
+      return { pool: seamed, fired: () => didFire };
+    }
+
+    async function deleteAs(client: OrgDeleteClient, tenant: Tenant): Promise<unknown> {
+      return await client.identity.organization.delete(
+        { query: { confirmation: tenant.tenantId } },
+        { context: adminContext(tenant) },
+      );
+    }
+
+    it('Requesting deletion twice returns the original date: the first request returns its purge date, the repeat inserts no second marker, returns the original purge date and sends no more notices than the first', async () => {
+      const t1 = await freshTenant();
+      const { client, sender } = freshClient();
+
+      // GIVEN `t1` has a pending deletion (the first request returns its own purge date).
+      const first = await deleteAs(client, t1);
+      const marker = await onlyMarkerOf(t1.tenantId);
+      expectPurgeDateOf(first, marker);
+      const sentAfterFirst = sender.sent.length;
+
+      // WHEN the deletion is requested again, in process.
+      const repeat = await deleteAs(client, t1);
+
+      // THEN no second marker is created: still one pending marker, its date unchanged.
+      const after = await onlyMarkerOf(t1.tenantId);
+      expect(after.purge_after.getTime(), 'the pending marker is unchanged').toBe(
+        marker.purge_after.getTime(),
+      );
+      // AND the original purge date is returned.
+      expectPurgeDateOf(repeat, marker);
+      // AND no second notice: the repeat sends nothing beyond what the first sent.
+      expect(sender.sent, 'the repeat sends no notice').toHaveLength(sentAfterFirst);
+    }, 60_000);
+
+    it('a repeated request re-runs the revocations: a session, a credential and an invitation of t1 created between the two requests are revoked, revoked and cancelled', async () => {
+      const t1 = await freshTenant();
+      const { client } = freshClient();
+      await deleteAs(client, t1);
+      const marker = await onlyMarkerOf(t1.tenantId);
+
+      // Between the two requests: a new session, a new credential and a new invitation of t1.
+      const lateSession = await seedSession(t1.adminId, t1.tenantId);
+      const lateCredential = await seedCredential(t1);
+      const lateInvitation = await seedInvitation(t1.tenantId, t1.adminId);
+      expect(await liveSessionIds([lateSession]), 'precondition: the session is live').toEqual([
+        lateSession,
+      ]);
+      expect(
+        await credentialState(t1.tenantId, lateCredential),
+        'precondition: the credential is live',
+      ).toEqual({ enabled: true, onRevocationList: false });
+      expect(
+        await invitationStatus(lateInvitation.id),
+        'precondition: the invitation is pending',
+      ).toBe('pending');
+
+      const repeat = await deleteAs(client, t1);
+
+      expectPurgeDateOf(repeat, marker);
+      expect(await liveSessionIds([lateSession]), 'the late session is revoked').toEqual([]);
+      expect(
+        await credentialState(t1.tenantId, lateCredential),
+        'the late credential is on the revocation list and disabled',
+      ).toEqual({ enabled: false, onRevocationList: true });
+      expect(await invitationStatus(lateInvitation.id), 'the late invitation is cancelled').toBe(
+        'canceled',
+      );
+      expect(await markerRowsOf(t1.tenantId), 'still one marker').toHaveLength(1);
+    }, 60_000);
+
+    it('A repeated request completes a half-failed first one: a first request that recorded the marker but failed on the credential revocation leaves the credential live, and the repeat revokes it', async () => {
+      const t1 = await freshTenant();
+      const [credentialId] = t1.credentialIds;
+      const [invitationId] = t1.invitationIds;
+      if (credentialId === undefined || invitationId === undefined) {
+        throw new Error('the tenant fixture seeds a credential and an invitation');
+      }
+      const seam = poolFailingFirstRevocation(appPool);
+
+      // GIVEN a first request that recorded the marker but failed before revoking a credential.
+      const { client: failing } = freshClient({ appPool: seam.pool });
+      await expect(deleteAs(failing, t1), 'the first request fails').rejects.toBeDefined();
+      expect(seam.fired(), 'the failure seam on the credential revocation was reached').toBe(true);
+      const marker = await onlyMarkerOf(t1.tenantId);
+      expect(
+        await credentialState(t1.tenantId, credentialId),
+        'the half-failed request left the credential live',
+      ).toEqual({ enabled: true, onRevocationList: false });
+
+      // WHEN the deletion is requested again.
+      const { client } = freshClient();
+      const repeat = await deleteAs(client, t1);
+
+      // THEN the credential is revoked.
+      expect(
+        await credentialState(t1.tenantId, credentialId),
+        'the repeat revoked the credential',
+      ).toEqual({ enabled: false, onRevocationList: true });
+      // AND the rest of phase 1 the first request never reached is completed too (design D1),
+      // with the original date returned and still one marker.
+      expect(await invitationStatus(invitationId), 'the pending invitation is cancelled').toBe(
+        'canceled',
+      );
+      expectPurgeDateOf(repeat, marker);
+      expect(await markerRowsOf(t1.tenantId), 'still one marker').toHaveLength(1);
     }, 60_000);
   });
 });

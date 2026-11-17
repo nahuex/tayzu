@@ -41,26 +41,78 @@ export interface RequestOrgDeletionOptions {
 }
 
 /**
+ * The answer of `identity.organization.delete`: the pending marker's `purge_after`, as ISO 8601.
+ */
+export interface OrgDeletionRequested {
+  readonly purgeAfter: string;
+}
+
+/** The pending marker of the tenant, and whether this call is the one that inserted it. */
+interface PendingMarker {
+  readonly purgeAfter: string;
+  readonly inserted: boolean;
+}
+
+/**
+ * Records the tenant's pending marker, or finds the one already pending (design D1, the
+ * repeated request). `on conflict ... do nothing` against the one-pending partial unique index
+ * makes two concurrent first requests end with one marker: the loser waits for the winner's
+ * commit, inserts nothing, and reads the winner's row. Fails closed if no pending row is found.
+ */
+async function recordPendingMarker(options: RequestOrgDeletionOptions): Promise<PendingMarker> {
+  const { tenantId } = options;
+  return await withTenantTransaction(options.appPool, { tenantId }, async (client) => {
+    // `purge_after` is computed in SQL from the transaction clock that also sets the
+    // `requested_at` default, so both come from one `now()` (design D1).
+    const inserted = await client.query<{ purge_after: Date }>(
+      `insert into tenant_deletion_marker (tenant_id, purge_after, requested_by)
+       values ($1, now() + make_interval(days => $2), $3)
+       on conflict (tenant_id) where state = 'pending' do nothing
+       returning purge_after`,
+      [tenantId, options.windowDays, options.actorId],
+    );
+    const insertedRow = inserted.rows[0];
+    if (insertedRow !== undefined) {
+      return { purgeAfter: new Date(insertedRow.purge_after).toISOString(), inserted: true };
+    }
+    const pending = await client.query<{ purge_after: Date }>(
+      `select purge_after from tenant_deletion_marker
+       where tenant_id = $1 and state = 'pending'`,
+      [tenantId],
+    );
+    const pendingRow = pending.rows[0];
+    if (pendingRow === undefined) {
+      throw new Error('org deletion: no pending marker after insert');
+    }
+    return { purgeAfter: new Date(pendingRow.purge_after).toISOString(), inserted: false };
+  });
+}
+
+/**
  * Phase 1 of org deletion (design D1 "Phase 1, request"). The confirmation must name the host
  * tenant; anything else fails with `CATALOG_VALIDATION_FAILED` before any write. Then, in
- * order: the marker (its own tenant transaction, as `tayzu_app`), the sessions, the machine
- * credentials, the pending invitations and the audit event. The marker cannot share a
- * transaction with the `auth` schema writes (another role and pool), so it commits first.
+ * order: the marker (its own tenant transaction, as `tayzu_app`), the audit event when this
+ * call inserted the marker, the sessions, the machine credentials and the pending invitations.
+ * The marker cannot share a transaction with the `auth` schema writes (another role and pool),
+ * so it commits first, and the event follows it at once so that no marker exists without its
+ * `requested` event. A repeat while pending inserts nothing and returns the pending date, but
+ * re-runs the idempotent revocations, completing a first request that failed half-way.
  */
-export async function requestOrgDeletion(options: RequestOrgDeletionOptions): Promise<void> {
+export async function requestOrgDeletion(
+  options: RequestOrgDeletionOptions,
+): Promise<OrgDeletionRequested> {
   const { tenantId, actorId } = options;
   if (options.confirmation !== tenantId) {
     throw new IdentityInputError();
   }
-  // `purge_after` is computed in SQL from the transaction clock that also sets the
-  // `requested_at` default, so both come from one `now()` (design D1).
-  await withTenantTransaction(options.appPool, { tenantId }, async (client) => {
-    await client.query(
-      `insert into tenant_deletion_marker (tenant_id, purge_after, requested_by)
-       values ($1, now() + make_interval(days => $2), $3)`,
-      [tenantId, options.windowDays, actorId],
-    );
-  });
+  const marker = await recordPendingMarker(options);
+  if (marker.inserted) {
+    emitIdentityEvent({
+      name: 'catalog.audit.org_deletion_requested',
+      severity: 'INFO',
+      attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': actorId },
+    });
+  }
   const revokedSessionUsers = await options.authRepository.deleteTenantSessions(tenantId);
   for (const userId of revokedSessionUsers) {
     emitSessionRevoked({ actorId: userId, tenantId, reason: 'admin_action' });
@@ -76,9 +128,5 @@ export async function requestOrgDeletion(options: RequestOrgDeletionOptions): Pr
   for (const invitation of await options.authRepository.pendingInvitationsOf(tenantId)) {
     await options.cancelInvitation(invitation.id);
   }
-  emitIdentityEvent({
-    name: 'catalog.audit.org_deletion_requested',
-    severity: 'INFO',
-    attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': actorId },
-  });
+  return { purgeAfter: marker.purgeAfter };
 }
