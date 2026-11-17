@@ -1198,3 +1198,30 @@ describe('reset limits, recovery caps and minimum response (044 task 4.2, D9)', 
     });
   });
 });
+
+/**
+ * Task 5.2 of `045-org-deletion-and-data-retention` (design D1 "Phase 1, request", Resolved
+ * decision Q21): the deletion window is between 7 and 14 days, configurable, validated at
+ * startup, 14 by default. The design names no variable; this test expects
+ * `ORG_DELETION_WINDOW_DAYS` read into `orgDeletionWindowDays: number`.
+ */
+describe('the org-deletion window (045 task 5.2, D1, Q21)', () => {
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['orgDeletionWindowDays'];
+
+  it('defaults to 14 days', () => {
+    expect(read(loadConfig(env()))).toBe(14);
+  });
+
+  it.each(['7', '10', '14'])('%s days is accepted', (value) => {
+    expect(read(loadConfig(env({ ORG_DELETION_WINDOW_DAYS: value })))).toBe(Number(value));
+  });
+
+  it.each(['6', '15', '0', '-7', '1.5', 'abc', ''])(
+    'ORG_DELETION_WINDOW_DAYS=%j fails startup naming the variable',
+    (value) => {
+      const error = thrown(() => loadConfig(env({ ORG_DELETION_WINDOW_DAYS: value })));
+      expect(error.message).toContain('ORG_DELETION_WINDOW_DAYS');
+    },
+  );
+});

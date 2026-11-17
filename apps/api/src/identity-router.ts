@@ -61,7 +61,11 @@ import {
 } from './identity/identity-target.js';
 import { readUserAttributes } from './identity/user-attributes.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
-import { ORG_DELETION_INPUT_SCHEMA, requestOrgDeletion } from './identity/org-deletion.js';
+import {
+  DEFAULT_ORG_DELETION_WINDOW_DAYS,
+  ORG_DELETION_INPUT_SCHEMA,
+  requestOrgDeletion,
+} from './identity/org-deletion.js';
 import {
   parseIdentityInput,
   type InputSchema,
@@ -173,6 +177,8 @@ export interface CreateIdentityRouterOptions {
   readonly userSync?: UserSyncAdapter;
   /** The shared MFA reset service behind `identity.users.resetMfa` (044 task 10.5). */
   readonly mfaReset?: MfaResetService;
+  /** Days from an org-deletion request to its purge (045 D1, Q21). Default 14. */
+  readonly orgDeletionWindowDays?: number;
 }
 
 export interface CreateUserInput {
@@ -506,7 +512,13 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
     tenantId: string,
     adminId: string,
     invitationId: string,
-    reason: 'admin_cancel' | 're_invite' | 'user_disabled' | 'inviter_disabled' | 'user_created',
+    reason:
+      | 'admin_cancel'
+      | 're_invite'
+      | 'user_disabled'
+      | 'inviter_disabled'
+      | 'user_created'
+      | 'org_deletion',
     cancel: () => Promise<unknown> = () => Promise.resolve(),
   ): Promise<void> {
     const attributes = {
@@ -751,11 +763,23 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             },
           },
           route: identityRoute('DELETE', '/v1/organization', { highRisk: true }),
-          handler: ({ context, input: rawInput }): Promise<void> => {
+          handler: async ({ context, input: rawInput }): Promise<void> => {
             const { query } = parseDetailedInput(SCHEMAS.deleteOrganization, rawInput);
-            return requestOrgDeletion({
-              tenantId: rawTenantId(context),
+            if (options.appPool === undefined) throw new IdentityInputError();
+            const tenantId = rawTenantId(context);
+            const adminId = (context['actor'] as { id: string }).id;
+            await requestOrgDeletion({
+              tenantId,
+              actorId: adminId,
               confirmation: query['confirmation'] as string,
+              windowDays: options.orgDeletionWindowDays ?? DEFAULT_ORG_DELETION_WINDOW_DAYS,
+              auth: options.auth,
+              appPool: options.appPool,
+              authRepository: options.authRepository,
+              cancelInvitation: (invitationId) =>
+                recordInvitationCancel(tenantId, adminId, invitationId, 'org_deletion', () =>
+                  options.authRepository.markInvitationCancelled(tenantId, invitationId),
+                ),
             });
           },
         }),

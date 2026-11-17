@@ -181,6 +181,8 @@ export interface CreateAppOptions {
   /** 043 task 14.18 (Q138): the credential and service-account caps handed to the identity router. */
   readonly credentialCap?: number;
   readonly serviceAccountCap?: number;
+  /** 045 D1 (Q21): the org-deletion window in days, validated by `loadConfig` (7 to 14). */
+  readonly orgDeletionWindowDays?: number;
   /**
    * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
@@ -475,6 +477,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           ...(options.serviceAccountCap === undefined
             ? {}
             : { serviceAccountCap: options.serviceAccountCap }),
+          ...(options.orgDeletionWindowDays === undefined
+            ? {}
+            : { orgDeletionWindowDays: options.orgDeletionWindowDays }),
         })),
   };
   // D4: the guard runs after context resolution and before the operation, for

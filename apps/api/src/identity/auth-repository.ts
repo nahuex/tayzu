@@ -101,6 +101,8 @@ export interface AuthRepository {
   pendingInvitationsByEmail: (tenantId: string, email: string) => Promise<InvitationRead[]>;
   /** The `pending` invitations of the tenant created by the inviter. */
   pendingInvitationsByInviter: (tenantId: string, inviterId: string) => Promise<InvitationRead[]>;
+  /** Every `pending` invitation of the tenant (045 D1, phase 1 of org deletion). */
+  pendingInvitationsOf: (tenantId: string) => Promise<InvitationRead[]>;
   listMembers: (tenantId: string) => Promise<MemberRead[]>;
   /** The owners and admins of the tenant other than `excludeUserId`, with their membership dates. */
   adminRecipients: (tenantId: string, excludeUserId: string) => Promise<AdminRecipientRead[]>;
@@ -116,6 +118,11 @@ export interface AuthRepository {
   deleteMember: (tenantId: string, memberId: string) => Promise<boolean>;
   /** Deletes the user's sessions whose active organization is the tenant; rows deleted. */
   deleteSessionsOf: (tenantId: string, userId: string) => Promise<number>;
+  /**
+   * Deletes every session whose active organization is the tenant (045 D1); the user id of
+   * each deleted session, one entry per session.
+   */
+  deleteTenantSessions: (tenantId: string) => Promise<string[]>;
   /**
    * Sets a `pending` invitation of the tenant to `accepted`; true when a row changed.
    * `db` lets the acceptance run it inside its own transaction.
@@ -388,6 +395,17 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       return result.rows.map(toInvitation);
     },
 
+    async pendingInvitationsOf(tenantId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<InvitationRow>(
+        `select ${INVITATION_COLUMNS} from auth.invitation
+         where organization_id = $1 and status = 'pending'
+         order by id`,
+        [tenantId],
+      );
+      return result.rows.map(toInvitation);
+    },
+
     async listMembers(tenantId) {
       requireTenant(tenantId);
       const result = await authPool.query<MemberRow>(
@@ -456,6 +474,15 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [tenantId, userId],
       );
       return result.rowCount ?? 0;
+    },
+
+    async deleteTenantSessions(tenantId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<{ user_id: string }>(
+        'delete from auth.session where active_organization_id = $1 returning user_id',
+        [tenantId],
+      );
+      return result.rows.map((row) => row.user_id);
     },
 
     async markInvitationAccepted(tenantId, invitationId, db = authPool) {

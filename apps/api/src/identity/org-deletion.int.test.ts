@@ -103,6 +103,8 @@ interface OrgDeleteClient {
 interface Tenant {
   readonly tenantId: string;
   readonly adminId: string;
+  /** The organization's name and slug and every seeded email: free text no signal may carry. */
+  readonly freeText: readonly string[];
   readonly sessionIds: readonly string[];
   readonly credentialIds: readonly string[];
   readonly invitationIds: readonly string[];
@@ -148,7 +150,7 @@ describe('identity.organization.delete requires the host tenant as confirmation 
     authRepository = createAuthRepository(authPool);
   }, 60_000);
 
-  function freshClient(): {
+  function freshClient(window: { orgDeletionWindowDays?: number } = {}): {
     client: OrgDeleteClient;
     sender: ReturnType<typeof createRecordingEmailSender>;
   } {
@@ -169,6 +171,7 @@ describe('identity.organization.delete requires the host tenant as confirmation 
       }),
       invitationLinkBaseUrl: 'https://app.tayzu.test',
       appPool,
+      ...window,
     });
     const client = createRouterClient(router, {
       context: (raw: Record<string, unknown>) => raw,
@@ -194,14 +197,18 @@ describe('identity.organization.delete requires the host tenant as confirmation 
     return id;
   }
 
-  async function seedInvitation(tenantId: string, inviterId: string): Promise<string> {
+  async function seedInvitation(
+    tenantId: string,
+    inviterId: string,
+  ): Promise<{ id: string; email: string }> {
     const id = `inv-${randomUUID()}`;
+    const email = `org-del-invitee-${randomUUID()}@example.test`;
     await authPool.query(
       `insert into auth.invitation (id, organization_id, email, role, status, expires_at, created_at, inviter_id)
        values ($1, $2, $3, 'member', 'pending', now() + interval '2 days', now(), $4)`,
-      [id, tenantId, `org-del-invitee-${randomUUID()}@example.test`, inviterId],
+      [id, tenantId, email, inviterId],
     );
-    return id;
+    return { id, email };
   }
 
   /** A fresh organization with an owner, an admin, two sessions, a credential and an invitation. */
@@ -235,13 +242,20 @@ describe('identity.organization.delete requires the host tenant as confirmation 
       actorKind: 'integration',
       metadata: { createdBy: admin.userId },
     });
-    const invitationId = await seedInvitation(org.id, admin.userId);
+    const invitation = await seedInvitation(org.id, admin.userId);
     return {
       tenantId: org.id,
       adminId: admin.userId,
+      freeText: [
+        `Org Deletion ${suffix}`,
+        `org-del-${suffix}`,
+        `org-del-owner-${suffix}@example.test`,
+        `org-del-admin-${suffix}@example.test`,
+        invitation.email,
+      ],
       sessionIds,
       credentialIds: [credential.id],
-      invitationIds: [invitationId],
+      invitationIds: [invitation.id],
     };
   }
 
@@ -387,4 +401,217 @@ describe('identity.organization.delete requires the host tenant as confirmation 
     expect(outcome, 'the procedure exists and was called').not.toBeInstanceOf(TypeError);
     expect((outcome as { code?: unknown } | undefined)?.code).not.toBe('CATALOG_VALIDATION_FAILED');
   }, 60_000);
+  /**
+   * Task 5.2. Scenario "Requesting deletion revokes access at once" (spec, quoted):
+   * - GIVEN organization `t1` with blueprints, entities, members and API credentials
+   * - WHEN an admin with a fresh step-up verification confirms deletion of `t1` by its identifier
+   * - THEN every member's session and every `t1` credential, human or machine, is rejected within
+   *   seconds, a marker with a purge date 7 to 14 days away exists, and the data is still there
+   *
+   * 5.2 asserts the marker and the data-still-present parts, plus what phase 1 itself does
+   * (design D1): sessions whose active organization is `t1` revoked (one
+   * `auth.security.session_revoked`, reason `admin_action`, each), `t1`'s credentials on the
+   * revocation list, pending invitations cancelled, and `catalog.audit.org_deletion_requested`
+   * once with the admin as `tayzu.actor.id`. The rejection of the principals is task 5.6.
+   * Step-up runs only in the OpenAPI interceptor (D6), so in process it is not exercised.
+   */
+  describe('phase 1 records the marker and revokes access (task 5.2)', () => {
+    interface CatalogCounts {
+      readonly blueprints: number;
+      readonly entities: number;
+    }
+
+    async function catalogCounts(tenantId: string): Promise<CatalogCounts> {
+      return await withTenantTransaction(appPool, { tenantId }, async (client) => {
+        const result = await client.query<{ blueprints: number; entities: number }>(
+          `select (select count(*)::int from catalog_blueprint where tenant_id = $1) as blueprints,
+                  (select count(*)::int from catalog_entity where tenant_id = $1) as entities`,
+          [tenantId],
+        );
+        const row = result.rows[0];
+        return { blueprints: row?.blueprints ?? 0, entities: row?.entities ?? 0 };
+      });
+    }
+
+    interface MarkerRow {
+      readonly state: string;
+      readonly requested_by: string;
+      readonly exact_window: boolean;
+      readonly requested_in_call: boolean;
+    }
+
+    async function markersOf(
+      tenantId: string,
+      windowDays: number,
+      calledAt: Date,
+    ): Promise<readonly MarkerRow[]> {
+      return await withTenantTransaction(appPool, { tenantId }, async (client) => {
+        const result = await client.query<MarkerRow>(
+          `select state, requested_by,
+                  purge_after = requested_at + make_interval(days => $2) as exact_window,
+                  requested_at between $3 and clock_timestamp() as requested_in_call
+             from tenant_deletion_marker where tenant_id = $1`,
+          [tenantId, windowDays, calledAt],
+        );
+        return result.rows;
+      });
+    }
+
+    async function databaseNow(): Promise<Date> {
+      const result = await authPool.query<{ now: Date }>('select clock_timestamp() as now');
+      const now = result.rows[0]?.now;
+      if (now === undefined) {
+        throw new Error('no database clock');
+      }
+      return now;
+    }
+
+    async function liveSessionsIn(tenantId: string): Promise<readonly string[]> {
+      const result = await authPool.query<{ id: string }>(
+        'select id from auth.session where active_organization_id = $1 and expires_at > now() order by id',
+        [tenantId],
+      );
+      return result.rows.map((row) => row.id);
+    }
+
+    async function liveSessionIds(ids: readonly string[]): Promise<readonly string[]> {
+      const result = await authPool.query<{ id: string }>(
+        'select id from auth.session where id = any($1) and expires_at > now() order by id',
+        [ids],
+      );
+      return result.rows.map((row) => row.id);
+    }
+
+    async function requestDeletion(
+      tenant: Tenant,
+      window: { orgDeletionWindowDays?: number } = {},
+    ): Promise<Date> {
+      const calledAt = await databaseNow();
+      const { client } = freshClient(window);
+      await client.identity.organization.delete(
+        { query: { confirmation: tenant.tenantId } },
+        { context: adminContext(tenant) },
+      );
+      return calledAt;
+    }
+
+    it('Requesting deletion revokes access at once: one pending marker with purge_after = requested_at + 14 days (the default window) requested by the admin, and the catalog data and members are still there', async () => {
+      // GIVEN organization `t1` with blueprints, entities, members and API credentials.
+      const t1 = await freshTenant();
+      const t2 = await freshTenant();
+      const catalogBefore = await catalogCounts(t1.tenantId);
+      expect(catalogBefore.blueprints, 'precondition: t1 has blueprints').toBeGreaterThan(0);
+      expect(catalogBefore.entities, 'precondition: t1 has entities').toBeGreaterThan(0);
+      const before = await stateOf(t1);
+      expect(before.members.length, 'precondition: t1 has members').toBeGreaterThan(1);
+      expect(before.credentials.length, 'precondition: t1 has API credentials').toBeGreaterThan(0);
+      const t2Before = await stateOf(t2);
+      const t2CatalogBefore = await catalogCounts(t2.tenantId);
+
+      // WHEN an admin confirms deletion of `t1` by its identifier (default window).
+      const calledAt = await requestDeletion(t1);
+
+      // THEN exactly one pending marker for `t1`, purge date the default 14 days after the
+      // request, requested by the admin's opaque id.
+      expect(await markersOf(t1.tenantId, 14, calledAt)).toEqual([
+        {
+          state: 'pending',
+          requested_by: t1.adminId,
+          exact_window: true,
+          requested_in_call: true,
+        },
+      ]);
+      // AND the data is still there: blueprints, entities and members unchanged.
+      expect(await catalogCounts(t1.tenantId), "t1's catalog data is still there").toEqual(
+        catalogBefore,
+      );
+      expect((await stateOf(t1)).members, "t1's members are still there").toEqual(before.members);
+      // AND nothing of another tenant changed.
+      expect(await stateOf(t2), 'nothing of t2 changed').toEqual(t2Before);
+      expect(await catalogCounts(t2.tenantId)).toEqual(t2CatalogBefore);
+    }, 60_000);
+
+    it('the purge date follows the configured window: with orgDeletionWindowDays 7 the marker has purge_after = requested_at + 7 days', async () => {
+      const t1 = await freshTenant();
+      const calledAt = await requestDeletion(t1, { orgDeletionWindowDays: 7 });
+      expect(await markersOf(t1.tenantId, 7, calledAt)).toEqual([
+        {
+          state: 'pending',
+          requested_by: t1.adminId,
+          exact_window: true,
+          requested_in_call: true,
+        },
+      ]);
+    }, 60_000);
+
+    it("revokes every session whose active organization is t1, each with one auth.security.session_revoked (admin_action) in t1, and leaves another tenant's sessions and the admin's session in another organization untouched", async () => {
+      const t1 = await freshTenant();
+      const t2 = await freshTenant();
+      // A session of t1's admin whose active organization is t2 is not a session of t1.
+      const adminElsewhere = await seedSession(t1.adminId, t2.tenantId);
+      const t1Sessions = await liveSessionsIn(t1.tenantId);
+      expect(t1Sessions, 'precondition: t1 sessions are live').toEqual(
+        expect.arrayContaining([...t1.sessionIds]),
+      );
+      const t2Sessions = await liveSessionsIn(t2.tenantId);
+      expect(t2Sessions, 'precondition: t2 sessions are live').toEqual(
+        expect.arrayContaining([...t2.sessionIds, adminElsewhere]),
+      );
+
+      await requestDeletion(t1);
+
+      expect(await liveSessionsIn(t1.tenantId), 'no live session of t1 is left').toEqual([]);
+      expect(
+        await liveSessionIds(t2Sessions),
+        "t2's sessions and the admin's session in t2 are untouched",
+      ).toEqual([...t2Sessions].sort());
+      const revoked = await logRecordsFor(REVOKED_EVENT, [t1.tenantId, t2.tenantId]);
+      expect(revoked, 'one session_revoked per revoked session, all in t1').toHaveLength(
+        t1Sessions.length,
+      );
+      for (const record of revoked) {
+        expect(record.attributes['tayzu.tenant.id']).toBe(t1.tenantId);
+        expect(record.attributes['tayzu.auth.revocation.reason']).toBe('admin_action');
+      }
+    }, 60_000);
+
+    it("revokes every t1 credential through the revocation list and cancels t1's pending invitations; another tenant's credentials and invitations are untouched", async () => {
+      const t1 = await freshTenant();
+      const t2 = await freshTenant();
+      const t2Before = await stateOf(t2);
+
+      await requestDeletion(t1);
+
+      const after = await stateOf(t1);
+      expect(
+        (after.revocations as { credential_id: string }[]).map((row) => row.credential_id),
+        'every t1 credential is on the revocation list',
+      ).toEqual([...t1.credentialIds].sort());
+      expect(after.invitations, "t1's pending invitations are cancelled").toEqual(
+        t1.invitationIds.map((id): unknown => expect.objectContaining({ id, status: 'canceled' })),
+      );
+      const t2After = await stateOf(t2);
+      expectIntact(t2, t2After);
+      expect(t2After, 'nothing of t2 changed').toEqual(t2Before);
+    }, 60_000);
+
+    it('logs catalog.audit.org_deletion_requested once, with tayzu.tenant.id and the admin as tayzu.actor.id and no free text', async () => {
+      const t1 = await freshTenant();
+      const t2 = await freshTenant();
+
+      await requestDeletion(t1);
+
+      const requested = await logRecordsFor(REQUESTED_EVENT, [t1.tenantId, t2.tenantId]);
+      expect(requested).toHaveLength(1);
+      const record = requested[0];
+      expect(record?.attributes).toEqual({
+        'tayzu.tenant.id': t1.tenantId,
+        'tayzu.actor.id': t1.adminId,
+      });
+      const serialized = JSON.stringify({ body: record?.body, attributes: record?.attributes });
+      for (const text of t1.freeText) {
+        expect(serialized, 'no organization name, slug or email').not.toContain(text);
+      }
+    }, 60_000);
+  });
 });

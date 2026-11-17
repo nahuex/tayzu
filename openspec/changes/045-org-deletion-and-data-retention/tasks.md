@@ -287,7 +287,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       design D6). Verify: `org-deletion.int.test.ts` covers "Org deletion targets only
       the host tenant" and a missing or wrong confirmation returning
       `CATALOG_VALIDATION_FAILED`, asserting nothing changes.
-- [ ] 5.2 Phase 1 records the marker (as `tayzu_app`, insert-only) with a
+- [x] 5.2 Phase 1 records the marker (as `tayzu_app`, insert-only) with a
       `purge_after` inside the configured window (7 to 14 days, validated at startup,
       default 14; computed in SQL, 2.1), revokes every session whose active organization
       is the tenant (each revocation emitting `auth.security.session_revoked` with the
