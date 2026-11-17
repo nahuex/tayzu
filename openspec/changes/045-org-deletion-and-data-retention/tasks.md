@@ -244,7 +244,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       name or any value read from input). Verify: `resource-kinds.test.ts` covers the kind
       existing, and `identity-attributes.test.ts` covers the resource tenant and the
       resource id of `organization.delete` being the host tenant id.
-- [ ] 3.2 (Checkpoint 3) Role ceilings: `policies/role_policies/admin.yaml` lists
+- [x] 3.2 (Checkpoint 3) Role ceilings: `policies/role_policies/admin.yaml` lists
       `organization` explicitly, `member.yaml` states the ceiling if one is needed, and
       `role_policies_test.yaml` is extended (the shared `testdata/` gains the kind). A
       role-policy allow does nothing without a resource-policy allow, so the

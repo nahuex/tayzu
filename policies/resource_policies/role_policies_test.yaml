@@ -249,6 +249,33 @@ tests:
         resource: credential_list_t1
         actions: *new_kinds_denied
 
+  # 045 task 3.2 (design D6, Resolved decision Q27): role ceilings of the kind
+  # `organization`. The admin ceiling lists `delete`, but a role-policy allow does
+  # nothing without a resource-policy allow, which arrives in 3.3
+  # (organization.yaml), so the admin-allowed assertion is made there. Here: a
+  # member is denied, and so is an admin of another tenant.
+  - name: Member is denied organization.delete
+    input:
+      principals: [member_t1]
+      resources: [organization_t1]
+      actions: [delete]
+    expected:
+      - principal: member_t1
+        resource: organization_t1
+        actions:
+          delete: EFFECT_DENY
+
+  - name: Admin of another tenant is denied organization.delete
+    input:
+      principals: [admin_t2]
+      resources: [organization_t1]
+      actions: [delete]
+    expected:
+      - principal: admin_t2
+        resource: organization_t1
+        actions:
+          delete: EFFECT_DENY
+
   - name: Member cannot delete an entity by role alone
     input:
       principals: [member_t1]
