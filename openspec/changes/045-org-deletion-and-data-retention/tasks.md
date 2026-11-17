@@ -342,7 +342,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 6. Phase 2: the purge
 
-- [ ] 6.1 Purge step 1 (`tayzu_purge`): ordered deletes of the tenant's
+- [x] 6.1 Purge step 1 (`tayzu_purge`): ordered deletes of the tenant's
       relations, entities, blueprints and other `catalog_*` rows that respect the
       `RESTRICT` foreign keys, and the append-only rows, which the amended trigger and the policies admit for
       `tayzu_purge` and a due tenant (2.2),
