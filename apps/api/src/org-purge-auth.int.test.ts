@@ -47,18 +47,65 @@
  * ): Promise<unknown>; // the resolved value is not asserted here
  * ```
  *
+ * Task 6.3 (design D2, Resolved decision Q79) extends this file: step 2 logs
+ * `catalog.audit.org_deletion_completed` (INFO, exactly `tayzu.tenant.id` and
+ * `tayzu.identity.org_deletion.entities_removed`) immediately before the
+ * organization row is deleted, covering the AND clause of the spec scenario:
+ *
+ * > #### Scenario: Purge removes tenant data after the window
+ * >
+ * > - **GIVEN** `t1`'s purge date has passed
+ * > - **WHEN** the purge job runs
+ * > - **THEN** `t1`'s catalog entities, blueprints, relations, change events, credential
+ * >   revocation rows, invitations, API keys, members and organization row are gone
+ * > - **AND** a `catalog.audit.org_deletion_completed` event was logged before the
+ * >   organization row was removed
+ *
+ * and that the record is exported by the time the purge's run function
+ * returns (it runs inside `runScript`, whose `finally` flushes through
+ * `RunScriptOptions.telemetry`). The telemetry harness registers before
+ * `../scripts/purge-job.js` loads (import order, design D1 of `043`). Expected
+ * additions to `apps/api/scripts/purge-job.ts`:
+ *
+ * ```ts
+ * export interface PurgeAuthOptions {
+ *   readonly beforeUserDeleted?: (userId: string) => void | Promise<void>;
+ *   // Step 1's `CatalogPurgeResult.entitiesRemoved`, carried into the record's
+ *   // `tayzu.identity.org_deletion.entities_removed`; `runPurge` passes it.
+ *   readonly entitiesRemoved?: number;
+ *   // Ordering seam: awaited once, after `catalog.audit.org_deletion_completed`
+ *   // is emitted and immediately before `delete from auth.organization`.
+ *   readonly beforeOrganizationDeleted?: () => void | Promise<void>;
+ * }
+ * export interface RunPurgeOptions {
+ *   readonly pool: Pool; // a `tayzu_purge` pool
+ *   // The tenants to purge; task 6.6 defaults it to every due tenant. Tests pass
+ *   // their own, so a run never purges another test file's due tenant.
+ *   readonly tenantIds?: readonly string[];
+ *   readonly env?: RunScriptOptions['env'];
+ *   readonly telemetry?: Telemetry; // forwarded to `runScript`
+ * }
+ * // Inside `runScript('purge-job', ..., { telemetry, ... })`: for each tenant,
+ * // `purgeCatalogStep`, then `purgeAuthStep` with step 1's `entitiesRemoved`.
+ * export function runPurge(options: RunPurgeOptions): Promise<unknown>;
+ * ```
+ *
  * Seeding and every read go through the owner pool (it alone can write a due
  * marker and it bypasses row-level security, so it sees what really
  * happened). Every id is random per run; other test files' due markers share
  * the database, so every assertion is scoped to this file's rows.
  */
+// Load-bearing import order (design D1 of `043`): the telemetry harness registers before
+// `../scripts/purge-job.js` (and anything it loads) obtains its logger.
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 
 import type { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
 import { getOwnerPool, getPurgeTestDatabase } from '../../../packages/db/src/harness.js';
-import { purgeAuthStep } from '../scripts/purge-job.js';
+import { purgeAuthStep, runPurge } from '../scripts/purge-job.js';
+import type { Telemetry } from './telemetry.js';
 
 type AuthTable =
   | 'organization'
@@ -663,5 +710,146 @@ describe('Users with no other membership are removed, others are kept (Better Au
     expect(await expectPurgedMarker(world.t1, runStartedAt)).toBe(first);
     await expectGone(rowsToBeDeleted(world), 't1 after the second run');
     await expectPresent(rowsToBeKept(world), 'kept rows after the second run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6.3: `catalog.audit.org_deletion_completed`.
+
+const COMPLETED_EVENT = 'catalog.audit.org_deletion_completed';
+
+function registeredHarness(): TelemetryTestHarness {
+  if ('error' in registration) {
+    throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+      cause: registration.error,
+    });
+  }
+  return registration.harness;
+}
+
+/** The exported completion records of `tenantId` (other tests of this file purge other tenants). */
+function completedRecords(harness: TelemetryTestHarness, tenantId: string) {
+  return harness.logExporter
+    .getFinishedLogRecords()
+    .filter(
+      (record) =>
+        record.eventName === COMPLETED_EVENT && record.attributes['tayzu.tenant.id'] === tenantId,
+    );
+}
+
+/** One blueprint and `count` entities of `tenantId`, through the owner pool. */
+async function seedCatalogEntities(tenantId: string, count: number): Promise<void> {
+  const actorId = `actor-${randomUUID()}`;
+  const blueprintId = randomUUID();
+  await ownerQuery(
+    `insert into catalog_blueprint
+       (id, tenant_id, identifier, title, schema, version, created_at, created_by_type,
+        created_by_id, updated_at, updated_by_type, updated_by_id)
+     values ($1, $2, 'service', '"Service"'::jsonb, '{}'::jsonb, 1, now(), 'user', $3,
+             now(), 'user', $3)`,
+    [blueprintId, tenantId, actorId],
+  );
+  for (let index = 0; index < count; index += 1) {
+    await ownerQuery(
+      `insert into catalog_entity
+         (id, tenant_id, blueprint_id, identifier, title, spec_properties, generation, version,
+          created_at, created_by_type, created_by_id, updated_at, updated_by_type, updated_by_id)
+       values ($1, $2, $3, $4, $4, '{}'::jsonb, 1, 1, now(), 'user', $5, now(), 'user', $5)`,
+      [randomUUID(), tenantId, blueprintId, `entity-${String(index)}`, actorId],
+    );
+  }
+}
+
+async function ownerEntityCount(tenantId: string): Promise<number> {
+  const owner = await getOwnerPool();
+  const { rows } = await owner.query<{ count: number }>(
+    'select count(*)::int as count from catalog_entity where tenant_id = $1',
+    [tenantId],
+  );
+  return rows[0]?.count ?? -1;
+}
+
+/** The free text of the world: the organization's slug and the users' emails. */
+function freeText(world: World): string[] {
+  return [`slug-${world.t1}`, `${world.leaverId}@example.test`, `${world.stayerId}@example.test`];
+}
+
+function expectCompletedRecord(
+  harness: TelemetryTestHarness,
+  world: World,
+  entitiesRemoved: number,
+): void {
+  const records = completedRecords(harness, world.t1);
+  expect(records, `exactly one ${COMPLETED_EVENT} for t1`).toHaveLength(1);
+  const [record] = records;
+  expect(record?.severityText, 'the declared severity').toBe('INFO');
+  expect(record?.attributes, 'exactly the declared attributes').toEqual({
+    'tayzu.tenant.id': world.t1,
+    'tayzu.identity.org_deletion.entities_removed': entitiesRemoved,
+  });
+  const serialized = JSON.stringify({ body: record?.body, attributes: record?.attributes });
+  for (const text of freeText(world)) {
+    expect(serialized, 'no organization slug or user email').not.toContain(text);
+  }
+}
+
+describe('Purge removes tenant data after the window: catalog.audit.org_deletion_completed is logged before the organization row is removed (task 6.3)', () => {
+  it("step 2 logs exactly one INFO catalog.audit.org_deletion_completed with exactly the tenant and step 1's entities_removed and no free text, while the organization row still exists (beforeOrganizationDeleted seam), and the row is gone afterwards", async () => {
+    const harness = registeredHarness();
+    const world = await seedWorld();
+    const atSeam: {
+      readonly records: number;
+      readonly organizationPresent: boolean;
+      readonly membersPresent: boolean;
+    }[] = [];
+
+    await purgeAuthStep(await purgePool(), world.t1, {
+      entitiesRemoved: 7,
+      beforeOrganizationDeleted: async () => {
+        await harness.forceFlush();
+        atSeam.push({
+          records: completedRecords(harness, world.t1).length,
+          organizationPresent: await ownerHas(world.t1Organization),
+          membersPresent:
+            (await ownerHas(world.leaverT1Member)) || (await ownerHas(world.stayerT1Member)),
+        });
+      },
+    });
+
+    expect(
+      atSeam,
+      'immediately before the organization delete: the record is exported, the organization row still exists and the members are already gone',
+    ).toEqual([{ records: 1, organizationPresent: true, membersPresent: false }]);
+    await expectGone([world.t1Organization], 'the organization row after the step');
+    await harness.forceFlush();
+    expectCompletedRecord(harness, world, 7);
+  });
+
+  it('runPurge runs the due tenant through both steps inside runScript: the record carries the entities step 1 removed and is exported by the time runPurge returns', async () => {
+    const harness = registeredHarness();
+    const world = await seedWorld(false);
+    await seedCatalogEntities(world.t1, 3);
+    let returned = false;
+    const atShutdown: { readonly records: number; readonly returned: boolean }[] = [];
+    const telemetry: Telemetry = {
+      shutdown: async () => {
+        await harness.forceFlush();
+        atShutdown.push({ records: completedRecords(harness, world.t1).length, returned });
+      },
+    };
+    const runStartedAt = await ownerNow();
+
+    await runPurge({ pool: await purgePool(), tenantIds: [world.t1], telemetry });
+    returned = true;
+
+    expect(
+      atShutdown,
+      "runScript's final flush ran once, before runPurge returned, with the record already emitted",
+    ).toEqual([{ records: 1, returned: false }]);
+    expectCompletedRecord(harness, world, 3);
+    expect(await ownerEntityCount(world.t1), "t1's catalog entities").toBe(0);
+    await expectGone(rowsToBeDeleted(world), 't1 after the run');
+    await expectPresent(rowsToBeKept(world), 'kept rows after the run');
+    await expectPurgedMarker(world.t1, runStartedAt);
   });
 });

@@ -3,7 +3,11 @@
  * tenant's window has passed, in two idempotent steps (catalog rows, then Better Auth
  * rows). Filled in by the tasks of group 6; started by the `identity:purge` package script.
  */
+import { emitIdentityEvent } from '@tayzu/auth';
 import type { Pool, PoolClient } from 'pg';
+
+import type { Telemetry } from '../src/telemetry.js';
+import { runScript, type RunScriptOptions } from './run-script.js';
 
 /** The seven tenant tables step 1 empties (migration `0013` names them one by one). */
 export type CatalogPurgeTable =
@@ -111,6 +115,16 @@ export interface PurgeAuthOptions {
    * lock. A throw interrupts the step before the marker is written.
    */
   readonly beforeUserDeleted?: (userId: string) => void | Promise<void>;
+  /**
+   * Step 1's `CatalogPurgeResult.entitiesRemoved`, carried into
+   * `catalog.audit.org_deletion_completed`. Defaults to 0.
+   */
+  readonly entitiesRemoved?: number;
+  /**
+   * Ordering seam: awaited once, after `catalog.audit.org_deletion_completed` is emitted and
+   * immediately before the organization row is deleted.
+   */
+  readonly beforeOrganizationDeleted?: () => void | Promise<void>;
 }
 
 /**
@@ -151,8 +165,9 @@ const USER_DELETES: readonly string[] = [
 
 /**
  * The organization-keyed deletes after the users (`$1` is the tenant id): API keys, the
- * step-up markers and sessions still active in the tenant (those of users who stay), the
- * members, and the organization row last. Each commits on its own; a rerun finds the rest.
+ * step-up markers and sessions still active in the tenant (those of users who stay), and
+ * the members. Each commits on its own; a rerun finds the rest. The organization row is
+ * deleted after them, once the completion event is emitted.
  */
 const ORGANIZATION_DELETES: readonly string[] = [
   'delete from auth.apikey where reference_id = $1',
@@ -163,7 +178,6 @@ const ORGANIZATION_DELETES: readonly string[] = [
     )`,
   'delete from auth.session where active_organization_id = $1',
   'delete from auth.member where organization_id = $1',
-  'delete from auth.organization where id = $1',
 ];
 
 /**
@@ -276,6 +290,19 @@ export async function purgeAuthStep(
     await pool.query(sql, [tenantId]);
   }
 
+  // The durable record of the purge, emitted by the purge itself right before the
+  // organization row goes (design D2), not from Better Auth's `afterDeleteOrganization`.
+  emitIdentityEvent({
+    name: 'catalog.audit.org_deletion_completed',
+    severity: 'INFO',
+    attributes: {
+      'tayzu.tenant.id': tenantId,
+      'tayzu.identity.org_deletion.entities_removed': options.entitiesRemoved ?? 0,
+    },
+  });
+  await options.beforeOrganizationDeleted?.();
+  await pool.query('delete from auth.organization where id = $1', [tenantId]);
+
   const recorded = await pool.query(
     `update tenant_deletion_marker
         set auth_purged_at = now(), state = 'purged'
@@ -285,4 +312,33 @@ export async function purgeAuthStep(
   if (recorded.rowCount !== 1) {
     throw new Error('purge step 2: the deletion marker could not be recorded');
   }
+}
+
+export interface RunPurgeOptions {
+  /** A `tayzu_purge` pool. */
+  readonly pool: Pool;
+  /** The tenants this pass purges. */
+  readonly tenantIds?: readonly string[];
+  readonly env?: RunScriptOptions['env'];
+  /** Forwarded to `runScript`. */
+  readonly telemetry?: Telemetry;
+}
+
+/**
+ * One purge pass inside `runScript`, whose final flush exports the completion events before
+ * this resolves (`043` task 2.0, Resolved decision Q79): for each tenant, step 1, then step 2
+ * with the entities step 1 removed.
+ */
+export async function runPurge(options: RunPurgeOptions): Promise<void> {
+  const { pool, tenantIds = [] } = options;
+  await runScript(
+    'purge-job',
+    async () => {
+      for (const tenantId of tenantIds) {
+        const { entitiesRemoved } = await purgeCatalogStep(pool, tenantId);
+        await purgeAuthStep(pool, tenantId, { entitiesRemoved });
+      }
+    },
+    { env: options.env, telemetry: options.telemetry },
+  );
 }

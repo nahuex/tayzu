@@ -378,7 +378,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       an invitation the removed user sent leaving no token or shed record behind,
       and a remaining session of a staying user whose active organization is the
       purged tenant being deleted.
-- [ ] 6.3 `catalog.audit.org_deletion_completed` is emitted by the purge
+- [x] 6.3 `catalog.audit.org_deletion_completed` is emitted by the purge
       immediately before the organization row is deleted (not from Better Auth's
       `afterDeleteOrganization`), and the script flushes it before it exits (the
       helper of `043`'s task 2.0, Resolved decision Q79). Verify: `org-purge-auth.int.test.ts`
