@@ -633,7 +633,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       migrations `0013` and `0014` carry the grants. The amendment is a dated addendum that
       links ADR-0019. Verify: `pnpm lint` passes and the ADR names the five roles and the
       Better Auth row-level security, with a link to ADR-0019.
-- [ ] 10.3 Extend `docs/security/data-retention.md` (which `043` created for its own
+- [x] 10.3 Extend `docs/security/data-retention.md` (which `043` created for its own
       operational policies and `044` extended, with its hand-off note to this change) with
       the retention policy and the erasure statement, replacing its sentence that nothing
       about org deletion is stated yet and marking `044`'s hand-off note as closed by
