@@ -47,3 +47,19 @@ describe('identity OpenAPI risk markers (task 14.2)', () => {
     }
   });
 });
+
+/**
+ * 045 task 8.2 (design D6): scenario "The route is marked high-risk and
+ * documented". Its drift-check half is in `identity-openapi.test.ts`.
+ */
+describe('identity OpenAPI: the org-deletion route (045 task 8.2)', () => {
+  const document = JSON.parse(readFileSync(committedPath, 'utf8')) as Document;
+
+  it('The route is marked high-risk and documented', () => {
+    const operation = document.paths['/v1/organization']?.['delete'];
+
+    expect(operation, 'delete /v1/organization is in the committed document').toBeDefined();
+    expect(operation?.['operationId']).toBe('identity.organization.delete');
+    expect(operation?.['x-tayzu-risk']).toBe('high');
+  });
+});

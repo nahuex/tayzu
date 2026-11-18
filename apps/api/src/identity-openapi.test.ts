@@ -221,3 +221,65 @@ describe('identity OpenAPI document: the admin MFA reset route (044 task 10.5, d
     expect(operation?.['x-tayzu-risk']).toBe('high');
   });
 });
+
+/**
+ * 045 task 8.2 (design D6), scenario "The route is marked high-risk and
+ * documented": the drift check fails when `DELETE /v1/organization` changes
+ * without regenerating the document, and passes on the regenerated file. The
+ * scratch edits are made on a temporary copy, as in the 14.1c cases above.
+ */
+describe('identity OpenAPI document: the org-deletion route drift check (045 task 8.2)', () => {
+  it('The route is marked high-risk and documented: contract:check fails after the route path is changed in a scratch edit', async () => {
+    const document = structuredClone(
+      (await generateIdentityOpenApiDocument()) as unknown as Document,
+    );
+    const organizationRoute = document.paths['/v1/organization'];
+    expect(organizationRoute?.['delete']).toBeDefined();
+    document.paths['/v1/organizations'] = organizationRoute as Record<string, Operation>;
+    delete document.paths['/v1/organization'];
+
+    const committedDocumentPath = tempFile('organization-path-drift.openapi.json');
+    writeFileSync(committedDocumentPath, serializeWithStableKeyOrder(document));
+
+    const result = await checkIdentityContract({ committedDocumentPath });
+    expect(result.ok).toBe(false);
+    expect(result.reasons.length).toBeGreaterThan(0);
+  });
+
+  it('The route is marked high-risk and documented: contract:check fails after the route risk spec is changed in a scratch edit', async () => {
+    const document = structuredClone(
+      (await generateIdentityOpenApiDocument()) as unknown as Document,
+    );
+    const operation = document.paths['/v1/organization']?.['delete'];
+    expect(operation?.['x-tayzu-risk']).toBe('high');
+    delete operation?.['x-tayzu-risk'];
+
+    const committedDocumentPath = tempFile('organization-risk-drift.openapi.json');
+    writeFileSync(committedDocumentPath, serializeWithStableKeyOrder(document));
+
+    const result = await checkIdentityContract({ committedDocumentPath });
+    expect(result.ok).toBe(false);
+    expect(result.reasons.length).toBeGreaterThan(0);
+  });
+
+  it('The route is marked high-risk and documented: contract:check passes on the regenerated file', async () => {
+    const generated = await generateIdentityOpenApiDocument();
+    const operation = (generated as unknown as Document).paths['/v1/organization']?.['delete'];
+    expect(operation?.['operationId']).toBe('identity.organization.delete');
+    expect(operation?.['x-tayzu-risk']).toBe('high');
+
+    const regeneratedPath = tempFile('organization-regenerated.openapi.json');
+    writeFileSync(regeneratedPath, serializeWithStableKeyOrder(generated));
+    const regenerated = await checkIdentityContract({ committedDocumentPath: regeneratedPath });
+    expect(regenerated.reasons).toEqual([]);
+    expect(regenerated.ok).toBe(true);
+
+    // The committed file is that regenerated file.
+    expect(readFileSync(IDENTITY_OPENAPI_DOCUMENT_PATH, 'utf8')).toBe(
+      serializeWithStableKeyOrder(generated),
+    );
+    const committed = await checkIdentityContract();
+    expect(committed.reasons).toEqual([]);
+    expect(committed.ok).toBe(true);
+  });
+});

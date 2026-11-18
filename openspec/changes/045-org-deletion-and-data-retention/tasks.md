@@ -529,7 +529,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       5.3b) passes with the procedure present (it is branded), and
       `define-identity-operation-order.test.ts` covers a non-admin getting
       `AUTH_FORBIDDEN` before the confirmation is parsed.
-- [ ] 8.2 The route carries `x-tayzu-risk: high` and the committed
+- [x] 8.2 The route carries `x-tayzu-risk: high` and the committed
       `openapi/identity.openapi.json` is regenerated with `DELETE /v1/organization`
       (paths, methods, path parameters and the risk marker only, no schema), so its drift
       check covers it (`043`'s tasks 14.1c and 14.2). Verify: `openapi.test.ts` covers
