@@ -6,7 +6,9 @@
 # reviewers approve the run. There is no checkout and no setup step, so no
 # repository code runs on a runner that holds the OIDC token. The operator id is
 # `gh:` plus the numeric actor id, never the login. Inputs reach the steps only
-# through `env`, never as an expression inside `run:`.
+# through `env`, never as an expression inside `run:`. A re-run by another
+# person is refused in the first step (Q177), because the operator id belongs to
+# the actor of the first run.
 
 name: Identity maintenance
 
@@ -49,7 +51,14 @@ jobs:
     steps:
       - name: Validate the inputs
         shell: bash
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
+          if [ "$TRIGGERING_ACTOR" != "$ACTOR" ]; then
+            echo "This run was started again by another actor; start a new run." >&2
+            exit 1
+          fi
           case "$JOB" in
             cancel-org-deletion)
               if [[ ! "$TAYZU_TENANT_ID" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then

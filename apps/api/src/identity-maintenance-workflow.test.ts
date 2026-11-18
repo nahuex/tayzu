@@ -71,6 +71,38 @@
  * matching line must list `@nahuex` (Q72). The repository has no `CODEOWNERS`
  * yet, so the two real-file `CODEOWNERS` cases fail; the other 7.4 real-file
  * cases hold on the file 7.3 committed.
+ *
+ * The `exit 1` of a tenant-id check must sit on the branch of the line that
+ * holds the pattern (the body of its `if ...; then` up to `else`, `elif` or
+ * `fi`, or the command after its `||`), not anywhere in the step: since Q177
+ * the first step holds a second check with an `exit 1` of its own.
+ *
+ * ## Resolved decision Q177 (VCDM fix)
+ *
+ * `github.actor_id` is the actor of the run's first attempt, so a re-run that
+ * someone else starts would be attributed to the first operator. The workflow
+ * therefore refuses a run whose `github.triggering_actor` differs from
+ * `github.actor`, in its first step ("Validate the inputs"), before the Azure
+ * login. The rule reads, in each job, the first step that compares the two and
+ * fails unless (1) it is the job's first step and comes before the first step
+ * that uses an action or calls `az`, (2) it has no `if:` and no
+ * `continue-on-error`, (3) its own `env` maps one variable to exactly
+ * `${{ github.actor }}` and one to exactly `${{ github.triggering_actor }}`
+ * (neither named `TAYZU_*`), (4) its `run:` compares the two variables as
+ * `if [ "$X" != "$Y" ]; then` (or `[[ ]]`) or as `[ "$X" = "$Y" ] ||` (or
+ * `==`, `[[ ]]`), in either order, and (5) the mismatch branch (the `if` body
+ * or the command after `||`) contains `exit 1`. No `run:` may name
+ * `github.actor` or `github.triggering_actor` at all.
+ *
+ * This narrows 7.3's rule that no code line names `github.actor` or
+ * `github.triggering_actor`: a line is exempt only when it is an entry of the
+ * `env` mapping of a job's first step, that step comes before the Azure login
+ * and performs the comparison above, the entry's key does not start with
+ * `TAYZU_`, and its value is exactly one of the two expressions (nothing
+ * around it, so not `gh:${{ github.actor }}`). Every other line that names
+ * either expression, including the bracket form `github['actor']`, still
+ * fails: the operator id, the job's or the workflow's `env`, a later step's
+ * `env`, any `if:`, `name:` or `with:`, and any `run:`.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -455,7 +487,31 @@ function stepViolations(text: string): string[] {
 }
 
 const OPERATOR_ID = /^gh:\$\{\{\s*github\.actor_id\s*\}\}$/;
-const ACTOR_LOGIN = /github\.(?:triggering_)?actor\b/;
+/** `github.actor` or `github.triggering_actor`, dotted or bracketed; not `github.actor_id`. */
+const ACTOR_LOGIN =
+  /\bgithub\s*(?:\.\s*(?:triggering_)?actor(?![A-Za-z0-9_])|\[\s*['"](?:triggering_)?actor['"]\s*\])/;
+
+/**
+ * The only lines that may name the actor login (Q177): the `env` entries of a
+ * job's first step, before the Azure login, that compares the two actors, whose
+ * key is not `TAYZU_*` and whose value is exactly one of the two expressions.
+ */
+function actorCheckEnvLines(root: YamlNode): Set<number> {
+  const lines = new Set<number>();
+  for (const job of jobsOf(root)) {
+    const steps = stepsOf(job);
+    const first = steps[0];
+    if (first === undefined || firstTokenStep(steps) === 0) continue;
+    if (!actorComparison(first).compares) continue;
+    for (const entry of [
+      ...actorEnvEntries(first, ACTOR_VALUE),
+      ...actorEnvEntries(first, TRIGGERING_ACTOR_VALUE),
+    ]) {
+      lines.add(entry.line);
+    }
+  }
+  return lines;
+}
 
 function operatorIdViolations(text: string): string[] {
   const root = parseYaml(text);
@@ -469,8 +525,9 @@ function operatorIdViolations(text: string): string[] {
       violations.push(`TAYZU_OPERATOR_ID is \`${entry.value}\`, not gh: plus github.actor_id`);
     }
   }
+  const exempt = actorCheckEnvLines(root);
   for (const { index, content } of codeLines(text)) {
-    if (ACTOR_LOGIN.test(stripComment(content))) {
+    if (ACTOR_LOGIN.test(stripComment(content)) && !exempt.has(index)) {
       violations.push(`line ${String(index + 1)} uses the actor login`);
     }
   }
@@ -655,8 +712,34 @@ function firstTokenStep(steps: YamlNode[]): number {
   return index === -1 ? steps.length : index;
 }
 
+/**
+ * The branch a check line guards: the body of its `if ...; then` up to `else`,
+ * `elif` or `fi`, or else the command after its `||`; empty when it has neither.
+ */
+function branchOf(lines: string[], index: number): string {
+  const line = lines[index] ?? '';
+  const then = /;\s*then\b(.*)$/.exec(line);
+  if (/^\s*(?:el)?if\b/.test(line) && then !== null) {
+    const rest = then[1] ?? '';
+    const inline = /^(.*?)(?:;\s*)?\b(?:fi|else|elif)\b/.exec(rest);
+    if (inline !== null) return inline[1] ?? '';
+    const body = [rest];
+    for (let j = index + 1; j < lines.length; j += 1) {
+      const next = (lines[j] ?? '').trim();
+      if (/^(?:fi|else|elif)\b/.test(next)) break;
+      body.push(next);
+    }
+    return body.join('\n');
+  }
+  const or = line.indexOf('||');
+  return or === -1 ? '' : line.slice(or + 2);
+}
+
+const EXIT_1 = /\bexit\s+1\b/;
+
 function validatesInput(step: YamlNode, variable: string, input: string): boolean {
   const run = runOf(step);
+  const lines = run.split(/\r?\n/);
   const ownEnv = child(child(step, 'env'), variable);
   return (
     child(step, 'uses') === undefined &&
@@ -664,8 +747,9 @@ function validatesInput(step: YamlNode, variable: string, input: string): boolea
     child(step, 'continue-on-error') === undefined &&
     (ownEnv === undefined || readsInput(ownEnv.value, input)) &&
     readsVariable(run, variable) &&
-    run.includes(TENANT_ID_PATTERN) &&
-    /\bexit\s+1\b/.test(run)
+    lines.some(
+      (line, index) => line.includes(TENANT_ID_PATTERN) && EXIT_1.test(branchOf(lines, index)),
+    )
   );
 }
 
@@ -918,8 +1002,105 @@ function codeownersViolations(text: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// The rule of Resolved decision Q177: a re-run by another actor is refused.
+// ---------------------------------------------------------------------------
+
+const ACTOR_VALUE = /^\$\{\{\s*github\.actor\s*\}\}$/;
+const TRIGGERING_ACTOR_VALUE = /^\$\{\{\s*github\.triggering_actor\s*\}\}$/;
+
+/** A step's own `env` entries whose value is exactly the expression; `TAYZU_*` names never count. */
+function actorEnvEntries(step: YamlNode, value: RegExp): YamlNode[] {
+  return (child(step, 'env')?.children ?? []).filter(
+    (entry) => !String(entry.key).startsWith('TAYZU_') && value.test(entry.value),
+  );
+}
+
+/** A shell reference to a variable: `$NAME` or `${NAME}`, optionally double-quoted. */
+function shellRef(name: string): string {
+  return `"?\\$(?:${escapeRegExp(name)}|\\{${escapeRegExp(name)}\\})"?(?![A-Za-z0-9_])`;
+}
+
+/**
+ * Whether a step's `run:` compares its env-mapped actor and triggering actor
+ * (`if [ X != Y ]; then` or `[ X = Y ] ||`, either order, `[` or `[[`), and
+ * whether the mismatch branch of such a comparison contains `exit 1`.
+ */
+function actorComparison(step: YamlNode): { compares: boolean; exits: boolean } {
+  const actors = actorEnvEntries(step, ACTOR_VALUE).map((e) => String(e.key));
+  const triggering = actorEnvEntries(step, TRIGGERING_ACTOR_VALUE).map((e) => String(e.key));
+  const lines = runOf(step).split(/\r?\n/);
+  let compares = false;
+  let exits = false;
+  for (const a of actors) {
+    for (const t of triggering) {
+      if (a === t) continue;
+      const x = shellRef(a);
+      const y = shellRef(t);
+      const differ = new RegExp(
+        `^\\s*if\\s+\\[\\[?\\s+(?:${x}\\s+!=\\s+${y}|${y}\\s+!=\\s+${x})\\s+\\]\\]?\\s*;\\s*then\\b`,
+      );
+      const equal = new RegExp(
+        `^\\s*\\[\\[?\\s+(?:${x}\\s+==?\\s+${y}|${y}\\s+==?\\s+${x})\\s+\\]\\]?\\s*\\|\\|`,
+      );
+      lines.forEach((line, index) => {
+        if (!differ.test(line) && !equal.test(line)) return;
+        compares = true;
+        if (EXIT_1.test(branchOf(lines, index))) exits = true;
+      });
+    }
+  }
+  return { compares, exits };
+}
+
+function actorCheckViolations(text: string): string[] {
+  const jobs = jobsOf(parseYaml(text));
+  if (jobs.length === 0) return ['the workflow declares no job'];
+  const violations: string[] = [];
+  for (const job of jobs) {
+    const name = String(job.key);
+    const steps = stepsOf(job);
+    for (const step of steps) {
+      if (ACTOR_LOGIN.test(runOf(step))) {
+        violations.push(`a run step of job ${name} interpolates the actor login inside run:`);
+      }
+    }
+    const index = steps.findIndex((step) => actorComparison(step).compares);
+    const step = steps[index];
+    if (step === undefined) {
+      violations.push(`job ${name} does not compare the triggering actor with the actor`);
+      continue;
+    }
+    if (index >= firstTokenStep(steps)) {
+      violations.push(`job ${name} compares the actors only after the Azure login`);
+      continue;
+    }
+    if (index !== 0) violations.push(`job ${name} compares the actors outside its first step`);
+    if (!actorComparison(step).exits) {
+      violations.push(`the actor comparison of job ${name} does not exit 1 on a mismatch`);
+    }
+    if (child(step, 'if') !== undefined || child(step, 'continue-on-error') !== undefined) {
+      violations.push(`the actor comparison of job ${name} can be skipped`);
+    }
+  }
+  return violations;
+}
+
+// ---------------------------------------------------------------------------
 // Scratch workflows.
 // ---------------------------------------------------------------------------
+
+/** The compliant first step's actor mappings (Q177). */
+const ACTOR_ENV =
+  '        env:\n' +
+  '          ACTOR: ${{ github.actor }}\n' +
+  '          TRIGGERING_ACTOR: ${{ github.triggering_actor }}\n';
+
+/** The compliant first step's actor comparison (Q177), after its tenant-id check. */
+const ACTOR_CHECK =
+  '          if [ "$TRIGGERING_ACTOR" != "$ACTOR" ]; then\n' +
+  '            echo "This run was started again by another actor; start a new run." >&2\n' +
+  '            exit 1\n' +
+  '          fi\n';
 
 /** A compliant workflow; the action SHA is a placeholder, not a real pin. */
 const COMPLIANT = `name: Identity maintenance
@@ -963,12 +1144,12 @@ jobs:
       RESOURCE_GROUP: \${{ vars.MAINTENANCE_RESOURCE_GROUP }}
     steps:
       - name: Validate the tenant id
-        run: |
+${ACTOR_ENV}        run: |
           if [ -n "$TAYZU_TENANT_ID" ] && ! printf '%s' "$TAYZU_TENANT_ID" | grep -Eq '^[A-Za-z0-9_-]{1,64}$'; then
             echo "The tenant id is malformed." >&2
             exit 1
           fi
-      - name: Azure login (OIDC)
+${ACTOR_CHECK}      - name: Azure login (OIDC)
         uses: azure/login@${'a'.repeat(40)} # v2
         with:
           client-id: \${{ secrets.AZURE_CLIENT_ID }}
@@ -1000,6 +1181,7 @@ const RULES = {
   bootstrapAdmin: (text: string) => namedCliViolations(text, BOOTSTRAP_ADMIN),
   recoverAdminMfa: (text: string) => namedCliViolations(text, RECOVER_ADMIN_MFA),
   purge: purgeViolations,
+  actorCheck: actorCheckViolations,
 } as const;
 
 function expectRejected(violations: string[], reason: RegExp): void {
@@ -1126,6 +1308,12 @@ describe('The workflow starts only the named jobs without overrides (the real fi
     const names = jobsOf(parseYaml(readWorkflow())).map(environmentNameOf);
     expect(names).toEqual([MAINTENANCE_ENVIRONMENT]);
     expect(sharedEnvironmentViolations(readOtherWorkflows())).toEqual([]);
+  });
+});
+
+describe('The workflow refuses a re-run by another actor (the real file, Q177)', () => {
+  it('compares the triggering actor with the actor through env in its first step, before the Azure login, with no if: and no continue-on-error, and exits 1 on a mismatch', () => {
+    expect(actorCheckViolations(readWorkflow())).toEqual([]);
   });
 });
 
@@ -1328,6 +1516,81 @@ describe('identity-maintenance workflow rules (scratch workflows)', () => {
       operatorIdViolations(mutate('"TAYZU_OPERATOR_ID=$TAYZU_OPERATOR_ID" ', '')),
       /does not pass TAYZU_OPERATOR_ID from env/,
     );
+  });
+
+  it("reject github.actor as the operator id even with Q177's actor mappings in place", () => {
+    expectRejected(
+      operatorIdViolations(mutate('gh:${{ github.actor_id }}', '${{ github.actor }}')),
+      /not gh: plus github\.actor_id/,
+    );
+    expectRejected(
+      operatorIdViolations(mutate('gh:${{ github.actor_id }}', '${{ github.actor }}')),
+      /uses the actor login/,
+    );
+    expectRejected(
+      operatorIdViolations(
+        mutate('gh:${{ github.actor_id }}', 'gh:${{ github.triggering_actor }}'),
+      ),
+      /uses the actor login/,
+    );
+    // The operator id moved into the comparison step's own env: a TAYZU_ name is never exempt.
+    expectRejected(
+      operatorIdViolations(
+        mutate(
+          '          TRIGGERING_ACTOR: ${{ github.triggering_actor }}\n',
+          '          TRIGGERING_ACTOR: ${{ github.triggering_actor }}\n          TAYZU_OPERATOR_ID: ${{ github.actor }}\n',
+        ),
+      ),
+      /line \d+ uses the actor login/,
+    );
+    // Anything around the expression loses the exemption, even in the comparison step's env.
+    expectRejected(
+      operatorIdViolations(
+        mutate(
+          '          TRIGGERING_ACTOR: ${{ github.triggering_actor }}\n',
+          '          TRIGGERING_ACTOR: ${{ github.triggering_actor }}\n          OPERATOR: gh:${{ github.actor }}\n',
+        ),
+      ),
+      /line \d+ uses the actor login/,
+    );
+  });
+
+  it("reject the actor login outside the comparison step's env", () => {
+    expectRejected(
+      operatorIdViolations(
+        mutate('      RESOURCE_GROUP:', '      ACTOR: ${{ github.actor }}\n      RESOURCE_GROUP:'),
+      ),
+      /line \d+ uses the actor login/,
+    );
+    expectRejected(
+      operatorIdViolations(
+        mutate(
+          START_STEP,
+          `${START_STEP}        env:\n          TRIGGERING_ACTOR: \${{ github.triggering_actor }}\n`,
+        ),
+      ),
+      /line \d+ uses the actor login/,
+    );
+    expectRejected(
+      operatorIdViolations(
+        mutate(
+          "    if: github.ref == 'refs/heads/master'\n",
+          "    if: github.ref == 'refs/heads/master' && github.actor != ''\n",
+        ),
+      ),
+      /line \d+ uses the actor login/,
+    );
+    expectRejected(
+      operatorIdViolations(
+        mutate(
+          '          ACTOR: ${{ github.actor }}\n',
+          "          ACTOR: ${{ github['actor'] }}\n",
+        ),
+      ),
+      /line \d+ uses the actor login/,
+    );
+    // The mappings are exempt only while their step really compares the two actors.
+    expectRejected(operatorIdViolations(mutate(ACTOR_CHECK, '')), /line \d+ uses the actor login/);
   });
 
   it('reject a choice input that does not list exactly the three maintenance scripts', () => {
@@ -1762,6 +2025,134 @@ describe('identity-maintenance workflow rules of 7.4 (scratch texts)', () => {
         },
       ]),
       /deploy\.yml job deploy names the identity-maintenance environment/,
+    );
+  });
+});
+
+/** The Q177 check as a step of its own, for moving it after the Azure login. */
+const ACTOR_CHECK_STEP = `      - name: Refuse a re-run by another actor\n${ACTOR_ENV}        run: |\n${ACTOR_CHECK}`;
+
+/** The compliant workflow with the Q177 check taken out of its first step. */
+function withoutActorCheck(): string {
+  return mutate(ACTOR_ENV, '').replace(ACTOR_CHECK, '');
+}
+
+const NO_ACTOR_CHECK = /job start does not compare the triggering actor with the actor/;
+
+describe('The workflow refuses a re-run by another actor (scratch workflows, Q177)', () => {
+  it('accept a compliant workflow, and the `[ X = Y ] ||` form of the check', () => {
+    expect(actorCheckViolations(COMPLIANT)).toEqual([]);
+    expect(operatorIdViolations(COMPLIANT)).toEqual([]);
+    const orForm = mutate(
+      ACTOR_CHECK,
+      '          [[ "${ACTOR}" == "${TRIGGERING_ACTOR}" ]] || { echo "Started again by another actor." >&2; exit 1; }\n',
+    );
+    expect(actorCheckViolations(orForm)).toEqual([]);
+    expect(operatorIdViolations(orForm)).toEqual([]);
+  });
+
+  it('reject a workflow without the actor check', () => {
+    expectRejected(actorCheckViolations(withoutActorCheck()), NO_ACTOR_CHECK);
+    // The mappings without the comparison.
+    expectRejected(actorCheckViolations(mutate(ACTOR_CHECK, '')), NO_ACTOR_CHECK);
+    // The comparison without the mappings: the variables do not come from env.
+    expectRejected(actorCheckViolations(mutate(ACTOR_ENV, '')), NO_ACTOR_CHECK);
+  });
+
+  it('reject an actor check that runs after the Azure login', () => {
+    const moved = withoutActorCheck().replace(START_STEP, `${ACTOR_CHECK_STEP}${START_STEP}`);
+    expectRejected(
+      actorCheckViolations(moved),
+      /job start compares the actors only after the Azure login/,
+    );
+    // Its env mappings are outside the exemption, so the 7.3 rule rejects them too.
+    expectRejected(operatorIdViolations(moved), /line \d+ uses the actor login/);
+  });
+
+  it('reject an actor check in a step other than the first one', () => {
+    expectRejected(
+      actorCheckViolations(
+        withoutActorCheck().replace(
+          '      - name: Azure login (OIDC)\n',
+          `${ACTOR_CHECK_STEP}      - name: Azure login (OIDC)\n`,
+        ),
+      ),
+      /job start compares the actors outside its first step/,
+    );
+  });
+
+  it('reject ${{ github.triggering_actor }} or ${{ github.actor }} inside run:', () => {
+    const triggering = mutate(
+      '[ "$TRIGGERING_ACTOR" != "$ACTOR" ]',
+      '[ "${{ github.triggering_actor }}" != "$ACTOR" ]',
+    );
+    expectRejected(
+      actorCheckViolations(triggering),
+      /a run step of job start interpolates the actor login inside run:/,
+    );
+    expectRejected(operatorIdViolations(triggering), /line \d+ uses the actor login/);
+    expectRejected(
+      actorCheckViolations(
+        mutate(
+          '[ "$TRIGGERING_ACTOR" != "$ACTOR" ]',
+          '[ "$TRIGGERING_ACTOR" != "${{ github.actor }}" ]',
+        ),
+      ),
+      /a run step of job start interpolates the actor login inside run:/,
+    );
+    expectRejected(
+      actorCheckViolations(
+        mutate(
+          '            echo "The tenant id is malformed." >&2\n',
+          '            echo "Malformed, ${{ github.triggering_actor }}." >&2\n',
+        ),
+      ),
+      /a run step of job start interpolates the actor login inside run:/,
+    );
+  });
+
+  it('reject an actor comparison without exit 1 on the mismatch branch', () => {
+    expectRejected(
+      actorCheckViolations(mutate(ACTOR_CHECK, ACTOR_CHECK.replace('exit 1', 'true'))),
+      /the actor comparison of job start does not exit 1 on a mismatch/,
+    );
+    // The tenant check's exit 1 in the same step does not count for the comparison.
+    expectRejected(
+      actorCheckViolations(
+        mutate(
+          ACTOR_CHECK,
+          '          if [ "$TRIGGERING_ACTOR" != "$ACTOR" ]; then echo "Another actor." >&2; fi\n',
+        ),
+      ),
+      /the actor comparison of job start does not exit 1 on a mismatch/,
+    );
+    // Exiting on a match, not a mismatch, is not the comparison the rule accepts.
+    expectRejected(
+      actorCheckViolations(
+        mutate('"$TRIGGERING_ACTOR" != "$ACTOR"', '"$TRIGGERING_ACTOR" = "$ACTOR"'),
+      ),
+      NO_ACTOR_CHECK,
+    );
+  });
+
+  it('reject an actor check that can be skipped', () => {
+    expectRejected(
+      actorCheckViolations(
+        mutate(
+          '      - name: Validate the tenant id\n',
+          "      - name: Validate the tenant id\n        if: env.MAINTENANCE_JOB == 'cancel-org-deletion'\n",
+        ),
+      ),
+      /the actor comparison of job start can be skipped/,
+    );
+    expectRejected(
+      actorCheckViolations(
+        mutate(
+          '      - name: Validate the tenant id\n',
+          '      - name: Validate the tenant id\n        continue-on-error: true\n',
+        ),
+      ),
+      /the actor comparison of job start can be skipped/,
     );
   });
 });
