@@ -695,7 +695,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       Verify: `pnpm lint` passes, each secret names its owner and rotation procedure, and
       the settings checklist lists the five settings, the second human and the rehearsal
       item.
-- [ ] 10.7 Update `docs/catalog/auth-and-rbac.md` (`002` D17): the `organization` kind
+- [x] 10.7 Update `docs/catalog/auth-and-rbac.md` (`002` D17): the `organization` kind
       and its action in the taxonomy, and the new spans, metric and log events in the
       telemetry reference (with a pointer to the identity contract module). Verify: `pnpm
       lint` passes and the kind and every event of the Observability contract are listed.
