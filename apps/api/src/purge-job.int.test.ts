@@ -635,22 +635,53 @@ describe('Q178: the purge job refuses to run without telemetry', () => {
     });
   });
 
+  /**
+   * `main` has no tenant scope, so a pass would list every due tenant of the shared database
+   * (this file's refusal tests leave theirs due on purpose). The start is let through or refused
+   * before any database work, so a pool that fails its first use with `sentinel` tells the two
+   * apart without running a pass: a refusal is a `FixedMessageError` and reaches no query.
+   */
+  function sentinelPool(sentinel: Error): { readonly pool: Pool; readonly reached: string[] } {
+    const reached: string[] = [];
+    const pool = {
+      query: (statement: unknown): Promise<never> => {
+        reached.push(typeof statement === 'string' ? statement : 'a non-text query');
+        return Promise.reject(sentinel);
+      },
+      connect: (): Promise<never> => {
+        reached.push('connect');
+        return Promise.reject(sentinel);
+      },
+      end: (): Promise<void> => Promise.resolve(),
+    };
+    return { pool: pool as unknown as Pool, reached };
+  }
+
   it('accepts a start with only a per-signal endpoint set (the guard shares the endpoint list of src/telemetry.ts)', async () => {
-    const due = await seedTenant('due');
+    const sentinel = new Error('the accepted start reached the database');
+    const { pool, reached } = sentinelPool(sentinel);
+    const signalsBefore = { ...identitySignals };
     const { telemetry, shutdowns } = countedTelemetry();
 
-    await main({
+    const error: unknown = await main({
       env: guardEnv({
         OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
         OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'http://127.0.0.1:4318/v1/logs',
       }),
-      pool: guardedPool(purgePool),
+      pool,
       telemetry,
-    });
+    }).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
 
-    expect(await readMarker(due.tenantId), 'the due tenant is purged').toMatchObject({
-      state: 'purged',
-    });
+    expect(error, 'the guard let the start through to the database').toBe(sentinel);
+    expect(error, 'not a refusal of the guard').not.toBeInstanceOf(FixedMessageError);
+    expect(reached, "the start reached runScript's role check, its first query").toEqual([
+      'SELECT current_user',
+    ]);
+    expect(createPoolMock, 'the given pool is used, none is built').not.toHaveBeenCalled();
+    expect({ ...identitySignals }, 'no purge pass ran').toEqual(signalsBefore);
     expect(shutdowns(), 'the final flush ran once').toBe(1);
   });
 });

@@ -388,13 +388,17 @@ describe('cross-tenant matrix: acceptance (task 12.3)', () => {
     return { members: members.rows, invitations: invitations.rows, catalogUser };
   }
 
+  /**
+   * The user's tenants, sorted in JS (code-unit order) so that they compare with an expected
+   * `.sort()`: a SQL `order by` would follow the database's locale collation instead.
+   */
   async function memberships(email: string): Promise<readonly string[]> {
     const result = await authPool.query<{ organization_id: string }>(
       `select m.organization_id from auth.member m join auth."user" u on u.id = m.user_id
-       where u.email = $1 order by m.organization_id`,
+       where u.email = $1`,
       [email],
     );
-    return result.rows.map((row) => row.organization_id);
+    return result.rows.map((row) => row.organization_id).sort();
   }
 
   it("The acceptance of t2's invitation by a new account creates the membership only in t2: t1 has no new member and no write", async () => {
@@ -1668,12 +1672,13 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
     return result.rows;
   }
 
+  /** The user's tenants, sorted in JS like `memberships` (independent of the collation). */
   async function membershipsOf(userId: string): Promise<readonly string[]> {
     const result = await authPool.query<{ organization_id: string }>(
-      'select organization_id from auth.member where user_id = $1 order by organization_id',
+      'select organization_id from auth.member where user_id = $1',
       [userId],
     );
-    return result.rows.map((row) => row.organization_id);
+    return result.rows.map((row) => row.organization_id).sort();
   }
 
   async function subjectOwners(subject: string): Promise<number> {

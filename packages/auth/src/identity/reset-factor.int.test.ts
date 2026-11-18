@@ -37,7 +37,7 @@ import { runMigrations } from '@tayzu/db';
 import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createAdminUser, signInAdminUser } from '../__fixtures__/admin-user.js';
 import '../__fixtures__/registered-harness.js';
@@ -298,6 +298,16 @@ describe('Reset factor verifier (task 8.1, design D6)', () => {
       throw new Error('expected the stored two_factor row');
     }
 
+    // The verifier and the endpoint both read the window from `Date.now()` (the `verify` of
+    // `@better-auth/utils/otp`), each on its own call. Freezing `Date` (and only `Date`: timers,
+    // the database and the handler stay real) keeps the codes below and every verification on
+    // one window, so a window boundary cannot fall between them. Near real time, so that
+    // session and cookie expiry checks see the present.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+
     const otp = createOTP(secret, { period: 30, digits: 6 });
     const counter = Math.floor(Date.now() / 30_000);
     const current = await otp.hotp(counter);
@@ -345,5 +355,8 @@ describe('Reset factor verifier (task 8.1, design D6)', () => {
       expect(verifier.verified, `the verifier on the ${name} window`).toBe(endpoint);
       expect(endpoint, `the installed endpoint on the ${name} window`).toBe(accepted);
     }
+    expect(Math.floor(Date.now() / 30_000), 'every case ran in the window of its codes').toBe(
+      counter,
+    );
   });
 });
