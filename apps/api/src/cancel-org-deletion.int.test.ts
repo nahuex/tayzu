@@ -64,6 +64,18 @@
  * owner pool. Every tenant id and operator id is random per test, and every telemetry assertion is
  * scoped to the test's operator id (or, with no operator id, to counts taken around the run).
  *
+ * ## The telemetry guard (Resolved decision Q178, `044`'s `recover-admin-mfa` model)
+ *
+ * The reversal's audit events are the only durable record of a reversal, so `main` refuses to run
+ * with `TAYZU_TELEMETRY_DISABLED=true` or without an OTLP endpoint (`hasOtlpEndpoint(env)` of
+ * `src/telemetry.ts`: `OTEL_EXPORTER_OTLP_ENDPOINT` or a per-signal endpoint, an empty value
+ * counting as unset), whatever `NODE_ENV` says. The check is the first thing `main` does, before
+ * the configuration load, the pool, the telemetry start, any query and any event, and it rejects
+ * with a `FixedMessageError` (`scripts/script-config.ts`):
+ *
+ * - `cancel-org-deletion refuses to run with TAYZU_TELEMETRY_DISABLED=true.`
+ * - `cancel-org-deletion requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).`
+ *
  * ## Why this fails right now
  *
  * `apps/api/scripts/cancel-org-deletion.ts` is the empty module of task 1.2: it exports no `main`.
@@ -85,6 +97,7 @@ import {
   getTestDatabase,
 } from '../../../packages/db/src/harness.js';
 import { main } from '../scripts/cancel-org-deletion.js';
+import { FixedMessageError } from '../scripts/script-config.js';
 import { createAuthRepository } from './identity/auth-repository.js';
 import { DEFAULT_ORG_DELETION_WINDOW_DAYS, requestOrgDeletion } from './identity/org-deletion.js';
 import type { Telemetry } from './telemetry.js';
@@ -1024,6 +1037,151 @@ describe('the reversal script cancel-org-deletion (task 7.2)', () => {
         'not as a repeat of a pending one',
       ).toEqual([]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resolved decision Q178: the telemetry guard.
+
+const TELEMETRY_DISABLED_MESSAGE =
+  'cancel-org-deletion refuses to run with TAYZU_TELEMETRY_DISABLED=true.';
+const NO_ENDPOINT_MESSAGE =
+  'cancel-org-deletion requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).';
+
+/** `envFor(operatorId)` under `NODE_ENV=test` (which the guard ignores), with `changes` applied. */
+function guardEnv(
+  operatorId: string,
+  changes: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...envFor(operatorId), NODE_ENV: 'test' };
+  for (const [name, value] of Object.entries(changes)) {
+    if (value === undefined) {
+      Reflect.deleteProperty(env, name);
+    } else {
+      env[name] = value;
+    }
+  }
+  return env;
+}
+
+/** `pool` with every `query` and `connect` counted; `end` leaves the shared pool open. */
+function countingPool(pool: Pool, onUse: () => void): Pool {
+  const shared = sharedPool(pool);
+  return new Proxy(shared, {
+    get(target, property): unknown {
+      if (property === 'query' || property === 'connect') onUse();
+      return Reflect.get(target, property, target);
+    },
+  });
+}
+
+describe('Q178: the reversal script refuses to run without telemetry', () => {
+  beforeAll(async () => {
+    await getOwnerPool();
+    await getTestDatabase();
+    await deletionAdminPool();
+  }, 120_000);
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    createPoolMock.mockReset();
+  });
+
+  describe.each([
+    {
+      start: 'TAYZU_TELEMETRY_DISABLED=true, even with an endpoint set and NODE_ENV=test',
+      changes: { TAYZU_TELEMETRY_DISABLED: 'true' },
+      message: TELEMETRY_DISABLED_MESSAGE,
+    },
+    {
+      start: 'no OTLP endpoint variable set, with NODE_ENV=test',
+      changes: { OTEL_EXPORTER_OTLP_ENDPOINT: undefined },
+      message: NO_ENDPOINT_MESSAGE,
+    },
+    {
+      start: 'an empty OTLP endpoint value',
+      changes: { OTEL_EXPORTER_OTLP_ENDPOINT: '' },
+      message: NO_ENDPOINT_MESSAGE,
+    },
+  ])('a start with $start', ({ changes, message }) => {
+    /**
+     * Runs `main` on a tombstonable pending marker and checks the refusal: the fixed message, no
+     * reversal event and no record naming the tenant, no flush, the marker unchanged and the
+     * tenant still closed. `pool` is handed to `main` when given; otherwise `main` builds its own.
+     */
+    async function expectRefusedBeforeAnyWork(pool?: Pool): Promise<void> {
+      const harness = registeredHarness();
+      const tenantId = `org-${randomUUID()}`;
+      const operatorId = randomOperatorId();
+      await seedMarker(tenantId, 'pending');
+      const before = await markerRows(tenantId);
+      buildPoolsFrom(await deletionAdminPool());
+      const eventsBefore = await reversalEventCount(harness);
+      const shutdowns: number[] = [];
+      const telemetry: Telemetry = {
+        shutdown: async () => {
+          await harness.forceFlush();
+          shutdowns.push(1);
+        },
+      };
+
+      const error: unknown = await main({
+        tenantId,
+        env: guardEnv(operatorId, changes),
+        telemetry,
+        ...(pool === undefined ? {} : { pool }),
+      }).then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+
+      expect(error, 'main refuses to run').toBeInstanceOf(FixedMessageError);
+      expect((error as Error).message, 'the fixed message').toBe(message);
+      expect(createPoolMock, 'no pool is built').not.toHaveBeenCalled();
+      expect(await reversalEventCount(harness), 'no reversal event is emitted').toBe(eventsBefore);
+      expect(refusalRecords(harness, operatorId), 'no refusal is logged').toEqual([]);
+      const tenantRecords = harness.logExporter
+        .getFinishedLogRecords()
+        .filter((record) => record.attributes['tayzu.tenant.id'] === tenantId);
+      expect(tenantRecords, 'no record names the tenant').toEqual([]);
+      expect(shutdowns.length, 'no telemetry was started, so none is flushed').toBe(0);
+      expect(await markerRows(tenantId), 'the marker is unchanged').toEqual(before);
+      expect(await isClosed(tenantId), 'the tenant stays closed').toBe(true);
+    }
+
+    it('main rejects with the fixed message before building a pool: nothing is tombstoned, no event is emitted and nothing is flushed', async () => {
+      await expectRefusedBeforeAnyWork();
+    });
+
+    it('main given a pool rejects with the fixed message before any query on it, and nothing is tombstoned', async () => {
+      let uses = 0;
+      const pool = countingPool(await deletionAdminPool(), () => {
+        uses += 1;
+      });
+
+      await expectRefusedBeforeAnyWork(pool);
+
+      expect(uses, 'no database work').toBe(0);
+    });
+  });
+
+  it('accepts a start with only a per-signal endpoint set (the guard shares the endpoint list of src/telemetry.ts)', async () => {
+    const tenantId = `org-${randomUUID()}`;
+    const operatorId = randomOperatorId();
+    await seedMarker(tenantId, 'pending');
+    buildPoolsFrom(await deletionAdminPool());
+
+    const result = await main({
+      tenantId,
+      env: guardEnv(operatorId, {
+        OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+        OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'http://127.0.0.1:4318/v1/logs',
+      }),
+      telemetry: flushingTelemetry(registeredHarness(), operatorId).telemetry,
+    });
+
+    expect(result, 'the pending marker is tombstoned').toEqual({ outcome: 'cancelled' });
+    expect(await isClosed(tenantId), 'the tenant is open again').toBe(false);
   });
 });
 

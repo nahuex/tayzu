@@ -11,7 +11,7 @@ import { emitIdentityEvent, recordIdentityMetric, withIdentitySpan } from '@tayz
 import { createPool } from '@tayzu/db';
 import type { Pool, PoolClient } from 'pg';
 
-import type { Telemetry } from '../src/telemetry.js';
+import { hasOtlpEndpoint, type Telemetry } from '../src/telemetry.js';
 import { runScript, type RunScriptOptions } from './run-script.js';
 import { FixedMessageError, loadScriptConfig } from './script-config.js';
 
@@ -480,9 +480,21 @@ export interface PurgeJobOptions {
  * The entry point: one pass over the due tenants on a pool built from `PURGE_DATABASE_URL`
  * (`createPool` requires `sslmode=verify-full`), the only database URL the job reads. The
  * caller turns `tenantsFailed > 0` into a non-zero exit status.
+ *
+ * The guard ignores `NODE_ENV` (Resolved decision Q178): it refuses to start, before any
+ * configuration, pool, telemetry or event, with `TAYZU_TELEMETRY_DISABLED=true` or without an
+ * OTLP endpoint, because the purge's audit events are the only durable record of it.
  */
 export async function main(options: PurgeJobOptions = {}): Promise<PurgeSummary> {
   const env = options.env ?? process.env;
+  if (env['TAYZU_TELEMETRY_DISABLED'] === 'true') {
+    throw new FixedMessageError('purge-job refuses to run with TAYZU_TELEMETRY_DISABLED=true.');
+  }
+  if (!hasOtlpEndpoint(env)) {
+    throw new FixedMessageError(
+      'purge-job requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).',
+    );
+  }
   const config = loadScriptConfig('purge-job', env);
   const pool = options.pool ?? createPool(config.PURGE_DATABASE_URL);
   try {

@@ -40,6 +40,21 @@
  * export function main(options?: PurgeJobOptions): Promise<void>;
  * ```
  *
+ * ## The telemetry guard (Resolved decision Q178, `044`'s `recover-admin-mfa` model)
+ *
+ * The purge's audit events are the only durable record of an irreversible purge, so `main`
+ * refuses to run with `TAYZU_TELEMETRY_DISABLED=true` or without an OTLP endpoint
+ * (`hasOtlpEndpoint(env)` of `src/telemetry.ts`: `OTEL_EXPORTER_OTLP_ENDPOINT` or a per-signal
+ * endpoint, an empty value counting as unset), whatever `NODE_ENV` says. The check is the first
+ * thing `main` does, before the configuration load, the pool, the telemetry start, any query and
+ * any event, and it rejects with a `FixedMessageError` (`scripts/script-config.ts`):
+ *
+ * - `purge-job refuses to run with TAYZU_TELEMETRY_DISABLED=true.`
+ * - `purge-job requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).`
+ *
+ * As in `recover-admin-mfa`, the guard is `main`'s only: `runPurge` is the in-process pass that
+ * other tests drive with an injected pool and no environment, and it does not apply it.
+ *
  * ## How the job reaches `tayzu_purge` here
  *
  * `tayzu_purge` is a `LOGIN` role with no password in the test cluster, so a
@@ -72,6 +87,7 @@ import {
   getTestDatabase,
 } from '../../../packages/db/src/harness.js';
 import { main, runPurge } from '../scripts/purge-job.js';
+import { FixedMessageError } from '../scripts/script-config.js';
 import type { Telemetry } from './telemetry.js';
 
 const createPoolMock = vi.hoisted(() => vi.fn<(url: string) => Pool>());
@@ -80,6 +96,28 @@ vi.mock('@tayzu/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tayzu/db')>()),
   createPool: createPoolMock,
 }));
+
+/** Every identity event, metric and span the job produced, counted (the originals still run). */
+const identitySignals = vi.hoisted(() => ({ events: 0, metrics: 0, spans: 0 }));
+
+vi.mock('@tayzu/auth', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@tayzu/auth')>();
+  return {
+    ...original,
+    emitIdentityEvent: (...args: Parameters<typeof original.emitIdentityEvent>): void => {
+      identitySignals.events += 1;
+      original.emitIdentityEvent(...args);
+    },
+    recordIdentityMetric: (...args: Parameters<typeof original.recordIdentityMetric>): void => {
+      identitySignals.metrics += 1;
+      original.recordIdentityMetric(...args);
+    },
+    withIdentitySpan: (...args: Parameters<typeof original.withIdentitySpan>): Promise<unknown> => {
+      identitySignals.spans += 1;
+      return original.withIdentitySpan(...args);
+    },
+  };
+});
 
 const PURGE_URL_SENTINEL = 'postgres://tayzu_purge@purge.invalid:5432/tayzu?sslmode=verify-full';
 const APP_URL_SENTINEL = 'postgres://tayzu_app@app.invalid:5432/tayzu?sslmode=verify-full';
@@ -473,5 +511,146 @@ describe('purge job entry point (task 6.6)', () => {
       expectFixedMessage(error);
       await expectUntouched(due);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resolved decision Q178: the telemetry guard.
+
+const TELEMETRY_DISABLED_MESSAGE = 'purge-job refuses to run with TAYZU_TELEMETRY_DISABLED=true.';
+const NO_ENDPOINT_MESSAGE = 'purge-job requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).';
+
+/** `ENV` under `NODE_ENV=test` (which the guard ignores), with `changes` applied. */
+function guardEnv(
+  changes: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...ENV, NODE_ENV: 'test' };
+  for (const [name, value] of Object.entries(changes)) {
+    if (value === undefined) {
+      Reflect.deleteProperty(env, name);
+    } else {
+      env[name] = value;
+    }
+  }
+  return env;
+}
+
+/** `pool` with every `query` and `connect` counted. */
+function countingPool(pool: Pool, onUse: () => void): Pool {
+  return new Proxy(pool, {
+    get(target, property): unknown {
+      if (property === 'query' || property === 'connect') onUse();
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === 'function' ? (value as QueryFunction).bind(target) : value;
+    },
+  });
+}
+
+describe('Q178: the purge job refuses to run without telemetry', () => {
+  let purgePool: Pool;
+
+  beforeAll(async () => {
+    purgePool = (await getPurgeTestDatabase()).pool;
+    await getOwnerPool();
+  }, 120_000);
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    createPoolMock.mockReset();
+  });
+
+  /** `runScript`'s flush, counted: a refused start starts no telemetry, so it flushes none. */
+  function countedTelemetry(): { readonly telemetry: Telemetry; readonly shutdowns: () => number } {
+    let shutdowns = 0;
+    return {
+      telemetry: {
+        async shutdown() {
+          shutdowns += 1;
+        },
+      },
+      shutdowns: () => shutdowns,
+    };
+  }
+
+  function expectRefusal(error: unknown, message: string): void {
+    expect(error, 'main refuses to run').toBeInstanceOf(FixedMessageError);
+    expect((error as Error).message, 'the fixed message').toBe(message);
+  }
+
+  describe.each([
+    {
+      start: 'TAYZU_TELEMETRY_DISABLED=true, even with an endpoint set and NODE_ENV=test',
+      env: () => guardEnv({ TAYZU_TELEMETRY_DISABLED: 'true' }),
+      message: TELEMETRY_DISABLED_MESSAGE,
+    },
+    {
+      start: 'no OTLP endpoint variable set, with NODE_ENV=test',
+      env: () => guardEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: undefined }),
+      message: NO_ENDPOINT_MESSAGE,
+    },
+    {
+      start: 'an empty OTLP endpoint value',
+      env: () => guardEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: '' }),
+      message: NO_ENDPOINT_MESSAGE,
+    },
+  ])('a start with $start', ({ env, message }) => {
+    it('main rejects with the fixed message before building a pool: the due tenant keeps every row and its marker, and no purge event, metric, span or flush happens', async () => {
+      const due = await seedTenant('due');
+      createPoolMock.mockImplementation(() => guardedPool(purgePool));
+      const signalsBefore = { ...identitySignals };
+      const { telemetry, shutdowns } = countedTelemetry();
+
+      const error: unknown = await main({ env: env(), telemetry }).then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+
+      expectRefusal(error, message);
+      expect(createPoolMock, 'no pool is built').not.toHaveBeenCalled();
+      expect({ ...identitySignals }, 'no event, metric or span').toEqual(signalsBefore);
+      expect(shutdowns(), 'no telemetry was started, so none is flushed').toBe(0);
+      await expectUntouched(due);
+    });
+
+    it('main given a pool rejects with the fixed message before any query on it, and the due tenant keeps every row and its marker', async () => {
+      const due = await seedTenant('due');
+      let uses = 0;
+      const pool = countingPool(guardedPool(purgePool), () => {
+        uses += 1;
+      });
+      const signalsBefore = { ...identitySignals };
+      const { telemetry, shutdowns } = countedTelemetry();
+
+      const error: unknown = await main({ env: env(), pool, telemetry }).then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+
+      expectRefusal(error, message);
+      expect(uses, 'no database work').toBe(0);
+      expect(createPoolMock, 'no pool is built').not.toHaveBeenCalled();
+      expect({ ...identitySignals }, 'no event, metric or span').toEqual(signalsBefore);
+      expect(shutdowns(), 'no telemetry was started, so none is flushed').toBe(0);
+      await expectUntouched(due);
+    });
+  });
+
+  it('accepts a start with only a per-signal endpoint set (the guard shares the endpoint list of src/telemetry.ts)', async () => {
+    const due = await seedTenant('due');
+    const { telemetry, shutdowns } = countedTelemetry();
+
+    await main({
+      env: guardEnv({
+        OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+        OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'http://127.0.0.1:4318/v1/logs',
+      }),
+      pool: guardedPool(purgePool),
+      telemetry,
+    });
+
+    expect(await readMarker(due.tenantId), 'the due tenant is purged').toMatchObject({
+      state: 'purged',
+    });
+    expect(shutdowns(), 'the final flush ran once').toBe(1);
   });
 });

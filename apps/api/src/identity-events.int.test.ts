@@ -1444,7 +1444,13 @@ describe('Security-relevant events are logged (task 15.6)', () => {
     // WHEN the deletion is reversed by the operator's script
     const result = await cancelOrgDeletionMain({
       tenantId,
-      env: { REVERSAL_DATABASE_URL: REVERSAL_URL_SENTINEL, TAYZU_OPERATOR_ID: operatorId },
+      env: {
+        REVERSAL_DATABASE_URL: REVERSAL_URL_SENTINEL,
+        TAYZU_OPERATOR_ID: operatorId,
+        // The script's telemetry guard (Resolved decision Q178) needs an endpoint; the harness's
+        // flush replaces the SDK, so nothing is exported to it.
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+      },
       pool: (await getDeletionAdminTestDatabase()).pool,
       telemetry: flushingTelemetry(),
     });

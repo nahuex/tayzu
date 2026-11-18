@@ -12,7 +12,7 @@ import { emitIdentityEvent, recordIdentityMetric, withIdentitySpan } from '@tayz
 import { createPool } from '@tayzu/db';
 import type { Pool } from 'pg';
 
-import type { Telemetry } from '../src/telemetry.js';
+import { hasOtlpEndpoint, type Telemetry } from '../src/telemetry.js';
 import { runScript } from './run-script.js';
 import { FixedMessageError, loadScriptConfig } from './script-config.js';
 
@@ -160,9 +160,12 @@ function cancel(
 }
 
 /**
- * The entry point. The configuration is loaded first: a missing or malformed
- * `TAYZU_OPERATOR_ID` rejects with the loader's fixed message before any pool, telemetry or
- * event. The pool is built from `REVERSAL_DATABASE_URL` (`createPool` requires
+ * The entry point. The telemetry guard comes first and ignores `NODE_ENV` (Resolved decision
+ * Q178): with `TAYZU_TELEMETRY_DISABLED=true` or without an OTLP endpoint it rejects with a
+ * fixed message before any configuration, pool, telemetry or event, because the reversal's
+ * audit events are its only durable record. The configuration is loaded next: a missing or
+ * malformed `TAYZU_OPERATOR_ID` rejects with the loader's fixed message before any pool,
+ * telemetry or event. The pool is built from `REVERSAL_DATABASE_URL` (`createPool` requires
  * `sslmode=verify-full`), the only database URL the script reads. The reversal runs inside
  * `runScript`, which first asserts `current_user = 'tayzu_deletion_admin'` and whose final flush
  * exports the refusal or cancellation event, and the counter, before this resolves (`043` task
@@ -171,6 +174,16 @@ function cancel(
  */
 export async function main(options: CancelOrgDeletionOptions): Promise<CancelOrgDeletionResult> {
   const env = options.env ?? process.env;
+  if (env['TAYZU_TELEMETRY_DISABLED'] === 'true') {
+    throw new FixedMessageError(
+      'cancel-org-deletion refuses to run with TAYZU_TELEMETRY_DISABLED=true.',
+    );
+  }
+  if (!hasOtlpEndpoint(env)) {
+    throw new FixedMessageError(
+      'cancel-org-deletion requires an OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT).',
+    );
+  }
   const config = loadScriptConfig('cancel-org-deletion', env);
   const pool = options.pool ?? createPool(config.REVERSAL_DATABASE_URL);
   try {
