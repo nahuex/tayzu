@@ -699,16 +699,16 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       and its action in the taxonomy, and the new spans, metric and log events in the
       telemetry reference (with a pointer to the identity contract module). Verify: `pnpm
       lint` passes and the kind and every event of the Observability contract are listed.
-- [ ] 10.8 `pnpm ci:local` is fully green (lint, typecheck, unit and integration tests,
+- [x] 10.8 `pnpm ci:local` is fully green (lint, typecheck, unit and integration tests,
       contract-check, otel-smoke-check, cerbos compile, audit, gitleaks). Verify: attach
       the command output to the PR description.
-- [ ] 10.9 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
+- [x] 10.9 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
       implemented code, and resolve or explicitly defer every blocking gap (the
       pre-assessment of task 1.1 and the seven passes over `043` are folded in before
       implementation). Verify: the report is attached to the PR with zero open blocking
       gaps.
-- [ ] 10.10 Run `/security-review` on the branch and fix or justify every finding.
+- [x] 10.10 Run `/security-review` on the branch and fix or justify every finding.
       Verify: the review output is attached to the PR.
-- [ ] 10.11 `openspec validate 045-org-deletion-and-data-retention --strict` passes, and
+- [x] 10.11 `openspec validate 045-org-deletion-and-data-retention --strict` passes, and
       design/specs/code agree (update design only if an implementation finding forced a
       change, noted in the PR). Verify: the command output is attached to the PR.
