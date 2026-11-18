@@ -176,7 +176,7 @@
 
 ## Decisions
 
-### D1. Org deletion is two-phase: revoke now, purge later — ADR-0019
+### D1. Org deletion is two-phase: revoke now, purge later — [ADR-0019](../../../docs/adr/0019-org-deletion-two-phase-purge.md)
 
 Decision (Resolved decisions Q14, Q21, Q26, Q27, carried from `043`), rewriting the earlier
 synchronous design, which could not work as written: `catalog_change_event` is

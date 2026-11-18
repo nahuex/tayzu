@@ -175,6 +175,7 @@ extended by `044` first, so the `OrgDeletionNotice` of `045` rebases onto them.
 ## Org deletion and data retention
 
 Design D1 to D3 of `openspec/changes/045-org-deletion-and-data-retention/design.md`
+([ADR-0019](../adr/0019-org-deletion-two-phase-purge.md))
 (task 10.3). Org deletion has two phases: the request revokes access at once and
 records a deletion marker, and a scheduled job purges the tenant's data once the
 window has passed. Server-level point-in-time restore cannot restore one tenant

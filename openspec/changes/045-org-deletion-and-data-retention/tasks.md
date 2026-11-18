@@ -621,11 +621,11 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 10. Docs, ADRs, diagram, and integration checks (Checkpoint 2 readiness)
 
-- [ ] 10.1 Write `docs/adr/0019-org-deletion-two-phase-purge.md` (design D1 to D3),
+- [x] 10.1 Write `docs/adr/0019-org-deletion-two-phase-purge.md` (design D1 to D3),
       covering the purge role, the marker's integrity rules and the reversal control
       (`043` reserved the number). Verify: the file exists with Context/Decision/
       Alternatives/Consequences, and design D1 links to it.
-- [ ] 10.2 Amend `docs/adr/0014-postgres-roles-and-forced-rls.md` (Resolved decisions Q48,
+- [x] 10.2 Amend `docs/adr/0014-postgres-roles-and-forced-rls.md` (Resolved decisions Q48,
       Q49 and Q65). It says "Three roles" and records row-level security on the
       `tayzu_auth` tables as "Not applicable" (`002` design D6 says the same), while this
       change adds two roles (`tayzu_purge` and `tayzu_deletion_admin`) and row-level
