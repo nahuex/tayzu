@@ -105,3 +105,41 @@ describe('identity router structure: the admin MFA reset (044 task 10.5, design 
     expect(findUnbrandedProcedures(router)).toEqual([]);
   });
 });
+
+/**
+ * `045` task 8.1 (design D6, Resolved decision Q166). Verify (the part of this file):
+ * "`identity-router-structure.test.ts` passes with the procedure present (it is branded)".
+ * D6: `identity.organization.delete` declares
+ * `.route({ method: 'DELETE', path: '/v1/organization', spec: markHighRisk })` with
+ * `inputStructure: 'detailed'`.
+ */
+describe('identity router structure: the org deletion request (045 task 8.1, design D6)', () => {
+  function organizationDelete(): unknown {
+    const router = realRouter() as unknown as {
+      identity: { organization?: Record<string, unknown> };
+    };
+    return router.identity.organization?.['delete'];
+  }
+
+  it('identity.organization.delete exists and is a branded procedure', () => {
+    const procedure = organizationDelete();
+
+    expect(procedure, 'identity.organization.delete is declared').toBeDefined();
+    expect(defineOperation.isIdentityOperation(procedure)).toBe(true);
+    expect(findUnbrandedProcedures(realRouter())).toEqual([]);
+  });
+
+  it('identity.organization.delete declares DELETE /v1/organization, detailed input and x-tayzu-risk: high', () => {
+    const route = (organizationDelete() as { '~orpc': { route: Record<string, unknown> } })['~orpc']
+      .route;
+    const spec =
+      typeof route['spec'] === 'function'
+        ? (route['spec'] as (operation: object) => unknown)({})
+        : route['spec'];
+
+    expect(route['method']).toBe('DELETE');
+    expect(route['path']).toBe('/v1/organization');
+    expect(route['inputStructure']).toBe('detailed');
+    expect((spec as Record<string, unknown> | undefined)?.['x-tayzu-risk']).toBe('high');
+  });
+});

@@ -519,7 +519,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 8. API contract, cross-tenant tests and mount gate
 
-- [ ] 8.1 `identity.organization.delete` is an oRPC procedure of the identity router,
+- [x] 8.1 `identity.organization.delete` is an oRPC procedure of the identity router,
       built with `defineIdentityOperation` (`043`'s task 5.3b) for kind `organization`
       and action `delete`, declaring `.route({ method: 'DELETE', path: '/v1/organization',
       spec: markHighRisk })` with `inputStructure: 'detailed'`, and merged with the other
