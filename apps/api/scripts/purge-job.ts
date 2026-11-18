@@ -322,21 +322,66 @@ export interface RunPurgeOptions {
   readonly env?: RunScriptOptions['env'];
   /** Forwarded to `runScript`. */
   readonly telemetry?: Telemetry;
+  /** Forwarded to every `purgeCatalogStep` call of the pass. */
+  readonly catalogOptions?: PurgeCatalogOptions;
+  /**
+   * Forwarded to every `purgeAuthStep` call of the pass; `runPurge` sets `entitiesRemoved`
+   * from step 1's result itself.
+   */
+  readonly authOptions?: Omit<PurgeAuthOptions, 'entitiesRemoved'>;
+}
+
+type PurgeStep = 'catalog' | 'auth';
+
+/**
+ * Logs a failed purge step (design "Observability"): the tenant and the step only, with no
+ * body and no error text, so that no tenant free text or SQL detail reaches the log.
+ */
+function emitStepFailed(tenantId: string, step: PurgeStep): void {
+  emitIdentityEvent({
+    name: 'catalog.security.org_deletion_failed',
+    severity: 'WARN',
+    attributes: {
+      'tayzu.tenant.id': tenantId,
+      'tayzu.identity.org_deletion.step': step,
+    },
+  });
 }
 
 /**
- * One purge pass inside `runScript`, whose final flush exports the completion events before
- * this resolves (`043` task 2.0, Resolved decision Q79): for each tenant, step 1, then step 2
- * with the entities step 1 removed.
+ * Purges one tenant: step 1, then step 2 with the entities step 1 removed (Resolved decision
+ * Q169: 0 when step 1 was recorded by an earlier run). A failed step is logged and ends this
+ * tenant's pass, so a failed step 1 never runs step 2; the next run resumes from the marker.
+ */
+async function purgeTenant(options: RunPurgeOptions, tenantId: string): Promise<void> {
+  const { pool } = options;
+  let entitiesRemoved: number;
+  try {
+    ({ entitiesRemoved } = await purgeCatalogStep(pool, tenantId, options.catalogOptions));
+  } catch {
+    emitStepFailed(tenantId, 'catalog');
+    return;
+  }
+  try {
+    await purgeAuthStep(pool, tenantId, { ...options.authOptions, entitiesRemoved });
+  } catch {
+    emitStepFailed(tenantId, 'auth');
+  }
+}
+
+/**
+ * One purge pass inside `runScript`, whose final flush exports the completion and failure
+ * events before this resolves (`043` task 2.0, Resolved decision Q79). A failed tenant does
+ * not stop the pass: it is logged and the pass continues with the next tenant, then resolves.
+ * The job's exit status when a tenant failed is task 6.6's concern (the entry point).
  */
 export async function runPurge(options: RunPurgeOptions): Promise<void> {
-  const { pool, tenantIds = [] } = options;
+  const { tenantIds = [] } = options;
   await runScript(
     'purge-job',
     async () => {
       for (const tenantId of tenantIds) {
-        const { entitiesRemoved } = await purgeCatalogStep(pool, tenantId);
-        await purgeAuthStep(pool, tenantId, { entitiesRemoved });
+        await purgeTenant(options, tenantId);
       }
     },
     { env: options.env, telemetry: options.telemetry },

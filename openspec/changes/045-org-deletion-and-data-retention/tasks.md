@@ -385,7 +385,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       asserts the log record precedes the row's disappearance, using the telemetry
       harness's in-memory log exporter, and that it is exported by the time the
       script's run returns.
-- [ ] 6.4 A failed step logs `catalog.security.org_deletion_failed` with the
+- [x] 6.4 A failed step logs `catalog.security.org_deletion_failed` with the
       step, and the next run resumes without repeating a completed step. Verify:
       `org-purge-resume.int.test.ts` covers "A failed purge step is visible and
       resumes" with a failure seam after step 1.
