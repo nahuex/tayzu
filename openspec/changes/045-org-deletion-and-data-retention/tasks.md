@@ -662,7 +662,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       repository member approved by the second human; its authentication, GitHub and the
       environment review; what it can start). Verify: `pnpm lint` passes and the route and
       the workflow entry point each have a row.
-- [ ] 10.5 Update `docs/architecture/system-diagram.md`: the platform operator's reversal
+- [x] 10.5 Update `docs/architecture/system-diagram.md`: the platform operator's reversal
       (the operator is already an actor of the diagram since `043`),
       the purge job with its one database connection (`tayzu_purge`), the reversal script
       and the GitHub Actions maintenance workflow that starts it through OIDC, in the full
