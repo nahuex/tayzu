@@ -1859,6 +1859,84 @@ describe('otel-smoke-check, 043: every declared identity name is in the imported
   );
 });
 
+/*
+ * Task 9.1 of openspec/changes/045-org-deletion-and-data-retention: "`otel-smoke-check.int.test.ts`
+ * fails when a declared name is missing from the module." The 043 check above iterates the
+ * extended fixture, so it already fails for every 045 name the module lacks; this check pins the
+ * fifteen 045 names (and the value sets the cardinality guard reads from the module) on the spec
+ * side too, so that dropping a name from the fixture and the module together still goes red.
+ *
+ * Production symbols expected: the 045 entries of `IDENTITY_SPANS`, `IDENTITY_METRICS`,
+ * `IDENTITY_LOG_EVENTS` and `IDENTITY_ATTRIBUTE_VALUES` in
+ * `packages/auth/src/telemetry/identity-contract.ts` (design "Observability contract").
+ */
+describe('otel-smoke-check, 045: every declared org-deletion name is in the imported contract module (task 9.1)', () => {
+  const SPANS_045 = [
+    'identity.organization.delete',
+    'identity.organization.cancel_deletion',
+    'identity.organization.purge',
+  ];
+  const METRICS_045 = ['tayzu.identity.org_deletions'];
+  const LOGS_045 = [
+    'catalog.audit.org_deletion_requested',
+    'catalog.audit.org_deletion_cancelled',
+    'catalog.audit.org_deletion_completed',
+    'catalog.security.org_deletion_notice_failed',
+    'catalog.security.org_deletion_failed',
+    'catalog.security.org_deletion_repeated',
+    'catalog.security.org_deletion_cancel_refused',
+  ];
+  const VALUES_045: Readonly<Record<string, readonly string[]>> = {
+    'tayzu.identity.rejection.reason': ['tenant_pending_deletion'],
+    'tayzu.identity.invitation.denial_reason': ['tenant_pending_deletion'],
+    'tayzu.identity.invitation.reason': ['org_deletion'],
+    'tayzu.identity.email.template': ['org_deletion'],
+    'tayzu.identity.notice.template': ['org_deletion'],
+    'tayzu.identity.org_deletion.outcome': ['requested', 'completed', 'failed', 'cancelled'],
+    'tayzu.identity.org_deletion.step': ['catalog', 'auth'],
+    'tayzu.identity.org_deletion.cancel_refusal': [
+      'invalid_tenant',
+      'no_pending_marker',
+      'purge_begun',
+      'purge_date_passed',
+    ],
+  };
+
+  function count(list: unknown, name: string): number {
+    const entries = Array.isArray(list) ? (list as readonly unknown[]) : [];
+    return entries.filter(
+      (entry) => (typeof entry === 'string' ? entry : (entry as { name?: unknown }).name) === name,
+    ).length;
+  }
+
+  const declared = identityContract as Record<string, unknown>;
+
+  it.each([
+    ...SPANS_045.map((name) => ['span', name] as const),
+    ...METRICS_045.map((name) => ['metric', name] as const),
+    ...LOGS_045.map((name) => ['log event', name] as const),
+  ])('the %s %s is in the fixture and declared exactly once in the module', (kind, name) => {
+    const [fixture, module] =
+      kind === 'span'
+        ? [EXPECTED_SPANS, declared.IDENTITY_SPANS]
+        : kind === 'metric'
+          ? [EXPECTED_METRICS, declared.IDENTITY_METRICS]
+          : [EXPECTED_LOG_EVENTS, declared.IDENTITY_LOG_EVENTS];
+    expect(count(fixture, name), `fixture has ${name}`).toBe(1);
+    expect(count(module, name), `module declares ${name}`).toBe(1);
+  });
+
+  it('the counter tayzu.identity.org_deletions has its declared unit', () => {
+    expect(IDENTITY_METRIC_UNITS['tayzu.identity.org_deletions']).toBe('{deletion}');
+  });
+
+  it.each(Object.entries(VALUES_045))('the module declares the 045 values of %s', (key, values) => {
+    const all = declared.IDENTITY_ATTRIBUTE_VALUES as
+      Readonly<Record<string, readonly string[]>> | undefined;
+    expect(all?.[key] ?? [], key).toEqual(expect.arrayContaining([...values]));
+  });
+});
+
 /**
  * `otel-smoke-check`, 043 extension (task 15.2, openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin;
  * design.md "Observability contract", Resolved decisions Q74, Q107, Q116, Q117 and Q131).
@@ -1944,6 +2022,8 @@ const IDENTITY_METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.password_reset_confirms': '{event}',
   'tayzu.identity.mfa_resets': '{event}',
   'tayzu.identity.recovery_emails': '{event}',
+  // 045 (design "Observability contract", Metrics: "Counter, `{deletion}`").
+  'tayzu.identity.org_deletions': '{deletion}',
 };
 
 /** Span attributes the design lists as conditional (its Spans table). */

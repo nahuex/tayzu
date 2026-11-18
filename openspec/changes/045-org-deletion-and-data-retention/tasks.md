@@ -584,7 +584,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 9. Telemetry contract enforcement
 
-- [ ] 9.1 Extend `043`'s identity contract module,
+- [x] 9.1 Extend `043`'s identity contract module,
       `packages/auth/src/telemetry/identity-contract.ts`, with the names of the
       Observability contract of this change: the spans `identity.organization.delete`,
       `identity.organization.cancel_deletion` and `identity.organization.purge`, the

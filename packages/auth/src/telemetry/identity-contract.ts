@@ -3,8 +3,9 @@
  * kept apart from `./contract.ts`, whose test requires it to equal the authz
  * contract's `auth.*` subset exactly. 13.3 declared the four `002` Q42 names
  * here and 15.1 declares the rest, as design.md's Observability contract
- * states them. `catalog.security.authz_denied` and `tayzu.authz.decisions`
- * are reused from 001 / 002 and are not declared here.
+ * states them; 044 (task 12.1) and 045 (task 9.1) append theirs.
+ * `catalog.security.authz_denied` and `tayzu.authz.decisions` are reused from
+ * 001 / 002 and are not declared here.
  */
 export interface IdentitySpanDeclaration {
   readonly name: string;
@@ -52,6 +53,9 @@ const MFA_RESET_PATH = 'tayzu.identity.mfa_reset.path';
 const SESSIONS_REVOKED = 'tayzu.identity.sessions.revoked';
 const RECONCILE_CREATED = 'tayzu.identity.reconcile.created';
 const RECONCILE_ORPHANS = 'tayzu.identity.reconcile.orphans';
+const ORG_DELETION_STEP = 'tayzu.identity.org_deletion.step';
+const ORG_DELETION_ENTITIES_REMOVED = 'tayzu.identity.org_deletion.entities_removed';
+const ORG_DELETION_CANCEL_REFUSAL = 'tayzu.identity.org_deletion.cancel_refusal';
 
 const STATUS_TAIL = [
   STATUS_TO,
@@ -83,6 +87,14 @@ export const IDENTITY_SPANS: readonly IdentitySpanDeclaration[] = [
     conditional: [RESET_MFA],
   },
   { name: 'identity.mfa.reset', attributes: [MFA_RESET_PATH] },
+  // 045 (design "Observability contract"). The purge span is one per tenant and step, and
+  // carries the tenant as a required attribute.
+  { name: 'identity.organization.delete', attributes: [TENANT] },
+  { name: 'identity.organization.cancel_deletion', attributes: [TENANT, OPERATOR_ID] },
+  {
+    name: 'identity.organization.purge',
+    attributes: [TENANT, ORG_DELETION_STEP, ORG_DELETION_ENTITIES_REMOVED],
+  },
 ];
 
 export const IDENTITY_METRICS: readonly IdentityMetricDeclaration[] = [
@@ -114,6 +126,8 @@ export const IDENTITY_METRICS: readonly IdentityMetricDeclaration[] = [
     name: 'tayzu.identity.recovery_emails',
     attributes: [EMAIL_TEMPLATE, 'tayzu.identity.email.outcome'],
   },
+  // 045 (design "Observability contract"): a counter, unit `{deletion}`.
+  { name: 'tayzu.identity.org_deletions', attributes: ['tayzu.identity.org_deletion.outcome'] },
 ];
 
 export const IDENTITY_LOG_EVENTS: readonly IdentityLogEventDeclaration[] = [
@@ -308,6 +322,40 @@ export const IDENTITY_LOG_EVENTS: readonly IdentityLogEventDeclaration[] = [
     severity: 'WARN',
     attributes: [TENANT, ACTOR_ID],
   },
+  // 045 (design "Observability contract"). `tayzu.actor.id` is the admin who acted.
+  {
+    name: 'catalog.audit.org_deletion_requested',
+    severity: 'INFO',
+    attributes: [TENANT, ACTOR_ID],
+  },
+  {
+    name: 'catalog.audit.org_deletion_cancelled',
+    severity: 'INFO',
+    attributes: [TENANT, OPERATOR_ID],
+  },
+  {
+    name: 'catalog.audit.org_deletion_completed',
+    severity: 'INFO',
+    attributes: [TENANT, ORG_DELETION_ENTITIES_REMOVED],
+  },
+  { name: 'catalog.security.org_deletion_notice_failed', severity: 'WARN', attributes: [TENANT] },
+  {
+    name: 'catalog.security.org_deletion_failed',
+    severity: 'WARN',
+    attributes: [TENANT, ORG_DELETION_STEP],
+  },
+  {
+    name: 'catalog.security.org_deletion_repeated',
+    severity: 'WARN',
+    attributes: [TENANT, ACTOR_ID],
+  },
+  {
+    // The tenant is set only once its id passed the shape check (absent for `invalid_tenant`).
+    name: 'catalog.security.org_deletion_cancel_refused',
+    severity: 'WARN',
+    attributes: [OPERATOR_ID, ORG_DELETION_CANCEL_REFUSAL],
+    conditional: [TENANT],
+  },
 ];
 
 /**
@@ -325,6 +373,8 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'user_disabled',
     'inviter_disabled',
     'user_created',
+    // 045: the cancellation by phase 1 of org deletion.
+    'org_deletion',
   ],
   'tayzu.identity.invitation.mutation': [
     'created',
@@ -351,6 +401,8 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'inviter_not_active_admin',
     'member_limit',
     'consume_conflict',
+    // 045 design D4: the invitation's tenant has a pending deletion.
+    'tenant_pending_deletion',
   ],
   'tayzu.identity.invitation.limit_scope': ['tenant', 'recipient', 'global'],
   'tayzu.identity.service_account.mutation': ['created', 'disabled', 'enabled', 'deleted'],
@@ -362,6 +414,8 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'service_account_disabled',
     'service_account_missing',
     'user_missing',
+    // 045 design D4.
+    'tenant_pending_deletion',
   ],
   'tayzu.identity.user.role': ['member', 'admin'],
   'tayzu.identity.user.source': ['admin', 'bootstrap'],
@@ -374,7 +428,7 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'admin_disable',
     'admin_enable',
   ],
-  'tayzu.identity.notice.template': ['admin_accepted'],
+  'tayzu.identity.notice.template': ['admin_accepted', 'org_deletion'],
   'tayzu.identity.notice.suppression': ['global', 'tenant', 'recipient', 'truncated'],
   'tayzu.identity.email.template': [
     'invitation',
@@ -384,6 +438,8 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'mfa_changed',
     'mfa_reset',
     'account_created',
+    // 045: the eighth template.
+    'org_deletion',
   ],
   [RESET_MFA]: ['not_enrolled', 'totp', 'backup_code'],
   'tayzu.identity.reset.request_outcome': ['issued', 'ineligible', 'suppressed'],
@@ -445,4 +501,13 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'no_enrolled_factor',
   ],
   'tayzu.auth.revocation.reason': ['sso_link_shed', 'password_reset', 'mfa_reset'],
+  // 045 (design "Observability contract").
+  'tayzu.identity.org_deletion.outcome': ['requested', 'completed', 'failed', 'cancelled'],
+  [ORG_DELETION_STEP]: ['catalog', 'auth'],
+  [ORG_DELETION_CANCEL_REFUSAL]: [
+    'invalid_tenant',
+    'no_pending_marker',
+    'purge_begun',
+    'purge_date_passed',
+  ],
 };

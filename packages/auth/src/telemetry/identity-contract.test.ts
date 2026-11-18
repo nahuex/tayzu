@@ -401,6 +401,8 @@ describe('the identity contract declares the 044 telemetry of design D15 (task 1
         'mfa_changed',
         'mfa_reset',
         'account_created',
+        // 045 task 9.1: the eighth template `org_deletion` (a superseded pin).
+        'org_deletion',
       ]),
     );
   });
@@ -423,9 +425,175 @@ describe('the identity contract declares the 044 telemetry of design D15 (task 1
     expect(request?.conditional ?? []).toEqual([]);
   });
 
-  it('`tayzu.identity.notice.template` is unchanged', () => {
+  it('`tayzu.identity.notice.template` is unchanged by 044 (045 appends `org_deletion`)', () => {
     expect(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.notice.template']).toEqual([
       'admin_accepted',
+      // 045 task 9.1 (a superseded pin).
+      'org_deletion',
+    ]);
+  });
+});
+
+/*
+ * Task 9.1 of openspec/changes/045-org-deletion-and-data-retention (design "Observability
+ * contract"). Verify clause: "`identity-contract.test.ts` snapshot-asserts every added name
+ * against the fixture `packages/auth/src/__fixtures__/identity-contract-expected.ts`
+ * (extended)".
+ *
+ * ## Production symbols expected (`./identity-contract.js`)
+ *
+ * - `IDENTITY_SPANS` gains `identity.organization.delete` (`tayzu.tenant.id`),
+ *   `identity.organization.cancel_deletion` (`tayzu.tenant.id`, `tayzu.identity.operator.id`)
+ *   and `identity.organization.purge` (`tayzu.tenant.id` required,
+ *   `tayzu.identity.org_deletion.step`, `tayzu.identity.org_deletion.entities_removed`).
+ * - `IDENTITY_METRICS` gains `tayzu.identity.org_deletions`
+ *   (`tayzu.identity.org_deletion.outcome`).
+ * - `IDENTITY_LOG_EVENTS` gains the seven 045 events; `catalog.security.org_deletion_cancel_refused`
+ *   has `conditional: ['tayzu.tenant.id']`.
+ * - `IDENTITY_ATTRIBUTE_VALUES` gains `tenant_pending_deletion` in
+ *   `tayzu.identity.rejection.reason` and `tayzu.identity.invitation.denial_reason`, `org_deletion`
+ *   in `tayzu.identity.invitation.reason`, `tayzu.identity.notice.template` and (the eighth,
+ *   after 044's five) `tayzu.identity.email.template`, and the three new keys
+ *   `tayzu.identity.org_deletion.outcome`, `.step` and `.cancel_refusal`.
+ *
+ * ## Why this fails right now
+ *
+ * The module declares none of these names or values (assertion failures). The 043 and 044
+ * cases above compare against the same extended fixture, so they fail for the same reason.
+ */
+const EXPECTED_045_NAMES = {
+  spans: [
+    'identity.organization.delete',
+    'identity.organization.cancel_deletion',
+    'identity.organization.purge',
+  ],
+  metrics: ['tayzu.identity.org_deletions'],
+  events: [
+    'catalog.audit.org_deletion_requested',
+    'catalog.audit.org_deletion_cancelled',
+    'catalog.audit.org_deletion_completed',
+    'catalog.security.org_deletion_notice_failed',
+    'catalog.security.org_deletion_failed',
+    'catalog.security.org_deletion_repeated',
+    'catalog.security.org_deletion_cancel_refused',
+  ],
+};
+
+const VALUES_045 = [
+  'tayzu.identity.rejection.reason',
+  'tayzu.identity.invitation.denial_reason',
+  'tayzu.identity.invitation.reason',
+  'tayzu.identity.email.template',
+  'tayzu.identity.notice.template',
+  'tayzu.identity.org_deletion.outcome',
+  'tayzu.identity.org_deletion.step',
+  'tayzu.identity.org_deletion.cancel_refusal',
+];
+
+describe('the identity contract declares the 045 org-deletion telemetry (task 9.1)', () => {
+  const contract = identityContract as unknown as {
+    IDENTITY_SPANS: readonly Declared[];
+    IDENTITY_METRICS: readonly Declared[];
+    IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>>;
+  };
+  const spans = asDeclared(contract.IDENTITY_SPANS);
+  const metrics = asDeclared(contract.IDENTITY_METRICS);
+  const events = asDeclared(IDENTITY_LOG_EVENTS);
+
+  it.each(EXPECTED_045_NAMES.spans)(
+    'span %s is declared exactly once and equals the fixture',
+    (name) => {
+      const expected = EXPECTED_SPANS.find((s) => s.name === name);
+      expect(expected, `fixture has ${name}`).toBeDefined();
+      expect(spans.filter((s) => s.name === name)).toHaveLength(1);
+      const declared = byName(spans, name);
+      expect(sorted(declared?.attributes)).toEqual(sorted(expected?.attributes));
+      expect(sorted(declared?.conditional)).toEqual(sorted(expected?.conditional));
+    },
+  );
+
+  it.each(EXPECTED_045_NAMES.metrics)(
+    'metric %s is declared exactly once and equals the fixture',
+    (name) => {
+      const expected = EXPECTED_METRICS.find((m) => m.name === name);
+      expect(expected, `fixture has ${name}`).toBeDefined();
+      expect(metrics.filter((m) => m.name === name)).toHaveLength(1);
+      expect(sorted(byName(metrics, name)?.attributes)).toEqual(sorted(expected?.attributes));
+    },
+  );
+
+  it.each(EXPECTED_045_NAMES.events)(
+    'log event %s is declared exactly once and equals the fixture',
+    (name) => {
+      const expected = EXPECTED_LOG_EVENTS.find((e) => e.name === name);
+      expect(expected, `fixture has ${name}`).toBeDefined();
+      expect(events.filter((e) => e.name === name)).toHaveLength(1);
+      const declared = byName(events, name);
+      expect(declared?.severity).toBe(expected?.severity);
+      expect(declared?.forms).toBeUndefined();
+      expect(sorted(declared?.attributes)).toEqual(sorted(expected?.attributes));
+      expect(sorted(declared?.conditional)).toEqual(sorted(expected?.conditional));
+    },
+  );
+
+  it('the purge span carries `tayzu.tenant.id` as a required attribute, not a conditional one', () => {
+    const purge = byName(spans, 'identity.organization.purge');
+    expect(purge, 'declared').toBeDefined();
+    expect(purge?.attributes).toContain('tayzu.tenant.id');
+    expect(purge?.conditional ?? []).not.toContain('tayzu.tenant.id');
+  });
+
+  it('catalog.security.org_deletion_cancel_refused requires the operator id and the refusal, with the tenant conditional', () => {
+    const refused = byName(events, 'catalog.security.org_deletion_cancel_refused');
+    expect(refused, 'declared').toBeDefined();
+    expect(sorted(refused?.attributes)).toEqual([
+      'tayzu.identity.operator.id',
+      'tayzu.identity.org_deletion.cancel_refusal',
+    ]);
+    expect(refused?.conditional).toEqual(['tayzu.tenant.id']);
+  });
+
+  it('the value sets equal the design, the extended ones included', () => {
+    for (const key of VALUES_045) {
+      expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES[key]), key).toEqual(
+        sorted(EXPECTED_ATTRIBUTE_VALUES[key]),
+      );
+    }
+    expect(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.rejection.reason']).toContain(
+      'tenant_pending_deletion',
+    );
+    expect(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.invitation.denial_reason']).toContain(
+      'tenant_pending_deletion',
+    );
+    expect(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.invitation.reason']).toContain(
+      'org_deletion',
+    );
+    expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.notice.template'])).toEqual([
+      'admin_accepted',
+      'org_deletion',
+    ]);
+    expect(
+      sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.org_deletion.outcome']),
+    ).toEqual(['cancelled', 'completed', 'failed', 'requested']);
+    expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.org_deletion.step'])).toEqual([
+      'auth',
+      'catalog',
+    ]);
+    expect(
+      sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.org_deletion.cancel_refusal']),
+    ).toEqual(['invalid_tenant', 'no_pending_marker', 'purge_begun', 'purge_date_passed']);
+  });
+
+  it("`org_deletion` is the eighth email template, appended after 044's five", () => {
+    expect(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.email.template']).toEqual([
+      'invitation',
+      'admin_accepted',
+      'password_reset',
+      'password_changed',
+      'mfa_changed',
+      'mfa_reset',
+      'account_created',
+      'org_deletion',
     ]);
   });
 });
