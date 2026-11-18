@@ -14,7 +14,8 @@ Dependabot opens weekly pull requests for three ecosystems
 - **npm**, root directory. Minor and patch updates are grouped into a single
   pull request so routine bumps do not create update noise; a major update
   still opens its own pull request for review.
-- **github-actions**, root directory. Every action pinned in `ci.yml` and the
+- **github-actions**, root directory. Every action pinned in `ci.yml`, in
+  `identity-maintenance.yml` (`azure/login`, change `045`) and in the
   composite action under `.github/actions/setup/` is covered.
 - **docker**, directories `/` and `/scripts/ci`. It reads `compose.yaml` and
   `scripts/ci/Dockerfile.images`, so the pinned image digests below are
@@ -177,9 +178,9 @@ waived, but only through this path:
 
 ### Waivers table
 
-| Advisory              | Package | Justification | Owner | Expiry | PR  |
-| --------------------- | ------- | ------------- | ----- | ------ | --- |
-| _(no active waivers)_ |         |               |       |        |     |
+| Advisory                                                                  | Package                                                      | Justification                                                                                                                                                                                                                                                                                                                                        | Owner     | Expiry                                                                                                        | PR                   |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- | -------------------- |
+| GHSA-fc5q-39xc-vjpf (high, ReDoS through single-branch repeated extglobs) | `picomatch` <=4.0.7, path `better-auth > vitest > picomatch` | No patched release exists (4.0.7 is the latest). The only path is `vitest`, an optional peer of Better Auth that is test tooling and is not loaded at runtime, and no glob pattern is built from user input anywhere in the product. An override cannot help until a fixed version is published. Recorded as Resolved decision Q180 of change `045`. | `@nahuex` | 2027-02-18, or as soon as a patched `picomatch` is published: remove the waiver and add an override or update | `045` (Checkpoint 2) |
 
 ## SBOM
 

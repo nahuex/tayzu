@@ -282,7 +282,10 @@ workstation.
 1. Start the workflow from `master` (a job condition refuses any other ref) with
    the inputs `job=cancel-org-deletion` and `tenant_id=<tenant id>`. The workflow
    refuses a tenant id that does not match `^[A-Za-z0-9_-]{1,64}$`, and the input
-   reaches its steps only through `env`.
+   reaches its steps only through `env`. It also refuses a re-run started by
+   anyone other than the person who started the first run, because the operator
+   id is that first person's: a re-run by someone else is dispatched again
+   (Resolved decision Q177).
 2. A reviewer of the environment approves the run.
 3. The workflow logs in to Azure through OIDC and starts the Container Apps Job
    `tayzu-cancel-org-deletion` with two fixed variables: `TAYZU_TENANT_ID` and
@@ -292,7 +295,9 @@ workstation.
    (`pnpm --filter @tayzu/api identity:cancel-org-deletion`) inside the VNET as
    `tayzu_deletion_admin` (Resolved decision Q35), which can only tombstone a
    pending marker and reads no tenant data. It asserts that role at start and
-   refuses to run without an operator id. It sets `state = 'cancelled'`,
+   refuses to run without an operator id, with `TAYZU_TELEMETRY_DISABLED=true` or
+   without an OTLP endpoint, so its audit event is always exported (Resolved
+   decision Q178; the purge job applies the same rule). It sets `state = 'cancelled'`,
    `cancelled_at` and `cancelled_by` (the row is never deleted), logs
    `catalog.audit.org_deletion_cancelled` with the tenant and the operator's
    opaque id, and increments `tayzu.identity.org_deletions` with the outcome

@@ -422,6 +422,13 @@ Container Apps Jobs that run inside the VNET as `tayzu_deletion_admin`,
   confirmed in `010`'s sandbox rehearsal (Q157, Q174). The GitHub and Azure
   settings are human-owned; their checklist is in
   [Secrets](secrets.md#github-settings-checklist-of-the-maintenance-workflow).
+- **Re-runs.** The first step refuses a run whose triggering actor differs from
+  the actor of the first run, so the operator id recorded by the job is always
+  the person who started that run (`045` Q177).
+- **No administrator bypass.** The environment's administrator bypass is off
+  and the `master` ruleset has no bypass actors, so the second approver and the
+  code-owner review cannot be skipped by an admin account (`045` Q179, item 6
+  of the settings checklist).
 - **Not enabled yet.** The workflow cannot be enabled until the second human is
   a reviewer of the environment and a code owner (Q153), a first-deployment
   gate for `010`.
