@@ -576,7 +576,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `cross-tenant.http.int.test.ts` covers a confirmation naming `t2`, called by `t1`'s
       admin, answering the same response as any wrong confirmation (the route has no
       target in its path).
-- [ ] 8.7 The route-template matcher of `043`'s task 15.5 covers the path of the route, so
+- [x] 8.7 The route-template matcher of `043`'s task 15.5 covers the path of the route, so
       that nothing about it but its template is exported. Verify:
       `telemetry-paths.http.int.test.ts` (extended) covers the matcher resolving
       `DELETE /v1/organization` to its template and a marker organization identifier sent

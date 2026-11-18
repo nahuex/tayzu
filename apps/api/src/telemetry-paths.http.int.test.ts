@@ -11,6 +11,29 @@
  * path templates) and the three `_user` catalog templates (fifteen), and
  * `docs/catalog/catalog-core.md` names the three `_user` route templates.
  *
+ * ## 045 task 8.7: `DELETE /v1/organization`
+ *
+ * Task 8.7 of openspec/changes/045-org-deletion-and-data-retention (design D9: the route has no
+ * path parameter, its confirmation travels in the query string, which the HTTP instrumentation
+ * already drops, and the route-template matcher gains its path): "The route-template matcher of
+ * `043`'s task 15.5 covers the path of the route, so that nothing about it but its template is
+ * exported. Verify: `telemetry-paths.http.int.test.ts` (extended) covers the matcher resolving
+ * `DELETE /v1/organization` to its template and a marker organization identifier sent as the
+ * confirmation appearing in no exported span, metric or log attribute."
+ *
+ * Scenario "The organization name never reaches telemetry" (045 spec): GIVEN an organization
+ * named with a marker string; WHEN it is deleted, reversed or purged; THEN the marker appears in
+ * no exported span, metric or log attribute, and the exported path of `DELETE /v1/organization`
+ * is the route template. Here, the deletion over HTTP only (the reversal and the purge are
+ * scripts, task 9.2).
+ *
+ * Two calls, each from a fresh tenant of its own (a deletion closes its tenant), after every
+ * other request of the shared admin: a wrong confirmation carrying a random marker string (400,
+ * the handler reached), and the happy path, whose confirmation must be the real tenant id, from
+ * an organization named with a marker string. The tenant id may be exported as
+ * `tayzu.tenant.id`, so for the happy path the URL attributes of the route's server spans are
+ * checked not to carry it, and no exported signal carries `confirmation=`.
+ *
  * ## Harness
  *
  * The real OTel SDK (`startTelemetry`) exports over OTLP/HTTP to an in-process receiver;
@@ -55,6 +78,7 @@ const CATALOG_USER = '/v1/blueprints/_user/entities/{entity}';
 const CATALOG_USER_STATUS = '/v1/blueprints/_user/entities/{entity}/status';
 const CATALOG_USER_RELATED = '/v1/blueprints/_user/entities/{entity}/related';
 const CREDENTIAL_ROTATE = '/v1/credentials/{credential}/rotate';
+const ORGANIZATION = '/v1/organization';
 
 interface JsonAttribute {
   key: string;
@@ -145,16 +169,23 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
   const resetEncodedMarker = `marker-enc-user-${suffix}@example.com`;
   const otherBlueprintPath = `/v1/blueprints/component/entities/${otherBlueprintEntity}`;
 
+  // 045 task 8.7: a random marker sent as a wrong confirmation, and an organization name marker.
+  const confirmationMarker = `org-marker-${suffix}`;
+  const organizationNameMarker = `Org Name Marker ${suffix}`;
+  let wrongConfirmationStatus = 0;
+  let deletionStatus = 0;
+  let deletedTenantId = '';
+
   let spans: JsonSpan[] = [];
   let everything = '';
 
   async function call(
     base: string,
     cookie: string,
-    method: 'GET' | 'PUT' | 'POST',
+    method: 'GET' | 'PUT' | 'POST' | 'DELETE',
     path: string,
     body?: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<number> {
     const response = await fetch(`${base}${path}`, {
       method,
       headers: {
@@ -167,6 +198,7 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     await response.arrayBuffer();
+    return response.status;
   }
 
   beforeAll(async () => {
@@ -262,6 +294,44 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
             reason: 'device_replaced',
           });
         }
+        // 045 task 8.7: `DELETE /v1/organization`, each call from a fresh tenant of its own.
+        const freshAdminCookie = async (
+          organizationName: string,
+        ): Promise<{
+          cookie: string;
+          tenantId: string;
+        }> => {
+          const own = randomUUID();
+          const created = await bootstrapTestTenant(app.auth, {
+            pool: testAppPool(),
+            name: 'Telemetry Paths Org Admin',
+            email: `telemetry-paths-org-${own}@example.test`,
+            password: TEST_PASSWORD,
+            organizationName,
+            organizationSlug: `telemetry-paths-org-${own}`,
+            ip: randomIp(),
+          });
+          const session = await enrolledAdminSession(app, created, {
+            password: TEST_PASSWORD,
+            origin: ORIGIN,
+          });
+          return { cookie: session.cookie, tenantId: created.organizationId };
+        };
+        const wrong = await freshAdminCookie(`Telemetry Paths Wrong ${randomUUID()}`);
+        wrongConfirmationStatus = await call(
+          base,
+          wrong.cookie,
+          'DELETE',
+          `${ORGANIZATION}?${new URLSearchParams({ confirmation: confirmationMarker }).toString()}`,
+        );
+        const deleted = await freshAdminCookie(organizationNameMarker);
+        deletedTenantId = deleted.tenantId;
+        deletionStatus = await call(
+          base,
+          deleted.cookie,
+          'DELETE',
+          `${ORGANIZATION}?${new URLSearchParams({ confirmation: deleted.tenantId }).toString()}`,
+        );
       } finally {
         await app.close();
       }
@@ -335,6 +405,32 @@ describe('identifiers in URL paths never reach telemetry over HTTP (task 15.5)',
     );
   });
 
+  it('A marker organization identifier sent as the confirmation of DELETE /v1/organization appears in no exported span, metric or log attribute, and the exported path is the route template (045 task 8.7)', () => {
+    expect(wrongConfirmationStatus, 'the wrong confirmation reached the handler').toBe(400);
+    expect(deletionStatus, 'the deletion was honored').toBeGreaterThanOrEqual(200);
+    expect(deletionStatus, 'the deletion was honored').toBeLessThan(300);
+    expect(
+      serverSpans('DELETE', ORGANIZATION).length,
+      'a DELETE server span per call exports the template',
+    ).toBeGreaterThanOrEqual(2);
+    expectTemplateExported('DELETE', ORGANIZATION);
+    expectNoMarker(confirmationMarker, encodeURIComponent(confirmationMarker), 'confirmation=');
+  });
+
+  it('The organization name never reaches telemetry: deleting an organization named with a marker string exports neither the name nor the confirmed id in a URL attribute (045 task 8.7)', () => {
+    expect(deletedTenantId).not.toBe('');
+    expectNoMarker(
+      organizationNameMarker,
+      encodeURIComponent(organizationNameMarker),
+      organizationNameMarker.replaceAll(' ', '+'),
+    );
+    for (const span of serverSpans('DELETE', ORGANIZATION)) {
+      for (const key of [...['url.full', 'http.url', 'http.target', 'url.path'], 'url.query']) {
+        expect(attr(span, key) ?? '', key).not.toContain(deletedTenantId);
+      }
+    }
+  });
+
   it('every identity or `_user` server span exports a template, never an identifier path', () => {
     const templates = new Set([
       USER_STATUS,
@@ -402,6 +498,13 @@ describe('docs/catalog/catalog-core.md (task 15.5)', () => {
     for (const template of [CATALOG_USER, CATALOG_USER_STATUS, CATALOG_USER_RELATED]) {
       expect(doc).toContain(template);
     }
+  });
+});
+
+/** 045 task 8.7: the template matcher covers the org deletion route. */
+describe('the org deletion template matcher (045 task 8.7)', () => {
+  it('the route-template matcher resolves DELETE /v1/organization to its template', () => {
+    expect(routeTemplate('/v1/organization')).toBe('/v1/organization');
   });
 });
 
