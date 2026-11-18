@@ -422,7 +422,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       unlisted identifier pattern, and passes on the real schema. The test's table
       also classifies every identifier family and table `002`, `044` and Better Auth write,
       so that it passes on the real schema (design D2): `sso-reauth-state:` and
-      `sso-reauth-result:` (deleted by step 2 or exempt, each with its reason),
+      `sso-reauth-result:` (deleted by the deletion request with the tenant's sessions, Q170),
       `backchannel-logout:<client>:<jti>` (exempt), `2fa-<random>` and
       `2fa-attempts-2fa-<random>` (written by Better Auth's two-factor plugin on
       every enrolled sign-in; exempt as short-lived state keyed by a random value,
