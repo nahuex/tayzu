@@ -1008,7 +1008,7 @@ describe('tayzu_deletion_admin, the reversal role (migration 0013, task 2.2, Q35
     ]);
   });
 
-  it('tayzu_deletion_admin reads no marker other than a pending one with no recorded step and a future date', async () => {
+  it('tayzu_deletion_admin reads every pending marker, whatever its purge steps or purge date, and no earlier tombstone or purged marker (Q171)', async () => {
     const eligible = newTenantId();
     const stepOne = newTenantId();
     const stepTwo = newTenantId();
@@ -1027,12 +1027,15 @@ describe('tayzu_deletion_admin, the reversal role (migration 0013, task 2.2, Q35
       'select tenant_id from tenant_deletion_marker where tenant_id = any($1::text[])',
       [[eligible, stepOne, stepTwo, pastDue, cancelled, purged]],
     );
-    expect(read.rows).toEqual([{ tenant_id: eligible }]);
+    expect(read.rows.map((row) => row.tenant_id).sort()).toEqual(
+      [eligible, stepOne, stepTwo, pastDue].sort(),
+    );
 
+    // Outside a transaction that writes a tombstone, `now()` is this
+    // statement's own clock, so no tombstone qualifies and the role reads
+    // nothing but pending markers, of any tenant.
     const outside = await admin.query<{ count: number }>(
-      `select count(*)::int as count from tenant_deletion_marker
-        where not (state = 'pending' and catalog_purged_at is null and auth_purged_at is null
-                   and purge_after > now())`,
+      `select count(*)::int as count from tenant_deletion_marker where state <> 'pending'`,
     );
     expect(outside.rows).toEqual([{ count: 0 }]);
   });

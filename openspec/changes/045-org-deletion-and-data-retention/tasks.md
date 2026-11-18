@@ -167,7 +167,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       role, so the rows are filtered by member) and that `tayzu_purge`
       owns no object; that `tayzu_deletion_admin` can tombstone a pending marker
       with no purge step and a future date and cannot once a step is recorded or the
-      date has passed, reads no marker other than a pending one with no recorded step and a future date
+      date has passed, reads every pending marker but no earlier tombstone or purged marker (Q171)
       (the tombstone's `UPDATE ... WHERE ... RETURNING` working), cannot read or delete
       tenant data and has no `USAGE` on `auth`; and that the migration creates no `SECURITY DEFINER` function. ⛔
       **Stop for Checkpoint 3 approval of the SQL before continuing.**

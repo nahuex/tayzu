@@ -19,8 +19,9 @@
 --   due markers, records the two purge steps and the `purged` state, and reads
 --   and deletes the rows of a tenant with a due marker on the seven tenant
 --   tables, named one by one.
--- - `tayzu_deletion_admin` (the reversal's role, Q35) may only tombstone a
---   pending marker with no recorded purge step and a future `purge_after`.
+-- - `tayzu_deletion_admin` (the reversal's role, Q35) may read every pending
+--   marker (Q171) but may only tombstone a pending marker with no recorded
+--   purge step and a future `purge_after`.
 --
 -- No function is created and no ownership is transferred (Q48): every rule is
 -- a grant, a policy or the amended trigger. "Due" is always the same
@@ -129,23 +130,23 @@ GRANT SELECT ON tenant_deletion_marker TO tayzu_deletion_admin;
 --> statement-breakpoint
 GRANT UPDATE (state, cancelled_at, cancelled_by) ON tenant_deletion_marker TO tayzu_deletion_admin;
 --> statement-breakpoint
--- Reads only a pending marker with no recorded purge step and a future
--- purge date, plus the tombstone this transaction has just written. The
--- second disjunct exists for the same reason as in `purge_due_select`: the
--- tombstone's `UPDATE ... WHERE ... RETURNING` has its NEW row
--- (`state = 'cancelled'`) checked against this SELECT policy. The update
--- policy below accepts a tombstone only with `cancelled_at = now()`, so every
--- tombstone this role writes carries the clock of its own transaction, and
--- no other transaction of this role reads it: the role never reads a
--- cancelled marker it is not writing, nor a purged or half-purged one.
+-- Reads every pending marker, whatever its purge steps or purge date, plus
+-- the tombstone this transaction has just written (Q171). The first disjunct
+-- is wider than what the role may tombstone so that the reversal script can
+-- tell a purge that has begun, or a purge date that has passed, from a
+-- missing marker, and name each refusal reason; the update policy below still
+-- refuses to tombstone any of those. A pending marker holds no tenant free
+-- text, and the role still reads no tenant data. The second disjunct exists
+-- for the same reason as in `purge_due_select`: the tombstone's
+-- `UPDATE ... WHERE ... RETURNING` has its NEW row (`state = 'cancelled'`)
+-- checked against this SELECT policy. The update policy below accepts a
+-- tombstone only with `cancelled_at = now()`, so every tombstone this role
+-- writes carries the clock of its own transaction, and no other transaction
+-- of this role reads it: the role never reads a cancelled marker it is not
+-- writing, nor a purged one.
 CREATE POLICY deletion_admin_select ON tenant_deletion_marker AS PERMISSIVE FOR SELECT TO tayzu_deletion_admin
   USING (
-    (
-      tenant_deletion_marker.state = 'pending'
-      AND tenant_deletion_marker.catalog_purged_at IS NULL
-      AND tenant_deletion_marker.auth_purged_at IS NULL
-      AND tenant_deletion_marker.purge_after > now()
-    )
+    tenant_deletion_marker.state = 'pending'
     OR (tenant_deletion_marker.state = 'cancelled' AND tenant_deletion_marker.cancelled_at = now())
   );
 --> statement-breakpoint
