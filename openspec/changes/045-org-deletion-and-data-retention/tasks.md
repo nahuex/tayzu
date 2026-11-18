@@ -612,7 +612,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       added `tayzu.identity.org_deletion.name` metric attribute makes it fail, and an
       organization named with a marker string appears in no signal of a request, a
       reversal and a purge.
-- [ ] 9.3 Every deletion action emits its declared event, with `tayzu.actor.id` the admin
+- [x] 9.3 Every deletion action emits its declared event, with `tayzu.actor.id` the admin
       who acted (the operator for the cancellation), never the `system` actor. Verify:
       `identity-events.int.test.ts` (`043`'s task 15.6, extended) covers "Each deletion
       action emits its declared event" for the request, the repeated request, the

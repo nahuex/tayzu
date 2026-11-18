@@ -24,11 +24,38 @@
  * - THEN the acceptance's audit event names the invitee as its actor, the bootstrap's names the
  *   operator's opaque id (the refusal without an operator id is 4.6b's case)
  *
+ * ## Extended by task 9.3 of openspec/changes/045-org-deletion-and-data-retention
+ *
+ * Design "Observability contract" (log-event table) and D1 to D3. Scenarios, quoted from
+ * `specs/org-deletion-and-data-retention/spec.md`:
+ *
+ * #### Scenario: Each deletion action emits its declared event
+ * - WHEN a deletion is requested, requested again, reversed, purged and, separately, a purge step
+ *   fails
+ * - THEN `catalog.audit.org_deletion_requested`, `catalog.security.org_deletion_repeated`,
+ *   `catalog.audit.org_deletion_cancelled`, `catalog.audit.org_deletion_completed` and
+ *   `catalog.security.org_deletion_failed` are each observed with their required attributes and
+ *   no email, name or secret
+ *
+ * #### Scenario: A failed deletion is logged
+ * - WHEN a purge step fails
+ * - THEN `catalog.security.org_deletion_failed` is logged with the step
+ *
+ * Declared attributes (design log-event table): the request and the repeat carry
+ * `tayzu.tenant.id` and `tayzu.actor.id` (the admin who acted); the cancellation carries
+ * `tayzu.tenant.id` and `tayzu.identity.operator.id`; the completion carries `tayzu.tenant.id`
+ * and `tayzu.identity.org_deletion.entities_removed`; the failure carries `tayzu.tenant.id` and
+ * `tayzu.identity.org_deletion.step`. The table declares no actor for the cancellation, the
+ * completion or the failure, so those cases assert only that no `system` actor appears and that
+ * an actor id, if any, is the operator (cancellation) or the requesting admin (purge), never
+ * another value.
+ *
  * ## Production symbols expected
  *
- * None new: every module imported here exists (15.2 produced the signals). If a producer still
- * attributes an event to the `system` actor, or omits a required attribute, the matching test
- * fails on an assertion. Tests that already pass on arrival are expected.
+ * None new: every module imported here exists (15.2 produced the signals; `045` groups 5 to 7
+ * produced the deletion events). If a producer still attributes an event to the `system` actor,
+ * or omits a required attribute, the matching test fails on an assertion. Tests that already
+ * pass on arrival are expected.
  *
  * ## Import order (design D1)
  *
@@ -64,6 +91,10 @@ import {
 } from '../../../packages/auth/src/__fixtures__/admin-user.js';
 import { startOidcStub, type OidcStub } from '../../../packages/auth/src/__fixtures__/oidc-stub.js';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import {
+  getDeletionAdminTestDatabase,
+  getPurgeTestDatabase,
+} from '../../../packages/db/src/harness.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
 import { oidcRoundTrip, poolFailing } from './__fixtures__/sso-shed.js';
 import { createAcceptFlow, type AcceptFlowOptions } from './identity/accept-flow.js';
@@ -76,7 +107,10 @@ import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
+import type { Telemetry } from './telemetry.js';
 import { main as bootstrapAdminMain } from '../scripts/bootstrap-admin.js';
+import { main as cancelOrgDeletionMain } from '../scripts/cancel-org-deletion.js';
+import { runPurge } from '../scripts/purge-job.js';
 import { main as reconcileUsersMain } from '../scripts/reconcile-users.js';
 
 const TEST_PASSWORD = 'correct horse battery staple';
@@ -99,6 +133,12 @@ const INVITATION_ID = 'tayzu.identity.invitation.id';
 const SERVICE_ACCOUNT_ID = 'tayzu.identity.service_account.id';
 const STATUS_EVENT_KEY = 'tayzu.identity.user.status.event';
 const STATUS_TO = 'tayzu.identity.user.status.to';
+const ENTITIES_REMOVED = 'tayzu.identity.org_deletion.entities_removed';
+const DELETION_STEP = 'tayzu.identity.org_deletion.step';
+
+/** `cancel-org-deletion`'s configuration; the pool is injected, so the URL is never dialled. */
+const REVERSAL_URL_SENTINEL =
+  'postgres://tayzu_deletion_admin@reversal.invalid:5432/tayzu?sslmode=verify-full';
 
 type Attributes = Readonly<Record<string, unknown>>;
 
@@ -1237,4 +1277,262 @@ describe('Security-relevant events are logged (task 15.6)', () => {
     // 8 and 9, the reconcile and the bootstrap, are asserted in the two tests above, each in the
     // operator form with no actor.
   }, 240_000);
+
+  // ---- Each deletion action emits its declared event (045 task 9.3) ----------------------
+
+  interface EventRecord {
+    readonly attributes: Attributes;
+    readonly severityText: string | undefined;
+    readonly body: unknown;
+  }
+
+  /** The one record of `name` that matches `where`, with its severity and its body. */
+  async function onlyRecord(name: string, where: Attributes): Promise<EventRecord> {
+    await harness.forceFlush();
+    const found = [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) =>
+        record.eventName === name &&
+        Object.entries(where).every(([key, value]) => record.attributes[key] === value),
+    );
+    expect(found, `exactly one "${name}" for ${JSON.stringify(where)}`).toHaveLength(1);
+    const [first] = found;
+    if (first === undefined) throw new Error('unreachable');
+    return {
+      attributes: { ...first.attributes },
+      severityText: first.severityText,
+      body: first.body,
+    };
+  }
+
+  /** Neither the attributes nor the body of `record` hold any of the tenant's free text. */
+  function expectRecordNoLeak(record: EventRecord, forbidden: readonly string[]): void {
+    expectNoLeak({ ...record.attributes, body: record.body }, forbidden);
+  }
+
+  /**
+   * Never the `system` actor (design "Observability contract"): no `system` actor type, and an
+   * actor id, when present, is one of `allowed` (the admin who acted, or the operator).
+   */
+  function expectNoSystemActor(
+    attributes: Attributes,
+    allowed: readonly (string | undefined)[],
+  ): void {
+    expect(attributes[ACTOR_TYPE], 'never the system actor type').not.toBe('system');
+    expect(allowed, 'the actor id is the admin or the operator, never the system actor').toContain(
+      attributes[ACTOR_ID],
+    );
+  }
+
+  interface DeletionTenant {
+    readonly tenant: BootstrappedTenant;
+    /** The admin's email and name, the organization's name and slug, and the secrets. */
+    readonly freeText: readonly string[];
+  }
+
+  /** A fresh tenant whose admin is its only member (a random tenant per case). */
+  async function newDeletionTenant(label: string): Promise<DeletionTenant> {
+    const id = randomUUID();
+    const name = `Events ${label} Admin ${id}`;
+    const email = `events-${label}-${id}@example.test`;
+    const organizationName = `Events ${label} Org ${id}`;
+    const organizationSlug = `events-${label}-org-${id}`;
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name,
+      email,
+      password: TEST_PASSWORD,
+      organizationName,
+      organizationSlug,
+      ip: randomIp(),
+    });
+    return {
+      tenant,
+      freeText: [email, name, organizationName, organizationSlug, TEST_PASSWORD, tenant.token],
+    };
+  }
+
+  /** `identity.organization.delete`, in process, confirmed with the host tenant. */
+  async function requestDeletion(
+    client: IdentityClient,
+    tenant: BootstrappedTenant,
+  ): Promise<unknown> {
+    return await client.identity.organization.delete(
+      { query: { confirmation: tenant.organizationId } },
+      { context: adminContext(tenant) },
+    );
+  }
+
+  /**
+   * Moves the tenant's pending marker past its window through the owner pool, keeping the two
+   * dates 14 days apart as `0012`'s window check requires.
+   */
+  async function makeDue(tenantId: string): Promise<void> {
+    const updated = await pools.authPool.query(
+      `update tenant_deletion_marker
+          set requested_at = now() - interval '15 days', purge_after = now() - interval '1 day'
+        where tenant_id = $1 and state = 'pending'`,
+      [tenantId],
+    );
+    expect(updated.rowCount, 'one pending marker is made due').toBe(1);
+  }
+
+  async function entityCount(tenantId: string): Promise<number> {
+    const { rows } = await pools.authPool.query<{ count: number }>(
+      'select count(*)::int as count from catalog_entity where tenant_id = $1',
+      [tenantId],
+    );
+    return rows[0]?.count ?? -1;
+  }
+
+  async function markerState(tenantId: string): Promise<string | undefined> {
+    const { rows } = await pools.authPool.query<{ state: string }>(
+      'select state::text as state from tenant_deletion_marker where tenant_id = $1',
+      [tenantId],
+    );
+    return rows[0]?.state;
+  }
+
+  /** `runScript`'s final flush, into this file's harness; no SDK is started. */
+  function flushingTelemetry(): Telemetry {
+    return {
+      shutdown: async () => {
+        await harness.forceFlush();
+      },
+    };
+  }
+
+  /** A fresh `gh:<numeric actor id>`, the operator id shape the maintenance workflow derives. */
+  function randomOperatorId(): string {
+    return `gh:${String(randomInt(1, 1_000_000_000_000))}`;
+  }
+
+  it('Each deletion action emits its declared event: the request and the repeated request carry the tenant and the admin who acted, never the system actor', async () => {
+    const { tenant, freeText } = await newDeletionTenant('del-request');
+    const client = routerWith(gateWith());
+    const tenantId = tenant.organizationId;
+
+    // WHEN a deletion is requested
+    await requestDeletion(client, tenant);
+    const requested = await onlyRecord('catalog.audit.org_deletion_requested', {
+      [TENANT]: tenantId,
+    });
+    expect(requested.severityText, 'the declared severity').toBe('INFO');
+    expect(requested.attributes).toMatchObject({ [TENANT]: tenantId, [ACTOR_ID]: tenant.userId });
+    expectNoSystemActor(requested.attributes, [tenant.userId]);
+    expectRecordNoLeak(requested, freeText);
+
+    // WHEN it is requested again while pending
+    await requestDeletion(client, tenant);
+    const repeated = await onlyRecord('catalog.security.org_deletion_repeated', {
+      [TENANT]: tenantId,
+    });
+    expect(repeated.severityText, 'the declared severity').toBe('WARN');
+    expect(repeated.attributes).toMatchObject({ [TENANT]: tenantId, [ACTOR_ID]: tenant.userId });
+    expectNoSystemActor(repeated.attributes, [tenant.userId]);
+    expectRecordNoLeak(repeated, freeText);
+
+    // The repeat is logged as the repeat only (Resolved decision Q168): still one request event.
+    await onlyRecord('catalog.audit.org_deletion_requested', { [TENANT]: tenantId });
+  }, 120_000);
+
+  it("Each deletion action emits its declared event: the reversal carries the tenant and the operator's opaque id, never the system actor", async () => {
+    const { tenant, freeText } = await newDeletionTenant('del-cancel');
+    const tenantId = tenant.organizationId;
+    await requestDeletion(routerWith(gateWith()), tenant);
+    const operatorId = randomOperatorId();
+
+    // WHEN the deletion is reversed by the operator's script
+    const result = await cancelOrgDeletionMain({
+      tenantId,
+      env: { REVERSAL_DATABASE_URL: REVERSAL_URL_SENTINEL, TAYZU_OPERATOR_ID: operatorId },
+      pool: (await getDeletionAdminTestDatabase()).pool,
+      telemetry: flushingTelemetry(),
+    });
+    expect(result, 'the pending marker is tombstoned').toEqual({ outcome: 'cancelled' });
+
+    const cancelled = await onlyRecord('catalog.audit.org_deletion_cancelled', {
+      [TENANT]: tenantId,
+    });
+    expect(cancelled.severityText, 'the declared severity').toBe('INFO');
+    expect(cancelled.attributes).toMatchObject({ [TENANT]: tenantId, [OPERATOR]: operatorId });
+    // The table declares no actor for the cancellation: if one is present, it is the operator.
+    expectNoSystemActor(cancelled.attributes, [undefined, operatorId]);
+    expectRecordNoLeak(cancelled, freeText);
+  }, 120_000);
+
+  it('Each deletion action emits its declared event: the completed purge carries the tenant and the entities removed, never the system actor', async () => {
+    const { tenant, freeText } = await newDeletionTenant('del-purge');
+    const tenantId = tenant.organizationId;
+    await requestDeletion(routerWith(gateWith()), tenant);
+    await makeDue(tenantId);
+    const entities = await entityCount(tenantId);
+    expect(entities, "the tenant's user entity is there to be removed").toBeGreaterThan(0);
+
+    // WHEN the tenant is purged
+    await runPurge({
+      pool: (await getPurgeTestDatabase()).pool,
+      tenantIds: [tenantId],
+      telemetry: flushingTelemetry(),
+    });
+    expect(await markerState(tenantId), 'the purge ran to completion').toBe('purged');
+
+    const completed = await onlyRecord('catalog.audit.org_deletion_completed', {
+      [TENANT]: tenantId,
+    });
+    expect(completed.severityText, 'the declared severity').toBe('INFO');
+    expect(completed.attributes).toMatchObject({
+      [TENANT]: tenantId,
+      [ENTITIES_REMOVED]: entities,
+    });
+    // The table declares no actor for the completion: if one is present, it is the admin who
+    // requested the deletion.
+    expectNoSystemActor(completed.attributes, [undefined, tenant.userId]);
+    expectRecordNoLeak(completed, freeText);
+    expect(
+      await events('catalog.security.org_deletion_failed', { [TENANT]: tenantId }),
+      'a completed purge logs no failure',
+    ).toHaveLength(0);
+  }, 120_000);
+
+  it.each(['catalog', 'auth'] as const)(
+    'Each deletion action emits its declared event, and A failed deletion is logged: a failed %s step logs org_deletion_failed with the step and the tenant, never the system actor',
+    async (step) => {
+      const { tenant, freeText } = await newDeletionTenant(`del-fail-${step}`);
+      const tenantId = tenant.organizationId;
+      await requestDeletion(routerWith(gateWith()), tenant);
+      await makeDue(tenantId);
+      const seamMessage = `seam failure ${randomUUID()}`;
+      let fired = false;
+      const fail = (): never => {
+        fired = true;
+        throw new Error(seamMessage);
+      };
+
+      // WHEN a purge step fails
+      await runPurge({
+        pool: (await getPurgeTestDatabase()).pool,
+        tenantIds: [tenantId],
+        telemetry: flushingTelemetry(),
+        ...(step === 'catalog'
+          ? { catalogOptions: { afterTableDeleted: fail } }
+          : { authOptions: { beforeUserDeleted: fail } }),
+      });
+      expect(fired, `the ${step} step's seam fired`).toBe(true);
+
+      const failed = await onlyRecord('catalog.security.org_deletion_failed', {
+        [TENANT]: tenantId,
+      });
+      expect(failed.severityText, 'the declared severity').toBe('WARN');
+      expect(failed.attributes).toMatchObject({ [TENANT]: tenantId, [DELETION_STEP]: step });
+      // The table declares no actor for the failure: if one is present, it is the admin who
+      // requested the deletion.
+      expectNoSystemActor(failed.attributes, [undefined, tenant.userId]);
+      expectRecordNoLeak(failed, [...freeText, seamMessage]);
+      expect(
+        await events('catalog.audit.org_deletion_completed', { [TENANT]: tenantId }),
+        'a failed purge is not completed',
+      ).toHaveLength(0);
+    },
+    120_000,
+  );
 });
