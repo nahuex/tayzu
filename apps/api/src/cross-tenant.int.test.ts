@@ -36,11 +36,11 @@ import {
   createServiceAccountLookup,
 } from '@tayzu/auth';
 import { createMachineCredential, revokeMachineCredential } from '@tayzu/auth/machine-credentials';
-import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
+import { RESOURCE_KINDS, createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createEntityService, createUserSync, type UserSync } from '@tayzu/catalog';
 import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 
 import {
@@ -57,12 +57,31 @@ import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixture
 import { harnessPools } from './__fixtures__/pools.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
-import { createAuthRepository } from './identity/auth-repository.js';
+import { createAuthRepository, type AuthRepository } from './identity/auth-repository.js';
 import { createEmailTenantGate } from './identity/email-tenant-gate.js';
 import { createInMemoryEmailCapStore } from './identity/invitation-caps.js';
 import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { createWithUserLock } from './identity/user-lock.js';
 import { createIdentityRouter } from './identity-router.js';
+import type * as OrgDeletionModule from './identity/org-deletion.js';
+
+/**
+ * 045 task 8.5: the tenant every `requestOrgDeletion` call is given (the phase 1 logic the
+ * request path of `identity.organization.delete` calls). The mock records and delegates to the
+ * real function, so every test of this file sees the real behavior.
+ */
+const orgDeletionCalls = vi.hoisted(() => [] as { tenantId: string; confirmation: string }[]);
+
+vi.mock('./identity/org-deletion.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof OrgDeletionModule>();
+  return {
+    ...actual,
+    requestOrgDeletion: (options: Parameters<typeof actual.requestOrgDeletion>[0]) => {
+      orgDeletionCalls.push({ tenantId: options.tenantId, confirmation: options.confirmation });
+      return actual.requestOrgDeletion(options);
+    },
+  };
+});
 
 const LINK_BASE_URL = 'https://app.tayzu.test';
 
@@ -1785,5 +1804,264 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
       signedIn.token,
     ]);
     expect(session.rows, 'the session was not revoked').toHaveLength(1);
+  }, 90_000);
+});
+
+/**
+ * Task 8.5 of openspec/changes/045-org-deletion-and-data-retention (design D6: the target of
+ * `identity.organization.delete` is the host tenant itself, "the resource id is the tenant id
+ * ... and the real tenant is the host tenant, never a value read from input"; "Every Better
+ * Auth call the handler makes is given the host tenant only").
+ *
+ * Task 8.5: "`identity.organization.delete` with another tenant's identifier fails and
+ * `deleteOrganization` is given the host tenant only. Verify: `cross-tenant.int.test.ts`
+ * (`043`'s group 12, extended) covers "Org deletion targets only the host tenant", asserting
+ * neither tenant has a marker."
+ *
+ * Scenario "Org deletion targets only the host tenant":
+ * - WHEN an admin of `t1` requests org deletion with `t2`'s identifier as the confirmation
+ * - THEN the operation fails with `CATALOG_VALIDATION_FAILED` and nothing of `t1` or `t2` changes
+ *
+ * Requirement (excerpt): "The target of the Cerbos check MUST be the host tenant, passed as the
+ * real tenant."
+ *
+ * The request path calls `requestOrgDeletion` (`./identity/org-deletion.ts`; the task's
+ * `deleteOrganization`), recorded by the delegating mock at the top of this file. The auth
+ * repository the router is given and the Cerbos client are recording wrappers over the real
+ * ones, so the tenant every call carries is observed, not inferred. A control case (the host
+ * tenant's own identifier) shows the recorders see the request path.
+ *
+ * ## Production symbols expected
+ *
+ * None new: `identity.organization.delete` (task 5.1) and `requestOrgDeletion` (group 5).
+ */
+describe('cross-tenant matrix: org deletion targets only the host tenant (045 task 8.5)', () => {
+  type CheckResourcesRequest = Parameters<CerbosClient['checkResources']>[0];
+
+  let appPool: Pool;
+  let authPool: Pool;
+  let auth: AuthInstance;
+  const cerbosRequests: CheckResourcesRequest[] = [];
+  /** Every string argument of every auth repository call the router makes. */
+  const repositoryArguments: string[] = [];
+  let client: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+
+  interface OrgDeleteClient {
+    identity: {
+      organization: {
+        delete(
+          input: { query: { confirmation: string } },
+          options: { context: Record<string, unknown> },
+        ): Promise<unknown>;
+      };
+    };
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    appPool = pools.appPool;
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: 'localhost:3593', tls: false });
+    const adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+    });
+    auth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    // Records every Cerbos request, then delegates to the real Cerbos.
+    const recordingCerbos = Object.create(cerbos) as CerbosClient;
+    recordingCerbos.checkResources = (request: CheckResourcesRequest) => {
+      cerbosRequests.push(request);
+      return cerbos.checkResources(request);
+    };
+    // Records the string arguments of every repository call, then delegates to the real one.
+    const repository = createAuthRepository(authPool);
+    const recordingRepository: AuthRepository = new Proxy(repository, {
+      get(target, property, receiver) {
+        const value: unknown = Reflect.get(target, property, receiver);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]): unknown => {
+          for (const arg of args) {
+            if (typeof arg === 'string') repositoryArguments.push(arg);
+          }
+          return Reflect.apply(value as (...a: unknown[]) => unknown, target, args);
+        };
+      },
+    });
+    const capStore = createInMemoryEmailCapStore({
+      tenant: { max: 1000, windowSeconds: 3600 },
+      recipient: { max: 1000, windowSeconds: 86_400 },
+    });
+    client = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: recordingCerbos,
+        authRepository: recordingRepository,
+        withUserLock: createWithUserLock(authPool),
+        emailGate: createEmailTenantGate({
+          disabledTenantIds: [],
+          recipientKeySecret: 'gate-wiring-test-only-secret-0123456789-abcdef',
+          capStore,
+          sender: createRecordingEmailSender(),
+        }),
+        appPool,
+        userSync: adapter,
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }, 60_000);
+
+  const orgClient = (): OrgDeleteClient => client;
+
+  async function freshTenant(label: string): Promise<Tenant> {
+    const id = randomUUID();
+    const t = await bootstrapTestTenant(auth, {
+      pool: testAppPool(),
+      name: `${label} Admin`,
+      email: `${label}-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `${label} Org`,
+      organizationSlug: `${label}-${id}`,
+      ip: randomIp(),
+    });
+    return { tenantId: t.organizationId, adminId: t.userId, cookie: t.cookie };
+  }
+
+  function sessionContext(tenant: Tenant): Record<string, unknown> {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.tenantId,
+      actor: { type: 'user', id: tenant.adminId },
+      principal: { roles: ['admin'] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  /** Every deletion marker of the tenant, read as `tayzu_app` under the tenant (RLS). */
+  async function markersOf(tenantId: string): Promise<readonly unknown[]> {
+    return await withTenantTransaction(appPool, { tenantId }, async (db) => {
+      const result = await db.query<Record<string, unknown>>(
+        'select tenant_id, state, purge_after from tenant_deletion_marker where tenant_id = $1',
+        [tenantId],
+      );
+      return result.rows;
+    });
+  }
+
+  /** The tenant's live sessions and members: what phase 1 would revoke or must keep. */
+  async function accessOf(tenantId: string): Promise<unknown> {
+    const sessions = await authPool.query(
+      'select id, expires_at from auth.session where active_organization_id = $1 order by id',
+      [tenantId],
+    );
+    const members = await authPool.query(
+      'select id, user_id, role from auth.member where organization_id = $1 order by id',
+      [tenantId],
+    );
+    return { sessions: sessions.rows, members: members.rows };
+  }
+
+  /** The organization resources that reached Cerbos. */
+  function organizationResources(): { id: string; tenantId: unknown }[] {
+    return cerbosRequests.flatMap((request) =>
+      request.resources
+        .filter((entry) => entry.resource.kind === RESOURCE_KINDS.organization)
+        .map((entry) => ({ id: entry.resource.id, tenantId: entry.resource.attr?.['tenantId'] })),
+    );
+  }
+
+  function resetRecorders(): void {
+    orgDeletionCalls.length = 0;
+    cerbosRequests.length = 0;
+    repositoryArguments.length = 0;
+  }
+
+  async function rejectionOf(call: Promise<unknown>): Promise<unknown> {
+    const thrown: unknown = await call.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown, 'the call must be rejected').toBeDefined();
+    return thrown;
+  }
+
+  it("Org deletion targets only the host tenant: an admin of t1 confirming with t2's identifier fails with CATALOG_VALIDATION_FAILED, neither tenant has a marker, nothing of t1 or t2 changes, and nothing of t2 reaches the request path", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    expect(await markersOf(t1.tenantId)).toEqual([]);
+    expect(await markersOf(t2.tenantId)).toEqual([]);
+    const before = [await accessOf(t1.tenantId), await accessOf(t2.tenantId)];
+    resetRecorders();
+
+    const thrown = await rejectionOf(
+      orgClient().identity.organization.delete(
+        { query: { confirmation: t2.tenantId } },
+        { context: sessionContext(t1) },
+      ),
+    );
+
+    expect((thrown as { code?: unknown }).code).toBe('CATALOG_VALIDATION_FAILED');
+    expect(await markersOf(t1.tenantId), 't1 has no marker').toEqual([]);
+    expect(await markersOf(t2.tenantId), 't2 has no marker').toEqual([]);
+    expect(
+      [await accessOf(t1.tenantId), await accessOf(t2.tenantId)],
+      'nothing of t1 or t2 changed',
+    ).toEqual(before);
+    expect(
+      orgDeletionCalls.map((call) => call.tenantId),
+      'the deletion logic is given the host tenant only',
+    ).toEqual(orgDeletionCalls.map(() => t1.tenantId));
+    expect(repositoryArguments, 'no repository call carries t2').not.toContain(t2.tenantId);
+    const resources = organizationResources();
+    expect(
+      resources.map((resource) => resource.tenantId),
+      'every organization check carries the host tenant as the real tenant',
+    ).toEqual(resources.map(() => t1.tenantId));
+    expect(
+      resources.map((resource) => resource.id),
+      't2 is never the Cerbos target',
+    ).not.toContain(t2.tenantId);
+  }, 90_000);
+
+  it("control: t1's own identifier as the confirmation gives the deletion logic and Cerbos the host tenant, records t1's marker and leaves t2 without one", async () => {
+    const t1 = await freshTenant('t1');
+    const t2 = await freshTenant('t2');
+    const t2Before = await accessOf(t2.tenantId);
+    resetRecorders();
+
+    await orgClient().identity.organization.delete(
+      { query: { confirmation: t1.tenantId } },
+      { context: sessionContext(t1) },
+    );
+
+    expect(orgDeletionCalls.length, 'the request path reached the deletion logic').toBeGreaterThan(
+      0,
+    );
+    expect(orgDeletionCalls.map((call) => call.tenantId)).toEqual(
+      orgDeletionCalls.map(() => t1.tenantId),
+    );
+    expect(repositoryArguments, 'the repository was called for t1').toContain(t1.tenantId);
+    expect(repositoryArguments, 'no repository call carries t2').not.toContain(t2.tenantId);
+    const resources = organizationResources();
+    expect(
+      resources.map((resource) => resource.tenantId),
+      'every organization check carries the host tenant as the real tenant',
+    ).toEqual(resources.map(() => t1.tenantId));
+    expect(resources, 'the Cerbos target is the host tenant itself (design D6)').toContainEqual({
+      id: t1.tenantId,
+      tenantId: t1.tenantId,
+    });
+    expect(resources.map((resource) => resource.id)).not.toContain(t2.tenantId);
+    expect(await markersOf(t1.tenantId), "t1's marker is recorded").toEqual([
+      expect.objectContaining({ tenant_id: t1.tenantId, state: 'pending' }),
+    ]);
+    expect(await markersOf(t2.tenantId), 't2 has no marker').toEqual([]);
+    expect(await accessOf(t2.tenantId), 'nothing of t2 changed').toEqual(t2Before);
   }, 90_000);
 });

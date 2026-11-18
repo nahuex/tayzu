@@ -562,7 +562,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `delete-routes.http.int.test.ts` (extended) covers the confirmation in the query
       being honored, a body-only confirmation and a wrong query value each answering
       `CATALOG_VALIDATION_FAILED` with nothing changed.
-- [ ] 8.5 `identity.organization.delete` with another tenant's identifier fails and
+- [x] 8.5 `identity.organization.delete` with another tenant's identifier fails and
       `deleteOrganization` is given the host tenant only. Verify: `cross-tenant.int.test.ts`
       (`043`'s group 12, extended) covers "Org deletion targets only the host tenant",
       asserting neither tenant has a marker.
