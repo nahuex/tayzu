@@ -1,0 +1,100 @@
+# The identity maintenance workflow (change 045, design D3; Resolved decisions
+# Q41, Q64 and Q70). It is the only way the org-deletion reversal reaches
+# production, and the way 043's `_user` blueprint backfill and reconcile are
+# started: one Azure Container Apps Job per script, chosen by the `job` input,
+# started through OIDC after the `identity-maintenance` environment's required
+# reviewers approve the run. There is no checkout and no setup step, so no
+# repository code runs on a runner that holds the OIDC token. The operator id is
+# `gh:` plus the numeric actor id, never the login. Inputs reach the steps only
+# through `env`, never as an expression inside `run:`.
+
+name: Identity maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: The maintenance script to start
+        type: choice
+        required: true
+        options:
+          - cancel-org-deletion
+          - backfill-user-blueprint
+          - reconcile-users
+      tenant_id:
+        description: The tenant id (the reversal only)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  id-token: write
+
+concurrency:
+  group: identity-maintenance
+  cancel-in-progress: false
+
+jobs:
+  start:
+    name: Start the maintenance job
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: identity-maintenance
+    env:
+      JOB: ${{ inputs.job }}
+      TAYZU_TENANT_ID: ${{ inputs.tenant_id }}
+      TAYZU_OPERATOR_ID: gh:${{ github.actor_id }}
+      RESOURCE_GROUP: ${{ vars.MAINTENANCE_RESOURCE_GROUP }}
+    steps:
+      - name: Validate the inputs
+        shell: bash
+        run: |
+          case "$JOB" in
+            cancel-org-deletion)
+              if [[ ! "$TAYZU_TENANT_ID" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+                echo "The tenant id is missing or malformed." >&2
+                exit 1
+              fi
+              ;;
+            backfill-user-blueprint | reconcile-users) ;;
+            *)
+              echo "Unknown maintenance job." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Azure login (OIDC)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Start the Container Apps Job
+        shell: bash
+        run: |
+          case "$JOB" in
+            cancel-org-deletion) job_name=tayzu-cancel-org-deletion ;;
+            backfill-user-blueprint) job_name=tayzu-backfill-user-blueprint ;;
+            reconcile-users) job_name=tayzu-reconcile-users ;;
+            *)
+              echo "Unknown maintenance job." >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$RESOURCE_GROUP" ]; then
+            echo "The MAINTENANCE_RESOURCE_GROUP variable is not set." >&2
+            exit 1
+          fi
+          if [ "$JOB" = cancel-org-deletion ]; then
+            az containerapp job start \
+              --name "$job_name" \
+              --resource-group "$RESOURCE_GROUP" \
+              --env-vars "TAYZU_OPERATOR_ID=$TAYZU_OPERATOR_ID" "TAYZU_TENANT_ID=$TAYZU_TENANT_ID"
+          else
+            az containerapp job start \
+              --name "$job_name" \
+              --resource-group "$RESOURCE_GROUP" \
+              --env-vars "TAYZU_OPERATOR_ID=$TAYZU_OPERATOR_ID"
+          fi

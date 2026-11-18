@@ -465,7 +465,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `cancel-org-deletion.int.test.ts` covers the event and its attributes with no
       email, the metric, and "Requesting deletion again after a reversal creates a new
       marker".
-- [ ] 7.3 The maintenance workflow, `.github/workflows/identity-maintenance.yml`
+- [x] 7.3 The maintenance workflow, `.github/workflows/identity-maintenance.yml`
       (Resolved decision Q41): the only way the reversal script reaches
       production and, from this task on, the way `043`'s `_user` blueprint backfill
       (`043`'s task 2.2) and reconcile (`043`'s task 4.2b) are started, which `043` runs as
