@@ -8,7 +8,7 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { emitIdentityEvent } from '@tayzu/auth';
+import { emitIdentityEvent, recordIdentityMetric } from '@tayzu/auth';
 import { createPool } from '@tayzu/db';
 import type { Pool } from 'pg';
 
@@ -46,6 +46,8 @@ export const TENANT_ID_VARIABLE = 'TAYZU_TENANT_ID';
 const TENANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 const REFUSED_EVENT = 'catalog.security.org_deletion_cancel_refused';
+const CANCELLED_EVENT = 'catalog.audit.org_deletion_cancelled';
+const ORG_DELETIONS_METRIC = 'tayzu.identity.org_deletions';
 
 /**
  * Why the tenant's marker cannot be tombstoned, or `undefined` when it can. Under `0013`'s
@@ -105,6 +107,21 @@ function emitRefused(operatorId: string, reason: CancelRefusalReason, tenantId?:
 }
 
 /**
+ * Records a tombstone (design "Observability"): the audit event with the tenant and the
+ * operator's opaque id, no body, and one `cancelled` increment of the org-deletion counter.
+ */
+function emitCancelled(operatorId: string, tenantId: string): void {
+  emitIdentityEvent({
+    name: CANCELLED_EVENT,
+    severity: 'INFO',
+    attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.identity.operator.id': operatorId },
+  });
+  recordIdentityMetric(ORG_DELETIONS_METRIC, 1, {
+    'tayzu.identity.org_deletion.outcome': 'cancelled',
+  });
+}
+
+/**
  * The reversal itself: shape check, classification, tombstone. A tombstone that touches no row
  * lost a race (another reversal, or a purge step, in between); the marker is read again to name
  * the refusal, and one that still looks tombstonable is refused as `no_pending_marker` (fail
@@ -121,7 +138,10 @@ async function cancel(
   }
   let reason = await refusalReason(pool, tenantId);
   if (reason === undefined) {
-    if (await tombstone(pool, tenantId, operatorId)) return { outcome: 'cancelled' };
+    if (await tombstone(pool, tenantId, operatorId)) {
+      emitCancelled(operatorId, tenantId);
+      return { outcome: 'cancelled' };
+    }
     reason = (await refusalReason(pool, tenantId)) ?? 'no_pending_marker';
   }
   emitRefused(operatorId, reason, tenantId);
@@ -134,8 +154,9 @@ async function cancel(
  * event. The pool is built from `REVERSAL_DATABASE_URL` (`createPool` requires
  * `sslmode=verify-full`), the only database URL the script reads. The reversal runs inside
  * `runScript`, which first asserts `current_user = 'tayzu_deletion_admin'` and whose final flush
- * exports the refusal event before this resolves (`043` task 2.0, Resolved decision Q79). A
- * refusal is a result; the CLI turns it into a non-zero exit status.
+ * exports the refusal or cancellation event, and the counter, before this resolves (`043` task
+ * 2.0, Resolved decision Q79). A refusal is a result; the CLI turns it into a non-zero exit
+ * status.
  */
 export async function main(options: CancelOrgDeletionOptions): Promise<CancelOrgDeletionResult> {
   const env = options.env ?? process.env;

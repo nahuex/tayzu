@@ -73,16 +73,20 @@
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { randomInt, randomUUID } from 'node:crypto';
 
-import { createTenantDeletionLookup } from '@tayzu/auth';
+import { authSchema, createAuth, createTenantDeletionLookup } from '@tayzu/auth';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import pg, { type Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 import {
   getDeletionAdminTestDatabase,
   getOwnerPool,
   getTestDatabase,
 } from '../../../packages/db/src/harness.js';
 import { main } from '../scripts/cancel-org-deletion.js';
+import { createAuthRepository } from './identity/auth-repository.js';
+import { DEFAULT_ORG_DELETION_WINDOW_DAYS, requestOrgDeletion } from './identity/org-deletion.js';
 import type { Telemetry } from './telemetry.js';
 
 const createPoolMock = vi.hoisted(() => vi.fn<(url: string) => Pool>());
@@ -714,6 +718,311 @@ describe('the reversal script cancel-org-deletion (task 7.1)', () => {
           expect(await ownerCounts(tenantId), 'every row stays').toEqual(counts);
         },
       );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 7.2: the audit event, the metric and the later request.
+//
+// Scenario "A platform operator reverses a pending deletion" (the 7.2 part):
+// - THEN [...] `catalog.audit.org_deletion_cancelled` is logged with the operator's opaque id
+// - AND a later deletion request creates a new marker
+//
+// Design "Log events": `catalog.audit.org_deletion_cancelled`, INFO, attributes `tayzu.tenant.id`
+// and `tayzu.identity.operator.id`. Design "Metrics": `tayzu.identity.org_deletions`, Counter,
+// `{deletion}`, attribute `tayzu.identity.org_deletion.outcome` (`requested`|`completed`|
+// `failed`|`cancelled`). "the organization's name, email and tokens are never attributes on any
+// signal". Task 7.2: the event is flushed before the script exits (`043` task 2.0), with the
+// operator's opaque id; the counter is incremented with outcome `cancelled`.
+//
+// The harness collects metrics with delta temporality, so a run's increments are the points of
+// the exports appended after the run started. Tests of this file run sequentially, and every
+// run starts from a flushed harness.
+
+const DELETIONS_COUNTER = 'tayzu.identity.org_deletions';
+const OUTCOME_ATTRIBUTE = 'tayzu.identity.org_deletion.outcome';
+const REQUESTED_EVENT = 'catalog.audit.org_deletion_requested';
+const REPEATED_EVENT = 'catalog.security.org_deletion_repeated';
+/** `DataPointType.SUM` of `@opentelemetry/sdk-metrics`, not a dependency of this app. */
+const METRIC_DATA_POINT_TYPE_SUM = 3;
+
+interface CounterPoint {
+  readonly unit: string;
+  /** `DataPointType` of the export: `SUM` (3) for a counter. */
+  readonly dataPointType: unknown;
+  /** `isMonotonic` of a sum: `true` for a counter. */
+  readonly monotonic: unknown;
+  readonly attributes: Readonly<Record<string, unknown>>;
+  readonly value: unknown;
+}
+
+/** Every point of `tayzu.identity.org_deletions` in the exports from index `fromExport` on. */
+function deletionCounterPoints(
+  harness: TelemetryTestHarness,
+  fromExport: number,
+): readonly CounterPoint[] {
+  const points: CounterPoint[] = [];
+  for (const resourceMetrics of harness.metricExporter.getMetrics().slice(fromExport)) {
+    for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+      for (const metric of scopeMetrics.metrics) {
+        if (metric.descriptor.name !== DELETIONS_COUNTER) continue;
+        for (const point of metric.dataPoints) {
+          points.push({
+            unit: metric.descriptor.unit,
+            dataPointType: metric.dataPointType,
+            monotonic: 'isMonotonic' in metric ? metric.isMonotonic : undefined,
+            attributes: point.attributes,
+            value: point.value,
+          });
+        }
+      }
+    }
+  }
+  return points;
+}
+
+/** The `cancelled` increments exported from index `fromExport` on. */
+function cancelledIncrements(harness: TelemetryTestHarness, fromExport: number): number {
+  return deletionCounterPoints(harness, fromExport)
+    .filter((point) => point.attributes[OUTCOME_ATTRIBUTE] === 'cancelled')
+    .reduce((sum, point) => sum + (typeof point.value === 'number' ? point.value : Number.NaN), 0);
+}
+
+/** The cancellation records naming the tenant or the operator, over the whole exporter. */
+function cancelledRecords(harness: TelemetryTestHarness, tenantId: string, operatorId: string) {
+  return harness.logExporter
+    .getFinishedLogRecords()
+    .filter(
+      (record) =>
+        record.eventName === CANCELLED_EVENT &&
+        (record.attributes['tayzu.tenant.id'] === tenantId ||
+          record.attributes['tayzu.identity.operator.id'] === operatorId),
+    );
+}
+
+interface AuditFlush {
+  /** `runScript`'s final flush, observed. */
+  readonly telemetry: Telemetry;
+  /** The index of the first metric export of this run. */
+  readonly fromExport: number;
+  /** At each shutdown, the cancellation records of the tenant or operator already exported. */
+  readonly cancelledAtShutdown: number[];
+  /** At each shutdown, the `cancelled` increments of this run already exported. */
+  readonly incrementsAtShutdown: number[];
+}
+
+/** Flushes whatever earlier tests left pending, then observes this run's final flush. */
+async function auditFlushingTelemetry(
+  harness: TelemetryTestHarness,
+  tenantId: string,
+  operatorId: string,
+): Promise<AuditFlush> {
+  await harness.forceFlush();
+  const fromExport = harness.metricExporter.getMetrics().length;
+  const cancelledAtShutdown: number[] = [];
+  const incrementsAtShutdown: number[] = [];
+  return {
+    fromExport,
+    cancelledAtShutdown,
+    incrementsAtShutdown,
+    telemetry: {
+      shutdown: async () => {
+        await harness.forceFlush();
+        cancelledAtShutdown.push(cancelledRecords(harness, tenantId, operatorId).length);
+        incrementsAtShutdown.push(cancelledIncrements(harness, fromExport));
+      },
+    },
+  };
+}
+
+describe('the reversal script cancel-org-deletion (task 7.2)', () => {
+  beforeAll(async () => {
+    await getOwnerPool();
+    await getTestDatabase();
+    await deletionAdminPool();
+  }, 120_000);
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    createPoolMock.mockReset();
+  });
+
+  describe('A platform operator reverses a pending deletion', () => {
+    it("logs catalog.audit.org_deletion_cancelled at INFO with exactly the tenant and the operator's opaque id from TAYZU_OPERATOR_ID, no email and no free text, flushed before main resolves", async () => {
+      const harness = registeredHarness();
+      const tenantId = `org-${randomUUID()}`;
+      const operatorId = randomOperatorId();
+      await seedMarker(tenantId, 'pending');
+      buildPoolsFrom(await deletionAdminPool());
+      const flush = await auditFlushingTelemetry(harness, tenantId, operatorId);
+
+      const { result, error } = await runReversal(tenantId, envFor(operatorId), flush.telemetry);
+
+      expect(error, 'the reversal succeeds').toBeUndefined();
+      expect(result).toEqual({ outcome: 'cancelled' });
+      expect(
+        flush.cancelledAtShutdown,
+        "runScript's final flush ran once, with the cancellation already emitted",
+      ).toEqual([1]);
+
+      await harness.forceFlush();
+      const records = cancelledRecords(harness, tenantId, operatorId);
+      expect(records, `exactly one ${CANCELLED_EVENT} for this tenant and operator`).toHaveLength(
+        1,
+      );
+      const [record] = records;
+      expect(record?.severityText, 'the declared severity').toBe('INFO');
+      expect(record?.attributes, 'exactly the declared attributes').toEqual({
+        'tayzu.tenant.id': tenantId,
+        'tayzu.identity.operator.id': operatorId,
+      });
+      expect(record?.body, 'no body: no free text').toBeUndefined();
+      const values = Object.values(record?.attributes ?? {}).map((value) => JSON.stringify(value));
+      expect(
+        values.filter((value) => value.includes('@')),
+        'no attribute value is an email',
+      ).toEqual([]);
+    });
+
+    it('increments tayzu.identity.org_deletions ({deletion}) by 1 with outcome cancelled and no other attribute, flushed before main resolves', async () => {
+      const harness = registeredHarness();
+      const tenantId = `org-${randomUUID()}`;
+      const operatorId = randomOperatorId();
+      await seedMarker(tenantId, 'pending');
+      buildPoolsFrom(await deletionAdminPool());
+      const flush = await auditFlushingTelemetry(harness, tenantId, operatorId);
+
+      const { result, error } = await runReversal(tenantId, envFor(operatorId), flush.telemetry);
+
+      expect(error, 'the reversal succeeds').toBeUndefined();
+      expect(result).toEqual({ outcome: 'cancelled' });
+      expect(
+        flush.incrementsAtShutdown,
+        "runScript's final flush ran once, with the increment already exported",
+      ).toEqual([1]);
+
+      await harness.forceFlush();
+      expect(cancelledIncrements(harness, flush.fromExport), 'one cancelled deletion').toBe(1);
+      const points = deletionCounterPoints(harness, flush.fromExport);
+      expect(points.length, 'the counter was exported').toBeGreaterThan(0);
+      for (const point of points) {
+        expect(point.dataPointType, 'a sum (DataPointType.SUM)').toBe(METRIC_DATA_POINT_TYPE_SUM);
+        expect(point.monotonic, 'a monotonic sum: a counter').toBe(true);
+        expect(point.unit, 'the declared unit').toBe('{deletion}');
+        expect(point.attributes, 'outcome cancelled is the only attribute').toEqual({
+          [OUTCOME_ATTRIBUTE]: 'cancelled',
+        });
+      }
+    });
+
+    it.each([
+      { case: 'no pending marker', marker: 'none', reason: 'no_pending_marker', valid: true },
+      { case: 'a purge step recorded', marker: 'purge_begun', reason: 'purge_begun', valid: true },
+      {
+        case: 'a purge date that has passed',
+        marker: 'purge_date_passed',
+        reason: 'purge_date_passed',
+        valid: true,
+      },
+      { case: 'a malformed tenant id', marker: 'none', reason: 'invalid_tenant', valid: false },
+    ] as const)(
+      'a refusal ($case) logs no catalog.audit.org_deletion_cancelled and no cancelled increment',
+      async ({ marker, reason, valid }) => {
+        const harness = registeredHarness();
+        const tenantId = valid ? `org-${randomUUID()}` : `org/${randomUUID()}`;
+        const operatorId = randomOperatorId();
+        await seedMarker(tenantId, marker);
+        buildPoolsFrom(await deletionAdminPool());
+        const flush = await auditFlushingTelemetry(harness, tenantId, operatorId);
+
+        const { result, error } = await runReversal(tenantId, envFor(operatorId), flush.telemetry);
+
+        expect(error, 'a refusal is a result, not a crash').toBeUndefined();
+        expect(result).toEqual({ outcome: 'refused', reason });
+        await harness.forceFlush();
+        expect(
+          cancelledRecords(harness, tenantId, operatorId),
+          `no ${CANCELLED_EVENT} for this tenant or operator`,
+        ).toEqual([]);
+        expect(cancelledIncrements(harness, flush.fromExport), 'no cancelled increment').toBe(0);
+      },
+    );
+
+    it('AND a later deletion request creates a new marker: after the reversal, the request path inserts a new pending marker, logs it as a new request, closes the tenant again, and the tombstone stays', async () => {
+      const harness = registeredHarness();
+      const tenantId = `org-${randomUUID()}`;
+      const operatorId = randomOperatorId();
+      const adminId = `usr-${randomUUID()}`;
+      await seedMarker(tenantId, 'pending');
+      buildPoolsFrom(await deletionAdminPool());
+      const reversal = await runReversal(
+        tenantId,
+        envFor(operatorId),
+        flushingTelemetry(harness, operatorId).telemetry,
+      );
+      expect(reversal.result, 'the reversal ran first').toEqual({ outcome: 'cancelled' });
+      const [tombstone, ...others] = await markerRows(tenantId);
+      expect(others, 'one row after the reversal').toEqual([]);
+      expect(tombstone?.state, 'the row is a tombstone').toBe('cancelled');
+      expect(await isClosed(tenantId), 'the tenant is open after the reversal').toBe(false);
+
+      // WHEN the deletion is requested again, through phase 1 of the request path.
+      const authPool = await getOwnerPool();
+      const cancelledInvitations: string[] = [];
+      const requested = await requestOrgDeletion({
+        tenantId,
+        actorId: adminId,
+        confirmation: tenantId,
+        windowDays: DEFAULT_ORG_DELETION_WINDOW_DAYS,
+        auth: createAuth({ db: drizzle(authPool, { schema: authSchema }), secret: TEST_SECRET }),
+        appPool: (await getTestDatabase()).pool,
+        authRepository: createAuthRepository(authPool),
+        cancelInvitation: async (invitationId) => {
+          cancelledInvitations.push(invitationId);
+        },
+      });
+
+      // THEN two rows: the tombstone, unchanged, and a new pending marker of this request.
+      const rows = await markerRows(tenantId);
+      expect(rows, 'the tombstone and one new marker').toHaveLength(2);
+      expect(rows.filter((row) => row.state === 'cancelled')).toEqual([tombstone]);
+      const pending = rows.filter((row) => row.state === 'pending');
+      expect(pending, 'one new pending marker').toEqual([
+        {
+          state: 'pending',
+          requested_at: expect.any(String) as unknown,
+          purge_after: expect.any(String) as unknown,
+          requested_by: adminId,
+          catalog_purged_at: null,
+          auth_purged_at: null,
+          cancelled_at: null,
+          cancelled_by: null,
+        },
+      ]);
+      expect(
+        new Date(requested.purgeAfter).getTime(),
+        "the request answers the new marker's date",
+      ).toBe(new Date(pending[0]?.purge_after ?? '').getTime());
+      expect(
+        new Date(requested.purgeAfter).getTime(),
+        "the new marker's date is not the tombstone's",
+      ).not.toBe(new Date(tombstone?.purge_after ?? '').getTime());
+      expect(await isClosed(tenantId), 'the tenant is closed again').toBe(true);
+
+      await harness.forceFlush();
+      const tenantEvents = harness.logExporter
+        .getFinishedLogRecords()
+        .filter((record) => record.attributes['tayzu.tenant.id'] === tenantId)
+        .map((record) => record.eventName);
+      expect(
+        tenantEvents.filter((name) => name === REQUESTED_EVENT),
+        'logged as a new request',
+      ).toEqual([REQUESTED_EVENT]);
+      expect(
+        tenantEvents.filter((name) => name === REPEATED_EVENT),
+        'not as a repeat of a pending one',
+      ).toEqual([]);
     });
   });
 });

@@ -109,6 +109,8 @@ const METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.mfa_resets': '{event}',
   'tayzu.identity.password_reset_requests': '{event}',
   'tayzu.identity.password_reset_confirms': '{event}',
+  // 045: outcome `cancelled` (the reversal script); `requested` and `completed` follow in 9.2.
+  'tayzu.identity.org_deletions': '{deletion}',
 };
 
 export function recordIdentityMetric(

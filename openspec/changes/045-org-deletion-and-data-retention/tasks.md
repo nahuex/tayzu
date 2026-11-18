@@ -458,7 +458,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       principals are accepted again, the row is still present as a tombstone, the
       script's role cannot delete or read tenant data, and the script refuses to run
       with no operator id.
-- [ ] 7.2 The reversal emits `catalog.audit.org_deletion_cancelled`, flushed
+- [x] 7.2 The reversal emits `catalog.audit.org_deletion_cancelled`, flushed
       before the script exits (`043`'s task 2.0), with the operator's opaque id (the authenticated
       workflow actor, not a self-asserted value) and increments `tayzu.identity.org_deletions` with outcome `cancelled`,
       and a later deletion request after a reversal inserts a new marker. Verify:
