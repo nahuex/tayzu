@@ -260,10 +260,11 @@ worthless if the role that serves requests can write the marker. So:
   enumerates them across tenants without any blanket read of the marker table.
   The reversal role, `tayzu_deletion_admin`, can only update `state`, `cancelled_at`
   and `cancelled_by` of a pending marker with no recorded step and a future
-  `purge_after`, and it holds `SELECT` on the marker under a policy with that same
-  predicate (an `UPDATE ... WHERE` and its `RETURNING` need one, and the predicate
-  keeps it from reading any other marker); it reads no tenant data and has no `USAGE`
-  on `auth`.
+  `purge_after`, and it holds `SELECT` on the marker under a policy that reads every
+  `pending` marker and the tombstone its own transaction writes (an `UPDATE ... WHERE`
+  and its `RETURNING` need one, and the script must tell a begun or past-due purge
+  from a missing marker; Resolved decision Q171), never an earlier tombstone or a
+  purged marker; it reads no tenant data and has no `USAGE` on `auth`.
 - The append-only trigger on `catalog_change_event` (migration `0001`) is amended
   to allow DELETE **only when `current_user` is `tayzu_purge`**, a real identity,
   not a settable flag (a GUC would be spoofable). Every other path, including the
@@ -1070,6 +1071,7 @@ points at `043` as it was before the split, this is where it landed:
 | Q168 | (Implementation, task 5.3, 2026-11-17) The answer of `identity.organization.delete` and the moment of its audit event | The operation answers `{ purgeAfter }`, the pending marker's purge date in ISO 8601 with an offset, for the first request and for a repeat (the spec's "returns the original date"). The marker is recorded with `ON CONFLICT (tenant_id) WHERE state = 'pending' DO NOTHING` and then read, so two concurrent first requests end with one marker and the same date. `catalog.audit.org_deletion_requested` is emitted right after this call inserts the marker, before the revocations, so a request that fails half-way still leaves its event and a marker never exists without one; a repeat emits none (its event is 5.4's). **Chosen by the orchestrator (D6 names no response body); may be revised at Checkpoint 2.** _Rejected:_ an empty answer; emitting the event after the revocations. |
 | Q169 | (Implementation, task 6.4, 2026-11-18) `entities_removed` of `catalog.audit.org_deletion_completed` on a resumed purge | The event reports the entities removed by the run that emits it: a run that resumes after step 1 was recorded in an earlier run reports 0, and the design says so. The full count of step 1 is on the span `identity.organization.purge` of step 1 (`tayzu.identity.org_deletion.step` = `catalog`, `tayzu.identity.org_deletion.entities_removed`). No migration. The human answered in chat on 2026-11-18 with the recommended option. _Rejected:_ a new `catalog_entities_removed` column on the marker (a migration `0015` and a Checkpoint 3); omitting the attribute when unknown. |
 | Q170 | (Implementation, task 6.7, 2026-11-18) Where the `sso-reauth-state:` and `sso-reauth-result:` rows of a deleted tenant are removed | `identity.organization.delete` deletes them in the same operation that deletes the tenant's sessions, on the `tayzu_auth` pool, keyed by the tokens of those sessions (`sso-reauth-result:<token>`, and `sso-reauth-state:` rows whose value starts with that token), so a never-consumed `id_token` (personal data) cannot outlive the purge. Step 2 cannot do it: the request already deleted the sessions, so no due session token is left to join. No migration. _Rejected:_ exempting them as short-lived state (an expired, never-consumed row stays in the table indefinitely); a migration `0015` policy for step 2 (nothing left to join to at purge time). |
+| Q171 | (Implementation, task 7.1, 2026-11-18) What the reversal role reads, so the script can name its four refusal reasons | Migration `0013` (not yet on master) is amended: `deletion_admin_select` reads every `pending` marker, whatever its purge steps or purge date, plus the tombstone its own transaction writes; it still reads no earlier tombstone and no purged marker. `deletion_admin_tombstone` is unchanged, so the database still refuses to tombstone a marker with a recorded step or a passed purge date. The amended SQL is approved separately (Checkpoint 3). _Rejected:_ a new migration `0015` for a migration never deployed; merging `no_pending_marker`, `purge_begun` and `purge_date_passed` into one reason (a spec, design and 9.1 change, and a less useful refusal). |
 
 ## Open Questions
 
