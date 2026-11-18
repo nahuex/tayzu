@@ -63,6 +63,7 @@ flowchart TB
                 credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
                 resetRequestApi["Public reset request route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/request<br/>unauthenticated, uniform response"]
                 resetConfirmApi["Public reset confirm route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/confirm<br/>unauthenticated, reset token"]
+                orgDeleteApi["Organization deletion route (045)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>DELETE /v1/organization<br/>admin with fresh step-up, high-risk"]
             end
             authn["Better Auth (002)<br/>in-process library"]
             cerbos["Cerbos PDP sidecar (002)<br/>same ACA revision, loopback only<br/>no external arrow<br/>gRPC uses TLS on any other address"]
@@ -160,6 +161,9 @@ flowchart TB
     invitee -->|"HTTPS (browser, public link with the invitation token)"| acceptApi
     authn -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>haveIBeenPwned plugin on the BREACH_CHECKED_PATHS"| pwned
     acceptApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only):<br/>createUser of the new-account path, through Better Auth"| pwned
+    %% Current interactions (045)
+    admin -->|"HTTPS (browser, session cookie, step-up): organization deletion request"| orgDeleteApi
+    orgDeleteApi -->|"HTTPS (ACS egress, Communication Services email API): org-deletion notice to the administrators"| emailProvider
     %% Current interactions (044)
     user -->|"HTTPS/JSON (browser, request a reset link)"| resetRequestApi
     user -->|"HTTPS/JSON (browser, confirm the reset with the token)"| resetConfirmApi
@@ -209,7 +213,7 @@ flowchart TB
     classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
     classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
 
-    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,resetRequestApi,resetConfirmApi,breakGlass,userApi,saApi,credApi,backfillJob,reconcileJob,cerbosBackfill,cerbosReconcile,authn,cerbos,lgCurrent,lgStore current
+    class catalog,db,obs,pg,api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,resetRequestApi,resetConfirmApi,orgDeleteApi,breakGlass,userApi,saApi,credApi,backfillJob,reconcileJob,cerbosBackfill,cerbosReconcile,authn,cerbos,lgCurrent,lgStore current
     class mcp,workers,intg,redis,monitor,acr,lgPlanned planned
     class user,admin,agent,integ,invitee,mailClient,operator,visma,kv,dev,ci,dast,system,lgActor actor
     class gh,npm,ghcr,llm,toolApis,emailProvider,pwned,lgExternal externalSys
@@ -276,6 +280,7 @@ flowchart TB
     intg["Integration adapters (008/009)<br/>Integration webhook endpoints<br/>pollers (ACA Jobs), JSONata mapping"]
     resetRequestApi["Public reset request route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/request<br/>unauthenticated, uniform response"]
     resetConfirmApi["Public reset confirm route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/confirm<br/>unauthenticated, reset token"]
+    orgDeleteApi["Organization deletion route (045)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>DELETE /v1/organization<br/>admin with fresh step-up, high-risk"]
 
     user -->|"HTTPS (browser, session cookie)"| catalogApi
     user -->|"HTTPS (browser, sign-in, session, MFA; anonymous JWKS read)"| authApi
@@ -297,12 +302,13 @@ flowchart TB
     user -->|"HTTPS/JSON (browser, confirm the reset with the token)"| resetConfirmApi
     emailProvider -->|"SMTP (reset and notice mail delivered to the mailbox)"| mailClient
     mailClient -->|"IMAP protocol (the user fetches the mail from the mailbox)"| emailProvider
+    admin -->|"HTTPS (browser, session cookie, step-up): organization deletion request"| orgDeleteApi
 
     classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
     classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
     classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
     classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
-    class catalogApi,authApi,healthApi,tokenApi,reauthApi,inviteApi,userApi,saApi,credApi,acceptApi,resetRequestApi,resetConfirmApi current
+    class catalogApi,authApi,healthApi,tokenApi,reauthApi,inviteApi,userApi,saApi,credApi,acceptApi,resetRequestApi,resetConfirmApi,orgDeleteApi current
     class mcp,intg planned
     class user,admin,agent,integ,invitee,visma,mailClient actor
     class emailProvider externalSys
@@ -402,6 +408,7 @@ flowchart TB
         credApi["Credential routes (043)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>GET /v1/credentials<br/>POST /v1/credentials<br/>POST /v1/credentials/{credential}/rotate<br/>POST /v1/credentials/{credential}/revoke"]
         resetRequestApi["Public reset request route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/request<br/>unauthenticated, uniform response"]
         resetConfirmApi["Public reset confirm route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/confirm<br/>unauthenticated, reset token"]
+        orgDeleteApi["Organization deletion route (045)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>DELETE /v1/organization<br/>admin with fresh step-up, high-risk"]
         authn["Better Auth (002)<br/>in-process library"]
         cerbos["Cerbos PDP sidecar (002)<br/>same ACA revision, loopback only<br/>no external arrow<br/>gRPC uses TLS on any other address"]
         mcp["MCP server (013)<br/>MCP endpoint"]
@@ -421,7 +428,8 @@ flowchart TB
         saApi ~~~ credApi
         credApi ~~~ resetRequestApi
         resetRequestApi ~~~ resetConfirmApi
-        resetConfirmApi ~~~ authn
+        resetConfirmApi ~~~ orgDeleteApi
+        orgDeleteApi ~~~ authn
         authn ~~~ cerbos
         cerbos ~~~ mcp
         mcp ~~~ workers
@@ -492,12 +500,14 @@ flowchart TB
     resetRequestApi -->|"PostgreSQL wire protocol over TLS (role tayzu_auth): auth.verification writes (token digest)"| pg
     resetConfirmApi -->|"PostgreSQL wire protocol over TLS (role tayzu_auth): auth.verification, auth.account, auth.session writes in one transaction"| pg
     resetConfirmApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only)"| pwned
+    admin -->|"HTTPS (browser, session cookie, step-up): organization deletion request"| orgDeleteApi
+    orgDeleteApi -->|"HTTPS (ACS egress, Communication Services email API): org-deletion notice to the administrators"| emailProvider
 
     classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
     classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
     classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
     classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
-    class api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,userApi,saApi,credApi,authn,cerbos,db,catalog,resetRequestApi,resetConfirmApi,pg current
+    class api,catalogApi,healthApi,authApi,tokenApi,ssoApi,bclApi,reauthApi,inviteApi,acceptApi,userApi,saApi,credApi,authn,cerbos,db,catalog,resetRequestApi,resetConfirmApi,orgDeleteApi,pg current
     class mcp,workers,intg,monitor,redis,acr planned
     class user,agent,visma,dast,admin,invitee,integ,kv,ci actor
     class emailProvider,pwned,toolApis,llm,ghcr externalSys
@@ -659,6 +669,7 @@ flowchart TB
     resetConfirmApi["Public reset confirm route (044)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>POST /v1/auth/password-reset/confirm<br/>unauthenticated, reset token"]
     mailClient(["Mail client (044)<br/>the end user's mailbox, receives reset and notice mail"])
     breakGlass["Break-glass CLI (044)<br/>recover:admin-mfa, named approver, telemetry required"]
+    orgDeleteApi["Organization deletion route (045)<br/>mounted only when MOUNT_IDENTITY_ROUTES=true (off by default)<br/>DELETE /v1/organization<br/>admin with fresh step-up, high-risk"]
 
     user -->|"HTTPS (browser redirect to sign in and back)"| visma
     ssoApi -->|"outbound HTTPS: discovery, authorize redirect,<br/>token, userinfo, JWKS"| visma
@@ -683,12 +694,13 @@ flowchart TB
     mailClient -->|"IMAP protocol (the user fetches the mail from the mailbox)"| emailProvider
     resetConfirmApi -->|"HTTPS (Pwned Passwords range query, k-anonymity prefix only)"| pwned
     breakGlass -->|"HTTPS (ACS egress, Communication Services email API): notice mail"| emailProvider
+    orgDeleteApi -->|"HTTPS (ACS egress, Communication Services email API): org-deletion notice to the administrators"| emailProvider
 
     classDef current fill:#e8f1fb,stroke:#1f5f99,stroke-width:2px,color:#0b2540
     classDef planned fill:#f6f6f6,stroke:#777777,stroke-width:1.5px,stroke-dasharray:6 4,color:#333333
     classDef actor fill:#fff4e0,stroke:#b36b00,stroke-width:2px,color:#3d2400
     classDef externalSys fill:#ffffff,stroke:#555555,stroke-width:1px,color:#222222
-    class ssoApi,reauthApi,bclApi,inviteApi,authn,acceptApi,resetRequestApi,resetConfirmApi,breakGlass current
+    class ssoApi,reauthApi,bclApi,inviteApi,authn,acceptApi,resetRequestApi,resetConfirmApi,orgDeleteApi,breakGlass current
     class intg,workers planned
     class visma,kv,user,invitee,ci,dev,mailClient actor
     class llm,toolApis,emailProvider,ghcr,pwned externalSys

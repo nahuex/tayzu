@@ -4,9 +4,9 @@
  * carries its protocol. The test reads the Mermaid source of the document.
  *
  * Design D9 (jobs, their own Cerbos sidecar on a loopback link without TLS,
- * `tayzu_auth` and `tayzu_app`) and D10 (the fourteen routes). `045` adds the
- * fourteenth oRPC procedure (`DELETE /v1/organization`), so it is not required
- * here.
+ * `tayzu_auth` and `tayzu_app`) and D10 (the fourteen routes). `045` task 8.3
+ * adds the fifteenth oRPC procedure (`DELETE /v1/organization`, behind the mount
+ * switch), so the route list below moves by one.
  *
  * This file lives in `apps/api/src` only because the Vitest projects glob
  * `src/**`; the document is outside every package (like `config.test.ts`
@@ -31,7 +31,7 @@ const DOC_PATH = fileURLToPath(
   new URL('../../../docs/architecture/system-diagram.md', import.meta.url),
 );
 
-/** Every route of design D10 that exists in this change (045's delete excluded). */
+/** Every route of design D10 that exists in this change, plus `045`'s org-deletion request. */
 const ROUTES = [
   'POST /v1/users/invitations',
   'POST /v1/users/invitations/{invitation}/cancel',
@@ -47,6 +47,8 @@ const ROUTES = [
   'POST /v1/credentials',
   'POST /v1/credentials/{credential}/rotate',
   'POST /v1/credentials/{credential}/revoke',
+  // 045 task 8.3 (design D6): the org-deletion request, the fifteenth oRPC procedure.
+  'DELETE /v1/organization',
 ] as const;
 
 /** A protocol token (SEC01): what an arrow must name. */

@@ -543,7 +543,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       list carrying a non-empty reason and naming a route of a committed OpenAPI document,
       and `dast-coverage.test.ts` (extended) covers the exclusion not counting as a missing
       2xx operation.
-- [ ] 8.3 The route is registered only behind the mount switch (`043`'s task 14.3): with
+- [x] 8.3 The route is registered only behind the mount switch (`043`'s task 14.3): with
       it off it answers exactly as an unknown `/v1` path does, for an unauthenticated and
       for an authenticated caller, and the route table and the procedure list that the
       gate's test enumerates include it. After `044` the switch gates fourteen oRPC
