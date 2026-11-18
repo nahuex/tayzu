@@ -67,8 +67,12 @@ const CATALOG_DELETES: readonly { readonly table: CatalogPurgeTable; readonly sq
  *
  * Each delete commits on its own, so an interrupted run keeps what it removed and leaves
  * `catalog_purged_at` null; the next run deletes the rest and records the step. Once the
- * step is recorded, a run is a no-op that keeps the first timestamp. Fails closed when the
- * tenant has no due pending marker (`pool` must be a `tayzu_purge` pool).
+ * step is recorded, a run is a no-op that keeps the first timestamp.
+ *
+ * A tenant with no visible due pending marker is a no-op that deletes and writes nothing:
+ * under `0013`'s `purge_due_select` a purged marker is invisible to `tayzu_purge`, so an
+ * already purged tenant, a tenant not yet due and a tenant with no marker look alike (a
+ * repeated purge is safe). `pool` must be a `tayzu_purge` pool.
  */
 export async function purgeCatalogStep(
   pool: Pool,
@@ -82,10 +86,7 @@ export async function purgeCatalogStep(
     [tenantId],
   );
   const [due] = marker.rows;
-  if (due === undefined) {
-    throw new Error('purge step 1: the tenant has no due deletion marker');
-  }
-  if (due.recorded) {
+  if (due === undefined || due.recorded) {
     return { entitiesRemoved: 0 };
   }
 
@@ -229,8 +230,10 @@ async function purgeUser(pool: Pool, userId: string): Promise<void> {
  * then the organization-keyed rows, the organization last; then the marker. Every auth
  * delete precedes the `purged` write, after which `0014` admits no auth row.
  *
- * A tenant already purged, or with no visible due pending marker, is a no-op. Fails closed,
- * deleting nothing, when step 1 is not recorded (`pool` must be a `tayzu_purge` pool).
+ * A tenant with no visible due pending marker (already purged, not yet due, or never
+ * marked; `0013` hides a purged marker from `tayzu_purge`) is a no-op, as in step 1. Fails
+ * closed, deleting nothing, when step 1 is not recorded (`pool` must be a `tayzu_purge`
+ * pool).
  */
 export async function purgeAuthStep(
   pool: Pool,
@@ -373,7 +376,10 @@ async function purgeTenant(options: RunPurgeOptions, tenantId: string): Promise<
  * One purge pass inside `runScript`, whose final flush exports the completion and failure
  * events before this resolves (`043` task 2.0, Resolved decision Q79). A failed tenant does
  * not stop the pass: it is logged and the pass continues with the next tenant, then resolves.
- * The job's exit status when a tenant failed is task 6.6's concern (the entry point).
+ * A tenant that is not due (already purged, not yet due, or never marked) is skipped
+ * silently: both steps are no-ops for it and nothing is logged. Selecting the tenants is the
+ * due-tenant listing's job (task 6.6); the job's exit status when a tenant failed is the
+ * entry point's concern (task 6.6 too).
  */
 export async function runPurge(options: RunPurgeOptions): Promise<void> {
   const { tenantIds = [] } = options;

@@ -389,8 +389,8 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       step, and the next run resumes without repeating a completed step. Verify:
       `org-purge-resume.int.test.ts` covers "A failed purge step is visible and
       resumes" with a failure seam after step 1.
-- [ ] 6.5 A tenant whose window has not passed is never purged, a tombstone
-      (tenant id, state and timestamps only) remains, and a repeated purge deletes
+- [x] 6.5 A tenant whose window has not passed is never purged, a tombstone
+      (tenant id, state, timestamps and the opaque requester id only) remains, and a repeated purge deletes
       nothing. Verify: `org-purge-resume.int.test.ts` covers "A purge does not touch
       a tenant whose window has not passed" and "A repeated purge is safe".
 - [ ] 6.6 The purge job entry point, `apps/api/scripts/purge-job.ts`

@@ -45,6 +45,12 @@
  * export function runPurge(options: RunPurgeOptions): Promise<unknown>;
  * ```
  *
+ * Task 6.5 adds "A purge does not touch a tenant whose window has not passed"
+ * and "A repeated purge is safe" (a repeated purge resolves, logs no
+ * `org_deletion_failed` and deletes nothing), plus the tombstone of D2: the
+ * marker remains, and its non-null columns are the tenant id, `state`, the
+ * timestamps and `requested_by` (an opaque id, `NOT NULL` in `0012`).
+ *
  * Seeding and every read go through the owner pool. Every id is random per
  * run, and every assertion is scoped to this file's tenants.
  */
@@ -57,7 +63,7 @@ import type { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
 import { getOwnerPool, getPurgeTestDatabase } from '../../../packages/db/src/harness.js';
-import { runPurge } from '../scripts/purge-job.js';
+import { purgeAuthStep, purgeCatalogStep, runPurge } from '../scripts/purge-job.js';
 import type { Telemetry } from './telemetry.js';
 
 const FAILED_EVENT = 'catalog.security.org_deletion_failed';
@@ -117,22 +123,50 @@ async function seedCatalogEntities(tenantId: string, count: number): Promise<voi
   }
 }
 
+/** `count` append-only `catalog_change_event` rows of `tenantId`. */
+async function seedChangeEvents(tenantId: string, count: number): Promise<void> {
+  for (let seq = 1; seq <= count; seq += 1) {
+    await ownerQuery(
+      `insert into catalog_change_event
+         (tenant_id, seq, occurred_at, actor_type, actor_id, action, resource_kind,
+          blueprint_identifier, resource_identifier, version, changed_fields, snapshot)
+       values ($1, $2, now(), 'user', $3, 'created', 'entity', 'service', 'api', 1,
+               '{}'::text[], '{}'::jsonb)`,
+      [tenantId, seq, `actor-${randomUUID()}`],
+    );
+  }
+}
+
 /**
- * A due tenant (pending marker, step 1 not recorded) with an organization, a
- * user who belongs only to it (with a session), and `entities` catalog entities.
+ * `due`: a pending marker whose window has passed (step 1 not recorded);
+ * `future`: a pending marker whose purge date is in the future; `none`: no marker.
  */
-async function seedDueTenant(entities: number): Promise<DueTenant> {
+type MarkerKind = 'due' | 'future' | 'none';
+
+/**
+ * A tenant with an organization, a user who belongs only to it (with a
+ * session), `entities` catalog entities and, by default, a due marker.
+ */
+async function seedDueTenant(entities: number, marker: MarkerKind = 'due'): Promise<DueTenant> {
   const tenantId = `org-${randomUUID()}`;
   const slug = `slug-${tenantId}`;
   await ownerQuery(
     'insert into auth.organization (id, name, slug, created_at) values ($1, $2, $3, now())',
     [tenantId, 'Org', slug],
   );
-  await ownerQuery(
-    `insert into tenant_deletion_marker (tenant_id, requested_at, purge_after, requested_by)
-     values ($1, now() - interval '15 days', now() - interval '1 day', $2)`,
-    [tenantId, `actor-${randomUUID()}`],
-  );
+  if (marker === 'due') {
+    await ownerQuery(
+      `insert into tenant_deletion_marker (tenant_id, requested_at, purge_after, requested_by)
+       values ($1, now() - interval '15 days', now() - interval '1 day', $2)`,
+      [tenantId, `actor-${randomUUID()}`],
+    );
+  } else if (marker === 'future') {
+    await ownerQuery(
+      `insert into tenant_deletion_marker (tenant_id, requested_at, purge_after, requested_by)
+       values ($1, now(), now() + interval '10 days', $2)`,
+      [tenantId, `actor-${randomUUID()}`],
+    );
+  }
   const userId = `user-${randomUUID()}`;
   const email = `${userId}@example.test`;
   await ownerQuery(
@@ -192,6 +226,45 @@ async function entityCount(tenantId: string): Promise<number> {
     [tenantId],
   );
   return rows[0]?.count ?? -1;
+}
+
+/** `catalog_blueprint` or `catalog_change_event` rows of `tenantId`. */
+async function catalogCount(
+  table: 'catalog_blueprint' | 'catalog_change_event',
+  tenantId: string,
+): Promise<number> {
+  const owner = await getOwnerPool();
+  // `table` is one of the two fixed literals.
+  const { rows } = await owner.query<{ count: number }>(
+    `select count(*)::int as count from ${table} where tenant_id = $1`,
+    [tenantId],
+  );
+  return rows[0]?.count ?? -1;
+}
+
+/**
+ * A direct `DELETE` of the tenant's append-only rows as `tayzu_purge`: the
+ * number of rows it deleted, or the SQLSTATE it raised.
+ */
+async function purgeRoleDeletesChangeEvents(tenantId: string): Promise<number | string> {
+  try {
+    const deleted = await (
+      await purgePool()
+    ).query('delete from catalog_change_event where tenant_id = $1', [tenantId]);
+    return deleted.rowCount ?? 0;
+  } catch (error) {
+    return (error as { code?: string }).code ?? 'no-sqlstate';
+  }
+}
+
+/** Every marker row of `tenantId`, whole, as JSON (timestamps as text). */
+async function markerRows(tenantId: string): Promise<Record<string, unknown>[]> {
+  const owner = await getOwnerPool();
+  const { rows } = await owner.query<{ row: Record<string, unknown> }>(
+    'select to_jsonb(m) as row from tenant_deletion_marker m where tenant_id = $1',
+    [tenantId],
+  );
+  return rows.map(({ row }) => row);
 }
 
 interface Marker {
@@ -404,5 +477,106 @@ describe('A failed purge step is visible and resumes', () => {
     expect(await entityCount(failing.tenantId)).toBe(0);
     expect(await presentAuthRows(failing)).toEqual([]);
     expectCompletedRecord(harness, failing.tenantId, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6.5.
+
+/** What a tenant holds before the purge job runs, to compare after it. */
+async function snapshotTenant(tenant: DueTenant) {
+  return {
+    auth: await presentAuthRows(tenant),
+    entities: await entityCount(tenant.tenantId),
+    blueprints: await catalogCount('catalog_blueprint', tenant.tenantId),
+    changeEvents: await catalogCount('catalog_change_event', tenant.tenantId),
+    markers: await markerRows(tenant.tenantId),
+  };
+}
+
+describe('A purge does not touch a tenant whose window has not passed', () => {
+  it('(guard) GIVEN t1 purge date is in the future and t2 has no marker, WHEN the purge job runs (runPurge and each step directly), THEN nothing of t1 or t2 is deleted, and the purge role is refused when it tries to delete the append-only rows of either', async () => {
+    const t1 = await seedDueTenant(2, 'future');
+    const t2 = await seedDueTenant(2, 'none');
+    await seedChangeEvents(t1.tenantId, 2);
+    await seedChangeEvents(t2.tenantId, 2);
+    const before = [await snapshotTenant(t1), await snapshotTenant(t2)];
+    expect(before[0]?.auth, 'seeded auth rows of t1').toHaveLength(4);
+    expect(before[0]?.changeEvents, 'seeded append-only rows of t1').toBe(2);
+    expect(before[1]?.markers, 't2 has no marker').toEqual([]);
+
+    const pool = await purgePool();
+    await runPurge({ pool, tenantIds: [t1.tenantId, t2.tenantId] });
+    for (const { tenantId } of [t1, t2]) {
+      // Failing closed or returning early are both allowed: only the rows are asserted.
+      await purgeCatalogStep(pool, tenantId).catch(() => undefined);
+      await purgeAuthStep(pool, tenantId).catch(() => undefined);
+    }
+
+    expect(await snapshotTenant(t1), 'nothing of t1 is deleted or changed').toEqual(before[0]);
+    expect(await snapshotTenant(t2), 'nothing of t2 is deleted or changed').toEqual(before[1]);
+
+    for (const tenant of [t1, t2]) {
+      const outcome = await purgeRoleDeletesChangeEvents(tenant.tenantId);
+      expect(
+        [0, '42501', 'P0001'],
+        'the purge role deletes no append-only row (no row, or refused)',
+      ).toContain(outcome);
+      expect(await catalogCount('catalog_change_event', tenant.tenantId)).toBe(2);
+    }
+  });
+});
+
+describe('A repeated purge is safe', () => {
+  it('(guard) after a completed purge the marker remains as a tombstone whose non-null columns are only the tenant id, state, the timestamps and the opaque requester id', async () => {
+    const t1 = await seedDueTenant(1);
+    await runPurge({ pool: await purgePool(), tenantIds: [t1.tenantId] });
+
+    const markers = await markerRows(t1.tenantId);
+    expect(markers, 'the marker row remains, not deleted').toHaveLength(1);
+    const [tombstone = {}] = markers;
+    expect(tombstone['state']).toBe('purged');
+    const nonNull = Object.keys(tombstone)
+      .filter((column) => tombstone[column] !== null)
+      .sort();
+    expect(nonNull, 'tenant id, state, timestamps and the opaque requested_by only').toEqual([
+      'auth_purged_at',
+      'catalog_purged_at',
+      'purge_after',
+      'requested_at',
+      'requested_by',
+      'state',
+      'tenant_id',
+    ]);
+  });
+
+  it('GIVEN t1 was already purged, WHEN the purge job runs again, THEN it deletes nothing and does not fail (runPurge resolves, no org_deletion_failed, no second completion)', async () => {
+    const harness = registeredHarness();
+    const t1 = await seedDueTenant(2);
+    await runPurge({ pool: await purgePool(), tenantIds: [t1.tenantId] });
+    expect((await readMarker(t1.tenantId))?.state, 'GIVEN t1 was already purged').toBe('purged');
+    expect(records(harness, FAILED_EVENT, t1.tenantId), 'the first purge did not fail').toEqual([]);
+
+    // Canaries: rows a repeated purge would delete.
+    await seedCatalogEntities(t1.tenantId, 1);
+    await seedChangeEvents(t1.tenantId, 2);
+    const before = await snapshotTenant(t1);
+
+    const atShutdown: number[] = [];
+    await expect(
+      runPurge({
+        pool: await purgePool(),
+        tenantIds: [t1.tenantId],
+        telemetry: flushingTelemetry(harness, t1.tenantId, atShutdown),
+      }),
+      'the repeated purge resolves',
+    ).resolves.toBeUndefined();
+
+    expect(atShutdown, 'no org_deletion_failed by the final flush').toEqual([0]);
+    expect(records(harness, FAILED_EVENT, t1.tenantId), 'the repeated purge does not fail').toEqual(
+      [],
+    );
+    expect(records(harness, COMPLETED_EVENT, t1.tenantId), 'no second completion').toHaveLength(1);
+    expect(await snapshotTenant(t1), 'it deletes nothing and keeps the tombstone').toEqual(before);
   });
 });
