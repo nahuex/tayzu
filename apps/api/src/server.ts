@@ -25,6 +25,7 @@ import {
   createRateLimitBucketStore,
   createServiceAccountLookup,
   createStepUpGuard,
+  createTenantDeletionLookup,
   emitInternalError,
   emitRateLimited,
   exchangeMachineToken,
@@ -181,6 +182,8 @@ export interface CreateAppOptions {
   /** 043 task 14.18 (Q138): the credential and service-account caps handed to the identity router. */
   readonly credentialCap?: number;
   readonly serviceAccountCap?: number;
+  /** 045 D1 (Q21): the org-deletion window in days, validated by `loadConfig` (7 to 14). */
+  readonly orgDeletionWindowDays?: number;
   /**
    * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
@@ -339,6 +342,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const resolveContext = createContextResolver({ auth, revocationPool: appPool });
   const serviceAccountLookup = createServiceAccountLookup(appPool);
+  const tenantDeletionLookup = createTenantDeletionLookup(appPool);
 
   const { email } = options;
   const recipientKeySecret =
@@ -460,6 +464,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           appPool,
           userSync,
           emailGate: identityEmail.emailGate,
+          notices: identityEmail.notices,
           ...(identityEmail.settings.invitationLinkBaseUrl === undefined
             ? {}
             : { invitationLinkBaseUrl: identityEmail.settings.invitationLinkBaseUrl }),
@@ -475,6 +480,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
           ...(options.serviceAccountCap === undefined
             ? {}
             : { serviceAccountCap: options.serviceAccountCap }),
+          ...(options.orgDeletionWindowDays === undefined
+            ? {}
+            : { orgDeletionWindowDays: options.orgDeletionWindowDays }),
         })),
   };
   // D4: the guard runs after context resolution and before the operation, for
@@ -958,7 +966,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       const { accessToken } = await exchangeMachineToken(
         auth,
         { clientId: body.clientId, clientSecret: body.clientSecret },
-        { serviceAccountLookup },
+        { serviceAccountLookup, tenantDeletionLookup },
       );
       return await reply.status(200).send({ accessToken });
     } catch (error) {
@@ -980,6 +988,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       ssoLinkShed,
       notices,
       stepUp: stepUpGuard,
+      tenantDeletionLookup,
       ...(reauthorization === undefined ? {} : { reauthorization }),
     });
     app.post(

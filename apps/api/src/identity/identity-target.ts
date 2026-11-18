@@ -6,7 +6,7 @@
  */
 import type { AuthRepository } from './auth-repository.js';
 
-export type IdentityTargetKind = 'invitation' | 'credential' | 'user';
+export type IdentityTargetKind = 'invitation' | 'credential' | 'user' | 'organization';
 
 /** The attributes of the target's `_user` entity that the policies read (design D3). */
 export interface ResolvedIdentityAttributes {
@@ -51,7 +51,7 @@ class IdentityTargetInvalidError extends Error {
   }
 }
 
-const KINDS: readonly string[] = ['invitation', 'credential', 'user'];
+const KINDS: readonly string[] = ['invitation', 'credential', 'user', 'organization'];
 
 function parseTarget(raw: unknown): { kind: IdentityTargetKind; id: string } {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -73,7 +73,11 @@ export function createIdentityTargetResolver(options: {
 }): IdentityTargetResolver {
   const { authRepository } = options;
 
-  async function lookup(tenantId: string, kind: IdentityTargetKind, id: string) {
+  async function lookup(
+    tenantId: string,
+    kind: Exclude<IdentityTargetKind, 'organization'>,
+    id: string,
+  ) {
     switch (kind) {
       case 'invitation':
         return authRepository.invitationById(tenantId, id);
@@ -87,6 +91,11 @@ export function createIdentityTargetResolver(options: {
   return {
     async resolve(context, rawTarget) {
       const { kind, id } = parseTarget(rawTarget);
+      // `045` design D6: the organization is the host tenant itself. No lookup, and the
+      // declared id is ignored, so neither the id nor the tenant ever comes from input.
+      if (kind === 'organization') {
+        return { kind, id: context.tenantId, tenantId: context.tenantId };
+      }
       const found = await lookup(context.tenantId, kind, id);
       if (found === undefined) throw new IdentityTargetNotFoundError();
       if (kind === 'user') {

@@ -250,6 +250,21 @@ resources:
     id: list
     attr:
       tenantId: t2
+  # 045 task 3.2 (design D6): the target of `organization.delete` is the host
+  # tenant itself, so the opaque resource id and `tenantId` are both the tenant
+  # id (never the organization's name or any value read from input).
+  organization_t1:
+    kind: organization
+    id: t1
+    attr:
+      tenantId: t1
+  # 045 task 3.3: the host tenant t2 as an `organization.delete` target, so the
+  # suite checks both directions of the cross-tenant deny and t2's own admin.
+  organization_t2:
+    kind: organization
+    id: t2
+    attr:
+      tenantId: t2
   # No ownership configured.
   entity_service_unowned_t1:
     kind: catalog_entity

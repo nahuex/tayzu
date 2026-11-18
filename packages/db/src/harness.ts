@@ -12,7 +12,7 @@
  * are provisioned out of band in a deployed environment (design D15); here,
  * the test-only bootstrap below (never a migration, never production code)
  * creates them if missing and grants the *test cluster's* `DATABASE_URL` role
- * (`tayzu` locally, the `postgres:16` service's superuser in CI) the
+ * (`tayzu` locally, the `postgres:18` service's superuser in CI) the
  * membership it needs to reach them:
  *
  * - `tayzu_migrator` gets a test-only `CREATEROLE` (so it can itself run
@@ -38,7 +38,7 @@
  *
  * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28): plain membership is
  * not enough on its own — a `DATABASE_URL` role that is itself a superuser
- * (the CI `postgres:16` service) or holds `BYPASSRLS` (the sandbox) skips
+ * (the CI `postgres:18` service) or holds `BYPASSRLS` (the sandbox) skips
  * `tenant_isolation` regardless of what it is a member of. `getTestDatabase()`
  * therefore hands back a pool that runs every query *as* `tayzu_app`
  * (`SET ROLE tayzu_app`, a fixed literal queued on every new connection,
@@ -55,7 +55,7 @@ import { assertVerifiedTlsOrLocal } from './connection-security.js';
 import { runMigrations } from './index.js';
 
 const MISSING_DATABASE_URL_MESSAGE = [
-  'DATABASE_URL is not set: the test harness needs a real PostgreSQL 16 database.',
+  'DATABASE_URL is not set: the test harness needs a real PostgreSQL 18 database.',
   'Export a connection string before running it, for example:',
   '  export DATABASE_URL=postgres://<user>:<password>@localhost:5432/tayzu_test',
   'To run only the unit tests instead, use `pnpm test:unit`. See CLAUDE.md, "Running tests".',
@@ -80,6 +80,9 @@ function requireDatabaseUrl(): string {
 const MIGRATOR_ROLE = 'tayzu_migrator';
 const APP_ROLE = 'tayzu_app';
 const AUTH_ROLE = 'tayzu_auth';
+/** `045` design D2 and D3 (migration `0013`, task 2.2): the purge and reversal roles. */
+const PURGE_ROLE = 'tayzu_purge';
+const DELETION_ADMIN_ROLE = 'tayzu_deletion_admin';
 
 /**
  * Fixed literal (task 6.3): never interpolated, never built from input, so it
@@ -90,6 +93,10 @@ const AUTH_ROLE = 'tayzu_auth';
 const APP_ROLE_SET_STATEMENT = 'SET ROLE tayzu_app';
 /** Same rule as `APP_ROLE_SET_STATEMENT`, for the `tayzu_auth` pool (`043` task 2.0b). */
 const AUTH_ROLE_SET_STATEMENT = 'SET ROLE tayzu_auth';
+/** Same rule, for the `tayzu_purge` pool (`045` task 1.3). */
+const PURGE_ROLE_SET_STATEMENT = 'SET ROLE tayzu_purge';
+/** Same rule, for the `tayzu_deletion_admin` pool (`045` task 1.3). */
+const DELETION_ADMIN_ROLE_SET_STATEMENT = 'SET ROLE tayzu_deletion_admin';
 
 /**
  * Advisory-lock key serializing this harness's own bootstrap (role creation,
@@ -284,9 +291,10 @@ async function reassignCatalogTableOwnership(bootstrap: Client): Promise<void> {
 
 /**
  * Task 23.17 (design Q47, D6): also reassigns schema `auth`, its tables and
- * sequences, and `machine_credential_revocation` to `tayzu_migrator`, so a
- * later `ALTER TABLE auth.*` migration run as `tayzu_migrator` succeeds on a
- * database first migrated under the bootstrap role. Tables go first: a
+ * sequences, `machine_credential_revocation` and `tenant_deletion_marker` (045
+ * task 2.1) to `tayzu_migrator`, so a later `ALTER TABLE auth.*` migration run
+ * as `tayzu_migrator` succeeds on a database first migrated under the
+ * bootstrap role. Tables go first: a
  * sequence owned by a table column follows its table's owner, and cannot be
  * reassigned on its own. Fixed literals only; idempotent.
  */
@@ -309,7 +317,8 @@ async function reassignAuthOwnership(bootstrap: Client): Promise<void> {
         WHERE c.relkind IN ('r', 'p')
           AND c.relowner <> '${MIGRATOR_ROLE}'::regrole
           AND (n.nspname = 'auth'
-               OR (n.nspname = 'public' AND c.relname = 'machine_credential_revocation'))
+               OR (n.nspname = 'public'
+                   AND c.relname IN ('machine_credential_revocation', 'tenant_deletion_marker')))
       LOOP
         EXECUTE format('ALTER TABLE %I.%I OWNER TO ${MIGRATOR_ROLE}', obj.schema_name, obj.rel_name);
       END LOOP;
@@ -356,6 +365,30 @@ async function grantAuthRoleMembership(bootstrap: Client): Promise<void> {
     DO $$
     BEGIN
       EXECUTE format('GRANT ${AUTH_ROLE} TO %I', current_user);
+    END
+    $$;
+  `);
+}
+
+/**
+ * `045` task 1.3: grants the bootstrap connection's role membership in
+ * `tayzu_purge` and `tayzu_deletion_admin`, so that `getPurgeTestDatabase()`
+ * and `getDeletionAdminTestDatabase()` can `SET ROLE` to them. Same bare
+ * `GRANT` as `grantAuthRoleMembership` (`set_option` and `inherit_option`).
+ * Migration `0013` (task 2.2) creates the two roles; until it exists, each
+ * grant is a no-op for a role that is absent (fixed literals only).
+ * Test-harness-only.
+ */
+async function grantDeletionRoleMemberships(bootstrap: Client): Promise<void> {
+  await bootstrap.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${PURGE_ROLE}') THEN
+        EXECUTE format('GRANT ${PURGE_ROLE} TO %I', current_user);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${DELETION_ADMIN_ROLE}') THEN
+        EXECUTE format('GRANT ${DELETION_ADMIN_ROLE} TO %I', current_user);
+      END IF;
     END
     $$;
   `);
@@ -416,6 +449,7 @@ async function migrateTestDatabase(url: string): Promise<void> {
       await reassignAuthOwnership(postMigration);
       await grantAppRoleMembership(postMigration);
       await grantAuthRoleMembership(postMigration);
+      await grantDeletionRoleMemberships(postMigration);
       await grantAppRoleJournalAccess(postMigration);
     });
   } finally {
@@ -539,6 +573,87 @@ export function getAuthTestDatabase(): Promise<TestDatabase> {
   void current.catch(() => {
     if (authTestDatabase === current) {
       authTestDatabase = undefined;
+    }
+  });
+  return current;
+}
+
+/**
+ * Builds a pool whose every connection runs as `role` (`045` task 1.3), after
+ * checking that the role exists: migration `0013` (task 2.2) creates it, and
+ * before that a `SET ROLE` would fail on the first query with a less clear
+ * error.
+ */
+async function initializeRoleTestDatabase(
+  role: string,
+  setStatement: string,
+): Promise<TestDatabase> {
+  const url = requireDatabaseUrl();
+  assertVerifiedTlsOrLocal(url);
+  await migrateTestDatabase(url);
+
+  const check = new Client({ connectionString: url });
+  await check.connect();
+  try {
+    const { rows } = await check.query<{ exists: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1) AS exists',
+      [role],
+    );
+    if (rows[0]?.exists !== true) {
+      throw new Error(`The ${role} role does not exist: migration 0013 (045 task 2.2) creates it.`);
+    }
+  } finally {
+    await check.end();
+  }
+
+  const pool = new Pool({ connectionString: url });
+  pool.on('connect', (client) => {
+    void client.query(setStatement).catch(() => {
+      // Same pattern as `initializeTestDatabase`: a failure surfaces as the
+      // next query's permission error, never as a silent wrong identity.
+    });
+  });
+  return { pool };
+}
+
+/** Memoized across concurrent callers within the same process (module instance). */
+let purgeTestDatabase: Promise<TestDatabase> | undefined;
+
+/**
+ * `045` task 1.3 (design D2): a pool whose every connection runs *as*
+ * `tayzu_purge`, the purge job's role. A distinct, separately memoized pool:
+ * the roles never share a physical connection. Rejects with a message naming
+ * the role while the role does not exist yet.
+ */
+export function getPurgeTestDatabase(): Promise<TestDatabase> {
+  purgeTestDatabase ??= initializeRoleTestDatabase(PURGE_ROLE, PURGE_ROLE_SET_STATEMENT);
+  const current = purgeTestDatabase;
+  void current.catch(() => {
+    if (purgeTestDatabase === current) {
+      purgeTestDatabase = undefined;
+    }
+  });
+  return current;
+}
+
+/** Memoized across concurrent callers within the same process (module instance). */
+let deletionAdminTestDatabase: Promise<TestDatabase> | undefined;
+
+/**
+ * `045` task 1.3 (design D3, Resolved decision Q35): a pool whose every
+ * connection runs *as* `tayzu_deletion_admin`, the reversal's role. A
+ * distinct, separately memoized pool. Rejects with a message naming the role
+ * while the role does not exist yet.
+ */
+export function getDeletionAdminTestDatabase(): Promise<TestDatabase> {
+  deletionAdminTestDatabase ??= initializeRoleTestDatabase(
+    DELETION_ADMIN_ROLE,
+    DELETION_ADMIN_ROLE_SET_STATEMENT,
+  );
+  const current = deletionAdminTestDatabase;
+  void current.catch(() => {
+    if (deletionAdminTestDatabase === current) {
+      deletionAdminTestDatabase = undefined;
     }
   });
   return current;

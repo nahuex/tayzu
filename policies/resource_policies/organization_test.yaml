@@ -1,0 +1,117 @@
+---
+name: OrganizationTest
+description: >-
+  045 task 3.3 (design D6, Resolved decision Q27): `organization.delete` on kind
+  `organization` is admin-only and tenant-bound. Any admin of the tenant may
+  request it; every other role is denied, and so is an admin of another tenant,
+  through the explicit cross-tenant deny of 002 D8. The target is the host
+  tenant itself: resource id and `tenantId` are both the tenant id. The policy
+  reads no other attribute, so no case sends one.
+tests:
+  - name: Admin of the same tenant is allowed organization.delete
+    input:
+      principals: [admin_t1]
+      resources: [organization_t1]
+      actions: [delete]
+    expected:
+      - principal: admin_t1
+        resource: organization_t1
+        actions:
+          delete: EFFECT_ALLOW
+
+  - name: Non-admin principals of the same tenant are denied organization.delete
+    input:
+      principals: [member_t1, member_platform_t1, member_moderator_service_t1, unknown_role_t1]
+      resources: [organization_t1]
+      actions: [delete]
+    expected:
+      - principal: member_t1
+        resource: organization_t1
+        actions: &delete_denied
+          delete: EFFECT_DENY
+      - principal: member_platform_t1
+        resource: organization_t1
+        actions: *delete_denied
+      - principal: member_moderator_service_t1
+        resource: organization_t1
+        actions: *delete_denied
+      - principal: unknown_role_t1
+        resource: organization_t1
+        actions: *delete_denied
+
+  - name: Admin of another tenant is denied organization.delete on tenant t1
+    input:
+      principals: [admin_t2]
+      resources: [organization_t1]
+      actions: [delete]
+    expected:
+      - principal: admin_t2
+        resource: organization_t1
+        actions: *delete_denied
+
+  - name: Admin of tenant t1 is denied organization.delete on tenant t2
+    input:
+      principals: [admin_t1]
+      resources: [organization_t2]
+      actions: [delete]
+    expected:
+      - principal: admin_t1
+        resource: organization_t2
+        actions: *delete_denied
+
+  - name: Non-admin principals of another tenant are denied organization.delete
+    input:
+      principals: [member_platform_t2, member_moderator_service_t2]
+      resources: [organization_t1]
+      actions: [delete]
+    expected:
+      - principal: member_platform_t2
+        resource: organization_t1
+        actions: *delete_denied
+      - principal: member_moderator_service_t2
+        resource: organization_t1
+        actions: *delete_denied
+
+  - name: Admin of tenant t2 is allowed on its own organization, a member of t2 is not
+    input:
+      principals: [admin_t2, member_platform_t2]
+      resources: [organization_t2]
+      actions: [delete]
+    expected:
+      - principal: admin_t2
+        resource: organization_t2
+        actions:
+          delete: EFFECT_ALLOW
+      - principal: member_platform_t2
+        resource: organization_t2
+        actions: *delete_denied
+
+  - name: Admin without a tenant attribute fails closed
+    input:
+      principals: [admin_no_tenant]
+      resources: [organization_t1, organization_t2]
+      actions: [delete]
+    expected:
+      - principal: admin_no_tenant
+        resource: organization_t1
+        actions: *delete_denied
+      - principal: admin_no_tenant
+        resource: organization_t2
+        actions: *delete_denied
+
+  - name: An action the design does not name stays denied, even for the admin
+    input:
+      principals: [admin_t1]
+      resources: [organization_t1]
+      actions: [view, list, create, update, restore, cancel, purge]
+    expected:
+      - principal: admin_t1
+        resource: organization_t1
+        actions:
+          view: EFFECT_DENY
+          list: EFFECT_DENY
+          create: EFFECT_DENY
+          update: EFFECT_DENY
+          restore: EFFECT_DENY
+          cancel: EFFECT_DENY
+          purge: EFFECT_DENY

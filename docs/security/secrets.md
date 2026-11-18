@@ -36,6 +36,7 @@ topology or trust configuration, so it is still never logged or echoed.
 | `INVITATION_LINK_BASE_URL`                                                                       | Sensitive | Base URL of the accept link in an invitation email (`043` Q32).                                                                                                                                                                                                                                           | Required outside `NODE_ENV=test`, then `https` and one of `ALLOWED_ORIGINS`. Never echoed.                                         |
 | `PASSWORD_RESET_LINK_BASE_URL`                                                                   | Sensitive | Base URL of the single link in a password reset email (`044` design D9). The path `/reset-password` is fixed in code.                                                                                                                                                                                     | Required outside `NODE_ENV=test`, then `https` and one of `ALLOWED_ORIGINS`; in test optional, `http` or `https`. Never echoed.    |
 | `MOUNT_IDENTITY_ROUTES`                                                                          | Setting   | Mounts the `identity.*` routes (`043` task 14.3). Off by default.                                                                                                                                                                                                                                         | Unset or `false` is off, `true` is on, anything else fails startup.                                                                |
+| `ORG_DELETION_WINDOW_DAYS`                                                                       | Setting   | Days from an org-deletion request to its purge (`045` design D1, Resolved decision Q21). Configuration, not a secret.                                                                                                                                                                                     | Optional, 14 when unset. A set value must be an integer from 7 to 14, else startup fails.                                          |
 | `BETTER_AUTH_URL`                                                                                | Sensitive | Public base URL of the API (cookies, redirects).                                                                                                                                                                                                                                                          | Required outside test and then `https`. Optional in test.                                                                          |
 | `ALLOWED_ORIGINS`                                                                                | Sensitive | Comma-separated CORS and Better Auth trusted origins. The first one also builds the SSO step-up callback URL.                                                                                                                                                                                             | Required. Outside test, every origin is `https` and wildcard-free. Never echoed.                                                   |
 | `CERBOS_ADDRESS`                                                                                 | Sensitive | `host:port` of the Cerbos gRPC endpoint. TLS is on unless it is `localhost`, `127.0.0.1` or `[::1]`.                                                                                                                                                                                                      | Required, non-blank.                                                                                                               |
@@ -98,11 +99,13 @@ The owner is the team that holds the Key Vault secret and runs its rotation.
 Each procedure below follows the [Change procedure](#change-procedure): a new
 Key Vault version, a new app revision, then revocation of the old version.
 
-| Secret                                                                   | Owner    | Rotation                                                                              |
-| ------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------- |
-| `ACS_CONNECTION_STRING`                                                  | Platform | [Communication Services connection string](#communication-services-connection-string) |
-| `IDENTITY_TOKEN_HMAC_SECRET`                                             | Platform | [Recipient cap key secret](#recipient-cap-key-secret)                                 |
-| `AUTH_DATABASE_URL` of the jobs and the CLIs (the `tayzu_auth` password) | Platform | [Maintenance jobs](#maintenance-jobs-and-the-bootstrap-cli)                           |
+| Secret                                                                            | Owner    | Rotation                                                                              |
+| --------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------- |
+| `ACS_CONNECTION_STRING`                                                           | Platform | [Communication Services connection string](#communication-services-connection-string) |
+| `IDENTITY_TOKEN_HMAC_SECRET`                                                      | Platform | [Recipient cap key secret](#recipient-cap-key-secret)                                 |
+| `AUTH_DATABASE_URL` of the jobs and the CLIs (the `tayzu_auth` password)          | Platform | [Maintenance jobs](#maintenance-jobs-and-the-bootstrap-cli)                           |
+| `PURGE_DATABASE_URL` of the purge job (the `tayzu_purge` password)                | Platform | [Org-deletion jobs](#org-deletion-jobs-purge-and-reversal)                            |
+| `REVERSAL_DATABASE_URL` of the reversal job (the `tayzu_deletion_admin` password) | Platform | [Org-deletion jobs](#org-deletion-jobs-purge-and-reversal)                            |
 
 The credential lifecycle of machine credentials (the 90-day cadence and the
 immediate cutover of a rotation) is a policy, not a Key Vault secret: it is in
@@ -187,7 +190,10 @@ There is no runtime toggle; a persistent per-tenant setting is a recorded ticket
 The `_user` blueprint backfill and the `_user` reconcile are operator-started
 Container Apps Jobs (design D9). Each has **its own identity** and its own Key
 Vault references (Resolved decision Q49), and neither is started by anything
-else until `045` adds the reviewed workflow. The bootstrap CLI is not a job: an
+else than the reviewed maintenance workflow of `045` (design D3), see
+[OIDC federation](#oidc-federation-of-the-maintenance-workflow). `045` adds two
+more jobs, the purge and the reversal, each with its own identity too, see
+[Org-deletion jobs](#org-deletion-jobs-purge-and-reversal). The bootstrap CLI is not a job: an
 operator runs it out of band, once per environment, as `002` designed it
 (Resolved decision Q91), under just-in-time access (Azure PIM) with a personal
 account and a named second approver. The runbooks are in
@@ -235,13 +241,18 @@ the recipient caps. A test asserts its variable list.
   (Resolved decision Q114), so it cannot sign a session cookie or decrypt the
   `jwt` key. Only the app and the out-of-band bootstrap CLI hold it.
 - **`TAYZU_OPERATOR_ID`** is an opaque id, 1 to 128 of `A-Z a-z 0-9 _ . : -`,
-  never an email (Resolved decision Q116). The operator who starts the run sets
-  it, until `045`'s workflow sets it from the workflow's authenticated actor. It
-  is not authenticated and not a secret: the PIM record and the second approver
-  are the control. It is recorded as `tayzu.identity.operator.id`. It has no
+  never an email (Resolved decision Q116). For the jobs the maintenance
+  workflow starts, the workflow sets it from its authenticated actor, as
+  `gh:<numeric GitHub actor id>` (`045` Q70), and the environment approval is
+  the control. For the bootstrap CLI and `recover:admin-mfa` the operator who
+  starts the run sets it; there it is not authenticated, and the PIM record and
+  the second approver are the control. The backfill reads no
+  `TAYZU_OPERATOR_ID`, so the workflow hands it one it ignores (`045` Q173). It
+  is not a secret. It is recorded as `tayzu.identity.operator.id`. It has no
   rotation; it identifies a run.
-- **Telemetry.** Every script starts telemetry and flushes it before it exits
-  (Resolved decision Q79). It reads the names the app reads:
+- **Telemetry.** Every script, the two org-deletion jobs of `045` included,
+  starts telemetry through `runScript`, emits its audit events and flushes them
+  before it exits (Resolved decision Q79). It reads the names the app reads:
   `OTEL_EXPORTER_OTLP_ENDPOINT` (and the per-signal variants), the headers
   variables of the inventory above, and `TAYZU_TELEMETRY_DISABLED`. Outside test,
   a script refuses to run without an endpoint unless
@@ -312,6 +323,109 @@ committed and the audit event may be missing, so the completion line is the
 record. The run is reviewed afterwards from the audit event
 `catalog.audit.mfa_reset` (form `operator`), by someone other than the operator.
 
+### Org-deletion jobs: purge and reversal
+
+`045` (design D2 and D3, Resolved decision Q49) adds two Container Apps Jobs.
+Each has **its own identity** and its own Key Vault reference, holds exactly
+one database secret and asserts its own role (`current_user`) through
+`runScript` at start, refusing to run as any other. No other script, no CLI and
+not the app reads either URL, and none of `043`'s or `044`'s scripts holds
+either role. Like every database URL here, neither is ever printed, and
+`createPool` refuses one without `sslmode=verify-full` outside the test
+harness. The two roles are created by migration `0013` with no password: the
+password is set out of band, never in a migration.
+
+| Variable                                                                                         | Purge job | Reversal | Class               | Owner                                                          |
+| ------------------------------------------------------------------------------------------------ | --------- | -------- | ------------------- | -------------------------------------------------------------- |
+| `PURGE_DATABASE_URL`                                                                             | Yes       | **No**   | Secret              | Platform                                                       |
+| `REVERSAL_DATABASE_URL`                                                                          | **No**    | Yes      | Secret              | Platform                                                       |
+| `TAYZU_OPERATOR_ID`                                                                              | **No**    | Yes      | Sensitive           | The maintenance workflow, from its authenticated actor         |
+| `TAYZU_TENANT_ID`                                                                                | **No**    | Yes      | Sensitive           | The maintenance workflow, from its validated `tenant_id` input |
+| `DATABASE_URL`, `AUTH_DATABASE_URL`, `BETTER_AUTH_SECRET`, `CERBOS_ADDRESS`, the email variables | **No**    | **No**   | Secret or Sensitive | Platform                                                       |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (and per-signal variants), `OTEL_EXPORTER_OTLP_*_HEADERS`          | Yes       | Yes      | Sensitive           | Platform                                                       |
+| `TAYZU_TELEMETRY_DISABLED`                                                                       | Yes       | Yes      | Setting             | Platform                                                       |
+
+`TAYZU_TENANT_ID` is the reversal's input, not its configuration (Resolved
+decision Q172): `cancel-org-deletion.ts` reads it directly and
+`script-config.ts` does not declare it, so a missing or malformed id is
+refused and logged as `invalid_tenant` rather than failing at the
+configuration load. The workflow also checks it against the tenant-id pattern
+before the Azure login.
+
+- **`PURGE_DATABASE_URL`** is the `tayzu_purge` secret, held by the scheduled
+  purge job alone (`identity:purge`). The role's policies admit it only to
+  tenants whose deletion window has passed. Rotation: `ALTER ROLE tayzu_purge
+PASSWORD` with an administrative role, then a new Key Vault version of
+  `PURGE_DATABASE_URL` ([Change procedure](#change-procedure) steps 1 and 2).
+  No app revision is involved: the job resolves the secret when an execution
+  starts, so the rotation affects the next execution, and a run in progress
+  keeps its connection. Revoke the old version once an execution on the new one
+  has succeeded. A run that fails on a revoked password deletes nothing more and
+  the next run resumes from the progress recorded on the marker.
+- **`REVERSAL_DATABASE_URL`** is the `tayzu_deletion_admin` secret, held by the
+  reversal job alone (`identity:cancel-org-deletion`). The role can only
+  tombstone a pending marker whose purge has not begun. Rotation: `ALTER ROLE
+tayzu_deletion_admin PASSWORD`, then a new Key Vault version of
+  `REVERSAL_DATABASE_URL`, the same steps. The reversal is started only through
+  the maintenance workflow, whose concurrency group runs one start at a time, so
+  rotate while no reversal execution is running; the next start reads the new
+  version.
+- **Suspected exposure** of either is handled the same way, immediately.
+
+### OIDC federation of the maintenance workflow
+
+`.github/workflows/identity-maintenance.yml` (`045` design D3, Resolved
+decisions Q41 and Q64) starts the reversal, the blueprint backfill and the
+reconcile through OIDC, with **no stored cloud secret**. The job requests
+`id-token: write`, GitHub issues a short-lived token for that run, and the
+SHA-pinned `azure/login` exchanges it for an Azure token of a federated
+identity. The federated credential trusts only the subject of the
+`identity-maintenance` environment, in the form
+`repo:<owner>/<repository>:environment:identity-maintenance`.
+
+- **What the workflow holds.** Three environment secrets that are identifiers,
+  not credentials: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
+  `AZURE_SUBSCRIPTION_ID` (`045` Q173). No other `secrets.` value is
+  referenced. The resource group comes from the variable
+  `MAINTENANCE_RESOURCE_GROUP`, which is configuration, not a secret.
+- **What the federated identity can do.** Only start the three named jobs
+  (`tayzu-cancel-org-deletion`, `tayzu-backfill-user-blueprint`,
+  `tayzu-reconcile-users`), see the checklist below. It holds no database
+  secret: each job resolves its own Key Vault references under its own
+  identity.
+- **Owner and rotation.** Platform owns the federated identity. There is no
+  secret to rotate. To revoke access, delete the federated credential or the
+  role assignment; recreating the identity changes the three identifiers, which
+  are then updated in the environment.
+
+### GitHub settings checklist of the maintenance workflow
+
+The workflow is only as strong as these settings, which are human-owned
+(Resolved decision Q55) and are applied by the human, not by code. The
+workflow's text tests (`identity-maintenance-workflow.test.ts`) cover only the
+file. Each item is a first-deployment gate for `010`.
+
+| Item         | Setting                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Where                                              | Decision   |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | ---------- |
+| 1            | Required reviewers on the `identity-maintenance` environment, with "prevent self-review"                                                                                                                                                                                                                                                                                                                                                                                            | GitHub, environment settings                       | Q55        |
+| 2            | Deployment branches of the environment limited to `master`                                                                                                                                                                                                                                                                                                                                                                                                                          | GitHub, environment settings                       | Q55        |
+| 3            | The OIDC federated credential's subject pinned to the `identity-maintenance` environment                                                                                                                                                                                                                                                                                                                                                                                            | Azure, federated identity                          | Q55        |
+| 4            | The federated identity's Azure role limited to the action that starts the named Container Apps Jobs and scoped to those three job resources only                                                                                                                                                                                                                                                                                                                                    | Azure, role assignment                             | Q64        |
+| 5            | `@nahuex` as the `CODEOWNERS` owner of `.github/workflows/**`, `.github/actions/**`, `.github/CODEOWNERS` and `apps/api/scripts/**`, with branch protection on `master` and "Require review from Code Owners", without which `CODEOWNERS` has no effect                                                                                                                                                                                                                             | GitHub, `.github/CODEOWNERS` and branch protection | Q64, Q72   |
+| 6            | Administrator bypass **off** on the `identity-maintenance` environment ("Allow administrators to bypass configured protection rules" unchecked), and **no bypass actors** on the `master` ruleset or branch protection, so neither the required reviewer nor "Require review from Code Owners" can be skipped by an admin account, the sole owner's included, which is the account the agent acts with. Every pull request touching a `CODEOWNERS` path waits for the second human. | GitHub, environment and `master` ruleset           | Q179       |
+| Second human | The reviewer of the environment and the second code owner is a **second human**, added before the first deployment. "Prevent self-review" leaves a single-person repository with nobody who can approve, so the workflow cannot be enabled until that person is added. Neither a bot account nor self-review stands in.                                                                                                                                                             | GitHub, environment reviewers and `CODEOWNERS`     | Q153       |
+| Rehearsal    | `010`'s sandbox rehearsal confirms whether a job start can override the job's command, arguments or image, and whether `--env-vars` needs `--container-name`. If an override is possible, the human records it as an accepted risk covered by `CODEOWNERS`, the environment approval and the workflow's text tests, and a custom Azure role is a ticket. If `--env-vars` needs `--container-name`, the workflow's flag allowlist changes.                                           | `010` sandbox                                      | Q157, Q174 |
+
+### Out-of-band CLIs
+
+Two CLIs are **not** started by the maintenance workflow, and its `choice`
+input lists neither: the bootstrap CLI, which an operator runs out of band as
+`002` designed it (Resolved decision Q91), and `044`'s break-glass
+`recover:admin-mfa`, which stays out of band under just-in-time access (Azure
+PIM) (Resolved decision Q155), see
+[Operator CLI](#operator-cli-recover-admin-mfa). `CODEOWNERS` still covers both,
+because they live under `apps/api/scripts/`.
+
 ## Change procedure
 
 Rotation procedure, the same for every secret:
@@ -320,7 +434,8 @@ Rotation procedure, the same for every secret:
    Container Apps configuration directly.
 2. For a database role password, first `ALTER ROLE ... PASSWORD` on the server
    (using an administrative role), then update the Key Vault secret and the
-   URL that embeds it (`DATABASE_URL` or `AUTH_DATABASE_URL`).
+   URL that embeds it (`DATABASE_URL`, `AUTH_DATABASE_URL`,
+   `PURGE_DATABASE_URL` or `REVERSAL_DATABASE_URL`).
 3. For `BETTER_AUTH_SECRET`, generate at least 32 random characters
    (`openssl rand -base64 48`). Rotating it invalidates existing sessions and
    makes the encrypted TOTP secrets, backup codes, OAuth tokens and `jwt`

@@ -16,6 +16,7 @@ const TEMPLATE_NAMES: Record<EmailTemplate['kind'], string> = {
   MfaChangedNotice: 'mfa_changed',
   MfaResetNotice: 'mfa_reset',
   AccountCreatedNotice: 'account_created',
+  OrgDeletionNotice: 'org_deletion',
 };
 
 function canonicalRecipient(address: string): string {

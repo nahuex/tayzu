@@ -16,16 +16,19 @@ type Env = Readonly<Record<string, string | undefined>>;
 /**
  * Startup assertion on a runtime database role (design Q62, D6): the role in
  * effect must not be a superuser, must not have BYPASSRLS and must own no
- * catalog table nor `machine_credential_revocation`, which the `catalog\_%`
- * pattern does not match (Q109). Judges `current_user`, and throws a fixed message so nothing
- * from the connection (host, password, role name) reaches the error.
+ * catalog table nor `machine_credential_revocation` (Q109) nor `tenant_deletion_marker`
+ * (045 task 2.4), which the `catalog\_%` pattern does not match, so both are named. Judges
+ * `current_user`, and throws a fixed message so nothing from the connection (host, password,
+ * role name) reaches the error. Exported so the integration suite can call it, because the
+ * startup call is skipped under `NODE_ENV=test`.
  */
-async function assertRuntimeRole(pool: ReturnType<typeof createPool>): Promise<void> {
+export async function assertRuntimeRole(pool: ReturnType<typeof createPool>): Promise<void> {
   const result = await pool.query<{ privileged: boolean }>(
     `select (r.rolsuper or r.rolbypassrls or exists (
        select 1 from pg_class c
        where c.relowner = r.oid and c.relkind in ('r', 'p')
-         and (c.relname like 'catalog\\_%' or c.relname = 'machine_credential_revocation')
+         and (c.relname like 'catalog\\_%'
+              or c.relname in ('machine_credential_revocation', 'tenant_deletion_marker'))
      )) as privileged
      from pg_roles r where r.rolname = current_user`,
   );
@@ -103,6 +106,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       mountIdentityRoutes: config.mountIdentityRoutes,
       credentialCap: config.credentialCap,
       serviceAccountCap: config.serviceAccountCap,
+      orgDeletionWindowDays: config.orgDeletionWindowDays,
       email: {
         sender: emailSender,
         ...(config.invitationLinkBaseUrl === undefined

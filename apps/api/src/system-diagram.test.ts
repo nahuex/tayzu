@@ -4,9 +4,9 @@
  * carries its protocol. The test reads the Mermaid source of the document.
  *
  * Design D9 (jobs, their own Cerbos sidecar on a loopback link without TLS,
- * `tayzu_auth` and `tayzu_app`) and D10 (the fourteen routes). `045` adds the
- * fourteenth oRPC procedure (`DELETE /v1/organization`), so it is not required
- * here.
+ * `tayzu_auth` and `tayzu_app`) and D10 (the fourteen routes). `045` task 8.3
+ * adds the fifteenth oRPC procedure (`DELETE /v1/organization`, behind the mount
+ * switch), so the route list below moves by one.
  *
  * This file lives in `apps/api/src` only because the Vitest projects glob
  * `src/**`; the document is outside every package (like `config.test.ts`
@@ -31,7 +31,7 @@ const DOC_PATH = fileURLToPath(
   new URL('../../../docs/architecture/system-diagram.md', import.meta.url),
 );
 
-/** Every route of design D10 that exists in this change (045's delete excluded). */
+/** Every route of design D10 that exists in this change, plus `045`'s org-deletion request. */
 const ROUTES = [
   'POST /v1/users/invitations',
   'POST /v1/users/invitations/{invitation}/cancel',
@@ -47,6 +47,8 @@ const ROUTES = [
   'POST /v1/credentials',
   'POST /v1/credentials/{credential}/rotate',
   'POST /v1/credentials/{credential}/revoke',
+  // 045 task 8.3 (design D6): the org-deletion request, the fifteenth oRPC procedure.
+  'DELETE /v1/organization',
 ] as const;
 
 /** A protocol token (SEC01): what an arrow must name. */
@@ -541,6 +543,250 @@ describe('system diagram, 044 trust zones and the break-glass telemetry (task 16
 
   it('every arrow of a zone block that touches a 044 node names a protocol', () => {
     const touching = zoneBlocks.flatMap((block) => drawn044(block).edges);
+    expect(touching.length).toBeGreaterThan(0);
+    for (const e of touching) expect(e.label, e.text).toMatch(PROTOCOL);
+  });
+});
+
+/**
+ * `045` task 10.5 (SEC01, design D2, D3 and the SEC01 row of the security
+ * walk-through): the diagram shows the org-deletion purge job with its one
+ * database connection as `tayzu_purge`, the reversal job
+ * (`tayzu-cancel-org-deletion`) with its one database connection as
+ * `tayzu_deletion_admin`, the GitHub Actions maintenance workflow
+ * (`identity-maintenance`) that starts the reversal through OIDC on Azure
+ * Resource Manager, and the platform operator's reversal as a
+ * `workflow_dispatch` of that workflow. Every new arrow names its protocol, in
+ * the full diagram and in the zone block of each trust zone it touches, under
+ * the projection rules of the `044` zone suite above.
+ *
+ * Node ids the suite requires in the full diagram: `purgeJob`, `reversalJob`
+ * and `maintenanceWorkflow`. The operator and PostgreSQL are found by label.
+ * The workflow sits in the `delivery` subgraph (GitHub Actions, outside the
+ * product boundary, beside CI and the operator); the two jobs sit in a zone
+ * that has a zone block and is neither the workflow's nor PostgreSQL's, so each
+ * of their arrows crosses a zone boundary and is drawn in both zone blocks.
+ *
+ * Production symbols expected: none (the change is the Markdown document).
+ *
+ * Why this fails right now: the diagram has none of the three nodes and none
+ * of their arrows (assertion failures only).
+ */
+const PURGE_JOB = 'purgeJob';
+const REVERSAL_JOB = 'reversalJob';
+const MAINTENANCE_WORKFLOW = 'maintenanceWorkflow';
+
+/** The three `045` nodes, by the id this suite requires and a label check. */
+const NODES_045: [string, string, (label: string) => boolean][] = [
+  [
+    'purge job (scheduled Container Apps Job)',
+    PURGE_JOB,
+    (l) => /purge/i.test(l) && /Container Apps Job/i.test(l) && /schedul/i.test(l),
+  ],
+  [
+    'reversal job (tayzu-cancel-org-deletion)',
+    REVERSAL_JOB,
+    (l) => l.includes('tayzu-cancel-org-deletion') && /Container Apps Job/i.test(l),
+  ],
+  [
+    'maintenance workflow (identity-maintenance)',
+    MAINTENANCE_WORKFLOW,
+    (l) => l.includes('identity-maintenance') && /GitHub Actions/i.test(l),
+  ],
+];
+
+const ids045 = new Set(NODES_045.map(([, id]) => id));
+const is045Label = (label: string): boolean => NODES_045.some(([, , pred]) => pred(label));
+const fullEdges045 = full.edges.filter((e) => ids045.has(e.srcId) || ids045.has(e.dstId));
+
+/** The one node of the full diagram whose label matches, or a failed expectation. */
+function onlyFullNode(name: string, pred: (label: string) => boolean): string {
+  const found = fullNodeIds(pred);
+  expect(found, name).toHaveLength(1);
+  return found[0] ?? '';
+}
+
+const operatorId = (): string =>
+  onlyFullNode('the platform operator actor', (l) => /platform operator/i.test(l));
+const postgresId = (): string => onlyFullNode('PostgreSQL', (l) => /^PostgreSQL 18\b/.test(l));
+
+/** Every arrow of a job that is a database connection (to PostgreSQL, or naming a role). */
+function databaseConnections(jobId: string): Edge[] {
+  const pg = postgresId();
+  return full.edges.filter(
+    (e) => e.srcId === jobId && (e.dstId === pg || /PostgreSQL|tayzu_\w+/.test(e.label)),
+  );
+}
+
+/** A zone block's own `045` nodes and arrows, by id or by label. */
+function drawn045(block: Block): { nodeIds: string[]; edges: Edge[] } {
+  const nodeIds = [...block.nodes]
+    .filter(([id, label]) => !block.subgraphs.has(id) && (ids045.has(id) || is045Label(label)))
+    .map(([id]) => id);
+  const edges = block.edges.filter((e) => nodeIds.includes(e.srcId) || nodeIds.includes(e.dstId));
+  return { nodeIds, edges };
+}
+
+describe('system diagram, 045 org deletion purge, reversal and maintenance workflow (task 10.5)', () => {
+  it.each(NODES_045)('draws the %s as node %s of the full diagram', (name, id, pred) => {
+    expect(full.subgraphs.has(id), `${id} is a node, not a subgraph`).toBe(false);
+    expect(full.nodes.get(id), `${id} is declared in the full diagram`).toBeDefined();
+    expect(pred(full.nodes.get(id) ?? ''), `${id} label: ${full.nodes.get(id) ?? ''}`).toBe(true);
+    // The label check names one node only.
+    expect(fullNodeIds(pred), name).toEqual([id]);
+  });
+
+  it('has the purge job with its one database connection, PostgreSQL over TLS as tayzu_purge', () => {
+    const out = databaseConnections(PURGE_JOB);
+    expect(out.map(arrow)).toHaveLength(1);
+    const [edge] = out;
+    expect(edge?.dstId).toBe(postgresId());
+    expectProtocol(out);
+    expect(edge?.label).toMatch(/PostgreSQL/);
+    expect(edge?.label).toMatch(/TLS/);
+    expect(edge?.label).toContain('tayzu_purge');
+    // The purge job holds no role of another job or of the runtime (D2, Q49).
+    expect(edge?.label).not.toMatch(/tayzu_(?:auth|app|migrator|deletion_admin)\b/);
+  });
+
+  it('has the reversal job with its one database connection, PostgreSQL over TLS as tayzu_deletion_admin', () => {
+    const out = databaseConnections(REVERSAL_JOB);
+    expect(out.map(arrow)).toHaveLength(1);
+    const [edge] = out;
+    expect(edge?.dstId).toBe(postgresId());
+    expectProtocol(out);
+    expect(edge?.label).toMatch(/PostgreSQL/);
+    expect(edge?.label).toMatch(/TLS/);
+    expect(edge?.label).toContain('tayzu_deletion_admin');
+    expect(edge?.label).not.toMatch(/tayzu_(?:auth|app|migrator|purge)\b/);
+  });
+
+  it('has the maintenance workflow starting the reversal Container Apps Job through OIDC on Azure Resource Manager over HTTPS', () => {
+    const matches = full.edges.filter(
+      (e) =>
+        e.srcId === MAINTENANCE_WORKFLOW &&
+        /Container Apps/i.test(e.dst) &&
+        (e.label + ' ' + e.dst).includes('tayzu-cancel-org-deletion'),
+    );
+    expect(matches.map(arrow)).not.toEqual([]);
+    expectProtocol(matches);
+    expect(
+      matches.some(
+        (e) =>
+          /HTTPS/.test(e.label) &&
+          /OIDC/.test(e.label) &&
+          /Azure Resource Manager|\bARM\b/.test(e.label),
+      ),
+      matches.map(arrow).join('\n'),
+    ).toBe(true);
+  });
+
+  it("has the platform operator's reversal as a workflow_dispatch of the maintenance workflow on GitHub over HTTPS", () => {
+    const operator = operatorId();
+    const matches = full.edges.filter(
+      (e) => e.srcId === operator && e.dstId === MAINTENANCE_WORKFLOW,
+    );
+    expectProtocol(matches);
+    expect(
+      matches.some(
+        (e) => /workflow_dispatch/.test(e.label) && /GitHub/.test(e.label) && /HTTPS/.test(e.label),
+      ),
+      matches.map(arrow).join('\n'),
+    ).toBe(true);
+  });
+
+  it('starts the reversal job only through the maintenance workflow (D3)', () => {
+    const into = full.edges.filter((e) => e.dstId === REVERSAL_JOB);
+    expect(into.length).toBeGreaterThan(0);
+    for (const e of into) expect(e.srcId, arrow(e)).toBe(MAINTENANCE_WORKFLOW);
+  });
+
+  it('gives every arrow of the full diagram that touches a 045 node a protocol', () => {
+    // At least the four arrows the cases above require.
+    expect(fullEdges045.length).toBeGreaterThanOrEqual(4);
+    for (const e of fullEdges045) expect(e.label, e.text).toMatch(PROTOCOL);
+  });
+
+  it.each(NODES_045)('the %s (%s) appears in the zone box of its zone block', (_name, id) => {
+    const subgraph = full.container.get(id);
+    expect(subgraph, `${id} is declared in a subgraph of the full diagram`).toBeDefined();
+    const block = blockOfSubgraph(subgraph ?? '');
+    expect(block, `a zone block for subgraph ${String(subgraph)}`).toBeDefined();
+    expect(
+      zoneMembers(block ?? full),
+      `${id} inside the zone box of ${String(subgraph)}`,
+    ).toContain(id);
+    expect(block?.nodes.get(id)).toBe(full.nodes.get(id));
+  });
+
+  it('puts the maintenance workflow in the delivery zone, and each job in a zone that is neither the workflow nor PostgreSQL zone', () => {
+    expect(full.container.get(MAINTENANCE_WORKFLOW)).toBe('delivery');
+    const workflowBlock = blockOfNode(MAINTENANCE_WORKFLOW);
+    const pgBlock = blockOfNode(postgresId());
+    for (const job of [PURGE_JOB, REVERSAL_JOB]) {
+      const jobBlock = blockOfNode(job);
+      expect(jobBlock, `${job} lies in a zone with a zone block`).toBeDefined();
+      expect(jobBlock === workflowBlock, `${job} shares the workflow's zone`).toBe(false);
+      expect(jobBlock === pgBlock, `${job} shares PostgreSQL's zone`).toBe(false);
+    }
+  });
+
+  it('every arrow of the full diagram that touches a 045 node appears with the same label in the zone block of each of its ends that lies in a zone', () => {
+    expect(fullEdges045.length).toBeGreaterThanOrEqual(4);
+    const missing: string[] = [];
+    let required = 0;
+    for (const e of fullEdges045) {
+      const srcBlock = blockOfNode(e.srcId);
+      const dstBlock = blockOfNode(e.dstId);
+      // An arrow inside one zone appears only in the full diagram.
+      if (srcBlock !== undefined && srcBlock === dstBlock) continue;
+      for (const block of [srcBlock, dstBlock]) {
+        if (block === undefined) continue;
+        required += 1;
+        const drawn = block.edges.some(
+          (z) =>
+            z.srcId === e.srcId &&
+            z.dstId === e.dstId &&
+            z.label === e.label &&
+            // Both ends are declared in the block, with the full diagram's labels.
+            block.nodes.get(e.srcId) === e.src &&
+            block.nodes.get(e.dstId) === e.dst,
+        );
+        if (!drawn) missing.push(`[${block.nodes.get('zone') ?? '?'}] ${arrow(e)}`);
+      }
+    }
+    expect(missing).toEqual([]);
+    // Not vacuous: the two database connections and the workflow's start of the
+    // reversal cross zones, so each is drawn in two zone blocks.
+    expect(required).toBeGreaterThanOrEqual(6);
+  });
+
+  it('no zone block draws a 045 node or a 045 arrow that the full diagram does not have', () => {
+    const extra: string[] = [];
+    let drawn = 0;
+    for (const block of zoneBlocks) {
+      const zone = block.nodes.get('zone') ?? '?';
+      const { nodeIds, edges: zoneEdges } = drawn045(block);
+      drawn += nodeIds.length + zoneEdges.length;
+      for (const id of nodeIds) {
+        if (!ids045.has(id) || block.nodes.get(id) !== full.nodes.get(id)) {
+          extra.push(`[${zone}] node ${id}: ${block.nodes.get(id) ?? ''}`);
+        }
+      }
+      for (const z of zoneEdges) {
+        const inFull = fullEdges045.some(
+          (e) => e.srcId === z.srcId && e.dstId === z.dstId && e.label === z.label,
+        );
+        if (!inFull) extra.push(`[${zone}] ${arrow(z)}`);
+      }
+    }
+    expect(extra).toEqual([]);
+    // Not vacuous: the zone blocks do draw 045 nodes and arrows.
+    expect(drawn).toBeGreaterThan(0);
+  });
+
+  it('every arrow of a zone block that touches a 045 node names a protocol', () => {
+    const touching = zoneBlocks.flatMap((block) => drawn045(block).edges);
     expect(touching.length).toBeGreaterThan(0);
     for (const e of touching) expect(e.label, e.text).toMatch(PROTOCOL);
   });

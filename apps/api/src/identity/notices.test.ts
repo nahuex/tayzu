@@ -545,3 +545,143 @@ describe('Notices and invitations count in separate recipient buckets (043 task 
     expect(store.consumed.some((call) => call.scope === 'recipient')).toBe(false);
   });
 });
+
+describe('The dispatcher derives the template name from the kind (045 task 5.5, design D5)', () => {
+  const PURGE_DATE = new Date(Date.UTC(2026, 11, 1, 9, 30)).toISOString();
+  const ORG_DELETION: Extract<EmailTemplate, { kind: 'OrgDeletionNotice' }> = {
+    kind: 'OrgDeletionNotice',
+    purgeDate: PURGE_DATE,
+  };
+
+  it('still names admin_accepted for the AdminAcceptedNotice of 043, suppressed and blocked', async () => {
+    const tenant = tenantId();
+    const listed = tenantId();
+    const sender = createRecordingEmailSender();
+    const suppressing = createNoticeDispatcher({
+      disabledTenantIds: [],
+      capStore: fakeStore(),
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+      killSwitch: true,
+    });
+    const blocking = createNoticeDispatcher({
+      disabledTenantIds: [listed],
+      capStore: fakeStore(),
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
+
+    await suppressing.send({ tenantId: tenant, template: NOTICE, recipients: [admin(1)] });
+    await blocking.send({ tenantId: listed, template: NOTICE, recipients: [admin(2)] });
+
+    expect(sender.sent).toHaveLength(0);
+    const suppressed = await eventsNamed(SUPPRESSED);
+    expect(suppressed).toHaveLength(1);
+    expect(suppressed[0]?.attributes['tayzu.tenant.id']).toBe(tenant);
+    expect(suppressed[0]?.attributes['tayzu.identity.notice.template']).toBe('admin_accepted');
+    const blocked = await eventsNamed(BLOCKED);
+    expect(blocked.length).toBeGreaterThanOrEqual(1);
+    for (const record of blocked) {
+      expect(record.attributes['tayzu.identity.email.template']).toBe('admin_accepted');
+    }
+  });
+
+  it('sends the OrgDeletionNotice unchanged, one email per recipient', async () => {
+    const sender = createRecordingEmailSender();
+    const admins = [admin(1), admin(2), admin(3)];
+    const dispatcher = createNoticeDispatcher({
+      disabledTenantIds: [],
+      capStore: fakeStore(),
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
+
+    await dispatcher.send({ tenantId: tenantId(), template: ORG_DELETION, recipients: admins });
+
+    expect(recipientsOf(sender).sort()).toEqual(admins.map((a) => a.email).sort());
+    for (const message of sender.sent) {
+      expect(message.template).toEqual(ORG_DELETION);
+    }
+    expect(await eventsNamed(SUPPRESSED)).toHaveLength(0);
+  });
+
+  it('names org_deletion when the kill switch suppresses an OrgDeletionNotice', async () => {
+    const tenant = tenantId();
+    const sender = createRecordingEmailSender();
+    const admins = [admin(1), admin(2)];
+    const dispatcher = createNoticeDispatcher({
+      disabledTenantIds: [],
+      capStore: fakeStore(),
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+      killSwitch: true,
+    });
+
+    await expect(
+      dispatcher.send({ tenantId: tenant, template: ORG_DELETION, recipients: admins }),
+    ).resolves.toBeUndefined();
+
+    expect(sender.sent).toHaveLength(0);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    const [record] = records;
+    expect(record?.attributes['tayzu.tenant.id']).toBe(tenant);
+    expect(record?.attributes['tayzu.identity.notice.template']).toBe('org_deletion');
+    expect(record?.attributes['tayzu.identity.notice.suppression']).toBe('global');
+    expect(record?.attributes['tayzu.identity.notice.dropped']).toBe(2);
+    expectNoAddress(
+      records,
+      admins.map((a) => a.email),
+    );
+  });
+
+  it('names org_deletion when a full recipient bucket suppresses an OrgDeletionNotice', async () => {
+    const tenant = tenantId();
+    const sender = createRecordingEmailSender();
+    const store = fakeStore();
+    const [full, ok] = [admin(1), admin(2)] as [NoticeRecipient, NoticeRecipient];
+    for (let i = 0; i < 3; i += 1) {
+      await store.consume('notice_recipient', recipientKey(full.email, HMAC_SECRET));
+    }
+    const dispatcher = createNoticeDispatcher({
+      disabledTenantIds: [],
+      capStore: store,
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
+
+    await dispatcher.send({ tenantId: tenant, template: ORG_DELETION, recipients: [full, ok] });
+
+    expect(sender.sent).toEqual([{ to: ok.email, template: ORG_DELETION }]);
+    const records = await eventsNamed(SUPPRESSED);
+    expect(records).toHaveLength(1);
+    const [record] = records;
+    expect(record?.attributes['tayzu.identity.notice.template']).toBe('org_deletion');
+    expect(record?.attributes['tayzu.identity.notice.suppression']).toBe('recipient');
+    expect(record?.attributes['tayzu.identity.notice.dropped']).toBe(1);
+    expectNoAddress(records, [full.email, ok.email]);
+  });
+
+  it('names org_deletion when a tenant on the disabled list blocks an OrgDeletionNotice', async () => {
+    const listed = tenantId();
+    const sender = createRecordingEmailSender();
+    const store = fakeStore();
+    const dispatcher = createNoticeDispatcher({
+      disabledTenantIds: [listed],
+      capStore: store,
+      sender,
+      recipientKeySecret: HMAC_SECRET,
+    });
+
+    await dispatcher.send({ tenantId: listed, template: ORG_DELETION, recipients: [admin(1)] });
+
+    expect(sender.sent).toHaveLength(0);
+    expect(store.consumed).toHaveLength(0);
+    const records = await eventsNamed(BLOCKED);
+    expect(records.length).toBeGreaterThanOrEqual(1);
+    for (const record of records) {
+      expect(record.attributes['tayzu.tenant.id']).toBe(listed);
+      expect(record.attributes['tayzu.identity.email.template']).toBe('org_deletion');
+    }
+  });
+});

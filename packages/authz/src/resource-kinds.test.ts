@@ -12,6 +12,11 @@ describe('RESOURCE_KINDS', () => {
     expect(RESOURCE_KINDS).toHaveProperty('credential', 'credential');
   });
 
+  /** `045` task 3.1 (design D6): `organization.delete` is authorized on its own kind. */
+  it('has the organization kind', () => {
+    expect(RESOURCE_KINDS).toHaveProperty('organization', 'organization');
+  });
+
   it('keeps the four existing kinds', () => {
     expect(RESOURCE_KINDS.catalogBlueprint).toBe('catalog_blueprint');
     expect(RESOURCE_KINDS.catalogEntity).toBe('catalog_entity');

@@ -25,12 +25,71 @@ if [ -z "$expected_pnpm" ] || [ -z "$actual_pnpm" ] || [ "$actual_pnpm" != "$exp
   exit 1
 fi
 
-# --- Start the local PostgreSQL 16 cluster if it is down -------------------
+# --- Install and start the local PostgreSQL 18 cluster `18 main` -----------
+# ADR-0024: PostgreSQL tracks the latest major version that Azure Database for
+# PostgreSQL Flexible Server offers in GA. The cluster listens on
+# localhost:5432. Ubuntu noble ships only PostgreSQL 16, so the server comes
+# from the PostgreSQL project's apt repository (PGDG), added the documented
+# way (https://wiki.postgresql.org/wiki/Apt, manual repository
+# configuration). Each step runs only when its result is missing. An older
+# cluster, such as `16 main`, is left alone and never started here.
+
+pg_major=18
+pg_cluster="${pg_major}/main"
+pg_port=5432
+pgdg_key="/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc"
+# Fingerprint of the PGDG signing key ACCC4CF8, as published on
+# https://www.postgresql.org/download/linux/ubuntu/.
+pgdg_key_fingerprint="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+
+package_installed() {
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -qx 'install ok installed'
+}
+
+pgdg_key_is_valid() {
+  local gnupg_home fingerprints
+  gnupg_home="$(mktemp -d)"
+  fingerprints="$(GNUPGHOME="$gnupg_home" gpg --show-keys --with-colons "$1" 2>/dev/null | awk -F: '$1 == "fpr" { print $10 }')"
+  rm -rf "$gnupg_home"
+  printf '%s\n' "$fingerprints" | grep -qx "$pgdg_key_fingerprint"
+}
+
+install_postgresql() {
+  if package_installed "postgresql-${pg_major}"; then
+    return 0
+  fi
+  echo "session-start: installing postgresql-${pg_major} from apt.postgresql.org." >&2
+  install -d /usr/share/postgresql-common/pgdg
+  # postgresql-common already ships the key at this path; download it only
+  # when it is missing, and check its fingerprint either way.
+  if [ ! -s "$pgdg_key" ]; then
+    curl -fsS -o "${pgdg_key}.download" https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    mv "${pgdg_key}.download" "$pgdg_key"
+  fi
+  if ! pgdg_key_is_valid "$pgdg_key"; then
+    echo "session-start: $pgdg_key is not the PGDG signing key ${pgdg_key_fingerprint}." >&2
+    exit 1
+  fi
+  local codename
+  codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+  echo "deb [signed-by=${pgdg_key}] https://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
+    >/etc/apt/sources.list.d/pgdg.list
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "postgresql-${pg_major}"
+}
+
+cluster_exists() {
+  pg_lsclusters --no-header 2>/dev/null | awk -v v="$pg_major" '$1 == v && $2 == "main" { found = 1 } END { exit !found }'
+}
+
+cluster_online() {
+  pg_ctlcluster "$pg_major" main status >/dev/null 2>&1
+}
 
 wait_for_postgres() {
   local tries=30
   while [ "$tries" -gt 0 ]; do
-    if pg_isready -q; then
+    if pg_isready --cluster "$pg_cluster" -q; then
       return 0
     fi
     tries=$((tries - 1))
@@ -39,17 +98,36 @@ wait_for_postgres() {
   return 1
 }
 
-if ! pg_isready -q; then
-  pg_ctlcluster 16 main start 2>/dev/null || true
+install_postgresql
+
+if ! cluster_exists; then
+  # An explicit UTF-8 locale: otherwise initdb inherits the sandbox's POSIX
+  # locale and every database is SQL_ASCII.
+  pg_createcluster "$pg_major" main --port "$pg_port" --locale C.UTF-8
+fi
+
+if [ "$(pg_conftool -s "$pg_major" main show port 2>/dev/null || echo "")" != "$pg_port" ]; then
+  if cluster_online; then
+    pg_ctlcluster "$pg_major" main stop
+  fi
+  pg_conftool "$pg_major" main set port "$pg_port"
+fi
+
+if ! cluster_online; then
+  if pg_isready -q -h /var/run/postgresql -p "$pg_port"; then
+    echo "session-start: another PostgreSQL server holds port ${pg_port} (see pg_lsclusters); stop it so that cluster ${pg_cluster} can start." >&2
+    exit 1
+  fi
+  pg_ctlcluster "$pg_major" main start 2>/dev/null || true
   if ! wait_for_postgres; then
     # A container restart can leave a stale postmaster.pid behind; clear it and retry once.
-    pid_file="/var/lib/postgresql/16/main/postmaster.pid"
+    pid_file="/var/lib/postgresql/${pg_major}/main/postmaster.pid"
     if [ -f "$pid_file" ]; then
       rm -f "$pid_file"
     fi
-    pg_ctlcluster 16 main start
+    pg_ctlcluster "$pg_major" main start
     if ! wait_for_postgres; then
-      echo "session-start: PostgreSQL 16 cluster failed to start." >&2
+      echo "session-start: PostgreSQL cluster ${pg_cluster} failed to start." >&2
       exit 1
     fi
   fi
@@ -58,7 +136,7 @@ fi
 # --- Create the test-only login role and database, idempotently ------------
 # Fixed literals only, no interpolation of untrusted input.
 
-su postgres -c "psql -v ON_ERROR_STOP=1 -q" <<'SQL'
+su postgres -c "psql --cluster $pg_cluster -v ON_ERROR_STOP=1 -q" <<'SQL'
 DO $do$
 BEGIN
    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'tayzu') THEN
@@ -68,12 +146,12 @@ BEGIN
    ALTER ROLE tayzu CREATEDB;
    -- Migrations from 002-auth-and-rbac on create the tayzu_auth, tayzu_app
    -- and tayzu_migrator roles (design D6). Test cluster only; CI uses the
-   -- postgres:16 image's superuser.
+   -- postgres:18 image's superuser.
    ALTER ROLE tayzu CREATEROLE;
    -- The test harness's owner connection reads and writes raw rows across
    -- tenants (constraint and trigger tests); service-level test pools run
    -- as tayzu_app through SET ROLE, so RLS still applies to them (002 D6).
-   -- CI's postgres:16 user is a superuser and bypasses RLS the same way.
+   -- CI's postgres:18 user is a superuser and bypasses RLS the same way.
    ALTER ROLE tayzu BYPASSRLS;
 END
 $do$;

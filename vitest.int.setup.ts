@@ -13,7 +13,7 @@
 import { prepareTestDatabase } from './packages/db/src/harness.js';
 
 export const MISSING_DATABASE_URL_MESSAGE = [
-  'DATABASE_URL is not set. Integration tests (*.int.test.ts) need a real PostgreSQL 16 database.',
+  'DATABASE_URL is not set. Integration tests (*.int.test.ts) need a real PostgreSQL 18 database.',
   'Export a connection string before running them, for example:',
   '  export DATABASE_URL=postgres://<user>:<password>@localhost:5432/tayzu_test',
   'To run only the unit tests, use `pnpm test:unit`. See CLAUDE.md, "Running tests".',

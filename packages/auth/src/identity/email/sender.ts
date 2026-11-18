@@ -18,7 +18,8 @@ export type EmailTemplate =
   | { readonly kind: 'PasswordChangedNotice' }
   | { readonly kind: 'MfaChangedNotice' }
   | { readonly kind: 'MfaResetNotice' }
-  | { readonly kind: 'AccountCreatedNotice' };
+  | { readonly kind: 'AccountCreatedNotice' }
+  | { readonly kind: 'OrgDeletionNotice'; readonly purgeDate: string };
 
 export interface EmailSender {
   send(to: string, template: EmailTemplate): Promise<void>;

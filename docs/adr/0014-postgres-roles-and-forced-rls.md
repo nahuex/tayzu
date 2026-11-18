@@ -4,6 +4,11 @@
 - **Date**: 2026-09-29
 - **Change**: [`002-auth-and-rbac`](../../openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md) (design D6)
 
+Amended 2026-11-18 by `045-org-deletion-and-data-retention`: see the
+[addendum](#addendum-2026-11-18-five-roles-and-better-auth-row-level-security)
+at the end. The sections before the addendum are the original decision,
+unchanged.
+
 ## Context
 
 `001-catalog-core` isolates tenants in application code: every query filters
@@ -99,3 +104,70 @@ is `FORCE`d, and a role with `BYPASSRLS` is exempt regardless.
 - `tayzu_app` runs `set_config('app.tenant_id', ...)` per transaction, so
   a code path that opens a connection without `withTenantTransaction`
   returns nothing.
+
+## Addendum, 2026-11-18: five roles and Better Auth row-level security
+
+- **Change**: [`045-org-deletion-and-data-retention`](../../openspec/changes/045-org-deletion-and-data-retention/design.md) (design D1 to D3; Resolved decisions Q35, Q48, Q49, Q59, Q65, Q82, Q159, Q161, Q162 and Q171)
+
+Org deletion ([ADR-0019](0019-org-deletion-two-phase-purge.md)) changes two
+statements of this ADR. Decision 1 says "Three roles", and its table records
+row-level security on the `tayzu_auth` tables as "Not applicable" (`002`
+design D6 says the same). `045` adds two roles and enables row-level security
+on nine Better Auth tables. Everything else above still holds: no role has
+`BYPASSRLS`, no role is shared between migration and runtime use, and
+`tayzu_app` and `tayzu_auth` keep their grants.
+
+1. **Five roles.**
+
+   | Role                   | Added by | Purpose                                                                                                                                                                                                  | RLS                                                                                                |
+   | ---------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+   | `tayzu_migrator`       | `002`    | Owns the catalog and `auth` tables, including `tenant_deletion_marker`, and runs DDL. Unchanged.                                                                                                         | As before. No policy names it, so it reads no marker row either.                                   |
+   | `tayzu_app`            | `002`    | As before, plus `SELECT` and a column-level `INSERT` (`tenant_id`, `purge_after`, `requested_by`) on `tenant_deletion_marker`. No `UPDATE` or `DELETE` on it.                                            | Subject to RLS, and `FORCE`d, on the marker too (`tenant_isolation`).                              |
+   | `tayzu_auth`           | `002`    | Runtime role for Better Auth. Unchanged.                                                                                                                                                                 | A permissive `auth_full_access` policy (`USING (true) WITH CHECK (true)`) on nine `auth` tables.   |
+   | `tayzu_purge`          | `045`    | The purge job only. `SELECT, DELETE` on the seven tenant tables and nine `auth` tables, named one by one; `SELECT` and an `UPDATE` of the progress columns and `state` on the marker; `USAGE` on `auth`. | Policies limited to tenants with a due marker (`state = 'pending' AND purge_after <= now()`).      |
+   | `tayzu_deletion_admin` | `045`    | The reversal job only. `SELECT` and an `UPDATE` of `state`, `cancelled_at` and `cancelled_by` on the marker. No tenant data, no `USAGE` on `auth`.                                                       | Reads pending markers; may only tombstone one with no recorded purge step and a future purge date. |
+
+   Both new roles are created guarded, with `LOGIN`, `NOSUPERUSER`,
+   `NOCREATEDB`, `NOCREATEROLE`, `NOREPLICATION`, `NOBYPASSRLS` and no
+   password, each provisioned out of band with its own secret. They own
+   nothing and there is no `SECURITY DEFINER` function (Q48).
+   `createrole_self_grant` is cleared while they are created, so
+   `tayzu_migrator` keeps only an admin-only membership and cannot `SET ROLE`
+   to either.
+
+2. **Row-level security on the Better Auth tables.** Migration `0014` enables
+   (does not force) row-level security on `auth.organization`, `member`,
+   `invitation`, `apikey`, `session`, `user`, `account`, `two_factor` and
+   `verification`. Each table first gets a permissive `auth_full_access`
+   policy `TO tayzu_auth`, so Better Auth reads and writes every tenant's rows
+   exactly as before (Q59 as reworded by Q65). The restriction applies to
+   `tayzu_purge` only, through `purge_due_select` and `purge_due_delete`
+   policies: an organization-keyed row when its organization is due, a
+   user-keyed row when every membership of the user is in a due tenant (read
+   through `purge_read_all`, a `SELECT` policy over every `auth.member` row,
+   Q65), and an `auth.verification` row by identifier family. `auth.rate_limit`
+   and `auth.jwks` have no row-level security and no grant to `tayzu_purge`.
+   `FORCE` is not set on these tables, because their owner is
+   `tayzu_migrator`, which no runtime path uses (Q162).
+
+3. **Decision 3, as amended.** Better Auth still never runs inside
+   `withTenantTransaction`, and `tayzu_auth` still has no privilege on the
+   catalog schema. `tayzu_purge` is the one role that reaches both sides, and
+   only the rows of a tenant with a due marker. `0003` revoked `USAGE` on
+   `auth` from everyone but `tayzu_auth`; `0014` grants it to `tayzu_purge`
+   too.
+
+4. **The catalog side.** `tenant_deletion_marker` is a catalog-schema table
+   and follows decision 2: `ENABLE` and `FORCE ROW LEVEL SECURITY` with the
+   `tenant_isolation` policy `TO tayzu_app` (Q159). The seven tenant tables
+   keep their `tenant_isolation` policy and `FORCE`, and gain the
+   `tayzu_purge` policies. The append-only trigger on `catalog_change_event`
+   now admits a `DELETE` only when `current_user = 'tayzu_purge'`; `tayzu_app`
+   still cannot alter or delete those rows.
+
+5. **The migrations that carry the grants.** Each is its own Checkpoint 3
+   review and has a `down` script next to it: `0012_tenant_deletion` (the
+   marker table, with no row-level security yet), `0013_tenant_deletion_grants`
+   (the two roles, the marker's grants and policies, the catalog purge
+   policies and the trigger amendment; amended before it reached `master`,
+   Q171) and `0014_tenant_deletion_auth_grants` (the Better Auth side, Q82).

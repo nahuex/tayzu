@@ -1,0 +1,9 @@
+{
+  "exclusions": [
+    {
+      "method": "DELETE",
+      "path": "/v1/organization",
+      "reason": "Destructive: starts the deletion of the scanned organization. Covered by integration tests instead (045 design D6, SEC12)."
+    }
+  ]
+}

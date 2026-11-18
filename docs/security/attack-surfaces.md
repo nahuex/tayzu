@@ -2,10 +2,13 @@
 
 SSA section SEC02, for `002-auth-and-rbac` (VCDM pre-assessment, ticket 6;
 design D13, D18, D22-D26), `043-identity-lifecycle-and-org-admin` (design
-D10, D15) and `044-password-reset-and-account-recovery` (design D2, D13, D16).
+D10, D15), `044-password-reset-and-account-recovery` (design D2, D13, D16) and
+`045-org-deletion-and-data-retention` (design D3, D6).
 It lists every route the API application
 (`apps/api`) exposes, with the actor category that reaches it, how the caller
-is authenticated, and which authorization check applies. The system diagram
+is authenticated, and which authorization check applies, and the one entry
+point outside the API, the
+[maintenance workflow](#maintenance-workflow-entry-point-workflow_dispatch). The system diagram
 in [`docs/architecture/system-diagram.md`](../architecture/system-diagram.md)
 uses the same surface names.
 
@@ -17,6 +20,8 @@ they read from: `ALLOWED_AUTH_ROUTES` in
 `packages/auth/src/http/allowed-routes.ts` and the catalog contract in
 `packages/catalog/src/api/contract.ts`. The identity routes come from
 `apps/api/src/identity-router.ts` and the accept route from `createApp`. The
+maintenance workflow entry point comes from
+`.github/workflows/identity-maintenance.yml` and `.github/CODEOWNERS`. The
 authorization column is read from
 `policies/` and from each operation's `authorization` declaration. Where the
 code and the design differ, this page follows the code and the difference is
@@ -188,7 +193,9 @@ session token, so it never carries over to another session.
 
 ## Identity routes (`/v1`, behind the mount gate)
 
-Thirteen oRPC procedures of `identity-router.ts` (design D10), served by the
+Fifteen oRPC procedures of `identity-router.ts`: the thirteen of `043` (design
+D10), `044`'s `identity.users.resetMfa` and `045`'s
+`identity.organization.delete` (`045` design D6). They are served by the
 same `ALL /v1/*` handler as the catalog routes, so the context resolution, the
 error mapping, the CSRF check and the per-principal limit of the catalog routes
 apply to them. They are registered only when the mount gate is on, see
@@ -202,7 +209,8 @@ parses the input, resolves the target on the server inside the caller's tenant
 the handler runs. It fails closed. A cross-tenant or unknown target is
 `404 CATALOG_NOT_FOUND`. `tenantId` and `actor` are never read from the input.
 The Cerbos policies are `policies/resource_policies/user.yaml`,
-`service_account.yaml` and `credential.yaml`, and the gating by action rather
+`service_account.yaml`, `credential.yaml` and `organization.yaml` (`045` D6),
+and the gating by action rather
 than by the origin of the account is in
 [ADR 0020](../adr/0020-cerbos-gates-invite-and-status-not-origin.md).
 
@@ -212,6 +220,7 @@ than by the origin of the account is in
 | `POST /v1/users/invitations/{invitation}/cancel` | `users.cancelInvitation` | `user`, `invite`            | Yes         | No                                                 |
 | `POST /v1/users/invitations/{invitation}/resend` | `users.resendInvitation` | `user`, `invite`            | Yes         | No                                                 |
 | `PUT /v1/users/{user}/status`                    | `users.setStatus`        | `user`, `updateStatus`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `POST /v1/users/{user}/mfa/reset`                | `users.resetMfa`         | `user`, `resetMfa`          | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
 | `POST /v1/users`                                 | `users.create`           | `user`, `create`            | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
 | `POST /v1/users/{user}/sso-account`              | `users.linkSsoAccount`   | `user`, `update`            | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
 | `DELETE /v1/users/{user}/sso-account`            | `users.unlinkSsoAccount` | `user`, `update`            | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
@@ -221,6 +230,7 @@ than by the origin of the account is in
 | `POST /v1/credentials`                           | `credentials.create`     | `credential`, `create`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
 | `POST /v1/credentials/{credential}/rotate`       | `credentials.rotate`     | `credential`, `rotate`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
 | `POST /v1/credentials/{credential}/revoke`       | `credentials.revoke`     | `credential`, `revoke`      | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
+| `DELETE /v1/organization`                        | `organization.delete`    | `organization`, `delete`    | Yes         | Yes, `x-tayzu-risk: high`, see [Step-up](#step-up) |
 
 `{user}` is the `_user` identifier (an email, or `svc-…`), sent unencoded, and a
 path holding `%` is Fastify's `404` (`002` Q74). Such identifiers never reach
@@ -229,8 +239,38 @@ builds null-prototype objects, rejects `__proto__`, `constructor` and
 `prototype` at every depth, rejects an undeclared field and checks length
 limits before any lookup.
 
-The fourteenth route is the public acceptance below, so the change exposes
-fourteen routes in all (`045` adds `identity.organization.delete`).
+The mount gate also covers three plain Fastify routes: the public acceptance
+and the two public password-reset routes below. The gate therefore covers
+eighteen routes in all: fifteen oRPC procedures and three plain routes (`045`
+design D6).
+
+### Organization deletion route
+
+`DELETE /v1/organization` (`identity.organization.delete`, `045` design D1 and
+D6) is phase 1 of the two-phase org deletion: it revokes the tenant's access at
+once and inserts the deletion marker that the purge job acts on after the
+window (`ORG_DELETION_WINDOW_DAYS`, see [Secrets](secrets.md)).
+
+- **Actor.** An `admin` of the caller's own tenant. Any admin may request it
+  (`045` Q27). A `member` gets `403 AUTH_FORBIDDEN`. A machine token carries
+  the fixed `member` role, so an agent or an integration is always denied.
+- **Authentication.** A step-up-verified session: a Better Auth session cookie
+  with a fresh step-up (`x-tayzu-risk: high`), see [Step-up](#step-up). A
+  failure is `403 AUTH_STEP_UP_REQUIRED`.
+- **Cerbos check.** `organization`, `delete`, allowed to `admin` only by
+  `policies/resource_policies/organization.yaml`, which carries the explicit
+  cross-tenant `EFFECT_DENY`. The target is the host tenant itself, resolved
+  with no lookup and never read from the input.
+- **Confirmation.** The organization identifier travels in the query string
+  (`?confirmation=<organization identifier>`, `043` Q47 item 2) and must equal
+  the host `ctx.tenantId`. A confirmation sent only in a body does not count. A
+  mismatch is `400 CATALOG_VALIDATION_FAILED`. The query never reaches
+  telemetry (`045` D9).
+- **Mount gate.** Behind `MOUNT_IDENTITY_ROUTES`, which is off by default, see
+  [Mount gate](#mount-gate). With the switch off the route answers like an
+  unknown `/v1` path.
+- **DAST.** The route is destructive, so it is on the scan's explicit exclusion
+  list (`045` task 8.2), and the scan runs against a sandbox tenant.
 
 ### Public accept route
 
@@ -329,7 +369,7 @@ accepts the invitation. The accept route is called by that future page.
 ### Mount gate
 
 `MOUNT_IDENTITY_ROUTES` (`mountIdentityRoutes`) is **off by default** (D15). With
-it off, none of the fourteen routes is registered, and each answers like an
+it off, none of the eighteen routes is registered, and each answers like an
 unknown `/v1` path: `401 CATALOG_CONTEXT_REQUIRED` without a valid credential
 and the oRPC `404` with one. State today: the switch is off, `identity.*` is not
 mounted over HTTP, and the routes are exercised in process and by tests only. The
@@ -339,8 +379,8 @@ first-deployment gate for `010`.
 
 ### Identity OpenAPI document
 
-`openapi/identity.openapi.json` lists the thirteen oRPC routes (not the accept
-route) with paths, methods, path parameters and `x-tayzu-risk` only, with no
+`openapi/identity.openapi.json` lists the fifteen oRPC routes (not the three
+plain routes) with paths, methods, path parameters and `x-tayzu-risk` only, with no
 request or response schemas (Q52): the router hand-parses its input and the
 change adds no schema dependency. A DAST scan of that document therefore
 exercises route reachability and status codes, not the shape of any body, and
@@ -355,6 +395,43 @@ first-deployment gate.
 | `/v1/auth/token`                              | `POST`        | `agent`, `integration`                      | Client id and secret of a machine credential in the JSON body, checked with `verifyApiKey`. A missing or non-string field is `400`. Any other failure is one identical `401 AUTH_INVALID_CREDENTIALS`. | Per-IP rate limit (30 per 60 seconds by default). Mints a 1-hour `jwt`-plugin token for the credential's tenant, actor and fixed `member` role; a credential without the `member` role fails closed. Revocation is checked on use within 5 seconds. Exempt from the per-principal limiter and from the CSRF check.                                                                                                                                                                                                                                                                 |
 | `/v1/auth/visma-connect/backchannel-logout`   | `POST`        | Visma Connect (unauthenticated)             | None, by design. The caller is Visma Connect's infrastructure, so there is no cookie and no CSRF header. The `logout_token` is the only proof.                                                         | Answers `404` when SSO is not configured. Fail-closed validation in the order the code runs it: `typ` `logout+jwt`, `iss`, `aud`, `iat` and `exp` (30 seconds of skew), the back-channel `events` member, no `nonce`, a `sid` or `sub`, then the signature against the discovered JWKS (`RS256`) last, so a token that fails a cheap check triggers no outbound fetch, and finally `jti` replay. Rate limited per source IP. Answers `200` for every well-formed request whatever the outcome, and `400` only when `logout_token` is missing. Revokes only Visma Connect sessions. |
 | `/v1/auth/visma-connect/reauthorize/callback` | `GET`, `POST` | Visma Connect, through the caller's browser | None. The single-use, unguessable `state` (10 minutes) is bound to the session that started the re-authorization, so no cookie is needed. `code` arrives in the query or a `form_post` body.           | Exchanges the `code` for an ID token and stores it under that session for the step-up guard, which validates it. Answers a bare `200`, or `400` for any failure, with nothing from the provider in the body. Always registered; without SSO configured it can only answer `400`.                                                                                                                                                                                                                                                                                                   |
+
+## Maintenance workflow entry point (`workflow_dispatch`)
+
+`.github/workflows/identity-maintenance.yml` (`045` design D3, Resolved
+decisions Q41, Q55, Q64, Q153) is not an API route, but it is the one entry
+point that reaches production data from outside `apps/api`: it starts Azure
+Container Apps Jobs that run inside the VNET as `tayzu_deletion_admin`,
+`tayzu_app` and `tayzu_auth`. Nothing else starts those three jobs.
+
+| Entry point                                  | Trigger                                                                              | Actor category                                                                            | Authentication                                                                                                                                                                                                                                                                        | Authorization check                                                                                                                                                                                                                                                                                                                                                                                                                                  | What it can start                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Identity maintenance` workflow, job `start` | `workflow_dispatch` only, from `refs/heads/master` only (a job condition on the ref) | A repository member with permission to run workflows, approved by the second human (Q153) | GitHub's own authentication of the actor, then the review of the `identity-maintenance` environment (required reviewers with "prevent self-review"), then OIDC (`id-token: write`, no stored cloud secret) to an Azure federated identity whose subject is pinned to that environment | The environment's required reviewers, deployment branches limited to `master` and the federated identity's Azure role, limited to starting the named jobs and scoped to those job resources. The operator id is `gh:` plus the numeric `github.actor_id`, never the login, handed to the job through `env` (Q70). `CODEOWNERS` (`@nahuex`, with the second human) covers the workflow, its actions, the `CODEOWNERS` file and `apps/api/scripts/**`. | One of three named Container Apps Jobs, chosen by the `job` input (a `choice`): `tayzu-cancel-org-deletion` (the reversal, with `TAYZU_TENANT_ID` validated against the tenant-id pattern before the Azure login), `tayzu-backfill-user-blueprint` and `tayzu-reconcile-users` (`043` D9). Nothing else: not the purge job, not the bootstrap CLI (Q91) and not `recover-admin-mfa` (Q155). |
+
+- **No repository code on the runner.** There is no checkout and no setup step.
+  The steps are an input check, the SHA-pinned `azure/login` and one
+  `az containerapp job start` call, so no repository code runs on a runner that
+  holds the OIDC token (`045` Q173).
+- **Inputs.** Every input reaches the steps through `env`, never as an
+  expression inside `run:`. The `az` flags are an allowlist, and `--env-vars`
+  passes only the fixed names `TAYZU_OPERATOR_ID` and `TAYZU_TENANT_ID`
+  (`045` Q174). `identity-maintenance-workflow.test.ts` asserts these rules on
+  the file's text.
+- **Start overrides.** Whether a job start can override the job's command,
+  arguments or image, and whether `--env-vars` needs `--container-name`, is
+  confirmed in `010`'s sandbox rehearsal (Q157, Q174). The GitHub and Azure
+  settings are human-owned; their checklist is in
+  [Secrets](secrets.md#github-settings-checklist-of-the-maintenance-workflow).
+- **Re-runs.** The first step refuses a run whose triggering actor differs from
+  the actor of the first run, so the operator id recorded by the job is always
+  the person who started that run (`045` Q177).
+- **No administrator bypass.** The environment's administrator bypass is off
+  and the `master` ruleset has no bypass actors, so the second approver and the
+  code-owner review cannot be skipped by an admin account (`045` Q179, item 6
+  of the settings checklist).
+- **Not enabled yet.** The workflow cannot be enabled until the second human is
+  a reviewer of the environment and a code owner (Q153), a first-deployment
+  gate for `010`.
 
 ## Blocked routes
 
@@ -377,11 +454,13 @@ named.
 
 | Capability                                                                                        | How it is reached                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every `identity.*` procedure                                                                      | In-process through `createRouterClient`. Over HTTP only when `MOUNT_IDENTITY_ROUTES` is `true`, which is off by default, see [Mount gate](#mount-gate). Cerbos-gated on the `user`, `service_account` or `credential` kind.                                                                                                                                               |
+| Every `identity.*` procedure                                                                      | In-process through `createRouterClient`. Over HTTP only when `MOUNT_IDENTITY_ROUTES` is `true`, which is off by default, see [Mount gate](#mount-gate). Cerbos-gated on the `user`, `service_account`, `credential` or `organization` kind.                                                                                                                               |
 | Machine credential creation and revocation (`createMachineCredential`, `revokeMachineCredential`) | In-process only. The only HTTP path is `identity.credentials.*` and `identity.serviceAccounts.*`, behind the same switch.                                                                                                                                                                                                                                                 |
 | Hard rule (Q73)                                                                                   | `identity.*` and the machine-credential routes are not mounted over HTTP before group 13 of `043` (hand-offs from `002`) is done.                                                                                                                                                                                                                                         |
 | Break-glass MFA recovery CLI (`recover:admin-mfa`)                                                | Run out of band by an operator from the production-network operator environment under Azure PIM (`044` D12). Never mounted. It connects as `tayzu_auth` and loads no Better Auth signing key.                                                                                                                                                                             |
 | First-admin bootstrap script                                                                      | Run out of band by an operator. Calls the same `auth.api.createUser` path. Idempotent.                                                                                                                                                                                                                                                                                    |
+| Org-deletion purge job (`identity:purge`)                                                         | A scheduled Container Apps Job inside the VNET (`045` D2), provisioned with `010`, with no HTTP listener and no other trigger: the maintenance workflow does not start it. It holds one database secret and connects only as `tayzu_purge`, which it asserts at start.                                                                                                    |
+| Org-deletion reversal (`identity:cancel-org-deletion`)                                            | A Container Apps Job inside the VNET (`045` D3), started only through the [maintenance workflow](#maintenance-workflow-entry-point-workflow_dispatch). It connects only as `tayzu_deletion_admin`, which can only tombstone a pending marker.                                                                                                                             |
 | Cerbos PDP                                                                                        | gRPC from `apps/api`, with TLS unless `CERBOS_ADDRESS` is `localhost`, `127.0.0.1` or `[::1]` (the sidecar case, no TLS). Nothing outside the boundary can reach a loopback sidecar.                                                                                                                                                                                      |
 | PostgreSQL                                                                                        | Outbound from `apps/api` over TLS with `sslmode=verify-full` (`createPool` refuses anything else), as `tayzu_app` for the catalog and `tayzu_auth` for Better Auth. Outside test, startup asserts neither role is privileged (Q62). The `tayzu_auth` identity has two more users in `044` (SEC14), see [Identity use of `tayzu_auth`](#identity-use-of-tayzu_auth-sec14). |
 

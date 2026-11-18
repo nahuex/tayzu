@@ -101,9 +101,13 @@ export interface AuthRepository {
   pendingInvitationsByEmail: (tenantId: string, email: string) => Promise<InvitationRead[]>;
   /** The `pending` invitations of the tenant created by the inviter. */
   pendingInvitationsByInviter: (tenantId: string, inviterId: string) => Promise<InvitationRead[]>;
+  /** Every `pending` invitation of the tenant (045 D1, phase 1 of org deletion). */
+  pendingInvitationsOf: (tenantId: string) => Promise<InvitationRead[]>;
   listMembers: (tenantId: string) => Promise<MemberRead[]>;
   /** The owners and admins of the tenant other than `excludeUserId`, with their membership dates. */
   adminRecipients: (tenantId: string, excludeUserId: string) => Promise<AdminRecipientRead[]>;
+  /** Every owner and admin of the tenant, with their membership dates (045 D5, the deletion notice). */
+  administratorsOf: (tenantId: string) => Promise<AdminRecipientRead[]>;
   /** `db` is the per-user lock's connection, for the in-lock predicate read (044 D10, Q36). */
   memberOf: (
     tenantId: string,
@@ -116,6 +120,12 @@ export interface AuthRepository {
   deleteMember: (tenantId: string, memberId: string) => Promise<boolean>;
   /** Deletes the user's sessions whose active organization is the tenant; rows deleted. */
   deleteSessionsOf: (tenantId: string, userId: string) => Promise<number>;
+  /**
+   * Deletes every session whose active organization is the tenant (045 D1), with the
+   * `sso-reauth-state:` and `sso-reauth-result:` verification rows keyed by those sessions'
+   * tokens (Q170); the user id of each deleted session, one entry per session.
+   */
+  deleteTenantSessions: (tenantId: string) => Promise<string[]>;
   /**
    * Sets a `pending` invitation of the tenant to `accepted`; true when a row changed.
    * `db` lets the acceptance run it inside its own transaction.
@@ -388,6 +398,17 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
       return result.rows.map(toInvitation);
     },
 
+    async pendingInvitationsOf(tenantId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<InvitationRow>(
+        `select ${INVITATION_COLUMNS} from auth.invitation
+         where organization_id = $1 and status = 'pending'
+         order by id`,
+        [tenantId],
+      );
+      return result.rows.map(toInvitation);
+    },
+
     async listMembers(tenantId) {
       requireTenant(tenantId);
       const result = await authPool.query<MemberRow>(
@@ -405,6 +426,18 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
          where m.organization_id = $1 and m.user_id <> $2 and m.role in ('owner', 'admin')
          order by m.created_at, m.id`,
         [tenantId, excludeUserId],
+      );
+      return result.rows.map((r) => ({ email: r.email, memberSince: r.created_at }));
+    },
+
+    async administratorsOf(tenantId) {
+      requireTenant(tenantId);
+      const result = await authPool.query<{ email: string; created_at: Date }>(
+        `select u.email, m.created_at from auth.member m
+         join auth."user" u on u.id = m.user_id
+         where m.organization_id = $1 and m.role in ('owner', 'admin')
+         order by m.created_at, m.id`,
+        [tenantId],
       );
       return result.rows.map((r) => ({ email: r.email, memberSince: r.created_at }));
     },
@@ -456,6 +489,26 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
         [tenantId, userId],
       );
       return result.rowCount ?? 0;
+    },
+
+    async deleteTenantSessions(tenantId) {
+      requireTenant(tenantId);
+      // One statement: the sessions and the reauthorization rows keyed by their tokens go
+      // together, so a never-consumed `id_token` cannot outlive the request (Q170). The state
+      // prefix mirrors `reauthorization.ts`: `{"token":<JSON-encoded token>,`.
+      const result = await authPool.query<{ user_id: string }>(
+        `with deleted as (
+           delete from auth.session where active_organization_id = $1 returning user_id, token
+         ), reauthorization as (
+           delete from auth.verification v using deleted d
+           where v.identifier = 'sso-reauth-result:' || d.token
+              or (v.identifier like 'sso-reauth-state:%'
+                  and position('{"token":' || to_json(d.token)::text || ',' in v.value) = 1)
+         )
+         select user_id from deleted`,
+        [tenantId],
+      );
+      return result.rows.map((row) => row.user_id);
     },
 
     async markInvitationAccepted(tenantId, invitationId, db = authPool) {

@@ -89,6 +89,10 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import type { AuthInstance } from './auth.js';
 import { AuthInvalidCredentialsError } from './errors.js';
 import type { MachineCredentialActorKind } from './machine-credentials.js';
+import {
+  emitTenantPendingDeletionRejection,
+  type TenantDeletionLookup,
+} from './tenant-deletion-lookup.js';
 import { logger, tokenExchangesCounter, tracer } from './telemetry/instruments.js';
 
 /** design D5: the one `apiKey` plugin config machine credentials live under (mirrors `./machine-credentials.ts`'s own `MACHINE_CREDENTIAL_CONFIG_ID`). */
@@ -147,6 +151,11 @@ export interface ExchangeMachineTokenPorts {
   readonly serviceAccountLookup?: (
     target: ServiceAccountLookupTarget,
   ) => Promise<ServiceAccountUserRow | null>;
+  /**
+   * `045` design D4: no token is minted for a credential of a tenant with a
+   * `pending` or `purged` deletion marker. Absent, nothing is checked.
+   */
+  readonly tenantDeletionLookup?: TenantDeletionLookup;
 }
 
 /** design D5, requirement text: "MUST return an access token." */
@@ -319,6 +328,19 @@ export async function exchangeMachineToken(
   if (role !== 'member') {
     recordFailedExchange(actorKind);
     throw new AuthInvalidCredentialsError();
+  }
+
+  // `045` design D4: a tenant closed for deletion gets no new token. A rejected
+  // lookup refuses too (fail closed), without a reason it cannot know.
+  if (ports.tenantDeletionLookup !== undefined) {
+    const closed = await ports.tenantDeletionLookup(key.referenceId).catch(() => null);
+    if (closed !== false) {
+      if (closed === true) {
+        emitTenantPendingDeletionRejection(actorKind);
+      }
+      recordFailedExchange(actorKind);
+      throw new AuthInvalidCredentialsError();
+    }
   }
 
   // Task 10.6: `userId` is an attribution claim only, never an authority.

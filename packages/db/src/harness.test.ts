@@ -205,7 +205,7 @@ describe('getTestDatabase', () => {
 
   /**
    * The harness exemption covers a local database only. What counts as local
-   * (for example the host of the CI `postgres:16` service) is for the
+   * (for example the host of the CI `postgres:18` service) is for the
    * implementation to define; none of the effective hosts below is local
    * under any definition, and none of the URLs gives pg `sslmode=verify-full`.
    */

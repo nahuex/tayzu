@@ -143,13 +143,49 @@ Better Auth's three reset routes are not in `ALLOWED_AUTH_ROUTES` and the drift
 test lists them as blocked. This change adds no allowlisted Better Auth route.
 The two public Tayzu routes are in `PUBLIC_ROUTE_ALLOWLIST`, each with a reason.
 
+### Organization deletion (change 045)
+
+Change
+[`045-org-deletion-and-data-retention`](../../openspec/changes/045-org-deletion-and-data-retention/design.md)
+adds `identity.organization.delete` (`DELETE /v1/organization`,
+`x-tayzu-risk: high`), behind the same `MOUNT_IDENTITY_ROUTES` switch. Any
+admin of the tenant may call it. The query parameter `confirmation` must equal
+the host tenant id, or the answer is `CATALOG_VALIDATION_FAILED`. Phase 1
+writes a `pending` deletion marker, revokes the tenant's sessions and
+credentials, cancels its pending invitations and notifies its admins. A
+scheduled job purges the tenant after the window (7 to 14 days), and only a
+reviewed operator workflow can cancel a pending deletion. Both are maintenance
+scripts with no Cerbos check.
+
+**A closed tenant rejects every principal.** A tenant with a `pending` or
+`purged` marker is closed; a `cancelled` marker (a tombstone) is not.
+
+- `resolveContext` checks the marker of the context's tenant for a session
+  and for a machine token, through a per-tenant cache of at most 5 seconds. A
+  closed tenant fails as `CATALOG_CONTEXT_REQUIRED`, like a missing context.
+- Token exchange checks the marker before it mints a token, with no cache. A
+  closed tenant fails as `AUTH_INVALID_CREDENTIALS`, the same answer as a
+  wrong secret.
+- A lookup failure counts as closed and is never cached (fail closed).
+- The check is chosen by the credential branch, never by `actor.type`. Each
+  rejection of a closed tenant logs `catalog.security.principal_rejected` with
+  the reason `tenant_pending_deletion` and counts it on
+  `tayzu.identity.principal_rejections`. A lookup failure emits neither,
+  because it does not know the reason.
+- An invitation of a closed tenant answers the uniform `CATALOG_NOT_FOUND` of
+  every dead invitation. The denial reason `tenant_pending_deletion` is only in
+  `catalog.security.invitation_acceptance_denied`.
+- The two password-reset routes are left untouched (`045` Q152): a reset grants
+  no access, because every session it leads to is rejected.
+
 ## Resource kinds
 
-Cerbos knows six fixed resource kinds (constants in
+Cerbos knows seven fixed resource kinds (constants in
 `packages/authz/src/resource-kinds.ts`). Blueprints do not get a kind each:
 the blueprint is an attribute of the entity resource. Change
 [`043-identity-lifecycle-and-org-admin`](../../openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin/design.md)
-(D3) added `service_account` and `credential`.
+(D3) added `service_account` and `credential`, and change `045` (D6) added
+`organization`.
 
 | Kind                | What it stands for                                       | Attributes sent to Cerbos                                                                                                 |
 | ------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
@@ -159,6 +195,7 @@ the blueprint is an attribute of the entity resource. Change
 | `user`              | A user (the `_user` system blueprint)                    | `tenantId`. The identity operations also send `accountKind`, and `portRole` and `moderatedBlueprints` when they are known |
 | `service_account`   | A service account (a `_user` of `accountKind` `service`) | `tenantId`, `accountKind` (always `service` for a valid target)                                                           |
 | `credential`        | An organization API credential (a Better Auth `apikey`)  | `tenantId`                                                                                                                |
+| `organization`      | The organization (the tenant) itself                     | `tenantId` (always the host tenant)                                                                                       |
 
 For the identity kinds the attributes describe the target, resolved on the
 server (D14): `tenantId` is the target's real tenant, never the caller's
@@ -167,7 +204,9 @@ echoed back. The resource id is opaque: the literal `new` for `invite`,
 literal `list` for `credentials.list`, the invitation id for cancel and
 resend, the Better Auth user id (or the `svc-…` identifier of a service
 account) for a status change, a service-account deletion and an SSO link or
-unlink, and the `apikey` id for rotate and revoke. An email is never a
+unlink, the `apikey` id for rotate and revoke, and the host tenant id for
+`identity.organization.delete`, which resolves with no lookup and never from
+input. An email is never a
 resource id, so it never reaches Cerbos's decision log.
 
 The principal carries `tenantId`, `roles`, `teams` and `moderatedBlueprints`.
@@ -202,14 +241,15 @@ and imports the `same_tenant` derived role, so a rule that forgets a tenant
 check still cannot cross tenants. Tenancy is a plain attribute, not a Cerbos
 scope ([ADR-0015](../adr/0015-cerbos-dynamic-context-not-scoped-policies.md)).
 
-| Kind                | `admin` | `member`                                                                                                                                                                                         |
-| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `catalog_blueprint` | All     | `view`, `list`                                                                                                                                                                                   |
-| `catalog_entity`    | All     | `view`, `list` on every entity of the tenant. `create` and `update` when the entity has no owner team. `delete` only where `createdBy` is the principal. Everything the derived roles below add. |
-| `team`              | All     | `view`, `list`                                                                                                                                                                                   |
-| `user`              | All     | `view`, `list`                                                                                                                                                                                   |
-| `service_account`   | All     | None                                                                                                                                                                                             |
-| `credential`        | All     | None                                                                                                                                                                                             |
+| Kind                | `admin`  | `member`                                                                                                                                                                                         |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `catalog_blueprint` | All      | `view`, `list`                                                                                                                                                                                   |
+| `catalog_entity`    | All      | `view`, `list` on every entity of the tenant. `create` and `update` when the entity has no owner team. `delete` only where `createdBy` is the principal. Everything the derived roles below add. |
+| `team`              | All      | `view`, `list`                                                                                                                                                                                   |
+| `user`              | All      | `view`, `list`                                                                                                                                                                                   |
+| `service_account`   | All      | None                                                                                                                                                                                             |
+| `credential`        | All      | None                                                                                                                                                                                             |
+| `organization`      | `delete` | None                                                                                                                                                                                             |
 
 The new content of change 043 on `user` is two explicit `EFFECT_DENY` rules
 (an allow cannot narrow the admin's `*`): `updateStatus` is denied when the
@@ -219,6 +259,13 @@ service account whose resulting `portRole` is not `member` or whose
 unless the resolved target's `accountKind` is `service`, so a route of that
 kind can never act on a human. Both new policies carry the explicit
 cross-tenant deny of every resource policy.
+
+Change 045 adds `organization` with the single action `delete`, admin only.
+`policies/role_policies/admin.yaml` lists the kind with `delete` alone, and
+`member.yaml` does not list it, so every action stays denied to a member.
+`policies/resource_policies/organization.yaml` starts with the explicit
+cross-tenant deny, imports `same_tenant` and allows `delete` to that derived
+role only when the principal has the `admin` role. It reads no other attribute.
 
 Derived roles on `catalog_entity`:
 
@@ -265,6 +312,7 @@ with `pnpm policy:compile`, and every policy change is a Checkpoint 3 review.
 | `identity.credentials.create`                                        | `credential`        | `create`                                                  |
 | `identity.credentials.rotate`                                        | `credential`        | `rotate`                                                  |
 | `identity.credentials.revoke`                                        | `credential`        | `revoke`                                                  |
+| `identity.organization.delete`                                       | `organization`      | `delete`                                                  |
 
 The identity actions are all gated to the `admin` role. The public
 invitation acceptance and the two password-reset routes are not `identity.*`
@@ -571,6 +619,93 @@ same as for bad credentials and the cause is visible only internally.
 Catalog spans and audit events never carry a `_user` identifier (it is a
 member's email): they carry one fixed placeholder instead. That rule is in
 [Catalog core](catalog-core.md#telemetry).
+
+### Organization deletion signals (change 045)
+
+The names below are appended to the same identity contract module,
+`packages/auth/src/telemetry/identity-contract.ts`, under the same `@tayzu/auth`
+scope. `002`'s contract is untouched. The purge job
+(`pnpm --filter @tayzu/api identity:purge`) and the reversal script
+(`identity:cancel-org-deletion`) start telemetry and flush it before they exit,
+so their audit events are exported. The `authz.check` span,
+`catalog.security.authz_denied` and `tayzu.authz.decisions` are reused for the
+Cerbos check of `identity.organization.delete`.
+
+Forbidden here, as on every signal: the organization's name and the
+confirmation value (the query string never reaches a span), emails, tokens,
+credential names and secrets. `tayzu.identity.operator.id` is the operator's
+opaque `gh:<numeric actor id>`, taken from the workflow's authenticated actor.
+
+#### Organization deletion spans
+
+All are `INTERNAL`.
+
+| Span                                    | When                               | Required attributes                                                                                   |
+| --------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `identity.organization.delete`          | Operation                          | `tayzu.tenant.id`                                                                                     |
+| `identity.organization.cancel_deletion` | Reversal script                    | `tayzu.tenant.id`, `tayzu.identity.operator.id`                                                       |
+| `identity.organization.purge`           | Purge job, one per tenant and step | `tayzu.tenant.id`, `tayzu.identity.org_deletion.step`, `tayzu.identity.org_deletion.entities_removed` |
+
+A refused reversal ends its span with status `ERROR` and the refusal reason
+(`invalid_tenant`, `no_pending_marker`, `purge_begun` or `purge_date_passed`)
+as `error.type`, with no exception event. The span carries `tayzu.tenant.id`
+only once the tenant id has passed its shape check (`045` Q175). A failed purge
+step lets its error cross the purge span (`error.type` `internal`, one
+sanitized exception), and the job goes on to the next tenant.
+
+#### Organization deletion metric
+
+| Metric                         | Instrument, unit      | Allowed attributes                    | Purpose                               |
+| ------------------------------ | --------------------- | ------------------------------------- | ------------------------------------- |
+| `tayzu.identity.org_deletions` | Counter, `{deletion}` | `tayzu.identity.org_deletion.outcome` | A rare, high-impact operation, always |
+
+`tayzu.identity.org_deletion.outcome` is `requested`, `completed`, `failed` or
+`cancelled`. A step-up refusal is not counted here: the guard already counts it
+on `tayzu.auth.step_up.required`. `tayzu.identity.principal_rejections` gains
+the reason `tenant_pending_deletion`, with no new instrument.
+
+#### Organization deletion log events
+
+Every event below is exempt from sampling and from any downstream filter or
+drop rule.
+
+| Event                                          | Severity | Attributes                                                                                                                              | Purpose                                                                   |
+| ---------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `catalog.audit.org_deletion_requested`         | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                                                     | Phase 1 ran: access revoked, tenant marked                                |
+| `catalog.audit.org_deletion_cancelled`         | INFO     | `tayzu.tenant.id`, `tayzu.identity.operator.id`                                                                                         | The reversal script tombstoned a pending marker                           |
+| `catalog.audit.org_deletion_completed`         | INFO     | `tayzu.tenant.id`, `tayzu.identity.org_deletion.entities_removed`                                                                       | The irreversible purge happened, logged before the organization row goes  |
+| `catalog.security.org_deletion_notice_failed`  | WARN     | `tayzu.tenant.id`                                                                                                                       | The notice to an admin could not be sent. The request is not blocked      |
+| `catalog.security.org_deletion_failed`         | WARN     | `tayzu.tenant.id`, `tayzu.identity.org_deletion.step`                                                                                   | A purge step failed                                                       |
+| `catalog.security.org_deletion_repeated`       | WARN     | `tayzu.tenant.id`, `tayzu.actor.id`                                                                                                     | A deletion was requested again while pending. The revocations were re-run |
+| `catalog.security.org_deletion_cancel_refused` | WARN     | `tayzu.identity.operator.id`, `tayzu.identity.org_deletion.cancel_refusal`, `tayzu.tenant.id` when the tenant id passed its shape check | The reversal script refused to revive a tenant                            |
+
+The actor attributes follow the table, not a general rule (`045` Q176):
+`org_deletion_requested` and `org_deletion_repeated` carry `tayzu.actor.id`,
+the admin who acted; `org_deletion_cancelled` carries
+`tayzu.identity.operator.id` and no `tayzu.actor.id`; `org_deletion_completed`
+and `org_deletion_failed` carry no actor, because the purge acts on no one's
+request at run time. None of them carries the `system` actor type.
+
+Values of the new closed enums:
+
+- `tayzu.identity.org_deletion.step`: `catalog` or `auth`.
+- `tayzu.identity.org_deletion.cancel_refusal`: `invalid_tenant`,
+  `no_pending_marker`, `purge_begun` or `purge_date_passed`, one per refusal of
+  the reversal script.
+
+Values added to enums declared above:
+
+- `tayzu.identity.rejection.reason` gains `tenant_pending_deletion`, logged on
+  `catalog.security.principal_rejected` (see
+  [Organization deletion](#organization-deletion-change-045)).
+- `tayzu.identity.invitation.denial_reason` gains `tenant_pending_deletion`.
+- `tayzu.identity.invitation.reason` gains `org_deletion`, on
+  `catalog.audit.invitation_cancelled` for each pending invitation that phase 1
+  cancels.
+- `tayzu.identity.email.template` gains `org_deletion`, the eighth template
+  (`OrgDeletionNotice`), and `tayzu.identity.notice.template` gains
+  `org_deletion` too. A suppressed or truncated notice logs
+  `catalog.security.notice_suppressed` with that template.
 
 ### Exporting traces (OpenTelemetry SDK)
 

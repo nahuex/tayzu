@@ -17,7 +17,7 @@
  * ## Harness
  *
  * Real Better Auth with the Q30 adapter, a real Cerbos container and a real
- * PostgreSQL 16. Every test uses a fresh organization (the tenant) and its
+ * PostgreSQL 18. Every test uses a fresh organization (the tenant) and its
  * admin, minted through `bootstrapTestTenant`; the admin's session cookie is the
  * `Headers` the context carries for `invite` (D4). The client is called with the
  * input shape of `inputStructure: 'detailed'`: `{ params, query, body }`.
@@ -35,6 +35,16 @@
  * The procedures read a flat input (`{ email, name, role }`, `{ user, subject }`),
  * so a call carrying `{ body }` or `{ params }` is rejected with
  * `CATALOG_VALIDATION_FAILED` (assertion/rejection failures, no missing module).
+ *
+ * ## `045` task 8.1 (design D6, Resolved decision Q166)
+ *
+ * Verify (the part of this file): "`router.int.test.ts` (extended) calls the procedure once on
+ * its happy path through `createRouterClient` as an admin". `identity.organization.delete` is
+ * `DELETE /v1/organization` with `inputStructure: 'detailed'`: the confirmation travels in
+ * `query.confirmation` and equals the host tenant. Step-up runs only in the OpenAPI interceptor
+ * (D6), so in process the call carries the same `__stepUpHeaders` as the other high-risk
+ * procedures here and step-up is not exercised (it is tested over HTTP). The answer is
+ * `{ purgeAfter }` (Q168), the pending marker's purge date, the default 14 days away (Q21).
  */
 // Load-bearing import order (design D1): the telemetry harness registers
 // before anything that loads `@tayzu/auth` creates its logger.
@@ -45,7 +55,7 @@ import { createRouterClient } from '@orpc/server';
 import { authSchema, createAuth, createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
 import { createCerbosClient, type CerbosClient } from '@tayzu/authz';
 import { createUserSync } from '@tayzu/catalog';
-import { runMigrations } from '@tayzu/db';
+import { runMigrations, withTenantTransaction } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
@@ -106,6 +116,9 @@ interface IdentityClient {
       readonly create: Call<{ id: string; secret: string }>;
       readonly rotate: Call<{ id: string; secret: string }>;
       readonly revoke: Call;
+    };
+    readonly organization: {
+      readonly delete: Call<{ purgeAfter: string }>;
     };
   };
 }
@@ -390,5 +403,38 @@ describe('identity router: each procedure on its happy path (task 14.1, design D
     const listed = await client.identity.credentials.list({ query: {} }, context(tenant));
     const view = listed.credentials.find((credential) => credential.id === created.id);
     expect(view?.enabled).toBe(false);
+  }, 60_000);
+
+  it('identity.organization.delete records the pending deletion of the host tenant confirmed by { query.confirmation }', async () => {
+    const tenant = await freshTenant();
+    const before = Date.now();
+
+    const answer = await client.identity.organization.delete(
+      { query: { confirmation: tenant.tenantId } },
+      context(tenant),
+    );
+
+    // The answer is the pending marker's purge date, ISO 8601 with an offset (Q168).
+    expect(answer.purgeAfter).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/,
+    );
+    const days = (Date.parse(answer.purgeAfter) - before) / 86_400_000;
+    expect(days).toBeGreaterThan(13.9);
+    expect(days).toBeLessThanOrEqual(14.1);
+    const markers = await withTenantTransaction(
+      appPool,
+      { tenantId: tenant.tenantId },
+      async (db) =>
+        (
+          await db.query<{ state: string; requested_by: string; purge_after: Date }>(
+            'select state, requested_by, purge_after from tenant_deletion_marker where tenant_id = $1',
+            [tenant.tenantId],
+          )
+        ).rows,
+    );
+    expect(markers).toHaveLength(1);
+    expect(markers[0]?.state).toBe('pending');
+    expect(markers[0]?.requested_by).toBe(tenant.adminId);
+    expect(markers[0]?.purge_after.getTime()).toBe(Date.parse(answer.purgeAfter));
   }, 60_000);
 });

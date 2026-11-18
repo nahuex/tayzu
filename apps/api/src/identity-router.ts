@@ -1,7 +1,8 @@
 /**
  * The `identity.*` oRPC router (`043` design D10, Resolved decisions Q16 and Q45):
- * the thirteen procedures of `identity.users`, `identity.serviceAccounts` and
- * `identity.credentials`, each built with `defineIdentityOperation`.
+ * the procedures of `identity.users`, `identity.serviceAccounts`,
+ * `identity.credentials` and `identity.organization` (`045` design D6), each built
+ * with `defineIdentityOperation`.
  * `identity.users.create` is the only way an org admin creates a user: Better
  * Auth's own `POST /admin/create-user` stays off D18's allowlist, and
  * self sign-up is disabled.
@@ -47,6 +48,7 @@ import { withMutationSlot } from './identity/mutation-semaphore.js';
 import type { UserSyncAdapter } from './identity/user-sync-adapter.js';
 import type { AuthRepository } from './identity/auth-repository.js';
 import type { EmailTenantGate } from './identity/email-tenant-gate.js';
+import type { NoticeDispatcher } from './identity/notices.js';
 import type { WithUserLock } from './identity/user-lock.js';
 import type { MfaResetReason, MfaResetService } from './identity/mfa-reset.js';
 import type { RecoveryMailer } from './identity/recovery-mailer.js';
@@ -60,6 +62,12 @@ import {
 } from './identity/identity-target.js';
 import { readUserAttributes } from './identity/user-attributes.js';
 import { runWithIdentityContext } from './identity/identity-context.js';
+import {
+  DEFAULT_ORG_DELETION_WINDOW_DAYS,
+  ORG_DELETION_INPUT_SCHEMA,
+  requestOrgDeletion,
+  type OrgDeletionRequested,
+} from './identity/org-deletion.js';
 import {
   parseIdentityInput,
   type InputSchema,
@@ -171,6 +179,10 @@ export interface CreateIdentityRouterOptions {
   readonly userSync?: UserSyncAdapter;
   /** The shared MFA reset service behind `identity.users.resetMfa` (044 task 10.5). */
   readonly mfaReset?: MfaResetService;
+  /** Days from an org-deletion request to its purge (045 D1, Q21). Default 14. */
+  readonly orgDeletionWindowDays?: number;
+  /** The notice dispatcher the org-deletion notice goes through (045 D5, task 5.5). */
+  readonly notices?: NoticeDispatcher;
 }
 
 export interface CreateUserInput {
@@ -294,6 +306,7 @@ const SCHEMAS = {
   },
   listCredentials: { query: {} },
   credential: { params: CREDENTIAL_PARAM },
+  deleteOrganization: ORG_DELETION_INPUT_SCHEMA,
 } satisfies Record<string, InputSchema>;
 
 /**
@@ -503,7 +516,13 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
     tenantId: string,
     adminId: string,
     invitationId: string,
-    reason: 'admin_cancel' | 're_invite' | 'user_disabled' | 'inviter_disabled' | 'user_created',
+    reason:
+      | 'admin_cancel'
+      | 're_invite'
+      | 'user_disabled'
+      | 'inviter_disabled'
+      | 'user_created'
+      | 'org_deletion',
     cancel: () => Promise<unknown> = () => Promise.resolve(),
   ): Promise<void> {
     const attributes = {
@@ -733,6 +752,49 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
                 identifier: user,
               });
             }),
+        }),
+      },
+      organization: {
+        // Step-up applies (D4); the target is the host tenant itself, never a value read from input
+        // (045 design D6), so the declared id is a fixed placeholder the resolver ignores.
+        delete: defineIdentityOperation({
+          authorization: {
+            kind: RESOURCE_KINDS.organization,
+            action: 'delete',
+            resolveTarget: (raw) => {
+              parseDetailedInput(SCHEMAS.deleteOrganization, raw);
+              return { kind: 'organization', id: 'host-tenant' };
+            },
+          },
+          route: identityRoute('DELETE', '/v1/organization', { highRisk: true }),
+          // The span carries the host tenant only; a wrong confirmation fails it with
+          // `error.type` `CATALOG_VALIDATION_FAILED` (design "Observability contract").
+          handler: ({ context, input: rawInput }): Promise<OrgDeletionRequested> => {
+            const tenantId = rawTenantId(context);
+            return withIdentitySpan(
+              'identity.organization.delete',
+              { 'tayzu.tenant.id': tenantId },
+              async () => {
+                const { query } = parseDetailedInput(SCHEMAS.deleteOrganization, rawInput);
+                if (options.appPool === undefined) throw new IdentityInputError();
+                const adminId = (context['actor'] as { id: string }).id;
+                return await requestOrgDeletion({
+                  tenantId,
+                  actorId: adminId,
+                  confirmation: query['confirmation'] as string,
+                  windowDays: options.orgDeletionWindowDays ?? DEFAULT_ORG_DELETION_WINDOW_DAYS,
+                  auth: options.auth,
+                  appPool: options.appPool,
+                  authRepository: options.authRepository,
+                  cancelInvitation: (invitationId) =>
+                    recordInvitationCancel(tenantId, adminId, invitationId, 'org_deletion', () =>
+                      options.authRepository.markInvitationCancelled(tenantId, invitationId),
+                    ),
+                  ...(options.notices === undefined ? {} : { notices: options.notices }),
+                });
+              },
+            );
+          },
         }),
       },
       users: {

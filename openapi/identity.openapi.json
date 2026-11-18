@@ -40,6 +40,12 @@
         "x-tayzu-risk": "high"
       }
     },
+    "/v1/organization": {
+      "delete": {
+        "operationId": "identity.organization.delete",
+        "x-tayzu-risk": "high"
+      }
+    },
     "/v1/service-accounts": {
       "post": {
         "operationId": "identity.serviceAccounts.create",

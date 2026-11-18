@@ -21,10 +21,12 @@
  * `createApp` over the real pools, Cerbos and Better Auth, driven with
  * `app.app.inject`. Two apps: one with the switch left at its default (off) and
  * one with it on, the control that proves the same requests do reach the routes
- * when it is on. The fourteen procedures are the router's own list, read from
+ * when it is on. The fifteen procedures (`045` task 5.1 adds `identity.organization.delete`,
+ * `DELETE /v1/organization`) are the router's own list, read from
  * `generateIdentityOpenApiDocument` (it walks `createIdentityRouter`'s procedures),
- * so a new procedure is covered without editing this file; the fifteenth route is
- * the plain accept route. The authenticated caller is an MFA-enrolled admin with a
+ * so a new procedure is covered without editing this file; the sixteenth route is
+ * the plain accept route. The two plain password-reset routes of `044` are not in this
+ * list: their own suites below cover them. The authenticated caller is an MFA-enrolled admin with a
  * fresh verification (so the catch-all's enrollment gate lets it through). The
  * baseline is an unknown `/v1` path with the same method and caller.
  *
@@ -37,7 +39,10 @@
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
-import { createRecordingEmailSender } from '@tayzu/auth';
+import { OpenAPIHandler } from '@orpc/openapi/fastify';
+import { createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
+import type { CerbosClient } from '@tayzu/authz';
+import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -49,7 +54,9 @@ import { csrfHeaders } from './__fixtures__/csrf.js';
 import { testEmailOptions } from './__fixtures__/email-options.js';
 import { freshMfaSessionCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
+import type { AuthRepository } from './identity/auth-repository.js';
 import { generateIdentityOpenApiDocument } from './identity-openapi.js';
+import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
 
 const ORIGIN = 'https://app.tayzu.test';
@@ -73,8 +80,8 @@ interface Answer {
   readonly body: unknown;
 }
 
-/** The fourteen oRPC routes, from the router's own procedures, plus the plain accept route. */
-async function fifteenRoutes(): Promise<readonly Route[]> {
+/** The fifteen oRPC routes, from the router's own procedures, plus the plain accept route. */
+async function sixteenRoutes(): Promise<readonly Route[]> {
   const document = (await generateIdentityOpenApiDocument()) as {
     paths: Record<string, Record<string, unknown>>;
   };
@@ -117,7 +124,7 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
         email: testEmailOptions(),
       },
     });
-    routes = await fifteenRoutes();
+    routes = await sixteenRoutes();
 
     const suffix = randomUUID();
     const tenant = await bootstrapTestTenant(off.auth, {
@@ -169,9 +176,13 @@ describe('the identity routes are unreachable until mounted (task 14.3, design D
     return { status: response.statusCode, body };
   }
 
-  it('lists the fourteen router procedures and the accept route as the fifteen routes', () => {
-    expect(routes).toHaveLength(15);
-    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(14);
+  it('lists the fifteen router procedures and the accept route as the sixteen routes', () => {
+    expect(routes).toHaveLength(16);
+    expect(routes.filter((route) => route.path !== ACCEPT_PATH)).toHaveLength(15);
+    expect(routes, '045 task 5.1: the org-deletion request').toContainEqual({
+      method: 'DELETE',
+      path: '/v1/organization',
+    });
   });
 
   it('Routes answer like an unknown path while the switch is off: unauthenticated, 401 CATALOG_CONTEXT_REQUIRED', async () => {
@@ -720,5 +731,214 @@ describe('the admin MFA reset route is unreachable until mounted (044 task 10.5)
   it('`POST /v1/users/{user}/mfa/reset` is present with the switch on: not the unknown-path answer', async () => {
     const open = await post(on, resetUrl(), true);
     expect(open.body).not.toMatchObject({ code: 'NOT_FOUND' });
+  }, 60_000);
+});
+
+/**
+ * Task 8.3 of openspec/changes/045-org-deletion-and-data-retention (spec requirement "Org
+ * deletion is requested through one confirmed, step-up gated route"; design D6; `043`'s task
+ * 14.3 mount switch; Resolved decision Q166).
+ *
+ * Task 8.3 Verify (verbatim): "`mount-gate.int.test.ts` (extended) covers "The route does not
+ * exist until mounted" for `DELETE /v1/organization`, and fails when the procedure is
+ * registered outside the switch (a scratch registration)."
+ *
+ * Scenario "The route does not exist until mounted" (verbatim from the spec):
+ * - GIVEN the mount switch is off, which is the default
+ * - WHEN the route is called with and without authentication
+ * - THEN each answers exactly as an unknown `/v1` path does
+ *
+ * ## Harness
+ *
+ * Three apps over the real pools, Cerbos and Better Auth: `off` (the switch not passed at all,
+ * so the default), `on` (the switch on, with `testEmailOptions()` because `createApp` refuses
+ * to mount the routes without the email path since `044`), the control that proves the same
+ * request reaches the procedure, and `scratch`, the switch off as well, whose `configureApp`
+ * seam registers the real `identity.organization.delete` procedure on `DELETE
+ * /v1/organization` outside the switch (a scratch registration, like the scratch routes of
+ * `route-auth-allowlist.int.test.ts`). The gate's checks are the functions `expectUnknownAnswer`
+ * and `expectNoFastifyRoute`: the scenario cases run them against `off`, and the scratch case
+ * shows that the same checks fail against `scratch`.
+ *
+ * Q166: task 5.1 already moved this file's pins (fifteen procedures, sixteen routes, and the
+ * `DELETE /v1/organization` entry of the list) when it registered the procedure; this block
+ * adds the scenario on top.
+ *
+ * ## Production symbols expected
+ *
+ * None new: `identity.organization.delete` (`createIdentityRouter`, task 5.1) and
+ * `CreateAppOptions.mountIdentityRoutes` and `configureApp` (`043` tasks 14.3, 14.3b).
+ */
+describe('DELETE /v1/organization does not exist until mounted (045 task 8.3)', () => {
+  const ORG_PATH = '/v1/organization';
+  const ORG_ROUTE: Route = { method: 'DELETE', path: ORG_PATH };
+  type Caller = 'anonymous' | 'authenticated';
+  let off: App;
+  let on: App;
+  let scratch: App;
+  let routes: readonly Route[];
+  let operationId: unknown;
+  let cookie: string;
+
+  /** The real procedure, from the router built with inert stand-ins (never called here). */
+  function orgDeletionProcedure() {
+    return createIdentityRouter({
+      auth: {} as AuthInstance,
+      authz: {} as CerbosClient,
+      authRepository: {} as AuthRepository,
+      withUserLock: () => Promise.reject(new Error('scratch registration: inert')),
+    }).identity.organization.delete;
+  }
+
+  /** The scratch registration: the procedure on its own route, outside the switch. */
+  function registerOutsideTheSwitch(instance: FastifyInstance): void {
+    const handler = new OpenAPIHandler({
+      identity: { organization: { delete: orgDeletionProcedure() } },
+    });
+    instance.delete(ORG_PATH, async (request, reply) => {
+      const result = await handler.handle(request, reply, { context: {} });
+      if (!result.matched) {
+        return reply.status(500).send({ code: 'SCRATCH_NOT_MATCHED' });
+      }
+      return undefined;
+    });
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const base = {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+    };
+    // The switch is not passed at all: off is the default.
+    off = await createApp(base);
+    on = await createApp({
+      ...base,
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      // 044 N4: the switch needs the email path to start.
+      email: testEmailOptions(),
+    });
+    // The switch is off here too: only the scratch registration reaches the procedure.
+    scratch = await createApp({ ...base, configureApp: registerOutsideTheSwitch });
+
+    routes = await sixteenRoutes();
+    const document = (await generateIdentityOpenApiDocument()) as {
+      paths: Record<string, Record<string, { operationId?: unknown } | undefined> | undefined>;
+    };
+    operationId = document.paths[ORG_PATH]?.['delete']?.operationId;
+
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(off.auth, {
+      pool: testAppPool(),
+      name: 'Org Deletion Gate Admin',
+      email: `org-deletion-gate-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Org Deletion Gate Org ${suffix}`,
+      organizationSlug: `org-deletion-gate-${suffix}`,
+      ip: randomIp(),
+    });
+    cookie = await freshMfaSessionCookie(off, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+      origin: ORIGIN,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await off.close();
+    await on.close();
+    await scratch.close();
+  }, 60_000);
+
+  /** A `DELETE` with no body and no confirmation, so no call can ever request a deletion. */
+  async function call(app: App, url: string, caller: Caller): Promise<Answer> {
+    const response = await app.app.inject({
+      method: 'DELETE',
+      url,
+      headers: {
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...(caller === 'authenticated' ? { cookie } : {}),
+        ...csrfHeaders('DELETE'),
+      },
+    });
+    let body: unknown;
+    try {
+      body = response.json();
+    } catch {
+      body = response.body;
+    }
+    return { status: response.statusCode, body };
+  }
+
+  const unknownPath = (): string => `/v1/unknown-${randomUUID().slice(0, 8)}`;
+
+  /** The gate's check: the route answers exactly as an unknown `/v1` path, same method and caller. */
+  async function expectUnknownAnswer(app: App, caller: Caller): Promise<void> {
+    const unknown = await call(app, unknownPath(), caller);
+    const answer = await call(app, ORG_PATH, caller);
+    expect(answer, `${caller}: DELETE ${ORG_PATH}`).toEqual(unknown);
+  }
+
+  /** The gate's check on the Fastify route table: no route of its own outside the switch. */
+  function expectNoFastifyRoute(app: App): void {
+    expect(app.app.hasRoute({ method: 'DELETE', url: ORG_PATH }), `route table: ${ORG_PATH}`).toBe(
+      false,
+    );
+  }
+
+  it('the route table and the procedure list the gate enumerates include DELETE /v1/organization', () => {
+    expect(routes, 'the route table of the gate').toContainEqual(ORG_ROUTE);
+    expect(
+      routes.filter((route) => route.path !== ACCEPT_PATH),
+      'the procedure list of the gate',
+    ).toContainEqual(ORG_ROUTE);
+    expect(operationId, 'the procedure behind the route').toBe('identity.organization.delete');
+  });
+
+  it('The route does not exist until mounted: unauthenticated, it answers as an unknown /v1 path does (401 CATALOG_CONTEXT_REQUIRED)', async () => {
+    const unknown = await call(off, unknownPath(), 'anonymous');
+    expect(unknown.status, 'the baseline of an unknown path').toBe(401);
+    expect(unknown.body).toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+
+    await expectUnknownAnswer(off, 'anonymous');
+  }, 60_000);
+
+  it('The route does not exist until mounted: authenticated, it answers as an unknown /v1 path does (the router 404)', async () => {
+    const unknown = await call(off, unknownPath(), 'authenticated');
+    expect(unknown.status, 'the baseline of an unknown path').toBe(404);
+    expect(unknown.body).toMatchObject({ code: 'NOT_FOUND' });
+
+    await expectUnknownAnswer(off, 'authenticated');
+  }, 60_000);
+
+  it('The route does not exist until mounted: the Fastify route table has no DELETE /v1/organization with the switch off', () => {
+    expectNoFastifyRoute(off);
+  });
+
+  it('the control: with the switch on, the same authenticated request reaches the procedure', async () => {
+    const unknown = await call(on, unknownPath(), 'authenticated');
+    const open = await call(on, ORG_PATH, 'authenticated');
+
+    expect(open).not.toEqual(unknown);
+    expect(open.body).not.toMatchObject({ code: 'NOT_FOUND' });
+  }, 60_000);
+
+  it('the gate fails when the procedure is registered outside the switch (a scratch registration)', async () => {
+    // The scratch app really serves the procedure with the switch off.
+    const served = await call(scratch, ORG_PATH, 'authenticated');
+    expect(served.body).not.toMatchObject({ code: 'NOT_FOUND' });
+
+    // The very checks the scenario cases run against `off` fail against it.
+    await expect(expectUnknownAnswer(scratch, 'authenticated')).rejects.toMatchObject({
+      name: 'AssertionError',
+    });
+    expect(() => {
+      expectNoFastifyRoute(scratch);
+    }).toThrow(/route table/);
   }, 60_000);
 });

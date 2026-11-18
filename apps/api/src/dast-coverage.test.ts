@@ -39,7 +39,8 @@
  * `../../../scripts/ci/dast-coverage.js` does not exist ("Cannot find module"
  * is the only cause).
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -247,5 +248,62 @@ describe('dast.sh api-scan runs the check on its report (task 13.13)', () => {
     expect(body).toContain('scripts/ci/dast-coverage.ts');
     expect(body).toContain('api_messages.json');
     expect(body).toContain('--hook');
+  });
+});
+
+/**
+ * 045 task 8.2: `DELETE /v1/organization` is on the scan's exclusion list,
+ * `scripts/ci/dast-exclusions.json` (`{ exclusions: [{ method, path, reason }] }`,
+ * see `dast-script.test.ts`), so ZAP never requests it. A report of a scan
+ * that requested every other operation of the committed OpenAPI documents, and
+ * never the excluded ones, passes the coverage check: the exclusion does not
+ * count as a missing 2xx operation.
+ */
+describe('DAST API scan coverage and the exclusion list (045 task 8.2)', () => {
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const httpMethods = new Set([
+    'get',
+    'put',
+    'post',
+    'delete',
+    'options',
+    'head',
+    'patch',
+    'trace',
+  ]);
+
+  it('an excluded operation does not count as a missing 2xx operation', () => {
+    const list = (
+      JSON.parse(readFileSync(join(repoRoot, 'scripts', 'ci', 'dast-exclusions.json'), 'utf8')) as {
+        exclusions: { method: string; path: string }[];
+      }
+    ).exclusions;
+    const excluded = new Set(list.map((entry) => `${entry.method} ${entry.path}`));
+    expect(excluded.has('DELETE /v1/organization')).toBe(true);
+
+    const scanned: Message[] = [];
+    for (const name of readdirSync(join(repoRoot, 'openapi'))) {
+      if (!name.endsWith('.openapi.json')) continue;
+      const document = JSON.parse(readFileSync(join(repoRoot, 'openapi', name), 'utf8')) as {
+        paths: Record<string, Record<string, unknown>>;
+      };
+      for (const [path, item] of Object.entries(document.paths)) {
+        for (const method of Object.keys(item)) {
+          if (!httpMethods.has(method.toLowerCase())) continue;
+          if (excluded.has(`${method.toUpperCase()} ${path}`)) continue;
+          // ZAP fills a path parameter with a placeholder value.
+          const concrete = path.replace(/\{[^}]+\}/g, 'placeholder');
+          scanned.push(instance(method.toUpperCase(), concrete, 200, 'OK'));
+        }
+      }
+    }
+    expect(scanned.length).toBeGreaterThan(0);
+    expect(scanned.some((message) => message['requestHeader']?.includes('/v1/organization '))).toBe(
+      false,
+    );
+
+    const coverage = assertDastCoverage(report(scanned));
+    expect(coverage.operationResponses).toBe(scanned.length);
+    expect(coverage.successResponses).toBe(scanned.length);
   });
 });

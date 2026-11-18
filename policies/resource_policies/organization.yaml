@@ -1,0 +1,27 @@
+# Resource kind `organization` (045 design D6, task 3.3): the action `delete`,
+# `admin`-only. Any admin of the tenant may request it (Resolved decision Q27).
+# `member` has no rule at all, so every action stays denied by default. The
+# first rule is the explicit cross-tenant deny of 002 D8. The target is the host
+# tenant itself: the wrapper passes the tenant id as both the resource id and
+# the resource `tenantId`, never a value read from input. The policy reads no
+# other attribute (in particular not `accountKind`).
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  resource: organization
+  version: default
+  importDerivedRoles:
+    - same_tenant
+  rules:
+    - actions: ['*']
+      effect: EFFECT_DENY
+      roles: ['*']
+      condition:
+        match:
+          expr: R.attr.tenantId != P.attr.tenantId
+    - actions: [delete]
+      effect: EFFECT_ALLOW
+      derivedRoles: [same_tenant]
+      condition:
+        match:
+          expr: '"admin" in P.roles'

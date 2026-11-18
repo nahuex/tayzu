@@ -62,7 +62,7 @@ changes `043` and `044`: the reset token (`reset-token.ts`,
 
 ## Tests
 
-- Integration tests (`*.int.test.ts`) need a real PostgreSQL 16
+- Integration tests (`*.int.test.ts`) need a real PostgreSQL 18
   (`DATABASE_URL`) and a running Cerbos container once group 7+ code calls
   into `@tayzu/authz`.
 - Self sign-up does not exist: users are created by an org admin or the

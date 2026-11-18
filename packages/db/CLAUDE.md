@@ -57,7 +57,7 @@ of `openspec/changes/archive/2026-09-28-001-catalog-core/design.md`.
 
 ## Tests
 
-- Integration tests (`*.int.test.ts`) run against a real PostgreSQL 16 through
+- Integration tests (`*.int.test.ts`) run against a real PostgreSQL 18 through
   `DATABASE_URL`. `getTestDatabase()` applies the migrations once per run and
   throws an explicit error when the URL is unset.
 - Isolation is tenant-per-test: each test generates a random `tenantId`. Never

@@ -9,12 +9,18 @@ import { fileURLToPath } from 'node:url';
 import { Client, escapeIdentifier, Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
-import { getAuthTestDatabase, getOwnerPool, getTestDatabase } from './harness.js';
+import {
+  getAuthTestDatabase,
+  getDeletionAdminTestDatabase,
+  getOwnerPool,
+  getPurgeTestDatabase,
+  getTestDatabase,
+} from './harness.js';
 import { runMigrations } from './index.js';
 
 /**
  * Integration tests for the Postgres harness of `@tayzu/db` (task 1.5; design
- * D5 and D12). They run against the real PostgreSQL 16 database named by
+ * D5 and D12). They run against the real PostgreSQL 18 database named by
  * `DATABASE_URL`, which the `int` project's global setup requires.
  *
  * Task 1.5: "`createPool(url)` and `runMigrations(pool)`", and "A test helper
@@ -47,7 +53,7 @@ import { runMigrations } from './index.js';
  * Scratch databases. The tests that need a fresh database create a private
  * one with a random name through the `DATABASE_URL` role, and drop it
  * afterwards. They never touch shared tables. The role therefore needs the
- * `CREATEDB` privilege (the user of the CI `postgres:16` service is a
+ * `CREATEDB` privilege (the user of the CI `postgres:18` service is a
  * superuser).
  *
  * Task 6.3 (design D6, Resolved decision Q1a, 2026-09-28): `getTestDatabase()`
@@ -112,7 +118,7 @@ async function expectTargets(pool: Pool, url: string): Promise<void> {
  * must hand back a pool that runs every query *as* `tayzu_app` (`SET ROLE` on
  * every connection), not merely a role that happens to inherit `tayzu_app`'s
  * privileges through plain membership — a `DATABASE_URL` role that is itself
- * a superuser (the CI `postgres:16` service) or holds `BYPASSRLS` (the
+ * a superuser (the CI `postgres:18` service) or holds `BYPASSRLS` (the
  * sandbox) would silently skip every `tenant_isolation` policy check
  * otherwise, defeating the whole point of 001's isolation tests becoming real
  * RLS tests (design D6). So `current_user` on this pool must read back as
@@ -513,7 +519,7 @@ describe('getTestDatabase() and getOwnerPool() run as different Postgres roles',
   });
 });
 
-describe('runMigrations against a real PostgreSQL 16', () => {
+describe('runMigrations against a real PostgreSQL 18', () => {
   it(
     'applies exactly the shipped migrations to a fresh database when several runners start at once, as parallel test files and packages do, and a later run changes nothing',
     { timeout: 60_000 },
@@ -594,5 +600,32 @@ describe('getAuthTestDatabase (043 task 2.0b)', () => {
     ]);
     expect(auth).not.toBe(app);
     expect(auth).not.toBe(owner);
+  });
+});
+
+describe.each([
+  ['getPurgeTestDatabase', 'tayzu_purge', getPurgeTestDatabase],
+  ['getDeletionAdminTestDatabase', 'tayzu_deletion_admin', getDeletionAdminTestDatabase],
+] as const)('%s (045 task 1.3)', (_name, role, getDatabase) => {
+  async function roleExists(): Promise<boolean> {
+    const owner = await getOwnerPool();
+    const { rows } = await owner.query<{ exists: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1) AS exists',
+      [role],
+    );
+    return rows[0]?.exists === true;
+  }
+
+  it(`runs as ${role} once the role exists, and names the role while it does not`, async () => {
+    if (await roleExists()) {
+      const { pool } = await getDatabase();
+      const { rows } = await pool.query<{ current_user: string }>('select current_user');
+      expect(rows[0]?.current_user).toBe(role);
+      const [{ pool: app }, owner] = await Promise.all([getTestDatabase(), getOwnerPool()]);
+      expect(pool).not.toBe(app);
+      expect(pool).not.toBe(owner);
+    } else {
+      await expect(getDatabase()).rejects.toThrow(`The ${role} role does not exist`);
+    }
   });
 });

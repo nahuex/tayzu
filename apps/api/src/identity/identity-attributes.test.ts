@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import type { AuthRepository } from './auth-repository.js';
 import { buildIdentityResource } from './identity-attributes.js';
 import type { IdentityOperation } from './identity-attributes.js';
+import { createIdentityTargetResolver } from './identity-target.js';
 
 /**
  * `043` task 5.1 (design D3, Resolved decisions Q62, Q90): the Cerbos resource of
@@ -249,5 +251,96 @@ describe('buildIdentityResource memberRole (044 task 10.2)', () => {
 
     expect('memberRole' in credential.attr).toBe(false);
     expect('memberRole' in service.attr).toBe(false);
+  });
+});
+
+/**
+ * Task 3.1 of `045-org-deletion-and-data-retention` (design D6; spec requirement "The
+ * deletion route is authorized, step-up gated, tenant-bound and mounted behind the
+ * switch": "The target of the Cerbos check MUST be the host tenant, passed as the real
+ * tenant"). The target of `organization.delete` is the host tenant itself: the target kind
+ * `organization` resolves to the host tenant with no lookup, and the Cerbos resource's real
+ * tenant and opaque resource id are both the host tenant id, never a value read from input.
+ *
+ * Production symbols expected: `'organization'` in `IdentityTargetKind`
+ * (`identity-target.ts`), operation `'organization.delete'` in `IdentityOperation` mapped to
+ * `RESOURCE_KINDS.organization` (`identity-attributes.ts`).
+ */
+describe('organization.delete resource (045 task 3.1)', () => {
+  const HOST_TENANT = `host-${randomUUID()}`;
+  const INPUT_VALUE = `input-${randomUUID()}`;
+
+  /** An auth repository that fails the test on any read: the organization target needs none. */
+  function noLookupRepository(): { repository: AuthRepository; reads: string[] } {
+    const reads: string[] = [];
+    const repository = new Proxy(Object.create(null) as object, {
+      get(_target, property) {
+        reads.push(String(property));
+        throw new Error('the organization target must resolve with no lookup');
+      },
+    }) as AuthRepository;
+    return { repository, reads };
+  }
+
+  it('the organization target resolves to the host tenant with no lookup', async () => {
+    const { repository, reads } = noLookupRepository();
+    const resolver = createIdentityTargetResolver({ authRepository: repository });
+
+    const target = await resolver.resolve(
+      { tenantId: HOST_TENANT },
+      { kind: 'organization', id: HOST_TENANT },
+    );
+
+    expect(target.kind).toBe('organization');
+    expect(target.id).toBe(HOST_TENANT);
+    expect(target.tenantId).toBe(HOST_TENANT);
+    expect(reads).toEqual([]);
+  });
+
+  it('the organization target never takes its id or tenant from input', async () => {
+    const { repository, reads } = noLookupRepository();
+    const resolver = createIdentityTargetResolver({ authRepository: repository });
+
+    const target = await resolver.resolve(
+      { tenantId: HOST_TENANT },
+      { kind: 'organization', id: INPUT_VALUE },
+    );
+
+    expect(target.id).toBe(HOST_TENANT);
+    expect(target.tenantId).toBe(HOST_TENANT);
+    expect(JSON.stringify(target)).not.toContain(INPUT_VALUE);
+    expect(reads).toEqual([]);
+  });
+
+  it('the Cerbos resource of organization.delete carries the host tenant as tenant and id', async () => {
+    const { repository } = noLookupRepository();
+    const resolver = createIdentityTargetResolver({ authRepository: repository });
+    const target = await resolver.resolve(
+      { tenantId: HOST_TENANT },
+      { kind: 'organization', id: INPUT_VALUE },
+    );
+
+    const resource = buildIdentityResource({
+      operation: 'organization.delete',
+      targetId: target.id,
+      tenantId: target.tenantId,
+    });
+
+    expect(resource.kind).toBe('organization');
+    expect(resource.attr.tenantId).toBe(HOST_TENANT);
+    expect(resource.id).toBe(HOST_TENANT);
+    expect(JSON.stringify(resource)).not.toContain(INPUT_VALUE);
+  });
+
+  it('organization.delete builds an organization resource whose tenant and id are the host tenant', () => {
+    const resource = buildIdentityResource({
+      operation: 'organization.delete',
+      targetId: HOST_TENANT,
+      tenantId: HOST_TENANT,
+    });
+
+    expect(resource.kind).toBe('organization');
+    expect(resource.attr.tenantId).toBe(HOST_TENANT);
+    expect(resource.id).toBe(HOST_TENANT);
   });
 });

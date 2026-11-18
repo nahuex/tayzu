@@ -90,6 +90,8 @@ export interface Config {
   readonly credentialCap: number;
   /** The most service accounts a tenant holds (043 Q56). */
   readonly serviceAccountCap: number;
+  /** `ORG_DELETION_WINDOW_DAYS` (045 D1, Q21): days from the deletion request to the purge. */
+  readonly orgDeletionWindowDays: number;
   /** Back-channel logout budget per source IP per minute (D26, Q32). */
   readonly backchannelLogoutRateLimitPerMinute: number;
   /** Explicit opt-out of telemetry (Q41); only the exact `true` enables it. */
@@ -129,6 +131,9 @@ const MAX_PASSWORD_RESET_MIN_RESPONSE_MS = 5000;
 const DEFAULT_BODY_LIMIT_BYTES = 1_048_576;
 const DEFAULT_CREDENTIAL_CAP = 200;
 const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
+/** The org-deletion window bounds (045 D1, Q21); the marker's CHECK enforces the same range. */
+const MIN_ORG_DELETION_WINDOW_DAYS = 7;
+const MAX_ORG_DELETION_WINDOW_DAYS = 14;
 
 const MIN_SECRET_LENGTH = 32;
 
@@ -178,6 +183,20 @@ function loadPasswordResetMinResponseMs(env: Env): number {
     );
   }
   return value ?? DEFAULT_PASSWORD_RESET_MIN_RESPONSE_MS;
+}
+
+/** `ORG_DELETION_WINDOW_DAYS` (045 D1, Q21): an integer in 7..14, 14 by default. */
+function loadOrgDeletionWindowDays(env: Env): number {
+  const value = optionalPositiveInt(env, 'ORG_DELETION_WINDOW_DAYS');
+  if (
+    value !== undefined &&
+    (value < MIN_ORG_DELETION_WINDOW_DAYS || value > MAX_ORG_DELETION_WINDOW_DAYS)
+  ) {
+    throw new Error(
+      `ORG_DELETION_WINDOW_DAYS is malformed (${String(MIN_ORG_DELETION_WINDOW_DAYS)} to ${String(MAX_ORG_DELETION_WINDOW_DAYS)}).`,
+    );
+  }
+  return value ?? MAX_ORG_DELETION_WINDOW_DAYS;
 }
 
 const SSO_VARIABLES = [
@@ -538,6 +557,7 @@ export function loadConfig(env: Env): Config {
     bodyLimit,
     credentialCap,
     serviceAccountCap,
+    orgDeletionWindowDays: loadOrgDeletionWindowDays(env),
     telemetryDisabled: loadTelemetryDisabled(env),
     mountIdentityRoutes: loadMountIdentityRoutes(env),
   };

@@ -17,10 +17,33 @@
  * ## Production symbols expected
  *
  * None new: `createApp` options `mountIdentityRoutes` and `identity` (`./server.js`).
+ *
+ * ## 045 task 8.4: the confirmation of `DELETE /v1/organization` is read from the query
+ *
+ * Task 8.4 of openspec/changes/045-org-deletion-and-data-retention (design D6: the route
+ * uses `inputStructure: 'detailed'`, the confirmation travels in the query string as
+ * `?confirmation=<organization identifier>` and is compared to the host `ctx.tenantId`; a
+ * confirmation sent only in a body does not count, Resolved decision Q47 item 2).
+ *
+ * Task 8.4 Verify: "`delete-routes.http.int.test.ts` (extended) covers the confirmation in
+ * the query being honored, a body-only confirmation and a wrong query value each answering
+ * `CATALOG_VALIDATION_FAILED` with nothing changed."
+ *
+ * Scenario "The confirmation must be in the query":
+ * - WHEN an admin with a fresh step-up verification calls the route with the confirmation
+ *   only in a body, and then with a wrong value in the query
+ * - THEN each fails with `CATALOG_VALIDATION_FAILED` and nothing changes, while the right
+ *   value in the query is honored
+ *
+ * "Nothing changed" is read from the database: the tenant has no deletion marker and its
+ * live sessions (phase 1 revokes every session whose active organization is the tenant) are
+ * exactly the ones it had before the call. The admin is MFA-enrolled with a fresh MFA
+ * verification, so step-up (the route is `x-tayzu-risk: high`) does not refuse first.
  */
 import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRecordingEmailSender } from '@tayzu/auth';
+import { withTenantTransaction } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -264,4 +287,79 @@ describe('the DELETE identity routes read their target from the path (task 14.6b
     // The link of the owner's member is untouched.
     expect(await ssoLinkCount(target.id)).toBe(1);
   }, 120_000);
+  describe('DELETE /v1/organization reads its confirmation from the query (045 task 8.4)', () => {
+    const ORG_PATH = '/v1/organization';
+
+    /** Every deletion marker of the tenant, read as `tayzu_app` under the tenant (RLS). */
+    async function markersOf(tenantId: string): Promise<readonly { state: string }[]> {
+      return await withTenantTransaction(pools.appPool, { tenantId }, async (client) => {
+        const result = await client.query<{ state: string }>(
+          'select state from tenant_deletion_marker where tenant_id = $1 order by requested_at',
+          [tenantId],
+        );
+        return result.rows;
+      });
+    }
+
+    /** The live sessions whose active organization is the tenant: phase 1 revokes them. */
+    async function liveSessionsOf(tenantId: string): Promise<readonly string[]> {
+      const result = await pools.authPool.query<{ id: string }>(
+        'select id from auth.session where active_organization_id = $1 and expires_at > now() order by id',
+        [tenantId],
+      );
+      return result.rows.map((row) => row.id);
+    }
+
+    function confirmationUrl(value: string): string {
+      return `${ORG_PATH}?${new URLSearchParams({ confirmation: value }).toString()}`;
+    }
+
+    async function expectRefusedAndNothingChanged(
+      admin: BootstrappedTenant,
+      call: () => Promise<Answer>,
+    ): Promise<void> {
+      const tenantId = admin.organizationId;
+      expect(await markersOf(tenantId), 'no marker before the call').toEqual([]);
+      const sessionsBefore = await liveSessionsOf(tenantId);
+      expect(sessionsBefore.length, 'the tenant has live sessions to revoke').toBeGreaterThan(0);
+
+      const answer = await call();
+
+      expect(answer.status, answer.body).toBe(400);
+      expect(answer.code).toBe('CATALOG_VALIDATION_FAILED');
+      expect(await markersOf(tenantId), 'no deletion marker was recorded').toEqual([]);
+      expect(await liveSessionsOf(tenantId), 'no session of the tenant was revoked').toEqual(
+        sessionsBefore,
+      );
+    }
+
+    it('The confirmation must be in the query: the right value in the query is honored and the pending marker is recorded', async () => {
+      const admin = await freshAdmin();
+      const tenantId = admin.organizationId;
+      expect(await markersOf(tenantId)).toEqual([]);
+      expect((await liveSessionsOf(tenantId)).length).toBeGreaterThan(0);
+
+      const answer = await send(admin.cookie, 'DELETE', confirmationUrl(tenantId));
+
+      expect(answer.status, answer.body).toBeLessThan(300);
+      expect(await markersOf(tenantId), 'one pending marker for the host tenant').toEqual([
+        { state: 'pending' },
+      ]);
+      expect(await liveSessionsOf(tenantId), "the tenant's sessions are revoked").toEqual([]);
+    }, 120_000);
+
+    it('The confirmation must be in the query: the right value sent only in a body fails with CATALOG_VALIDATION_FAILED and nothing changes', async () => {
+      const admin = await freshAdmin();
+      await expectRefusedAndNothingChanged(admin, () =>
+        send(admin.cookie, 'DELETE', ORG_PATH, { confirmation: admin.organizationId }),
+      );
+    }, 120_000);
+
+    it('The confirmation must be in the query: a wrong value in the query fails with CATALOG_VALIDATION_FAILED and nothing changes', async () => {
+      const admin = await freshAdmin();
+      await expectRefusedAndNothingChanged(admin, () =>
+        send(admin.cookie, 'DELETE', confirmationUrl(`wrong-${randomUUID()}`)),
+      );
+    }, 120_000);
+  });
 });

@@ -110,8 +110,12 @@ import {
   EXPECTED_METRICS,
   EXPECTED_SPANS,
 } from '../../../packages/auth/src/__fixtures__/identity-contract-expected.js';
+import {
+  getDeletionAdminTestDatabase,
+  getPurgeTestDatabase,
+} from '../../../packages/db/src/harness.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
-import { enrolledAdminSession } from './__fixtures__/fresh-mfa.js';
+import { enrolledAdminSession, sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
 import { oidcRoundTrip, poolFailing } from './__fixtures__/sso-shed.js';
 import { createAcceptFlow, type AcceptFlowOptions } from './identity/accept-flow.js';
@@ -128,6 +132,9 @@ import { createIdentityRouter } from './identity-router.js';
 import { createApp, type App } from './server.js';
 import { main as bootstrapAdminMain } from '../scripts/bootstrap-admin.js';
 import { main as reconcileUsersMain } from '../scripts/reconcile-users.js';
+import { main as cancelOrgDeletionMain } from '../scripts/cancel-org-deletion.js';
+import { runPurge } from '../scripts/purge-job.js';
+import type { Telemetry } from './telemetry.js';
 import type * as MachineCredentialsModule from '@tayzu/auth/machine-credentials';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
@@ -1859,6 +1866,84 @@ describe('otel-smoke-check, 043: every declared identity name is in the imported
   );
 });
 
+/*
+ * Task 9.1 of openspec/changes/045-org-deletion-and-data-retention: "`otel-smoke-check.int.test.ts`
+ * fails when a declared name is missing from the module." The 043 check above iterates the
+ * extended fixture, so it already fails for every 045 name the module lacks; this check pins the
+ * fifteen 045 names (and the value sets the cardinality guard reads from the module) on the spec
+ * side too, so that dropping a name from the fixture and the module together still goes red.
+ *
+ * Production symbols expected: the 045 entries of `IDENTITY_SPANS`, `IDENTITY_METRICS`,
+ * `IDENTITY_LOG_EVENTS` and `IDENTITY_ATTRIBUTE_VALUES` in
+ * `packages/auth/src/telemetry/identity-contract.ts` (design "Observability contract").
+ */
+describe('otel-smoke-check, 045: every declared org-deletion name is in the imported contract module (task 9.1)', () => {
+  const SPANS_045 = [
+    'identity.organization.delete',
+    'identity.organization.cancel_deletion',
+    'identity.organization.purge',
+  ];
+  const METRICS_045 = ['tayzu.identity.org_deletions'];
+  const LOGS_045 = [
+    'catalog.audit.org_deletion_requested',
+    'catalog.audit.org_deletion_cancelled',
+    'catalog.audit.org_deletion_completed',
+    'catalog.security.org_deletion_notice_failed',
+    'catalog.security.org_deletion_failed',
+    'catalog.security.org_deletion_repeated',
+    'catalog.security.org_deletion_cancel_refused',
+  ];
+  const VALUES_045: Readonly<Record<string, readonly string[]>> = {
+    'tayzu.identity.rejection.reason': ['tenant_pending_deletion'],
+    'tayzu.identity.invitation.denial_reason': ['tenant_pending_deletion'],
+    'tayzu.identity.invitation.reason': ['org_deletion'],
+    'tayzu.identity.email.template': ['org_deletion'],
+    'tayzu.identity.notice.template': ['org_deletion'],
+    'tayzu.identity.org_deletion.outcome': ['requested', 'completed', 'failed', 'cancelled'],
+    'tayzu.identity.org_deletion.step': ['catalog', 'auth'],
+    'tayzu.identity.org_deletion.cancel_refusal': [
+      'invalid_tenant',
+      'no_pending_marker',
+      'purge_begun',
+      'purge_date_passed',
+    ],
+  };
+
+  function count(list: unknown, name: string): number {
+    const entries = Array.isArray(list) ? (list as readonly unknown[]) : [];
+    return entries.filter(
+      (entry) => (typeof entry === 'string' ? entry : (entry as { name?: unknown }).name) === name,
+    ).length;
+  }
+
+  const declared = identityContract as Record<string, unknown>;
+
+  it.each([
+    ...SPANS_045.map((name) => ['span', name] as const),
+    ...METRICS_045.map((name) => ['metric', name] as const),
+    ...LOGS_045.map((name) => ['log event', name] as const),
+  ])('the %s %s is in the fixture and declared exactly once in the module', (kind, name) => {
+    const [fixture, module] =
+      kind === 'span'
+        ? [EXPECTED_SPANS, declared.IDENTITY_SPANS]
+        : kind === 'metric'
+          ? [EXPECTED_METRICS, declared.IDENTITY_METRICS]
+          : [EXPECTED_LOG_EVENTS, declared.IDENTITY_LOG_EVENTS];
+    expect(count(fixture, name), `fixture has ${name}`).toBe(1);
+    expect(count(module, name), `module declares ${name}`).toBe(1);
+  });
+
+  it('the counter tayzu.identity.org_deletions has its declared unit', () => {
+    expect(IDENTITY_METRIC_UNITS['tayzu.identity.org_deletions']).toBe('{deletion}');
+  });
+
+  it.each(Object.entries(VALUES_045))('the module declares the 045 values of %s', (key, values) => {
+    const all = declared.IDENTITY_ATTRIBUTE_VALUES as
+      Readonly<Record<string, readonly string[]>> | undefined;
+    expect(all?.[key] ?? [], key).toEqual(expect.arrayContaining([...values]));
+  });
+});
+
 /**
  * `otel-smoke-check`, 043 extension (task 15.2, openspec/changes/archive/2026-10-14-043-identity-lifecycle-and-org-admin;
  * design.md "Observability contract", Resolved decisions Q74, Q107, Q116, Q117 and Q131).
@@ -1944,6 +2029,8 @@ const IDENTITY_METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.password_reset_confirms': '{event}',
   'tayzu.identity.mfa_resets': '{event}',
   'tayzu.identity.recovery_emails': '{event}',
+  // 045 (design "Observability contract", Metrics: "Counter, `{deletion}`").
+  'tayzu.identity.org_deletions': '{deletion}',
 };
 
 /** Span attributes the design lists as conditional (its Spans table). */
@@ -3492,6 +3579,422 @@ describe('otel-smoke-check, 044: every declared 044 name is observed once and no
   });
 });
 
+/**
+ * `otel-smoke-check`, 045 extension (task 9.2 of openspec/changes/045-org-deletion-and-data-retention;
+ * design.md "Observability contract", Resolved decision Q169).
+ *
+ * "`otel-smoke-check` runs the request, the repeated request, the reversal and the purge once
+ * successfully and once per applicable error or denial class."
+ *
+ * This `describe` only drives the operations; its own assertions are limited to "the operation
+ * behaved as its class says", so a failure here is never a telemetry finding. The declared names
+ * are asserted by the 043 `describe` below (it iterates the identity contract module, which
+ * carries the 045 names since task 9.1) and by the 045 `describe` after it. Every driven
+ * operation has a fresh tenant of its own (the repeated request reuses the tenant of its first
+ * request, by definition).
+ *
+ * Operations driven, success and error class each:
+ *
+ * - the deletion request (`identity.organization.delete`): over HTTP (`DELETE /v1/organization`)
+ *   a success with a fresh MFA step-up and a refusal without it (`AUTH_STEP_UP_REQUIRED`); in
+ *   process over the identity router (step-up lives in the Fastify interceptor) a `member`
+ *   denial (`AUTH_FORBIDDEN`), a wrong confirmation (`CATALOG_VALIDATION_FAILED`), a success
+ *   whose notice the provider refuses and a success whose notice recipients cannot be read
+ *   (both `catalog.security.org_deletion_notice_failed`);
+ * - the repeated request, on the tenant of the provider-refused success;
+ * - the reversal (`main` of `../scripts/cancel-org-deletion.js`): a cancellation and the four
+ *   refusals `invalid_tenant`, `no_pending_marker`, `purge_begun` and `purge_date_passed`;
+ * - the purge (`runPurge` of `../scripts/purge-job.js`, one due tenant per pass): a full purge,
+ *   a failed catalog step (`afterTableDeleted`) and a failed auth step (`beforeUserDeleted`),
+ *   each failed tenant then resumed to completion by a second pass.
+ *
+ * ## How the scripts reach their roles here
+ *
+ * As in `cancel-org-deletion.int.test.ts` and `purge-job.int.test.ts`, the harness's
+ * `getDeletionAdminTestDatabase()` and `getPurgeTestDatabase()` pools (`SET ROLE` on every
+ * connection). Both entry points take the pool as an option, so `createPool` is not mocked
+ * here: `main` of the reversal gets `pool`, and `runPurge` always takes one. The injected env of
+ * the reversal carries sentinel database URLs only; `DATABASE_URL` is never printed. The
+ * `telemetry` seam of both scripts is the in-memory harness's flush, so `runScript`'s final
+ * flush exports into the exporters this file reads. The purge passes name their tenant
+ * (`tenantIds`), so no other file's due tenant is touched.
+ *
+ * ## Production symbols expected (the red phase)
+ *
+ * Every module exists; the expected failures are assertion failures on signals that are declared
+ * but not produced: the spans `identity.organization.delete`, `.cancel_deletion` and `.purge`,
+ * and the outcomes `requested`, `completed` and `failed` of `tayzu.identity.org_deletions`.
+ */
+const ORG_DELETION_REVERSAL_ENV: Readonly<Record<string, string>> = {
+  REVERSAL_DATABASE_URL:
+    'postgres://tayzu_deletion_admin@reversal.invalid:5432/tayzu?sslmode=verify-full',
+  PURGE_DATABASE_URL: 'postgres://tayzu_purge@purge.invalid:5432/tayzu?sslmode=verify-full',
+  DATABASE_URL: 'postgres://tayzu_app@app.invalid:5432/tayzu?sslmode=verify-full',
+  AUTH_DATABASE_URL: 'postgres://tayzu_auth@auth.invalid:5432/tayzu?sslmode=verify-full',
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+};
+
+/** The text of the purge failure seams: SQL-looking, so a leak into a signal is recognizable. */
+const ORG_PURGE_FAILURE_MESSAGE =
+  'injected purge failure: delete from catalog_entity where tenant_id = $1 returning title';
+
+/** What the 045 drive did, read by the 045 assertions below. Filled by the drive only. */
+const orgDeletionDrive = {
+  operatorId: `gh:${String(randomInt(1, 1_000_000_000))}`,
+  /** Tenants whose first deletion request succeeded. */
+  requested: new Set<string>(),
+  wrongConfirmation: new Set<string>(),
+  repeated: new Set<string>(),
+  /** Tenants whose request succeeded with a failed notice (provider refusal, recipients read). */
+  noticeFailed: new Set<string>(),
+  cancelled: new Set<string>(),
+  /** Refusal reason to the tenant id handed to the reversal (the malformed one included). */
+  refused: new Map<string, string>(),
+  /** Tenants fully purged by one pass, with one seeded entity each. */
+  purgedAtOnce: new Set<string>(),
+  /** Tenants whose first pass failed at the step, then completed in a second pass. */
+  failedAt: new Map<string, 'catalog' | 'auth'>(),
+};
+
+/** `runScript`'s final flush, onto the in-memory harness. */
+function harnessTelemetry(harness: TelemetryTestHarness): Telemetry {
+  return { shutdown: () => harness.forceFlush() };
+}
+
+describe('otel-smoke-check, 045: every org-deletion operation is driven (task 9.2)', () => {
+  let app: App;
+  let pools: HarnessPools;
+  let harness: TelemetryTestHarness;
+  let repository: ReturnType<typeof createAuthRepository>;
+  let reversalPool: Pool;
+  let purgePool: Pool;
+  const authz = createCerbosClient({ address: IDENTITY_CERBOS, tls: false });
+  const appSender = createRecordingEmailSender();
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    pools = await harnessPools();
+    await runMigrations(pools.authPool);
+    reversalPool = (await getDeletionAdminTestDatabase()).pool;
+    purgePool = (await getPurgeTestDatabase()).pool;
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: IDENTITY_CERBOS,
+      allowedOrigins: [IDENTITY_ORIGIN],
+      mountIdentityRoutes: true,
+      email: {
+        sender: appSender,
+        invitationLinkBaseUrl: IDENTITY_ORIGIN,
+        passwordResetLinkBaseUrl: IDENTITY_ORIGIN,
+        disabledTenantIds: [],
+        killSwitch: false,
+        recipientKeySecret: IDENTITY_SECRET,
+        tenantCap: { max: 1000, windowSeconds: 3600 },
+        recipientCap: { max: 1000, windowSeconds: 86_400 },
+      },
+    });
+    repository = createAuthRepository(pools.authPool);
+  }, 120_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  async function newTenant(label: string): Promise<BootstrappedTenant> {
+    const id = randomUUID();
+    return await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: `Org Deletion ${label}`,
+      email: `s045-${label.toLowerCase().replaceAll(' ', '-')}-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Smoke 045 ${id}`,
+      organizationSlug: `s045-${id}`,
+      ip: randomIp(),
+    });
+  }
+
+  function contextOf(tenant: BootstrappedTenant, role: 'admin' | 'member' = 'admin') {
+    const headers = new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() });
+    return {
+      tenantId: tenant.organizationId,
+      actor: { type: 'user', id: tenant.userId },
+      principal: { roles: [role] },
+      __requestHeaders: headers,
+      __stepUpHeaders: headers,
+    };
+  }
+
+  function routerWith(
+    options: { notices?: NoticeDispatcher; authRepository?: typeof repository } = {},
+  ): IdentityClient {
+    return createRouterClient(
+      createIdentityRouter({
+        auth: app.auth,
+        authz,
+        authRepository: options.authRepository ?? repository,
+        withUserLock: createWithUserLock(pools.authPool),
+        appPool: pools.appPool,
+        ...(options.notices === undefined ? {} : { notices: options.notices }),
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+  }
+
+  function noticesWith(sender: Parameters<typeof createNoticeDispatcher>[0]['sender']) {
+    return createNoticeDispatcher({
+      disabledTenantIds: [],
+      capStore: { consume: () => Promise.resolve() },
+      sender,
+      recipientKeySecret: IDENTITY_SECRET,
+    });
+  }
+
+  function deleteOverHttp(cookie: string, confirmation: string) {
+    return app.app.inject({
+      method: 'DELETE',
+      url: `/v1/organization?${new URLSearchParams({ confirmation }).toString()}`,
+      headers: {
+        cookie,
+        origin: IDENTITY_ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('DELETE'),
+      },
+    });
+  }
+
+  async function enrolledAdmin(label: string): Promise<BootstrappedTenant> {
+    return await enrolledAdminSession(app, await newTenant(label), {
+      password: TEST_PASSWORD,
+      origin: IDENTITY_ORIGIN,
+    });
+  }
+
+  it('the request over HTTP: a success with a fresh step-up, and AUTH_STEP_UP_REQUIRED without one', async () => {
+    const allowed = await enrolledAdmin('Http Allowed');
+    const answer = await deleteOverHttp(allowed.cookie, allowed.organizationId);
+    expect(answer.statusCode, 'the request succeeds').toBe(200);
+    orgDeletionDrive.requested.add(allowed.organizationId);
+
+    const stale = await enrolledAdmin('Http Stale');
+    await pools.authPool.query('delete from auth.verification where identifier = $1', [
+      `step-up-verified:${sessionTokenOfCookie(stale.cookie)}`,
+    ]);
+    const refused = await deleteOverHttp(stale.cookie, stale.organizationId);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json<{ code?: unknown }>().code).toBe('AUTH_STEP_UP_REQUIRED');
+  }, 120_000);
+
+  it('the request in process: a member denial and a wrong confirmation', async () => {
+    const client = routerWith();
+    const denied = await newTenant('Member');
+    await expect(
+      client.identity.organization.delete(
+        { query: { confirmation: denied.organizationId } },
+        { context: contextOf(denied, 'member') },
+      ),
+    ).rejects.toMatchObject({ code: 'AUTH_FORBIDDEN' });
+
+    const wrong = await newTenant('Wrong Confirmation');
+    await expect(
+      client.identity.organization.delete(
+        { query: { confirmation: `org-${randomUUID()}` } },
+        { context: contextOf(wrong) },
+      ),
+    ).rejects.toMatchObject({ code: 'CATALOG_VALIDATION_FAILED' });
+    orgDeletionDrive.wrongConfirmation.add(wrong.organizationId);
+  }, 120_000);
+
+  it('the request with a notice the provider refuses, then the repeated request', async () => {
+    const refusing = noticesWith({
+      send: () => Promise.reject(new Error('provider refused the message')),
+    });
+    const client = routerWith({ notices: refusing });
+    const tenant = await newTenant('Notice Refused');
+    const first = await client.identity.organization.delete(
+      { query: { confirmation: tenant.organizationId } },
+      { context: contextOf(tenant) },
+    );
+    expect(typeof first.purgeAfter).toBe('string');
+    orgDeletionDrive.requested.add(tenant.organizationId);
+    orgDeletionDrive.noticeFailed.add(tenant.organizationId);
+
+    const again = await client.identity.organization.delete(
+      { query: { confirmation: tenant.organizationId } },
+      { context: contextOf(tenant) },
+    );
+    expect(again.purgeAfter, 'a repeat answers the pending date').toBe(first.purgeAfter);
+    orgDeletionDrive.repeated.add(tenant.organizationId);
+  }, 120_000);
+
+  it('the request whose notice recipients cannot be read', async () => {
+    const failingRead: typeof repository = {
+      ...repository,
+      administratorsOf: () => Promise.reject(new Error('recipients read failed')),
+    };
+    const client = routerWith({
+      notices: noticesWith(createRecordingEmailSender()),
+      authRepository: failingRead,
+    });
+    const tenant = await newTenant('Notice Read');
+    await client.identity.organization.delete(
+      { query: { confirmation: tenant.organizationId } },
+      { context: contextOf(tenant) },
+    );
+    orgDeletionDrive.requested.add(tenant.organizationId);
+    orgDeletionDrive.noticeFailed.add(tenant.organizationId);
+  }, 120_000);
+
+  const MARKER_SEEDS = {
+    pending: `insert into tenant_deletion_marker (tenant_id, requested_at, purge_after, requested_by)
+              values ($1, now(), now() + interval '10 days', $2)`,
+    purge_begun: `insert into tenant_deletion_marker
+                    (tenant_id, requested_at, purge_after, requested_by, catalog_purged_at)
+                  values ($1, now() - interval '1 day', now() + interval '9 days', $2,
+                          now() - interval '1 hour')`,
+    purge_date_passed: `insert into tenant_deletion_marker
+                          (tenant_id, requested_at, purge_after, requested_by)
+                        values ($1, now() - interval '15 days', now() - interval '1 day', $2)`,
+  } as const;
+
+  async function reverse(tenantId: string) {
+    return await cancelOrgDeletionMain({
+      tenantId,
+      env: { ...ORG_DELETION_REVERSAL_ENV, TAYZU_OPERATOR_ID: orgDeletionDrive.operatorId },
+      pool: reversalPool,
+      telemetry: harnessTelemetry(harness),
+    });
+  }
+
+  it('the reversal: a cancellation and every refusal reason', async () => {
+    const pending = `org-${randomUUID()}`;
+    await pools.authPool.query(MARKER_SEEDS.pending, [pending, `usr-${randomUUID()}`]);
+    expect(await reverse(pending)).toEqual({ outcome: 'cancelled' });
+    orgDeletionDrive.cancelled.add(pending);
+
+    const malformed = `not a tenant id! ${randomUUID()}`;
+    expect(await reverse(malformed)).toEqual({ outcome: 'refused', reason: 'invalid_tenant' });
+    orgDeletionDrive.refused.set('invalid_tenant', malformed);
+
+    const unmarked = `org-${randomUUID()}`;
+    expect(await reverse(unmarked)).toEqual({ outcome: 'refused', reason: 'no_pending_marker' });
+    orgDeletionDrive.refused.set('no_pending_marker', unmarked);
+
+    for (const reason of ['purge_begun', 'purge_date_passed'] as const) {
+      const tenantId = `org-${randomUUID()}`;
+      await pools.authPool.query(MARKER_SEEDS[reason], [tenantId, `usr-${randomUUID()}`]);
+      expect(await reverse(tenantId)).toEqual({ outcome: 'refused', reason });
+      orgDeletionDrive.refused.set(reason, tenantId);
+    }
+  }, 120_000);
+
+  /**
+   * A due tenant (the seed of `purge-job.int.test.ts`): an organization, a user who belongs only
+   * to it with a session, a blueprint and exactly one entity, and a pending marker whose date
+   * has passed.
+   */
+  async function seedDueTenant(): Promise<string> {
+    const owner = pools.authPool;
+    const tenantId = `org-${randomUUID()}`;
+    await owner.query(
+      'insert into auth.organization (id, name, slug, created_at) values ($1, $2, $3, now())',
+      [tenantId, 'Org', `slug-${tenantId}`],
+    );
+    await owner.query(MARKER_SEEDS.purge_date_passed, [tenantId, `actor-${randomUUID()}`]);
+    const userId = `user-${randomUUID()}`;
+    await owner.query(
+      `insert into auth."user" (id, name, email, email_verified, created_at, updated_at)
+       values ($1, 'User', $2, true, now(), now())`,
+      [userId, `${userId}@example.test`],
+    );
+    await owner.query(
+      `insert into auth.member (id, organization_id, user_id, role, created_at)
+       values ($1, $2, $3, 'member', now())`,
+      [`member-${randomUUID()}`, tenantId, userId],
+    );
+    await owner.query(
+      `insert into auth.session (id, expires_at, token, created_at, updated_at, user_id, active_organization_id)
+       values ($1, now() + interval '1 day', $2, now(), now(), $3, $4)`,
+      [`session-${randomUUID()}`, randomBytes(24).toString('hex'), userId, tenantId],
+    );
+    const actorId = `actor-${randomUUID()}`;
+    const blueprintId = randomUUID();
+    await owner.query(
+      `insert into catalog_blueprint
+         (id, tenant_id, identifier, title, schema, version, created_at, created_by_type,
+          created_by_id, updated_at, updated_by_type, updated_by_id)
+       values ($1, $2, $3, '"Service"'::jsonb, '{}'::jsonb, 1, now(), 'user', $4,
+               now(), 'user', $4)`,
+      [blueprintId, tenantId, `service-${randomUUID()}`, actorId],
+    );
+    await owner.query(
+      `insert into catalog_entity
+         (id, tenant_id, blueprint_id, identifier, title, spec_properties, generation, version,
+          created_at, created_by_type, created_by_id, updated_at, updated_by_type, updated_by_id)
+       values ($1, $2, $3, $4, $4, '{}'::jsonb, 1, 1, now(), 'user', $5, now(), 'user', $5)`,
+      [randomUUID(), tenantId, blueprintId, `entity-${randomUUID()}`, actorId],
+    );
+    return tenantId;
+  }
+
+  async function markerState(tenantId: string): Promise<string | undefined> {
+    const { rows } = await pools.authPool.query<{ state: string }>(
+      'select state::text as state from tenant_deletion_marker where tenant_id = $1',
+      [tenantId],
+    );
+    return rows[0]?.state;
+  }
+
+  function purgeOnce(
+    tenantId: string,
+    seams: Pick<Parameters<typeof runPurge>[0], 'catalogOptions' | 'authOptions'> = {},
+  ): Promise<void> {
+    return runPurge({
+      pool: purgePool,
+      tenantIds: [tenantId],
+      telemetry: harnessTelemetry(harness),
+      ...seams,
+    });
+  }
+
+  it('the purge: a full purge, a failed catalog step and a failed auth step, each resumed', async () => {
+    const full = await seedDueTenant();
+    await purgeOnce(full);
+    expect(await markerState(full), 'the due tenant is purged').toBe('purged');
+    orgDeletionDrive.purgedAtOnce.add(full);
+
+    const catalogFails = await seedDueTenant();
+    await purgeOnce(catalogFails, {
+      catalogOptions: {
+        afterTableDeleted: (table) => {
+          if (table === 'catalog_entity') throw new Error(ORG_PURGE_FAILURE_MESSAGE);
+        },
+      },
+    });
+    expect(await markerState(catalogFails), 'a failed step leaves the marker pending').toBe(
+      'pending',
+    );
+    orgDeletionDrive.failedAt.set(catalogFails, 'catalog');
+
+    const authFails = await seedDueTenant();
+    await purgeOnce(authFails, {
+      authOptions: {
+        beforeUserDeleted: () => {
+          throw new Error(ORG_PURGE_FAILURE_MESSAGE);
+        },
+      },
+    });
+    expect(await markerState(authFails), 'a failed step leaves the marker pending').toBe('pending');
+    orgDeletionDrive.failedAt.set(authFails, 'auth');
+
+    // The next run resumes from the marker and completes both.
+    for (const tenantId of [catalogFails, authFails]) {
+      await purgeOnce(tenantId);
+      expect(await markerState(tenantId), 'the resumed tenant is purged').toBe('purged');
+    }
+  }, 120_000);
+});
+
 describe('otel-smoke-check, 043: every declared identity signal appears with its declared attributes (task 15.2)', () => {
   let harness: TelemetryTestHarness;
 
@@ -3882,6 +4385,243 @@ describe('otel-smoke-check, 043: every declared identity signal appears with its
   });
 });
 
+/**
+ * Task 9.2 (045): the org-deletion signals of the drive above cover every success, error and
+ * denial class the design's Observability contract names. The 043 `describe` above already
+ * asserts, from the contract module, that each 045 span, counter and event is captured with
+ * exactly its declared attribute keys; this one asserts the values: the counter's four
+ * outcomes, one purge span per tenant and step with step 1's entities removed (Q169), the
+ * reversal's refusal reasons and the failure classes.
+ *
+ * Span coverage ("removing one declared span makes the check fail"): the 043 span check is an
+ * `it.each` over `IDENTITY_SPANS`, so a declared span that is no longer emitted fails its own
+ * case ("no ... span was captured"), and a span removed from the module fails the 9.1 checks
+ * above (the fixture and the pinned 045 list still name it). The last case here proves the
+ * first half against the captured 045 spans.
+ */
+describe('otel-smoke-check, 045: every org-deletion class is observed with its declared values (task 9.2)', () => {
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    await harness.forceFlush();
+  });
+
+  const SPANS_045 = [
+    'identity.organization.delete',
+    'identity.organization.cancel_deletion',
+    'identity.organization.purge',
+  ] as const;
+
+  const ofTenant = (name: string, tenantId: string) =>
+    spansNamed(harness, name).filter((span) => span.attributes['tayzu.tenant.id'] === tenantId);
+  const failed = (span: { attributes: Readonly<Record<string, unknown>> }) =>
+    'error.type' in span.attributes;
+
+  it('tayzu.identity.org_deletions covers requested, completed, failed and cancelled', () => {
+    const outcomes = metricValues(
+      harness,
+      'tayzu.identity.org_deletions',
+      'tayzu.identity.org_deletion.outcome',
+    );
+    for (const outcome of ['requested', 'completed', 'failed', 'cancelled']) {
+      expect(outcomes, `org deletion outcome ${outcome}`).toContain(outcome);
+    }
+  });
+
+  it('identity.organization.delete: each successful request has a span with its host tenant, and a wrong confirmation fails it with error.type CATALOG_VALIDATION_FAILED', () => {
+    expect(orgDeletionDrive.requested.size, 'the drive requested deletions').toBeGreaterThan(0);
+    for (const tenantId of orgDeletionDrive.requested) {
+      const spans = ofTenant('identity.organization.delete', tenantId);
+      expect(
+        spans.some((span) => !failed(span)),
+        `a successful identity.organization.delete span for the requested tenant`,
+      ).toBe(true);
+    }
+    for (const tenantId of orgDeletionDrive.wrongConfirmation) {
+      const spans = ofTenant('identity.organization.delete', tenantId);
+      expect(spans.length, 'the wrong confirmation has its span').toBeGreaterThan(0);
+      for (const span of spans) {
+        expect(isErrorStatus(span.status.code), 'the span failed').toBe(true);
+        expect(span.attributes['error.type']).toBe('CATALOG_VALIDATION_FAILED');
+      }
+    }
+  });
+
+  it('identity.organization.purge: one span per tenant and step, catalog and auth, and step 1 carries the entities it removed (Q169)', () => {
+    expect(orgDeletionDrive.purgedAtOnce.size, 'the drive purged a tenant').toBeGreaterThan(0);
+    for (const tenantId of orgDeletionDrive.purgedAtOnce) {
+      const spans = ofTenant('identity.organization.purge', tenantId);
+      const steps = spans.map((span) => span.attributes['tayzu.identity.org_deletion.step']);
+      expect(steps.sort(), 'one span per step').toEqual(['auth', 'catalog']);
+      const catalog = spans.find(
+        (span) => span.attributes['tayzu.identity.org_deletion.step'] === 'catalog',
+      );
+      expect(catalog?.attributes['tayzu.identity.org_deletion.entities_removed']).toBe(1);
+      for (const span of spans) {
+        expect(failed(span), 'a one-pass purge step succeeds').toBe(false);
+      }
+    }
+  });
+
+  it('identity.organization.purge: a failed step fails its span with error.type internal and one sanitized exception', () => {
+    expect(orgDeletionDrive.failedAt.size, 'the drive failed a step').toBe(2);
+    for (const [tenantId, step] of orgDeletionDrive.failedAt) {
+      const spans = ofTenant('identity.organization.purge', tenantId).filter(
+        (span) => span.attributes['tayzu.identity.org_deletion.step'] === step,
+      );
+      const failures = spans.filter(failed);
+      expect(failures, `exactly one failed ${step} span`).toHaveLength(1);
+      const [span] = failures;
+      expect(isErrorStatus(span?.status.code ?? 0), 'the span status is ERROR').toBe(true);
+      expect(span?.attributes['error.type']).toBe('internal');
+      const exceptions = span?.events.filter((event) => event.name === 'exception') ?? [];
+      expect(exceptions).toHaveLength(1);
+      expect(exceptions[0]?.attributes ?? {}).not.toHaveProperty(['exception.message']);
+    }
+  });
+
+  it('identity.organization.cancel_deletion: the cancellation carries the tenant and the operator id', () => {
+    expect(orgDeletionDrive.cancelled.size).toBe(1);
+    for (const tenantId of orgDeletionDrive.cancelled) {
+      const spans = ofTenant('identity.organization.cancel_deletion', tenantId);
+      expect(spans, 'one span for the cancellation').toHaveLength(1);
+      expect(spans[0]?.attributes['tayzu.identity.operator.id']).toBe(orgDeletionDrive.operatorId);
+      expect(failed(spans[0] ?? { attributes: {} }), 'the cancellation succeeded').toBe(false);
+    }
+  });
+
+  it('catalog.security.org_deletion_cancel_refused covers the four reasons, with the tenant only once its id passed the shape check', () => {
+    const records = logRecords(harness, 'catalog.security.org_deletion_cancel_refused').filter(
+      (record) => record.attributes['tayzu.identity.operator.id'] === orgDeletionDrive.operatorId,
+    );
+    const reasons = new Set(
+      records.map((record) => record.attributes['tayzu.identity.org_deletion.cancel_refusal']),
+    );
+    expect(reasons).toEqual(
+      new Set(['invalid_tenant', 'no_pending_marker', 'purge_begun', 'purge_date_passed']),
+    );
+    for (const record of records) {
+      const raw = record.attributes['tayzu.identity.org_deletion.cancel_refusal'];
+      const reason = typeof raw === 'string' ? raw : '';
+      if (reason === 'invalid_tenant') {
+        expect(record.attributes, reason).not.toHaveProperty(['tayzu.tenant.id']);
+      } else {
+        expect(record.attributes['tayzu.tenant.id'], reason).toBe(
+          orgDeletionDrive.refused.get(reason),
+        );
+      }
+    }
+  });
+
+  it('catalog.audit.org_deletion_requested, _repeated and _notice_failed name the driven tenants', () => {
+    const tenantsOf = (event: string) => logValues(harness, event, 'tayzu.tenant.id');
+    const requested = tenantsOf('catalog.audit.org_deletion_requested');
+    for (const tenantId of orgDeletionDrive.requested) expect(requested).toContain(tenantId);
+    const repeated = tenantsOf('catalog.security.org_deletion_repeated');
+    for (const tenantId of orgDeletionDrive.repeated) expect(repeated).toContain(tenantId);
+    const noticeFailed = tenantsOf('catalog.security.org_deletion_notice_failed');
+    expect(orgDeletionDrive.noticeFailed.size, 'a refused send and a failed read').toBe(2);
+    for (const tenantId of orgDeletionDrive.noticeFailed) expect(noticeFailed).toContain(tenantId);
+  });
+
+  it('catalog.security.org_deletion_failed covers both steps, and catalog.audit.org_deletion_completed reports the entities of the run that emits it (Q169)', () => {
+    const failures = logRecords(harness, 'catalog.security.org_deletion_failed');
+    for (const [tenantId, step] of orgDeletionDrive.failedAt) {
+      expect(
+        failures.some(
+          (record) =>
+            record.attributes['tayzu.tenant.id'] === tenantId &&
+            record.attributes['tayzu.identity.org_deletion.step'] === step,
+        ),
+        `a failed ${step} step is logged`,
+      ).toBe(true);
+    }
+    const completed = (tenantId: string) =>
+      logRecords(harness, 'catalog.audit.org_deletion_completed')
+        .filter((record) => record.attributes['tayzu.tenant.id'] === tenantId)
+        .map((record) => record.attributes['tayzu.identity.org_deletion.entities_removed']);
+    for (const tenantId of orgDeletionDrive.purgedAtOnce) {
+      expect(completed(tenantId), 'a one-pass purge reports its entity').toEqual([1]);
+    }
+    for (const [tenantId, step] of orgDeletionDrive.failedAt) {
+      if (step === 'auth') {
+        expect(completed(tenantId), 'a run resumed after step 1 reports 0').toEqual([0]);
+      }
+    }
+  });
+
+  it('no span or log record carries the text of an injected purge failure', () => {
+    const entries = exportedCorpus(harness).filter(
+      (entry) => entry.signal.startsWith('span ') || entry.signal.startsWith('log '),
+    );
+    expect(entries.length).toBeGreaterThan(0);
+    for (const marker of [ORG_PURGE_FAILURE_MESSAGE, 'injected purge failure', 'returning title']) {
+      expect(leaks(entries, marker), `a signal carries "${marker}"`).toEqual([]);
+    }
+  });
+
+  it('span coverage: every 045 span is captured, and a declared span with no capture is reported', () => {
+    const captured = new Set(harness.spanExporter.getFinishedSpans().map((span) => span.name));
+    const missing = (names: ReadonlySet<string>) => SPANS_045.filter((name) => !names.has(name));
+    expect(missing(captured), 'every 045 span is captured').toEqual([]);
+    const withoutPurge = new Set([...captured].filter((name) => name !== SPANS_045[2]));
+    expect(missing(withoutPurge), 'a span no longer emitted is reported').toEqual([SPANS_045[2]]);
+  });
+});
+
+/** The structural slice of an exported metric batch the identity cardinality guard reads. */
+type MetricBatch = readonly {
+  readonly scopeMetrics: readonly {
+    readonly metrics: readonly {
+      readonly descriptor: { readonly name: string };
+      readonly dataPoints: readonly { readonly attributes: Readonly<Record<string, unknown>> }[];
+    }[];
+  }[];
+}[];
+
+/**
+ * Keys that must never be a `tayzu.identity.*` metric attribute, whatever the contract declares:
+ * the invited email (043 task 15.3) and the organization's name (045 task 9.2).
+ */
+const FORBIDDEN_IDENTITY_METRIC_KEYS: readonly string[] = [
+  'tayzu.identity.invitation.email',
+  'tayzu.identity.org_deletion.name',
+];
+
+/**
+ * The cardinality guard of `tayzu.identity.*` metrics: every data point carries only keys of its
+ * metric's allowed set, never a forbidden key, and every metric is declared.
+ */
+function identityMetricOffenders(
+  batches: MetricBatch,
+  allowedByMetric: ReadonlyMap<string, readonly string[]>,
+): { readonly identityMetrics: number; readonly offenders: readonly string[] } {
+  const offenders: string[] = [];
+  let identityMetrics = 0;
+  for (const resourceMetrics of batches) {
+    for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+      for (const metric of scopeMetrics.metrics) {
+        const name = metric.descriptor.name;
+        if (!name.startsWith('tayzu.identity.')) continue;
+        identityMetrics += 1;
+        const allowed = allowedByMetric.get(name);
+        if (allowed === undefined) {
+          offenders.push(`${name}: not a declared metric`);
+          continue;
+        }
+        for (const point of metric.dataPoints) {
+          for (const key of Object.keys(point.attributes)) {
+            if (!allowed.includes(key)) offenders.push(`${name}: ${key}`);
+            if (FORBIDDEN_IDENTITY_METRIC_KEYS.includes(key)) offenders.push(`${name}: ${key}`);
+          }
+        }
+      }
+    }
+  }
+  return { identityMetrics, offenders };
+}
+
 /*
  * Task 15.3 (043): the cardinality guard extends to `tayzu.identity.*` metrics:
  * no attribute key outside the contract's allowed set. A deliberately added
@@ -3898,34 +4638,66 @@ describe('otel-smoke-check, 043: no tayzu.identity.* metric carries an attribute
     await harness.forceFlush();
   });
 
+  const allowedByMetric: ReadonlyMap<string, readonly string[]> = new Map(
+    EXPECTED_METRICS.map((metric) => [metric.name, metric.attributes] as const),
+  );
+
   it('every tayzu.identity.* data point carries only keys of its declared set, and no invitation email key', () => {
-    const allowedByMetric = new Map(
-      EXPECTED_METRICS.map((metric) => [metric.name, metric.attributes] as const),
+    const { identityMetrics, offenders } = identityMetricOffenders(
+      harness.metricExporter.getMetrics(),
+      allowedByMetric,
     );
-    const offenders: string[] = [];
-    let identityMetrics = 0;
-    for (const resourceMetrics of harness.metricExporter.getMetrics()) {
-      for (const scopeMetrics of resourceMetrics.scopeMetrics) {
-        for (const metric of scopeMetrics.metrics) {
-          const name = metric.descriptor.name;
-          if (!name.startsWith('tayzu.identity.')) continue;
-          identityMetrics += 1;
-          const allowed = allowedByMetric.get(name);
-          if (allowed === undefined) {
-            offenders.push(`${name}: not a declared metric`);
-            continue;
-          }
-          for (const point of metric.dataPoints) {
-            for (const key of Object.keys(point.attributes)) {
-              if (!allowed.includes(key)) offenders.push(`${name}: ${key}`);
-              if (key === 'tayzu.identity.invitation.email') offenders.push(`${name}: ${key}`);
-            }
-          }
-        }
-      }
-    }
     expect(identityMetrics, 'no tayzu.identity.* metric was captured').toBeGreaterThan(0);
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * 045 task 9.2: "a deliberately added `tayzu.identity.org_deletion.name` metric attribute makes
+   * it fail". The captured `tayzu.identity.org_deletions` points, each with the organization's
+   * name added, go through the same guard: once against the contract's allowed set, and once
+   * against an allowed set that declares the key too (a contract edited along with the code).
+   */
+  describe('045: an organization-name attribute on tayzu.identity.org_deletions fails the guard (task 9.2)', () => {
+    const NAME_KEY = 'tayzu.identity.org_deletion.name';
+
+    function withName(): MetricBatch {
+      return harness.metricExporter.getMetrics().map((resourceMetrics) => ({
+        scopeMetrics: resourceMetrics.scopeMetrics.map((scopeMetrics) => ({
+          metrics: scopeMetrics.metrics
+            .filter((metric) => metric.descriptor.name === 'tayzu.identity.org_deletions')
+            .map((metric) => ({
+              descriptor: metric.descriptor,
+              dataPoints: metric.dataPoints.map((point) => ({
+                attributes: { ...point.attributes, [NAME_KEY]: 'Acme Marker Org' },
+              })),
+            })),
+        })),
+      }));
+    }
+
+    it('the captured org-deletion points pass the guard as they are', () => {
+      const points = dataPointAttributes(harness, 'tayzu.identity.org_deletions');
+      expect(points.length, 'tayzu.identity.org_deletions was captured').toBeGreaterThan(0);
+      expect(
+        identityMetricOffenders(harness.metricExporter.getMetrics(), allowedByMetric),
+      ).toMatchObject({ offenders: [] });
+    });
+
+    it('the same points with the organization name added fail it', () => {
+      const { identityMetrics, offenders } = identityMetricOffenders(withName(), allowedByMetric);
+      expect(identityMetrics, 'the org-deletion metric is in the batch').toBeGreaterThan(0);
+      expect(offenders).toContain(`tayzu.identity.org_deletions: ${NAME_KEY}`);
+    });
+
+    it('they fail it even when the allowed set declares the name', () => {
+      const widened = new Map(allowedByMetric);
+      widened.set('tayzu.identity.org_deletions', [
+        ...(allowedByMetric.get('tayzu.identity.org_deletions') ?? []),
+        NAME_KEY,
+      ]);
+      const { offenders } = identityMetricOffenders(withName(), widened);
+      expect(offenders).toContain(`tayzu.identity.org_deletions: ${NAME_KEY}`);
+    });
   });
 
   it.each(EXPECTED_METRICS.map((metric) => [metric.name, metric.attributes] as const))(
@@ -4386,5 +5158,102 @@ describe('otel-smoke-check, 043: marker values never reach a signal (task 15.4)'
     ).toBe(true);
 
     await expectNoLeak({ 'invited email': email });
+  }, 120_000);
+
+  /**
+   * 045 task 9.2, spec scenario "The organization name never reaches telemetry": GIVEN an
+   * organization named with a marker string; WHEN it is deleted, reversed or purged; THEN the
+   * marker appears in no exported span, metric or log attribute. One organization per
+   * operation, each named with its own marker, through the real request (the identity router),
+   * the reversal script (`tayzu_deletion_admin`) and the purge (`tayzu_purge`). The malformed
+   * tenant id of an `invalid_tenant` reversal is a marker too: it failed the shape check, so it
+   * is untrusted input that no signal may carry (design: the tenant is absent for
+   * `invalid_tenant`).
+   */
+  it('The organization name never reaches telemetry: a request, a reversal and a purge', async () => {
+    const router = routerWith(gateWith(teeTo(createNonSendingEmailSender())));
+    const telemetry = { shutdown: () => harness.forceFlush() };
+    const operatorId = `gh:${String(randomInt(1, 1_000_000_000))}`;
+    const env = { ...ORG_DELETION_REVERSAL_ENV, TAYZU_OPERATOR_ID: operatorId };
+
+    async function markerOrganization(label: string) {
+      const name = `OrgNameMarker-${label}-${randomUUID()}`;
+      const id = randomUUID();
+      const tenant = await bootstrapTestTenant(app.auth, {
+        pool: testAppPool(),
+        name: `Marker ${label}`,
+        email: `idmarker-org-${label}-${id}@example.test`,
+        password: TEST_PASSWORD,
+        organizationName: name,
+        organizationSlug: `idmarker-org-${id}`,
+        ip: randomIp(),
+      });
+      const requested = await router.identity.organization.delete(
+        { query: { confirmation: tenant.organizationId } },
+        { context: adminContext(tenant) },
+      );
+      return { tenant, name, requested };
+    }
+
+    // The request.
+    const deleted = await markerOrganization('deleted');
+
+    // The reversal of a request, and a refused one on a malformed tenant id.
+    const reversed = await markerOrganization('reversed');
+    const cancelled = await cancelOrgDeletionMain({
+      tenantId: reversed.tenant.organizationId,
+      env,
+      pool: (await getDeletionAdminTestDatabase()).pool,
+      telemetry,
+    });
+    expect(cancelled).toEqual({ outcome: 'cancelled' });
+    const malformed = `OrgNameMarker invalid ${randomUUID()}`;
+    const refused = await cancelOrgDeletionMain({
+      tenantId: malformed,
+      env,
+      pool: (await getDeletionAdminTestDatabase()).pool,
+      telemetry,
+    });
+    expect(refused).toEqual({ outcome: 'refused', reason: 'invalid_tenant' });
+
+    // The purge of a request whose window has passed (both dates move together: the window
+    // CHECK of `0012` still holds).
+    const purged = await markerOrganization('purged');
+    await pools.authPool.query(
+      `update tenant_deletion_marker
+          set requested_at = requested_at - interval '15 days',
+              purge_after = purge_after - interval '15 days'
+        where tenant_id = $1 and state = 'pending'`,
+      [purged.tenant.organizationId],
+    );
+    await runPurge({
+      pool: (await getPurgeTestDatabase()).pool,
+      tenantIds: [purged.tenant.organizationId],
+      telemetry,
+    });
+    const { rows } = await pools.authPool.query<{ state: string }>(
+      'select state::text as state from tenant_deletion_marker where tenant_id = $1',
+      [purged.tenant.organizationId],
+    );
+    expect(
+      rows.map((row) => row.state),
+      'the marker organization was purged',
+    ).toEqual(['purged']);
+
+    await expectNoLeak(
+      {
+        'deleted organization name': deleted.name,
+        'reversed organization name': reversed.name,
+        'purged organization name': purged.name,
+        'malformed tenant id': malformed,
+      },
+      {
+        request: deleted.requested,
+        'reversed request': reversed.requested,
+        'purged request': purged.requested,
+        cancellation: cancelled,
+        refusal: refused,
+      },
+    );
   }, 120_000);
 });

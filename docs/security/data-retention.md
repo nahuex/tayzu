@@ -6,7 +6,7 @@ lifecycle: the credential rotation cadence, the invitation caps, the email
 policy, the repairs for a failed acceptance, the off-boarding step and the
 first-deployment run of the bootstrap CLI. Change `045-org-deletion-and-data-retention`
 extends it with the retention policy, the erasure statement of org deletion and
-the reversal runbook; nothing about org deletion is stated here yet.
+the reversal runbook, in [Org deletion and data retention](#org-deletion-and-data-retention).
 
 Secrets, their owners and the emergency flip of the kill switch are in
 [Secrets](secrets.md). The routes and the egresses are in
@@ -147,7 +147,15 @@ rows of the two global caps add one row per window. Pruning the rows whose
 ticket (design D16), not built in this change. Until it is, the table grows with
 the number of distinct keys.
 
-### Hand-off note to `045`
+### Hand-off note to `045` (closed)
+
+**Closed by `045`, Resolved decision Q150.** Both families are classified as
+recommended below: `mfa-reenrol:<userId>` is deleted by purge step 2 before the
+user, and `password-reset:<id>` is exempt as 30-minute state. `045`'s
+completeness test (`apps/api/src/purge-coverage.int.test.ts`) holds both lines,
+and `auth.rate_limit` stays exempt for the reason Resolved decision Q151
+corrects ([What a purge does not remove](#what-a-purge-does-not-remove)). The
+note below is kept as the record of the hand-off.
 
 `044` adds no migration. Its two families need a classification in the
 completeness test of `045`, which classifies every `auth.verification` family by
@@ -163,6 +171,187 @@ above (pseudonymous, no tenant; exempt as `045` already treats the table), and
 the `EmailTemplate` union and the `tayzu.identity.email.template` set are
 extended by `044` first, so the `OrgDeletionNotice` of `045` rebases onto them.
 `verification-families.int.test.ts` is the early-warning list.
+
+## Org deletion and data retention
+
+Design D1 to D3 of `openspec/changes/045-org-deletion-and-data-retention/design.md`
+([ADR-0019](../adr/0019-org-deletion-two-phase-purge.md))
+(task 10.3). Org deletion has two phases: the request revokes access at once and
+records a deletion marker, and a scheduled job purges the tenant's data once the
+window has passed. Server-level point-in-time restore cannot restore one tenant
+out of the shared-schema database, so the only way back is the operator's
+reversal while the deletion is pending:
+[Runbook: reversing a pending deletion](#runbook-reversing-a-pending-deletion).
+
+### The purge window
+
+`ORG_DELETION_WINDOW_DAYS` (`apps/api/src/config.ts`) is an integer from **7 to
+14 days**, and the default is **14 days** (Resolved decisions Q21 and Q167). A
+value outside the range, zero, negative, fractional or not a number fails
+startup naming only the variable. It is an environment variable, so a change
+needs a new app revision.
+
+The request computes the purge date in SQL, `now() + make_interval(days => $1)`,
+from the same transaction clock as the database-set `requested_at`, and a
+`CHECK` on `tenant_deletion_marker` keeps `purge_after` between 7 and 14 days
+after `requested_at`. During the window every principal of the tenant, human or
+machine, is rejected, an invitation of the tenant cannot be accepted, and the
+data is still there. There is no in-product cancel.
+
+Once `purge_after` has passed, the purge job
+(`pnpm --filter @tayzu/api identity:purge`, a Container Apps Job that runs as `tayzu_purge` and holds no
+other role) purges the tenant on its next scheduled run, in two idempotent steps
+that resume where a failed run stopped: the catalog data (the append-only change
+events and the revocation rows included), then the Better Auth data (invitation
+tokens and shed records, invitations, each user left with no other membership
+with that user's accounts, sessions, second-factor and `verification` rows, API
+keys, the tenant's remaining sessions, members, and the organization row last).
+It logs `catalog.audit.org_deletion_completed` before it deletes the
+organization row, and `catalog.security.org_deletion_failed` with the step when
+a step fails.
+
+### What the request removes at once
+
+Phase 1 (`identity.organization.delete`, `DELETE /v1/organization`) records the
+marker, revokes every session whose active organization is the tenant, revokes
+every org-owned credential, cancels the pending invitations, sends the
+org-deletion notice to at most 20 administrators and logs
+`catalog.audit.org_deletion_requested`. In the same operation that deletes the
+tenant's sessions it also deletes, on the `tayzu_auth` pool, the
+`sso-reauth-state:` and `sso-reauth-result:` rows keyed by the tokens of those
+sessions (Resolved decision Q170). A `sso-reauth-result:` row can hold a
+never-consumed `id_token`, which is personal data, and purge step 2 cannot find
+it later: the sessions it would join are already gone.
+
+A repeated request while the deletion is pending inserts no second marker,
+sends no second notice and returns the original date, but runs the idempotent
+revocations again, and logs `catalog.security.org_deletion_repeated`.
+
+### Backups
+
+The PostgreSQL backup retention is **7 days** (Resolved decision Q156); `010`
+sets it when the server is provisioned, a first-deployment gate. A backup keeps
+a purged tenant's rows until that retention expires, so purged data is gone from
+the backups at most **21 days** after the request with the default window (14
+days of window and 7 of backup retention), and at most 14 days with the 7-day
+window. Both figures count the purge on its due date; the purge job's schedule
+adds at most the time to its next run. A backup is not a reversal path: it
+cannot restore one tenant.
+
+### What a purge does not remove
+
+The erasure statement: the purge deletes the tenant's catalog and Better Auth
+data, and these stay after it, each until the point named.
+
+| Data                                                | What it holds                                                                                                                                                                                                                                                                          | Stays until                                                                                                                                                                                          |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL backups                                  | A copy of the database, the purged tenant's rows included                                                                                                                                                                                                                              | The backup retention of 7 days expires ([Backups](#backups))                                                                                                                                         |
+| Cerbos decision logs                                | `decisionLogsEnabled: true` (`config/cerbos.yaml`) records each check's principal and resource ids and attributes; `043` sends only opaque ids                                                                                                                                         | Their content and retention have no policy yet (`045` design, Tickets, "Cerbos decision logs")                                                                                                       |
+| Azure Monitor data                                  | The telemetry the app exported: spans, metrics and log events with tenant ids and opaque actor ids, never tenant free text                                                                                                                                                             | The backend's retention, set by `010`; the security events among them follow [Audit and security log retention](#audit-and-security-log-retention)                                                   |
+| Azure Communication Services records                | The provider's message records and delivery logs of the tenant's emails, the org-deletion notice included: the recipient address and the fixed subject and body                                                                                                                        | The provider's retention, which the operator records in [Azure Communication Services: data location and retention](#azure-communication-services-data-location-and-retention) before `010` deploys  |
+| `password-reset:<id>` rows                          | `044`'s reset token: a random id, a digest and a user id in `value`                                                                                                                                                                                                                    | 30 minutes, or the next issue's opportunistic purge of expired rows (Resolved decision Q150)                                                                                                         |
+| `auth-state:<state>` rows                           | Better Auth's OAuth state of an SSO sign-in, keyed by a random value                                                                                                                                                                                                                   | 10 minutes, or the callback that consumes it                                                                                                                                                         |
+| `2fa-<random>` and `2fa-attempts-2fa-<random>` rows | Better Auth's two-factor challenge of an enrolled sign-in and its attempt counter, keyed by a random value                                                                                                                                                                             | Their own expiry, 10 minutes                                                                                                                                                                         |
+| `backchannel-logout:<client>:<jti>` rows            | Replay state keyed by the identity provider's client and token id, not by tenant                                                                                                                                                                                                       | The logout token's expiry plus a skew                                                                                                                                                                |
+| `auth.rate_limit` rows                              | A count and a timestamp under an unsalted SHA-256 of a scope and a tenant id, a user id, an IP or the keyed (HMAC) hash of an email (`043`'s task 6.7b): no personal data in clear. A tenant-keyed bucket's key can be recomputed from the tenant id, which the tombstone keeps anyway | `044`'s ticket "Prune `auth.rate_limit`" (`044` design, Tickets) removes old rows; `tayzu_purge` has no grant on the table (Resolved decision Q151, [Pruning](#pruning-expired-authrate_limit-rows)) |
+| `auth.jwks` rows                                    | The platform's signing keys, not per tenant                                                                                                                                                                                                                                            | Key rotation                                                                                                                                                                                         |
+| The marker's tombstone                              | The `tenant_deletion_marker` row: the tenant id, the state, the timestamps (`requested_at`, `purge_after`, the two step timestamps, `cancelled_at`) and the opaque `requested_by` and `cancelled_by` ids; no name or email                                                             | Kept, so that a later run finds nothing to purge                                                                                                                                                     |
+
+Each exemption, and its reason, is a line of the completeness test
+(`apps/api/src/purge-coverage.int.test.ts`), which fails on any tenant table,
+`auth` table or `auth.verification` family that no purge step deletes and no
+line exempts.
+
+### Runbook: reversing a pending deletion
+
+A reversal tombstones a pending marker, so that the tenant's principals are
+accepted again. It is possible only while the marker is `pending`, no purge step
+is recorded and `purge_after` is in the future.
+
+**Access.** The maintenance workflow, `.github/workflows/identity-maintenance.yml`
+("Identity maintenance"), is the only way the reversal reaches production
+(Resolved decision Q41). Its GitHub environment, `identity-maintenance`, has
+required reviewers with "prevent self-review", and those reviewers are the
+**named second approver**: a second human, who is also a code owner (Resolved
+decision Q153). Until that person is added, the workflow cannot be enabled, and
+neither a bot account nor self-review stands in. Any other operator access, such
+as reading the marker or the job's logs, is just-in-time access through Azure PIM
+with a personal account. No one connects to the production database from a
+workstation.
+
+1. Start the workflow from `master` (a job condition refuses any other ref) with
+   the inputs `job=cancel-org-deletion` and `tenant_id=<tenant id>`. The workflow
+   refuses a tenant id that does not match `^[A-Za-z0-9_-]{1,64}$`, and the input
+   reaches its steps only through `env`. It also refuses a re-run started by
+   anyone other than the person who started the first run, because the operator
+   id is that first person's: a re-run by someone else is dispatched again
+   (Resolved decision Q177).
+2. A reviewer of the environment approves the run.
+3. The workflow logs in to Azure through OIDC and starts the Container Apps Job
+   `tayzu-cancel-org-deletion` with two fixed variables: `TAYZU_TENANT_ID` and
+   `TAYZU_OPERATOR_ID`, which is `gh:<numeric GitHub actor id>` of the
+   workflow's authenticated actor, never typed and never the login.
+4. The job runs `apps/api/scripts/cancel-org-deletion.ts`
+   (`pnpm --filter @tayzu/api identity:cancel-org-deletion`) inside the VNET as
+   `tayzu_deletion_admin` (Resolved decision Q35), which can only tombstone a
+   pending marker and reads no tenant data. It asserts that role at start and
+   refuses to run without an operator id, with `TAYZU_TELEMETRY_DISABLED=true` or
+   without an OTLP endpoint, so its audit event is always exported (Resolved
+   decision Q178; the purge job applies the same rule). It sets `state = 'cancelled'`,
+   `cancelled_at` and `cancelled_by` (the row is never deleted), logs
+   `catalog.audit.org_deletion_cancelled` with the tenant and the operator's
+   opaque id, and increments `tayzu.identity.org_deletions` with the outcome
+   `cancelled`.
+5. Check the job's result. A refusal exits non-zero, writes
+   `cancel-org-deletion refused: <reason>` to standard error and logs
+   `catalog.security.org_deletion_cancel_refused` with the operator's opaque id
+   and the reason; the marker is unchanged.
+6. Tell the organization's administrators to rotate every credential (below),
+   and record the run, the approver and the operator id in the change record.
+
+**Refusals.** The script refuses with one of four reasons (Resolved decision
+Q171). The tombstone policy of `tayzu_deletion_admin` refuses the same marker in
+the database. A missing or malformed operator id fails at the configuration load
+instead, with no event.
+
+| Reason              | When                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_tenant`    | The tenant id is missing or does not match the catalog's tenant-id pattern; the event carries no tenant (Resolved decision Q172) |
+| `no_pending_marker` | The tenant has no pending marker: never requested, already cancelled or already purged, or another run tombstoned it first       |
+| `purge_begun`       | A purge step timestamp is recorded, so a half-purged tenant is never revived with its catalog data gone                          |
+| `purge_date_passed` | `purge_after` is past by the database clock, so the purge job may start at its next run                                          |
+
+**What a reversal does not restore.** Phase 1's revocations are permanent. Every
+org-owned credential stays revoked, so the administrators rotate each one: they
+issue a new key and update the integration that held the old one
+([Credential rotation cadence](#credential-rotation-cadence)). The revoked
+sessions are gone, so members sign in again, and the cancelled invitations stay
+cancelled, so administrators invite again.
+
+**A later request.** After a reversal the tombstone stays, and a new deletion
+request inserts a new marker beside it (only one `pending` marker per tenant is
+unique), with a new window from that request, a new notice and a new
+`catalog.audit.org_deletion_requested` event.
+
+### The `_user` backfill and reconcile
+
+`043`'s `_user` blueprint backfill and [`_user` reconcile](#the-_user-reconcile)
+are now started through the same workflow, with `job=backfill-user-blueprint` or
+`job=reconcile-users` and no tenant id, so the environment's reviewers are their
+named second approver too and their operator id is derived from the workflow's
+authenticated actor (Resolved decision Q41). The workflow starts nothing else:
+the bootstrap CLI and `044`'s break-glass `recover-admin-mfa` stay out of band,
+run by an operator under just-in-time access (Resolved decisions Q91 and Q155).
+
+### Audit and security log retention
+
+Audit and security logs (the `catalog.audit.*`, `catalog.security.*` and
+`auth.security.*` log events, the deletion's own events included) are kept for
+**12 months**, independent of tenant deletion: a purge deletes none of them. They
+carry tenant ids and opaque ids, never tenant free text. This is the target that
+`010` implements (Resolved decision Q156), a first-deployment gate, and it matches
+the 1 year of [Security log retention](#security-log-retention). The org-wide audit-log
+product surface, with its own retention and export tooling, is `015`.
 
 ## Security log retention
 
@@ -263,18 +452,24 @@ A member whose tenant has no usable `_user` row is rejected by the context
 resolver with `user_missing` (Resolved decisions Q46 and Q50). The repair is the
 `_user` reconcile, an operator-started job (design D9).
 
-**Start.** Until `045` adds the reviewed workflow, an operator starts the job as
-a Container Apps Job inside the VNET, under just-in-time access (Azure PIM)
-with a personal account, and records a **named second approver** in the change
-record. The entry point is `pnpm --filter @tayzu/api identity:reconcile-users`.
+**Start.** Since `045`, the job is started only through the maintenance
+workflow, with `job=reconcile-users`
+([The `_user` backfill and reconcile](#the-_user-backfill-and-reconcile)): the
+environment's reviewers are the **named second approver**, and the workflow
+derives the operator id from its authenticated actor. Before `045`, an operator
+started the job by hand as a Container Apps Job inside the VNET, under
+just-in-time access (Azure PIM) with a personal account, and recorded the named
+second approver in the change record. The entry point is `pnpm --filter @tayzu/api identity:reconcile-users`.
 The job:
 
 - holds `tayzu_app` and `tayzu_auth`, and no `BETTER_AUTH_SECRET`;
 - reaches its own Cerbos sidecar at `CERBOS_ADDRESS` (loopback, no TLS);
 - takes the operator's opaque id as `TAYZU_OPERATOR_ID` (1 to 128 of
   `A-Z a-z 0-9 _ . : -`, never an email) and refuses to run without it; the id
-  is the `onBehalfOf` of its writes and is not authenticated, so the PIM record
-  and the second approver are the control.
+  is the `onBehalfOf` of its writes. The workflow sets it to
+  `gh:<numeric GitHub actor id>` of its authenticated actor; set by hand before
+  `045`, it was not authenticated, and the PIM record and the second approver
+  were the control.
 
 **What it does**, per tenant:
 

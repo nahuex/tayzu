@@ -25,9 +25,9 @@ every other catalog mutation.
   or body. The confirmation of the organization's identifier is compared to
   the host tenant and is never a source of the tenant.
 - **Routes**: one oRPC route, `DELETE /v1/organization`, registered only behind
-  the mount switch of `043`. With it, the identity routes number fifteen
-  (`043` has fourteen: thirteen oRPC procedures and the plain Fastify
-  invitation-accept route).
+  the mount switch of `043`. It is the fifteenth oRPC procedure behind that
+  switch (`043` has thirteen and `044` added one), beside three plain Fastify
+  routes: the invitation-accept route and `044`'s two password-reset routes.
 - **Extended requirements of `043`**: the resolver checks of "Disabling a human
   takes effect immediately", the rejection list of "Invitation acceptance",
   the notice controls of "Invitation email is fixed and capped", "Every
@@ -62,12 +62,15 @@ keys, invitation tokens, members, each user left with no other membership
 together with that user's accounts, sessions and second-factor rows, and the
 organization row last). `catalog.audit.org_deletion_completed` MUST be logged
 before the organization row is removed, and a failed step MUST log
-`catalog.security.org_deletion_failed` and be retried by the next run. A pending deletion MUST be
+`catalog.security.org_deletion_failed` and be retried by the next run. The Better Auth step MUST also delete the
+`auth.verification` rows keyed by a removed user, session or invitation, each before the row it names. A pending deletion MUST be
 reversible only by a platform operator, through an audited script that tombstones
 the marker (never deletes it) and logs `catalog.audit.org_deletion_cancelled` with
 the operator's opaque id; there is no in-product cancel. The reversal MUST be
-refused for a tenant whose purge has begun or whose purge date has passed, and it
-does not restore the credentials phase 1 revoked.
+refused for a tenant whose purge has begun or whose purge date has passed, a refusal
+MUST be logged as `catalog.security.org_deletion_cancel_refused` with the operator's
+opaque id and the reason, and the reversal does not restore the credentials phase 1
+revoked.
 
 #### Scenario: Deletion without step-up fails
 
@@ -92,7 +95,7 @@ does not restore the credentials phase 1 revoked.
 
 - **GIVEN** `t1` has a pending marker with a purge step recorded, or whose purge date has passed
 - **WHEN** a platform operator runs the reversal script
-- **THEN** it refuses, the marker is unchanged, and the database refuses the same tombstone from the reversal role
+- **THEN** it refuses, the marker is unchanged, `catalog.security.org_deletion_cancel_refused` is logged with the operator's opaque id and the reason, and the database refuses the same tombstone from the reversal role
 
 #### Scenario: Requesting deletion twice returns the original date
 
@@ -123,7 +126,7 @@ does not restore the credentials phase 1 revoked.
 
 - **GIVEN** a user who belongs only to `t1` and another who belongs to `t1` and `t2`
 - **WHEN** `t1` is purged
-- **THEN** the first user and their account, session and second-factor rows are gone, and the second user keeps their account and their membership in `t2`
+- **THEN** the first user and their account, session and second-factor rows are gone, together with the verification rows keyed by that user (the temporary-password, MFA re-enrolment and SSO-link markers), and the second user keeps their account and their membership in `t2`
 
 #### Scenario: A failed purge step is visible and resumes
 
@@ -146,7 +149,10 @@ the existing 5-second cache and failing closed on any lookup failure, and MUST l
 count the rejection, with the reason only in the log. Token exchange MUST refuse to mint a token for a credential of
 such a tenant. An invitation of such a tenant MUST NOT be acceptable and MUST answer
 the same uniform rejection as every other dead invitation, with the denial reason
-`tenant_pending_deletion` only in the log. A `cancelled` marker MUST NOT reject.
+`tenant_pending_deletion` only in the log. A `cancelled` marker MUST NOT reject. The
+password-reset routes of `044` are left untouched: a user of such a tenant MAY still
+reset a password, because the account is global and a user of another tenant keeps
+recovery, and a completed reset MUST NOT give access to the closed tenant.
 
 #### Scenario: A purged tenant stays rejected
 
@@ -166,6 +172,12 @@ the same uniform rejection as every other dead invitation, with the denial reaso
 - **WHEN** the invitation is accepted
 - **THEN** the answer is the same uniform rejection as for a nonexistent invitation, and the reason `tenant_pending_deletion` appears only in `catalog.security.invitation_acceptance_denied`
 
+#### Scenario: A password reset during the window does not reopen the tenant
+
+- **GIVEN** a tenant with a pending marker and a member who completes a password reset
+- **WHEN** that member signs in and the session is resolved
+- **THEN** it is rejected with the reason `tenant_pending_deletion`, exactly as before the reset
+
 ### Requirement: The deletion marker and the purge are protected from the request path
 
 The deletion marker MUST be insert-only for the role that serves requests, and that role
@@ -183,7 +195,13 @@ append-only change-event rows MUST be deletable only by that role. No
 `SECURITY DEFINER` function MUST take part in the purge, and each maintenance
 script MUST run as its own job with its own identity and secrets and MUST refuse to run
 under a database role other than the one it declares. A schema-driven test MUST fail when a
-table carrying tenant data is neither purged nor explicitly exempted.
+table carrying tenant data, or an `auth.verification` identifier family, is neither purged
+nor explicitly exempted with a reason. The MFA re-enrolment marker (`mfa-reenrol:<userId>`)
+MUST be purged with its user and the acceptance shed record
+(`invitation-shed:<invitationId>`) with its invitation; the password-reset token row
+(`password-reset:<id>`, 30-minute state) and the rate-limit buckets (`auth.rate_limit`: a
+count and a timestamp under a hash, with no personal data in clear) are exempt, and the
+purge role MUST have no privilege on the rate-limit table.
 
 #### Scenario: The request role cannot back-date a marker
 
@@ -207,15 +225,17 @@ table carrying tenant data is neither purged nor explicitly exempted.
 - **WHEN** any other role of the platform attempts `SET ROLE` to the purge role
 - **THEN** it is refused, and no membership of another application role grants it the ability (the creating role's admin-only membership has no set or inherit option)
 
-#### Scenario: A new table cannot escape the purge
+#### Scenario: A new table or identifier family cannot escape the purge
 
 - **WHEN** a table with a `tenant_id` column, an `auth` table that references an organization or a user (by foreign key or by column), or a new `auth.verification` identifier pattern is added that no purge step covers
 - **THEN** the completeness test fails until it is covered or exempted with a reason
+- **AND** on the real schema it passes with `mfa-reenrol:` and `invitation-shed:` purged, and `password-reset:` and `auth.rate_limit` exempt, each with its reason
 
 ### Requirement: The reversal runs only through a reviewed workflow
 
 The reversal script MUST run only through a reviewed manual workflow, runnable only
-from the main branch, whose environment requires a second approver, and the
+from the main branch, whose environment requires a second approver, who MUST be a
+second human (never a bot account, never the operator approving their own run), and the
 operator's id MUST derive from that workflow's authenticated actor, never from an
 argument. The same workflow MUST also start `043`'s `_user` backfill and reconcile,
 whose operator id then derives from it too. Every workflow input MUST be a fixed
@@ -224,9 +244,11 @@ through the environment, never through an expression inside a `run:` script; eve
 third-party action MUST be pinned by commit SHA; the workflow MUST have no checkout
 and no setup step and MUST NOT override the job's command, arguments or image; the
 workflow and the scripts MUST be covered by `CODEOWNERS`; and the federated
-identity's cloud role MUST be limited to starting the named jobs. The bootstrap
-command is the one script outside that workflow: an operator runs it out of band,
-as the authentication baseline designed it.
+identity's cloud role MUST be limited to starting the named jobs. Two commands stay
+outside that workflow, and the workflow MUST NOT be able to start either: the bootstrap
+command, which an operator runs out of band as the authentication baseline designed it,
+and the break-glass `recover-admin-mfa` command of `044`, which an operator runs out of
+band under just-in-time access.
 
 #### Scenario: The workflow does not interpolate its inputs
 
@@ -242,6 +264,7 @@ as the authentication baseline designed it.
 
 - **WHEN** the workflow file is read
 - **THEN** its only steps are a pinned Azure login and the call that starts the named job, the call carries no command, arguments, image or environment override other than the fixed variable names, it is runnable only from `master`, and no other workflow names the same environment
+- **AND** its job choice lists the reversal, the blueprint backfill and the reconcile only, and names neither the bootstrap command nor `recover-admin-mfa`
 
 ### Requirement: The deletion notice is fixed and capped
 
@@ -250,8 +273,9 @@ purge date, with no link and no tenant, actor or organization free text. It MUST
 as one email per recipient to the administrators of the organization, resolved on the
 server from the tenant's memberships, at most 20 of them (the administrators who have
 been members the longest), once per deletion request, and MUST go through the same
-notice controls as every other notice: the global kill switch, the per-recipient cap, the
-per-tenant notice cap and the list of disabled tenants. A suppressed or truncated notice
+notice controls as every other notice: the global kill switch, the notices' own
+per-recipient cap (separate from the invitation cap), the per-tenant notice cap and the
+list of disabled tenants. A suppressed or truncated notice
 MUST NOT block the request and MUST be logged as `catalog.security.notice_suppressed`; a
 send failure MUST NOT block it and MUST be logged as
 `catalog.security.org_deletion_notice_failed`.
@@ -270,7 +294,7 @@ send failure MUST NOT block it and MUST be logged as
 
 #### Scenario: The deletion notice is under the kill switch and the caps
 
-- **GIVEN** the kill switch is on, or the per-tenant notice cap is exhausted, or a recipient's per-recipient bucket is full
+- **GIVEN** the kill switch is on, or the per-tenant notice cap is exhausted, or a recipient's notice bucket is full
 - **WHEN** an organization deletion is requested
 - **THEN** the request succeeds, no email goes to the affected recipients, and `catalog.security.notice_suppressed` is logged with the template `org_deletion` and the reason
 
@@ -328,8 +352,8 @@ unknown `/v1` path does. Over HTTP a `member` and a machine `member` token MUST 
 
 ### Requirement: Org deletion events are logged and exported
 
-Org-deletion request, repeated request, completion, failure, cancellation and notice
-failure MUST be logged as the corresponding `catalog.audit.*` or `catalog.security.*`
+Org-deletion request, repeated request, completion, failure, cancellation, refused
+cancellation and notice failure MUST be logged as the corresponding `catalog.audit.*` or `catalog.security.*`
 event declared in the Observability contract, with opaque identifiers and enumerated
 values only, and the actor of an audit event MUST be the admin who acted, or for a
 cancellation the operator, never the `system` actor of the write. A failed org deletion

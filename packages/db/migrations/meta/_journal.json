@@ -85,6 +85,27 @@
       "when": 1791844703629,
       "tag": "0011_machine_credential_revocation_tenant_key",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794881377138,
+      "tag": "0012_tenant_deletion",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794919855619,
+      "tag": "0013_tenant_deletion_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794923306032,
+      "tag": "0014_tenant_deletion_auth_grants",
+      "breakpoints": true
     }
   ]
 }

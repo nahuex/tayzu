@@ -1,13 +1,15 @@
 # Local development services for Tayzu (laptop / Docker). The Claude Code
 # cloud sandbox does not use this file: its SessionStart hook starts a local
-# PostgreSQL 16 cluster instead. See docs/dev-environment/README.md.
+# PostgreSQL 18 cluster instead. See docs/dev-environment/README.md.
 #
 # Test-only credentials. Never reuse them outside a local machine.
 name: tayzu
 
 services:
   db:
-    image: postgres:16
+    # PostgreSQL tracks the latest major version that Azure Database for
+    # PostgreSQL Flexible Server offers in GA (ADR-0024).
+    image: postgres:18
     environment:
       POSTGRES_USER: tayzu
       POSTGRES_PASSWORD: tayzu
@@ -16,7 +18,13 @@ services:
       # Bound to loopback only: the database is never reachable from the LAN.
       - '127.0.0.1:${TAYZU_DB_PORT:-5432}:5432'
     volumes:
-      - tayzu-pg:/var/lib/postgresql/data
+      # From postgres:18 on, the image keeps PGDATA in a major-specific
+      # directory (/var/lib/postgresql/18/docker) and declares its volume at
+      # /var/lib/postgresql, so the volume is mounted there. A volume created
+      # by the earlier postgres:16 service (mounted at /var/lib/postgresql/data)
+      # is not reusable: start from a fresh volume (`docker compose down -v`)
+      # or dump the old database and restore it into the new one.
+      - tayzu-pg:/var/lib/postgresql
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U tayzu -d tayzu_test']
       interval: 2s

@@ -1,10 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, expectTypeOf, it } from 'vitest';
 
 import { registration, type TelemetryTestHarness } from '../../__fixtures__/registered-harness.js';
 import { EmailProviderError } from './azure-communication-email.js';
 import { createNonSendingEmailSender } from './non-sending-sender.js';
 import { createRecordingEmailSender, InvalidRecipientError, validateRecipient } from './sender.js';
-import type { EmailTemplate } from './sender.js';
+import type { EmailSender, EmailTemplate } from './sender.js';
 
 /**
  * `043` task 6.1 (design D5): the `EmailSender` port, its recipient validator and
@@ -204,5 +204,90 @@ describe('044 recovery email kinds', () => {
     expect(records.map((record) => record.attributes['tayzu.identity.email.template'])).toEqual(
       FIVE.map(([, name]) => name),
     );
+  });
+});
+
+/**
+ * `045` task 4.1 (design D5, Resolved decision Q27, telemetry table): `OrgDeletionNotice`
+ * is the eighth kind of the closed `EmailTemplate` union, and the port still takes
+ * exactly one recipient.
+ *
+ * ## Production symbols expected
+ *
+ * `packages/auth/src/identity/email/sender.ts`: `EmailTemplate` gains
+ * `{ kind: 'OrgDeletionNotice'; purgeDate: string }`; `EmailSender['send']` keeps the
+ * signature `(to: string, template: EmailTemplate)`.
+ * `email-allowlist.ts` names it `org_deletion` (`tayzu.identity.email.template`).
+ */
+const ORG_DELETION: EmailTemplate = { kind: 'OrgDeletionNotice', purgeDate: '2026-12-01' };
+
+describe('045 org-deletion notice kind', () => {
+  let harness: TelemetryTestHarness;
+  let allowlist: typeof import('./email-allowlist.js');
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(`createTelemetryTestHarness() failed: ${String(registration.error)}`, {
+        cause: registration.error,
+      });
+    }
+    harness = registration.harness;
+    allowlist = await import('./email-allowlist.js');
+  });
+
+  beforeEach(async () => {
+    await harness.reset();
+  });
+
+  it('the union accepts OrgDeletionNotice while the port still takes exactly one recipient', async () => {
+    expectTypeOf<Parameters<EmailSender['send']>>().toEqualTypeOf<[string, EmailTemplate]>();
+    expectTypeOf<Extract<EmailTemplate, { kind: 'OrgDeletionNotice' }>>().toEqualTypeOf<{
+      readonly kind: 'OrgDeletionNotice';
+      readonly purgeDate: string;
+    }>();
+
+    const sender = createRecordingEmailSender();
+    await sender.send('admin@example.com', ORG_DELETION);
+    for (const [, address] of REJECTED) {
+      await expect(sender.send(address, ORG_DELETION)).rejects.toBeInstanceOf(
+        InvalidRecipientError,
+      );
+    }
+
+    expect(sender.sent).toHaveLength(1);
+    expect(sender.sent[0]?.to).toBe('admin@example.com');
+    expect(sender.sent[0]?.template).toEqual({
+      kind: 'OrgDeletionNotice',
+      purgeDate: '2026-12-01',
+    });
+    expect(Object.keys(sender.sent[0] ?? {}).sort()).toEqual(['template', 'to']);
+  });
+
+  it("the recording sender, the non-sending sender and the allowlist wrapper accept OrgDeletionNotice, and the allowlist wrapper's refusal log names it `org_deletion`", async () => {
+    const recording = createRecordingEmailSender();
+    await recording.send('admin@allowed.example', ORG_DELETION);
+    expect(recording.sent.map((message) => message.template)).toEqual([ORG_DELETION]);
+
+    const nonSending = createNonSendingEmailSender();
+    await expect(nonSending.send('admin@allowed.example', ORG_DELETION)).resolves.toBeUndefined();
+
+    const inner = createRecordingEmailSender();
+    const permissive = allowlist.createAllowlistEmailSender(inner, ['allowed.example']);
+    await permissive.send('admin@allowed.example', ORG_DELETION);
+    expect(inner.sent.map((message) => message.template)).toEqual([ORG_DELETION]);
+
+    const refusing = allowlist.createAllowlistEmailSender(createRecordingEmailSender(), [
+      'allowed.example',
+    ]);
+    await expect(refusing.send('admin@blocked.example', ORG_DELETION)).rejects.toBeInstanceOf(
+      EmailProviderError,
+    );
+    await harness.forceFlush();
+    const records = harness.logExporter
+      .getFinishedLogRecords()
+      .filter((record) => record.eventName === 'catalog.security.email_recipient_blocked');
+    expect(records.map((record) => record.attributes['tayzu.identity.email.template'])).toEqual([
+      'org_deletion',
+    ]);
   });
 });

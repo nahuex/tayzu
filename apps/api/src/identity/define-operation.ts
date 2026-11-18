@@ -44,6 +44,7 @@ const TARGET_OPERATION: Record<ResourceKind, IdentityOperation> = {
   [RESOURCE_KINDS.user]: 'users.setStatus',
   [RESOURCE_KINDS.serviceAccount]: 'serviceAccounts.delete',
   [RESOURCE_KINDS.credential]: 'credentials.rotate',
+  [RESOURCE_KINDS.organization]: 'organization.delete',
 } as Record<ResourceKind, IdentityOperation>;
 
 export interface IdentityOperationDeps {

@@ -22,6 +22,11 @@
 # rule is the ceiling and the resource policies deny by default. A role-policy
 # rule cannot state an empty allow list, so no entry is written.
 # role_policies_test.yaml asserts the member denial on every action of both kinds.
+#
+# `organization` (045, task 3.2) is deliberately NOT listed, for the same reason:
+# only an admin may request `organization.delete` (Resolved decision Q27), and
+# task 3.3's organization.yaml allows `admin` only. role_policies_test.yaml
+# asserts the member denial on `organization.delete`.
 ---
 apiVersion: api.cerbos.dev/v1
 rolePolicy:

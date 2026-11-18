@@ -25,6 +25,7 @@ import {
   type AuthInstance,
   type IdentitySpanHandle,
   type StepUpGuard,
+  type TenantDeletionLookup,
 } from '@tayzu/auth';
 
 import type { Reauthorization } from '../reauthorization.js';
@@ -62,6 +63,11 @@ export interface AcceptFlowOptions {
   readonly reauthorization?: Reauthorization;
   /** Sends the admin-accepted notice (8.15); without it the flow sends nothing. */
   readonly notices?: NoticeDispatcher;
+  /**
+   * `045` design D4: an invitation of a tenant with a `pending` or `purged`
+   * deletion marker is not acceptable. Absent, nothing is checked.
+   */
+  readonly tenantDeletionLookup?: TenantDeletionLookup;
   /** Test seam, awaited immediately before each step; a throw fails that step. */
   readonly onStep?: (step: Step) => void | Promise<void>;
 }
@@ -334,6 +340,13 @@ export function createAcceptFlow(options: AcceptFlowOptions): {
     const digest = stored.rows[0]?.value ?? null;
     if (!verifyInvitationToken(input.token, digest)) throw deny(invitation.id, 'token_mismatch');
     const { organizationId: tenantId, email } = invitation;
+    // `045` D4: a closed tenant, or a failed lookup (fail closed), denies.
+    if (
+      options.tenantDeletionLookup !== undefined &&
+      (await options.tenantDeletionLookup(tenantId).catch(() => true))
+    ) {
+      throw deny(invitation.id, 'tenant_pending_deletion');
+    }
     const statusBefore = await userSync.readStatus({ tenantId, email });
     if (statusBefore === 'Disabled') {
       throw deny(invitation.id, 'disabled_user');
