@@ -1,0 +1,5 @@
+# The maintenance workflow, its actions, this file and the scripts (045 D3; Q64, Q72).
+/.github/workflows/** @nahuex
+/.github/actions/** @nahuex
+/.github/CODEOWNERS @nahuex
+/apps/api/scripts/** @nahuex

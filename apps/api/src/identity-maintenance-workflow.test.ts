@@ -33,8 +33,46 @@
  * `.github/workflows/identity-maintenance.yml` does not exist, so every case
  * on the real file fails reading it. The scratch cases exercise the helpers,
  * which live in this file, so they pass already.
+ *
+ * ## Task 7.4 (design D3; Resolved decisions Q64, Q72, Q173)
+ *
+ * Scenario "The workflow does not interpolate its inputs": no `run:` contains
+ * `${{ inputs.* }}`, `github.event.*` or `github.head_ref`; every input is a
+ * `choice` or validated; every `uses:` is pinned by a 40-character SHA (a tag,
+ * a branch and a local `./` action all fail); and `.github/CODEOWNERS` covers
+ * the workflow and `apps/api/scripts/**`. Scenario "...without overrides": the
+ * `az containerapp job start` call carries no command, arguments, image or
+ * environment override other than the fixed variable names, and no other
+ * workflow names the same environment.
+ *
+ * A non-choice input counts as validated when every `env` variable that carries
+ * it is checked, in its job, by a step that (1) comes before the first step
+ * that uses an action or calls `az` (so before the Azure login, while the runner
+ * holds no OIDC token), (2) has no `if:` and no `continue-on-error`, so it
+ * always runs and its failure fails the run, (3) references that variable as
+ * `$NAME` or `${NAME}`, (4) contains the catalog's tenant-id pattern
+ * `^[A-Za-z0-9_-]{1,64}$` verbatim, and (5) contains `exit 1`. A variable that
+ * a later step's own `env` maps from the input bypasses that check and fails,
+ * and so does a read of the input anywhere outside an `env` mapping. This is a
+ * text rule: it cannot prove the `exit 1` sits on the mismatch branch, which
+ * the review of the step's few lines does.
+ *
+ * The `az` call is read against an allowlist of flags (`--name`/`-n`,
+ * `--resource-group`/`-g`, `--env-vars`, and the CLI's harmless `--subscription`,
+ * `--output`/`-o` and `--only-show-errors`): `--command`, `--args` and
+ * `--image` are named overrides, and every other flag (`--yaml`,
+ * `--container-name`, `--cpu`, `--registry-*`) shapes the execution template
+ * too. Each `--env-vars` entry is `TAYZU_OPERATOR_ID` or `TAYZU_TENANT_ID`, read
+ * from the shell variable of the same name.
+ *
+ * `CODEOWNERS` is read with GitHub's rules (gitignore-style patterns, the last
+ * matching line wins, a line without owners removes ownership): each of the
+ * four required paths is probed with real and future file paths, and the last
+ * matching line must list `@nahuex` (Q72). The repository has no `CODEOWNERS`
+ * yet, so the two real-file `CODEOWNERS` cases fail; the other 7.4 real-file
+ * cases hold on the file 7.3 committed.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -489,6 +527,397 @@ function purgeViolations(text: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// The rules of task 7.4. Each returns its violations; none means it holds.
+// ---------------------------------------------------------------------------
+
+const WORKFLOWS_DIR = fileURLToPath(new URL('../../../.github/workflows/', import.meta.url));
+const WORKFLOW_FILE = 'identity-maintenance.yml';
+const CODEOWNERS_PATH = fileURLToPath(new URL('../../../.github/CODEOWNERS', import.meta.url));
+
+/** The GitHub environment whose reviewers gate the workflow. */
+const MAINTENANCE_ENVIRONMENT = 'identity-maintenance';
+
+/** The catalog's tenant-id pattern (`packages/catalog/src/domain/context.ts`). */
+const TENANT_ID_PATTERN = '^[A-Za-z0-9_-]{1,64}$';
+
+/** The only variables the job start may set (Q70, Q172). */
+const FIXED_ENV_VARS = new Set(['TAYZU_OPERATOR_ID', 'TAYZU_TENANT_ID']);
+
+/** The owner of the maintenance workflow and the scripts (Q72). */
+const CODEOWNER = '@nahuex';
+
+/** The four paths `CODEOWNERS` covers, each probed with present and future files. */
+const CODEOWNED_PATHS: { path: string; probes: string[] }[] = [
+  {
+    path: '.github/workflows/**',
+    probes: [
+      '.github/workflows/identity-maintenance.yml',
+      '.github/workflows/ci.yml',
+      '.github/workflows/copilot-setup-steps.yml',
+      '.github/workflows/a-future-workflow.yaml',
+    ],
+  },
+  {
+    path: '.github/actions/**',
+    probes: ['.github/actions/setup/action.yml', '.github/actions/a-future-action/action.yaml'],
+  },
+  { path: '.github/CODEOWNERS', probes: ['.github/CODEOWNERS'] },
+  {
+    path: 'apps/api/scripts/**',
+    probes: [
+      'apps/api/scripts/cancel-org-deletion.ts',
+      'apps/api/scripts/backfill-user-blueprint.ts',
+      'apps/api/scripts/reconcile-users.ts',
+      'apps/api/scripts/bootstrap-admin.ts',
+      'apps/api/scripts/recover-admin-mfa.ts',
+      'apps/api/scripts/run-script.ts',
+      'apps/api/scripts/lib/a-future-module.ts',
+    ],
+  },
+];
+
+function readCodeowners(): string {
+  return readFileSync(CODEOWNERS_PATH, 'utf8');
+}
+
+/** Every workflow file in `.github/workflows` other than the maintenance one. */
+function readOtherWorkflows(): { file: string; text: string }[] {
+  return readdirSync(WORKFLOWS_DIR)
+    .filter((file) => /\.ya?ml$/.test(file) && file !== WORKFLOW_FILE)
+    .map((file) => ({ file, text: readFileSync(`${WORKFLOWS_DIR}${file}`, 'utf8') }));
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const EXPRESSION = /\$\{\{([\s\S]*?)\}\}/g;
+const INPUTS_CONTEXT = /\binputs\s*(?:\.|\[)/;
+const EVENT_CONTEXT = /\bgithub\s*(?:\.\s*event(?![A-Za-z0-9_])|\[\s*['"]event['"]\s*\])/;
+const HEAD_REF_CONTEXT = /\bgithub\s*(?:\.\s*head_ref\b|\[\s*['"]head_ref['"]\s*\])/;
+
+function interpolationViolations(text: string): string[] {
+  const violations: string[] = [];
+  for (const job of jobsOf(parseYaml(text))) {
+    for (const step of stepsOf(job)) {
+      const run = runOf(step);
+      for (const match of run.matchAll(EXPRESSION)) {
+        if (INPUTS_CONTEXT.test(match[1] ?? '')) {
+          violations.push(`a run step of job ${String(job.key)} interpolates inputs.*`);
+        }
+      }
+      if (EVENT_CONTEXT.test(run)) {
+        violations.push(`a run step of job ${String(job.key)} reads github.event.*`);
+      }
+      if (HEAD_REF_CONTEXT.test(run)) {
+        violations.push(`a run step of job ${String(job.key)} reads github.head_ref`);
+      }
+    }
+  }
+  return violations;
+}
+
+const USES_LINE = /^\s*(?:-\s+)?uses\s*:\s*(.*)$/;
+const PINNED_ACTION = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[^@\s]+)?@[0-9a-f]{40}$/;
+
+function pinViolations(text: string): string[] {
+  const violations: string[] = [];
+  for (const { index, content } of codeLines(text)) {
+    const match = USES_LINE.exec(stripComment(content));
+    if (match === null) continue;
+    const ref = unquote(match[1] ?? '');
+    const line = `line ${String(index + 1)}`;
+    if (ref.startsWith('./') || ref.startsWith('../')) {
+      violations.push(`${line} uses a local action: ${ref}`);
+    } else if (!PINNED_ACTION.test(ref)) {
+      violations.push(`${line} uses ${ref}, not pinned by a 40-character commit SHA`);
+    }
+  }
+  return violations;
+}
+
+function readsInput(text: string, name: string): boolean {
+  const n = escapeRegExp(name);
+  return new RegExp(
+    `\\binputs\\s*(?:\\.\\s*${n}(?![A-Za-z0-9_-])|\\[\\s*['"]${n}['"]\\s*\\])`,
+  ).test(text);
+}
+
+function readsVariable(run: string, variable: string): boolean {
+  return new RegExp(`\\$\\{?${escapeRegExp(variable)}(?![A-Za-z0-9_])`).test(run);
+}
+
+/** The index of the first step that uses an action or calls `az`; validation comes before it. */
+function firstTokenStep(steps: YamlNode[]): number {
+  const index = steps.findIndex(
+    (step) => child(step, 'uses') !== undefined || /(?:^|[\s;&|(])az\s/.test(runOf(step)),
+  );
+  return index === -1 ? steps.length : index;
+}
+
+function validatesInput(step: YamlNode, variable: string, input: string): boolean {
+  const run = runOf(step);
+  const ownEnv = child(child(step, 'env'), variable);
+  return (
+    child(step, 'uses') === undefined &&
+    child(step, 'if') === undefined &&
+    child(step, 'continue-on-error') === undefined &&
+    (ownEnv === undefined || readsInput(ownEnv.value, input)) &&
+    readsVariable(run, variable) &&
+    run.includes(TENANT_ID_PATTERN) &&
+    /\bexit\s+1\b/.test(run)
+  );
+}
+
+function jobValidates(job: YamlNode, variable: string, input: string): boolean {
+  const steps = stepsOf(job);
+  return steps
+    .slice(0, firstTokenStep(steps))
+    .some((step) => validatesInput(step, variable, input));
+}
+
+function stepLabel(step: YamlNode, index: number): string {
+  const name = child(step, 'name')?.value;
+  return name === undefined || name === '' ? `#${String(index + 1)}` : `"${name}"`;
+}
+
+function inputValidationViolations(text: string): string[] {
+  const root = parseYaml(text);
+  const jobs = jobsOf(root);
+  const violations: string[] = [];
+  const envLines = new Set(envMappings(root).flatMap((env) => env.children.map((c) => c.line)));
+  const freeInputs = inputsOf(root).filter((input) => child(input, 'type')?.value !== 'choice');
+
+  for (const input of freeInputs) {
+    const name = String(input.key);
+    let carried = false;
+
+    for (const { index, content } of codeLines(text)) {
+      if (readsInput(stripComment(content), name) && !envLines.has(index)) {
+        violations.push(`line ${String(index + 1)} reads input ${name} outside an env mapping`);
+      }
+    }
+
+    for (const entry of child(root, 'env')?.children ?? []) {
+      if (!readsInput(entry.value, name)) continue;
+      carried = true;
+      for (const job of jobs) {
+        if (!jobValidates(job, String(entry.key), name)) {
+          violations.push(
+            `workflow env ${String(entry.key)} carries input ${name} without validation in job ${String(job.key)}`,
+          );
+        }
+      }
+    }
+    for (const job of jobs) {
+      for (const entry of child(job, 'env')?.children ?? []) {
+        if (!readsInput(entry.value, name)) continue;
+        carried = true;
+        if (!jobValidates(job, String(entry.key), name)) {
+          violations.push(
+            `env ${String(entry.key)} of job ${String(job.key)} carries input ${name} without validation`,
+          );
+        }
+      }
+      const steps = stepsOf(job);
+      const limit = firstTokenStep(steps);
+      steps.forEach((step, index) => {
+        for (const entry of child(step, 'env')?.children ?? []) {
+          if (!readsInput(entry.value, name)) continue;
+          carried = true;
+          if (index >= limit || !validatesInput(step, String(entry.key), name)) {
+            violations.push(
+              `env ${String(entry.key)} of step ${stepLabel(step, index)} carries input ${name} without validation`,
+            );
+          }
+        }
+      });
+    }
+
+    if (!carried) violations.push(`input ${name} is neither a choice nor validated`);
+  }
+  return violations;
+}
+
+/** Splits a shell command into words, honouring quotes; stops at `;`, `&`, `|`, `)` or `#`. */
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let inWord = false;
+  let quote: string | undefined;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command.charAt(i);
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      else word += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      inWord = true;
+    } else if (/\s/.test(ch)) {
+      if (inWord) words.push(word);
+      word = '';
+      inWord = false;
+    } else if (/[;&|)]/.test(ch) || (ch === '#' && !inWord)) {
+      break;
+    } else {
+      word += ch;
+      inWord = true;
+    }
+  }
+  if (inWord) words.push(word);
+  return words;
+}
+
+const JOB_START = /\baz\s+containerapp\s+job\s+start\b/;
+const OVERRIDE_FLAGS = new Set(['--command', '--args', '--image']);
+const FLAGS_WITH_VALUE = new Set([
+  '--name',
+  '-n',
+  '--resource-group',
+  '-g',
+  '--subscription',
+  '--output',
+  '-o',
+]);
+const FLAGS_WITHOUT_VALUE = new Set(['--only-show-errors']);
+
+/** The words after `az containerapp job start`, one list per call in a `run:` script. */
+function jobStartCalls(run: string): string[][] {
+  return run
+    .replace(/\\\r?\n/g, ' ')
+    .split(/\r?\n/)
+    .flatMap((line) => {
+      const match = JOB_START.exec(line);
+      return match === null ? [] : [shellWords(line.slice(match.index + match[0].length))];
+    });
+}
+
+function envVarViolations(entry: string): string[] {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(entry);
+  if (match === null) return ['the job start passes an --env-vars entry that is not NAME=value'];
+  const name = match[1] ?? '';
+  const value = match[2] ?? '';
+  if (!FIXED_ENV_VARS.has(name)) {
+    return [`the job start sets --env-vars ${name}, outside the fixed names`];
+  }
+  if (value !== `$${name}` && value !== `\${${name}}`) {
+    return [`the job start sets --env-vars ${name} from something other than $${name}`];
+  }
+  return [];
+}
+
+function jobStartViolations(text: string): string[] {
+  const violations: string[] = [];
+  for (const job of jobsOf(parseYaml(text))) {
+    for (const step of stepsOf(job)) {
+      for (const words of jobStartCalls(runOf(step))) {
+        for (let i = 0; i < words.length; i += 1) {
+          const word = words[i] ?? '';
+          const eq = word.indexOf('=');
+          const flag = word.startsWith('-') && eq !== -1 ? word.slice(0, eq) : word;
+          const inline = word.startsWith('-') && eq !== -1 ? word.slice(eq + 1) : undefined;
+          if (!flag.startsWith('-')) {
+            violations.push('the job start takes an unexpected positional argument');
+          } else if (OVERRIDE_FLAGS.has(flag)) {
+            violations.push(`the job start passes ${flag}, which overrides the job`);
+          } else if (flag === '--env-vars') {
+            const entries: string[] = inline === undefined ? [] : [inline];
+            while (i + 1 < words.length && !(words[i + 1] ?? '').startsWith('-')) {
+              i += 1;
+              entries.push(words[i] ?? '');
+            }
+            for (const entry of entries) violations.push(...envVarViolations(entry));
+          } else if (FLAGS_WITH_VALUE.has(flag)) {
+            if (inline === undefined) {
+              if (i + 1 >= words.length) violations.push(`the job start passes ${flag} no value`);
+              i += 1;
+            }
+          } else if (!FLAGS_WITHOUT_VALUE.has(flag) || inline !== undefined) {
+            violations.push(`the job start passes ${flag}, which is not an allowed flag`);
+          }
+        }
+      }
+    }
+  }
+  return violations;
+}
+
+/** A job's GitHub environment name, from `environment: x` or `environment: { name: x }`. */
+function environmentNameOf(job: YamlNode): string {
+  const environment = child(job, 'environment');
+  if (environment === undefined) return '';
+  return environment.value !== '' ? environment.value : (child(environment, 'name')?.value ?? '');
+}
+
+/** GitHub environment names are case-insensitive. */
+function sharedEnvironmentViolations(others: { file: string; text: string }[]): string[] {
+  const violations: string[] = [];
+  for (const { file, text } of others) {
+    for (const job of jobsOf(parseYaml(text))) {
+      if (environmentNameOf(job).trim().toLowerCase() === MAINTENANCE_ENVIRONMENT) {
+        violations.push(
+          `${file} job ${String(job.key)} names the ${MAINTENANCE_ENVIRONMENT} environment`,
+        );
+      }
+    }
+  }
+  return violations;
+}
+
+/** A `CODEOWNERS` pattern as GitHub reads it (gitignore-style, no negation). */
+function codeownersPattern(pattern: string): RegExp {
+  let p = pattern;
+  const directory = p.endsWith('/');
+  if (directory) p = p.slice(0, -1);
+  const anchored = p.includes('/');
+  if (p.startsWith('/')) p = p.slice(1);
+  const last = p.split('/').pop() ?? '';
+  let body = '';
+  for (let i = 0; i < p.length; i += 1) {
+    if (p.startsWith('**/', i)) {
+      body += '(?:.*/)?';
+      i += 2;
+    } else if (p.startsWith('**', i)) {
+      body += '.*';
+      i += 1;
+    } else if (p.charAt(i) === '*') {
+      body += '[^/]*';
+    } else if (p.charAt(i) === '?') {
+      body += '[^/]';
+    } else {
+      body += escapeRegExp(p.charAt(i));
+    }
+  }
+  const prefix = anchored ? '^' : '^(?:.*/)?';
+  const suffix = directory ? '/.*$' : last.includes('*') ? '$' : '(?:/.*)?$';
+  return new RegExp(`${prefix}${body}${suffix}`);
+}
+
+function codeownersViolations(text: string): string[] {
+  const rules = codeLines(text).flatMap(({ content }) => {
+    const words = stripComment(content.trim())
+      .split(/\s+/)
+      .filter((w) => w !== '');
+    const [pattern, ...owners] = words;
+    return pattern === undefined ? [] : [{ pattern: codeownersPattern(pattern), owners }];
+  });
+  const violations: string[] = [];
+  for (const { path, probes } of CODEOWNED_PATHS) {
+    for (const probe of probes) {
+      const rule = rules.filter((r) => r.pattern.test(probe)).pop();
+      if (rule === undefined) {
+        violations.push(`${path} is not covered: no line matches ${probe}`);
+      } else if (!rule.owners.includes(CODEOWNER)) {
+        violations.push(
+          `${path} is not owned by ${CODEOWNER}: the last line matching ${probe} lists [${rule.owners.join(', ')}]`,
+        );
+      }
+    }
+  }
+  return violations;
+}
+
+// ---------------------------------------------------------------------------
 // Scratch workflows.
 // ---------------------------------------------------------------------------
 
@@ -535,7 +964,7 @@ jobs:
     steps:
       - name: Validate the tenant id
         run: |
-          if [ -n "$TAYZU_TENANT_ID" ] && ! printf '%s' "$TAYZU_TENANT_ID" | grep -Eq '^[A-Za-z0-9_.:-]{1,128}$'; then
+          if [ -n "$TAYZU_TENANT_ID" ] && ! printf '%s' "$TAYZU_TENANT_ID" | grep -Eq '^[A-Za-z0-9_-]{1,64}$'; then
             echo "The tenant id is malformed." >&2
             exit 1
           fi
@@ -577,6 +1006,40 @@ function expectRejected(violations: string[], reason: RegExp): void {
   expect(violations.length, 'the rule accepted a violating workflow').toBeGreaterThan(0);
   expect(violations.join('\n')).toMatch(reason);
 }
+
+/** The 7.4 rules that read the maintenance workflow alone. */
+const WORKFLOW_RULES_7_4 = {
+  interpolation: interpolationViolations,
+  pins: pinViolations,
+  inputs: inputValidationViolations,
+  jobStart: jobStartViolations,
+} as const;
+
+/** A compliant `CODEOWNERS`, one line per required path. */
+const CODEOWNERS_LINES = {
+  workflows: '/.github/workflows/** @nahuex',
+  actions: '/.github/actions/** @nahuex',
+  codeowners: '/.github/CODEOWNERS @nahuex',
+  scripts: '/apps/api/scripts/** @nahuex',
+} as const;
+
+const COMPLIANT_CODEOWNERS = `# The maintenance workflow, its actions, this file and the scripts (045 D3; Q64, Q72).
+${Object.values(CODEOWNERS_LINES).join('\n')}
+`;
+
+/** A second workflow that uses an environment of its own. */
+const SIBLING_WORKFLOW = `name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo deploy
+`;
 
 // ---------------------------------------------------------------------------
 // The real workflow.
@@ -629,6 +1092,40 @@ describe('identity-maintenance workflow (the real file)', () => {
 
   it('has no purge option, because the purge is scheduled', () => {
     expect(purgeViolations(readWorkflow())).toEqual([]);
+  });
+});
+
+describe('The workflow does not interpolate its inputs (the real file, 7.4)', () => {
+  it('has no ${{ inputs.* }}, github.event.* or github.head_ref inside any run:', () => {
+    expect(interpolationViolations(readWorkflow())).toEqual([]);
+  });
+
+  it('pins every uses: by a 40-character commit SHA and uses no local action', () => {
+    expect(pinViolations(readWorkflow())).toEqual([]);
+  });
+
+  it('has every input a choice or validated against the tenant-id pattern before the Azure login', () => {
+    expect(inputValidationViolations(readWorkflow())).toEqual([]);
+  });
+
+  it('has a .github/CODEOWNERS file', () => {
+    expect(existsSync(CODEOWNERS_PATH)).toBe(true);
+  });
+
+  it('has CODEOWNERS cover the workflows, the actions, itself and apps/api/scripts with @nahuex', () => {
+    expect(codeownersViolations(readCodeowners())).toEqual([]);
+  });
+});
+
+describe('The workflow starts only the named jobs without overrides (the real file, 7.4)', () => {
+  it('starts the job with no --command, --args or --image and only the fixed --env-vars names', () => {
+    expect(jobStartViolations(readWorkflow())).toEqual([]);
+  });
+
+  it('is the only workflow that names the identity-maintenance environment', () => {
+    const names = jobsOf(parseYaml(readWorkflow())).map(environmentNameOf);
+    expect(names).toEqual([MAINTENANCE_ENVIRONMENT]);
+    expect(sharedEnvironmentViolations(readOtherWorkflows())).toEqual([]);
   });
 });
 
@@ -920,6 +1417,351 @@ describe('identity-maintenance workflow rules (scratch workflows)', () => {
         mutate('      RESOURCE_GROUP:', '      PURGE: identity:purge\n      RESOURCE_GROUP:'),
       ),
       /names the purge job/,
+    );
+  });
+});
+
+/** The compliant workflow's tenant-id check, the first step. */
+const VALIDATION_STEP = COMPLIANT.slice(
+  COMPLIANT.indexOf('      - name: Validate the tenant id\n'),
+  COMPLIANT.indexOf('      - name: Azure login (OIDC)\n'),
+);
+
+const START_STEP = '      - name: Start the Container Apps Job\n';
+const RESOURCE_GROUP_ARG = '            --resource-group "$RESOURCE_GROUP" \\\n';
+const TENANT_ENV_VAR = '"TAYZU_TENANT_ID=$TAYZU_TENANT_ID"';
+
+const NO_TENANT_VALIDATION =
+  /env TAYZU_TENANT_ID of job start carries input tenant_id without validation/;
+
+describe('identity-maintenance workflow rules of 7.4 (scratch texts)', () => {
+  it('accept a compliant workflow, CODEOWNERS and sibling workflow', () => {
+    expect(VALIDATION_STEP).toMatch(/^ {6}- name: Validate the tenant id\n/);
+    for (const [name, rule] of Object.entries(WORKFLOW_RULES_7_4)) {
+      expect(rule(COMPLIANT), name).toEqual([]);
+    }
+    expect(codeownersViolations(COMPLIANT_CODEOWNERS)).toEqual([]);
+    expect(codeownersViolations('* @nahuex\n')).toEqual([]);
+    expect(
+      codeownersViolations(
+        '/.github/workflows/ @nahuex\n/.github/actions/ @nahuex\n/.github/CODEOWNERS @nahuex\n/apps/api/scripts/ @nahuex @second-human\n',
+      ),
+    ).toEqual([]);
+    expect(sharedEnvironmentViolations([{ file: 'deploy.yml', text: SIBLING_WORKFLOW }])).toEqual(
+      [],
+    );
+  });
+
+  it('reject ${{ inputs.* }} inside a run:', () => {
+    expectRejected(
+      interpolationViolations(mutate('--name "$MAINTENANCE_JOB"', '--name "${{ inputs.job }}"')),
+      /interpolates inputs\.\*/,
+    );
+    expectRejected(
+      interpolationViolations(mutate(TENANT_ENV_VAR, '"TAYZU_TENANT_ID=${{inputs.tenant_id}}"')),
+      /interpolates inputs\.\*/,
+    );
+    expectRejected(
+      interpolationViolations(
+        mutate(
+          '      - name: Azure login (OIDC)\n',
+          `      - run: echo "\${{ inputs['tenant_id'] }}"\n      - name: Azure login (OIDC)\n`,
+        ),
+      ),
+      /interpolates inputs\.\*/,
+    );
+  });
+
+  it('reject github.event.* inside a run:', () => {
+    expectRejected(
+      interpolationViolations(
+        mutate(TENANT_ENV_VAR, '"TAYZU_TENANT_ID=${{ github.event.inputs.tenant_id }}"'),
+      ),
+      /reads github\.event\.\*/,
+    );
+  });
+
+  it('reject github.head_ref inside a run:', () => {
+    expectRejected(
+      interpolationViolations(
+        mutate(
+          '            echo "The tenant id is malformed." >&2\n',
+          '            echo "Malformed on ${{ github.head_ref }}." >&2\n',
+        ),
+      ),
+      /reads github\.head_ref/,
+    );
+  });
+
+  it('reject a uses: pinned by a tag or a branch, or by no full SHA', () => {
+    const pinned = `azure/login@${'a'.repeat(40)}`;
+    expectRejected(
+      pinViolations(mutate(pinned, 'azure/login@v3')),
+      /azure\/login@v3, not pinned by a 40-character commit SHA/,
+    );
+    expectRejected(
+      pinViolations(mutate(pinned, 'azure/login@main')),
+      /azure\/login@main, not pinned by a 40-character commit SHA/,
+    );
+    expectRejected(
+      pinViolations(mutate(pinned, 'azure/login@a641126')),
+      /azure\/login@a641126, not pinned by a 40-character commit SHA/,
+    );
+    expectRejected(
+      pinViolations(mutate(pinned, 'azure/login')),
+      /azure\/login, not pinned by a 40-character commit SHA/,
+    );
+  });
+
+  it('reject a local uses: ./', () => {
+    expectRejected(
+      pinViolations(mutate('    steps:\n', '    steps:\n      - uses: ./.github/actions/setup\n')),
+      /uses a local action: \.\/\.github\/actions\/setup/,
+    );
+  });
+
+  it('reject a tenant-id input with no validation', () => {
+    expectRejected(inputValidationViolations(mutate(VALIDATION_STEP, '')), NO_TENANT_VALIDATION);
+  });
+
+  it('reject a tenant-id check that runs after the Azure login', () => {
+    expectRejected(
+      inputValidationViolations(
+        mutate(VALIDATION_STEP, '').replace(START_STEP, `${VALIDATION_STEP}${START_STEP}`),
+      ),
+      NO_TENANT_VALIDATION,
+    );
+  });
+
+  it('reject a tenant-id check without the tenant-id pattern or without exit 1', () => {
+    expectRejected(
+      inputValidationViolations(mutate("'^[A-Za-z0-9_-]{1,64}$'", "'^[A-Za-z0-9_.:-]{1,128}$'")),
+      NO_TENANT_VALIDATION,
+    );
+    expectRejected(
+      inputValidationViolations(mutate('            exit 1\n', '            true\n')),
+      NO_TENANT_VALIDATION,
+    );
+  });
+
+  it('reject a tenant-id check that can be skipped', () => {
+    expectRejected(
+      inputValidationViolations(
+        mutate(
+          '      - name: Validate the tenant id\n',
+          "      - name: Validate the tenant id\n        if: env.MAINTENANCE_JOB == 'cancel-org-deletion'\n",
+        ),
+      ),
+      NO_TENANT_VALIDATION,
+    );
+    expectRejected(
+      inputValidationViolations(
+        mutate(
+          '      - name: Validate the tenant id\n',
+          '      - name: Validate the tenant id\n        continue-on-error: true\n',
+        ),
+      ),
+      NO_TENANT_VALIDATION,
+    );
+  });
+
+  it('reject a tenant id carried by a variable the check does not read', () => {
+    expectRejected(
+      inputValidationViolations(
+        mutate(
+          '      TAYZU_TENANT_ID: ${{ inputs.tenant_id }}\n',
+          '      TAYZU_TENANT_ID: ${{ inputs.tenant_id }}\n      RAW_TENANT_ID: ${{ inputs.tenant_id }}\n',
+        ),
+      ),
+      /env RAW_TENANT_ID of job start carries input tenant_id without validation/,
+    );
+    expectRejected(
+      inputValidationViolations(
+        mutate(
+          START_STEP,
+          `${START_STEP}        env:\n          TAYZU_TENANT_ID: \${{ inputs.tenant_id }}\n`,
+        ),
+      ),
+      /env TAYZU_TENANT_ID of step "Start the Container Apps Job" carries input tenant_id without validation/,
+    );
+  });
+
+  it('reject a tenant id read outside an env mapping', () => {
+    expectRejected(
+      inputValidationViolations(
+        mutate(
+          '          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}\n',
+          '          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}\n          audience: ${{ inputs.tenant_id }}\n',
+        ),
+      ),
+      /line \d+ reads input tenant_id outside an env mapping/,
+    );
+  });
+
+  it('reject an input that is neither a choice nor validated', () => {
+    expectRejected(
+      inputValidationViolations(
+        mutate(
+          '      tenant_id:\n',
+          '      reason:\n        description: Why\n        type: string\n      tenant_id:\n',
+        ),
+      ),
+      /input reason is neither a choice nor validated/,
+    );
+    expectRejected(
+      inputValidationViolations(
+        mutate('      tenant_id:\n', '      dry_run:\n        type: boolean\n      tenant_id:\n'),
+      ),
+      /input dry_run is neither a choice nor validated/,
+    );
+    expectRejected(
+      inputValidationViolations(
+        mutate(
+          '      tenant_id:\n',
+          '      reason:\n        type: string\n      tenant_id:\n',
+        ).replace(
+          '      RESOURCE_GROUP:',
+          '      REASON: ${{ inputs.reason }}\n      RESOURCE_GROUP:',
+        ),
+      ),
+      /env REASON of job start carries input reason without validation/,
+    );
+  });
+
+  it('reject an az call with --command, --args or --image', () => {
+    expectRejected(
+      jobStartViolations(
+        mutate(RESOURCE_GROUP_ARG, `${RESOURCE_GROUP_ARG}            --command "/bin/sh" \\\n`),
+      ),
+      /passes --command, which overrides the job/,
+    );
+    expectRejected(
+      jobStartViolations(
+        mutate(RESOURCE_GROUP_ARG, `${RESOURCE_GROUP_ARG}            --command=/bin/sh \\\n`),
+      ),
+      /passes --command, which overrides the job/,
+    );
+    expectRejected(
+      jobStartViolations(
+        mutate(RESOURCE_GROUP_ARG, `${RESOURCE_GROUP_ARG}            --args "id" \\\n`),
+      ),
+      /passes --args, which overrides the job/,
+    );
+    expectRejected(
+      jobStartViolations(
+        mutate(
+          RESOURCE_GROUP_ARG,
+          `${RESOURCE_GROUP_ARG}            --image registry.invalid/other:latest \\\n`,
+        ),
+      ),
+      /passes --image, which overrides the job/,
+    );
+  });
+
+  it('reject an az call with another template flag', () => {
+    expectRejected(
+      jobStartViolations(
+        mutate(RESOURCE_GROUP_ARG, `${RESOURCE_GROUP_ARG}            --yaml template.yaml \\\n`),
+      ),
+      /passes --yaml, which is not an allowed flag/,
+    );
+  });
+
+  it('reject an az call with an --env-vars name outside the fixed ones', () => {
+    expectRejected(
+      jobStartViolations(
+        mutate(TENANT_ENV_VAR, `${TENANT_ENV_VAR} "NODE_OPTIONS=--require=/tmp/x.js"`),
+      ),
+      /sets --env-vars NODE_OPTIONS, outside the fixed names/,
+    );
+    expectRejected(
+      jobStartViolations(mutate(TENANT_ENV_VAR, '"TAYZU_TENANT_ID=$RAW_TENANT_ID"')),
+      /sets --env-vars TAYZU_TENANT_ID from something other than \$TAYZU_TENANT_ID/,
+    );
+  });
+
+  it.each([
+    ['.github/workflows/**', CODEOWNERS_LINES.workflows],
+    ['.github/actions/**', CODEOWNERS_LINES.actions],
+    ['.github/CODEOWNERS', CODEOWNERS_LINES.codeowners],
+    ['apps/api/scripts/**', CODEOWNERS_LINES.scripts],
+  ])('reject a CODEOWNERS that lacks %s', (path, line) => {
+    expectRejected(
+      codeownersViolations(COMPLIANT_CODEOWNERS.replace(`${line}\n`, '')),
+      new RegExp(`${escapeRegExp(path)} is not covered`),
+    );
+  });
+
+  it('reject a CODEOWNERS whose last matching line does not list @nahuex', () => {
+    expectRejected(
+      codeownersViolations(
+        COMPLIANT_CODEOWNERS.replace(
+          CODEOWNERS_LINES.scripts,
+          '/apps/api/scripts/** @someone-else',
+        ),
+      ),
+      /apps\/api\/scripts\/\*\* is not owned by @nahuex/,
+    );
+    expectRejected(
+      codeownersViolations(`${COMPLIANT_CODEOWNERS}/apps/api/scripts/recover-admin-mfa.ts\n`),
+      /apps\/api\/scripts\/\*\* is not owned by @nahuex: the last line matching apps\/api\/scripts\/recover-admin-mfa\.ts/,
+    );
+  });
+
+  it('reject a CODEOWNERS pattern narrower than the required path', () => {
+    expectRejected(
+      codeownersViolations(
+        COMPLIANT_CODEOWNERS.replace(
+          CODEOWNERS_LINES.workflows,
+          '/.github/workflows/*.yml @nahuex',
+        ),
+      ),
+      /\.github\/workflows\/\*\* is not covered: no line matches \.github\/workflows\/a-future-workflow\.yaml/,
+    );
+    expectRejected(
+      codeownersViolations(
+        COMPLIANT_CODEOWNERS.replace(CODEOWNERS_LINES.scripts, '/apps/api/scripts/* @nahuex'),
+      ),
+      /apps\/api\/scripts\/\*\* is not covered: no line matches apps\/api\/scripts\/lib\/a-future-module\.ts/,
+    );
+  });
+
+  it('reject another workflow that names the same environment', () => {
+    expectRejected(
+      sharedEnvironmentViolations([
+        {
+          file: 'deploy.yml',
+          text: SIBLING_WORKFLOW.replace(
+            'environment: production',
+            'environment: identity-maintenance',
+          ),
+        },
+      ]),
+      /deploy\.yml job deploy names the identity-maintenance environment/,
+    );
+    expectRejected(
+      sharedEnvironmentViolations([
+        {
+          file: 'deploy.yml',
+          text: SIBLING_WORKFLOW.replace(
+            'environment: production',
+            'environment:\n      name: "identity-maintenance"\n      url: https://example.invalid',
+          ),
+        },
+      ]),
+      /deploy\.yml job deploy names the identity-maintenance environment/,
+    );
+    expectRejected(
+      sharedEnvironmentViolations([
+        {
+          file: 'deploy.yml',
+          text: SIBLING_WORKFLOW.replace(
+            'environment: production',
+            'environment: Identity-Maintenance',
+          ),
+        },
+      ]),
+      /deploy\.yml job deploy names the identity-maintenance environment/,
     );
   });
 });

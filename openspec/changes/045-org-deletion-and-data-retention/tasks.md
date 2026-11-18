@@ -495,7 +495,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       no `secrets.` value other than the environment's is referenced, there is no
       checkout or setup step, and the operator id is `gh:` plus `github.actor_id`,
       passed through `env`, and the `choice` input listing exactly the reversal, the blueprint backfill and the reconcile: neither out-of-band CLI (a case each asserts that no option and no line of the file names `bootstrap-admin` or `recover-admin-mfa`), and no purge, which is scheduled.
-- [ ] 7.4 The workflow's inputs and supply chain are hardened (Resolved decision
+- [x] 7.4 The workflow's inputs and supply chain are hardened (Resolved decision
       Q64; design D3): every input is a `choice` (the job) or validated against the
       catalog's tenant-id regular expression (the tenant id, checked in a first step
       that fails the run) and reaches the job only through `env` or the job's
