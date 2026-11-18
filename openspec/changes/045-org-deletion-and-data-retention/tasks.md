@@ -655,7 +655,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       tenant deletion, stated as the target `010` implements, Q156, cross-referencing
       `010`/`015`). Verify: `pnpm lint` passes, the runbook is reachable from the file, and
       the file states the 7 days, the 21 days and the 12 months.
-- [ ] 10.4 Update `docs/security/attack-surfaces.md`: the route `DELETE /v1/organization`
+- [x] 10.4 Update `docs/security/attack-surfaces.md`: the route `DELETE /v1/organization`
       with its actor, authentication (a step-up-verified session), Cerbos check and the
       mount gate state, the route count (fifteen oRPC procedures), and a row for the
       `workflow_dispatch` entry point of the maintenance workflow of 7.3 (its actor, a
@@ -673,7 +673,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       (SEC01), asserted by `apps/api/src/system-diagram.test.ts` (the test of `043`'s task
       16.7, extended), whose zone-projection suite of `044`'s task 16.2 also covers the
       nodes and arrows of this change.
-- [ ] 10.6 Update `docs/security/secrets.md`: the `tayzu_purge` secret of the purge job and
+- [x] 10.6 Update `docs/security/secrets.md`: the `tayzu_purge` secret of the purge job and
       the reversal role's secret, each job with its own identity, with owner and rotation;
       the telemetry environment names every script reads (`OTEL_EXPORTER_OTLP_ENDPOINT` and
       `TAYZU_TELEMETRY_DISABLED`, Resolved decision Q79); the OIDC federation; and the
