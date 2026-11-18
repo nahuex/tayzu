@@ -21,6 +21,27 @@
  * admin-allowed case runs in a tenant of its own (`ownTenant`), and the member, machine and
  * unauthenticated cases, which are refused before the handler, keep the shared fixtures.
  *
+ * ## `organization.delete` by name (045 task 8.6)
+ *
+ * Task 8.6 Verify: "`identity-authorization-matrix.http.int.test.ts` (extended) covers
+ * `organization.delete` by name: the admin with a fresh step-up allowed, a `member` and a
+ * machine `member` token getting `AUTH_FORBIDDEN` (403) and an unauthenticated call getting 401
+ * (the test fails when the procedure is missing from the matrix)".
+ *
+ * Scenario "A non-admin cannot request deletion" (045 spec, requirement "The deletion route is
+ * authorized, step-up gated, tenant-bound and mounted behind the switch"):
+ * - WHEN a `member`, a machine `member` token and an unauthenticated caller call the route over
+ *   HTTP
+ * - THEN the first two get `AUTH_FORBIDDEN` (403) and the third gets 401, and nothing changes
+ *
+ * The by-name cases read their request from `MATRIX['identity.organization.delete']` and first
+ * assert that the router lists the procedure and that the matrix has the entry, so dropping the
+ * entry fails them as well as the completeness test (pinned at fifteen procedures by 5.1). Each
+ * case builds its own fresh tenant: an allowed request closes it, and a refusal that regressed
+ * into an allow would close only that tenant. "Nothing changes" is read from the database: no
+ * deletion marker, no machine-credential revocation row, the same live sessions, keys and
+ * invitations as before the call.
+ *
  * ## Built from the router's own procedure list
  *
  * The routes come from `generateIdentityOpenApiDocument` (it walks `createIdentityRouter`'s
@@ -45,6 +66,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRecordingEmailSender } from '@tayzu/auth';
 import { createMachineCredential } from '@tayzu/auth/machine-credentials';
+import { withTenantTransaction } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -654,6 +676,134 @@ describe('the identity authorization matrix over HTTP (task 14.9)', () => {
     expect(deleted.status, deleted.body).toBeLessThan(300);
     expect(deleted.code).not.toBe('AUTH_FORBIDDEN');
   }, 120_000);
+
+  // ---- identity.organization.delete, by name (045 task 8.6) ----------------------------------
+
+  describe('organization.delete by name (045 task 8.6, "A non-admin cannot request deletion")', () => {
+    const ORG_DELETE = 'identity.organization.delete';
+
+    /** The matrix entry of the procedure; fails when the router or the matrix lacks it. */
+    function orgDeleteEntry(): MatrixEntry {
+      expect(routeIds, 'the router lists identity.organization.delete').toContain(ORG_DELETE);
+      expect(Object.keys(MATRIX), 'the matrix has an entry for organization.delete').toContain(
+        ORG_DELETE,
+      );
+      const entry = MATRIX[ORG_DELETE];
+      if (entry === undefined) throw new Error(`${ORG_DELETE} is missing from the matrix`);
+      return entry;
+    }
+
+    /** What phase 1 of org deletion records or revokes for the tenant. */
+    async function deletionStateOf(tenantId: string): Promise<{
+      markers: readonly unknown[];
+      revocations: readonly unknown[];
+      sessions: readonly unknown[];
+      keys: readonly unknown[];
+      invitations: readonly unknown[];
+    }> {
+      const [markers, revocations] = await withTenantTransaction(
+        pools.appPool,
+        { tenantId },
+        async (client) =>
+          [
+            (
+              await client.query<Record<string, unknown>>(
+                'select state from tenant_deletion_marker where tenant_id = $1 order by requested_at',
+                [tenantId],
+              )
+            ).rows,
+            (
+              await client.query<Record<string, unknown>>(
+                'select credential_id from machine_credential_revocation where tenant_id = $1 order by credential_id',
+                [tenantId],
+              )
+            ).rows,
+          ] as const,
+      );
+      const sessions = await pools.authPool.query<Record<string, unknown>>(
+        'select id from auth.session where active_organization_id = $1 and expires_at > now() order by id',
+        [tenantId],
+      );
+      const keys = await pools.authPool.query<Record<string, unknown>>(
+        'select id, enabled from auth.apikey where reference_id = $1 order by id',
+        [tenantId],
+      );
+      const invitations = await pools.authPool.query<Record<string, unknown>>(
+        'select id, status from auth.invitation where organization_id = $1 order by id',
+        [tenantId],
+      );
+      return {
+        markers,
+        revocations,
+        sessions: sessions.rows,
+        keys: keys.rows,
+        invitations: invitations.rows,
+      };
+    }
+
+    it('organization.delete: the admin with a fresh step-up is allowed and the pending marker is recorded', async () => {
+      const entry = orgDeleteEntry();
+      const admin = await freshAdmin('org-delete-admin');
+      expect((await deletionStateOf(admin.organizationId)).markers, 'no marker before').toEqual([]);
+
+      const answer = await send(
+        { kind: 'cookie', cookie: admin.cookie },
+        await entry.request(admin),
+      );
+
+      expect(answer.status, answer.body).toBeGreaterThanOrEqual(200);
+      expect(answer.status, answer.body).toBeLessThan(300);
+      expect(answer.code).not.toBe('AUTH_FORBIDDEN');
+      expect((await deletionStateOf(admin.organizationId)).markers).toEqual([{ state: 'pending' }]);
+    }, 120_000);
+
+    const refused: readonly [
+      string,
+      (fixtures: Fixtures) => Caller,
+      { status: number; code?: string },
+    ][] = [
+      [
+        'a member session gets AUTH_FORBIDDEN 403',
+        (f) => ({ kind: 'cookie', cookie: f.memberCookie }),
+        { status: 403, code: 'AUTH_FORBIDDEN' },
+      ],
+      [
+        'a machine member token of an integration credential gets AUTH_FORBIDDEN 403',
+        (f) => ({ kind: 'bearer', token: f.integrationToken }),
+        { status: 403, code: 'AUTH_FORBIDDEN' },
+      ],
+      [
+        'a machine member token of a service account gets AUTH_FORBIDDEN 403',
+        (f) => ({ kind: 'bearer', token: f.serviceAccountToken }),
+        { status: 403, code: 'AUTH_FORBIDDEN' },
+      ],
+      ['an unauthenticated call gets 401', () => ({ kind: 'anonymous' }), { status: 401 }],
+    ];
+
+    it.each(refused)(
+      'organization.delete: %s, and nothing changes',
+      async (_name, callerOf, expected) => {
+        const entry = orgDeleteEntry();
+        // A fresh tenant of its own: an allow here would close only this tenant.
+        const fixtures = await buildFixtures();
+        await invite(fixtures.t1);
+        const before = await deletionStateOf(fixtures.t1.organizationId);
+        expect(before.markers, 'precondition: no marker').toEqual([]);
+        expect(before.sessions.length, 'precondition: live sessions').toBeGreaterThan(0);
+        expect(before.keys.length, 'precondition: machine credentials').toBeGreaterThan(0);
+        expect(before.invitations.length, 'precondition: a pending invitation').toBeGreaterThan(0);
+
+        const answer = await send(callerOf(fixtures), await entry.request(fixtures.t1));
+
+        expect(answer.status, answer.body).toBe(expected.status);
+        if (expected.code !== undefined) expect(answer.code).toBe(expected.code);
+        expect(await deletionStateOf(fixtures.t1.organizationId), 'nothing changed').toEqual(
+          before,
+        );
+      },
+      240_000,
+    );
+  });
 
   // ---- identity.users.resetMfa (044 task 10.6) -----------------------------------------------
 

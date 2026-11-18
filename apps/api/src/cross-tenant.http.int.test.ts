@@ -10,6 +10,18 @@
  * `credentials.list`) asserts that the write lands only in `t1` and that the list omits `t2`'s
  * credentials."
  *
+ * ## 045 task 8.6: `DELETE /v1/organization` naming `t2`
+ *
+ * Task 8.6 of openspec/changes/045-org-deletion-and-data-retention Verify (excerpt):
+ * "`cross-tenant.http.int.test.ts` covers a confirmation naming `t2`, called by `t1`'s admin,
+ * answering the same response as any wrong confirmation (the route has no target in its path)".
+ * Scenario "Org deletion targets only the host tenant": WHEN an admin of `t1` requests org
+ * deletion with `t2`'s identifier as the confirmation; THEN the operation fails with
+ * `CATALOG_VALIDATION_FAILED` and nothing of `t1` or `t2` changes. The answer naming `t2` is
+ * compared, status, code and body, with two wrong confirmations: a random id of the same shape
+ * as a tenant id and a plain string. Each case uses fresh tenants, since an allowed request
+ * would close the tenant.
+ *
  * ## Harness
  *
  * `createApp` with the identity routes mounted over the harness pools (same wiring as
@@ -25,6 +37,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
 
 import { createRecordingEmailSender } from '@tayzu/auth';
+import { withTenantTransaction } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -427,6 +440,91 @@ describe('cross-tenant requests over HTTP, called by the admin of t1 (task 14.8)
     expect(await invitationRow(invitationId), 'the invitation is untouched').toEqual(before);
     expect(await membersOf(t1.organizationId), 't1 gained no member').toEqual(t1Members);
     expect(await membersOf(t2.organizationId), 't2 gained no member').toEqual(t2Members);
+  }, 120_000);
+
+  // ---- DELETE /v1/organization: the target is the host tenant (045 task 8.6) ------------------
+
+  /** What phase 1 of org deletion records or revokes for a tenant. */
+  async function deletionStateOf(tenantId: string): Promise<{
+    markers: readonly unknown[];
+    revocations: readonly unknown[];
+    sessions: readonly unknown[];
+    keys: readonly unknown[];
+    members: readonly unknown[];
+  }> {
+    const [markers, revocations] = await withTenantTransaction(
+      pools.appPool,
+      { tenantId },
+      async (client) =>
+        [
+          (
+            await client.query<Record<string, unknown>>(
+              'select state from tenant_deletion_marker where tenant_id = $1 order by requested_at',
+              [tenantId],
+            )
+          ).rows,
+          (
+            await client.query<Record<string, unknown>>(
+              'select credential_id from machine_credential_revocation where tenant_id = $1 order by credential_id',
+              [tenantId],
+            )
+          ).rows,
+        ] as const,
+    );
+    const sessions = await pools.authPool.query<Record<string, unknown>>(
+      'select id from auth.session where active_organization_id = $1 and expires_at > now() order by id',
+      [tenantId],
+    );
+    return {
+      markers,
+      revocations,
+      sessions: sessions.rows,
+      keys: await keys(tenantId),
+      members: await membersOf(tenantId),
+    };
+  }
+
+  function deleteOrganizationUrl(confirmation: string): string {
+    return `/v1/organization?${new URLSearchParams({ confirmation }).toString()}`;
+  }
+
+  it("DELETE /v1/organization with a confirmation naming t2, called by t1's admin, answers exactly like any wrong confirmation and changes nothing of t1 or t2", async () => {
+    const { t1, t2 } = await twoTenants();
+    await createCredential(t1);
+    await createCredential(t2);
+    const t1Before = await deletionStateOf(t1.organizationId);
+    const t2Before = await deletionStateOf(t2.organizationId);
+    expect(t1Before.markers, 'precondition: t1 has no marker').toEqual([]);
+    expect(t2Before.markers, 'precondition: t2 has no marker').toEqual([]);
+    expect(t1Before.sessions.length, 'precondition: t1 has live sessions').toBeGreaterThan(0);
+    expect(t2Before.sessions.length, 'precondition: t2 has live sessions').toBeGreaterThan(0);
+
+    const namingT2 = await send(t1.cookie, 'DELETE', deleteOrganizationUrl(t2.organizationId));
+    const wrongId = await send(t1.cookie, 'DELETE', deleteOrganizationUrl(randomUUID()));
+    const wrongText = await send(
+      t1.cookie,
+      'DELETE',
+      deleteOrganizationUrl(`wrong-${randomUUID().slice(0, 8)}`),
+    );
+
+    for (const [name, wrong] of [
+      ['a wrong id', wrongId],
+      ['a wrong string', wrongText],
+    ] as const) {
+      expect(wrong.status, `${name}: ${wrong.body}`).toBe(400);
+      expect(wrong.code, name).toBe('CATALOG_VALIDATION_FAILED');
+      expect(namingT2.status, `naming t2 vs ${name}: ${namingT2.body}`).toBe(wrong.status);
+      expect(namingT2.code, `naming t2 vs ${name}`).toBe(wrong.code);
+      expect(Object.keys(namingT2.json).sort(), `same body shape as ${name}`).toEqual(
+        Object.keys(wrong.json).sort(),
+      );
+      expect(namingT2.body, `same body as ${name}`).toBe(wrong.body);
+    }
+    expect(namingT2.body, "the answer does not echo t2's identifier").not.toContain(
+      t2.organizationId,
+    );
+    expect(await deletionStateOf(t1.organizationId), 'nothing of t1 changed').toEqual(t1Before);
+    expect(await deletionStateOf(t2.organizationId), 'nothing of t2 changed').toEqual(t2Before);
   }, 120_000);
 
   // ---- Routes without a target ---------------------------------------------------------------

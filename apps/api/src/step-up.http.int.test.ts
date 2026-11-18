@@ -25,6 +25,19 @@
  *   not, who has not enrolled a second factor; WHEN they call any `/v1` route;
  *   THEN it fails with `AUTH_STEP_UP_REQUIRED` until they enrol.
  *
+ * ## 045 task 8.6: `DELETE /v1/organization`
+ *
+ * Task 8.6 of openspec/changes/045-org-deletion-and-data-retention Verify (excerpt):
+ * "`step-up.http.int.test.ts` covers "A hijacked admin session without a fresh MFA cannot mint
+ * power" for the route, nothing being recorded". The route carries `x-tayzu-risk: high` (design
+ * D6), so a fresh step-up is required over HTTP; the 045 scenario "Deletion without step-up
+ * fails" reads: GIVEN an admin session without a fresh MFA verification; WHEN that admin requests
+ * org deletion; THEN the operation fails with a step-up-required error and nothing changes. The
+ * request carries the right confirmation (the host tenant), so step-up is the only refusal.
+ * "Nothing recorded" is read from the database: no deletion marker, no machine-credential
+ * revocation row, and the same live sessions, keys and pending invitations as before the call.
+ * The case uses a fresh tenant of its own, since an allowed request would close it.
+ *
  * ## Harness
  *
  * The production bootstrap (`createAppFromEnv`) with `MOUNT_IDENTITY_ROUTES=true`
@@ -47,6 +60,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { withTenantTransaction } from '@tayzu/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -371,6 +385,81 @@ describe('step-up over HTTP with the switch on (task 14.4, spec "Every high-risk
     }
 
     expect(await snapshot(admin.organizationId)).toEqual(before);
+  }, 120_000);
+
+  /** What phase 1 of org deletion records or revokes for the tenant (045 task 8.6). */
+  async function deletionStateOf(tenantId: string): Promise<{
+    markers: readonly unknown[];
+    revocations: readonly unknown[];
+    sessions: readonly unknown[];
+    keys: readonly unknown[];
+    invitations: readonly unknown[];
+  }> {
+    const [markers, revocations] = await withTenantTransaction(
+      pools.appPool,
+      { tenantId },
+      async (client) =>
+        [
+          (
+            await client.query<Record<string, unknown>>(
+              'select state from tenant_deletion_marker where tenant_id = $1 order by requested_at',
+              [tenantId],
+            )
+          ).rows,
+          (
+            await client.query<Record<string, unknown>>(
+              'select credential_id from machine_credential_revocation where tenant_id = $1 order by credential_id',
+              [tenantId],
+            )
+          ).rows,
+        ] as const,
+    );
+    const rows = async (sql: string): Promise<readonly unknown[]> =>
+      (await pools.authPool.query<Record<string, unknown>>(sql, [tenantId])).rows;
+    return {
+      markers,
+      revocations,
+      sessions: await rows(
+        'select id from auth.session where active_organization_id = $1 and expires_at > now() order by id',
+      ),
+      keys: await rows('select id, enabled from auth.apikey where reference_id = $1 order by id'),
+      invitations: await rows(
+        'select id, status from auth.invitation where organization_id = $1 order by id',
+      ),
+    };
+  }
+
+  it('A hijacked admin session without a fresh MFA cannot mint power: DELETE /v1/organization with the right confirmation fails with AUTH_STEP_UP_REQUIRED and nothing is recorded (045 task 8.6)', async () => {
+    // A fresh tenant of its own, with something phase 1 would revoke: its live sessions and a
+    // machine credential, created while the marker is still fresh.
+    const admin = await enrolledAdmin();
+    const credential = await request(admin.cookie, 'POST', '/v1/credentials', {
+      name: 'org-delete-step-up-key',
+      kind: 'integration',
+    });
+    expect([200, 201], 'precondition: a credential').toContain(credential.status);
+
+    // GIVEN an admin session without a fresh MFA verification (enrolled, marker gone).
+    await dropMarker(admin.cookie);
+    expect(await markerOf(admin.cookie), 'precondition: no fresh marker').toBeNull();
+    const before = await deletionStateOf(admin.organizationId);
+    expect(before.markers, 'precondition: no deletion marker').toEqual([]);
+    expect(before.sessions.length, 'precondition: live sessions').toBeGreaterThan(0);
+    expect(before.keys.length, 'precondition: a key').toBeGreaterThan(0);
+
+    // WHEN that admin requests org deletion, confirming the host tenant in the query.
+    const answer = await request(
+      admin.cookie,
+      'DELETE',
+      `/v1/organization?${new URLSearchParams({ confirmation: admin.organizationId }).toString()}`,
+    );
+
+    // THEN it fails with AUTH_STEP_UP_REQUIRED over HTTP...
+    expect(answer.status).toBe(403);
+    expect(answer.code).toBe('AUTH_STEP_UP_REQUIRED');
+    // ...and nothing is recorded: no marker, no revocation, the same sessions, keys and invitations.
+    expect(await deletionStateOf(admin.organizationId)).toEqual(before);
+    expect(await markerOf(admin.cookie), 'no step-up marker was written').toBeNull();
   }, 120_000);
 
   it('The step-up honors the factor: an MFA-enrolled admin holding only a password marker gets AUTH_STEP_UP_REQUIRED', async () => {

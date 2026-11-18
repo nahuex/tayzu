@@ -566,7 +566,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       `deleteOrganization` is given the host tenant only. Verify: `cross-tenant.int.test.ts`
       (`043`'s group 12, extended) covers "Org deletion targets only the host tenant",
       asserting neither tenant has a marker.
-- [ ] 8.6 The HTTP matrices of `043` include the route. Verify:
+- [x] 8.6 The HTTP matrices of `043` include the route. Verify:
       `identity-authorization-matrix.http.int.test.ts` (extended) covers
       `organization.delete` by name: the admin with a fresh step-up allowed, a `member` and
       a machine `member` token getting `AUTH_FORBIDDEN` (403) and an unauthenticated call
