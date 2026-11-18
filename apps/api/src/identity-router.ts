@@ -767,25 +767,33 @@ export function createIdentityRouter(options: CreateIdentityRouterOptions) {
             },
           },
           route: identityRoute('DELETE', '/v1/organization', { highRisk: true }),
-          handler: async ({ context, input: rawInput }): Promise<OrgDeletionRequested> => {
-            const { query } = parseDetailedInput(SCHEMAS.deleteOrganization, rawInput);
-            if (options.appPool === undefined) throw new IdentityInputError();
+          // The span carries the host tenant only; a wrong confirmation fails it with
+          // `error.type` `CATALOG_VALIDATION_FAILED` (design "Observability contract").
+          handler: ({ context, input: rawInput }): Promise<OrgDeletionRequested> => {
             const tenantId = rawTenantId(context);
-            const adminId = (context['actor'] as { id: string }).id;
-            return await requestOrgDeletion({
-              tenantId,
-              actorId: adminId,
-              confirmation: query['confirmation'] as string,
-              windowDays: options.orgDeletionWindowDays ?? DEFAULT_ORG_DELETION_WINDOW_DAYS,
-              auth: options.auth,
-              appPool: options.appPool,
-              authRepository: options.authRepository,
-              cancelInvitation: (invitationId) =>
-                recordInvitationCancel(tenantId, adminId, invitationId, 'org_deletion', () =>
-                  options.authRepository.markInvitationCancelled(tenantId, invitationId),
-                ),
-              ...(options.notices === undefined ? {} : { notices: options.notices }),
-            });
+            return withIdentitySpan(
+              'identity.organization.delete',
+              { 'tayzu.tenant.id': tenantId },
+              async () => {
+                const { query } = parseDetailedInput(SCHEMAS.deleteOrganization, rawInput);
+                if (options.appPool === undefined) throw new IdentityInputError();
+                const adminId = (context['actor'] as { id: string }).id;
+                return await requestOrgDeletion({
+                  tenantId,
+                  actorId: adminId,
+                  confirmation: query['confirmation'] as string,
+                  windowDays: options.orgDeletionWindowDays ?? DEFAULT_ORG_DELETION_WINDOW_DAYS,
+                  auth: options.auth,
+                  appPool: options.appPool,
+                  authRepository: options.authRepository,
+                  cancelInvitation: (invitationId) =>
+                    recordInvitationCancel(tenantId, adminId, invitationId, 'org_deletion', () =>
+                      options.authRepository.markInvitationCancelled(tenantId, invitationId),
+                    ),
+                  ...(options.notices === undefined ? {} : { notices: options.notices }),
+                });
+              },
+            );
           },
         }),
       },

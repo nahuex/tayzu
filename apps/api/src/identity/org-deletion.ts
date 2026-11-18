@@ -3,7 +3,12 @@
  * (revoke now, record the deletion marker, notify the admins) behind
  * `identity.organization.delete`. Filled in by the tasks of group 5.
  */
-import { emitIdentityEvent, emitSessionRevoked, type AuthInstance } from '@tayzu/auth';
+import {
+  emitIdentityEvent,
+  emitSessionRevoked,
+  recordIdentityMetric,
+  type AuthInstance,
+} from '@tayzu/auth';
 import { revokeMachineCredential } from '@tayzu/auth/machine-credentials';
 import { withTenantTransaction } from '@tayzu/db';
 import type { Pool } from 'pg';
@@ -94,8 +99,9 @@ async function recordPendingMarker(options: RequestOrgDeletionOptions): Promise<
 /**
  * Phase 1 of org deletion (design D1 "Phase 1, request"). The confirmation must name the host
  * tenant; anything else fails with `CATALOG_VALIDATION_FAILED` before any write. Then, in
- * order: the marker (its own tenant transaction, as `tayzu_app`), the audit event when this
- * call inserted the marker, the sessions, the machine credentials and the pending invitations.
+ * order: the marker (its own tenant transaction, as `tayzu_app`), the audit event and the
+ * `requested` count when this call inserted the marker, the sessions, the machine credentials
+ * and the pending invitations.
  * The marker cannot share a transaction with the `auth` schema writes (another role and pool),
  * so it commits first, and the event follows it at once so that no marker exists without its
  * `requested` event. A repeat while pending inserts nothing, logs
@@ -117,6 +123,9 @@ export async function requestOrgDeletion(
       name: 'catalog.audit.org_deletion_requested',
       severity: 'INFO',
       attributes: { 'tayzu.tenant.id': tenantId, 'tayzu.actor.id': actorId },
+    });
+    recordIdentityMetric('tayzu.identity.org_deletions', 1, {
+      'tayzu.identity.org_deletion.outcome': 'requested',
     });
   } else {
     emitIdentityEvent({

@@ -7,13 +7,17 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { emitIdentityEvent } from '@tayzu/auth';
+import { emitIdentityEvent, recordIdentityMetric, withIdentitySpan } from '@tayzu/auth';
 import { createPool } from '@tayzu/db';
 import type { Pool, PoolClient } from 'pg';
 
 import type { Telemetry } from '../src/telemetry.js';
 import { runScript, type RunScriptOptions } from './run-script.js';
 import { FixedMessageError, loadScriptConfig } from './script-config.js';
+
+const ORG_DELETIONS_METRIC = 'tayzu.identity.org_deletions';
+const PURGE_SPAN = 'identity.organization.purge';
+const ENTITIES_REMOVED = 'tayzu.identity.org_deletion.entities_removed';
 
 /** The seven tenant tables step 1 empties (migration `0013` names them one by one). */
 export type CatalogPurgeTable =
@@ -300,14 +304,18 @@ export async function purgeAuthStep(
   }
 
   // The durable record of the purge, emitted by the purge itself right before the
-  // organization row goes (design D2), not from Better Auth's `afterDeleteOrganization`.
+  // organization row goes (design D2), not from Better Auth's `afterDeleteOrganization`,
+  // with the `completed` count of the org-deletion counter.
   emitIdentityEvent({
     name: 'catalog.audit.org_deletion_completed',
     severity: 'INFO',
     attributes: {
       'tayzu.tenant.id': tenantId,
-      'tayzu.identity.org_deletion.entities_removed': options.entitiesRemoved ?? 0,
+      [ENTITIES_REMOVED]: options.entitiesRemoved ?? 0,
     },
+  });
+  recordIdentityMetric(ORG_DELETIONS_METRIC, 1, {
+    'tayzu.identity.org_deletion.outcome': 'completed',
   });
   await options.beforeOrganizationDeleted?.();
   await pool.query('delete from auth.organization where id = $1', [tenantId]);
@@ -342,9 +350,15 @@ export interface RunPurgeOptions {
 
 type PurgeStep = 'catalog' | 'auth';
 
+/** The attributes every purge span carries from its start: the tenant and the step. */
+function purgeSpanAttributes(tenantId: string, step: PurgeStep) {
+  return { 'tayzu.tenant.id': tenantId, 'tayzu.identity.org_deletion.step': step };
+}
+
 /**
  * Logs a failed purge step (design "Observability"): the tenant and the step only, with no
- * body and no error text, so that no tenant free text or SQL detail reaches the log.
+ * body and no error text, so that no tenant free text or SQL detail reaches the log, and one
+ * `failed` increment of the org-deletion counter.
  */
 function emitStepFailed(tenantId: string, step: PurgeStep): void {
   emitIdentityEvent({
@@ -355,25 +369,43 @@ function emitStepFailed(tenantId: string, step: PurgeStep): void {
       'tayzu.identity.org_deletion.step': step,
     },
   });
+  recordIdentityMetric(ORG_DELETIONS_METRIC, 1, {
+    'tayzu.identity.org_deletion.outcome': 'failed',
+  });
 }
 
 /**
  * Purges one tenant: step 1, then step 2 with the entities step 1 removed (Resolved decision
- * Q169: 0 when step 1 was recorded by an earlier run). A failed step is logged and ends this
- * tenant's pass, so a failed step 1 never runs step 2; the next run resumes from the marker.
- * Resolves `false` when a step failed.
+ * Q169: 0 when step 1 was recorded by an earlier run). Each step runs in its own
+ * `identity.organization.purge` span carrying `entities_removed`: on step 1 the entities it
+ * removed, on step 2 the value handed to it. A step's error crosses its span, which records it
+ * sanitized (`error.type` `internal`), and is caught here: a failed step is logged and ends
+ * this tenant's pass, so a failed step 1 never runs step 2; the next run resumes from the
+ * marker. Resolves `false` when a step failed.
  */
 async function purgeTenant(options: RunPurgeOptions, tenantId: string): Promise<boolean> {
   const { pool } = options;
   let entitiesRemoved: number;
   try {
-    ({ entitiesRemoved } = await purgeCatalogStep(pool, tenantId, options.catalogOptions));
+    entitiesRemoved = await withIdentitySpan(
+      PURGE_SPAN,
+      purgeSpanAttributes(tenantId, 'catalog'),
+      async (span) => {
+        const result = await purgeCatalogStep(pool, tenantId, options.catalogOptions);
+        span.setAttributes({ [ENTITIES_REMOVED]: result.entitiesRemoved });
+        return result.entitiesRemoved;
+      },
+    );
   } catch {
     emitStepFailed(tenantId, 'catalog');
     return false;
   }
   try {
-    await purgeAuthStep(pool, tenantId, { ...options.authOptions, entitiesRemoved });
+    await withIdentitySpan(
+      PURGE_SPAN,
+      { ...purgeSpanAttributes(tenantId, 'auth'), [ENTITIES_REMOVED]: entitiesRemoved },
+      () => purgeAuthStep(pool, tenantId, { ...options.authOptions, entitiesRemoved }),
+    );
   } catch {
     emitStepFailed(tenantId, 'auth');
     return false;

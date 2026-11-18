@@ -8,7 +8,7 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { emitIdentityEvent, recordIdentityMetric } from '@tayzu/auth';
+import { emitIdentityEvent, recordIdentityMetric, withIdentitySpan } from '@tayzu/auth';
 import { createPool } from '@tayzu/db';
 import type { Pool } from 'pg';
 
@@ -48,6 +48,7 @@ const TENANT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const REFUSED_EVENT = 'catalog.security.org_deletion_cancel_refused';
 const CANCELLED_EVENT = 'catalog.audit.org_deletion_cancelled';
 const ORG_DELETIONS_METRIC = 'tayzu.identity.org_deletions';
+const CANCEL_SPAN = 'identity.organization.cancel_deletion';
 
 /**
  * Why the tenant's marker cannot be tombstoned, or `undefined` when it can. Under `0013`'s
@@ -122,30 +123,40 @@ function emitCancelled(operatorId: string, tenantId: string): void {
 }
 
 /**
- * The reversal itself: shape check, classification, tombstone. A tombstone that touches no row
- * lost a race (another reversal, or a purge step, in between); the marker is read again to name
- * the refusal, and one that still looks tombstonable is refused as `no_pending_marker` (fail
- * closed).
+ * The reversal itself, in the `identity.organization.cancel_deletion` span: shape check,
+ * classification, tombstone. The span carries the operator id always and the tenant only once
+ * its id passed the shape check; a refusal fails it with the reason as `error.type`, a bounded
+ * value. A tombstone that touches no row lost a race (another reversal, or a purge step, in
+ * between); the marker is read again to name the refusal, and one that still looks
+ * tombstonable is refused as `no_pending_marker` (fail closed).
  */
-async function cancel(
+function cancel(
   pool: Pool,
   tenantId: string,
   operatorId: string,
 ): Promise<CancelOrgDeletionResult> {
-  if (!TENANT_ID_PATTERN.test(tenantId)) {
-    emitRefused(operatorId, 'invalid_tenant');
-    return { outcome: 'refused', reason: 'invalid_tenant' };
-  }
-  let reason = await refusalReason(pool, tenantId);
-  if (reason === undefined) {
-    if (await tombstone(pool, tenantId, operatorId)) {
-      emitCancelled(operatorId, tenantId);
-      return { outcome: 'cancelled' };
-    }
-    reason = (await refusalReason(pool, tenantId)) ?? 'no_pending_marker';
-  }
-  emitRefused(operatorId, reason, tenantId);
-  return { outcome: 'refused', reason };
+  return withIdentitySpan(
+    CANCEL_SPAN,
+    { 'tayzu.identity.operator.id': operatorId },
+    async (span): Promise<CancelOrgDeletionResult> => {
+      const refuse = (reason: CancelRefusalReason, checkedTenantId?: string) => {
+        emitRefused(operatorId, reason, checkedTenantId);
+        span.fail(reason);
+        return { outcome: 'refused', reason } as const;
+      };
+      if (!TENANT_ID_PATTERN.test(tenantId)) return refuse('invalid_tenant');
+      span.setAttributes({ 'tayzu.tenant.id': tenantId });
+      let reason = await refusalReason(pool, tenantId);
+      if (reason === undefined) {
+        if (await tombstone(pool, tenantId, operatorId)) {
+          emitCancelled(operatorId, tenantId);
+          return { outcome: 'cancelled' };
+        }
+        reason = (await refusalReason(pool, tenantId)) ?? 'no_pending_marker';
+      }
+      return refuse(reason, tenantId);
+    },
+  );
 }
 
 /**

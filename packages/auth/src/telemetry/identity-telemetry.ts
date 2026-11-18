@@ -35,6 +35,11 @@ export function emitIdentityEvent(event: {
 /** The slice of the active span an operation may use: attributes known only after it ran. */
 export interface IdentitySpanHandle {
   setAttributes(attributes: IdentityAttributes): void;
+  /**
+   * Fails the span with an expected error the operation returns instead of throwing (a refusal):
+   * status ERROR and `error.type` set to `errorType`, a bounded value, with no exception event.
+   */
+  fail(errorType: string): void;
 }
 
 /** Expected errors carry a stable `AUTH_*` / `CATALOG_*` code; a driver's SQLSTATE never matches. */
@@ -77,7 +82,13 @@ export function withIdentitySpan<T>(
 ): Promise<T> {
   return tracer.startActiveSpan(name, { attributes: { ...attributes } }, async (span) => {
     try {
-      return await fn({ setAttributes: (extra) => void span.setAttributes({ ...extra }) });
+      return await fn({
+        setAttributes: (extra) => void span.setAttributes({ ...extra }),
+        fail: (errorType) => {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          span.setAttribute('error.type', errorType);
+        },
+      });
     } catch (error) {
       const code = expectedErrorCode(error);
       span.setStatus({ code: SpanStatusCode.ERROR });
@@ -109,7 +120,8 @@ const METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.mfa_resets': '{event}',
   'tayzu.identity.password_reset_requests': '{event}',
   'tayzu.identity.password_reset_confirms': '{event}',
-  // 045: outcome `cancelled` (the reversal script); `requested` and `completed` follow in 9.2.
+  // 045: outcomes `requested` (the request), `completed` and `failed` (the purge job) and
+  // `cancelled` (the reversal script).
   'tayzu.identity.org_deletions': '{deletion}',
 };
 

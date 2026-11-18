@@ -604,7 +604,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       the fixture `packages/auth/src/__fixtures__/identity-contract-expected.ts` (extended), and
       `otel-smoke-check.int.test.ts` fails when a declared name is missing from the
       module.
-- [ ] 9.2 `otel-smoke-check` runs the request, the repeated request, the reversal and the
+- [x] 9.2 `otel-smoke-check` runs the request, the repeated request, the reversal and the
       purge once successfully and once per applicable error or denial class, the
       cardinality guard rejects an attribute outside the contract's allowed set, and the
       marker-leak test covers the organization's name. Verify: `pnpm otel-smoke-check` is
