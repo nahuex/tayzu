@@ -439,7 +439,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
 
 ## 7. Reversal and the maintenance workflow
 
-- [ ] 7.1 The reversal script (`apps/api/scripts/cancel-org-deletion.ts`,
+- [x] 7.1 The reversal script (`apps/api/scripts/cancel-org-deletion.ts`,
       `pnpm --filter @tayzu/api identity:cancel-org-deletion`, with the role of Q35,
       started through the helper of `043`'s task 2.0) tombstones a pending marker (`state =
       'cancelled'`, `cancelled_at` and `cancelled_by`; the row is never deleted) and refuses a tenant with no pending marker, a tenant whose purge has begun (a step
