@@ -27,7 +27,7 @@
  *
  * ## 045 task 8.6: `DELETE /v1/organization`
  *
- * Task 8.6 of openspec/changes/045-org-deletion-and-data-retention Verify (excerpt):
+ * Task 8.6 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention Verify (excerpt):
  * "`step-up.http.int.test.ts` covers "A hijacked admin session without a fresh MFA cannot mint
  * power" for the route, nothing being recorded". The route carries `x-tayzu-risk: high` (design
  * D6), so a fresh step-up is required over HTTP; the 045 scenario "Deletion without step-up

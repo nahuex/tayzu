@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-11-18
-- **Change**: [`045-org-deletion-and-data-retention`](../../openspec/changes/045-org-deletion-and-data-retention/design.md) (design D1, D2, D3; Resolved decisions Q14, Q21, Q26, Q27, Q35, Q41, Q48, Q49, Q55, Q64, Q65, Q150, Q153 and Q158 to Q176)
+- **Change**: [`045-org-deletion-and-data-retention`](../../openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention/design.md) (design D1, D2, D3; Resolved decisions Q14, Q21, Q26, Q27, Q35, Q41, Q48, Q49, Q55, Q64, Q65, Q150, Q153 and Q158 to Q176)
 
 `043-identity-lifecycle-and-org-admin` reserved number `0019` for this change
 when org deletion moved out of it, so ADR-0020 to ADR-0024 were written first.

@@ -435,7 +435,7 @@ describe('the identity contract declares the 044 telemetry of design D15 (task 1
 });
 
 /*
- * Task 9.1 of openspec/changes/045-org-deletion-and-data-retention (design "Observability
+ * Task 9.1 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design "Observability
  * contract"). Verify clause: "`identity-contract.test.ts` snapshot-asserts every added name
  * against the fixture `packages/auth/src/__fixtures__/identity-contract-expected.ts`
  * (extended)".

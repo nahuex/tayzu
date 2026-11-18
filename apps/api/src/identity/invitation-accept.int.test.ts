@@ -4662,7 +4662,7 @@ describe('A compensated new-account acceptance deletes the _user row it created 
 });
 
 /**
- * Task 5.6 of openspec/changes/045-org-deletion-and-data-retention (design D4: "An invitation of
+ * Task 5.6 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D4: "An invitation of
  * such a tenant is no longer acceptable: it answers the same uniform rejection as every other dead
  * invitation (`CATALOG_NOT_FOUND`, `043` D4 step 5), with the denial reason
  * `tenant_pending_deletion` only in `catalog.security.invitation_acceptance_denied`").

@@ -107,7 +107,7 @@ is `FORCE`d, and a role with `BYPASSRLS` is exempt regardless.
 
 ## Addendum, 2026-11-18: five roles and Better Auth row-level security
 
-- **Change**: [`045-org-deletion-and-data-retention`](../../openspec/changes/045-org-deletion-and-data-retention/design.md) (design D1 to D3; Resolved decisions Q35, Q48, Q49, Q59, Q65, Q82, Q159, Q161, Q162 and Q171)
+- **Change**: [`045-org-deletion-and-data-retention`](../../openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention/design.md) (design D1 to D3; Resolved decisions Q35, Q48, Q49, Q59, Q65, Q82, Q159, Q161, Q162 and Q171)
 
 Org deletion ([ADR-0019](0019-org-deletion-two-phase-purge.md)) changes two
 statements of this ADR. Decision 1 says "Three roles", and its table records

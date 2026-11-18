@@ -1867,7 +1867,7 @@ describe('otel-smoke-check, 043: every declared identity name is in the imported
 });
 
 /*
- * Task 9.1 of openspec/changes/045-org-deletion-and-data-retention: "`otel-smoke-check.int.test.ts`
+ * Task 9.1 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention: "`otel-smoke-check.int.test.ts`
  * fails when a declared name is missing from the module." The 043 check above iterates the
  * extended fixture, so it already fails for every 045 name the module lacks; this check pins the
  * fifteen 045 names (and the value sets the cardinality guard reads from the module) on the spec
@@ -3580,7 +3580,7 @@ describe('otel-smoke-check, 044: every declared 044 name is observed once and no
 });
 
 /**
- * `otel-smoke-check`, 045 extension (task 9.2 of openspec/changes/045-org-deletion-and-data-retention;
+ * `otel-smoke-check`, 045 extension (task 9.2 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention;
  * design.md "Observability contract", Resolved decision Q169).
  *
  * "`otel-smoke-check` runs the request, the repeated request, the reversal and the purge once

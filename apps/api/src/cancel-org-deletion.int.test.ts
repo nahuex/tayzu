@@ -1,5 +1,5 @@
 /**
- * Task 7.1 of openspec/changes/045-org-deletion-and-data-retention (design D3, Resolved decisions
+ * Task 7.1 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D3, Resolved decisions
  * Q35, Q41, Q70 and Q79; migration `0013`): the reversal script
  * `apps/api/scripts/cancel-org-deletion.ts` (`pnpm --filter @tayzu/api identity:cancel-org-deletion`).
  *

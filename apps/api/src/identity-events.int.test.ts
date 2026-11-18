@@ -24,7 +24,7 @@
  * - THEN the acceptance's audit event names the invitee as its actor, the bootstrap's names the
  *   operator's opaque id (the refusal without an operator id is 4.6b's case)
  *
- * ## Extended by task 9.3 of openspec/changes/045-org-deletion-and-data-retention
+ * ## Extended by task 9.3 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention
  *
  * Design "Observability contract" (log-event table) and D1 to D3. Scenarios, quoted from
  * `specs/org-deletion-and-data-retention/spec.md`:
