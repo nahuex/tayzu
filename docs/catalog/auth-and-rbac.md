@@ -146,7 +146,7 @@ The two public Tayzu routes are in `PUBLIC_ROUTE_ALLOWLIST`, each with a reason.
 ### Organization deletion (change 045)
 
 Change
-[`045-org-deletion-and-data-retention`](../../openspec/changes/045-org-deletion-and-data-retention/design.md)
+[`045-org-deletion-and-data-retention`](../../openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention/design.md)
 adds `identity.organization.delete` (`DELETE /v1/organization`,
 `x-tayzu-risk: high`), behind the same `MOUNT_IDENTITY_ROUTES` switch. Any
 admin of the tenant may call it. The query parameter `confirmation` must equal

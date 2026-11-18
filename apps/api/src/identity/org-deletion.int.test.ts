@@ -1,5 +1,5 @@
 /**
- * Task 5.1 of openspec/changes/045-org-deletion-and-data-retention (design D1 "Phase 1,
+ * Task 5.1 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D1 "Phase 1,
  * request", D6 "API contract"; spec requirement "The deletion route is authorized, step-up
  * gated, tenant-bound and mounted behind the switch").
  *

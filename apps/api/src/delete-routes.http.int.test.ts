@@ -20,7 +20,7 @@
  *
  * ## 045 task 8.4: the confirmation of `DELETE /v1/organization` is read from the query
  *
- * Task 8.4 of openspec/changes/045-org-deletion-and-data-retention (design D6: the route
+ * Task 8.4 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D6: the route
  * uses `inputStructure: 'detailed'`, the confirmation travels in the query string as
  * `?confirmation=<organization identifier>` and is compared to the host `ctx.tenantId`; a
  * confirmation sent only in a body does not count, Resolved decision Q47 item 2).

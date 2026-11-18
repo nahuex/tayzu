@@ -1,5 +1,5 @@
 /**
- * Task 5.5 of openspec/changes/045-org-deletion-and-data-retention (design D5 "The deletion
+ * Task 5.5 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D5 "The deletion
  * notice is the eighth fixed template and goes through `043`'s notice controls", Resolved
  * decisions Q27 and Q53).
  *

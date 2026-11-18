@@ -12,7 +12,7 @@
  *
  * ## 045 task 8.6: `DELETE /v1/organization` naming `t2`
  *
- * Task 8.6 of openspec/changes/045-org-deletion-and-data-retention Verify (excerpt):
+ * Task 8.6 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention Verify (excerpt):
  * "`cross-tenant.http.int.test.ts` covers a confirmation naming `t2`, called by `t1`'s admin,
  * answering the same response as any wrong confirmation (the route has no target in its path)".
  * Scenario "Org deletion targets only the host tenant": WHEN an admin of `t1` requests org

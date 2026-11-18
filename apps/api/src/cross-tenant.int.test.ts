@@ -1813,7 +1813,7 @@ describe('cross-tenant matrix: users create, link and unlink (task 12.9)', () =>
 });
 
 /**
- * Task 8.5 of openspec/changes/045-org-deletion-and-data-retention (design D6: the target of
+ * Task 8.5 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D6: the target of
  * `identity.organization.delete` is the host tenant itself, "the resource id is the tenant id
  * ... and the real tenant is the host tenant, never a value read from input"; "Every Better
  * Auth call the handler makes is given the host tenant only").

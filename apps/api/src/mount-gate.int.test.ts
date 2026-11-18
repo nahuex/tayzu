@@ -735,7 +735,7 @@ describe('the admin MFA reset route is unreachable until mounted (044 task 10.5)
 });
 
 /**
- * Task 8.3 of openspec/changes/045-org-deletion-and-data-retention (spec requirement "Org
+ * Task 8.3 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (spec requirement "Org
  * deletion is requested through one confirmed, step-up gated route"; design D6; `043`'s task
  * 14.3 mount switch; Resolved decision Q166).
  *

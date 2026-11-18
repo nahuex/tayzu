@@ -13,7 +13,7 @@
  *
  * ## 045 task 8.7: `DELETE /v1/organization`
  *
- * Task 8.7 of openspec/changes/045-org-deletion-and-data-retention (design D9: the route has no
+ * Task 8.7 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D9: the route has no
  * path parameter, its confirmation travels in the query string, which the HTTP instrumentation
  * already drops, and the route-template matcher gains its path): "The route-template matcher of
  * `043`'s task 15.5 covers the path of the route, so that nothing about it but its template is

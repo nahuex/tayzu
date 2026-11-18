@@ -1023,7 +1023,7 @@ describe('Machine-credential token exchange (task 5.3, design D5)', () => {
   });
 
   /**
-   * Task 5.6 of openspec/changes/045-org-deletion-and-data-retention (design D4; spec requirement
+   * Task 5.6 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D4; spec requirement
    * "A tenant with a pending or purged deletion is closed to every principal": "Token exchange
    * MUST refuse to mint a token for a credential of such a tenant", "failing closed on any lookup
    * failure", "A `cancelled` marker MUST NOT reject").

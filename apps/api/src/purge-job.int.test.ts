@@ -1,5 +1,5 @@
 /**
- * Task 6.6 of openspec/changes/045-org-deletion-and-data-retention (design D2, Resolved
+ * Task 6.6 of openspec/changes/archive/2026-11-18-045-org-deletion-and-data-retention (design D2, Resolved
  * decision Q49): the purge job entry point, `apps/api/scripts/purge-job.ts`
  * (`pnpm --filter @tayzu/api identity:purge`).
  *
