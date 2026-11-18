@@ -393,7 +393,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       (tenant id, state, timestamps and the opaque requester id only) remains, and a repeated purge deletes
       nothing. Verify: `org-purge-resume.int.test.ts` covers "A purge does not touch
       a tenant whose window has not passed" and "A repeated purge is safe".
-- [ ] 6.6 The purge job entry point, `apps/api/scripts/purge-job.ts`
+- [x] 6.6 The purge job entry point, `apps/api/scripts/purge-job.ts`
       (`pnpm --filter @tayzu/api identity:purge`): a `tsx` script run by a scheduled job
       (its own Container Apps Job, Resolved decision Q49), started through the helper
       of `043`'s task 2.0, with no HTTP listener, that connects **only** as `tayzu_purge`

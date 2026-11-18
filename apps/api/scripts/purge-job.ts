@@ -1,13 +1,19 @@
 /**
  * The purge job (`045` design D2): phase 2 of the org deletion, run as `tayzu_purge` once a
  * tenant's window has passed, in two idempotent steps (catalog rows, then Better Auth
- * rows). Filled in by the tasks of group 6; started by the `identity:purge` package script.
+ * rows). Started by the `identity:purge` package script (a scheduled Container Apps Job,
+ * Resolved decision Q49) through `main`, which opens no listener.
  */
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { emitIdentityEvent } from '@tayzu/auth';
+import { createPool } from '@tayzu/db';
 import type { Pool, PoolClient } from 'pg';
 
 import type { Telemetry } from '../src/telemetry.js';
 import { runScript, type RunScriptOptions } from './run-script.js';
+import { FixedMessageError, loadScriptConfig } from './script-config.js';
 
 /** The seven tenant tables step 1 empties (migration `0013` names them one by one). */
 export type CatalogPurgeTable =
@@ -320,7 +326,7 @@ export async function purgeAuthStep(
 export interface RunPurgeOptions {
   /** A `tayzu_purge` pool. */
   readonly pool: Pool;
-  /** The tenants this pass purges. */
+  /** The tenants this pass purges; when absent, the pass lists the due tenants itself. */
   readonly tenantIds?: readonly string[];
   readonly env?: RunScriptOptions['env'];
   /** Forwarded to `runScript`. */
@@ -355,41 +361,132 @@ function emitStepFailed(tenantId: string, step: PurgeStep): void {
  * Purges one tenant: step 1, then step 2 with the entities step 1 removed (Resolved decision
  * Q169: 0 when step 1 was recorded by an earlier run). A failed step is logged and ends this
  * tenant's pass, so a failed step 1 never runs step 2; the next run resumes from the marker.
+ * Resolves `false` when a step failed.
  */
-async function purgeTenant(options: RunPurgeOptions, tenantId: string): Promise<void> {
+async function purgeTenant(options: RunPurgeOptions, tenantId: string): Promise<boolean> {
   const { pool } = options;
   let entitiesRemoved: number;
   try {
     ({ entitiesRemoved } = await purgeCatalogStep(pool, tenantId, options.catalogOptions));
   } catch {
     emitStepFailed(tenantId, 'catalog');
-    return;
+    return false;
   }
   try {
     await purgeAuthStep(pool, tenantId, { ...options.authOptions, entitiesRemoved });
   } catch {
     emitStepFailed(tenantId, 'auth');
+    return false;
   }
+  return true;
 }
 
 /**
- * One purge pass inside `runScript`, whose final flush exports the completion and failure
- * events before this resolves (`043` task 2.0, Resolved decision Q79). A failed tenant does
- * not stop the pass: it is logged and the pass continues with the next tenant, then resolves.
- * A tenant that is not due (already purged, not yet due, or never marked) is skipped
- * silently: both steps are no-ops for it and nothing is logged. Selecting the tenants is the
- * due-tenant listing's job (task 6.6); the job's exit status when a tenant failed is the
- * entry point's concern (task 6.6 too).
+ * The due tenants, listed through the marker policy: under `0013`'s `purge_due_select` a
+ * `tayzu_purge` pool sees exactly the pending markers whose window has passed, and the
+ * predicate repeats that so the listing does not depend on the policy alone.
  */
-export async function runPurge(options: RunPurgeOptions): Promise<void> {
-  const { tenantIds = [] } = options;
-  await runScript(
+export async function listDueTenants(pool: Pick<Pool, 'query'>): Promise<string[]> {
+  const { rows } = await pool.query<{ tenant_id: string }>(
+    `select tenant_id from tenant_deletion_marker
+      where state = 'pending' and purge_after <= now()
+      order by tenant_id`,
+  );
+  return rows.map((row) => row.tenant_id);
+}
+
+export interface PurgeSummary {
+  /** The tenants whose catalog or auth step failed in this pass. */
+  readonly tenantsFailed: number;
+}
+
+/**
+ * One purge pass inside `runScript`, which first asserts `current_user = 'tayzu_purge'` on
+ * `pool` (design D2: `assertRuntimeRole` would let `tayzu_app` through) and rejects with its
+ * fixed message under any other role, before any other query. Its final flush exports the
+ * completion and failure events before this resolves (`043` task 2.0, Resolved decision Q79).
+ *
+ * Without `tenantIds` the pass purges the tenants `listDueTenants` returns. A failed tenant
+ * does not stop the pass: it is logged, counted in the summary, and the pass continues with
+ * the next tenant. A tenant that is not due (already purged, not yet due, or never marked) is
+ * skipped silently: both steps are no-ops for it and nothing is logged.
+ */
+async function purgePass(options: RunPurgeOptions): Promise<PurgeSummary> {
+  const { pool } = options;
+  return runScript(
     'purge-job',
     async () => {
+      const tenantIds = options.tenantIds ?? (await listDueTenants(pool));
+      let tenantsFailed = 0;
       for (const tenantId of tenantIds) {
-        await purgeTenant(options, tenantId);
+        if (!(await purgeTenant(options, tenantId))) tenantsFailed += 1;
+      }
+      return { tenantsFailed };
+    },
+    { env: options.env, roles: [{ pool, roles: ['tayzu_purge'] }], telemetry: options.telemetry },
+  );
+}
+
+/**
+ * One purge pass (see `purgePass`). It resolves even when a tenant failed; the job's exit
+ * status for that case comes from `main`'s summary.
+ */
+export async function runPurge(options: RunPurgeOptions): Promise<void> {
+  await purgePass(options);
+}
+
+export interface PurgeJobOptions {
+  /** Defaults to `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** A pool the host already built; when given, `main` does not end it. */
+  readonly pool?: Pool;
+  /** Replaces `startTelemetry(env)`; a test seam. */
+  readonly telemetry?: Telemetry;
+}
+
+/**
+ * The entry point: one pass over the due tenants on a pool built from `PURGE_DATABASE_URL`
+ * (`createPool` requires `sslmode=verify-full`), the only database URL the job reads. The
+ * caller turns `tenantsFailed > 0` into a non-zero exit status.
+ */
+export async function main(options: PurgeJobOptions = {}): Promise<PurgeSummary> {
+  const env = options.env ?? process.env;
+  const config = loadScriptConfig('purge-job', env);
+  const pool = options.pool ?? createPool(config.PURGE_DATABASE_URL);
+  try {
+    return await purgePass({ pool, env, telemetry: options.telemetry });
+  } finally {
+    if (options.pool === undefined) await pool.end();
+  }
+}
+
+const GENERIC_FAILURE_MESSAGE =
+  'the purge job failed; check the database role and the environment.';
+
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  main().then(
+    ({ tenantsFailed }) => {
+      if (tenantsFailed > 0) {
+        process.stderr.write(`purge-job: ${String(tenantsFailed)} tenant(s) failed\n`);
+        process.exitCode = 1;
       }
     },
-    { env: options.env, telemetry: options.telemetry },
+    (error: unknown) => {
+      // Only a fixed text: a driver error can quote a host or a bind value.
+      process.stderr.write(
+        `purge-job failed: ${error instanceof FixedMessageError ? error.message : GENERIC_FAILURE_MESSAGE}\n`,
+      );
+      process.exitCode = 1;
+    },
   );
 }
