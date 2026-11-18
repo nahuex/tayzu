@@ -1,5 +1,9 @@
 # Proposal: 003-catalog-ui-core
 
+**Status:** approved by the human at Checkpoint 1 on 2026-11-18 ("si", in chat). Task
+1.1's pre-assessment and drift-check run first, at the start of implementation; any
+conflict they find is asked in chat and recorded from Q27 on.
+
 ## Why
 
 Tayzu has a catalog API (`001`), authentication, RBAC and tenant isolation (`002`),
