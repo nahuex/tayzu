@@ -408,7 +408,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       process opened no listener and no connection other than `tayzu_purge`, and
       asserts it refuses to start as `tayzu_app` (which passes `assertRuntimeRole`) and
       as `tayzu_auth`.
-- [ ] 6.7 A completeness test driven by the schema's columns and the identifier
+- [x] 6.7 A completeness test driven by the schema's columns and the identifier
       patterns, not by foreign keys alone: every table that has a `tenant_id` column
       (catalog), every `auth` table that references an organization or a user by
       foreign key **or by column** (`apikey.reference_id` and

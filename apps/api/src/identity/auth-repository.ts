@@ -121,8 +121,9 @@ export interface AuthRepository {
   /** Deletes the user's sessions whose active organization is the tenant; rows deleted. */
   deleteSessionsOf: (tenantId: string, userId: string) => Promise<number>;
   /**
-   * Deletes every session whose active organization is the tenant (045 D1); the user id of
-   * each deleted session, one entry per session.
+   * Deletes every session whose active organization is the tenant (045 D1), with the
+   * `sso-reauth-state:` and `sso-reauth-result:` verification rows keyed by those sessions'
+   * tokens (Q170); the user id of each deleted session, one entry per session.
    */
   deleteTenantSessions: (tenantId: string) => Promise<string[]>;
   /**
@@ -492,8 +493,19 @@ export function createAuthRepository(authPool: Pool): AuthRepository {
 
     async deleteTenantSessions(tenantId) {
       requireTenant(tenantId);
+      // One statement: the sessions and the reauthorization rows keyed by their tokens go
+      // together, so a never-consumed `id_token` cannot outlive the request (Q170). The state
+      // prefix mirrors `reauthorization.ts`: `{"token":<JSON-encoded token>,`.
       const result = await authPool.query<{ user_id: string }>(
-        'delete from auth.session where active_organization_id = $1 returning user_id',
+        `with deleted as (
+           delete from auth.session where active_organization_id = $1 returning user_id, token
+         ), reauthorization as (
+           delete from auth.verification v using deleted d
+           where v.identifier = 'sso-reauth-result:' || d.token
+              or (v.identifier like 'sso-reauth-state:%'
+                  and position('{"token":' || to_json(d.token)::text || ',' in v.value) = 1)
+         )
+         select user_id from deleted`,
         [tenantId],
       );
       return result.rows.map((row) => row.user_id);

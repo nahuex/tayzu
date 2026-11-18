@@ -49,7 +49,7 @@
 // Load-bearing import order (design D1 of `043`): the telemetry harness registers before
 // anything that loads `@tayzu/auth` creates its logger.
 import { registration, type TelemetryTestHarness } from '../__fixtures__/link-telemetry.js';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 import { createRouterClient } from '@orpc/server';
 import {
@@ -648,6 +648,73 @@ describe('identity.organization.delete requires the host tenant as confirmation 
         expect(record.attributes['tayzu.tenant.id']).toBe(t1.tenantId);
         expect(record.attributes['tayzu.auth.revocation.reason']).toBe('admin_action');
       }
+    }, 60_000);
+
+    /**
+     * A session active in `tenantId` with a known token, plus the two reauthorization rows
+     * keyed by it, written exactly as `reauthorization.ts` writes them: the state row
+     * (`sso-reauth-state:<random>`, value `{"token":<token>,"verifier":<random>}`, 600 s) and
+     * the result row (`sso-reauth-result:<token>`, value the ID token, 330 s).
+     */
+    async function seedReauthorizedSession(
+      userId: string,
+      tenantId: string,
+    ): Promise<{ readonly stateIdentifier: string; readonly resultIdentifier: string }> {
+      const token = `tok-${randomUUID()}`;
+      await authPool.query(
+        `insert into auth.session (id, expires_at, token, created_at, updated_at, user_id, active_organization_id)
+         values ($1, now() + interval '1 day', $2, now(), now(), $3, $4)`,
+        [`ses-${randomUUID()}`, token, userId, tenantId],
+      );
+      const stateIdentifier = `sso-reauth-state:${randomBytes(32).toString('base64url')}`;
+      const resultIdentifier = `sso-reauth-result:${token}`;
+      const store =
+        'insert into auth.verification (id, identifier, value, expires_at) values ($1, $2, $3, now() + make_interval(secs => $4))';
+      await authPool.query(store, [
+        randomUUID(),
+        stateIdentifier,
+        JSON.stringify({ token, verifier: randomBytes(32).toString('base64url') }),
+        600,
+      ]);
+      await authPool.query(store, [
+        randomUUID(),
+        resultIdentifier,
+        `id-token-${randomUUID()}`,
+        330,
+      ]);
+      return { stateIdentifier, resultIdentifier };
+    }
+
+    async function verificationIdentifiers(identifiers: readonly string[]): Promise<string[]> {
+      const result = await authPool.query<{ identifier: string }>(
+        'select identifier from auth.verification where identifier = any($1) order by identifier',
+        [identifiers],
+      );
+      return result.rows.map((row) => row.identifier);
+    }
+
+    it("deletes the sso-reauth-state: and sso-reauth-result: rows keyed by the tokens of t1's deleted sessions, and leaves another tenant's rows (Q170)", async () => {
+      const t1 = await freshTenant();
+      const t2 = await freshTenant();
+      const t1Rows = await seedReauthorizedSession(t1.adminId, t1.tenantId);
+      const t2Rows = await seedReauthorizedSession(t2.adminId, t2.tenantId);
+      const t1Identifiers = [t1Rows.stateIdentifier, t1Rows.resultIdentifier];
+      const t2Identifiers = [t2Rows.stateIdentifier, t2Rows.resultIdentifier];
+      expect(
+        await verificationIdentifiers([...t1Identifiers, ...t2Identifiers]),
+        'precondition: the four reauthorization rows exist',
+      ).toEqual([...t1Identifiers, ...t2Identifiers].sort());
+
+      await requestDeletion(t1);
+
+      expect(
+        await verificationIdentifiers(t1Identifiers),
+        "t1's reauthorization state and result rows are gone",
+      ).toEqual([]);
+      expect(
+        await verificationIdentifiers(t2Identifiers),
+        "t2's reauthorization state and result rows remain",
+      ).toEqual([...t2Identifiers].sort());
     }, 60_000);
 
     it("revokes every t1 credential through the revocation list and cancels t1's pending invitations; another tenant's credentials and invitations are untouched", async () => {
