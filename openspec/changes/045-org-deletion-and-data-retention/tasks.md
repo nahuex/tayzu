@@ -556,7 +556,7 @@ code as `*.test.ts`. Integration tests are named `*.int.test.ts` and need
       them without the email path since `044`. Verify: `mount-gate.int.test.ts` (extended)
       covers "The route does not exist until mounted" for `DELETE /v1/organization`, and
       fails when the procedure is registered outside the switch (a scratch registration).
-- [ ] 8.4 Over HTTP the confirmation of `DELETE /v1/organization` is read from the query
+- [x] 8.4 Over HTTP the confirmation of `DELETE /v1/organization` is read from the query
       string and compared to the host tenant (`inputStructure: 'detailed'`, design D6);
       a confirmation sent only in a body does not count. Verify:
       `delete-routes.http.int.test.ts` (extended) covers the confirmation in the query
