@@ -103,7 +103,20 @@ export const SPANS: readonly SpanContract[] = [
   {
     name: 'catalog.entity.list',
     kind: 'operation',
-    requiredAttributes: ['tayzu.catalog.blueprint.identifier', 'tayzu.catalog.page.size'],
+    requiredAttributes: [
+      'tayzu.catalog.blueprint.identifier',
+      'tayzu.catalog.page.size',
+      // 003-catalog-ui-core design, Spans table.
+      'tayzu.catalog.sort.field',
+      'tayzu.catalog.sort.order',
+    ],
+    conditionalAttributes: ['tayzu.catalog.result.count'],
+  },
+  {
+    // 003-catalog-ui-core design, Spans table: the cross-blueprint search.
+    name: 'catalog.entity.search',
+    kind: 'operation',
+    requiredAttributes: ['tayzu.catalog.search.query_length', 'tayzu.catalog.page.size'],
     conditionalAttributes: ['tayzu.catalog.result.count'],
   },
   {

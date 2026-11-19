@@ -91,7 +91,7 @@ import {
   type SpanContract,
 } from './contract.js';
 
-/** Design.md, "Observability contract" -> the 16 spans table, transcribed verbatim. */
+/** Design.md, "Observability contract" -> the 17 spans table (16 from 001, plus 003's catalog.entity.search), transcribed verbatim. */
 const DESIGN_SPANS: readonly SpanContract[] = [
   {
     name: 'catalog.blueprint.create',
@@ -148,7 +148,21 @@ const DESIGN_SPANS: readonly SpanContract[] = [
   {
     name: 'catalog.entity.list',
     kind: 'operation',
-    requiredAttributes: ['tayzu.catalog.blueprint.identifier', 'tayzu.catalog.page.size'],
+    // 003-catalog-ui-core design, Spans table: "adds tayzu.catalog.sort.field
+    // and tayzu.catalog.sort.order" to the required attributes.
+    requiredAttributes: [
+      'tayzu.catalog.blueprint.identifier',
+      'tayzu.catalog.page.size',
+      'tayzu.catalog.sort.field',
+      'tayzu.catalog.sort.order',
+    ],
+    conditionalAttributes: ['tayzu.catalog.result.count'],
+  },
+  {
+    // 003-catalog-ui-core design, Spans table: the cross-blueprint search.
+    name: 'catalog.entity.search',
+    kind: 'operation',
+    requiredAttributes: ['tayzu.catalog.search.query_length', 'tayzu.catalog.page.size'],
     conditionalAttributes: ['tayzu.catalog.result.count'],
   },
   {
@@ -360,7 +374,7 @@ describe('telemetry/contract.ts mirrors design.md, "Observability contract" (tas
   });
 
   describe('Spans', () => {
-    it('declares exactly the 16 spans design.md names, no more and no fewer', () => {
+    it('declares exactly the 17 spans design.md names (003 adds catalog.entity.search), no more and no fewer', () => {
       expect(SPANS.map((span) => span.name).sort()).toEqual(
         DESIGN_SPANS.map((span) => span.name).sort(),
       );

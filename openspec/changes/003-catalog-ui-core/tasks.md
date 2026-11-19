@@ -242,7 +242,7 @@ stack of `scripts/ci/e2e.sh`.
       "Search shows only what the caller may list", "Another tenant's entity is never
       found" and "Limits are checked before the database" (no database span), and the
       `_user` and `_team` entities included under the plan (Q19).
-- [ ] 3.7 Telemetry of search and sort (Observability contract): the span
+- [x] 3.7 Telemetry of search and sort (Observability contract): the span
       `catalog.entity.search` with `tayzu.catalog.search.query_length`,
       `tayzu.catalog.page.size` and `tayzu.catalog.result.count`; `catalog.entity.list`
       with `tayzu.catalog.sort.field` and `tayzu.catalog.sort.order`; the operation

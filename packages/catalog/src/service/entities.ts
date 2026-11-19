@@ -39,7 +39,7 @@ import {
   type EntitySortOrder,
 } from '../domain/pagination.js';
 import { assertReservedAccess, type ReservedOperationKind } from '../domain/reserved.js';
-import { parseSearchQuery } from '../domain/search-query.js';
+import { normalizedQueryLength, parseSearchQuery } from '../domain/search-query.js';
 import { parseSafeInput } from '../domain/safe-parse.js';
 import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
@@ -383,6 +383,31 @@ const ENTITY_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.entity.identifier';
 
 const ENTITY_SORT_FIELDS: readonly EntitySortField[] = ['identifier', 'title', 'updatedAt'];
 const ENTITY_SORT_ORDERS: readonly EntitySortOrder[] = ['asc', 'desc'];
+
+/** 003 design, Spans table: the `tayzu.catalog.sort.field` value of each API sort field. */
+const SORT_FIELD_ATTRIBUTE_VALUES: Readonly<Record<EntitySortField, string>> = {
+  identifier: 'identifier',
+  title: 'title',
+  updatedAt: 'updated_at',
+};
+
+/**
+ * 003 design, Spans table: `tayzu.catalog.sort.field` and
+ * `tayzu.catalog.sort.order` are required on `catalog.entity.list`, so they
+ * are recorded before any check can throw. Only an enum value is recorded:
+ * an unknown one is caller input, which `resolveEntitySort` then rejects.
+ */
+function recordEntitySort(input: ListEntitiesInput): void {
+  const span = trace.getActiveSpan();
+  const sort = input.sort ?? 'identifier';
+  const order = input.order ?? 'asc';
+  if (ENTITY_SORT_FIELDS.includes(sort)) {
+    span?.setAttribute('tayzu.catalog.sort.field', SORT_FIELD_ATTRIBUTE_VALUES[sort]);
+  }
+  if (ENTITY_SORT_ORDERS.includes(order)) {
+    span?.setAttribute('tayzu.catalog.sort.order', order);
+  }
+}
 
 /**
  * 003 design D6: the sort of `entities.list`, `identifier` `asc` by default.
@@ -1724,6 +1749,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       // attribute of catalog.entity.list, not conditional -- set it before
       // the CATALOG_LIMIT_EXCEEDED check below can throw.
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.page.size', pageSize);
+      recordEntitySort(input);
       if (pageSize > limits.pagination.maxPageSize) {
         throw new CatalogError('CATALOG_LIMIT_EXCEEDED', 'Page size exceeds the limit', {
           details: { limit: 'pagination.maxPageSize' },
@@ -2082,13 +2108,26 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     authz,
     authorization: PLAN_AUTHORIZED,
     validateInput: (input) => {
+      // 003 design, Spans table: both attributes are required, so they are
+      // recorded before the checks below can throw. The query's length only,
+      // never its text; the limit as requested, even when it is rejected
+      // (a malformed number such as 1.5 included). Only a number is ever
+      // recorded, so a direct caller's non-number cannot reach the span.
+      trace.getActiveSpan()?.setAttributes({
+        'tayzu.catalog.search.query_length': normalizedQueryLength(input.q),
+        'tayzu.catalog.page.size':
+          typeof input.limit === 'number' ? input.limit : limits.search.defaultLimit,
+      });
       parseSearchQuery(input, limits);
     },
     handler: async ({ ctx, client, input }) => {
       // Pure and already checked by `validateInput`; parsed again for its values.
       const query = parseSearchQuery(input, limits);
       const planFilter = await planEntityList(authz, ctx);
-      if (planFilter.kind === 'denied') return { output: { items: [] } };
+      if (planFilter.kind === 'denied') {
+        trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', 0);
+        return { output: { items: [] } };
+      }
 
       const items = await searchEntities(drizzle(client), ctx.tenantId, {
         q: query.q,
@@ -2096,6 +2135,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         limit: query.limit,
         authorizationFilter: planFilter.filter,
       });
+      trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', items.length);
       return { output: { items } };
     },
   });

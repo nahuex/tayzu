@@ -33,8 +33,22 @@ function invalidInput(path: string, message: string, issueMessage: string): neve
   });
 }
 
+/** Design D5: the query as matched, trimmed and then NFC-normalized. */
+function normalizeQuery(raw: string): string {
+  return raw.trim().normalize('NFC');
+}
+
+/**
+ * The length of `raw` after the trim and NFC normalization: the value of the
+ * span attribute `tayzu.catalog.search.query_length`, so telemetry carries
+ * the query's length and never its text.
+ */
+export function normalizedQueryLength(raw: string): number {
+  return normalizeQuery(raw).length;
+}
+
 function parseQueryText(raw: string, limits: CatalogLimits['search']): string {
-  const q = raw.trim().normalize('NFC');
+  const q = normalizeQuery(raw);
   if (
     q.length < limits.minQueryLength ||
     q.length > limits.maxQueryLength ||
