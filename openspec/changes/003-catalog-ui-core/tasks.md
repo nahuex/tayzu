@@ -66,7 +66,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 2. Workspace and tooling
 
-- [ ] 2.1 _(setup)_ Scaffold `apps/web` (`@tayzu/web`, private, `type: module`):
+- [x] 2.1 _(setup)_ Scaffold `apps/web` (`@tayzu/web`, private, `type: module`):
       `package.json` with the scripts `dev`, `build` (`tsc -b && vite build`),
       `typecheck` (`tsc -b`), `test`, `test:unit` and `e2e`; the solution-style
       `tsconfig.json` referencing `tsconfig.app.json` (extends `tsconfig.base.json`;
