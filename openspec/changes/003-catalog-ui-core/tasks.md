@@ -225,7 +225,7 @@ stack of `scripts/ci/e2e.sh`.
       identifiers still page", "A cursor anchored on an unreadable entity is rejected"
       (and one of another tenant, the same answer), "Sorting does not widen visibility",
       and the default order unchanged.
-- [ ] 3.5 The search query domain (design D5): `domain/search-query.ts` trims and
+- [x] 3.5 The search query domain (design D5): `domain/search-query.ts` trims and
       NFC-normalizes `q`, checks 2 to 100 characters and no control character, checks
       `limit` against `CatalogLimits.search` (new: `minQueryLength`, `maxQueryLength`,
       `defaultLimit`, `maxLimit`, overridable like the others), and builds the escaped
