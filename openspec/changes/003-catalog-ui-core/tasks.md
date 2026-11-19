@@ -147,7 +147,7 @@ stack of `scripts/ci/e2e.sh`.
       `"e2e": "bash scripts/ci/e2e.sh all"`; `scripts/ci/local.sh` gains a `web build`
       step after `typecheck`. Verify: `pnpm build` twice reports a cache hit for
       `@tayzu/web#build` the second time, and `pnpm ci:local` runs the web build step.
-- [ ] 2.6 _(setup)_ **Needs the human's attention: a change to the agent harness.**
+- [x] 2.6 _(setup)_ **Needs the human's attention: a change to the agent harness.**
       `.claude/hooks/tdd-path-guard.sh` treats `apps/web/e2e/**/*.spec.ts` and
       `apps/web/e2e/fixtures/**` as test files, so the `test-writer` may write
       Playwright specs and the `implementer` may not (design D2, Q7). Present the diff
