@@ -195,7 +195,7 @@ stack of `scripts/ci/e2e.sh`.
       (`EXPLAIN` with sequential scans off), and the down script removing them;
       `schema.int.test.ts` passes with any index list it asserts updated. ⛔ **Stop for
       Checkpoint 3 approval of the SQL before continuing.**
-- [ ] 3.2 The sort-bound cursor (design D6, Q37): `encodeSortCursor` and
+- [x] 3.2 The sort-bound cursor (design D6, Q37): `encodeSortCursor` and
       `decodeSortCursor` in `packages/catalog/src/domain/pagination.ts` for
       `{ v: 2, s, o, id }` (the last row's UUID, no sort value, no tenant), checking the
       512-character limit first, rejecting a cursor of another sort or order and a
