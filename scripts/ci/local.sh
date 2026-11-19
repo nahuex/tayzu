@@ -36,6 +36,7 @@ step() {
 step "lint" pnpm lint
 step "format:check" pnpm format:check
 step "typecheck" pnpm typecheck
+step "web build" pnpm --filter @tayzu/web build
 step "policy:compile" pnpm policy:compile
 step "test" pnpm test
 step "contract:check" pnpm contract:check

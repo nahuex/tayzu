@@ -141,7 +141,7 @@ stack of `scripts/ci/e2e.sh`.
       Verify: `apps/web/src/smoke.test.tsx` (renders the root and finds its landmark by
       role) passes under `pnpm --filter @tayzu/web test` and `pnpm test:projects`, and
       `pnpm test:unit` includes it.
-- [ ] 2.5 _(setup)_ Turborepo and local CI: `apps/web/turbo.json` gives `build` the
+- [x] 2.5 _(setup)_ Turborepo and local CI: `apps/web/turbo.json` gives `build` the
       outputs `dist/**`; the root `turbo.json` gains an `e2e` task (`cache: false`,
       depending on `@tayzu/web#build`); the root `package.json` gains
       `"e2e": "bash scripts/ci/e2e.sh all"`; `scripts/ci/local.sh` gains a `web build`

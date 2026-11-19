@@ -24,7 +24,8 @@
     "otel-smoke-check": "turbo run otel-smoke-check",
     "db:migrate": "turbo run db:migrate",
     "policy:compile": "bash scripts/policy-compile.sh",
-    "ci:local": "bash scripts/ci/local.sh"
+    "ci:local": "bash scripts/ci/local.sh",
+    "e2e": "bash scripts/ci/e2e.sh all"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
