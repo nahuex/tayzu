@@ -156,7 +156,7 @@ stack of `scripts/ci/e2e.sh`.
       "apps/web/e2e/sign-in.spec.ts"}}` to `bash .claude/hooks/tdd-path-guard.sh
       test` exits 0 and to `... impl` exits 2, and `apps/web/src/app.tsx` still
       exits 2 for `test` and 0 for `impl`.
-- [ ] 2.7 The browser-safe catalog contract (design D4): move `catalogContract` and
+- [x] 2.7 The browser-safe catalog contract (design D4): move `catalogContract` and
       its schemas to `packages/catalog/src/api/contract-definition.ts`, which imports
       only `@orpc/contract` and `zod`; `contract.ts` re-exports it; add the
       `"./contract"` export. Verify: `contract-definition-imports.test.ts` (next to the
