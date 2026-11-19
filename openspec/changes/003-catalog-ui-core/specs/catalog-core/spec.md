@@ -10,9 +10,13 @@ identifier ascending by default, with cursor pagination. The list operation MUST
 also accept a sort key, `identifier`, `title` or `updatedAt`, and an order, `asc` or
 `desc`; rows with an equal sort key MUST be ordered by identifier in the same
 direction, so that paging returns every row exactly once. The cursor MUST be bound
-to the sort key and order it was issued for: a cursor used with another sort key or
-order, or a malformed cursor, MUST fail with `CATALOG_VALIDATION_FAILED`, and a
-cursor issued before sorting existed MUST stay valid for the default sort. Sorting
+to the sort key and order it was issued for and MUST NOT exceed the cursor length
+limit for any sort; it MUST carry no tenant and no sort value, only the position of
+the last row, whose sort key the server reads inside the caller's tenant under the
+same authorization as the list. A cursor used with another sort key or order, a
+malformed cursor, or one whose row is gone, is in another blueprint or tenant, or is
+not readable by the caller, MUST fail with `CATALOG_VALIDATION_FAILED`, and a cursor
+issued before sorting existed MUST stay valid for the default sort. Sorting
 MUST NOT change which entities the caller may see. The list operation MAY accept
 additional filters in later changes, but it MUST NOT return entities of other
 blueprints or tenants.
@@ -84,6 +88,18 @@ transaction, and each affected referrer gets a new `version` (not
 - **GIVEN** a cursor returned by a list sorted by `title`
 - **WHEN** it is sent with a list sorted by `identifier`
 - **THEN** the list fails with `CATALOG_VALIDATION_FAILED` on `/cursor`
+
+#### Scenario: Long titles and identifiers still page
+
+- **GIVEN** entities with 256-character titles and 256-character identifiers
+- **WHEN** they are listed sorted by `title` and the next page is requested
+- **THEN** every returned cursor is at most 512 characters and the second page continues the order
+
+#### Scenario: A cursor anchored on an unreadable entity is rejected
+
+- **GIVEN** a cursor crafted to point at an entity the caller cannot read
+- **WHEN** it is sent with a list sorted by `title`
+- **THEN** the list fails with `CATALOG_VALIDATION_FAILED` on `/cursor` and reveals nothing about that entity
 
 #### Scenario: Sorting does not widen visibility
 

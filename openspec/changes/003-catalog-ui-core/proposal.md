@@ -1,5 +1,11 @@
 # Proposal: 003-catalog-ui-core
 
+**Status (2026-11-19):** Checkpoint 1 approved. Task 1.1 (the VCDM Mode A
+pre-assessment and the drift-check against `master`) ran on 2026-11-18/19; its two
+blocking gaps (B1 and B2, SEC16), its other findings and the human's answers (Resolved
+decisions Q27 to Q43 in `design.md`) are folded into the design, the specs and the
+tasks, and Checkpoint 1 stands per Q27.
+
 **Status:** approved by the human at Checkpoint 1 on 2026-11-18 ("si", in chat). Task
 1.1's pre-assessment and drift-check run first, at the start of implementation; any
 conflict they find is asked in chat and recorded from Q27 on.
@@ -41,8 +47,8 @@ and `:78`; `SPE4` L190).
   user menu. Every dependency is named in `design.md` D3 with its license.
 - **Same-origin hosting.** The API's Fastify server serves the Vite build from the
   same container: hashed assets under `/assets/`, and an SPA fallback that answers
-  `index.html` for a `GET` that is not under `/v1`, `/api/auth`, `/assets` or
-  `/healthz`. The `SameSite=Lax` session cookie, the oRPC CSRF header and the Visma
+  `index.html` for every `GET` or `HEAD` that is not under `/v1`, `/api` or `/assets`,
+  is not `/healthz` and is not one of the root build files (Q28). The `SameSite=Lax` session cookie, the oRPC CSRF header and the Visma
   Connect `form_post` callbacks keep working unchanged, and the SPA needs no CORS
   (Q2). The cookie is never readable by script.
 - **A strict, self-only Content Security Policy** and the related headers on every
@@ -79,17 +85,20 @@ and `:78`; `SPE4` L190).
     indexes and two sort indexes. ⛔ Checkpoint 3.
   - `GET /v1/me`, the shell's view of the caller's own session: display name, active
     organization, role, sign-in method, MFA state and which gate (temporary password,
-    MFA enrolment) applies. It never reads a tenant from input.
+    MFA enrolment) applies. It reads the session only and never reads a tenant from
+    input.
   - The Visma Connect re-authorization callback redirects to a fixed page of the app
-    instead of answering an empty JSON body, when the web app is served.
+    instead of answering a JSON body, when the web app is served, and a Visma Connect
+    step-up is now logged on success (`auth.security.step_up_succeeded` with
+    `visma_connect`) and on failure (the new `auth.security.reauthorization_failed`).
 - **Tests.** Component tests with Vitest, Testing Library and jsdom, and a Playwright
   end-to-end suite with axe-core accessibility checks (WCAG 2.2 A and AA) against the
   real API, PostgreSQL 18, Cerbos and the local OIDC stub, in a new CI job (Q7). The
   TDD path guard learns Playwright specs; that hook change needs the human's attention
   (task 2.6).
 - **No browser telemetry** (Q6). The telemetry contract is server-side only: the new
-  search span, the sort attributes of `catalog.entity.list`, the `me` span and the
-  path rule for SPA routes.
+  search span, the sort attributes of `catalog.entity.list`, the `me` span, the two
+  step-up events and the path-shape rule that exports every app path as `/{spa}`.
 
 Out of scope: page layouts, saved views, branding, the announcement banner, the icon
 library, enum colors and their storage (`047-catalog-ui-customization`); the filter
@@ -122,9 +131,14 @@ a profile locale field (Q10).
   search domain, service and repository code, the sort-bound cursor and the new
   telemetry names; in `apps/api`, the static and SPA routes, the CSP and header
   configuration, `GET /v1/me`, the callback redirect and the `WEB_DIST_DIR` setting;
-  `scripts/ci/e2e.sh`.
+  in `packages/auth`, the `resolveSessionState` export and the Visma Connect step-up
+  telemetry (`auth.ts`, `sso/reauthorization.ts`, the two contract modules);
+  `scripts/ci/e2e.sh` and its test-only TLS reverse proxy.
 - **Edits to shared tooling**: `tsconfig.base.json` is unchanged and `apps/web` overrides
-  it (DOM lib, JSX); `eslint.config.js` covers `.tsx`; `vitest.shared.ts` gains a web
+  it with a solution-style `tsconfig.json` (DOM lib, JSX); `eslint.config.js` covers
+  `.tsx`; the root `package.json` raises `engines.node` to `>=22.22.2` (jsdom) and gains a
+  `pnpm.peerDependencyRules` entry for `eslint-plugin-jsx-a11y` on ESLint 10;
+  `.github/dependabot.yml` gains a 14-day cooldown and ignores Playwright; `vitest.shared.ts` gains a web
   project with jsdom; `turbo.json` gains build outputs and an `e2e` task;
   `.github/workflows/ci.yml` gains an `e2e` job; `scripts/ci/local.sh` gains the web
   build and the e2e step; `scripts/ci/dast.sh` serves the built SPA;
@@ -137,7 +151,9 @@ a profile locale field (Q10).
   libraries are `dependencies` of `@tayzu/web` so that `pnpm audit --prod` covers what
   ships in the bundle. One new server dependency, `@fastify/static`.
 - **Security**: pre-assessed against SSA SEC01-SEC16 by the `vcdm-ssa-validator` agent
-  as task 1.1, before Checkpoint 1. New surface: the HTML pages and static assets on
+  as task 1.1 on 2026-11-18/19: two blocking gaps (B1, a `_user` email in an exported
+  app path; B2, no record of a Visma Connect step-up), both fixed by the design (Q27 to
+  Q29), and its questions answered as Q30 to Q35. New surface: the HTML pages and static assets on
   the public ingress, two new authenticated routes, and the browser itself.
 - **Docs**: ADR-0004 (TanStack Query + Zustand) and ADR-0007 (shadcn/ui) as backfills,
   ADR-0025 (same-origin web hosting) and ADR-0026 (strict CSP); updates to

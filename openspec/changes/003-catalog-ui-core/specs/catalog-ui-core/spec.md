@@ -36,11 +36,15 @@ left to it.
 When the deployment names a build directory, the API server MUST serve the web app from
 its own origin: hashed static assets under `/assets/` with a long immutable cache, and
 the app's `index.html` with `Cache-Control: no-store` for every `GET` or `HEAD` whose path
-is not under `/v1`, `/api`, `/assets` or `/healthz` and has no file extension. The
+is not under `/v1`, `/api` or `/assets`, is not `/healthz` and is not one of an explicit
+list of root build files, whatever characters the path holds, a dot included. The
 fallback MUST NOT change the answer of any API route, of the Better Auth allowlist or of
 the path-shape guard that refuses percent-encoded, double-slash and backslash paths. The
-asset route MUST NOT read the file system with a client-supplied path. When no build
-directory is configured the server MUST behave exactly as before. A configured directory
+asset route MUST NOT read the file system with a client-supplied path, and the immutable
+cache header of an asset MUST NOT be replaced by the default `no-store`. The fallback
+MUST be rate-limited per client address. When no build directory is configured the
+server MUST register no app route and answer every route as before, apart from the
+security headers that every response carries. A configured directory
 without `index.html` MUST fail startup with an error that names the setting and not its
 value.
 
@@ -49,6 +53,12 @@ value.
 - **GIVEN** the API is started with a build directory
 - **WHEN** a browser requests `GET /catalog/service`
 - **THEN** it receives the app's `index.html` with `Cache-Control: no-store`
+
+#### Scenario: A user page with an email in its path answers the app
+
+- **GIVEN** the API is started with a build directory
+- **WHEN** a browser requests `GET /catalog/_user/alice@example.com` and `GET /catalog/service/v1.2`
+- **THEN** each receives the app's `index.html`
 
 #### Scenario: API and auth paths are unchanged
 
@@ -132,8 +142,8 @@ path of the app on the same origin; any other value MUST be replaced by `/`.
 
 ### Requirement: The shell knows the caller's session and enforces its gates
 
-The API MUST offer `GET /v1/me`, which reads only the caller's own session and MUST NOT
-read a tenant, user or organization from its path, query or body. For a valid session it
+The API MUST offer `GET /v1/me`, which reads only the caller's own session, never a bearer token, and
+MUST NOT read a tenant, user or organization from its path, query or body. For a valid session it
 MUST return the user's id, name and email, the active organization's id and name, the
 member role, the sign-in method, whether a second factor is enrolled, and the gate that
 applies: `password_expired` for an expired temporary password, `password_change_required`
@@ -167,6 +177,12 @@ for every route but sign-out.
 
 - **WHEN** an anonymous client calls `GET /v1/me`
 - **THEN** it receives the same `401 CATALOG_CONTEXT_REQUIRED` body as `GET /v1/blueprints`
+
+#### Scenario: A machine token is not a session
+
+- **GIVEN** a valid machine access token
+- **WHEN** it calls `GET /v1/me` as a bearer token
+- **THEN** it receives the same `401 CATALOG_CONTEXT_REQUIRED` body as an anonymous client
 
 ### Requirement: Users can sign in locally or with Visma Connect
 
@@ -218,14 +234,20 @@ own memory. Re-enrolment after an MFA reset MUST use the same page.
 
 ### Requirement: High-risk operations prompt for step-up
 
-When the API answers `AUTH_STEP_UP_REQUIRED`, the app MUST open a step-up prompt. With a
-re-authorization URL in the answer, the prompt MUST offer a Visma Connect round trip that
-starts only on the user's click and stores at most an in-app return path; the API's
-re-authorization callback MUST then redirect to the app's fixed step-up completion page,
-never to a location taken from the request, and the user MUST repeat the action.
-Without a URL, the prompt MUST ask for a TOTP or backup code when the user has a second
-factor, and for the password otherwise, and MAY retry the original request once after a
-successful verification.
+When the API answers `AUTH_STEP_UP_REQUIRED`, the app MUST open a step-up prompt chosen
+from the session's sign-in method. For a Visma Connect session with a re-authorization
+URL in the answer, the prompt MUST offer a Visma Connect round trip that starts only on
+the user's click and stores at most an in-app return path; the API's re-authorization
+callback MUST then redirect to the app's fixed step-up completion page, also when it
+fails or is rate-limited, never to a location taken from the request, and the user MUST
+repeat the action. For a Visma Connect session without a URL, the prompt MUST ask the
+user to try again later and MUST NOT offer a code or password field. For a local session,
+the prompt MUST ask for a TOTP or backup code when the user has a second factor, and for
+the password otherwise, and MAY retry the original request once after a successful
+verification. The server MUST log a successful Visma Connect step-up as a step-up success
+with the Visma Connect method and the bound session's tenant and actor, and a failed
+re-authorization callback as a re-authorization failure with its reason, with no code,
+state, token or claim in either event.
 
 #### Scenario: A local user verifies with TOTP
 
@@ -248,8 +270,20 @@ successful verification.
 #### Scenario: The callback redirect is fixed
 
 - **GIVEN** the API is started with a build directory
-- **WHEN** the re-authorization callback completes, successfully or not
-- **THEN** it answers `303` to `/step-up/complete` or `/step-up/complete?result=failed`, whatever the request carried
+- **WHEN** the re-authorization callback completes successfully, fails, or is refused by its rate limit
+- **THEN** it answers `303` to `/step-up/complete`, `/step-up/complete?result=failed` or `/step-up/complete?result=rate_limited`, whatever the request carried
+
+#### Scenario: No re-authorization is available for a Visma Connect session
+
+- **GIVEN** a user signed in through Visma Connect whose step-up answer carries no re-authorization URL
+- **WHEN** the prompt opens
+- **THEN** it asks the user to try again later and offers no code or password field
+
+#### Scenario: A Visma Connect step-up is logged
+
+- **GIVEN** a user signed in through Visma Connect
+- **WHEN** a re-authorization completes, and another callback arrives with an unknown state
+- **THEN** a step-up success with method `visma_connect` and the session's tenant and actor is logged for the first, a re-authorization failure with reason `invalid_state` and no tenant for the second, and neither carries a code, state or token
 
 ### Requirement: The invitation and password-reset pages follow the page rules
 
@@ -321,14 +355,22 @@ timestamps, actors, version and generation, a Details tab with the spec properti
 when present, the status properties with their observed generation, source and time, and
 a Related tab that lists forward and backward relations in the spec, status or both
 scopes with cursor paging and links to each target. An entity that is missing or in
-another tenant MUST show the not-found page. An entity whose identifier cannot be
-addressed in a URL path MUST be listed with its link disabled and an explanation.
+another tenant MUST show the not-found page. An entity whose identifier holds `@`, `:` or
+`=` MUST open normally, with those characters sent unencoded in the app path and in the
+API call. An entity whose identifier holds `/` or is made only of dots cannot be
+addressed in a URL path and MUST be listed with its link disabled and an explanation.
 
 #### Scenario: Related entities in both directions
 
 - **GIVEN** `payments` depends on `ledger`
 - **WHEN** the user opens `ledger`'s Related tab and chooses backward
 - **THEN** `payments` is listed and links to its entity page
+
+#### Scenario: An identifier with reserved characters opens
+
+- **GIVEN** an entity `team@example.com:prod=1`
+- **WHEN** the user opens it from the table
+- **THEN** its entity page shows it, and no request path holds a `%`
 
 #### Scenario: Status shown next to spec
 
@@ -393,13 +435,20 @@ the light and the dark theme.
 ### Requirement: The web app adds no browser telemetry and the server's new signals carry no tenant free text
 
 The web app MUST NOT emit telemetry of any kind. The server MUST declare in its telemetry
-contract the span of `GET /v1/me` with its gate attribute, and MUST export every path
-answered by the app fallback as one fixed template, so that no blueprint or entity
-identifier from an app path reaches an exported span. An organization name, a user name
-or an email MUST NOT reach any signal.
+contract the span of `GET /v1/me` with its gate attribute, and MUST export every HTTP
+server span whose path is not under `/v1`, `/api` or `/assets`, is not `/healthz` and is
+not a root build file as one fixed template, at any status and for any method, so that no
+blueprint or entity identifier from an app path reaches an exported span, whether or not
+the app answered the request. An organization name, a user name or an email MUST NOT
+reach any signal.
 
 #### Scenario: App paths are exported as one template
 
 - **GIVEN** a browser that opens `/catalog/_user/someone`
 - **WHEN** the HTTP server span is exported
 - **THEN** its path attributes hold the fixed app template and not the path
+
+#### Scenario: Refused and non-GET app paths are exported as the template too
+
+- **WHEN** a client sends `POST /catalog/_user/alice@example.com`, and `GET /catalog/_user/a%40b.com`, which the path guard refuses
+- **THEN** both exported HTTP server spans hold the fixed app template and no email

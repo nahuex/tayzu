@@ -15,8 +15,26 @@
 - **Decisions.** The rows Q1 to Q11 of "Resolved decisions" are the human's answers of
   2026-11-18, each with what was rejected. The fifteen assumptions this design first
   had to make without a human decision (OQ1 to OQ15) were asked in chat and answered by
-  the human the same day as Q12 to Q26, each with the recommended option. This change
-  has no Open Questions; a new question found by task 1.1 becomes a row from Q27 on.
+  the human the same day as Q12 to Q26, each with the recommended option. Task 1.1
+  raised seventeen more, answered on 2026-11-18 and 2026-11-19 as Q27 to Q43, each with
+  the recommended option. This change has no Open Questions; a new question becomes a
+  row from Q44 on.
+- **Task 1.1 (VCDM Mode A pre-assessment and drift-check against `master`,
+  2026-11-18/19).** The pre-assessment found two blocking gaps, both SEC16: B1, an app
+  path that the fallback does not answer (a `POST`, a refused `%40` path, a 404) kept its
+  raw path, so a `_user` email could reach an exported span; and B2, a Visma Connect
+  step-up was never logged as succeeded and a failed re-authorization callback left no
+  trace. The human kept Checkpoint 1 approved on condition of their fixes (Q27): the
+  path-shape `/{spa}` template shared with the fallback (Q28, Observability contract,
+  task 4.6) and the step-up telemetry of task 3.11 (Q29). Its non-blocking gaps and the
+  questions only the human could answer (Q30 to Q35) are folded into the posture table,
+  the Gates, the Tickets and the tasks. The drift-check found six design conflicts,
+  decided as Q36 to Q43, a set of design-only fixes (the step-up dialog keyed on the
+  sign-in method, the `GET /v1/me` export, the header details, the tooling details, the
+  error model and the `defineCatalogOperation` call form), and the mechanical drift
+  corrected in the "Current state" bullets below. `packages/catalog/CLAUDE.md` still
+  shows the old positional `defineCatalogOperation(name, handler)` form; task 11.8 fixes
+  it.
 - **Where the earlier changes are.** `001`, `002`, `043`, `044` and `045` are archived:
   `openspec/changes/archive/2026-09-28-001-catalog-core/`,
   `openspec/changes/archive/2026-10-15-002-auth-and-rbac/`,
@@ -84,55 +102,96 @@
     (`PLAYWRIGHT_BROWSERS_PATH`), installed by `playwright-core` 1.63.0
     (`/opt/node-tools/node_modules/playwright-core/browsers.json`), and is already used
     to render Mermaid (`docs/dev-environment/README.md:21`).
-  - API (`apps/api/src/server.ts`): the step-up interceptor throws
-    `AUTH_STEP_UP_REQUIRED` with `data.reauthorizationUrl` for an SSO session (lines
-    514-551); `SimpleCsrfProtectionHandlerPlugin` requires `x-csrf-token: orpc` on
-    every non-`GET` route (554-564); the first `onRequest` hook refuses a target that is
-    not origin-form or whose path holds `%`, `//` or a backslash (`002` Q74, 575-584);
-    helmet runs with `contentSecurityPolicy: false` (601-606); every response defaults
-    to `Cache-Control: no-store` (607-613); CORS is an exact-match allowlist with
-    credentials (615-628); the Visma Connect re-authorization callback answers `200 {}`
-    or `400` as JSON (895-912), which leaves a browser on an empty JSON page after the
-    `form_post`; the `/v1/*` catch-all refuses an admin without an enrolled factor with
-    `AUTH_STEP_UP_REQUIRED` (1186-1222). Every Fastify route is either in
-    `PUBLIC_ROUTE_ALLOWLIST` (`apps/api/src/public-routes.ts:17-68`) or answers an
-    anonymous call with `401 CATALOG_CONTEXT_REQUIRED`, which
-    `route-auth-allowlist.int.test.ts` enforces. Exported HTTP spans drop the query
-    string and replace seventeen identifier-carrying paths by their templates
-    (`apps/api/src/telemetry.ts:48-125`).
+  - API (`apps/api/src/server.ts`): Better Auth's `trustedOrigins` (line 336) and the
+    `Origin` checks of the accept and reset routes (1014-1016, 1116-1118, 1145-1147)
+    refuse an `http:` origin outside test; the step-up interceptor throws
+    `AUTH_STEP_UP_REQUIRED` with `data.reauthorizationUrl` for an SSO session, and
+    without it when `start()` returns `null` (514-551, the throw at 537-549);
+    `SimpleCsrfProtectionHandlerPlugin` requires `x-csrf-token: orpc` on every non-`GET`
+    route (554-564); the first `onRequest` hook refuses a target that is not
+    origin-form or whose path holds `%`, `//` or a backslash (`002` Q74, 575-584, the
+    test at 581); helmet runs with `contentSecurityPolicy: false` (601-606); an `onSend`
+    hook sets `Cache-Control: no-store` on every response that has none (607-614); CORS
+    is an exact-match allowlist with credentials (615-627); `@fastify/rate-limit` runs
+    with `global: false` (634), so a route has a limit only if it opts in; the
+    re-authorization callback's limiter answers a JSON `429` (869-880); the callback scope
+    (881-913, handler 895-903, routes 904-911) answers `200 {}` or `400
+    {defined:false, code:'BAD_REQUEST', status:400}` as JSON, which leaves a browser on
+    a JSON page after the `form_post`; the `/v1/*` catch-all (1188-1226) refuses an admin
+    without an enrolled factor with `AUTH_STEP_UP_REQUIRED` (1201-1211). Every Fastify
+    route is either in `PUBLIC_ROUTE_ALLOWLIST` (`apps/api/src/public-routes.ts:17-68`)
+    or answers an anonymous call with `401 CATALOG_CONTEXT_REQUIRED`, which
+    `route-auth-allowlist.int.test.ts` enforces; its lines 208-220 also reject an entry
+    that is not a registered route. Exported HTTP spans drop the query string and
+    replace seventeen identifier-carrying paths by their templates
+    (`apps/api/src/telemetry.ts:48-124`, the templates at 56-74).
+    `apps/api/src/headers.int.test.ts` asserts `X-Frame-Options: SAMEORIGIN` (83-84) and
+    the absence of a CSP (103-106); D10 changes both.
+  - Step-up telemetry (`packages/auth`): `emitStepUpSucceeded` hard-codes
+    `tayzu.auth.method` `local` (`auth.ts:346-361`); the SSO branch of `step-up.ts`
+    (316-337) emits only the required and insufficient outcomes, and a TOTP or password
+    verification never satisfies an SSO session (316-334); `sso/reauthorization.ts` has
+    no telemetry at all, and its `start()` returns `null` when five states are already
+    pending for the session or discovery fails (96-127). `auth.security.step_up_succeeded`
+    is declared in `002`'s contract (`telemetry/contract.ts:137`, attributes tenant,
+    actor and `tayzu.auth.method`).
   - Catalog contract (`packages/catalog/src/api/contract.ts`): contract-first
-    (`oc.router`, lines 405-466), so the procedure types exist without the router; but
-    the module imports `node:fs/promises`, `node:path` and `node:url` (line 35) for
-    document generation and drift checking, so a browser bundle cannot import it.
-    `@orpc/client` and `@orpc/openapi-client` 1.15.4 are already in the lockfile as
-    transitive dependencies.
+    (`oc.router`, lines 405-463, twelve procedures), so the procedure types exist without
+    the router; but the module imports `node:fs/promises`, `node:path` and `node:url`
+    (lines 35-37) for document generation and drift checking, so a browser bundle cannot
+    import it. `@orpc/client` and `@orpc/openapi-client` 1.15.4 are already in the
+    lockfile as transitive dependencies; the OpenAPI link encodes every path parameter
+    with `encodeURIComponent`, so an identifier with `@`, `:` or `=` reaches the server
+    percent-encoded and the Q74 hook refuses it (Q36). Catalog issues are
+    `{ path, message }` (`api/errors.ts:23-26`); there is no issue code.
   - Catalog list: keyset pagination on `identifier` only
     (`packages/catalog/src/domain/pagination.ts`, cursor `{ "k": <identifier> }`;
-    `entities-repository.ts:84-106`); default page 50, maximum 500
+    `entities-repository.ts:84-107`); default page 50, maximum 500
     (`domain/limits.ts`). No sort, no filter, no free text, no cross-blueprint search,
-    no count. The Cerbos `list` plan is built without a blueprint
-    (`service/entities.ts:305-322`) and its mapper expressions are per row
-    (`BLUEPRINT_IDENTIFIER_SQL`, `OWNER_TEAM_SQL`), so the same filter narrows a query
-    over several blueprints. No migration creates an extension; the last is `0014`.
+    no count. The operation is declared as
+    `defineCatalogOperation<I, O>({ name, pool, authz, authorization: PLAN_AUTHORIZED,
+    handler })` (`service/entities.ts:1655-1659`). The Cerbos `list` plan is built
+    without a blueprint (`planEntityList`, 282-304; `runEntityListPlan`, 306-323) and its
+    mapper expressions are per row (249-276: `BLUEPRINT_IDENTIFIER_SQL`,
+    `OWNER_TEAM_SQL`), so the same filter narrows a query over several blueprints. No
+    migration creates an extension; the migrations live in `packages/db/migrations/`
+    and the journal ends at idx 14, so `0015` is next.
   - Entity identifiers match `^[A-Za-z0-9@_.:/=-]{1,256}$`
     (`packages/catalog/src/domain/identifiers.ts:22`). One containing `/` needs `%2F` in
     a URL path, which the Q74 hook refuses, so such an entity is unreachable over HTTP
-    today (Q18).
-  - Identity: the Better Auth allowlist (`packages/auth/src/http/allowed-routes.ts`)
-    holds sign-in (email and social), sign-out, get-session, the two-factor routes,
-    `/verify-password`, `/change-password`, `/organization/set-active` and the Visma
-    Connect callback; there is no route listing organizations (decision D7, no org
-    switcher). A session under the temporary-password marker may reach only
-    `/change-password`, `/sign-out` and `/get-session`
-    (`packages/auth/src/identity/temporary-password.ts`); under the re-enrolment marker
-    only `/two-factor/enable`, `/two-factor/verify-totp`, `/get-session` and
-    `/sign-out` (`docs/catalog/auth-and-rbac.md:127-138`). `resolveContext` rejects
-    both with the same uniform error (`packages/auth/src/context-resolver.ts:704-712`),
-    so a `/v1` call cannot tell the browser which gate applies (D8). The invitation
-    link is `/accept-invitation#invitation=<id>&token=<token>`
-    (`apps/api/src/identity/invitation-link.ts`) and the reset link is
-    `/reset-password#reset=<id>&token=<token>`
-    (`apps/api/src/identity/password-reset-link.ts`).
+    today (Q18); `@`, `:` and `=` are valid unencoded in a path segment, so those
+    identifiers become reachable once the client stops encoding them (Q36). `_user`
+    identifiers are emails, so they always hold `@` and a dot.
+  - Identity: the Better Auth allowlist (`packages/auth/src/http/allowed-routes.ts:10-35`)
+    holds `/sign-in/email`, `/sign-out`, `/get-session`, `/two-factor/enable`,
+    `/two-factor/verify-totp`, `/two-factor/generate-backup-codes`,
+    `/two-factor/verify-backup-code`, `/organization/set-active`, `/sign-in/social`,
+    `/callback/visma-connect`, `/link-social`, `/unlink-account`, `/list-accounts`,
+    `/verify-password`, `/change-password` and `/jwks`; there is no route listing
+    organizations (decision D7, no org switcher). A session under the
+    temporary-password marker may reach only `/change-password`, `/sign-out` and
+    `/get-session` (`packages/auth/src/identity/temporary-password.ts:45-49`); under the
+    re-enrolment marker only `/two-factor/enable`, `/two-factor/verify-totp`,
+    `/get-session` and `/sign-out` (`identity/mfa-reenrol-marker.ts:20-25`).
+    `resolveContext` checks both markers (`context-resolver.ts:704-717`) before the
+    membership, the open-tenant and the `_user` checks (719-762), rejects every case
+    with the same uniform error, and keeps those helpers private; a membership role can be
+    a comma-separated list, and `toCerbosRole` folds `owner` into `admin` (336-339). So
+    a `/v1` call cannot tell the browser which gate applies (D8). The invitation link is
+    `/accept-invitation#invitation=<id>&token=<token>`
+    (`apps/api/src/identity/invitation-link.ts`), accepted with
+    `{ invitationId, token, password? }` (`identity/accept-flow.ts:172-178`); the reset
+    link is `/reset-password#reset=<id>&token=<token>`
+    (`apps/api/src/identity/password-reset-link.ts`), confirmed with
+    `{ id, token, newPassword, factor?: { kind: 'totp' | 'backup_code', code } }`
+    (`identity/password-reset-confirm.ts:38-54, 91-105`).
+  - Tooling: `eslint.config.js:154` holds a test-file override that matches `*.test.ts`
+    and misses `*.test.tsx`; typescript-eslint's `projectService` finds only a file's
+    nearest `tsconfig.json`, so a sibling `tsconfig.node.json` is not seen;
+    `eslint-plugin-jsx-a11y` 6.10.2 declares ESLint peers only up to 9 while the
+    repository runs ESLint 10.11.0, and it depends on `axe-core` (MPL-2.0) (Q40);
+    `allowBuilds` lists `esbuild` as `false`; jsdom 30.1.3 requires Node `^22.22.2`, the
+    root `engines` says `>=22.12.0`, and the sandbox runs Node 22.23.4.
   - DAST: the ZAP baseline targets the API on `localhost:3000`
     (`scripts/ci/dast.sh`); `.zap/rules.tsv` sets only rule 10049 to `INFO`, and every
     other alert fails the job.
@@ -199,7 +258,10 @@ apps/
       state/               Zustand stores (theme, locale, step-up)
       components/ui/       shadcn/ui components, copied (components.json at the package root)
       lib/                 safe rendering (links, markdown), formatting, return paths
-    e2e/                   Playwright specs (*.spec.ts), fixtures and the seed script
+      __fixtures__/        setup-tests.ts (jest-dom matchers) and test fixtures
+      build-check/         the bundle check of task 2.8 (Node)
+    e2e/                   Playwright specs (*.spec.ts); fixtures/ holds the seed script
+    tsconfig.json          solution-style: references tsconfig.app.json and tsconfig.node.json
     vite.config.ts, playwright.config.ts, CLAUDE.md
 packages/
   catalog/    gains src/api/contract-definition.ts (browser-safe) and the search code
@@ -210,6 +272,13 @@ business rule in the UI, no `tenantId` anywhere, no `console`, no
 `dangerouslySetInnerHTML`, every server string rendered as text unless it passes
 through `lib/` renderers, and the TDD split for component and e2e tests.
 
+**TDD ownership of the test infrastructure.** The Vitest setup file
+`apps/web/src/__fixtures__/setup-tests.ts` and the e2e seed `apps/web/e2e/fixtures/seed.ts`
+are test fixtures: the `test-writer` writes them (the first matches the guard's
+`*/__fixtures__/*` today, the second once task 2.6 lands), and the `implementer` never
+edits them. `playwright.config.ts`, `scripts/ci/e2e.sh` and the TLS proxy of D16 are
+setup files written by the orchestrator in their setup tasks.
+
 `@tayzu/web` depends on `@tayzu/catalog` only through its `./contract` subpath (D4).
 It never imports `@tayzu/api`, `@tayzu/auth` or `@tayzu/db`, so no Node-only module
 can reach the bundle; a lint rule enforces it (task 2.3), and the contract module's own
@@ -217,22 +286,30 @@ import graph is checked by a test (task 2.7).
 
 ### D2. Tooling changes
 
-- **TypeScript.** `tsconfig.base.json` is unchanged. `apps/web/tsconfig.json` extends it
-  and overrides `lib` to `["ES2023", "DOM", "DOM.Iterable"]`, `types` to
-  `["vite/client"]` (no `node`, so a Node API in browser code fails to typecheck), and
-  sets `jsx: "react-jsx"`. A second `tsconfig.node.json` covers `vite.config.ts`,
-  `playwright.config.ts`, `e2e/` and the build check `src/build-check/` (task 2.8) with
-  `types: ["node"]`; the main `tsconfig.json` excludes those paths. TypeScript stays at
-  `~6.0.3`.
+- **TypeScript.** `tsconfig.base.json` is unchanged. `apps/web/tsconfig.json` is
+  solution-style (`files: []` and `references` to `tsconfig.app.json` and
+  `tsconfig.node.json`), because typescript-eslint's `projectService` resolves only a
+  file's nearest `tsconfig.json` and follows its references. `tsconfig.app.json`
+  extends the base for `src/` and overrides `lib` to `["ES2023", "DOM",
+  "DOM.Iterable"]`, `types` to `["vite/client"]` (no `node`, so a Node API in browser
+  code fails to typecheck), and sets `jsx: "react-jsx"`; `tsconfig.node.json` covers
+  `vite.config.ts`, `playwright.config.ts`, `e2e/` and the build check
+  `src/build-check/` (task 2.8) with `types: ["node"]`, and `tsconfig.app.json` excludes
+  those paths. The package's `typecheck` runs `tsc -b`. TypeScript stays at `~6.0.3`.
 - **ESLint.** A block for `apps/web/**/*.tsx` and `apps/web/**/*.ts` adds
   `eslint-plugin-react-hooks` (recommended) and `eslint-plugin-jsx-a11y` (strict),
-  keeps `strictTypeChecked`, the `sql.raw` ban and the actor-type ban (web code never
-  compares `actor.type`), and adds `no-console: error`, a `no-restricted-syntax`
+  keeps `strictTypeChecked`, and adds `no-console: error`, a `no-restricted-syntax`
   entry banning the JSX attribute `dangerouslySetInnerHTML`, `document.cookie`, `eval`,
   `new Function`, `document.write` and assignments to `innerHTML` or `outerHTML`, and a
   `no-restricted-imports` entry that allows `@tayzu/catalog/contract` and no other
-  workspace package. The root file glob
-  grows from `**/*.{js,ts}` to `**/*.{js,ts,tsx}`.
+  workspace package. Because a later block replaces the rule's array, the web
+  `no-restricted-syntax` entry re-spreads the `sql.raw` and actor-type selectors (web
+  code never compares `actor.type`), as the identity block does. The root file glob
+  grows from `**/*.{js,ts}` to `**/*.{js,ts,tsx}`, and the test-file override at
+  `eslint.config.js:154` gains `*.test.tsx`. `eslint-plugin-jsx-a11y` 6.10.2 declares
+  ESLint peers only up to 9, so the root `package.json` gains a
+  `pnpm.peerDependencyRules.allowedVersions` entry for it and ESLint 10, with its reason,
+  and a lint test proves its rules fire on ESLint 10 (Q40).
 - **Vitest.** `vitest.shared.ts` gains `defineWebPackageConfig(name)`: one project,
   `<name> (unit)`, environment `jsdom`, include `src/**/*.test.{ts,tsx}`, a setup file
   that loads `@testing-library/jest-dom` matchers; there is no `int` project in the web
@@ -241,44 +318,76 @@ import graph is checked by a test (task 2.7).
   outputs `dist/**`; the root gains an `e2e` task (`cache: false`, depends on `build`
   of `@tayzu/web`) and the root script `"e2e": "bash scripts/ci/e2e.sh all"`. `build`
   of every other package stays a typecheck.
-- **pnpm `allowBuilds`.** Unchanged unless `pnpm install` reports an ignored build
-  script for a new package. Then the entry is added as `false` (or `true` only with a
-  stated reason, as for `esbuild`), in the task that adds the package; Tailwind's native
-  engine and Playwright are the candidates. Playwright browsers are never downloaded by
-  an install script: CI runs `playwright install --with-deps chromium` as an explicit
-  step, and the sandbox uses `/opt/pw-browsers`.
+- **pnpm `allowBuilds`.** It lists `esbuild` and `protobufjs`, both `false`. It is
+  unchanged unless `pnpm install` reports an ignored build script for a new package.
+  Then the entry is added as `false` (or `true` only with a stated reason), in the task
+  that adds the package; Tailwind's native engine and Playwright are the candidates.
+  Playwright browsers are never downloaded by an install script: CI runs `playwright
+  install --with-deps chromium` as an explicit step, and the sandbox uses
+  `/opt/pw-browsers`.
+- **Node.** jsdom 30.1.3 requires Node `^22.22.2`; the root `engines.node` becomes
+  `>=22.22.2` (the sandbox runs 22.23.4, CI's `setup-node` reads `engines`), and
+  `docs/dev-environment/README.md` records it.
+- **Dependabot** (`.github/dependabot.yml`): a `cooldown` of 14 days for npm updates, and
+  an `ignore` for `@playwright/test` and `playwright-core`, which move only together with
+  the sandbox browser (Q43).
+- **The Vite dev server** binds `server.host: '127.0.0.1'` with `strictPort: true`, keeps
+  `server.fs.strict` on and is never started with `--host`; the pinned Vite has no open
+  `server.fs` advisory.
 - **The TDD path guard** (`.claude/hooks/tdd-path-guard.sh`) treats
   `apps/web/e2e/**/*.spec.ts` and `apps/web/e2e/fixtures/**` as test files. It is a
   change to the agent harness, not to product code: task 2.6 stops, shows the diff to
   the human, and the human applies or approves it (Q7).
-- **CI.** `.github/workflows/ci.yml` gains a job `e2e` (PostgreSQL 18 service, the
-  pinned Cerbos image, the browsers installed by the pinned Playwright, the stack of
-  `scripts/ci/e2e.sh`); it uploads the Playwright report only on failure, and the
-  report holds no secret (the session cookie is never logged). The `dast-zap` job
-  builds the web app first (D10). `scripts/ci/local.sh` gains `pnpm --filter
-  @tayzu/web build` after `typecheck` and the e2e step after `dast`, skipping with an
-  explicit `SKIP` when Docker or the browser is missing, like the DAST step.
+- **CI.** `.github/workflows/ci.yml` gains a job `e2e` (checkout with
+  `persist-credentials: false`, PostgreSQL 18 service, the pinned Cerbos image, the
+  browsers installed by the pinned Playwright, the stack of `scripts/ci/e2e.sh`). A
+  Playwright trace or report holds the cookies, form values and seeded credentials of the
+  run, so the seed generates random credentials per run (D16), and the report is uploaded
+  only on failure with `retention-days: 3`. The `dast-zap` job builds the web app first
+  (D10). `scripts/ci/local.sh` gains `pnpm --filter @tayzu/web build` after `typecheck`
+  and the e2e step after `dast`, skipping with an explicit `SKIP` when Docker or the
+  browser is missing, like the DAST step.
 
 ### D3. Dependencies
 
 A dependency may be added only when the design names it (root `CLAUDE.md`). These are
-all of them. Every version is pinned exactly in `apps/web/package.json` at the task that
-adds it, to the latest release published at least 14 days earlier that is compatible
-with the rest (React 19, Vite 8, TypeScript 6), and recorded with its license in
+all of them. Every version is pinned exactly at the task that adds it (Q43): the latest
+release published at least 14 days earlier, compatible with the rest, re-checked at task
+2.1. The table below is the drift-check's pinned starting point (2026-11-19); Vite stays
+at the latest 8.3.x published before the cutoff (8.3.8, of 2026-11-11, is too new), and
+`@hookform/resolvers` takes the latest major that supports Zod 4 and is at least 14
+days old. Each package is recorded with its license in
 `docs/security/dependencies.md` (task 2.2). Libraries that end up in the bundle are
 `dependencies` of `@tayzu/web`, so `pnpm audit --prod --audit-level=high` covers what
-ships; build and test tools are `devDependencies`.
+ships; build and test tools are `devDependencies`, and a non-blocking `pnpm audit
+--audit-level=critical` over every dependency covers the build chain.
+
+| Group | Versions |
+| ----- | -------- |
+| React and data | `react` / `react-dom` 19.3.1; `@tanstack/react-query` 5.106.0; `zustand` 5.0.16; `@tanstack/react-router` 1.170.46; `react-hook-form` 7.91.0; `zod` 4.6.7 |
+| i18n | `i18next` 26.7.1; `react-i18next` 17.1.12 |
+| API client | `@orpc/client` and `@orpc/openapi-client` 1.15.4 |
+| Radix | `dialog` 1.3.1, `dropdown-menu` 2.2.1, `popover` 1.3.1, `tabs` 1.2.1, `select` 2.4.1, `label` 2.1.17, `slot` 1.5.0, `tooltip` 1.4.1, `separator` 1.2.0 |
+| UI helpers | `class-variance-authority` 0.7.1, `clsx` 2.1.1, `tailwind-merge` 3.7.0, `lucide-react` 1.68.0, `cmdk` 1.1.1, `react-markdown` 10.1.0, `qrcode.react` 4.2.0, `get-nonce` 1.0.1 (one copy, checked with `pnpm why get-nonce`) |
+| Build | `tailwindcss` and `@tailwindcss/vite` 4.3.4, `tw-animate-css` 1.4.0, `@vitejs/plugin-react` 6.2.1, `@types/react` and `@types/react-dom` 19.3.0, `eslint-plugin-react-hooks` 7.1.1 |
+| Test | `@testing-library/react` 16.3.3, `@testing-library/dom` 10.4.2, `@testing-library/user-event` 14.6.8, `@testing-library/jest-dom` 7.0.1; `jsdom` 30.1.3 (Node `^22.22.2`, D2) |
+| E2E | `@playwright/test` 1.63.0; `@axe-core/playwright` 4.14.0 |
+| Server and CLI | `@fastify/static` 10.1.10; the shadcn CLI 4.23.0 |
+
+`@axe-core/playwright` declares `playwright-core >=1.0.0` as a peer and could pull in a
+second copy, so `pnpm why playwright-core` must show 1.63.0 only. `eslint-plugin-jsx-a11y`
+is pinned at 6.10.2 (Q40).
 
 | Package | Role | License | Kind |
 | ------- | ---- | ------- | ---- |
-| `react`, `react-dom` (19.x) | UI runtime | MIT | runtime |
-| `@tanstack/react-query` (5.x) | Server state: fetching, cache, retries off for 4xx (ADR-0004) | MIT | runtime |
-| `zustand` (5.x) | Local UI state: theme, locale, step-up dialog (ADR-0004) | MIT | runtime |
-| `@tanstack/react-router` (1.x) | Routing with typed params and Zod-validated search params (below) | MIT | runtime |
-| `react-hook-form` (7.x), `@hookform/resolvers` (5.x) | Forms | MIT | runtime |
-| `zod` (4.x, the version `@tayzu/catalog` already uses) | Form and response schemas | MIT | runtime |
+| `react`, `react-dom` | UI runtime | MIT | runtime |
+| `@tanstack/react-query` | Server state: fetching, cache, retries off for 4xx (ADR-0004) | MIT | runtime |
+| `zustand` | Local UI state: theme, locale, step-up dialog (ADR-0004) | MIT | runtime |
+| `@tanstack/react-router` | Routing with typed params and Zod-validated search params (below) | MIT | runtime |
+| `react-hook-form`, `@hookform/resolvers` | Forms | MIT | runtime |
+| `zod` | Form and response schemas | MIT | runtime |
 | `i18next`, `react-i18next` | i18n with namespaces (`project.md` §15) | MIT | runtime |
-| `@orpc/client`, `@orpc/openapi-client` (1.15.4, the server's version) | Typed API client (D4) | MIT | runtime |
+| `@orpc/client`, `@orpc/openapi-client` (the server's version) | Typed API client (D4) | MIT | runtime |
 | `@radix-ui/react-*` primitives that the copied components import (dialog, dropdown-menu, popover, tabs, select, label, slot, tooltip, separator) | Accessible primitives under shadcn/ui | MIT | runtime |
 | `class-variance-authority`, `clsx`, `tailwind-merge` | shadcn/ui component styling helpers | Apache-2.0, MIT, MIT | runtime |
 | `lucide-react` | Icons, bundled (no icon font, no CDN) | ISC | runtime |
@@ -286,7 +395,7 @@ ships; build and test tools are `devDependencies`.
 | `react-markdown` | Markdown property values rendered without raw HTML (D13, Q16) | MIT | runtime |
 | `qrcode.react` | The TOTP enrolment QR code as inline SVG (D11, Q17) | ISC | runtime |
 | `get-nonce` | Hands the style nonce to the Radix scroll lock (D10, Q15) | MIT | runtime |
-| `tailwindcss` (4.x), `@tailwindcss/vite`, `tw-animate-css` | Styling, compiled at build time | MIT | build |
+| `tailwindcss`, `@tailwindcss/vite`, `tw-animate-css` | Styling, compiled at build time | MIT | build |
 | `@vitejs/plugin-react` | Vite React plugin (Vite itself is already a root dev dependency) | MIT | build |
 | `@types/react`, `@types/react-dom` | Types | MIT | build |
 | `eslint-plugin-react-hooks`, `eslint-plugin-jsx-a11y` (root) | Lint (D2) | MIT | build |
@@ -296,20 +405,23 @@ ships; build and test tools are `devDependencies`.
 | `@axe-core/playwright` | Accessibility checks in e2e (`axe-core` is MPL-2.0, see below) | MPL-2.0 | test |
 | `@fastify/static` (in `@tayzu/api`) | Serves the build (D9) | MIT | server runtime |
 
-shadcn/ui itself is not a dependency (ADR-0007): its CLI runs as `npx shadcn@<exact
-version>` to copy components into `src/components/ui/`, and `components.json` records
-the configuration. Fonts are the operating system's font stack (no web font is loaded),
+shadcn/ui itself is not a dependency (ADR-0007): its CLI runs as `npx shadcn@4.23.0` to
+copy components into `src/components/ui/`, and `components.json` records the
+configuration. Its output is reviewed in task 2.2: every dependency it adds is re-pinned
+to the exact version above, the lockfile diff adds only packages this section names,
+and the CLI version and the registry it read are recorded. Fonts are the operating system's font stack (no web font is loaded),
 so there is no font dependency. No date library: dates use `Intl.DateTimeFormat` in the
 browser's time zone (`project.md` §15).
 
 **License note.** Every package above is on the allowlist of
 `docs/security/dependencies.md` (MIT, Apache-2.0, ISC) except `@axe-core/playwright` and
 the `axe-core` engine it depends on, which are MPL-2.0: an OSI-approved weak copyleft
-license that is neither on the allowlist nor in the "flag for review" list. They are
-test-only tools that never ship in the bundle or the image, and Tayzu does not modify
-them. The human accepted them as test-only dev dependencies (Resolved decision Q26): task
-2.2 records the license in `docs/security/dependencies.md` and extends its allowlist note
-for test-only MPL-2.0. The transitive packages of each addition (notably the
+license that is neither on the allowlist nor in the "flag for review" list.
+`eslint-plugin-jsx-a11y` depends on `axe-core` too (Q40). They are lint and test tools
+that never ship in the bundle or the image, and Tayzu does not modify them. The human
+accepted them as test-only dev dependencies (Resolved decision Q26, extended to the lint
+plugin's copy by Q40): task 2.2 records the license in `docs/security/dependencies.md`
+and extends its allowlist note for test-only and lint-only MPL-2.0. The transitive packages of each addition (notably the
 `unified`/`remark` family under `react-markdown`) are checked in the same task.
 
 **Router choice: TanStack Router** (code-based route tree, no file-based code
@@ -325,7 +437,11 @@ framework mode brings server rendering this app does not use.
   { url: window.location.origin, plugins: [new SimpleCsrfProtectionLinkPlugin()] }))`
   typed as `ContractRouterClient<typeof catalogContract>`. `OpenAPILink` is required
   because the server mounts an `OpenAPIHandler` (REST paths of the committed document),
-  not the RPC protocol, and it reads the routes from the contract at runtime. The CSRF
+  not the RPC protocol, and it reads the routes from the contract at runtime. The link
+  gets a custom path-parameter serializer (Q36): `encodeURIComponent`, then `%40`, `%3A`
+  and `%3D` turned back into `@`, `:` and `=`, which are valid unencoded in a path
+  segment, so an identifier with those characters is sent without any `%` and passes the
+  Q74 hook; an identifier with `/` is never sent (D13). The CSRF
   link plugin sends `x-csrf-token: orpc` on every non-`GET` call, which is exactly what
   the server's `SimpleCsrfProtectionHandlerPlugin` checks. Requests use the browser's
   default `credentials: 'same-origin'`, so the cookie goes with them and never needs to
@@ -342,15 +458,22 @@ framework mode brings server rendering this app does not use.
   over the exact routes the UI needs: the allowlisted Better Auth routes, the plain
   Fastify routes of `043` and `044` (`POST /v1/auth/invitations/accept`,
   `POST /v1/auth/password-reset/request`, `POST /v1/auth/password-reset/confirm`) and
-  `GET /v1/me` (D8). Each response is parsed by a Zod schema into a null-prototype
-  object; unknown fields are dropped. Every non-`GET` call sends `x-csrf-token: orpc`
+  `GET /v1/me` (D8). The bodies are the routes' own allowlists: accept
+  `{ invitationId, token, password? }` and reset confirm `{ id, token, newPassword,
+  factor?: { kind: 'totp' | 'backup_code', code } }`. Each response is parsed by a Zod
+  schema into a null-prototype object; unknown fields are dropped. Every non-`GET` call sends `x-csrf-token: orpc`
   and `Content-Type: application/json`, which the accept and reset routes check (`043`
   D4, `044` D2). _Rejected (Q24):_ `better-auth/client`, which would add the whole
   `better-auth` package to the bundle and call routes this app does not use.
 - **One error model** (`src/api/errors.ts`) maps every failure to a closed set of kinds:
   `unauthenticated` (401), `forbidden` (`AUTH_FORBIDDEN`), `not_found`
   (`CATALOG_NOT_FOUND`, also every cross-tenant answer), `step_up_required` (with the
-  optional `reauthorizationUrl`), `validation` (issue paths and codes only),
+  optional `reauthorizationUrl`), `validation` (issue paths only: catalog issues are
+  `{ path, message }` with no code, so the UI shows the field and a generic localized
+  "invalid value", and maps a message to text only for the password-policy rules on
+  `/newPassword` (the reset confirm), whose message is the rule name; the accept route
+  reports the same rule names on `/password`, `identity/accept-flow.ts:137`, and is
+  mapped the same way),
   `reference_violation` (referrer identifiers and the "+N not visible" count),
   `rate_limited` (with `Retry-After`), `conflict` and `server`. The UI renders localized
   text for each kind and never the server's message string, so an internal error can
@@ -392,8 +515,10 @@ framework mode brings server rendering this app does not use.
   _Rejected:_ a dedicated `search` action on `catalog_entity` (a policy change with no
   difference in who may see what, which Q4 rules out by "works as `entities.list` does
   today").
-- **Operation.** Declared with `defineCatalogOperation('entity.search', ...)`, so it
-  gets the context check, the tenant transaction, the error mapping and the telemetry
+- **Operation.** Declared as `defineCatalogOperation<SearchEntitiesInput,
+  SearchEntitiesOutput>({ name: 'entity.search', pool, authz, authorization:
+  PLAN_AUTHORIZED, handler })`, the form `entity.list` uses
+  (`service/entities.ts:1655-1659`), so it gets the context check, the tenant transaction, the error mapping and the telemetry
   of every catalog operation; agents and humans take the same path. Search reads are
   not audited (`001` R2 defers read audit to `014`).
 
@@ -406,12 +531,23 @@ framework mode brings server rendering this app does not use.
   in the same direction, and the next page uses a row comparison,
   `(title, identifier) > ($1, $2)` (or `<` for `desc`). Titles compare under the
   database's default collation (D7's indexes use the same).
-- **A cursor bound to its sort.** The cursor becomes `{ "v": 2, "s": <sort>, "o":
-  <order>, "k": [<sort value>, <identifier>] }`, base64url JSON, still at most 512
-  characters and still carrying no tenant. A cursor used with a different sort or order,
-  or a malformed one, fails with `CATALOG_VALIDATION_FAILED` (issue path `/cursor`). A
-  version-1 cursor (`{ "k": <identifier> }`) stays valid for the default sort, so a page
-  fetched before the upgrade still continues.
+- **A cursor bound to its sort, anchored on a row id** (Q37). The cursor becomes
+  `{ "v": 2, "s": <sort>, "o": <order>, "id": <uuid of the last row> }`, base64url JSON,
+  carrying no tenant and no sort value. Inside the tenant transaction the server reads
+  that row's sort key and identifier, under the same `tenant_id`, blueprint and Cerbos
+  plan filter as the page, and uses them as the keyset bound. So the 512-character limit
+  holds for every sort (a 256-character title plus a 256-character identifier would not
+  fit in the cursor), and a crafted id of an entity the caller cannot read, of another
+  blueprint or of another tenant is the same `CATALOG_VALIDATION_FAILED` (issue path
+  `/cursor`) as an anchor that was deleted meanwhile, a cursor used with a different sort
+  or order, or a malformed one; the UI then restarts from the first page. A version-1
+  cursor (`{ "k": <identifier> }`) stays valid for the default sort, so a page fetched
+  before the upgrade still continues; removing that acceptance is a ticket for `005`.
+  `blueprints.list` keeps the version-1 cursor.
+- **Timestamps.** The `updatedAt` keyset compares the stored `updated_at`, which every
+  write sets from the application clock at millisecond precision; rows with an equal
+  millisecond are ordered by identifier. Because the bound is read from the row itself,
+  no timestamp is ever round-tripped through the cursor.
 - **The Cerbos plan filter** applies unchanged; sort never widens what is returned.
 
 ### D7. Migration `0015_catalog_entity_search` (⛔ Checkpoint 3)
@@ -428,7 +564,13 @@ CREATE INDEX catalog_entity_tenant_blueprint_updated_idx
   ON catalog_entity (tenant_id, blueprint_id, updated_at, identifier);
 ```
 
-The down script drops the four indexes and then the extension (`DROP EXTENSION IF EXISTS
+**One migration, generated** (Q41): `drizzle-kit generate` produces
+`packages/db/migrations/0015_catalog_entity_search.sql` from the index declarations
+below, and `CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;` is prepended to
+that file by hand before Checkpoint 3, so the whole change is one reviewed file (the
+journal ends at idx 14, so `0015` is next). The down script,
+`packages/db/migrations/down/0015_catalog_entity_search.down.sql`, drops the four indexes
+and then the extension (`DROP EXTENSION IF EXISTS
 pg_trgm`, safe because nothing else uses it). The trigram indexes do not lead with
 `tenant_id` (a GIN trigram index cannot without `btree_gin`, another extension); with
 fewer than 20 tenants (ADR-0006) the tenant predicate filters the bitmap scan cheaply,
@@ -439,7 +581,7 @@ the `azure.extensions` server parameter, a first-deployment gate of `046`. No ro
 grant or policy changes: the operators and functions of `pg_trgm` are executable by
 `PUBLIC`. The Drizzle table in `packages/catalog/src/persistence/schema.ts` declares
 the two btree indexes and the two GIN indexes (Drizzle's `.using('gin', ...op('gin_trgm_ops'))`),
-so the snapshot matches. `drizzle-kit generate --custom` holds the `CREATE EXTENSION`.
+so the snapshot matches.
 
 ### D8. `GET /v1/me`: the shell's view of its own session
 
@@ -451,7 +593,18 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
 - **A plain Fastify route**, `GET /v1/me`, registered before the `/v1/*` catch-all (as
   token exchange is), with the authenticated rate-limit bucket. It reads the session
   through Better Auth's in-process `getSession` with the request headers; it never reads
-  a tenant, user or organization from the path, query or body.
+  a tenant, user or organization from the path, query or body. It reads the session
+  only: a machine bearer token gets the same uniform `401` as no session.
+- **A new export of `@tayzu/auth`**, `resolveSessionState(headers)`, does the work,
+  because the checks it needs are private to `context-resolver.ts`. It runs the
+  resolver's own checks in the resolver's order (the markers, 704-717, then the
+  membership, the open tenant and the `_user` state, 719-762) and reuses their helpers
+  instead of copying them, but where `resolveContext` rejects a marker it records the
+  gate and goes on, so that a gated session that would fail a later check is still the
+  uniform `401`. The membership role is read as stored (a comma-separated list is
+  allowed) and reported as the highest of `owner`, `admin` and `member`; the
+  admin-without-factor gate uses the folded role of `toCerbosRole` (336-339), so an
+  owner counts as an admin.
 - **No session, an expired or idle session, a banned user, a disabled `_user`, a
   tenant with a pending or purged deletion marker, or no active organization:** the
   same `401 CATALOG_CONTEXT_REQUIRED` body as the catch-all, so the route reveals
@@ -463,8 +616,9 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
   `password_expired` (an expired temporary-password marker),
   `password_change_required` (an unexpired one), `mfa_enrolment_required` (the
   re-enrolment marker, or an admin or owner without an enrolled factor, which the
-  catch-all refuses), or `none`. The marker checks are the same functions
-  `resolveContext` calls, and a failed lookup fails closed (`401`).
+  catch-all refuses), or `none`. A failed lookup fails closed (`401`). `signInMethod`
+  is `visma-connect` when the session carries an `ssoSid` (`002` D25) and `password`
+  otherwise; the step-up dialog is chosen from it (D11).
 - `organization.name` is the caller's own organization's name, shown in the header; it
   never reaches telemetry (D9 of `045` keeps it off every signal, and so does this route).
 - The route is in no public allowlist; `route-auth-allowlist.int.test.ts` keeps
@@ -472,26 +626,42 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
 
 ### D9. Same-origin hosting ([ADR-0025](../../../docs/adr/0025-same-origin-web-hosting.md), Q2)
 
-- **Setting.** `WEB_DIST_DIR`, optional: the absolute path of the Vite build. Unset,
-  nothing is served and the API behaves exactly as today (the DAST of the API alone, the
-  existing tests). Set, startup fails unless it is an absolute path to a readable
+- **Setting.** `WEB_DIST_DIR`, optional: the absolute path of the Vite build. Unset, no
+  app route is registered and every route answers as today (the DAST of the API alone,
+  the existing tests); the security headers of D10 apply either way. Set, startup fails unless it is an absolute path to a readable
   directory containing `index.html`; the error names the variable, never its value
   (Q21).
 - **Assets.** `@fastify/static` serves `<WEB_DIST_DIR>/assets/` at `/assets/` with
-  `wildcard: false` (the file list is read once at startup, so a request never reaches
-  the file system with a client path), `dotfiles: 'deny'`, `index: false`, no directory
-  listing, and `Cache-Control: public, max-age=31536000, immutable` (Vite's file names
-  carry a content hash). A missing asset is Fastify's own 404. `theme-init.js` and the
-  favicon, which are not hashed, are served from the build root with `no-cache`.
-- **SPA fallback.** A `GET` or `HEAD` whose path is not under `/v1`, `/api`, `/assets`
-  or `/healthz` and has no file extension answers `index.html` (`text/html;
-  charset=utf-8`, `Cache-Control: no-store`), with the style nonce of D10 substituted.
-  Any other method on such a path is the usual 404. The Q74 hook still runs first, so a
-  path with `%`, `//` or a backslash never reaches the fallback. The fallback never
-  reads the session: authentication happens in the API calls the app then makes.
-- **Allowlists.** `PUBLIC_ROUTE_ALLOWLIST` gains two reviewed entries, the asset route
-  and the SPA fallback, each with its reason ("static, public by nature, no data");
-  the route-auth test keeps every other route closed.
+  `wildcard: false` (the file list is read once at startup, one route per file, so a
+  request never reaches the file system with a client path), `dotfiles: 'deny'`,
+  `index: false`, no directory listing, and `Cache-Control: public, max-age=31536000,
+  immutable` (Vite's file names carry a content hash); the `onSend` `no-store` hook
+  (`server.ts:607-614`) only fills a missing header, and a test proves it does not
+  replace `immutable`. A missing asset is Fastify's own 404. The **root build files**,
+  an explicit list (`theme-init.js` and the favicon), are served from the build root
+  with `no-cache`.
+- **SPA fallback** (Q28). A `GET` or `HEAD` whose path is not under `/v1`, `/api` or
+  `/assets`, is not `/healthz` and is not a root build file answers `index.html`
+  (`text/html; charset=utf-8`, `Cache-Control: no-store`), whatever the path holds: a
+  `_user` page (`/catalog/_user/alice@example.com`) and an identifier such as `v1.2`
+  have a dot, so no "file extension" rule is used. `index.html` is read once at startup
+  and the style nonce of D10 is substituted in memory per response. Any other method on
+  such a path is the usual 404. The Q74 hook still runs first, so a path with `%`, `//`
+  or a backslash never reaches the fallback. The fallback never reads the session:
+  authentication happens in the API calls the app then makes. One predicate,
+  `isSpaPath(pathname)` in `apps/api`, decides "an app path" for the fallback and for the
+  span template of the Observability contract (Q27, B1).
+- **Rate limit.** `@fastify/rate-limit` runs with `global: false`, so the fallback opts
+  in to its own in-memory bucket keyed by `request.ip` (300 requests per minute per
+  replica, never logged); hashed assets get no in-process limit and rely on the ingress
+  limit that `046` records as a gate.
+- **Allowlists** (Q39). `PUBLIC_ROUTE_ALLOWLIST` gains reviewed entries, each with its
+  reason ("static, public by nature, no data"): a prefix entry for `/assets/`, because
+  `wildcard: false` registers one route per file, and exact entries for the fallback and
+  each root build file. `route-auth-allowlist.int.test.ts` rejects any entry that is not
+  a registered route (lines 208-220), so it gains a second harness app started with a
+  fixture `web-dist` and `WEB_DIST_DIR`, in which those entries are registered; the
+  first app keeps proving every other route closed.
 - **Why the same origin.** The session cookie is `SameSite=Lax` and host-only, the CSRF
   defense is a custom header plus Better Auth's origin check, and the Visma Connect
   sign-in and re-authorization callbacks are `form_post` to this origin (`002` D13,
@@ -504,9 +674,9 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
 
 ### D10. Strict CSP and security headers ([ADR-0026](../../../docs/adr/0026-strict-content-security-policy.md), Q5)
 
-- **One policy on every response** (HTML, JSON, assets and 404s), through
-  `@fastify/helmet` with `contentSecurityPolicy.useDefaults: false` and these
-  directives:
+- **One policy on every response** (HTML, JSON, assets and 404s), whether or not
+  `WEB_DIST_DIR` is set, through `@fastify/helmet` with
+  `contentSecurityPolicy.useDefaults: false` and these directives:
 
   ```text
   default-src 'self'; script-src 'self'; style-src 'self' 'nonce-<n>';
@@ -523,7 +693,9 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
 - **The style nonce** (Q15). Radix's dialog scroll lock (`react-remove-scroll`, through
   `react-style-singleton`) inserts a `<style>` element at runtime, which
   `style-src 'self'` refuses. Each HTML response gets a fresh 128-bit nonce from
-  `crypto.randomBytes(16)` (base64), placed in the CSP header and in `<meta
+  `crypto.randomBytes(16)` (base64), generated by Tayzu's own `onRequest` hook and read
+  by the `style-src` directive function (not helmet's `enableCSPNonces`, which emits hex
+  and adds the nonce to `script-src` too), placed in the CSP header and in `<meta
   name="tayzu-style-nonce" content="<n>">` of that response's `index.html`; `main.tsx`
   reads it and passes it to `get-nonce`'s `setNonce`. Non-HTML responses carry a nonce
   nothing uses. React's `style` props go through the CSSOM, which CSP does not restrict,
@@ -537,16 +709,21 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
   Q25); if the e2e run against the OIDC stub shows otherwise, adding the Visma Connect
   origin is asked in chat as a new question before the policy changes.
 - **Other headers.** `Referrer-Policy: no-referrer` (helmet's default, now asserted);
-  `X-Frame-Options: DENY` (matching `frame-ancestors 'none'`);
+  `X-Frame-Options: DENY`, set explicitly (`xFrameOptions: { action: 'deny' }`;
+  helmet's default is `SAMEORIGIN`), matching `frame-ancestors 'none'`;
   `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy:
   same-origin` (helmet defaults, now asserted); `Cross-Origin-Embedder-Policy:
   require-corp` (every resource is same-origin); `X-Content-Type-Options: nosniff`;
-  `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(),
-  interest-cohort=()`. HSTS stays as `002` set it. `Cache-Control: no-store` stays the
-  default for everything but hashed assets.
+  `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`
+  (without `interest-cohort`, which Chromium reports as a console error that would fail
+  the e2e checks). HSTS stays as `002` set it. `Cache-Control: no-store` stays the
+  default for everything but hashed assets. Two existing assertions change with this
+  decision: `apps/api/src/headers.int.test.ts:83-84` (`SAMEORIGIN`) and `:103-106` (no
+  CSP).
 - **The Vite dev server** uses a looser policy (`script-src 'self' 'unsafe-eval'`, the
   HMR WebSocket in `connect-src`, `style-src 'self' 'unsafe-inline'`) set in
-  `vite.config.ts` for `serve` only; it proxies `/v1` and `/api/auth` to a local API.
+  `vite.config.ts` for `serve` only; it proxies `/v1` and `/api/auth` to a local API and
+  listens on `127.0.0.1` only (D2).
   The build never carries it, and a test reads the built `index.html` and the served
   header to prove it.
 - **DAST.** `scripts/ci/dast.sh up` builds the app and starts the API with
@@ -554,7 +731,10 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
   header rules (10038, 10055, 10063, 10020, 10021, 90004 and the others) run against
   them. Every new WARN is fixed, not ignored, except a purely informational rule that
   fires on any single-page app (10109 "Modern Web Application"), which is set to `INFO`
-  in `.zap/rules.tsv` with its note, as 10049 is (Q22). The scan stays green (Q5).
+  in `.zap/rules.tsv` with its note, as 10049 is (Q22). A baseline run right after task
+  2.1 (task 2.1b) shows which alerts the build actually raises; every alert beyond 10109
+  (10027 and 10096 are likely) is asked in chat before anything is set to `INFO` (Q42).
+  The scan stays green (Q5).
 
 ### D11. Authentication pages (Q3)
 
@@ -586,29 +766,45 @@ logged, and are cleared from form state after a submit.
   state, never in the query cache, storage or the URL, and are dropped on leaving the
   page. Re-enrolment after an MFA reset is the same page.
 - **Step-up dialog.** Any call answered `step_up_required` opens one dialog (a Zustand
-  store holds the pending retry, not its input on disk):
-  - with `reauthorizationUrl` (a Visma Connect session): a "Continue with Visma Connect"
+  store holds the pending retry, not its input on disk). The dialog is chosen from the
+  session's `signInMethod` in `GET /v1/me` (D8), not from the presence of a URL, because a
+  TOTP or password verification never satisfies an SSO session (`step-up.ts:316-334`):
+  - a Visma Connect session with a `reauthorizationUrl`: a "Continue with Visma Connect"
     button; on click the app stores only the current in-app path in `sessionStorage`
     (key `tayzu.stepUp.returnTo`) and navigates to the URL. The callback then redirects
     to `/step-up/complete` (below), which reads and deletes the key, validates the path
-    (D15) and returns there with a "verified, repeat the action" notice. The action is
-    never repeated automatically (Q14);
-  - without it, for a user with MFA: a TOTP field (or a backup code), then
+    (D15) and returns there with a "you are back, repeat the action" notice; it never
+    says "verified", because the page cannot know whether the next request will pass.
+    The action is never repeated automatically (Q14);
+  - a Visma Connect session without a URL (the server's `start()` returns `null` when
+    five re-authorizations are already pending for the session or discovery fails,
+    `reauthorization.ts:96-127`, `server.ts:537-549`): a "try again in a few minutes"
+    message, with no factor field;
+  - a local session with MFA: a TOTP field (or a backup code), then
     `/two-factor/verify-totp`, and the original request is retried once, because the
     user's click on "Verify" is the user action;
-  - without it, for a user without MFA: password re-entry through
-    `/api/auth/verify-password`, then one retry.
+  - a local session without MFA: password re-entry through `/api/auth/verify-password`,
+    then one retry.
 - **The re-authorization redirect** (server, `apps/api`). When `WEB_DIST_DIR` is set,
   the Visma Connect re-authorization callback (`GET` and `POST
   /v1/auth/visma-connect/reauthorize/callback`) answers `303 See Other` to the fixed
-  path `/step-up/complete` on success and `/step-up/complete?result=failed` on failure,
-  instead of `200 {}` or `400`. The target is a constant, never derived from the request
-  or the OIDC state, so the route cannot become an open redirect. Without the web app
-  the answers are unchanged.
+  path `/step-up/complete` on success, `/step-up/complete?result=failed` on failure, and
+  `/step-up/complete?result=rate_limited` (keeping `Retry-After`) when its limiter
+  refuses (today a JSON `429`, `server.ts:869-880`), instead of `200 {}`, the `400` body
+  or the JSON `429`. The target is a constant, never derived from the request or the
+  OIDC state, so the route cannot become an open redirect. Without the web app the
+  answers are unchanged. The page shows a retry-later message for `rate_limited`.
+- **Step-up telemetry for Visma Connect** (Q27 B2, Q29, task 3.11). On a successful
+  `complete`, the server emits the already-declared `auth.security.step_up_succeeded`
+  with `tayzu.auth.method` `visma_connect` and the tenant and actor of the session the
+  state is bound to (`emitStepUpSucceeded` stops hard-coding `local`); a failed callback
+  emits the new `auth.security.reauthorization_failed` (WARN, reason `invalid_state` or
+  `exchange_failed`, no tenant, since none is bound to an unknown state). No code, state,
+  token or claim reaches either event.
 - **`/forgot-password`** (Q23): one email field, `POST /v1/auth/password-reset/request`,
   and the same "if an account exists, a link was sent" message for every answer but
   `AUTH_RATE_LIMITED`.
-- **`/reset-password`** (`044` D14, Q10, Q26). Before the first render, the page reads
+- **`/reset-password`** (`044` D14, Q10, `044` Q26). Before the first render, the page reads
   `reset` and `token` from `location.hash`, removes the fragment with
   `history.replaceState`, and keeps both values in component state only (never storage,
   the URL, the query cache or a log). It shows new password and confirmation and submits
@@ -619,7 +815,7 @@ logged, and are cleared from form state after a submit.
   invalid-link message.
 - **`/accept-invitation`** (`043` Q32). The same fragment handling (`invitation`,
   `token`). Signed out, the page offers the new-account path (a new password, then
-  `POST /v1/auth/invitations/accept` with `password`) and, for an existing local
+  `POST /v1/auth/invitations/accept` with `{ invitationId, token, password }`) and, for an existing local
   account, a sign-in form embedded in the page, so the token stays in memory; a Visma
   Connect user is told to sign in first and open the link again (Q20). Signed in, it
   offers "Accept" (the session path). Every refusal is the one uniform message. Nothing
@@ -636,7 +832,9 @@ logged, and are cleared from form state after a submit.
   list), `/catalog/$blueprint` (the table), `/catalog/$blueprint/$entity` (the entity
   page, search param `tab`: `details` or `related`), `/search` (search param `q`), and a
   not-found page. Every search param is parsed by a Zod schema with the D15 rules; an
-  invalid value falls back to its default, never to an error page.
+  invalid value falls back to its default, never to an error page. The router is
+  created with `pathParamsAllowedCharacters: ['@', ':', '=']`, so an entity path holds
+  those characters unencoded, like the API calls of D4 (Q36).
 - **Session gate.** A root loader reads `GET /v1/me` through TanStack Query. A `401`
   sends a protected route to `/sign-in?returnTo=<path>`; a gate other than `none` sends
   every route except its own page and sign-out to that page (`/change-password` or
@@ -698,9 +896,11 @@ logged, and are cleared from form state after a submit.
   tracking pixels, and `img-src 'self'` would block them anyway), and a URL transform
   that keeps only `http:`, `https:` and `mailto:`. No server string is ever passed to
   `dangerouslySetInnerHTML` (lint-enforced, D2).
-- **Identifiers that cannot be addressed by URL** (Q18): an entity whose identifier
-  contains `/` is listed, but its link is disabled with a localized note, because the
-  API cannot be called for it until the Q74 rule is revisited (a ticket).
+- **Identifiers that cannot be addressed by URL** (Q18, narrowed by Q36): an entity
+  whose identifier contains `/`, or is made only of dots, is listed, but its link is
+  disabled with a localized note: the first needs `%2F`, which the Q74 hook refuses, and
+  the browser normalizes the second away. Identifiers with `@`, `:` or `=` open normally,
+  because neither the router nor the client encodes those characters (D4, D12).
 
 ### D14. Search UI
 
@@ -725,8 +925,9 @@ logged, and are cleared from form state after a submit.
   library, and the error boundary renders a generic localized message with a "reload"
   action, never an error message or stack. Tenant free text (titles, descriptions,
   property values, validation messages) therefore never leaves the page.
-- **Error display is sanitized.** Only the error kind, the issue paths, localized codes
-  and counts are rendered (D4); the server's `message` is never shown.
+- **Error display is sanitized.** Only the error kind, the issue paths and counts are
+  rendered, with localized text (D4); the server's `message` is never shown, except a
+  password-policy rule name, mapped to its localized text.
 - **Untrusted input in the browser.** Every response, search param and fragment value is
   parsed with Zod into null-prototype objects; keys `__proto__`, `constructor` and
   `prototype` are rejected at every depth, and lengths are checked before parsing
@@ -755,13 +956,23 @@ logged, and are cleared from form state after a submit.
   stack started by `scripts/ci/e2e.sh`: PostgreSQL 18 behind verified TLS (as
   `dast.sh`), migrations, the pinned Cerbos, the local OIDC stub of `@tayzu/auth`
   (`packages/auth/src/__fixtures__/oidc-stub.ts`) as Visma Connect, and the API from
-  `main.ts` with `WEB_DIST_DIR` and `MOUNT_IDENTITY_ROUTES=true`. A seed script creates
-  two tenants, an admin with TOTP, a member without MFA, a user under a temporary
-  password, an invitation and a reset request, through the in-process services with
-  `043`'s recording email sender, and writes the captured links to a file in the run's
-  state directory outside the repository; secrets and links are never printed. Every
-  spec fails on any `securitypolicyviolation` event, any console error and any request to
-  an origin other than the app's (and the stub's, where the flow needs it).
+  `main.ts` with its production configuration, `WEB_DIST_DIR` and
+  `MOUNT_IDENTITY_ROUTES=true`. Outside test every origin must be `https:` (Better
+  Auth's `trustedOrigins` and the accept and reset `Origin` checks refuse `http:`), so
+  the API and the stub sit behind a **test-only TLS reverse proxy** that `e2e.sh` starts
+  (Q38): a small `node:https` proxy script under `scripts/ci/`, no new dependency, with
+  a `localhost` certificate signed by the same throwaway CA that `dast.sh` generates per
+  run. Chromium trusts only that certificate (by its SPKI hash), never
+  `ignoreHTTPSErrors`. The product is not touched. A seed script
+  (`apps/web/e2e/fixtures/seed.ts`, owned by the `test-writer`, D1) creates two tenants,
+  an admin with TOTP, a member without MFA, a user under a temporary password, a Visma
+  Connect user, an invitation and a reset request, through the in-process services with
+  `043`'s recording email sender, with **random credentials generated per run**, and
+  writes them and the captured links to a file in the run's state directory outside the
+  repository; secrets and links are never printed. A trace or report can still hold
+  them, which is why it is kept 3 days only (D2). Every spec fails on any
+  `securitypolicyviolation` event, any console error and any request to an origin other
+  than the app's (and the stub's, where the flow needs it).
 - **Accessibility.** `@axe-core/playwright` runs on every page, in both themes, with the
   tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` and `wcag22aa`; any violation fails.
 - **Isolation through the UI.** A user of one tenant opening another tenant's entity URL
@@ -786,8 +997,11 @@ logged, and are cleared from form state after a submit.
 - `docs/security/dependencies.md` (D3), `docs/security/crypto-inventory.md` (the style
   nonce), `docs/catalog/catalog-core.md` (sort, search and the new telemetry names, which
   `docs-telemetry.test.ts` checks), `docs/catalog/auth-and-rbac.md` (`GET /v1/me`, the
-  step-up UX and the callback redirect), and a new `docs/catalog/catalog-ui.md` (pages,
+  step-up UX and the callback redirect), `docs/security/secrets.md` (a Setting row for
+  `WEB_DIST_DIR`, a path, not a secret), and a new `docs/catalog/catalog-ui.md` (pages,
   i18n, theme, CSP, browser storage inventory, how to run the app and the e2e suite).
+- `packages/catalog/CLAUDE.md` shows the old `defineCatalogOperation(name, handler)` form;
+  it is corrected to the object form of D5 (task 11.8).
 
 ## Observability contract
 
@@ -797,11 +1011,17 @@ banned) and no CSP violation reports. The server already traces every request. B
 RUM is a ticket for `016-observability-dogfood`.
 
 Names follow `001`'s rules: tracer and meter `@tayzu/catalog` for catalog operations and
-`@tayzu/auth` for `GET /v1/me`, versions equal to the package versions; the shared keys
-come from `@tayzu/observability/semconv`. Catalog names are added to
-`packages/catalog/src/telemetry/contract.ts`; the `me` names to `043`'s identity contract
-module, `packages/auth/src/telemetry/identity-contract.ts`, which `otel-smoke-check`
-already imports. **Forbidden on every signal**: the search query text, entity titles,
+`@tayzu/auth` for `GET /v1/me` and the step-up events, versions equal to the package
+versions; the shared keys come from `@tayzu/observability/semconv`. Catalog names are
+added to `packages/catalog/src/telemetry/contract.ts`; the `me` names to `043`'s identity
+contract module, `packages/auth/src/telemetry/identity-contract.ts`, which
+`otel-smoke-check` already imports; the new `auth.security.reauthorization_failed` event
+and its reason attribute to `002`'s contract module,
+`packages/auth/src/telemetry/contract.ts`, where every `auth.security.*` event lives. The
+identity contract fixture `packages/auth/src/__fixtures__/identity-contract-expected.ts`
+records the new `me` span and, as it already does for a value added to `002`'s
+`session_revoked` (line 567), the `visma_connect` emission of `step_up_succeeded` and the
+new event, so the `apps/api` smoke check asserts them. **Forbidden on every signal**: the search query text, entity titles,
 property values, organization and user names, emails, the style nonce and every URL
 fragment.
 
@@ -816,13 +1036,16 @@ fragment.
 `catalog.entity.search` has `001`'s common attributes and its `authz.plan` child span
 (unchanged). Errors follow `001`'s rules: `error.type` only for expected errors, a
 sanitized exception event for `internal`. HTTP server spans come from the existing
-instrumentation: the route-template matcher of `apps/api/src/telemetry.ts` gains one
-rule, every path answered by the SPA fallback is exported as the template `/{spa}`
-(an app path carries blueprint and entity identifiers, including `_user` ones, which the
-seventeen templates already hide on the API side), and the asset paths keep their
-hashed file names. `GET /v1/search/entities` and `GET /v1/me` have no identifier in
-their path, and `q` travels in the query string, which is dropped from every exported
-span (`002` Q67).
+instrumentation. The route-template matcher of `apps/api/src/telemetry.ts` gains one
+rule, defined by **path shape**, not by which route answered (Q27, B1): every HTTP server
+span whose path is not under `/v1`, `/api` or `/assets`, is not `/healthz` and is not one
+of the explicitly served root build files is exported as the template `/{spa}`, at any
+status and for any method. So a `POST` to an app path, a path the Q74 hook refused (such
+as `/catalog/_user/a%40b.com`) and a 404 all export `/{spa}`, and a `_user` email in an
+app path never reaches a span. The predicate is `isSpaPath`, the one the fallback uses
+(D9). The asset paths keep their hashed file names. `GET /v1/search/entities` and
+`GET /v1/me` have no identifier in their path, and `q` travels in the query string,
+which is dropped from every exported span (`002` Q67).
 
 ### Metrics
 
@@ -831,7 +1054,7 @@ No new instrument.
 | Instrument | Change |
 | ---------- | ------ |
 | `tayzu.catalog.operation.duration` | `tayzu.catalog.operation` gains the value `entity.search` |
-| `tayzu.catalog.validation.failures` | `tayzu.catalog.operation` gains the value `entity.search` (a short or long query, a too large limit, a cursor of another sort on `entity.list`) |
+| `tayzu.catalog.validation.failures` | `tayzu.catalog.operation` gains the value `entity.search` (a short or long query, a too large limit); under the existing `entity.list` value it now also counts a cursor of another sort or with an unreadable anchor |
 
 Static serving adds no metric: the HTTP server spans cover it. The query length, the
 sort field and the gate are span attributes only, never metric attributes, so the
@@ -839,33 +1062,60 @@ cardinality budget of `001` is unchanged.
 
 ### Log events
 
-None new. A search without a valid context is `001`'s
-`catalog.security.context_rejected`, and an unexpected failure is
-`catalog.internal_error`, both through the existing pipeline. Search reads are not
+| Event name | Severity | Attributes | Purpose |
+| ---------- | -------- | ---------- | ------- |
+| `auth.security.step_up_succeeded` (`002`, existing) | INFO | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.method` gains the emitted value `visma_connect` | A Visma Connect step-up is now recorded when the re-authorization callback completes; the tenant and actor are those of the session the state is bound to (Q27 B2) |
+| `auth.security.reauthorization_failed` | WARN | `tayzu.auth.reauthorization.reason` (`invalid_state`\|`exchange_failed`) | A failed re-authorization callback leaves a trace; no tenant, because an unknown or expired state is bound to none (Q29) |
+
+No code, state, token or claim reaches either event. Over HTTP, a search without a valid
+context is refused by the `/v1/*` catch-all before the catalog pipeline runs, so it
+emits the catch-all's existing rejection signals, not `001`'s
+`catalog.security.context_rejected` (which fires only for an in-process call without a
+context). An unexpected failure is `catalog.internal_error`. Search reads are not
 audited (`001` R2). The sampling exemption of `001` applies unchanged.
 
 ## Security considerations (SSA SEC01-SEC16 posture)
 
-The `vcdm-ssa-validator` pre-assessment (Mode A) is task 1.1, before Checkpoint 1; its
-findings become rows from Q12 on or tasks. This is the design's own walk-through.
+The `vcdm-ssa-validator` pre-assessment (Mode A) of task 1.1 ran on 2026-11-18/19. It
+found two blocking gaps (B1 and B2, both SEC16), closed by Q27 to Q29, and the human
+answered its questions as Q30 to Q35; its non-blocking gaps are closed in the design and
+the tasks as the table below says. A new finding becomes a row from Q44 on. This is
+Tayzu's first SSA cycle, so there are no open items from an earlier assessment to carry
+(Q31).
+
+| Gap (task 1.1) | Where it is closed |
+| -------------- | ------------------ |
+| B1 (SEC16) an app path that the fallback does not answer keeps its raw path in spans | Q27, Q28, Observability contract, D9 (`isSpaPath`), task 4.6 |
+| B2 (SEC16) no success event for a Visma Connect step-up, no trace of a failed callback | Q27, Q29, D11, Log events, task 3.11 |
+| `GET /v1/me` and a bearer token | D8 (the uniform `401`), task 3.9 |
+| Fallback exclusion is `/api`, not `/api/auth` | D9, proposal |
+| Vite dev server exposure | D2, task 2.1 |
+| Rate limit on static routes | D9 (an IP bucket on the fallback), Gates (the ingress limit for assets) |
+| Build-chain and shadcn CLI supply chain | D3, task 2.2 |
+| Secrets in the bundle | task 2.8 (names from `docs/security/secrets.md`, gitleaks over `dist/`, no `VITE_*`) |
+| Secrets in Playwright traces | D2, D16, tasks 10.1 and 10.11 |
+| `WEB_DIST_DIR` not in the settings inventory | D17, task 11.7 |
+| The e2e job's checkout credentials | D2, task 10.11 |
+| The log-events sentence on context rejection | Log events |
+| CSP violation reporting (Q30), the repository access review (Q33), misuse and suspicious-location detection (Q34), the SOC delivery time (Q35), TLS posture, DNS DDoS, ingress logs, Defender for Cloud | Gates, Tickets |
 
 | Section | Applies | Posture |
 | ------- | ------- | ------- |
-| SEC01 Diagram | Yes | The browser SPA is drawn as a component of the API container with its same-origin HTTPS calls and the Visma Connect redirects, in the full and zone diagrams (D17, task 11.6). |
-| SEC02 Attack surfaces | Yes | New: the HTML pages and hashed assets (public, static), `GET /v1/me` and `GET /v1/search/entities` (session or machine token, Cerbos-narrowed), and the callback's fixed redirect. Each gets a row in `docs/security/attack-surfaces.md` (task 11.5); the public routes are two reviewed `PUBLIC_ROUTE_ALLOWLIST` entries (D9). |
+| SEC01 Diagram | Yes | The browser SPA is drawn as a component of the API container with its same-origin HTTPS calls and the Visma Connect redirects, in the full and zone diagrams (D17, task 11.6). The check for open items of earlier assessments is N/A: this is Tayzu's first SSA cycle (Q31). |
+| SEC02 Attack surfaces | Yes | New: the HTML pages and hashed assets (public, static), `GET /v1/me` (session only; a bearer token gets the uniform `401`) and `GET /v1/search/entities` (session or machine token, Cerbos-narrowed), and the callback's fixed redirect. Each gets a row in `docs/security/attack-surfaces.md` (task 11.5); the public routes are two reviewed `PUBLIC_ROUTE_ALLOWLIST` entries (D9). |
 | SEC03 Access control | Yes | Search is narrowed by the same Cerbos `list` plan as `entities.list` and fails closed on a plan it cannot translate (D5); `GET /v1/me` reads only the caller's own session (D8); the UI never sends a tenant (D15); cross-tenant answers stay "not found" through the UI (D16). |
 | SEC04 Password storage | Partial | No password is stored or hashed by this change. The forms send passwords only to the allowlisted routes over same-origin TLS, never keep them after submit and never log them (D11). |
 | SEC05 Cryptography | Partial | One new use: the 128-bit CSP style nonce from `crypto.randomBytes` per HTML response (D10), recorded in `docs/security/crypto-inventory.md`. TLS and HSTS unchanged. |
-| SEC06 Misuse | Yes | Search limits checked before database work and `LIKE` wildcards escaped (D5); a sort-bound cursor (D6); sanitized markdown and URL rendering, no `dangerouslySetInnerHTML` (D13, `001` T4); fragments stripped, no submit without a user action, validated return paths (D11, D15); the callback redirect target is a constant (D11). |
-| SEC07 Dependencies | Yes | Many new packages, each named with its license in D3, pinned exactly, runtime ones as `dependencies` so `pnpm audit --prod` covers them, in the SBOM, with no install script unless `allowBuilds` names it; no CDN or third-party script at runtime; shadcn/ui copied, not installed; `axe-core`'s MPL-2.0 accepted as test-only (Q26, task 2.2). |
+| SEC06 Misuse | Yes | Search limits checked before database work and `LIKE` wildcards escaped (D5); a sort-bound cursor (D6); sanitized markdown and URL rendering, no `dangerouslySetInnerHTML` (D13, `001` T4); fragments stripped, no submit without a user action, validated return paths (D11, D15); the callback redirect target is a constant (D11). Detection of sign-ins from suspicious locations and of misuse is not implemented (Q34): two tickets, and misuse detection on the `046` ingress or WAF is a gate. |
+| SEC07 Dependencies | Yes | Many new packages, each named with its license in D3, pinned exactly, runtime ones as `dependencies` so `pnpm audit --prod` covers them, in the SBOM, with no install script unless `allowBuilds` names it; no CDN or third-party script at runtime; shadcn/ui copied, not installed, its CLI output reviewed; `axe-core`'s MPL-2.0 accepted as test-only (Q26, Q40, task 2.2); a non-blocking critical-level audit covers the build chain; Dependabot waits 14 days (Q43). |
 | SEC08 File upload | N/A | No upload (custom icons are `047`). |
-| SEC09/SEC10 Secrets | Partial | The bundle contains no secret: no `VITE_*` variable is used, and a build test scans `dist/` for the names of every server secret variable; gitleaks scans the repository as before. `WEB_DIST_DIR` is a path, not a secret. |
+| SEC09/SEC10 Secrets | Partial | The bundle contains no secret: any `import.meta.env.VITE_*` use fails the build check (with `envDir` pointing at an empty directory), the check scans `dist/` for the name of every Secret-class row of `docs/security/secrets.md`, and gitleaks runs a `dir` scan over `dist/` (task 2.8). E2E credentials are random per run and traces are kept 3 days (D2, D16). `WEB_DIST_DIR` is a Setting row, a path, not a secret. |
 | SEC11 Phishing | Partial | The accept and reset pages follow the page rules of `043` Q32 and `044` D14 and Q26 (D11); links are built only from trusted settings (unchanged); the Visma Connect navigation requires an `https:` URL returned by the server and a click; external URL values open with `noopener noreferrer`. |
-| SEC12 Testing | Yes | Component tests, server integration tests, Playwright e2e against the real stack with axe and CSP-violation checks, and the ZAP baseline over the HTML pages (D10, D16). |
-| SEC13 Deployment | Partial | Nothing is deployed here; the image that carries `dist/` and sets `WEB_DIST_DIR` is `046`'s (Gates). |
+| SEC12 Testing | Yes | Component tests, server integration tests, Playwright e2e against the real stack behind TLS with axe and CSP-violation checks, and the ZAP baseline over the HTML pages (D10, D16). The team has been trained in security testing (Q32). |
+| SEC13 Deployment | Partial | Nothing is deployed here; the image that carries `dist/` and sets `WEB_DIST_DIR` is `046`'s (Gates). The access review of the GitHub repository, its Actions secrets and its environments has not been done: a `046` gate (Q33). |
 | SEC14 Infra permissions | Yes | One migration (Checkpoint 3) creates a trusted extension and four indexes; no role, grant or policy changes (D7). The Azure extension allowlist is a gate. |
-| SEC15 Network and host | Partial | No new listener or port: the pages are served by the existing API on the existing ingress, under CSP, COOP, CORP, COEP, `X-Frame-Options` and HSTS (D10). |
-| SEC16 Logging | Yes | Three span changes and two metric values in the contract; no tenant free text, no query text and no browser logs on any signal; SPA paths exported as one template (Observability contract). |
+| SEC15 Network and host | Partial | No new listener or port: the pages are served by the existing API on the existing ingress, under CSP, COOP, CORP, COEP, `X-Frame-Options` and HSTS (D10); the fallback has an IP bucket (D9). The TLS posture check, DNS DDoS protection, the ingress or WAF decision and Defender for Cloud are `046` gates. |
+| SEC16 Logging | Yes | Three span changes, two metric values and two step-up events in the contract; no tenant free text, no query text and no browser logs on any signal; every app-shaped path exported as one template at any status and method (Q27 B1); a Visma Connect step-up logged on success and failure (Q27 B2, Q29). How long logs take to reach the SOC is unknown: a `046` gate (Q35), with the ACA ingress logs sent to Azure Monitor. |
 
 ## Divergences from Port (deliberate)
 
@@ -886,11 +1136,14 @@ findings become rows from Q12 on or tasks. This is the design's own walk-through
   transitive packages ship to every user. Each is reviewed in task 2.2, routes and
   locales are split into chunks, and a build test fails if the initial JavaScript
   exceeds 350 kB gzip (a budget recorded in `docs/catalog/catalog-ui.md`).
-- **Tool compatibility** → ESLint 10 with `eslint-plugin-react-hooks` and
-  `eslint-plugin-jsx-a11y`, TypeScript 6 with the React types, and Vite 8 with
-  `@vitejs/plugin-react` may not all declare support yet. Task 2.1 and 2.3 check the peer
-  ranges; an unsupported pair stops the task and is asked in chat, never forced with
-  overrides silently.
+- **Tool compatibility** → `eslint-plugin-jsx-a11y` 6.10.2 declares ESLint peers only
+  up to 9 (Q40): the `peerDependencyRules` entry is explicit and a lint test proves its
+  rules fire on ESLint 10, so a silent no-op is caught. TypeScript 6 with the React
+  types and Vite 8 with `@vitejs/plugin-react` are checked in task 2.1; any other
+  unsupported pair stops the task and is asked in chat, never forced with overrides
+  silently.
+- **Fresh releases** → a version younger than 14 days is not adopted (Q43), and
+  Dependabot waits as long; a security fix that cannot wait is asked in chat.
 - **Trigram ranking and collation** → `title % q` uses the default 0.3 threshold and the
   title sort uses the database collation, which differs between the sandbox (`C.UTF-8`)
   and Azure (`en_US.utf8`); the tests assert relative order only where collation does
@@ -898,8 +1151,13 @@ findings become rows from Q12 on or tasks. This is the design's own walk-through
 - **Search cost** → a short query can match many rows; the limit (at most 50), the
   minimum length (2), the statement timeout and the trigram indexes bound it. `005`
   replaces it.
-- **Entities with `/` in their identifier** stay unreachable over HTTP (Q18), so the UI
-  cannot open them; listed with a disabled link and a ticket.
+- **Entities with `/` in their identifier, or made only of dots,** stay unreachable over
+  HTTP (Q18, Q36), so the UI cannot open them; listed with a disabled link and a ticket.
+  Identifiers with `@`, `:` or `=` depend on the custom path serializer of D4 and on the
+  router setting of D12; a library upgrade that re-encodes them would make those
+  entities 404 again, which the client and e2e tests catch.
+- **The cursor anchor is a row read** → one more indexed lookup per page, inside the same
+  transaction; in exchange the cursor stays small and holds no tenant data (Q37).
 - **E2E stability** → the suite needs Docker, PostgreSQL, Cerbos and a browser; it runs
   as its own CI job with retries off and traces kept on failure, so a flaky test is
   visible and fixed, not retried away.
@@ -917,6 +1175,19 @@ Human-owned, added to the gates `046` inherits from `002` to `045` (Q8):
   header check against the sandbox URL).
 - `ALLOWED_ORIGINS`, `BETTER_AUTH_URL`, `INVITATION_LINK_BASE_URL` and
   `PASSWORD_RESET_LINK_BASE_URL` all name the one public origin.
+- **CSP violation reporting** (Q30): a same-origin report endpoint with a sanitized log
+  (no URL, no sample, only the directive and a count) exists before production.
+- **Access review** (Q33): the GitHub repository's collaborators, its Actions secrets and
+  its environments are reviewed and the result recorded.
+- **Misuse detection** (Q34) on the ingress or a WAF, and the ingress-or-WAF decision
+  itself, with Azure DNS DDoS protection recorded.
+- **Ingress rate limit** for the hashed assets and the root build files, which have no
+  in-process limit (D9).
+- **Logging** (Q35): the ACA ingress logs go to Azure Monitor, and the time for logs to
+  reach the SOC is measured and recorded.
+- **TLS posture**: an SSL Labs or `testssl.sh` run against the public origin shows TLS 1.2
+  or later only and HSTS, recorded with `002`'s task 11.12 record.
+- **Defender for Cloud** is enabled for the subscription that holds the deployment.
 - The `043` and `044` page gates for `MOUNT_IDENTITY_ROUTES` are met by this change's
   `/accept-invitation` and `/reset-password` (tasks 6.8, 6.9, 6.10 and 10.6); `046`
   records the evidence before it turns the switch on.
@@ -934,32 +1205,42 @@ Human-owned, added to the gates `046` inherits from `002` to `045` (Q8):
 | Entity identifiers with `/` | Revisit `002` Q74 for the entity segment of catalog routes, or add an id-based route, so the UI can open such an entity (Q18). |
 | ADR backfill | ADR-0001, 0002 (superseded by 0012), 0003, 0005 and 0006 remain unwritten (`001` T7). |
 | Trusted Types | Evaluate `require-trusted-types-for 'script'` once the dependency set is stable. |
+| CSP violation reporting (Q30) | The same-origin report endpoint with a sanitized log; a `046` gate, built with `016`'s browser telemetry or before it. |
+| Suspicious-location sign-in detection (Q34) | Detect and alert on sign-ins from unusual locations (SEC06). |
+| Misuse detection and WAF (Q34) | Misuse detection at the `046` ingress or a WAF (SEC06, SEC15). |
+| Remove version-1 cursor acceptance (`005`) | Drop the version-1 `{ k }` cursor of `entities.list` once no client can hold one (D6, Q37). |
+| Visma Connect URL origin check | Accept the sign-in and step-up navigation URL only when its origin is the discovered issuer's authorization endpoint origin, exposed to the app without a new public surface (D11). |
 | Entity and blueprint forms | Create and edit forms with the JSON Schema form generator (`project.md` §2), which Q12 keeps out. |
 
 ## Migration Plan
 
-1. **One SQL migration, Checkpoint 3**: `0015_catalog_entity_search` (D7), with
-   `migrations/down/0015_catalog_entity_search.down.sql`, `meta/0015_snapshot.json` and
-   its `_journal.json` entry. ⛔ Stop for the human's separate approval of the SQL.
+1. **One SQL migration, Checkpoint 3** (Q41): `packages/db/migrations/0015_catalog_entity_search.sql`
+   (D7), generated by drizzle-kit with the `CREATE EXTENSION` prepended, with
+   `packages/db/migrations/down/0015_catalog_entity_search.down.sql`,
+   `meta/0015_snapshot.json` and its `_journal.json` entry (idx 15). ⛔ Stop for the human's separate approval of the SQL.
 2. **No Cerbos policy change** (D5). If implementation shows one is needed, it is asked
    in chat and stops at Checkpoint 3 before any policy file is written.
 3. Deploy (in `046`): the migration first, then the release that carries `sort`,
    `search.entities`, `GET /v1/me` and the static routes with `WEB_DIST_DIR`.
 4. Rollback: unset `WEB_DIST_DIR` to stop serving the app (the API is unchanged), and the
-   down script removes the indexes and the extension. A version-1 cursor stays valid, so
-   a rollback breaks no client.
+   down script removes the indexes and the extension. A version-2 cursor held by a browser
+   then fails with `CATALOG_VALIDATION_FAILED` and the table restarts from its first
+   page; nothing else breaks.
 
-## Resolved decisions (asked and approved in chat, 2026-11-18)
+## Resolved decisions (asked and approved in chat, 2026-11-18 and 2026-11-19)
 
 Per `openspec/project.md` §20. Q1 to Q11 are the human's answers before this proposal
 was written. Q12 to Q26 are the human's answers of the same day to the fifteen open
 questions this design raised (OQ1 to OQ15, kept in each row); each took the recommended
-option.
+option. Q27 to Q43 are the human's answers of 2026-11-18 and 2026-11-19 to the questions
+of task 1.1, each with the recommended option; each row names its source, the VCDM
+Mode A pre-assessment or the drift-check. A row that a later row narrows or extends
+says so in italics, as `045` does. A new question becomes a row from Q44 on.
 
 | # | Question | Decision |
 | --- | -------- | -------- |
 | Q1 | Scope of `003` against the ~30-80 task budget | Split. `003-catalog-ui-core` is the core: the app shell (navigation, catalog sidebar of blueprints, light and dark theme), every auth page, i18n (react-i18next, en and es), the catalog table per blueprint (columns from the blueprint schema, keyset pagination, sorting by meta fields), the entity page with Details and Related tabs, and minimal search. Page layouts, saved views, branding, banner, icons, enum colors and their storage move to a new change, `047-catalog-ui-customization`. _Rejected:_ one change with the full roadmap scope (far over budget); deferring the auth pages to a follow-up (keeps the `043` and `044` links inert). |
-| Q2 | Hosting of the web app | The same origin as the API: Fastify serves the Vite build from the same container (a static plugin and an SPA fallback for non-`/v1` and non-`/api/auth` `GET`s). The `SameSite=Lax` cookie, CSRF and Visma Connect `form_post` keep working, and the SPA needs no CORS. _Rejected:_ Azure Static Web Apps or a CDN on a sibling subdomain with CORS; a separate Container Apps app. |
+| Q2 | Hosting of the web app | _Refined by Q28: the fallback excludes `/api`, not only `/api/auth`, and has no file-extension rule._ The same origin as the API: Fastify serves the Vite build from the same container (a static plugin and an SPA fallback for non-`/v1` and non-`/api/auth` `GET`s). The `SameSite=Lax` cookie, CSRF and Visma Connect `form_post` keep working, and the SPA needs no CORS. _Rejected:_ Azure Static Web Apps or a CDN on a sibling subdomain with CORS; a separate Container Apps app. |
 | Q3 | Auth pages in `003` | All of them: sign-in (local and Visma Connect), the temporary-password change, MFA enrolment and re-enrolment, step-up (TOTP, password, SSO round trip), `/accept-invitation` (`043`) and `/reset-password` (`044`) with the `044` D14 rules. They are the prerequisite for turning on `MOUNT_IDENTITY_ROUTES` in production. _Rejected:_ only sign-in now and the rest in a follow-up. |
 | Q4 | Search and sort backend | Minimal and server-side: cross-blueprint search by title or identifier (prefix plus a `pg_trgm` trigram index, a migration, Checkpoint 3) and sorting by meta fields (title, updatedAt). Cerbos narrowing works as `entities.list` does today. The filter language and full-text search stay in `005-search-and-query`. _Rejected:_ client-side filtering over loaded pages; PostgreSQL full-text search with GIN now. |
 | Q5 | Content Security Policy | Strict and self-only: `default-src 'self'`, no inline script or style hashes unless needed, self-hosted fonts and icons, `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'self'` plus the Visma Connect origin as needed; a looser policy only in the Vite dev server; DAST stays green. _Rejected:_ a policy with `'unsafe-inline'`; the same loose policy in development and production. |
@@ -975,7 +1256,7 @@ option.
 | Q15 | (OQ4, answered by the human in chat on 2026-11-18, recommended option (a)) Runtime `<style>` elements (Radix scroll lock) under `style-src 'self'` | A per-response style nonce handed to the Radix scroll lock through `get-nonce`; scripts stay nonce-free (D10). _Rejected:_ `style-src 'self' 'unsafe-inline'` (weaker, flagged by ZAP 10055); avoiding every component that injects styles (a custom dialog, more code). |
 | Q16 | (OQ5, answered by the human in chat on 2026-11-18, recommended option (a)) Rendering `markdown` property values | `react-markdown` with raw HTML skipped, no images, and a URL filter keeping only `http`, `https` and `mailto`. _Rejected:_ plain text in `003` with rendering later; `marked` with DOMPurify (an HTML string plus a sanitizer). |
 | Q17 | (OQ6, answered by the human in chat on 2026-11-18, recommended option (a)) The TOTP enrolment QR code | `qrcode.react`, rendered as inline SVG (no network, no `data:` image). _Rejected:_ the secret as text only (no dependency, poorer UX); `uqr` (smaller, less used). |
-| Q18 | (OQ7, answered by the human in chat on 2026-11-18, recommended option (a)) Entities whose identifier contains `/` (unreachable over HTTP because of `002` Q74) | Entities whose identifier contains `/` are listed with a disabled link and a localized note, plus a ticket to revisit `002` Q74. _Rejected:_ allowing `%2F` in the entity segment of catalog routes in `003`, with its own security review; an id-based entity route. |
+| Q18 | (OQ7, answered by the human in chat on 2026-11-18, recommended option (a)) Entities whose identifier contains `/` (unreachable over HTTP because of `002` Q74) | _Narrowed by Q36: the disabled link remains only for `/` and dot-only identifiers._ Entities whose identifier contains `/` are listed with a disabled link and a localized note, plus a ticket to revisit `002` Q74. _Rejected:_ allowing `%2F` in the entity segment of catalog routes in `003`, with its own security review; an id-based entity route. |
 | Q19 | (OQ8, answered by the human in chat on 2026-11-18, recommended option (a)) The `_user` and `_team` system blueprints in search | The `_user` and `_team` system blueprints are included in search, narrowed by Cerbos like `entities.list`. _Rejected:_ excluding them from search (users and teams found only in their tables). |
 | Q20 | (OQ9, answered by the human in chat on 2026-11-18, recommended option (a)) Accepting an invitation with an existing account while signed out | An embedded local sign-in on the accept page keeps the token in memory only; a Visma Connect user signs in first and reopens the link. _Rejected:_ keeping the token in `sessionStorage` across a sign-in navigation; always requiring a sign-in before the link is opened. |
 | Q21 | (OQ10, answered by the human in chat on 2026-11-18, recommended option (a)) How the API finds the build | An optional `WEB_DIST_DIR`; unset means the API alone, exactly as before. _Rejected:_ a fixed path inside the image, always served; a separate `MOUNT_WEB_APP` switch plus the path. |
@@ -984,8 +1265,26 @@ option.
 | Q24 | (OQ13, answered by the human in chat on 2026-11-18, recommended option (a)) Calling Better Auth from the browser | A thin hand-written client over the allowlisted routes (D4). _Rejected:_ `better-auth/client` (a large dependency, and routes the app does not use). |
 | Q25 | (OQ14, answered by the human in chat on 2026-11-18, recommended option (a)) `form-action` and the Visma Connect origin | `form-action 'self'` only, because the app never submits a form to Visma Connect (D10); the origin is added only if the e2e run proves it is needed, which would be a new question. _Rejected:_ adding the Visma Connect origin now. |
 | Q26 | (OQ15, answered by the human in chat on 2026-11-18, recommended option (a)) The MPL-2.0 license of `@axe-core/playwright` and `axe-core` (Q7 names axe-core; the license is not on the allowlist of `docs/security/dependencies.md`) | `@axe-core/playwright` and `axe-core` are adopted as test-only dev dependencies that never ship, with their MPL-2.0 license recorded in `docs/security/dependencies.md` and the allowlist note extended for test-only MPL-2.0. _Rejected:_ Playwright's built-in accessibility snapshots only, without axe (weaker WCAG coverage). |
+| Q27 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) Checkpoint 1 with two blocking gaps (B1 and B2, both SEC16) | Checkpoint 1 stays approved, on condition of the fixes. B1: an app path the fallback does not answer (a `POST`, a 404, a `%40` path refused by Q74) kept its raw path, so a `_user` email could reach a span; the `/{spa}` export template is defined by path shape (every HTTP server span whose path is not under `/v1`, `/api` or `/assets`, is not `/healthz` and is not an explicitly served root build file, at any status and for any method), shares its predicate with the fallback (Q28), and task 4.6 covers `GET` and `POST /catalog/_user/alice@example.com`, `/catalog/_user/a%40b.com` and `/catalog/service/payments.api`. B2: a Visma Connect step-up was never logged as succeeded (`emitStepUpSucceeded` hard-codes `local`, `auth.ts:346-361`; the SSO branch of `step-up.ts` emits only required and insufficient; `reauthorization.ts` has no telemetry); on a successful `complete` the server emits `auth.security.step_up_succeeded` with `tayzu.auth.method=visma_connect` and the bound session's tenant and actor, plus the event of Q29, asserted in `otel-smoke-check` with no code, state or token in any attribute (task 3.11). _Rejected:_ withdrawing Checkpoint 1 until the fixes are implemented; accepting B1 or B2 as residual risk. |
+| Q28 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) Which paths the SPA fallback answers | `index.html` for every `GET` and `HEAD` outside `/v1`, `/api`, `/assets` and `/healthz`, except an explicit list of root build files (`theme-init.js`, the favicon). This replaces the "no file extension" rule, which broke every `_user` page (identifiers are emails, so they contain a dot) and identifiers such as `v1.2`. _Rejected:_ keeping the file-extension rule; an allowlist of app route patterns duplicated on the server. |
+| Q29 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) How a failed re-authorization callback is logged | A new event, `auth.security.reauthorization_failed`, WARN, with the reason `invalid_state` or `exchange_failed` and no tenant (none is bound to an unknown state); plus `step_up_succeeded` with `visma_connect` on success (Q27). _Rejected:_ a counter only, with no log event; reusing `step_up_insufficient` for a failed callback. |
+| Q30 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) CSP violation reporting | A `046` gate: a same-origin report endpoint with a sanitized log exists before production; also a ticket. _Rejected:_ building the endpoint in `003`; no reporting at all. |
+| Q31 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) SEC01, open items of earlier assessments | N/A: this is Tayzu's first SSA cycle, so there are no open items from earlier assessments. _Rejected:_ carrying the `002` to `045` pre-assessment gaps as open SSA items. |
+| Q32 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) SEC12 Q2, security-testing training | Yes: the team has been trained in security testing. _Rejected:_ recording it as unknown; a training ticket. |
+| Q33 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) SEC13, the access review of the GitHub repository, its Actions secrets and its environments | Not done; a ticketed `046` gate. _Rejected:_ doing it inside `003`; leaving it undocumented. |
+| Q34 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) SEC06 Q1 and Q3, suspicious-location sign-ins and misuse detection | Not implemented; two tickets, and misuse detection goes on the `046` ingress or a WAF (a gate). _Rejected:_ building detection in `003`; one combined ticket with no deployment gate. |
+| Q35 | (VCDM Mode A, task 1.1, answered by the human in chat on 2026-11-18, recommended option) SEC16 Q4, the time for logs to reach the SOC | Unknown; a `046` gate that measures and records it. _Rejected:_ stating an assumed time; leaving it out of the SSA. |
+| Q36 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) Opening identifiers that hold `@`, `:` or `=` | They must be openable: a custom path serializer in the oRPC link and TanStack Router's `pathParamsAllowedCharacters: ['@', ':', '=']` send them unencoded (today `@orpc/openapi-client` 1.15.4 uses `encodeURIComponent`, and the Q74 hook, `server.ts:581`, refuses any `%`). Q18's disabled link stays only for `/` and for dot-only identifiers, which the browser normalizes and so cannot be reached. _Rejected:_ disabling the link for every identifier with a reserved character; relaxing the Q74 hook for `%40`, `%3A` and `%3D`. |
+| Q37 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) The version-2 cursor and the 512-character limit | `{ v: 2, s, o, id: <uuid> }`: the server reads that row's sort key inside the tenant transaction, so the 512-character limit holds (a 256-character title plus a 256-character identifier would not fit). `blueprints.list` stays on version 1. The `updated_at` keyset relies on millisecond precision on writes, recorded in D6. _Rejected:_ the sort value and identifier in the cursor with a larger limit; an encrypted or compressed cursor. |
+| Q38 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) The e2e origin, given that outside test every origin must be `https:` | The e2e runs behind a test-only TLS reverse proxy started by `e2e.sh`, with the throwaway CA `dast.sh` already uses; Better Auth `trustedOrigins` (`server.ts:336`) and the accept and reset routes (`server.ts:1014-1016, 1116-1118, 1145-1147`) refuse `Origin: http://…` outside test. The product is not touched. _Rejected:_ running the e2e with `NODE_ENV=test` and `http:` origins (not production-like); relaxing the origin checks for `localhost`. |
+| Q39 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) The route-allowlist test and the static routes | A second harness app in `route-auth-allowlist.int.test.ts` with a fixture `web-dist` and `WEB_DIST_DIR`, a reviewed prefix entry for `/assets/`, and exact entries for the fallback and the root files; today lines 208-220 reject any entry that is not a registered route, and `wildcard: false` registers one route per file. _Rejected:_ one entry per hashed asset; exempting the static routes from the test. |
+| Q40 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) `eslint-plugin-jsx-a11y` 6.10.2 declares ESLint peers only up to 9 (the repository runs 10.11.0) | An explicit `pnpm.peerDependencyRules.allowedVersions` entry and a lint test proving its rules fire. It also pulls in `axe-core` (MPL-2.0), so the Q26 license note covers that copy too. _Rejected:_ dropping the accessibility lint plugin and relying on axe in e2e only; pinning ESLint back to 9. |
+| Q41 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) How migration `0015` is produced | One migration, generated by drizzle-kit, with `CREATE EXTENSION pg_trgm` prepended before Checkpoint 3, in `packages/db/migrations/` (the journal ends at idx 14, so `0015` is next). _Rejected:_ two migrations (the extension as a `--custom` file, then the indexes); a hand-written migration without a generated snapshot. |
+| Q42 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) ZAP alerts beyond 10109 | Run the baseline right after task 2.1 (task 2.1b) and ask the human in chat about every alert actually raised beyond 10109 (10027 and 10096 are likely); Q22 stands for 10109. _Rejected:_ setting every new alert to `INFO` now; waiting for group 4 to see the alerts. |
+| Q43 | (drift-check, task 1.1, answered by the human in chat on 2026-11-19, recommended option) Dependency versions | Pin the latest release that is at least 14 days old, re-checked at task 2.1 (Vite 8.3.8, of 2026-11-11, is too new: the latest 8.3.x before the cutoff; for `@hookform/resolvers`, the latest major supporting Zod 4 that is at least 14 days old); a Dependabot `cooldown` of 14 days and an `ignore` for `@playwright/test` and `playwright-core`, bumped with the sandbox browser; `pnpm why playwright-core` shows 1.63.0 only; the drift-check's pinned table is D3's starting point. _Rejected:_ the latest release at install time; caret ranges in `apps/web/package.json`. |
 
 ## Open Questions
 
-None. All fifteen were answered by the human in chat on 2026-11-18 and are Resolved
-decisions Q12 to Q26.
+None. The fifteen questions of the first draft were answered by the human in chat on
+2026-11-18 (Resolved decisions Q12 to Q26), and the questions of task 1.1 on 2026-11-18
+and 2026-11-19 (Q27 to Q43). A new question becomes a row from Q44 on.
