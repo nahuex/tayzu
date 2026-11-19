@@ -620,6 +620,92 @@ describe('actor parity and the audit trail (task 8.10; spec "Actor attribution a
     );
   });
 
+  /**
+   * 003 task 3.8 (design D5, D6): search and the sorted list are reads through the same
+   * pipeline for every actor type, so the same request answers the same for a `user`, an
+   * `integration` and an `agent` actor with the same grants (`ADMIN_PRINCIPAL` for all three).
+   */
+  describe('search and the sorted list answer the same for every actor type (003 task 3.8)', () => {
+    async function seedSearchTenant(tenantId: string): Promise<void> {
+      const c = ctxFor(tenantId, 'user');
+      const emptySchema = { properties: {}, required: [] } as const;
+      for (const identifier of ['service', 'database']) {
+        await blueprintService.create(c, {
+          identifier,
+          title: { en: identifier },
+          schema: emptySchema,
+        });
+      }
+      await entityService.create(c, {
+        blueprint: 'service',
+        identifier: 'payments-api',
+        title: 'Payments API',
+      });
+      await entityService.create(c, {
+        blueprint: 'database',
+        identifier: 'payments-db',
+        title: 'Payments DB',
+      });
+      for (const [identifier, title] of [
+        ['alpha', 'Alpha'],
+        ['betaone', 'Beta'],
+        ['betatwo', 'Beta'],
+        ['gamma', 'Gamma'],
+      ] as const) {
+        await entityService.create(c, { blueprint: 'service', identifier, title });
+      }
+    }
+
+    it('the same search as a user and as an integration actor gives the same result', async () => {
+      const tenantId = randomTenantId();
+      await seedSearchTenant(tenantId);
+
+      for (const q of ['paym', 'payments-api', 'Gamma']) {
+        const asUser = await entityService.search(ctxFor(tenantId, 'user'), { q });
+        expect(asUser.items.length, `q=${q} finds something`).toBeGreaterThan(0);
+        for (const kind of ACTOR_KINDS) {
+          const answer = await entityService.search(ctxFor(tenantId, kind), { q });
+          expect(answer, `${kind}, q=${q}`).toEqual(asUser);
+        }
+      }
+      const asIntegration = await entityService.search(ctxFor(tenantId, 'integration'), {
+        q: 'paym',
+      });
+      expect(asIntegration.items.map((item) => [item.blueprint, item.identifier])).toEqual([
+        ['database', 'payments-db'],
+        ['service', 'payments-api'],
+      ]);
+    });
+
+    it('the same sorted list as a user and as an integration actor gives the same pages, and a cursor of one continues for the other', async () => {
+      const tenantId = randomTenantId();
+      await seedSearchTenant(tenantId);
+      const input = {
+        blueprint: 'service',
+        sort: 'title',
+        order: 'desc',
+        pageSize: 2,
+      } as const;
+
+      const userFirst = await entityService.list(ctxFor(tenantId, 'user'), input);
+      expect(userFirst.items.map((e) => e.identifier)).toEqual(['payments-api', 'gamma']);
+      expect(userFirst.cursor).toBeDefined();
+      for (const kind of ACTOR_KINDS) {
+        const first = await entityService.list(ctxFor(tenantId, kind), input);
+        expect(first, `${kind}: first page`).toEqual(userFirst);
+      }
+
+      const cursor = userFirst.cursor ?? '';
+      const userSecond = await entityService.list(ctxFor(tenantId, 'user'), { ...input, cursor });
+      expect(userSecond.items.map((e) => e.identifier)).toEqual(['betatwo', 'betaone']);
+      const integrationSecond = await entityService.list(ctxFor(tenantId, 'integration'), {
+        ...input,
+        cursor,
+      });
+      expect(integrationSecond).toEqual(userSecond);
+    });
+  });
+
   it('Change events record resulting values', async () => {
     const tenantId = randomTenantId();
     const c = ctxFor(tenantId, 'user');

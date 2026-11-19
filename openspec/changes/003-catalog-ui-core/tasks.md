@@ -252,7 +252,7 @@ stack of `scripts/ci/e2e.sh`.
       `otel-smoke-check.int.test.ts` runs `entity.search` on success and per error
       class and asserts the new attributes, its marker-leak case covers "The query text
       never reaches telemetry", and `docs-telemetry.test.ts` passes.
-- [ ] 3.8 Search and sort over HTTP: `GET /v1/search/entities` and the `sort` and
+- [x] 3.8 Search and sort over HTTP: `GET /v1/search/entities` and the `sort` and
       `order` query of `GET /v1/blueprints/{blueprint}/entities` through the merged
       router, with the authenticated rate limit, the same answers for a `user` session
       and an `integration` token with the same grants, a cross-tenant search returning
