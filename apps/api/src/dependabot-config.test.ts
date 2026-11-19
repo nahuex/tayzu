@@ -162,3 +162,204 @@ describe('Dependabot tracks the pinned image digests (task 13.12)', () => {
     }
   });
 });
+
+/**
+ * `003` task 2.2 (design D3, Resolved decision Q43): Dependabot waits 14 days
+ * before it proposes a release, and it never bumps Playwright, which moves only
+ * together with the sandbox browser (`/opt/pw-browsers`).
+ *
+ * The cooldown uses Dependabot's documented `cooldown` keys: `default-days`
+ * (required here) and the optional `semver-major-days`, `semver-minor-days` and
+ * `semver-patch-days`, each of which overrides `default-days` for its update
+ * type, so each one present must also be at least 14. `include` and `exclude`
+ * would narrow the cooldown to some dependencies, so neither may appear.
+ */
+const MIN_COOLDOWN_DAYS = 14;
+
+const COOLDOWN_DAY_KEYS = [
+  'default-days',
+  'semver-major-days',
+  'semver-minor-days',
+  'semver-patch-days',
+] as const;
+
+function unquote(value: string): string {
+  return value
+    .replace(/\s+#.*$/, '')
+    .trim()
+    .replace(/^(['"])(.*)\1$/, '$2');
+}
+
+/** The text of each `package-ecosystem` entry, keyed by ecosystem. */
+function readBlocks(): Map<string, string> {
+  const text = readFileSync(path.join(root, '.github/dependabot.yml'), 'utf8');
+  const blocks = new Map<string, string>();
+  for (const block of text.split(/^ {2}- package-ecosystem:/m).slice(1)) {
+    const ecosystem = /^\s*['"]?([\w-]+)/.exec(block)?.[1] ?? '';
+    blocks.set(ecosystem, block);
+  }
+  return blocks;
+}
+
+/**
+ * The lines nested under `key:` at entry level (four spaces), up to the next
+ * line indented four spaces or less. Blank and comment-only lines are dropped.
+ * Returns `undefined` when the key is missing.
+ */
+function section(block: string, key: string): string[] | undefined {
+  const lines = block.split('\n');
+  const start = lines.findIndex((line) => new RegExp(`^ {4}${key}:\\s*(#.*)?$`).test(line));
+  if (start === -1) return undefined;
+  const nested: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    if (!/^ {5}/.test(line)) break;
+    nested.push(line);
+  }
+  return nested;
+}
+
+function readCooldown(block: string): Map<string, string> | undefined {
+  const lines = section(block, 'cooldown');
+  if (lines === undefined) return undefined;
+  const cooldown = new Map<string, string>();
+  for (const line of lines) {
+    const match = /^ {6}([\w-]+):\s*(.*)$/.exec(line);
+    if (match?.[1] !== undefined) cooldown.set(match[1], unquote(match[2] ?? ''));
+  }
+  return cooldown;
+}
+
+interface IgnoreRule {
+  dependency: string;
+  /** Keys other than `dependency-name` (`update-types`, `versions`), which narrow the rule. */
+  narrowedBy: string[];
+}
+
+function readIgnores(block: string): IgnoreRule[] {
+  const lines = section(block, 'ignore') ?? [];
+  const rules: IgnoreRule[] = [];
+  for (const line of lines) {
+    const item = /^ {6}- ([\w-]+):\s*(.*)$/.exec(line);
+    if (item?.[1] !== undefined) {
+      rules.push({ dependency: '', narrowedBy: [] });
+    }
+    const current = rules.at(-1);
+    const keyed = item ?? /^ {8}([\w-]+):\s*(.*)$/.exec(line);
+    if (current === undefined || keyed?.[1] === undefined) continue;
+    if (keyed[1] === 'dependency-name') current.dependency = unquote(keyed[2] ?? '');
+    else current.narrowedBy.push(keyed[1]);
+  }
+  return rules;
+}
+
+function listUnder(block: string, key: string, indent: number): string[] {
+  const lines = section(block, key) ?? [];
+  const pad = ' '.repeat(indent);
+  return lines
+    .map((line) => new RegExp(`^${pad}- (.*)$`).exec(line)?.[1])
+    .filter((item): item is string => item !== undefined)
+    .map(unquote);
+}
+
+describe('Dependabot cooldown and Playwright ignore (003 task 2.2, Q43)', () => {
+  it('gives the npm entry a cooldown of at least 14 days', () => {
+    const npm = readBlocks().get('npm');
+    expect(npm).toBeDefined();
+    const cooldown = readCooldown(npm ?? '');
+    expect(cooldown).toBeDefined();
+    expect(cooldown?.has('default-days')).toBe(true);
+    for (const key of COOLDOWN_DAY_KEYS) {
+      const value = cooldown?.get(key);
+      if (value === undefined) continue;
+      expect({ key, value, integer: /^\d+$/.test(value) }).toEqual({ key, value, integer: true });
+      expect({ key, atLeast14: Number(value) >= MIN_COOLDOWN_DAYS }).toEqual({
+        key,
+        atLeast14: true,
+      });
+    }
+    expect(cooldown?.has('include')).toBe(false);
+    expect(cooldown?.has('exclude')).toBe(false);
+  });
+
+  it('gives every package ecosystem entry a cooldown of at least 14 days', () => {
+    const blocks = readBlocks();
+    expect([...blocks.keys()]).toEqual(expect.arrayContaining(['npm', 'github-actions', 'docker']));
+    for (const [ecosystem, block] of blocks) {
+      const cooldown = readCooldown(block);
+      expect({ ecosystem, hasCooldown: cooldown !== undefined }).toEqual({
+        ecosystem,
+        hasCooldown: true,
+      });
+      const defaultDays = cooldown?.get('default-days');
+      expect({ ecosystem, defaultDaysInteger: /^\d+$/.test(defaultDays ?? '') }).toEqual({
+        ecosystem,
+        defaultDaysInteger: true,
+      });
+      for (const key of COOLDOWN_DAY_KEYS) {
+        const value = cooldown?.get(key);
+        if (value === undefined) continue;
+        expect({
+          ecosystem,
+          key,
+          value,
+          integer: /^\d+$/.test(value),
+          atLeast14: Number(value) >= MIN_COOLDOWN_DAYS,
+        }).toEqual({ ecosystem, key, value, integer: true, atLeast14: true });
+      }
+      expect({ ecosystem, include: cooldown?.has('include') ?? false }).toEqual({
+        ecosystem,
+        include: false,
+      });
+      expect({ ecosystem, exclude: cooldown?.has('exclude') ?? false }).toEqual({
+        ecosystem,
+        exclude: false,
+      });
+    }
+  });
+
+  it('ignores every update of @playwright/test and playwright-core in the npm entry', () => {
+    const ignores = readIgnores(readBlocks().get('npm') ?? '');
+    for (const dependency of ['@playwright/test', 'playwright-core']) {
+      const rule = ignores.find((r) => r.dependency === dependency);
+      expect({ dependency, ignored: rule !== undefined }).toEqual({ dependency, ignored: true });
+      // No `update-types` or `versions`: the package is never bumped by Dependabot.
+      expect({ dependency, narrowedBy: rule?.narrowedBy }).toEqual({
+        dependency,
+        narrowedBy: [],
+      });
+    }
+  });
+
+  it('keeps the @types/node major-version ignore', () => {
+    const npm = readBlocks().get('npm') ?? '';
+    const rule = readIgnores(npm).find((r) => r.dependency === '@types/node');
+    expect(rule).toBeDefined();
+    expect(npm).toMatch(
+      /dependency-name:\s*['"]?@types\/node['"]?\s*\n\s+update-types:\s*\n\s+- ['"]?version-update:semver-major/,
+    );
+  });
+
+  it('keeps the existing groups, directories and weekly schedules', () => {
+    const blocks = readBlocks();
+    const npm = blocks.get('npm') ?? '';
+    expect(npm).toMatch(/^ {4}directory:\s*['"]?\/['"]?\s*$/m);
+    expect(npm).toMatch(/^ {4}schedule:\s*\n {6}interval:\s*weekly\b/m);
+    expect(section(npm, 'groups')?.some((line) => /^ {6}minor-and-patch:/.test(line))).toBe(true);
+    const groupTypes = (section(npm, 'groups') ?? [])
+      .map((line) => /^ {10}- (.*)$/.exec(line)?.[1])
+      .filter((item): item is string => item !== undefined)
+      .map(unquote);
+    expect(groupTypes).toEqual(expect.arrayContaining(['minor', 'patch']));
+
+    const actions = blocks.get('github-actions') ?? '';
+    expect(actions).toMatch(/^ {4}directory:\s*['"]?\/['"]?\s*$/m);
+    expect(actions).toMatch(/^ {4}schedule:\s*\n {6}interval:\s*weekly\b/m);
+
+    const docker = blocks.get('docker') ?? '';
+    expect(listUnder(docker, 'directories', 6)).toEqual(
+      expect.arrayContaining(['/', '/scripts/ci']),
+    );
+    expect(docker).toMatch(/^ {4}schedule:\s*\n {6}interval:\s*weekly\b/m);
+  });
+});

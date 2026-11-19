@@ -99,7 +99,7 @@ stack of `scripts/ci/e2e.sh`.
       record the answers as Resolved decisions from Q44 on before task 4.7. Q22 stands for
       10109. Verify: the alert list and the answers are recorded in `design.md` and
       attached to the PR.
-- [ ] 2.2 _(setup)_ Review every package added by 2.1, 2.3, 2.4 and 10.1 and
+- [x] 2.2 _(setup)_ Review every package added by 2.1, 2.3, 2.4 and 10.1 and
       `@fastify/static` (design D3) in `docs/security/dependencies.md`: license, install
       scripts and `allowBuilds` (an entry only if `pnpm install` reports an ignored build
       script, with its reason), the transitive packages (notably the `unified` and

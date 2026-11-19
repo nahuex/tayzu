@@ -1,10 +1,14 @@
 version: 2
 
+# Every ecosystem waits 14 days before it proposes a release (003 Q43, Q49):
+# a version younger than that is not adopted.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
     groups:
       minor-and-patch:
         update-types:
@@ -15,11 +19,17 @@ updates:
       - dependency-name: '@types/node'
         update-types:
           - version-update:semver-major
+      # Playwright moves only with the sandbox browser (/opt/pw-browsers) and
+      # CI together (003 Q43), so Dependabot never bumps it.
+      - dependency-name: '@playwright/test'
+      - dependency-name: playwright-core
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
 
   # Reads compose.yaml (Cerbos) and scripts/ci/Dockerfile.images (postgres, ZAP).
   - package-ecosystem: docker
@@ -28,3 +38,5 @@ updates:
       - /scripts/ci
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
