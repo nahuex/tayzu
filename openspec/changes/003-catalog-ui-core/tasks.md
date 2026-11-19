@@ -180,7 +180,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 3. Backend: migration, sort, search, `GET /v1/me` and the callback redirect
 
-- [ ] 3.1 (Checkpoint 3) Migration `0015_catalog_entity_search` (design D7, Q41): the
+- [x] 3.1 (Checkpoint 3) Migration `0015_catalog_entity_search` (design D7, Q41): the
       two GIN trigram indexes on `catalog_entity.title` and `catalog_entity.identifier`
       and the two btree sort indexes `(tenant_id, blueprint_id, title, identifier)` and
       `(tenant_id, blueprint_id, updated_at, identifier)`, declared on the Drizzle table in
