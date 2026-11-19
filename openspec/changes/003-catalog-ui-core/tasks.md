@@ -163,7 +163,7 @@ stack of `scripts/ci/e2e.sh`.
       module) walks the module's static imports and fails on any `node:` specifier or
       any package other than `@orpc/contract` and `zod`, and `pnpm contract:check`
       reports no drift in `openapi/catalog.openapi.json`.
-- [ ] 2.8 The web build check (design D3, D10, SEC09): `apps/web/src/build-check/
+- [x] 2.8 The web build check (design D3, D10, SEC09): `apps/web/src/build-check/
       check-bundle.ts` (covered by `tsconfig.node.json`) fails when the built
       `index.html` has an inline `<script>` or `<style>`, when any file of `dist/` names a
       server secret variable, taken from the Secret-class rows of

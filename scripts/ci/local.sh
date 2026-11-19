@@ -37,6 +37,8 @@ step "lint" pnpm lint
 step "format:check" pnpm format:check
 step "typecheck" pnpm typecheck
 step "web build" pnpm --filter @tayzu/web build
+step "web bundle check" pnpm --filter @tayzu/web check:bundle
+step "gitleaks (web dist)" bash "$SCRIPT_DIR/gitleaks.sh" dir apps/web/dist
 step "policy:compile" pnpm policy:compile
 step "test" pnpm test
 step "contract:check" pnpm contract:check

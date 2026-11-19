@@ -23,6 +23,16 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
+      # The web build and its checks (003 task 2.8, design D10 and SEC09):
+      # no inline script or style, no external origin, no server secret name,
+      # no import.meta.env.VITE_*, the initial JavaScript budget, then a
+      # gitleaks scan of the built files with the pinned binary.
+      - name: Web build
+        run: pnpm --filter @tayzu/web build
+      - name: Web bundle check
+        run: pnpm --filter @tayzu/web check:bundle
+      - name: Secret scan of the web build (gitleaks dir)
+        run: bash scripts/ci/gitleaks.sh dir apps/web/dist
 
   policy-compile:
     name: Policy compile
