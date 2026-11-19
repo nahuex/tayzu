@@ -139,6 +139,17 @@ The `source-map-js` path enters through `vitest`, an optional peer of Better
 Auth that is test tooling and is not loaded at runtime; the override still
 fixes it so the `dependency-audit` job stays green without a waiver.
 
+## Peer dependency rules
+
+`pnpm.peerDependencyRules.allowedVersions` in the root `package.json` accepts
+a peer version that a package does not declare yet. JSON holds no comments, so
+each entry and its reason are listed here, and the entry is removed once the
+package declares the peer itself.
+
+| Entry                                       | Reason                                                                                                                                                                                                                                | Added      |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `eslint-plugin-jsx-a11y@6.10.2>eslint` `10` | 6.10.2, the latest release, declares ESLint peers only up to 9 and the repository runs ESLint 10. The human accepted the entry over dropping the plugin or pinning ESLint 9, with a lint test that proves its rules fire (`003` Q40). | 2026-11-19 |
+
 ## Security updates
 
 Updates made because `pnpm audit --prod --audit-level=high` reported an

@@ -45,6 +45,7 @@ function InputGroupAddon({
   ...props
 }: React.ComponentProps<'div'> & VariantProps<typeof inputGroupAddonVariants>) {
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- a pointer shortcut that focuses the group's input; keyboard users reach the input directly with Tab, so the addon is not a control
     <div
       role="group"
       data-slot="input-group-addon"

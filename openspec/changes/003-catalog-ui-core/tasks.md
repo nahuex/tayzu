@@ -91,7 +91,7 @@ stack of `scripts/ci/e2e.sh`.
       `apps/web/dist/index.html` and hashed files under `dist/assets/`, `pnpm typecheck`
       covers both web projects, and `pnpm --filter @tayzu/web dev` listens on
       `127.0.0.1` only.
-- [ ] 2.1b _(setup)_ Early ZAP baseline over the build (design D10, Q42): serve
+- [x] 2.1b _(setup)_ Early ZAP baseline over the build (design D10, Q42): serve
       `apps/web/dist` on `127.0.0.1` (`vite preview` with the production CSP and headers
       of design D10 set as preview headers), run the pinned ZAP image with
       `.zap/rules.tsv`, and ask the human in chat about every alert actually raised
