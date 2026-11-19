@@ -39,6 +39,7 @@ import {
   type EntitySortOrder,
 } from '../domain/pagination.js';
 import { assertReservedAccess, type ReservedOperationKind } from '../domain/reserved.js';
+import { parseSearchQuery } from '../domain/search-query.js';
 import { parseSafeInput } from '../domain/safe-parse.js';
 import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
@@ -74,6 +75,7 @@ import {
   selectRelationDefinitionsForSource,
   selectRelationEdgesForEntity,
   selectSpecReferrers,
+  searchEntities,
   updateEntitySpecRow,
   updateEntityStatusRow,
   type EntityPageBound,
@@ -81,6 +83,7 @@ import {
   type EntityRelationEdgeInput,
   type EntityRepositoryTx,
   type EntityRow,
+  type EntitySearchRow,
 } from '../persistence/entities-repository.js';
 import type { LocalizedText } from '../domain/localized-text.js';
 import {
@@ -163,6 +166,16 @@ export interface ListEntitiesInput {
 export interface ListEntitiesOutput {
   readonly items: readonly EntityOutput[];
   readonly cursor?: string;
+}
+
+/** 003 design D5: `q` is required, `limit` defaults to `search.defaultLimit`. */
+export interface SearchEntitiesInput {
+  readonly q: string;
+  readonly limit?: number;
+}
+/** 003 design D5: a ranked top-N list, so no cursor and no count. */
+export interface SearchEntitiesOutput {
+  readonly items: readonly EntitySearchRow[];
 }
 
 export type RelatedDirection = 'forward' | 'backward';
@@ -354,6 +367,10 @@ export interface EntityService {
   ) => Promise<EntityOutput>;
   readonly get: (rawContext: unknown, input: GetEntityInput) => Promise<EntityOutput>;
   readonly list: (rawContext: unknown, input: ListEntitiesInput) => Promise<ListEntitiesOutput>;
+  readonly search: (
+    rawContext: unknown,
+    input: SearchEntitiesInput,
+  ) => Promise<SearchEntitiesOutput>;
   readonly delete: (rawContext: unknown, input: DeleteEntityInput) => Promise<void>;
   readonly listRelated: (
     rawContext: unknown,
@@ -2054,5 +2071,34 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     },
   });
 
-  return { create, upsert, writeStatus, get, list, delete: doDelete, listRelated };
+  /**
+   * 003 design D5: the cross-blueprint search, narrowed by the same
+   * `catalog_entity` `list` plan as `entity.list`. The query and limit are
+   * checked by `validateInput`, before Cerbos and the tenant transaction.
+   */
+  const search = defineCatalogOperation<SearchEntitiesInput, SearchEntitiesOutput>({
+    name: 'entity.search',
+    pool,
+    authz,
+    authorization: PLAN_AUTHORIZED,
+    validateInput: (input) => {
+      parseSearchQuery(input, limits);
+    },
+    handler: async ({ ctx, client, input }) => {
+      // Pure and already checked by `validateInput`; parsed again for its values.
+      const query = parseSearchQuery(input, limits);
+      const planFilter = await planEntityList(authz, ctx);
+      if (planFilter.kind === 'denied') return { output: { items: [] } };
+
+      const items = await searchEntities(drizzle(client), ctx.tenantId, {
+        q: query.q,
+        prefixPattern: query.prefixPattern,
+        limit: query.limit,
+        authorizationFilter: planFilter.filter,
+      });
+      return { output: { items } };
+    },
+  });
+
+  return { create, upsert, writeStatus, get, list, search, delete: doDelete, listRelated };
 }

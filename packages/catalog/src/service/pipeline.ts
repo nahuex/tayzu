@@ -14,6 +14,10 @@
  *    `tayzu.catalog.context.rejections`, emit the WARN log
  *    `catalog.security.context_rejected`, and rethrow. No span starts, and
  *    the handler never runs.
+ * 1a. `validateInput(input)`, when declared (003 design D5): input limits
+ *    checked inside the span but before authorization and the tenant
+ *    transaction, so a rejected input makes no Cerbos or database call. A
+ *    thrown `CatalogError` is mapped as in step 4.
  * 1b. Authorization (task 9.1, 002 design D10): Cerbos `CheckResources`,
  *    before the tenant transaction opens. A deny throws `AUTH_FORBIDDEN`,
  *    emits `catalog.security.authz_denied` and counts
@@ -171,6 +175,13 @@ export interface DefineCatalogOperationOptions<Input, Output> {
         readonly input: Input;
       }) => AuthorizationDeclaration)
     | typeof PLAN_AUTHORIZED;
+  /**
+   * Optional (003 design D5): checks the still-untrusted input before
+   * authorization and the tenant transaction, so a rejected input makes no
+   * database round trip. It throws a `CatalogError` to reject; it must be
+   * pure (no I/O).
+   */
+  readonly validateInput?: (input: Input) => void;
   /**
    * Overrides `withTenantTransaction`'s default 5 s `statement_timeout`
    * (design D5). Design Risks: "`statement_timeout` raised only for this
@@ -484,6 +495,7 @@ export function defineCatalogOperation<Input, Output>(
     statementTimeoutMs,
     authz,
     authorization,
+    validateInput,
     loadAttributes,
     authorizationWhenMissing,
     additionalAuthorization,
@@ -513,6 +525,7 @@ export function defineCatalogOperation<Input, Output>(
 
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
+        validateInput?.(input);
         let authorized: AuthorizationDeclaration['attributes'];
         if (typeof authorization === 'function') {
           const declaration = authorization({ ctx, input });

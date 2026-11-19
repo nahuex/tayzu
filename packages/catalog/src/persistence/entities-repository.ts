@@ -191,6 +191,80 @@ function keysetAfter(
     : sql`${key.column} ${direction.after} ${key.bound(after.sortKey)}`;
 }
 
+export interface SearchEntitiesOptions {
+  /** The normalized query: the exact-identifier and trigram operand. */
+  readonly q: string;
+  /** `q` with `\`, `%` and `_` escaped, then `%` (`parseSearchQuery`). */
+  readonly prefixPattern: string;
+  readonly limit: number;
+  /** The Cerbos `catalog_entity` `list` plan filter, composed by `and(...)` (design D7). */
+  readonly authorizationFilter?: SQL;
+}
+
+/** One ranked `entities.search` hit (003 design D5). */
+export interface EntitySearchRow {
+  readonly blueprint: string;
+  readonly identifier: string;
+  readonly title: string;
+  readonly match: 'identifier' | 'title';
+}
+
+/**
+ * The cross-blueprint entity search of 003 design D5, in one query: an
+ * identifier or title prefix (`ILIKE ... ESCAPE '\'`), or a title trigram
+ * match (`%`, `pg_trgm`'s default threshold). Ranked by tier (0: exact
+ * identifier, case-insensitive; 1: identifier prefix; 2: title prefix; 3:
+ * similarity only), then similarity descending within tier 3, then blueprint
+ * and entity identifier.
+ *
+ * `catalog_entity` is not aliased: the plan mapper's column references
+ * render as `"catalog_entity"."<column>"`.
+ */
+export async function searchEntities(
+  tx: EntityRepositoryTx,
+  tenantId: string,
+  options: SearchEntitiesOptions,
+): Promise<EntitySearchRow[]> {
+  const { q, prefixPattern, limit } = options;
+  const scope = and(
+    sql`catalog_entity.tenant_id = ${tenantId}`,
+    sql`(catalog_entity.identifier ilike ${prefixPattern} escape '\\'
+      or catalog_entity.title ilike ${prefixPattern} escape '\\'
+      or catalog_entity.title % ${q})`,
+    options.authorizationFilter,
+  );
+  const result = await tx.execute<{
+    blueprint: string;
+    identifier: string;
+    title: string;
+    tier: number;
+  }>(sql`
+    select blueprint, identifier, title, tier
+    from (
+      select b.identifier as blueprint, catalog_entity.identifier, catalog_entity.title,
+        case
+          when lower(catalog_entity.identifier) = lower(${q}) then 0
+          when catalog_entity.identifier ilike ${prefixPattern} escape '\\' then 1
+          when catalog_entity.title ilike ${prefixPattern} escape '\\' then 2
+          else 3
+        end as tier,
+        similarity(catalog_entity.title, ${q}) as score
+      from catalog_entity
+      join catalog_blueprint b
+        on b.tenant_id = catalog_entity.tenant_id and b.id = catalog_entity.blueprint_id
+      where ${scope}
+    ) ranked
+    order by tier, case when tier = 3 then score end desc nulls last, blueprint, identifier
+    limit ${limit}
+  `);
+  return result.rows.map((row) => ({
+    blueprint: row.blueprint,
+    identifier: row.identifier,
+    title: row.title,
+    match: row.tier <= 1 ? 'identifier' : 'title',
+  }));
+}
+
 /** A batched lookup of `catalog_entity.id` by `identifier`, scoped to one blueprint and tenant (relation-target resolution). */
 export async function findEntityIdsByIdentifiers(
   tx: EntityRepositoryTx,

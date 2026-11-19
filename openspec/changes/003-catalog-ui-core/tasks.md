@@ -232,7 +232,7 @@ stack of `scripts/ci/e2e.sh`.
       prefix pattern. Verify: `search-query.test.ts` covers each bound, the
       normalization, the escaping of `%`, `_` and `\`, the error codes and issue
       paths, and a limit override.
-- [ ] 3.6 The search service and repository (design D5):
+- [x] 3.6 The search service and repository (design D5):
       `defineCatalogOperation<SearchEntitiesInput, SearchEntitiesOutput>({ name:
       'entity.search', pool, authz, authorization: PLAN_AUTHORIZED, handler })` with the
       limits of 3.5 before the transaction, the `catalog_entity` `list` plan folded into one parameterized
