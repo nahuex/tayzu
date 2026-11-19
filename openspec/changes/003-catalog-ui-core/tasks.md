@@ -118,7 +118,7 @@ stack of `scripts/ci/e2e.sh`.
       production audit reports nothing at high or above, and
       `apps/api/src/dependabot-config.test.ts` (extended) asserts the cooldown and the
       ignore.
-- [ ] 2.3 _(setup)_ ESLint (design D2): the root glob covers `.tsx`, and the
+- [x] 2.3 _(setup)_ ESLint (design D2): the root glob covers `.tsx`, and the
       test-file override at `eslint.config.js:154` gains `*.test.tsx`; a block for
       `apps/web/**` adds `eslint-plugin-react-hooks` and `eslint-plugin-jsx-a11y`,
       `no-console: error`, `no-restricted-syntax` entries banning the
