@@ -10,6 +10,7 @@ import { and, sql, type SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import type { Principal } from '../domain/context.js';
+import type { EntitySortField, EntitySortOrder } from '../domain/pagination.js';
 
 /** Same rationale as `BlueprintRepositoryTx` (`blueprints-repository.ts`). */
 export type EntityRepositoryTx = NodePgDatabase;
@@ -73,37 +74,121 @@ export async function selectEntityRowById(
   return result.rows[0];
 }
 
+/**
+ * The closed mapping from an `entities.list` sort key to its column (003
+ * design D6). The column is only ever chosen here, by enum, never built from
+ * input. `tiebreak` adds `identifier` after the column (it is unique within a
+ * blueprint, so the identifier sort needs none); `bound` renders the anchor's
+ * text sort key back as a bind parameter of the column's type.
+ */
+const ENTITY_SORT_KEYS: Record<
+  EntitySortField,
+  { readonly column: SQL; readonly tiebreak: boolean; readonly bound: (key: string) => SQL }
+> = {
+  identifier: { column: sql`identifier`, tiebreak: false, bound: (key) => sql`${key}` },
+  title: { column: sql`title`, tiebreak: true, bound: (key) => sql`${key}` },
+  updatedAt: { column: sql`updated_at`, tiebreak: true, bound: (key) => sql`${key}::timestamptz` },
+};
+
+/** The SQL fragments of one sort direction: the `order by` keyword and the keyset comparison. */
+const ENTITY_SORT_DIRECTIONS: Record<
+  EntitySortOrder,
+  { readonly keyword: SQL; readonly after: SQL }
+> = {
+  asc: { keyword: sql`asc`, after: sql`>` },
+  desc: { keyword: sql`desc`, after: sql`<` },
+};
+
+/** The keyset position a page starts after: the last row's sort key (as text) and identifier. */
+export interface EntityPageBound {
+  readonly sortKey: string;
+  readonly identifier: string;
+}
+
 export interface EntitiesPageOptions {
   /** Fetches one row beyond `limit`, so the caller can tell whether a next page exists. */
   readonly limit: number;
-  readonly afterIdentifier?: string;
+  readonly sort: EntitySortField;
+  readonly order: EntitySortOrder;
+  /** Rows strictly after this position in `sort` `order` (003 design D6). */
+  readonly after?: EntityPageBound;
   /** The Cerbos query-plan filter, composed with the tenant scope by `and(...)` (design D7). */
   readonly authorizationFilter?: SQL;
 }
 
-/** Up to `options.limit + 1` `catalog_entity` rows of `blueprintId`, ordered by `identifier` ascending (design D10). */
+/**
+ * The keyset bound of `entities.list` (003 design D6): the row anchoring a
+ * version-2 cursor, read under the same `tenant_id`, blueprint and Cerbos
+ * plan filter as the page itself. `undefined` when that row does not exist,
+ * is in another blueprint or tenant, or is not readable under the plan; the
+ * caller answers all of these alike.
+ */
+export async function selectEntityPageBound(
+  tx: EntityRepositoryTx,
+  tenantId: string,
+  blueprintId: string,
+  options: {
+    readonly id: string;
+    readonly sort: EntitySortField;
+    readonly authorizationFilter?: SQL;
+  },
+): Promise<EntityPageBound | undefined> {
+  const scope = and(
+    sql`tenant_id = ${tenantId}`,
+    sql`blueprint_id = ${blueprintId}`,
+    sql`id = ${options.id}`,
+    options.authorizationFilter,
+  );
+  const result = await tx.execute<{ sort_key: string; identifier: string }>(sql`
+    select ${ENTITY_SORT_KEYS[options.sort].column}::text as sort_key, identifier
+    from catalog_entity
+    where ${scope}
+  `);
+  const row = result.rows[0];
+  return row ? { sortKey: row.sort_key, identifier: row.identifier } : undefined;
+}
+
+/**
+ * Up to `options.limit + 1` `catalog_entity` rows of `blueprintId`, ordered
+ * by the sort key and then `identifier`, both in `options.order` (003 design
+ * D6; the default is `identifier` ascending, design D10).
+ */
 export async function selectEntitiesPage(
   tx: EntityRepositoryTx,
   tenantId: string,
   blueprintId: string,
   options: EntitiesPageOptions,
 ): Promise<EntityRow[]> {
+  const key = ENTITY_SORT_KEYS[options.sort];
+  const direction = ENTITY_SORT_DIRECTIONS[options.order];
   const scope = and(
     sql`tenant_id = ${tenantId}`,
     sql`blueprint_id = ${blueprintId}`,
-    options.afterIdentifier !== undefined
-      ? sql`identifier > ${options.afterIdentifier}`
-      : undefined,
+    options.after !== undefined ? keysetAfter(key, direction, options.after) : undefined,
     options.authorizationFilter,
   );
+  const orderBy = key.tiebreak
+    ? sql`${key.column} ${direction.keyword}, identifier ${direction.keyword}`
+    : sql`${key.column} ${direction.keyword}`;
   const result = await tx.execute<EntityRow>(sql`
     select ${ENTITY_COLUMNS}
     from catalog_entity
     where ${scope}
-    order by identifier
+    order by ${orderBy}
     limit ${options.limit + 1}
   `);
   return result.rows;
+}
+
+/** `(key, identifier) > / < ($1, $2)`, or `identifier > / < $1` for the identifier sort. */
+function keysetAfter(
+  key: (typeof ENTITY_SORT_KEYS)[EntitySortField],
+  direction: (typeof ENTITY_SORT_DIRECTIONS)[EntitySortOrder],
+  after: EntityPageBound,
+): SQL {
+  return key.tiebreak
+    ? sql`(${key.column}, identifier) ${direction.after} (${key.bound(after.sortKey)}, ${after.identifier})`
+    : sql`${key.column} ${direction.after} ${key.bound(after.sortKey)}`;
 }
 
 /** A batched lookup of `catalog_entity.id` by `identifier`, scoped to one blueprint and tenant (relation-target resolution). */

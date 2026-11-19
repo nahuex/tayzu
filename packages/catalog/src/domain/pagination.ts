@@ -20,7 +20,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function invalidCursor(): never {
+/**
+ * The one rejection of every unusable cursor: malformed, of another sort or
+ * order, or (003 design D6) anchored on a row the server cannot read. The
+ * answer is identical in every case, so it reveals nothing about the anchor.
+ */
+export function invalidCursor(): never {
   throw new CatalogError('CATALOG_VALIDATION_FAILED', 'Pagination cursor is invalid', {
     issues: [{ path: '/cursor', message: 'Pagination cursor is invalid' }],
   });

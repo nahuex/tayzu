@@ -31,8 +31,10 @@ import { parseEntityIdentifier } from '../domain/identifiers.js';
 import { defaultCatalogLimits, type CatalogLimits } from '../domain/limits.js';
 import {
   assertCursorLength,
-  decodeCursor,
+  decodeSortCursor,
   encodeCursor,
+  encodeSortCursor,
+  invalidCursor,
   type EntitySortField,
   type EntitySortOrder,
 } from '../domain/pagination.js';
@@ -65,6 +67,7 @@ import {
   selectBlueprintIdentifierById,
   selectDistinctStatusReferrerIds,
   selectEntitiesPage,
+  selectEntityPageBound,
   selectEntityRow,
   selectEntityRowById,
   selectForwardRelatedPage,
@@ -73,6 +76,7 @@ import {
   selectSpecReferrers,
   updateEntitySpecRow,
   updateEntityStatusRow,
+  type EntityPageBound,
   type EntityRelationDefinitionById,
   type EntityRelationEdgeInput,
   type EntityRepositoryTx,
@@ -360,23 +364,32 @@ export interface EntityService {
 const BLUEPRINT_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.blueprint.identifier';
 const ENTITY_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.entity.identifier';
 
+const ENTITY_SORT_FIELDS: readonly EntitySortField[] = ['identifier', 'title', 'updatedAt'];
+const ENTITY_SORT_ORDERS: readonly EntitySortOrder[] = ['asc', 'desc'];
+
 /**
- * 003 design D6: `entities.list` accepts `sort` and `order` from the contract
- * on, but only the default order (`identifier` `asc`) is served until 003
- * task 3.4 implements sorting. Any other value, unknown ones included, fails
- * with `CATALOG_VALIDATION_FAILED` rather than being silently ignored.
+ * 003 design D6: the sort of `entities.list`, `identifier` `asc` by default.
+ * The contract already restricts both to their enums; a direct caller's
+ * unknown value fails closed with `CATALOG_VALIDATION_FAILED` rather than
+ * being ignored or reaching the repository's column mapping.
  */
-function assertDefaultEntitySort(input: ListEntitiesInput): void {
+function resolveEntitySort(input: ListEntitiesInput): {
+  sort: EntitySortField;
+  order: EntitySortOrder;
+} {
+  const sort = input.sort ?? 'identifier';
+  const order = input.order ?? 'asc';
   const issues: { path: string; message: string }[] = [];
-  if (input.sort !== undefined && input.sort !== 'identifier') {
-    issues.push({ path: '/sort', message: 'Sort is not supported' });
+  if (!ENTITY_SORT_FIELDS.includes(sort)) {
+    issues.push({ path: '/sort', message: 'Sort is invalid' });
   }
-  if (input.order !== undefined && input.order !== 'asc') {
-    issues.push({ path: '/order', message: 'Order is not supported' });
+  if (!ENTITY_SORT_ORDERS.includes(order)) {
+    issues.push({ path: '/order', message: 'Order is invalid' });
   }
   if (issues.length > 0) {
-    throw new CatalogError('CATALOG_VALIDATION_FAILED', 'Sort is not supported', { issues });
+    throw new CatalogError('CATALOG_VALIDATION_FAILED', 'Sort is invalid', { issues });
   }
+  return { sort, order };
 }
 
 /** design.md, "Log events" table: the reserved-identifier WARN, emitted before `assertReservedAccess` throws (mirrors `blueprints.ts`'s own `denyIfReserved`). */
@@ -1699,9 +1712,12 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           details: { limit: 'pagination.maxPageSize' },
         });
       }
-      assertDefaultEntitySort(input);
-      if (input.cursor !== undefined) assertCursorLength(input.cursor, limits);
-      const afterIdentifier = input.cursor !== undefined ? decodeCursor(input.cursor) : undefined;
+      const { sort, order } = resolveEntitySort(input);
+      const isDefaultSort = sort === 'identifier' && order === 'asc';
+      const position =
+        input.cursor !== undefined
+          ? decodeSortCursor(input.cursor, { sort, order }, limits)
+          : undefined;
 
       const tx = drizzle(client);
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);
@@ -1714,10 +1730,27 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         return { output: { items: [] } };
       }
 
+      // 003 design D6, Q37: a version-1 key bounds the default sort directly; a
+      // version-2 anchor is read under the page's own tenant, blueprint and plan
+      // filter, and one that cannot be read is the same error as a malformed cursor.
+      let after: EntityPageBound | undefined;
+      if (position?.kind === 'v1') {
+        after = { sortKey: position.key, identifier: position.key };
+      } else if (position?.kind === 'v2') {
+        after = await selectEntityPageBound(tx, ctx.tenantId, blueprintId, {
+          id: position.id,
+          sort,
+          authorizationFilter: planFilter.filter,
+        });
+        if (after === undefined) invalidCursor();
+      }
+
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintId);
       const rows = await selectEntitiesPage(tx, ctx.tenantId, blueprintId, {
         limit: pageSize,
-        afterIdentifier,
+        sort,
+        order,
+        after,
         authorizationFilter: planFilter.filter,
       });
       const hasMore = rows.length > pageSize;
@@ -1730,8 +1763,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         }),
       );
 
-      const lastItem = pageRows[pageRows.length - 1];
-      const cursor = hasMore && lastItem ? encodeCursor(lastItem.identifier) : undefined;
+      // The default sort keeps the version-1 cursor; every other sort is version 2 (D6).
+      const lastRow = pageRows[pageRows.length - 1];
+      const cursor =
+        hasMore && lastRow
+          ? isDefaultSort
+            ? encodeCursor(lastRow.identifier)
+            : encodeSortCursor({ sort, order, id: lastRow.id })
+          : undefined;
 
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', items.length);
 

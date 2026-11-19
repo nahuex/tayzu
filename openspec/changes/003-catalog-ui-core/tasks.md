@@ -213,7 +213,7 @@ stack of `scripts/ci/e2e.sh`.
       `routes.test.ts` asserts both routes, the query parameters and their enums in
       the generated document, that neither declares `tenantId` or `actor`, and that
       `search.entities` is not `x-tayzu-risk: high`; `pnpm contract:check` passes.
-- [ ] 3.4 Sorting `entities.list` in the service and the repository (design D6, Q37):
+- [x] 3.4 Sorting `entities.list` in the service and the repository (design D6, Q37):
       the order by the sort key then `identifier` in the same direction; the cursor's
       anchor row read inside the tenant transaction under the same `tenant_id`,
       blueprint and Cerbos plan filter as the page, its sort key and identifier used as
