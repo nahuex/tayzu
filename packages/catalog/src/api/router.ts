@@ -15,6 +15,12 @@
  * path-parameter field (`blueprint`, `entity`) back to the plain TS service
  * field (`identifier`) here, the other way around from the contract's own
  * `identifier` -> path-parameter rename.
+ *
+ * `search.entities` (003 design D5) is declared in the contract but has no
+ * handler until 003 task 3.6 adds the search service. oRPC routes only the
+ * procedures a router implements, so until then the route is unmatched: over
+ * HTTP it answers the `/v1/*` catch-all's 404 after the same context
+ * resolution as every other catalog route, and in-process it does not exist.
  */
 import { implement } from '@orpc/server';
 

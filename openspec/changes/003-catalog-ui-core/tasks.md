@@ -205,7 +205,7 @@ stack of `scripts/ci/e2e.sh`.
       `CATALOG_VALIDATION_FAILED` on `/cursor`, the length check before decoding, unsafe
       keys in the JSON rejected, the version-1 cursor, and a cursor for a 256-character
       title and identifier staying under 512 characters.
-- [ ] 3.3 The contract (design D5, D6): `entities.list` gains the query enums `sort`
+- [x] 3.3 The contract (design D5, D6): `entities.list` gains the query enums `sort`
       (`identifier`, `title`, `updatedAt`) and `order` (`asc`, `desc`), and the new
       procedure `search.entities` (`GET /v1/search/entities`, query `q` and `limit`,
       output `{ items: [{ blueprint, identifier, title, match }] }`), both in

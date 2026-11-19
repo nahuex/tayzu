@@ -242,6 +242,20 @@ const listRelatedOutputSchema = z.object({
   cursor: z.string().optional(),
 });
 
+/** 003 design D5: a ranked top-N list, so no cursor and no count. */
+const searchEntitiesOutputSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        blueprint: z.string(),
+        identifier: z.string(),
+        title: z.string(),
+        match: z.enum(['identifier', 'title']),
+      }),
+    )
+    .readonly(),
+});
+
 // ---------------------------------------------------------------------------
 // Path-parameter bridging (see the module doc comment above)
 // ---------------------------------------------------------------------------
@@ -331,10 +345,13 @@ const createEntityInputSchema = z.object({
   spec: entitySpecWriteInputSchema,
 });
 
+/** 003 design D6: `sort` defaults to `identifier`, `order` to `asc` (the service applies the defaults). */
 const listEntitiesInputSchema = z.object({
   blueprint: z.string(),
   pageSize: queryIntegerSchema.optional(),
   cursor: z.string().optional(),
+  sort: z.enum(['identifier', 'title', 'updatedAt']).optional(),
+  order: z.enum(['asc', 'desc']).optional(),
 });
 
 const getEntityInputSchema = withEntityPathParam({});
@@ -391,6 +408,17 @@ const listRelatedInputSchema = withEntityPathParam({
   scope: z.enum(['spec', 'status', 'both']).optional(),
   pageSize: queryIntegerSchema.optional(),
   cursor: z.string().optional(),
+});
+
+/**
+ * 003 design D5: `q` is required and `limit` optional. Their bounds (2 to 100
+ * characters after trimming and NFC normalization, a limit of at most 50) are
+ * checked by the service, as `pageSize` is, so the error codes and issue
+ * paths stay the catalog's own.
+ */
+const searchEntitiesInputSchema = z.object({
+  q: z.string(),
+  limit: queryIntegerSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -460,5 +488,11 @@ export const catalogContract = oc.router({
       .route({ method: 'GET', path: '/v1/blueprints/{blueprint}/entities/{entity}/related' })
       .input(listRelatedInputSchema)
       .output(listRelatedOutputSchema),
+  },
+  search: {
+    entities: oc
+      .route({ method: 'GET', path: '/v1/search/entities' })
+      .input(searchEntitiesInputSchema)
+      .output(searchEntitiesOutputSchema),
   },
 });

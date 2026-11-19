@@ -29,7 +29,13 @@ import { assertEntitySpecSize, assertEntityStatusSize } from '../domain/entity-l
 import { AuthorizationError, CatalogError, isCatalogError } from '../domain/errors.js';
 import { parseEntityIdentifier } from '../domain/identifiers.js';
 import { defaultCatalogLimits, type CatalogLimits } from '../domain/limits.js';
-import { assertCursorLength, decodeCursor, encodeCursor } from '../domain/pagination.js';
+import {
+  assertCursorLength,
+  decodeCursor,
+  encodeCursor,
+  type EntitySortField,
+  type EntitySortOrder,
+} from '../domain/pagination.js';
 import { assertReservedAccess, type ReservedOperationKind } from '../domain/reserved.js';
 import { parseSafeInput } from '../domain/safe-parse.js';
 import { validateRelationValues } from '../domain/relation-values.js';
@@ -145,6 +151,10 @@ export interface ListEntitiesInput {
   readonly blueprint: string;
   readonly pageSize?: number;
   readonly cursor?: string;
+  /** 003 design D6; defaults to `identifier`. */
+  readonly sort?: EntitySortField;
+  /** 003 design D6; defaults to `asc`. */
+  readonly order?: EntitySortOrder;
 }
 export interface ListEntitiesOutput {
   readonly items: readonly EntityOutput[];
@@ -349,6 +359,25 @@ export interface EntityService {
 
 const BLUEPRINT_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.blueprint.identifier';
 const ENTITY_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.entity.identifier';
+
+/**
+ * 003 design D6: `entities.list` accepts `sort` and `order` from the contract
+ * on, but only the default order (`identifier` `asc`) is served until 003
+ * task 3.4 implements sorting. Any other value, unknown ones included, fails
+ * with `CATALOG_VALIDATION_FAILED` rather than being silently ignored.
+ */
+function assertDefaultEntitySort(input: ListEntitiesInput): void {
+  const issues: { path: string; message: string }[] = [];
+  if (input.sort !== undefined && input.sort !== 'identifier') {
+    issues.push({ path: '/sort', message: 'Sort is not supported' });
+  }
+  if (input.order !== undefined && input.order !== 'asc') {
+    issues.push({ path: '/order', message: 'Order is not supported' });
+  }
+  if (issues.length > 0) {
+    throw new CatalogError('CATALOG_VALIDATION_FAILED', 'Sort is not supported', { issues });
+  }
+}
 
 /** design.md, "Log events" table: the reserved-identifier WARN, emitted before `assertReservedAccess` throws (mirrors `blueprints.ts`'s own `denyIfReserved`). */
 function denyIfReserved(
@@ -1670,6 +1699,7 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
           details: { limit: 'pagination.maxPageSize' },
         });
       }
+      assertDefaultEntitySort(input);
       if (input.cursor !== undefined) assertCursorLength(input.cursor, limits);
       const afterIdentifier = input.cursor !== undefined ? decodeCursor(input.cursor) : undefined;
 
