@@ -134,7 +134,7 @@ stack of `scripts/ci/e2e.sh`.
       react-hooks rule, `no-console`, each restricted-syntax selector (`sql.raw` and the
       actor-type ban included) and the restricted imports report, and that a
       `*.test.tsx` file gets the test override.
-- [ ] 2.4 _(setup)_ Vitest: `vitest.shared.ts` gains `defineWebPackageConfig(name)`
+- [x] 2.4 _(setup)_ Vitest: `vitest.shared.ts` gains `defineWebPackageConfig(name)`
       (one `unit` project, environment `jsdom`, include `src/**/*.test.{ts,tsx}`, the
       setup file `src/__fixtures__/setup-tests.ts` with `@testing-library/jest-dom`,
       written by the `test-writer`, design D1), and `apps/web/vitest.config.ts` uses it.

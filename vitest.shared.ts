@@ -4,6 +4,9 @@ import { configDefaults, defineProject, type UserWorkspaceConfig } from 'vitest/
 /** Unit tests: pure, no database. */
 export const UNIT_TEST_GLOB = 'src/**/*.test.ts';
 
+/** Web component tests: jsdom, `.ts` and `.tsx`. */
+export const WEB_TEST_GLOB = 'src/**/*.test.{ts,tsx}';
+
 /** Integration tests: need a real PostgreSQL 18 through `DATABASE_URL`. */
 export const INTEGRATION_TEST_GLOB = 'src/**/*.int.test.ts';
 
@@ -48,6 +51,32 @@ export function definePackageConfig(name: string): UserWorkspaceConfig {
             // is not an assertion: tests still fail on any wrong result.
             testTimeout: 30_000,
             hookTimeout: 60_000,
+          },
+        },
+      ],
+    },
+  });
+}
+
+/**
+ * The Vitest config of the web app (`apps/web`). It declares one nested
+ * project, `<name> (unit)`, so `pnpm test:unit` (`--project "*unit*"`)
+ * selects it like the other packages' unit projects. Tests run under jsdom,
+ * and the setup file (owned by the `test-writer`) registers the
+ * `@testing-library/jest-dom` matchers. There is no `int` project: component
+ * tests replace the network with a fake `fetch` and never need a database.
+ */
+export function defineWebPackageConfig(name: string): UserWorkspaceConfig {
+  return defineProject({
+    test: {
+      name,
+      projects: [
+        {
+          test: {
+            name: 'unit',
+            environment: 'jsdom',
+            include: [WEB_TEST_GLOB],
+            setupFiles: ['src/__fixtures__/setup-tests.ts'],
           },
         },
       ],

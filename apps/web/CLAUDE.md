@@ -18,7 +18,7 @@ When code and design disagree, stop and ask.
   Node bundle check).
 - `tsconfig.json` is solution-style. `tsconfig.app.json` covers browser code
   (`lib` DOM, `types` `vite/client`, no Node types, so a Node API in browser
-  code fails to typecheck). `tsconfig.node.json` covers `vite.config.ts`,
+  code fails to typecheck). `tsconfig.node.json` covers `vite.config.ts`, `vitest.config.ts`,
   `playwright.config.ts`, `e2e/` and `src/build-check/`. `typecheck` is
   `tsc -b`, which checks both.
 - `vite.config.ts` sets `envDir` to the empty `env/` directory, so no `.env`
