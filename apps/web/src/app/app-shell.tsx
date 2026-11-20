@@ -11,6 +11,8 @@
  * session-bound stores and landing on `/sign-in`: sign-out, and any `unauthenticated`
  * answer of a query or mutation while the shell is mounted, which keeps the current
  * path as `returnTo`. Theme and locale stay.
+ *
+ * The shell mounts the app's one step-up dialog (D11, Q75), which reads this session.
  */
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from '@tanstack/react-router';
@@ -22,6 +24,7 @@ import { Button } from '@/components/ui/button';
 
 import type { AuthClient } from '../api/auth-client.js';
 import type { ApiClient } from '../api/client.js';
+import { StepUpDialog } from '../auth/step-up-dialog.js';
 import type { ThemeStore } from '../state/theme.js';
 
 import { BlueprintSidebar } from './blueprint-sidebar.js';
@@ -121,6 +124,7 @@ export function AppShell({
           {children}
         </main>
       </div>
+      <StepUpDialog me={me.data} />
     </div>
   );
 }

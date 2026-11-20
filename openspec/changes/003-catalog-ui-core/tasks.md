@@ -483,7 +483,7 @@ stack of `scripts/ci/e2e.sh`.
       code", the QR SVG and the secret rendered, the backup codes shown once, and the
       URI, secret and codes absent from storage, the URL and the query cache after
       leaving the page.
-- [ ] 6.5 The local step-up dialog (design D11): for a session whose `signInMethod` is
+- [x] 6.5 The local step-up dialog (design D11): for a session whose `signInMethod` is
       `password`, on `step_up_required`, a TOTP or backup-code field for a user with MFA
       and password re-entry through `/api/auth/verify-password` otherwise, then one retry
       of the original request. Verify: `step-up-dialog.test.tsx` covers "A local user
