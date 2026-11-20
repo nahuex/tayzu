@@ -3,7 +3,7 @@
  * D12 route, plus the not-found page for any other path.
  *
  * Each route renders one page slot. `createAppRouter` lays the given pages over the
- * defaults (the real sign-in, forgot-password, reset-password, change-password, expired-password, MFA
+ * defaults (the real sign-in, forgot-password, reset-password, accept-invitation, change-password, expired-password, MFA
  * enrolment and step-up completion pages, and placeholders until groups 6 to 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
  * an entity such as `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
  *
@@ -34,6 +34,7 @@ import {
 import type { RouteComponent, RouterHistory } from '@tanstack/react-router';
 import type { ComponentType } from 'react';
 
+import { AcceptInvitationPage } from '../auth/accept-invitation-page.js';
 import { ChangePasswordPage } from '../auth/change-password-page.js';
 import { ForgotPasswordPage } from '../auth/forgot-password-page.js';
 import { MfaEnrolPage } from '../auth/mfa-enrol-page.js';
@@ -99,7 +100,7 @@ const DEFAULT_PAGES: AppPageOptions = {
   signIn: SignInPage,
   forgotPassword: ForgotPasswordPage,
   resetPassword: ResetPasswordPage,
-  acceptInvitation: PlaceholderPage,
+  acceptInvitation: AcceptInvitationPage,
   changePassword: ChangePasswordPage,
   mfaEnrol: MfaEnrolPage,
   stepUpComplete: StepUpCompletePage,

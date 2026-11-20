@@ -514,7 +514,7 @@ stack of `scripts/ci/e2e.sh`.
       request" (no fetch before the click), "A reset for an MFA-enrolled user asks for
       the factor", a missing fragment, the uniform `404` message, and storage left
       empty.
-- [ ] 6.9 `/accept-invitation` (design D11, `043` Q32, Q20): the same fragment
+- [x] 6.9 `/accept-invitation` (design D11, `043` Q32, Q20): the same fragment
       handling; signed out, the new-account path and an embedded local sign-in for an
       existing account; signed in, "Accept"; the uniform rejection message. Verify:
       `accept-invitation.test.tsx` covers "A new invitee creates their account", the

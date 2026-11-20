@@ -7,7 +7,8 @@
  * uniform message chosen from the error kind only, never from the server's text: a
  * rate limit says when to try again, a refused code says so and keeps the code step,
  * and anything else is "the email or password is incorrect". The password is emptied
- * after every request. Nothing is sent without the user's submit.
+ * after every request. Nothing is sent without the user's submit. Both forms live in
+ * `./sign-in-forms.js`, which the accept-invitation page's embedded sign-in shares.
  *
  * "Sign in with Visma Connect" posts `/api/auth/sign-in/social` only on the user's click
  * and leaves the app only when the returned URL is an absolute `https:` URL (Q72). A
@@ -21,13 +22,10 @@
  * again (it reads with `staleTime: 'static'`, which an invalidation would not move),
  * and the page goes to the route's validated `returnTo`, query included.
  */
-import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useRouter, useSearch } from '@tanstack/react-router';
-import { Suspense, useEffect, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { Suspense, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { z } from 'zod';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -38,17 +36,8 @@ import { SESSION_QUERY_KEY } from '../app/session-gate.js';
 import { isAbsoluteHttpsUrl } from '../lib/external-url.js';
 import { navigateToExternal } from '../lib/navigate-away.js';
 
-import { Field } from './field.js';
 import { returnToOf, searchField } from './route-search.js';
-
-/** Only emptiness is checked here; the server decides everything else (Q71). */
-const credentialsSchema = z.object({ email: z.string().min(1), password: z.string().min(1) });
-const codeSchema = z.object({ code: z.string().min(1) });
-
-type Credentials = z.input<typeof credentialsSchema>;
-type Code = z.input<typeof codeSchema>;
-
-type CodeStep = 'totp' | 'backup';
+import { CodeForm, CredentialsForm, type CodeStep } from './sign-in-forms.js';
 
 /** What the page's one alert says; never anything the server wrote. */
 type Notice =
@@ -77,111 +66,6 @@ function NoticeAlert({ notice }: { notice: Notice }): React.JSX.Element {
     text = t('signIn.rateLimitedLater');
   } else text = t('signIn.rateLimited', { count: notice.retryAfterSeconds });
   return <Alert variant="destructive">{text}</Alert>;
-}
-
-function CredentialsForm({
-  onResult,
-}: {
-  onResult: (result: AuthResult<{ readonly twoFactorRequired: boolean }>) => void;
-}): React.JSX.Element {
-  const { t } = useTranslation('auth');
-  const authClient = useAuthClient();
-  const {
-    register,
-    handleSubmit,
-    setValue,
-    formState: { errors },
-  } = useForm<Credentials>({ resolver: zodResolver(credentialsSchema) });
-
-  const submit = handleSubmit(async ({ email, password }) => {
-    const result = await authClient.signInEmail({ email, password });
-    setValue('password', '');
-    onResult(result);
-  });
-
-  return (
-    <form
-      noValidate
-      className="flex flex-col gap-4"
-      onSubmit={(event) => {
-        void submit(event);
-      }}
-    >
-      <Field
-        label={t('signIn.email')}
-        error={errors.email === undefined ? undefined : t('signIn.emailRequired')}
-        type="email"
-        autoComplete="username"
-        {...register('email')}
-      />
-      <Field
-        label={t('signIn.password')}
-        error={errors.password === undefined ? undefined : t('signIn.passwordRequired')}
-        type="password"
-        autoComplete="current-password"
-        {...register('password')}
-      />
-      <Button type="submit">{t('signIn.submit')}</Button>
-    </form>
-  );
-}
-
-function CodeForm({
-  step,
-  onResult,
-  onUseBackupCode,
-}: {
-  step: CodeStep;
-  onResult: (result: AuthResult<void>) => void;
-  onUseBackupCode: () => void;
-}): React.JSX.Element {
-  const { t } = useTranslation('auth');
-  const authClient = useAuthClient();
-  const {
-    register,
-    handleSubmit,
-    setValue,
-    setFocus,
-    formState: { errors },
-  } = useForm<Code>({ resolver: zodResolver(codeSchema) });
-
-  // The step replaced the form the user was in: keep the keyboard focus in the page.
-  useEffect(() => {
-    setFocus('code');
-  }, [setFocus]);
-
-  const submit = handleSubmit(async ({ code }) => {
-    const result =
-      step === 'totp'
-        ? await authClient.verifyTotp({ code })
-        : await authClient.verifyBackupCode({ code });
-    setValue('code', '');
-    onResult(result);
-  });
-
-  return (
-    <form
-      noValidate
-      className="flex flex-col gap-4"
-      onSubmit={(event) => {
-        void submit(event);
-      }}
-    >
-      <Field
-        label={t(step === 'totp' ? 'signIn.code' : 'signIn.backupCode')}
-        error={errors.code === undefined ? undefined : t('signIn.codeRequired')}
-        type="text"
-        autoComplete="one-time-code"
-        {...register('code')}
-      />
-      <Button type="submit">{t('signIn.verify')}</Button>
-      {step === 'totp' && (
-        <Button type="button" variant="link" onClick={onUseBackupCode}>
-          {t('signIn.useBackupCode')}
-        </Button>
-      )}
-    </form>
-  );
 }
 
 /**
@@ -241,6 +125,7 @@ function SignInContent(): React.JSX.Element {
       {step === 'credentials' ? (
         <>
           <CredentialsForm
+            submitLabel={t('signIn.submit')}
             onResult={(result) => {
               if (!result.ok) show(noticeOf(result, { kind: 'failed' }));
               else if (!result.value.twoFactorRequired) signedIn();
@@ -263,6 +148,7 @@ function SignInContent(): React.JSX.Element {
         <CodeForm
           key={step}
           step={step}
+          submitLabel={t('signIn.verify')}
           onResult={(result) => {
             if (result.ok) signedIn();
             else show(noticeOf(result, { kind: 'invalidCode' }));
