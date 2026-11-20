@@ -6,12 +6,15 @@
  * route cannot become public by accident: adding it here is a reviewed decision.
  *
  * `path` is the route as Fastify registers it; `method` is an upper-case HTTP method
- * or `'*'` for any. A `HEAD` route Fastify derives from a `GET` entry is covered.
+ * or `'*'` for any. A `HEAD` route Fastify derives from a `GET` entry is covered. An
+ * entry with `prefix: true` covers every registered route whose path starts with `path`
+ * (003 Q39: only `/assets/`, where `wildcard: false` registers one route per file).
  */
 export interface PublicRoute {
   readonly method: string;
   readonly path: string;
   readonly reason: string;
+  readonly prefix?: boolean;
 }
 
 export const PUBLIC_ROUTE_ALLOWLIST: readonly PublicRoute[] = [
@@ -64,5 +67,27 @@ export const PUBLIC_ROUTE_ALLOWLIST: readonly PublicRoute[] = [
     method: '*',
     path: '/v1/auth/visma-connect/reauthorize/callback',
     reason: 'Visma Connect re-authorization callback: authenticated by the OIDC state.',
+  },
+  // 003 D9 (Q39): the web build's routes, registered only with `WEB_DIST_DIR`.
+  {
+    method: 'GET',
+    path: '/assets/',
+    prefix: true,
+    reason: 'Hashed web build assets: static, public by nature, no data (003 D9).',
+  },
+  {
+    method: 'GET',
+    path: '/*',
+    reason: 'SPA fallback: the static index.html, public by nature, no data (003 D9, Q28).',
+  },
+  {
+    method: 'GET',
+    path: '/theme-init.js',
+    reason: 'Root build file: static, public by nature, no data (003 D9, Q58).',
+  },
+  {
+    method: 'GET',
+    path: '/favicon.svg',
+    reason: 'Root build file: static, public by nature, no data (003 D9, Q58).',
   },
 ];

@@ -325,7 +325,7 @@ stack of `scripts/ci/e2e.sh`.
       `immutable` header not replaced by the `onSend` `no-store` hook, a root build file
       with `no-cache`, a missing asset as a 404, and "A traversal attempt reaches no
       file".
-- [ ] 4.3 The SPA fallback (design D9, Q28, Q39): the shared predicate
+- [x] 4.3 The SPA fallback (design D9, Q28, Q39): the shared predicate
       `isSpaPath(pathname)` (true for a path not under `/v1`, `/api` or `/assets`, not
       `/healthz` and not a root build file); `GET` and `HEAD` of such a path answer
       `index.html` with `no-store`, the file read once at startup; the fallback's own

@@ -75,6 +75,7 @@ import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
 import { assertDiscoverable } from './sso-discovery.js';
+import { DEFAULT_SPA_FALLBACK_RATE_LIMIT, registerSpaFallback } from './spa-fallback.js';
 import { registerWebStatic } from './web-static.js';
 
 type Pool = ReturnType<typeof createPool>;
@@ -190,9 +191,16 @@ export interface CreateAppOptions {
    * 003 D9 (Q21): the absolute path of the web build (`WEB_DIST_DIR`). Omitted: the API
    * alone, every answer exactly as before. Set: the Visma Connect re-authorization
    * callback answers `303` to a fixed `/step-up/complete` path instead of JSON (D11, Q14),
-   * and the build's assets and root build files are served (D9, `web-static.ts`).
+   * and the build's assets, root build files and SPA fallback are served (D9,
+   * `web-static.ts`, `spa-fallback.ts`).
    */
   readonly webDistDir?: string;
+  /**
+   * 003 D9 "Rate limit": the SPA fallback's own bucket, keyed by the client address and
+   * counting only requests answered with the app. Defaults to 300 per minute. Ignored
+   * without `webDistDir`.
+   */
+  readonly spaFallbackRateLimit?: { readonly max: number; readonly timeWindowMs: number };
   /**
    * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
@@ -688,6 +696,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return;
     }
     if (!isAllowedAuthPath(pathname)) {
+      // No route matched (`/api/auth` itself): the 404 handler already answers, and
+      // `callNotFound` inside it would send Fastify's bare text 404 instead.
+      if (request.is404) {
+        return;
+      }
       reply.callNotFound();
       return reply;
     }
@@ -1307,8 +1320,13 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
 
   // 003 D9: the web build's assets and root build files, only when a build is configured.
   // Their own `Cache-Control` is set before `onSend`, so the `no-store` default leaves it.
+  // The SPA fallback (Q28): the router prefers every more specific route over `/*`.
   if (options.webDistDir !== undefined) {
     await registerWebStatic(app, options.webDistDir);
+    await registerSpaFallback(app, options.webDistDir, {
+      rateLimit: options.spaFallbackRateLimit ?? DEFAULT_SPA_FALLBACK_RATE_LIMIT,
+      rateLimitedBody: () => ({ ...limited.toJSON(), statusCode: 429 }),
+    });
   }
 
   await app.ready();
