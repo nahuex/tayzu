@@ -502,7 +502,7 @@ stack of `scripts/ci/e2e.sh`.
       the stored path, an invalid stored path becoming `/`, `?result=failed`,
       `?result=rate_limited`, the notice wording, and the action not being repeated
       automatically.
-- [ ] 6.7 `/forgot-password` (design D11, Q23): one email field, the uniform message
+- [x] 6.7 `/forgot-password` (design D11, Q23): one email field, the uniform message
       for every answer but `AUTH_RATE_LIMITED`. Verify: `forgot-password.test.tsx`
       covers a `200`, a `404`-like failure and a server error all showing the same
       message, and the rate-limit message.
