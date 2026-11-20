@@ -12,18 +12,16 @@
  * answer of a query or mutation while the shell is mounted, which keeps the current
  * path as `returnTo`. Theme and locale stay.
  */
-import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useRouter } from '@tanstack/react-router';
 import { SearchIcon } from 'lucide-react';
-import { useCallback, useEffect, useRef, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useRef, type MouseEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 
 import type { AuthClient } from '../api/auth-client.js';
 import type { ApiClient } from '../api/client.js';
-import { safeReturnPath } from '../lib/return-path.js';
-import { resetSessionStores } from '../state/session-stores.js';
 import type { ThemeStore } from '../state/theme.js';
 
 import { BlueprintSidebar } from './blueprint-sidebar.js';
@@ -31,6 +29,7 @@ import { LocaleSelector } from './locale-selector.js';
 import { sessionQueryOptions, type SessionSource } from './session-gate.js';
 import { subscribeToUnauthenticated } from './session-end.js';
 import { ThemeToggle } from './theme-toggle.js';
+import { useEndSession } from './use-end-session.js';
 import { UserMenu } from './user-menu.js';
 
 /** What the shell needs besides the session source; `main.tsx` passes all of it. */
@@ -41,51 +40,6 @@ export interface ShellSources {
 }
 
 const MAIN_ID = 'main-content';
-
-/**
- * Ends the session on the client: clears the cache and the session-bound stores, then
- * goes to `/sign-in`, with `returnTo` when given. It runs at most once per mount.
- */
-function useEndSession(queryClient: QueryClient) {
-  const router = useRouter();
-  const ending = useRef(false);
-
-  const begin = useCallback((): boolean => {
-    if (ending.current) return false;
-    ending.current = true;
-    return true;
-  }, []);
-
-  const finish = useCallback(
-    (returnTo?: string): void => {
-      queryClient.clear();
-      resetSessionStores();
-      void router.navigate(
-        returnTo === undefined ? { to: '/sign-in' } : { to: '/sign-in', search: { returnTo } },
-      );
-    },
-    [queryClient, router],
-  );
-
-  /** D4: the session is gone on the server; come back to the current path afterwards. */
-  const onUnauthenticated = useCallback((): void => {
-    if (!begin()) return;
-    const { pathname, search } = router.history.location;
-    finish(safeReturnPath(`${pathname}${search}`));
-  }, [begin, finish, router]);
-
-  /** The local state is cleared whatever the server answers: the cookie is not ours. */
-  const signOut = useCallback(
-    async (authClient: Pick<AuthClient, 'signOut'>): Promise<void> => {
-      if (!begin()) return;
-      await authClient.signOut();
-      finish();
-    },
-    [begin, finish],
-  );
-
-  return { onUnauthenticated, signOut };
-}
 
 export function AppShell({
   apiClient,

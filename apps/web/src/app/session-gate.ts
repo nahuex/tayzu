@@ -1,13 +1,13 @@
 /**
- * The session gate (design D12, D8, D4 and Q64, Q65, Q68).
+ * The session gate (design D12, D8, D4 and Q64, Q65, Q68, Q73).
  *
  * Every protected route reads `GET /v1/me` through TanStack Query before its page
  * renders. Only `unauthenticated` (the uniform `401` of D8) sends the visitor to
  * `/sign-in`, with `returnTo` the raw path and query through `safeReturnPath`. Any
  * other failure fails closed: the route throws and the root error component shows a
  * generic message. A gate other than `none` sends every protected route but its own
- * page to that page. The gate follows only the server's `gate` field. The public
- * pages never call this.
+ * page to that page, `/change-password` with the same `returnTo` (Q73). The gate
+ * follows only the server's `gate` field. The public pages never call this.
  */
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
 import { redirect, type RouterHistory } from '@tanstack/react-router';
@@ -96,6 +96,19 @@ function rawPathAndQuery(history: RouterHistory): string {
 }
 
 /**
+ * The redirect to a gate's page. `/change-password` carries the requested path and query
+ * as `returnTo`, so a changed password lands where the user was going (Q73).
+ */
+function gateRedirect(gatePath: GatePath, history: RouterHistory) {
+  return gatePath === '/change-password'
+    ? redirect({
+        to: gatePath,
+        search: { returnTo: safeReturnPath(rawPathAndQuery(history)) },
+      })
+    : redirect({ to: gatePath });
+}
+
+/**
  * The `beforeLoad` of the protected route at `ownPath`, over the router's `history`. It
  * throws a redirect to sign-in or to the gate's page, rethrows any other failure, and
  * otherwise hands the gate to the route context.
@@ -124,7 +137,7 @@ export function sessionGuard(session: SessionSource, history: RouterHistory, own
     if (me.gate !== 'none') {
       const gatePath: GatePath = GATE_PATHS[me.gate];
       // eslint-disable-next-line @typescript-eslint/only-throw-error -- a router redirect is thrown
-      if (gatePath !== ownPath) throw redirect({ to: gatePath });
+      if (gatePath !== ownPath) throw gateRedirect(gatePath, history);
     }
     return { sessionGate: me.gate };
   };

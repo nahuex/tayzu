@@ -470,7 +470,7 @@ stack of `scripts/ci/e2e.sh`.
       URL, and the generic `?error=sso` message. Verify: `sign-in-sso.test.tsx` covers
       the request body, navigation to an `https:` URL, a non-`https:` or relative URL
       refused, and the error message.
-- [ ] 6.3 The temporary-password change and the expired page (design D11):
+- [x] 6.3 The temporary-password change and the expired page (design D11):
       `/change-password` with `revokeOtherSessions: true` and the localized rule name
       of a policy failure, and the expired-password page with sign-out. Verify:
       `change-password.test.tsx` covers "A temporary password is changed", a policy

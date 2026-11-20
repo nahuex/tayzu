@@ -7,8 +7,11 @@
  * referrers and count, the step-up `reauthorizationUrl` and `Retry-After` are
  * kept. The server's `message` never is, except a password-policy rule name on
  * `/newPassword` or `/password`, which is kept as a rule id for the UI to
- * localize. Every input is untrusted: types are checked before reading and
- * only own properties are read.
+ * localize. Better Auth's `/change-password` answers (Q63, Q73) become issues
+ * too: its top-level `rule` on `/newPassword`, the breach check as the
+ * `breached` rule, and a wrong current password on `/currentPassword`. Every
+ * input is untrusted: types are checked before reading and only own properties
+ * are read.
  */
 import { ORPCError } from '@orpc/client';
 
@@ -66,6 +69,13 @@ const PASSWORD_RULES: ReadonlySet<string> = new Set<PasswordRule>([
 /** The issue paths whose message is a password-policy rule name. */
 const PASSWORD_PATHS: ReadonlySet<string> = new Set(['/newPassword', '/password']);
 
+/** A known password rule, else `undefined`: an unknown name is never kept. */
+function passwordRuleOf(value: unknown): PasswordRule | undefined {
+  return typeof value === 'string' && PASSWORD_RULES.has(value)
+    ? (value as PasswordRule)
+    : undefined;
+}
+
 /** Bounds the work spent on an answer; the server sends far fewer. */
 const MAX_ISSUES = 100;
 const MAX_REFERRERS = 100;
@@ -102,10 +112,7 @@ function issuesOf(data: unknown): ValidationIssue[] {
     const path = own(issue, 'path');
     if (typeof path !== 'string') continue;
     const message = own(issue, 'message');
-    const rule =
-      PASSWORD_PATHS.has(path) && typeof message === 'string' && PASSWORD_RULES.has(message)
-        ? (message as PasswordRule)
-        : undefined;
+    const rule = PASSWORD_PATHS.has(path) ? passwordRuleOf(message) : undefined;
     issues.push(rule === undefined ? { path } : { path, rule });
   }
   return issues;
@@ -122,8 +129,17 @@ function referenceViolationOf(data: unknown): ApiError {
   return { kind: 'reference_violation', referrers, notVisible };
 }
 
-/** Maps an error code and its `data` to a kind; an unknown code is `server`. */
-function fromCode(code: unknown, data: unknown): ApiError {
+/** One validation issue on `path`, with `rule` when it is a known password rule. */
+function passwordIssue(path: string, rule: unknown): ApiError {
+  const known = passwordRuleOf(rule);
+  return { kind: 'validation', issues: [known === undefined ? { path } : { path, rule: known }] };
+}
+
+/**
+ * Maps an error code, its `data` and the whole `body` to a kind; an unknown code is
+ * `server`. `body` is a plain route's answer, where Better Auth puts its `rule`.
+ */
+function fromCode(code: unknown, data: unknown, body?: unknown): ApiError {
   switch (code) {
     case 'AUTH_FORBIDDEN':
     case 'CATALOG_RESERVED_IDENTIFIER':
@@ -141,6 +157,12 @@ function fromCode(code: unknown, data: unknown): ApiError {
       return { kind: 'validation', issues: issuesOf(data) };
     case 'CATALOG_REFERENCE_VIOLATION':
       return referenceViolationOf(data);
+    case 'PASSWORD_POLICY_VIOLATION':
+      return passwordIssue('/newPassword', own(body, 'rule'));
+    case 'PASSWORD_COMPROMISED':
+      return passwordIssue('/newPassword', 'breached');
+    case 'INVALID_PASSWORD':
+      return passwordIssue('/currentPassword', undefined);
     case 'AUTH_RATE_LIMITED':
       return { kind: 'rate_limited' };
     case 'CATALOG_ALREADY_EXISTS':
@@ -200,5 +222,5 @@ export async function apiErrorFromResponse(response: Response): Promise<ApiError
   const byStatus = fromStatus(response.status);
   if (byStatus !== undefined) return byStatus;
   const body = await jsonBodyOf(response);
-  return fromCode(own(body, 'code'), own(body, 'data'));
+  return fromCode(own(body, 'code'), own(body, 'data'), body);
 }

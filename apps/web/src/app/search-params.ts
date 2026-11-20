@@ -142,13 +142,24 @@ const ssoError = z
   })
   .optional();
 
+/** A raw `returnTo`, later passed through `safeReturnPath`; anything but text is absent. */
+const rawReturnTo = z.string().optional().catch(undefined);
+
 /**
  * `/sign-in`: where to go after signing in, always through `safeReturnPath`, and whether
  * the page is the Visma Connect error return.
  */
 export const signInSearchSchema = z
-  .object({ returnTo: z.string().optional().catch(undefined), error: ssoError })
+  .object({ returnTo: rawReturnTo, error: ssoError })
   .transform(({ returnTo, error }) => ({ returnTo: safeReturnPath(returnTo), error }));
+
+/**
+ * `/change-password`: where to go once the temporary password is changed (Q73), always
+ * through `safeReturnPath`.
+ */
+export const changePasswordSearchSchema = z
+  .object({ returnTo: rawReturnTo })
+  .transform(({ returnTo }) => ({ returnTo: safeReturnPath(returnTo) }));
 
 /** The search middleware `next` with its metadata, as the router's own middlewares call it. */
 type NextWithMeta = (
@@ -177,3 +188,4 @@ export type TableSearch = z.output<typeof tableSearchSchema>;
 export type EntitySearch = z.output<typeof entitySearchSchema>;
 export type SearchPageSearch = z.output<typeof searchPageSearchSchema>;
 export type SignInSearch = z.output<typeof signInSearchSchema>;
+export type ChangePasswordSearch = z.output<typeof changePasswordSearchSchema>;

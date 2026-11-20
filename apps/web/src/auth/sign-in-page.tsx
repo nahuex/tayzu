@@ -21,22 +21,22 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter, useSearch } from '@tanstack/react-router';
-import { Suspense, useEffect, useId, useState, type ComponentProps } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { z } from 'zod';
 
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 
 import { useAuthClient } from '../api/auth-client-context.js';
 import type { AuthResult } from '../api/auth-client.js';
 import { SESSION_QUERY_KEY } from '../app/session-gate.js';
 import { isAbsoluteHttpsUrl } from '../lib/external-url.js';
 import { navigateToExternal } from '../lib/navigate-away.js';
-import { safeReturnPath } from '../lib/return-path.js';
+
+import { Field } from './field.js';
+import { returnToOf, searchField } from './route-search.js';
 
 /** Only emptiness is checked here; the server decides everything else (Q71). */
 const credentialsSchema = z.object({ email: z.string().min(1), password: z.string().min(1) });
@@ -61,50 +61,9 @@ function noticeOf(result: AuthResult<unknown>, fallback: Notice): Notice | undef
   return { kind: 'rateLimited', retryAfterSeconds: result.error.retryAfterSeconds };
 }
 
-/**
- * One own field of the route's search. The search is read as `unknown` (the hook is typed
- * `any` inside the tree the router type comes from), so each field is checked again.
- */
-function searchField(search: unknown, key: string): unknown {
-  return typeof search === 'object' && search !== null && Object.hasOwn(search, key)
-    ? (search as Record<string, unknown>)[key]
-    : undefined;
-}
-
-/** The route's `returnTo`, failing closed on `/`. */
-function returnToOf(search: unknown): string {
-  return safeReturnPath(searchField(search, 'returnTo'));
-}
-
 /** True on the Visma Connect error return (`?error=sso`), as the route parsed it. */
 function isSsoErrorReturn(search: unknown): boolean {
   return searchField(search, 'error') === 'sso';
-}
-
-/** A labelled input with its error tied to it (`aria-invalid`, `aria-describedby`). */
-function Field({
-  label,
-  error,
-  ...inputProps
-}: { label: string; error: string | undefined } & ComponentProps<typeof Input>) {
-  const id = useId();
-  const errorId = `${id}-error`;
-  return (
-    <div className="flex flex-col gap-2">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        aria-invalid={error === undefined ? undefined : true}
-        aria-describedby={error === undefined ? undefined : errorId}
-        {...inputProps}
-      />
-      {error !== undefined && (
-        <p id={errorId} className="text-sm text-destructive">
-          {error}
-        </p>
-      )}
-    </div>
-  );
 }
 
 function NoticeAlert({ notice }: { notice: Notice }): React.JSX.Element {

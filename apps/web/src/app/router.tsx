@@ -3,8 +3,8 @@
  * D12 route, plus the not-found page for any other path.
  *
  * Each route renders one page slot. `createAppRouter` lays the given pages over the
- * defaults (the real sign-in page, and placeholders until groups 6 to 9 bring the
- * others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
+ * defaults (the real sign-in, change-password and expired-password pages, and
+ * placeholders until groups 6 to 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
  * an entity such as `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
  *
  * Given a `session` source (task 5.8, Q68), every protected route runs the session
@@ -34,6 +34,8 @@ import {
 import type { RouteComponent, RouterHistory } from '@tanstack/react-router';
 import type { ComponentType } from 'react';
 
+import { ChangePasswordPage } from '../auth/change-password-page.js';
+import { PasswordExpiredPage } from '../auth/password-expired-page.js';
 import { SignInPage } from '../auth/sign-in-page.js';
 
 import { AppShell, type ShellSources } from './app-shell.js';
@@ -42,6 +44,7 @@ import { NotFoundPage } from './not-found-page.js';
 import {
   ENTITY_SEARCH_DEFAULTS,
   TABLE_SEARCH_DEFAULTS,
+  changePasswordSearchSchema,
   entitySearchSchema,
   omitDefaultReturnTo,
   parseSearch,
@@ -92,14 +95,14 @@ const DEFAULT_PAGES: AppPageOptions = {
   forgotPassword: PlaceholderPage,
   resetPassword: PlaceholderPage,
   acceptInvitation: PlaceholderPage,
-  changePassword: PlaceholderPage,
+  changePassword: ChangePasswordPage,
   mfaEnrol: PlaceholderPage,
   stepUpComplete: PlaceholderPage,
   home: PlaceholderPage,
   catalogTable: PlaceholderPage,
   entity: PlaceholderPage,
   search: PlaceholderPage,
-  passwordExpired: PlaceholderPage,
+  passwordExpired: PasswordExpiredPage,
 };
 
 /** A route component rendering `Page`: route components are function components only. */
@@ -185,6 +188,7 @@ function buildRouteTree(
     createRoute({
       getParentRoute: () => rootRoute,
       path: 'change-password',
+      validateSearch: changePasswordSearchSchema,
       beforeLoad: guard('/change-password'),
       component: changePasswordComponent(pages),
     }),
