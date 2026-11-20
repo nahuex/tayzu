@@ -65,6 +65,25 @@ export type PageSize = (typeof PAGE_SIZES)[number];
 
 const DEFAULT_PAGE_SIZE: PageSize = 50;
 
+/**
+ * The defaults of the table and entity search. The router strips them from the URL, so
+ * a canonical URL holds only what the user chose and a `returnTo` path keeps its own
+ * query (D12, task 5.8).
+ */
+export const TABLE_SEARCH_DEFAULTS = {
+  sort: 'identifier',
+  order: 'asc',
+  pageSize: DEFAULT_PAGE_SIZE,
+} as const satisfies {
+  sort: (typeof SORT_FIELDS)[number];
+  order: (typeof SORT_ORDERS)[number];
+  pageSize: PageSize;
+};
+
+export const ENTITY_SEARCH_DEFAULTS = {
+  tab: 'details',
+} as const satisfies { tab: (typeof ENTITY_TABS)[number] };
+
 /** One of `values`, else `fallback`; optional on input so a link may omit it. */
 function oneOf<const T extends readonly [string, ...string[]]>(values: T, fallback: T[number]) {
   return z.enum(values).default(fallback).catch(fallback);
@@ -87,8 +106,8 @@ const pageSize = z
 /** `/catalog/$blueprint`: the `entities.list` sort, order, page size and cursor. */
 export const tableSearchSchema = z
   .object({
-    sort: oneOf(SORT_FIELDS, 'identifier'),
-    order: oneOf(SORT_ORDERS, 'asc'),
+    sort: oneOf(SORT_FIELDS, TABLE_SEARCH_DEFAULTS.sort),
+    order: oneOf(SORT_ORDERS, TABLE_SEARCH_DEFAULTS.order),
     pageSize,
     cursor: boundedText(MAX_CURSOR_LENGTH),
   })
@@ -101,7 +120,7 @@ export const tableSearchSchema = z
 
 /** `/catalog/$blueprint/$entity`: the open tab. */
 export const entitySearchSchema = z
-  .object({ tab: oneOf(ENTITY_TABS, 'details') })
+  .object({ tab: oneOf(ENTITY_TABS, ENTITY_SEARCH_DEFAULTS.tab) })
   .transform(({ tab }) => ({ tab }));
 
 /** `/search`: the query, kept as text. */

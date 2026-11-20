@@ -430,7 +430,7 @@ stack of `scripts/ci/e2e.sh`.
       rendering its page, a link to `team@example.com:prod=1` holding no `%`, invalid
       search params replaced by defaults, an over-long `q` or `cursor` rejected before
       use, and an unknown path showing the not-found page.
-- [ ] 5.8 The session gate (design D12, D8): the root loader over `GET /v1/me`, the
+- [x] 5.8 The session gate (design D12, D8): the root loader over `GET /v1/me`, the
       redirect to `/sign-in?returnTo=` on `401`, the redirect of a gated session to its
       page for every route but sign-out, and the public pages rendering without a
       session. Verify: `session-gate.test.tsx` covers "A temporary password is a gate",

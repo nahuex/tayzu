@@ -17,5 +17,9 @@
     "title": "Page not found",
     "description": "The page you are looking for does not exist or is not available.",
     "home": "Go to the home page"
+  },
+  "routeError": {
+    "title": "Something went wrong",
+    "description": "The page could not be loaded. Try again later."
   }
 }
