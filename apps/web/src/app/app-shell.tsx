@@ -3,6 +3,10 @@
  * name, search trigger, locale selector, theme toggle, user menu), the blueprint sidebar
  * and the `main` landmark holding the page. Only the signed-in routes render it.
  *
+ * The shell's session observer is the app's only query that refetches on window focus
+ * (D4). When that refetch reports a gate, the session guards run again and move to the
+ * gate's page; when it answers `401`, the session ends as below.
+ *
  * The session ends here in two ways, both clearing the query cache and the
  * session-bound stores and landing on `/sign-in`: sign-out, and any `unauthenticated`
  * answer of a query or mutation while the shell is mounted, which keeps the current
@@ -94,11 +98,25 @@ export function AppShell({
   const { queryClient } = session;
   const { onUnauthenticated, signOut } = useEndSession(queryClient);
   const mainRef = useRef<HTMLElement>(null);
-  // The gate has just read the session; the shell shows what it read.
+  const router = useRouter();
+  // The gate has just read the session, so mounting does not read it again. D4: this is
+  // the only query that refetches on window focus ('always', whatever its staleness);
+  // `staleTime: 'static'` would block that refetch, so the data is only never stale.
   const me = useQuery(
-    { ...sessionQueryOptions(session.authClient), staleTime: 'static' },
+    {
+      ...sessionQueryOptions(session.authClient),
+      staleTime: Infinity,
+      refetchOnWindowFocus: 'always',
+    },
     queryClient,
   );
+  const gate = me.data?.gate;
+
+  // D12: a refetch that reports a gate reruns the session guards, which read the fresh
+  // cached session and redirect to the gate's page before any catalog route is called.
+  useEffect(() => {
+    if (gate !== undefined && gate !== 'none') void router.invalidate();
+  }, [gate, router]);
 
   useEffect(
     () => subscribeToUnauthenticated(queryClient, onUnauthenticated),

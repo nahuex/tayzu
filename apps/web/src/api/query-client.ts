@@ -1,8 +1,9 @@
 /**
  * The app's TanStack Query client (design D4, TanStack Query settings): no retry on a
  * 4xx, at most one retry on a network failure or a 5xx, no refetch on window focus by
- * default, and nothing persisted. A query may set its own policy, as the session query
- * of `src/app/session-gate.ts` does.
+ * default, and nothing persisted. A query may set its own policy: the session query of
+ * `src/app/session-gate.ts` sets its own retry, and the shell's session observer
+ * (`src/app/app-shell.tsx`) is the only one that refetches on window focus.
  */
 import { QueryClient } from '@tanstack/react-query';
 
