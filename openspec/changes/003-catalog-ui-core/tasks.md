@@ -311,7 +311,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 4. Static serving, CSP and headers
 
-- [ ] 4.1 The `WEB_DIST_DIR` setting (design D9, Q21): optional; when set, it must be
+- [x] 4.1 The `WEB_DIST_DIR` setting (design D9, Q21): optional; when set, it must be
       an absolute path to a readable directory containing `index.html`, or startup
       fails with an error that names the variable and not its value. Verify:
       `config.test.ts` covers unset, valid, relative, missing directory and missing
