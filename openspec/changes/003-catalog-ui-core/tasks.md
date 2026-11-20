@@ -361,7 +361,7 @@ stack of `scripts/ci/e2e.sh`.
       holding the same value, two responses holding different values, the value being 16
       bytes in base64, `script-src` holding no nonce, and no nonce placeholder left in the
       served page.
-- [ ] 4.6 App paths in exported spans (Observability contract; Q27 B1): the
+- [x] 4.6 App paths in exported spans (Observability contract; Q27 B1): the
       route-template matcher of `apps/api/src/telemetry.ts` exports every HTTP server span
       whose path satisfies `isSpaPath` (task 4.3) as `/{spa}`, at any status and for any
       method, with or without `WEB_DIST_DIR`, and keeps asset paths. Verify:
