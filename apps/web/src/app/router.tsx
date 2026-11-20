@@ -3,8 +3,8 @@
  * D12 route, plus the not-found page for any other path.
  *
  * Each route renders one page slot. `createAppRouter` lays the given pages over the
- * defaults (the real sign-in, forgot-password, change-password, expired-password, MFA enrolment and
- * step-up completion pages, and placeholders until groups 6 to 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
+ * defaults (the real sign-in, forgot-password, reset-password, change-password, expired-password, MFA
+ * enrolment and step-up completion pages, and placeholders until groups 6 to 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
  * an entity such as `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
  *
  * Given a `session` source (task 5.8, Q68), every protected route runs the session
@@ -38,6 +38,7 @@ import { ChangePasswordPage } from '../auth/change-password-page.js';
 import { ForgotPasswordPage } from '../auth/forgot-password-page.js';
 import { MfaEnrolPage } from '../auth/mfa-enrol-page.js';
 import { PasswordExpiredPage } from '../auth/password-expired-page.js';
+import { ResetPasswordPage } from '../auth/reset-password-page.js';
 import { SignInPage } from '../auth/sign-in-page.js';
 import { StepUpCompletePage } from '../auth/step-up-complete-page.js';
 
@@ -97,7 +98,7 @@ function PlaceholderPage(): null {
 const DEFAULT_PAGES: AppPageOptions = {
   signIn: SignInPage,
   forgotPassword: ForgotPasswordPage,
-  resetPassword: PlaceholderPage,
+  resetPassword: ResetPasswordPage,
   acceptInvitation: PlaceholderPage,
   changePassword: ChangePasswordPage,
   mfaEnrol: MfaEnrolPage,

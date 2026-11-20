@@ -506,7 +506,7 @@ stack of `scripts/ci/e2e.sh`.
       for every answer but `AUTH_RATE_LIMITED`. Verify: `forgot-password.test.tsx`
       covers a `200`, a `404`-like failure and a server error all showing the same
       message, and the rate-limit message.
-- [ ] 6.8 `/reset-password` (design D11, `044` D14, Q26): the fragment read and removed
+- [x] 6.8 `/reset-password` (design D11, `044` D14, Q26): the fragment read and removed
       with `history.replaceState` before the first render, the values kept in memory,
       submit only on click, the factor field on `AUTH_STEP_UP_REQUIRED`, the uniform
       invalid-link message and the sign-in link on success. Verify:
