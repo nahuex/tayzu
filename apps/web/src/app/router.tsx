@@ -11,6 +11,11 @@
  * gate of `./session-gate.js` before its page renders; the public pages (sign-in,
  * forgot, reset, accept, step-up complete) never read the session. Without one, no
  * route reads a session.
+ *
+ * Given `shell` sources as well (task 5.9, Q69), the signed-in routes (`/`, the table,
+ * the entity page, `/search`) render their page inside the `AppShell` of a pathless
+ * layout route; the public and gate pages never do. Without them, the layout renders
+ * the page alone.
  */
 import {
   Outlet,
@@ -23,6 +28,7 @@ import {
 import type { RouteComponent, RouterHistory } from '@tanstack/react-router';
 import type { ComponentType } from 'react';
 
+import { AppShell, type ShellSources } from './app-shell.js';
 import { NotFoundPage } from './not-found-page.js';
 import { RouteErrorPage } from './route-error-page.js';
 import {
@@ -38,6 +44,7 @@ import {
 import { isPasswordExpired, sessionGuard, type SessionSource } from './session-gate.js';
 
 export { SESSION_QUERY_KEY, type SessionSource } from './session-gate.js';
+export type { ShellSources } from './app-shell.js';
 
 /** One page slot per D12 route; the not-found page is not a slot. */
 export const PAGE_NAMES = [
@@ -106,10 +113,29 @@ function changePasswordComponent(pages: AppPageOptions): RouteComponent {
   };
 }
 
+/**
+ * The signed-in routes' layout: the shell around the page, when both the session source
+ * and the shell sources are given; the page alone otherwise.
+ */
+function shellComponent(
+  session: SessionSource | undefined,
+  shell: ShellSources | undefined,
+): RouteComponent {
+  if (session === undefined || shell === undefined) return Outlet;
+  return function ShellLayout(): React.JSX.Element {
+    return (
+      <AppShell {...shell} session={session}>
+        <Outlet />
+      </AppShell>
+    );
+  };
+}
+
 function buildRouteTree(
   history: RouterHistory,
   pages: AppPageOptions,
   session: SessionSource | undefined,
+  shell: ShellSources | undefined,
 ) {
   const rootRoute = createRootRoute({
     component: Outlet,
@@ -121,6 +147,11 @@ function buildRouteTree(
     session === undefined ? undefined : sessionGuard(session, history, path);
   const page = <P extends string>(path: P, name: PageName) =>
     createRoute({ getParentRoute: () => rootRoute, path, component: routeComponent(pages[name]) });
+  const shellRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    id: 'signed-in',
+    component: shellComponent(session, shell),
+  });
 
   return rootRoute.addChildren([
     createRoute({
@@ -145,35 +176,37 @@ function buildRouteTree(
       component: routeComponent(pages.mfaEnrol),
     }),
     page('step-up/complete', 'stepUpComplete'),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/',
-      beforeLoad: guard('/'),
-      component: routeComponent(pages.home),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: 'catalog/$blueprint',
-      validateSearch: tableSearchSchema,
-      search: { middlewares: [stripSearchParams(TABLE_SEARCH_DEFAULTS)] },
-      beforeLoad: guard('/catalog/$blueprint'),
-      component: routeComponent(pages.catalogTable),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: 'catalog/$blueprint/$entity',
-      validateSearch: entitySearchSchema,
-      search: { middlewares: [stripSearchParams(ENTITY_SEARCH_DEFAULTS)] },
-      beforeLoad: guard('/catalog/$blueprint/$entity'),
-      component: routeComponent(pages.entity),
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: 'search',
-      validateSearch: searchPageSearchSchema,
-      beforeLoad: guard('/search'),
-      component: routeComponent(pages.search),
-    }),
+    shellRoute.addChildren([
+      createRoute({
+        getParentRoute: () => shellRoute,
+        path: '/',
+        beforeLoad: guard('/'),
+        component: routeComponent(pages.home),
+      }),
+      createRoute({
+        getParentRoute: () => shellRoute,
+        path: 'catalog/$blueprint',
+        validateSearch: tableSearchSchema,
+        search: { middlewares: [stripSearchParams(TABLE_SEARCH_DEFAULTS)] },
+        beforeLoad: guard('/catalog/$blueprint'),
+        component: routeComponent(pages.catalogTable),
+      }),
+      createRoute({
+        getParentRoute: () => shellRoute,
+        path: 'catalog/$blueprint/$entity',
+        validateSearch: entitySearchSchema,
+        search: { middlewares: [stripSearchParams(ENTITY_SEARCH_DEFAULTS)] },
+        beforeLoad: guard('/catalog/$blueprint/$entity'),
+        component: routeComponent(pages.entity),
+      }),
+      createRoute({
+        getParentRoute: () => shellRoute,
+        path: 'search',
+        validateSearch: searchPageSearchSchema,
+        beforeLoad: guard('/search'),
+        component: routeComponent(pages.search),
+      }),
+    ]),
   ]);
 }
 
@@ -181,9 +214,10 @@ function buildRouter(
   history: RouterHistory,
   pages: AppPageOptions,
   session: SessionSource | undefined,
+  shell: ShellSources | undefined,
 ) {
   return createRouter({
-    routeTree: buildRouteTree(history, pages, session),
+    routeTree: buildRouteTree(history, pages, session, shell),
     history,
     pathParamsAllowedCharacters: ['@', ':', '='],
     parseSearch,
@@ -199,18 +233,21 @@ const PAGE_OPTION_NAMES = [...PAGE_NAMES, 'passwordExpired'] as const;
 /**
  * The app router over `history`, each slot rendering `pages[name]` or its default. With
  * `session`, the protected routes run the session gate; without it, none reads a session.
+ * With `session` and `shell`, the signed-in routes render inside the app shell, which
+ * uses `session.queryClient`.
  */
 export function createAppRouter(options: {
   history: RouterHistory;
   pages?: Partial<AppPageOptions>;
   session?: SessionSource;
+  shell?: ShellSources;
 }): AppRouter {
   const pages = { ...DEFAULT_PAGES };
   for (const name of PAGE_OPTION_NAMES) {
     const given = options.pages?.[name];
     if (given !== undefined) pages[name] = given;
   }
-  return buildRouter(options.history, pages, options.session);
+  return buildRouter(options.history, pages, options.session, options.shell);
 }
 
 declare module '@tanstack/react-router' {

@@ -144,3 +144,8 @@ export async function changeLocale(i18n: I18n, locale: Locale): Promise<void> {
 export function localizedText(text: { en: string; es?: string }, locale: Locale): string {
   return locale === 'es' ? (text.es ?? text.en) : text.en;
 }
+
+/** The locale an instance shows: its resolved language when that is `es`, else `en`. */
+export function currentLocale(i18n: I18n): Locale {
+  return isLocale(i18n.resolvedLanguage) ? i18n.resolvedLanguage : FALLBACK_LOCALE;
+}

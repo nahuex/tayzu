@@ -436,7 +436,7 @@ stack of `scripts/ci/e2e.sh`.
       session. Verify: `session-gate.test.tsx` covers "A temporary password is a gate",
       "An admin without MFA must enrol", the expired-password page, a signed-out visit
       of a protected route, and the public pages.
-- [ ] 5.9 The app shell (design D12): header with the search trigger, the locale
+- [x] 5.9 The app shell (design D12): header with the search trigger, the locale
       selector, the theme toggle and the user menu (name, organization, role,
       sign-out), the blueprint sidebar with system blueprints grouped last and
       localized titles, a skip link and landmarks; sign-out clears the query cache and

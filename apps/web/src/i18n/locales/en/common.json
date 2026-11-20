@@ -2,6 +2,20 @@
   "appName": "Tayzu",
   "skipToContent": "Skip to main content",
   "signOut": "Sign out",
+  "nav": {
+    "catalog": "Catalog"
+  },
+  "search": {
+    "open": "Search"
+  },
+  "userMenu": {
+    "label": "User menu"
+  },
+  "role": {
+    "owner": "Owner",
+    "admin": "Admin",
+    "member": "Member"
+  },
   "theme": {
     "label": "Theme",
     "system": "System",
