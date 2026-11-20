@@ -444,7 +444,7 @@ stack of `scripts/ci/e2e.sh`.
       `blueprints.list`, the user menu content, the locale switch updating the texts,
       the skip link moving focus, and sign-out posting `/api/auth/sign-out`, clearing
       the cache and navigating to `/sign-in`.
-- [ ] 5.10 Safe rendering (design D13, `001` T4): `src/lib/safe-link.tsx` and
+- [x] 5.10 Safe rendering (design D13, `001` T4): `src/lib/safe-link.tsx` and
       `src/lib/markdown.tsx` (raw HTML skipped, images disallowed, `http`, `https` and
       `mailto` only). Verify: `safe-render.test.tsx` covers "A dangerous URL value stays
       text" for `javascript:`, `data:`, `vbscript:` and relative values, the link
