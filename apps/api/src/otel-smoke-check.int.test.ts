@@ -92,6 +92,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   bootstrapTestTenant,
   createAdminUser,
+  seedUserRow,
   signInAdminUser,
   type BootstrappedTenant,
   testAppPool,
@@ -3994,6 +3995,176 @@ describe('otel-smoke-check, 045: every org-deletion operation is driven (task 9.
     }
   }, 120_000);
 });
+
+/*
+ * Task 3.9 of openspec/changes/003-catalog-ui-core (design D8 and "Observability contract",
+ * Spans; spec requirement "The web app adds no browser telemetry and the server's new signals
+ * carry no tenant free text"): "The server MUST declare in its telemetry contract the span of
+ * `GET /v1/me` with its gate attribute ... An organization name, a user name or an email MUST
+ * NOT reach any signal." Design: "`identity.session.me` | route |
+ * `tayzu.identity.session.gate` (`none`|`password_change_required`|`password_expired`|
+ * `mfa_enrolment_required`|`unauthenticated`) | `tayzu.tenant.id` (when the session has an
+ * active organization)", tracer `@tayzu/auth`; and D8: `organization.name` "never reaches
+ * telemetry".
+ *
+ * Drives `GET /v1/me` over HTTP once per gate (an owner without a factor, a member, an unexpired
+ * and an expired temporary password) and once anonymously, with every organization name, user
+ * name and email a marker string, then asserts the span and that no marker reached any signal.
+ * It runs before the 043 check below, which requires every span the module declares to have
+ * been captured.
+ *
+ * Production symbols expected: the `GET /v1/me` route of `createApp` and its span
+ * `identity.session.me` on the `@tayzu/auth` tracer (design D8; the declaration is in
+ * `packages/auth/src/telemetry/identity-contract.ts`).
+ */
+describe('otel-smoke-check, 003: GET /v1/me records identity.session.me with its gate and no names (task 3.9)', () => {
+  const SESSION_GATES = [
+    'none',
+    'password_change_required',
+    'password_expired',
+    'mfa_enrolment_required',
+    'unauthenticated',
+  ];
+  const GATE = 'tayzu.identity.session.gate';
+  const TENANT = 'tayzu.tenant.id';
+  let app: App;
+  let pools: HarnessPools;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    pools = await harnessPools();
+    await runMigrations(pools.authPool);
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: IDENTITY_CERBOS,
+      allowedOrigins: [IDENTITY_ORIGIN],
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  function me(cookie?: string) {
+    return app.app.inject({
+      method: 'GET',
+      url: '/v1/me',
+      headers: { 'x-forwarded-for': randomIp(), ...(cookie === undefined ? {} : { cookie }) },
+    });
+  }
+
+  it('identity.session.me carries the gate on every answer, the tenant only with an active organization, and no organization name, user name or email', async () => {
+    const id = randomUUID();
+    const markers = {
+      'organization name': `MeOrgNameMarker-${id}`,
+      'owner name': `MeOwnerNameMarker-${id}`,
+      'owner email': `me-owner-marker-${id}@example.test`,
+      'member name': `MeMemberNameMarker-${id}`,
+      'member email': `me-member-marker-${id}@example.test`,
+      'temporary user name': `MeTemporaryNameMarker-${id}`,
+      'temporary user email': `me-temporary-marker-${id}@example.test`,
+      'expired user name': `MeExpiredNameMarker-${id}`,
+      'expired user email': `me-expired-marker-${id}@example.test`,
+    };
+    const owner = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: markers['owner name'],
+      email: markers['owner email'],
+      password: TEST_PASSWORD,
+      organizationName: markers['organization name'],
+      organizationSlug: `me-smoke-${id}`,
+      ip: randomIp(),
+    });
+    const tenantId = owner.organizationId;
+
+    async function memberSession(name: string, email: string): Promise<SessionUser> {
+      const created = await createAdminUser(app.auth, { name, email, password: TEST_PASSWORD });
+      await (app.auth.api as MemberAdminApi).addMember({
+        body: { userId: created.userId, organizationId: tenantId, role: 'member' },
+      });
+      await seedUserRow(testAppPool(), { tenantId, email, name });
+      const signedIn = await signInAdminUser(app.auth, {
+        email,
+        password: TEST_PASSWORD,
+        ip: randomIp(),
+      });
+      return { userId: created.userId, cookie: signedIn.cookie };
+    }
+
+    async function writeTemporaryPasswordMarker(userId: string, offsetMs: number): Promise<void> {
+      await pools.authPool.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, $3, '9999-12-31T23:59:59.000Z'::timestamptz)`,
+        [randomUUID(), `temp-password:${userId}`, new Date(Date.now() + offsetMs).toISOString()],
+      );
+    }
+
+    const member = await memberSession(markers['member name'], markers['member email']);
+    const temporary = await memberSession(
+      markers['temporary user name'],
+      markers['temporary user email'],
+    );
+    await writeTemporaryPasswordMarker(temporary.userId, 48 * 60 * 60 * 1000);
+    const expired = await memberSession(
+      markers['expired user name'],
+      markers['expired user email'],
+    );
+    await writeTemporaryPasswordMarker(expired.userId, -60 * 60 * 1000);
+
+    const answers = {
+      owner: await me(owner.cookie),
+      member: await me(member.cookie),
+      temporary: await me(temporary.cookie),
+      expired: await me(expired.cookie),
+      anonymous: await me(),
+    };
+    // The drive behaved as its class says (not a telemetry finding).
+    const gateOf = (answer: (typeof answers)['owner']): unknown =>
+      answer.json<{ gate?: unknown }>().gate;
+    for (const [label, answer] of Object.entries(answers)) {
+      expect(answer.statusCode, `${label}: ${answer.body}`).toBe(label === 'anonymous' ? 401 : 200);
+    }
+    expect(gateOf(answers.owner)).toBe('mfa_enrolment_required');
+    expect(gateOf(answers.member)).toBe('none');
+    expect(gateOf(answers.temporary)).toBe('password_change_required');
+    expect(gateOf(answers.expired)).toBe('password_expired');
+
+    await harness.forceFlush();
+    const spans = spansNamed(harness, 'identity.session.me');
+    expect(spans.length, 'no "identity.session.me" span was captured').toBeGreaterThan(0);
+    for (const span of spans) {
+      expect(span.instrumentationScope.name).toBe('@tayzu/auth');
+      expect(SESSION_GATES, `${GATE} is in its closed set`).toContain(span.attributes[GATE]);
+      for (const key of Object.keys(span.attributes)) {
+        expect([GATE, TENANT, 'error.type'], `undeclared attribute ${key}`).toContain(key);
+      }
+    }
+    const ofTenant = spans.filter((span) => span.attributes[TENANT] === tenantId);
+    expect(new Set(ofTenant.map((span) => span.attributes[GATE]))).toEqual(
+      new Set(['mfa_enrolment_required', 'none', 'password_change_required', 'password_expired']),
+    );
+    const unauthenticated = spans.filter((span) => span.attributes[GATE] === 'unauthenticated');
+    expect(unauthenticated.length, 'the anonymous answer has its span').toBeGreaterThan(0);
+    expect(
+      unauthenticated.some((span) => !(TENANT in span.attributes)),
+      'a span without a session carries no tenant',
+    ).toBe(true);
+
+    const corpus = exportedCorpus(harness);
+    for (const [label, marker] of Object.entries(markers)) {
+      expect(leaks(corpus, marker), `the ${label} must never appear on any signal`).toEqual([]);
+      const local = marker.split('@')[0] ?? marker;
+      expect(leaks(corpus, local), `the ${label} must never appear in part`).toEqual([]);
+    }
+  }, 120_000);
+});
+
+interface SessionUser {
+  readonly userId: string;
+  readonly cookie: string;
+}
 
 describe('otel-smoke-check, 043: every declared identity signal appears with its declared attributes (task 15.2)', () => {
   let harness: TelemetryTestHarness;

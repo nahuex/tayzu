@@ -1,7 +1,7 @@
 /**
  * The identity change's telemetry contract as design.md's "Observability
- * contract" tables state it (043, task 15.1; extended by 044 task 12.1 and
- * 045 task 9.1), written out once so that
+ * contract" tables state it (043, task 15.1; extended by 044 task 12.1,
+ * 045 task 9.1 and 003 task 3.9), written out once so that
  * `telemetry/identity-contract.test.ts` and `apps/api`'s
  * `otel-smoke-check.int.test.ts` assert the same thing. It is the spec side of
  * the comparison: nothing here is derived from `identity-contract.ts`.
@@ -89,6 +89,13 @@ export const EXPECTED_SPANS: readonly ExpectedSpan[] = [
       'tayzu.identity.org_deletion.step',
       'tayzu.identity.org_deletion.entities_removed',
     ],
+  },
+  // 003 (design D8 and "Observability contract", Spans): `GET /v1/me`. The tenant is set only
+  // when the session has an active organization.
+  {
+    name: 'identity.session.me',
+    attributes: ['tayzu.identity.session.gate'],
+    conditional: [TENANT],
   },
 ];
 
@@ -575,5 +582,14 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'no_pending_marker',
     'purge_begun',
     'purge_date_passed',
+  ],
+  // 003 (design "Observability contract", Spans): the gate of `GET /v1/me`, and
+  // `unauthenticated` for its uniform `401`.
+  'tayzu.identity.session.gate': [
+    'none',
+    'password_change_required',
+    'password_expired',
+    'mfa_enrolment_required',
+    'unauthenticated',
   ],
 };

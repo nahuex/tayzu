@@ -127,6 +127,15 @@ const SIGN_IN_EMAIL_PATH = '/sign-in/email';
 /** Task 27.3: sign-in routes (including the SSO callback) are exempt from the idle check. */
 const SIGN_IN_PATH_PREFIXES: readonly string[] = ['/sign-in/', '/callback/'];
 const SIGN_OUT_PATH = '/sign-out';
+const GET_SESSION_PATH = '/get-session';
+/**
+ * Q146 as amended by 003 Q55: the only routes a session opened under an expired
+ * temporary-password marker reaches. `/change-password` is not one of them.
+ */
+const EXPIRED_TEMPORARY_PASSWORD_ALLOWED_PATHS: readonly string[] = [
+  SIGN_OUT_PATH,
+  GET_SESSION_PATH,
+];
 const SIGN_IN_SOCIAL_PATH = '/sign-in/social';
 const CHANGE_PASSWORD_PATH = '/change-password';
 const CREATE_USER_PATH = '/admin/create-user';
@@ -1299,11 +1308,13 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
                 message: 'MFA_ENROLMENT_REQUIRED',
               });
             }
-            // Task 16.11a, Q36, Q146: once the marker has expired, a session opened
-            // under it reaches only `/sign-out`; `/change-password` is refused too.
+            // Task 16.11a, Q36, Q146, amended by 003 Q55: once the marker has expired,
+            // a session opened under it reaches only `/sign-out` and `/get-session`
+            // (so D8's in-process `getSession` can read it and `/v1/me` can report
+            // `password_expired`); `/change-password` and every other route are refused.
             if (
               peek &&
-              ctx.path !== SIGN_OUT_PATH &&
+              !EXPIRED_TEMPORARY_PASSWORD_ALLOWED_PATHS.includes(ctx.path) &&
               (await hasExpiredTemporaryPasswordMarker(ctx.context.adapter, peek.user.id).catch(
                 () => true,
               )) &&

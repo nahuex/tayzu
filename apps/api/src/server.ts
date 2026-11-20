@@ -22,6 +22,7 @@ import {
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  createSessionStateResolver,
   createRateLimitBucketStore,
   createServiceAccountLookup,
   createStepUpGuard,
@@ -223,6 +224,10 @@ interface StepUpHandlerContext {
 }
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+/** 003 D8: the shell's view of its own session. */
+const ME_PATH = '/v1/me';
+/** 003 "Observability contract": the gate attribute of `identity.session.me`. */
+const SESSION_GATE = 'tayzu.identity.session.gate';
 const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
 const PASSWORD_RESET_REQUEST_PATH = '/v1/auth/password-reset/request';
 const PASSWORD_RESET_CONFIRM_PATH = '/v1/auth/password-reset/confirm';
@@ -249,6 +254,30 @@ function pathnameOf(request: FastifyRequest): string {
 
 function isTokenExchange(request: FastifyRequest): boolean {
   return request.method === 'POST' && pathnameOf(request) === TOKEN_EXCHANGE_PATH;
+}
+
+/** A resolution's outcome, kept so a rejection is answered, never rethrown unhandled. */
+type Resolution<T> = { readonly value: T } | { readonly error: unknown };
+
+/**
+ * Runs `resolve` at most once per request over its headers: the rate-limit key generator
+ * and the handler share the result.
+ */
+function oncePerRequest<T>(
+  resolve: (headers: Headers) => Promise<T>,
+): (request: FastifyRequest) => Promise<Resolution<T>> {
+  const resolutions = new WeakMap<FastifyRequest, Promise<Resolution<T>>>();
+  return (request) => {
+    let pending = resolutions.get(request);
+    if (pending === undefined) {
+      pending = resolve(toWebHeaders(request)).then(
+        (value): Resolution<T> => ({ value }),
+        (error: unknown): Resolution<T> => ({ error }),
+      );
+      resolutions.set(request, pending);
+    }
+    return pending;
+  };
 }
 
 const CERBOS_TLS_LOOPBACK_ONLY = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
@@ -913,19 +942,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   // Resolved once per request: the rate-limit key generator and the handler share it.
-  type Resolution = { context: Awaited<ReturnType<typeof resolveContext>> } | { error: unknown };
-  const resolutions = new WeakMap<FastifyRequest, Promise<Resolution>>();
-  const resolveOnce = (request: FastifyRequest): Promise<Resolution> => {
-    let pending = resolutions.get(request);
-    if (pending === undefined) {
-      pending = resolveContext(toWebHeaders(request)).then(
-        (context): Resolution => ({ context }),
-        (error: unknown): Resolution => ({ error }),
-      );
-      resolutions.set(request, pending);
-    }
-    return pending;
-  };
+  const resolveOnce = oncePerRequest(resolveContext);
 
   const limited = new ORPCError('AUTH_RATE_LIMITED', {
     status: 429,
@@ -1164,32 +1181,70 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     });
   }
 
-  let v1Config: { rateLimit?: object } = {};
-  if (options.rateLimit !== undefined) {
-    v1Config = {
-      rateLimit: {
-        max: options.rateLimit.max,
-        timeWindow: options.rateLimit.timeWindowMs,
-        allowList: isTokenExchange,
-        // Internal bucket key only: never logged, returned or exported.
-        keyGenerator: async (request: FastifyRequest): Promise<string> => {
-          const resolved = await resolveOnce(request);
-          if ('error' in resolved) {
-            return `unauthenticated:${request.ip}`;
-          }
-          const { tenantId, actor } = resolved.context;
-          return `${tenantId}:${actor.type}:${actor.id}`;
-        },
-        errorResponseBuilder: () => ({ ...limited.toJSON(), statusCode: 429 }),
-      },
-    };
-  }
+  // D13: the authenticated per-principal budget. `principalKeyOf` resolves the request's
+  // principal; a request without one shares its IP's `unauthenticated` bucket.
+  const authenticatedRateLimit = (
+    principalKeyOf: (request: FastifyRequest) => Promise<string | undefined>,
+  ): { rateLimit?: object } =>
+    options.rateLimit === undefined
+      ? {}
+      : {
+          rateLimit: {
+            max: options.rateLimit.max,
+            timeWindow: options.rateLimit.timeWindowMs,
+            allowList: isTokenExchange,
+            // Internal bucket key only: never logged, returned or exported.
+            keyGenerator: async (request: FastifyRequest): Promise<string> =>
+              (await principalKeyOf(request)) ?? `unauthenticated:${request.ip}`,
+            errorResponseBuilder: () => ({ ...limited.toJSON(), statusCode: 429 }),
+          },
+        };
+
+  // 003 D8 (Q13, Q54): the shell's view of its own session, read from the session only.
+  // The span covers the resolution; its gate is `unauthenticated` unless a state resolves.
+  const resolveSessionState = createSessionStateResolver({ auth, revocationPool: appPool });
+  const resolveSessionStateOnce = oncePerRequest((headers) =>
+    withIdentitySpan('identity.session.me', { [SESSION_GATE]: 'unauthenticated' }, async (span) => {
+      const state = await resolveSessionState(headers);
+      span.setAttributes({ [SESSION_GATE]: state.gate, 'tayzu.tenant.id': state.organization.id });
+      return state;
+    }),
+  );
+  // Registered before the `/v1/*` catch-all, as token exchange is. Same bucket key shape as
+  // the catch-all's session principal, so the budget follows the person, gated or not.
+  app.get(
+    ME_PATH,
+    {
+      config: authenticatedRateLimit(async (request) => {
+        const resolved = await resolveSessionStateOnce(request);
+        return 'error' in resolved
+          ? undefined
+          : `${resolved.value.organization.id}:user:${resolved.value.user.id}`;
+      }),
+    },
+    async (request, reply) => {
+      const resolved = await resolveSessionStateOnce(request);
+      if ('error' in resolved) {
+        // The catch-all's own mapping, so the `401` body is the anonymous one.
+        const mapped = toOrpcError(resolved.error);
+        return reply.status(mapped.status).send(mapped.toJSON());
+      }
+      return reply.status(200).header('cache-control', 'no-store').send(resolved.value);
+    },
+  );
 
   // The methods the merged router routes (Q141); `HEAD` is derived from `GET`.
   app.route({
     method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     url: '/v1/*',
-    config: v1Config,
+    config: authenticatedRateLimit(async (request) => {
+      const resolved = await resolveOnce(request);
+      if ('error' in resolved) {
+        return undefined;
+      }
+      const { tenantId, actor } = resolved.value;
+      return `${tenantId}:${actor.type}:${actor.id}`;
+    }),
     handler: async (request, reply) => {
       const resolved = await resolveOnce(request);
       if ('error' in resolved) {
@@ -1197,7 +1252,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         const mapped = toOrpcError(resolved.error);
         return reply.status(mapped.status).send(mapped.toJSON());
       }
-      const context = resolved.context;
+      const context = resolved.value;
       // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
       // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
       // principals are always `member` (Q28), so only a user can carry `admin` here.

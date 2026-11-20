@@ -201,6 +201,17 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
     expect(real.pairs).toContainEqual({ method: 'GET', path: '/v1/*' });
   });
 
+  /*
+   * 003 task 3.9 (design D8): "The route is in no public allowlist;
+   * `route-auth-allowlist.int.test.ts` keeps covering it." `GET /v1/me` is its own route,
+   * registered before the catch-all, so the behavioral check below reaches it as itself; it
+   * answers an anonymous caller like the catch-all only because it is not on the allowlist.
+   */
+  it('GET /v1/me (003 task 3.9, design D8) is a registered route of its own and on no public allowlist', () => {
+    expect(real.pairs).toContainEqual({ method: 'GET', path: '/v1/me' });
+    expect(allowlist.filter((entry) => entry.path === '/v1/me')).toEqual([]);
+  });
+
   it('A new Fastify route cannot be public by accident: every route outside the allowlist answers 401 CATALOG_CONTEXT_REQUIRED to an anonymous caller', async () => {
     expect(await unguardedRoutes(app, real.pairs, allowlist)).toEqual([]);
   }, 120_000);

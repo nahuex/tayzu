@@ -3,7 +3,7 @@
  * kept apart from `./contract.ts`, whose test requires it to equal the authz
  * contract's `auth.*` subset exactly. 13.3 declared the four `002` Q42 names
  * here and 15.1 declares the rest, as design.md's Observability contract
- * states them; 044 (task 12.1) and 045 (task 9.1) append theirs.
+ * states them; 044 (task 12.1), 045 (task 9.1) and 003 (task 3.9) append theirs.
  * `catalog.security.authz_denied` and `tayzu.authz.decisions` are reused from
  * 001 / 002 and are not declared here.
  */
@@ -56,6 +56,7 @@ const RECONCILE_ORPHANS = 'tayzu.identity.reconcile.orphans';
 const ORG_DELETION_STEP = 'tayzu.identity.org_deletion.step';
 const ORG_DELETION_ENTITIES_REMOVED = 'tayzu.identity.org_deletion.entities_removed';
 const ORG_DELETION_CANCEL_REFUSAL = 'tayzu.identity.org_deletion.cancel_refusal';
+const SESSION_GATE = 'tayzu.identity.session.gate';
 
 const STATUS_TAIL = [
   STATUS_TO,
@@ -95,6 +96,9 @@ export const IDENTITY_SPANS: readonly IdentitySpanDeclaration[] = [
     name: 'identity.organization.purge',
     attributes: [TENANT, ORG_DELETION_STEP, ORG_DELETION_ENTITIES_REMOVED],
   },
+  // 003 (design D8 and "Observability contract", Spans): `GET /v1/me`. The tenant is set only
+  // when the session has an active organization, so never on the uniform `401`.
+  { name: 'identity.session.me', attributes: [SESSION_GATE], conditional: [TENANT] },
 ];
 
 export const IDENTITY_METRICS: readonly IdentityMetricDeclaration[] = [
@@ -509,5 +513,14 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'no_pending_marker',
     'purge_begun',
     'purge_date_passed',
+  ],
+  // 003 (design "Observability contract", Spans): the gate of `GET /v1/me`, and
+  // `unauthenticated` for its uniform `401`.
+  [SESSION_GATE]: [
+    'none',
+    'password_change_required',
+    'password_expired',
+    'mfa_enrolment_required',
+    'unauthenticated',
   ],
 };

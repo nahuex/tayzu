@@ -492,23 +492,61 @@ describe('A temporary password grants only a password change (task 13.5, D13, Q3
   });
 
   /**
-   * Task 16.11a (Resolved decisions Q36 and Q146; the security review's LOW-1): a
-   * session created while the marker was active is refused once the marker expires.
+   * Task 16.11a (Resolved decisions Q36 and Q146; the security review's LOW-1), as
+   * amended by 003 Resolved decision Q55: a session created while the marker was
+   * active is refused once the marker expires, except on `/get-session` and
+   * `/sign-out`.
    *
    * Production symbols expected: the `/api/auth/*` before-hook of `auth.ts` and the
    * `createContextResolver` of `context-resolver.ts` treat an expired marker
    * (`hasExpiredTemporaryPasswordMarker`) like an active one for an existing session:
    * `/v1` rejects with `CATALOG_CONTEXT_REQUIRED`, and every `/api/auth/*` route but
-   * `/sign-out` (`/change-password` included) is refused with a client error.
+   * `/sign-out` and `/get-session` (`/change-password` included) is refused with a
+   * client error. Q55 adds `/get-session` to the routes the hook lets through under an
+   * expired marker, the same allowance an unexpired marker already has.
    */
-  describe('an expired marker rejects an existing session (task 16.11a, Q36, Q146)', () => {
+  describe('an expired marker rejects an existing session (task 16.11a, Q36, Q146, amended by Q55)', () => {
     async function expireMarker(userId: string): Promise<void> {
       await db.execute(
         sql`update auth.verification set value = ${new Date(Date.now() - 60 * 1000).toISOString()} where identifier = ${`temp-password:${userId}`}`,
       );
     }
 
-    it('a session created under an active marker is refused on /v1, /list-sessions and /change-password once the marker expired, and /sign-out still answers', async () => {
+    it('Q55: /get-session returns a session created under an active marker once the marker expired, and nothing else opens up', async () => {
+      const user = await newUser();
+      await writeMarker(user.userId, 60 * 60 * 1000);
+      const cookie = await signIn(user);
+
+      await expireMarker(user.userId);
+
+      // Q55: the expired-marker session is read on `/get-session`, like under an unexpired marker.
+      const session = await authRequest('/get-session', cookie, 'GET');
+      expect(session.status, 'get-session answers under an expired marker (Q55)').toBe(200);
+      expect(await session.json(), 'get-session returns the session (Q55)').toMatchObject({
+        user: { id: user.userId },
+      });
+      expect(await markerCount(user.userId), 'reading the session keeps the marker').toBe(1);
+
+      // Q55 keeps every other refusal, after the session was read.
+      const change = await authRequest('/change-password', cookie, 'POST', {
+        currentPassword: user.password,
+        newPassword: generateTemporaryPassword(),
+      });
+      expect(change.status, 'change-password stays refused (Q55)').toBeGreaterThanOrEqual(400);
+      expect(change.status).toBeLessThan(500);
+
+      const listSessions = await authRequest('/list-sessions', cookie, 'GET');
+      expect(listSessions.status, 'list-sessions stays refused (Q55)').toBeGreaterThanOrEqual(400);
+      expect(listSessions.status).toBeLessThan(500);
+
+      await expect(
+        resolveContext(new Headers({ cookie })),
+        '/v1 still rejects the session (Q55)',
+      ).rejects.toMatchObject({ code: 'CATALOG_CONTEXT_REQUIRED' });
+      expect(await markerCount(user.userId), 'the marker stays').toBe(1);
+    }, 60_000);
+
+    it('a session created under an active marker is refused on /v1, /list-sessions and /change-password once the marker expired, and /sign-out still answers (Q146, kept by Q55)', async () => {
       const user = await newUser();
       await writeMarker(user.userId, 60 * 60 * 1000);
       const cookie = await signIn(user);

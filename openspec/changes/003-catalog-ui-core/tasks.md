@@ -259,7 +259,7 @@ stack of `scripts/ci/e2e.sh`.
       nothing, and the exported HTTP span carrying no `q`. Verify:
       `search.http.int.test.ts` covers these cases, and `actor-parity.int.test.ts` and
       `cross-tenant.http.int.test.ts` gain the search rows.
-- [ ] 3.9 `GET /v1/me` (design D8): the new `@tayzu/auth` export
+- [x] 3.9 `GET /v1/me` (design D8): the new `@tayzu/auth` export
       `resolveSessionState(headers)`, which runs `resolveContext`'s checks in its order
       (the markers, then the membership, the open tenant and the `_user` state) through
       the same helpers, recording a marker as a gate instead of rejecting, reading the

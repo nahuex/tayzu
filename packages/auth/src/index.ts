@@ -37,6 +37,13 @@ export {
   type ResolvedActor,
   type ResolvedContext,
 } from './context-resolver.js';
+export {
+  createSessionStateResolver,
+  type SessionGate,
+  type SessionRole,
+  type SessionState,
+  type SessionStateResolver,
+} from './session-state.js';
 export * as authSchema from './persistence/schema.js';
 export { AuthContextError, AuthRateLimitedError, AuthStepUpError } from './errors.js';
 export {
