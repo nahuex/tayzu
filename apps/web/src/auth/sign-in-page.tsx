@@ -14,13 +14,16 @@
  * refused URL, any failed answer and the `?error=sso` return show one generic message;
  * neither the URL nor the server's text is ever shown.
  *
+ * The credentials step links to `/forgot-password` (Q23, Q77). The link carries nothing:
+ * no `returnTo` and no typed value. The code step does not show it.
+ *
  * On success the cached session is removed, so the session gate reads `GET /v1/me`
  * again (it reads with `staleTime: 'static'`, which an invalidation would not move),
  * and the page goes to the route's validated `returnTo`, query included.
  */
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
-import { useRouter, useSearch } from '@tanstack/react-router';
+import { Link, useRouter, useSearch } from '@tanstack/react-router';
 import { Suspense, useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
@@ -247,6 +250,9 @@ function SignInContent(): React.JSX.Element {
               }
             }}
           />
+          <Link to="/forgot-password" className="underline underline-offset-4">
+            {t('signIn.forgotPassword')}
+          </Link>
           <VismaConnectButton
             onFailed={() => {
               show({ kind: 'ssoFailed' });
