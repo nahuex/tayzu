@@ -410,7 +410,7 @@ stack of `scripts/ci/e2e.sh`.
       covers the unsafe keys at depth and the length check, and `return-path.test.ts`
       covers "An external return path is ignored" for `//host`, `/\host`,
       `https://host`, `javascript:`, control characters and unknown routes.
-- [ ] 5.5 i18n and formatting (design D12, Q10): i18next with the `common`, `auth`,
+- [x] 5.5 i18n and formatting (design D12, Q10): i18next with the `common`, `auth`,
       `catalog` and `search` namespaces in `en` and `es`, loaded per namespace; the
       locale from storage, then `navigator.language`, then `en`; `<html lang>`; the
       localized-text helper with `en` fallback; dates and numbers through `Intl` in the

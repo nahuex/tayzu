@@ -1,0 +1,16 @@
+{
+  "appName": "Tayzu",
+  "skipToContent": "Saltar al contenido principal",
+  "signOut": "Cerrar sesión",
+  "theme": {
+    "label": "Tema",
+    "system": "Sistema",
+    "light": "Claro",
+    "dark": "Oscuro"
+  },
+  "locale": {
+    "label": "Idioma",
+    "en": "English",
+    "es": "Español"
+  }
+}
