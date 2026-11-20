@@ -34,6 +34,7 @@
   },
   "routeError": {
     "title": "Algo salió mal",
-    "description": "No se pudo cargar la página. Inténtalo de nuevo más tarde."
+    "description": "No se pudo cargar la página. Inténtalo de nuevo más tarde.",
+    "reload": "Recargar la página"
   }
 }

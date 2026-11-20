@@ -16,6 +16,12 @@
  * the entity page, `/search`) render their page inside the `AppShell` of a pathless
  * layout route; the public and gate pages never do. Without them, the layout renders
  * the page alone.
+ *
+ * Errors (task 5.11, D15): the root route renders every route inside `AppErrorBoundary`,
+ * so a failing page or session read shows the generic `ErrorPage` before TanStack
+ * Router's own boundary (which warns on the console) sees it. No child route has an
+ * error component and the router sets no default one; the root's `errorComponent`
+ * covers a failure of the root itself.
  */
 import {
   Outlet,
@@ -29,8 +35,8 @@ import type { RouteComponent, RouterHistory } from '@tanstack/react-router';
 import type { ComponentType } from 'react';
 
 import { AppShell, type ShellSources } from './app-shell.js';
+import { AppErrorBoundary, ErrorPage } from './error-boundary.js';
 import { NotFoundPage } from './not-found-page.js';
-import { RouteErrorPage } from './route-error-page.js';
 import {
   ENTITY_SEARCH_DEFAULTS,
   TABLE_SEARCH_DEFAULTS,
@@ -113,6 +119,15 @@ function changePasswordComponent(pages: AppPageOptions): RouteComponent {
   };
 }
 
+/** The root route's component: every route renders inside the app's error boundary. */
+function RootLayout(): React.JSX.Element {
+  return (
+    <AppErrorBoundary>
+      <Outlet />
+    </AppErrorBoundary>
+  );
+}
+
 /**
  * The signed-in routes' layout: the shell around the page, when both the session source
  * and the shell sources are given; the page alone otherwise.
@@ -138,8 +153,8 @@ function buildRouteTree(
   shell: ShellSources | undefined,
 ) {
   const rootRoute = createRootRoute({
-    component: Outlet,
-    errorComponent: RouteErrorPage,
+    component: RootLayout,
+    errorComponent: ErrorPage,
     notFoundComponent: NotFoundPage,
   });
   /** The session gate of the protected route at `path`; none without a session source. */

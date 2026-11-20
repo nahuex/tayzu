@@ -451,7 +451,7 @@ stack of `scripts/ci/e2e.sh`.
       attributes `rel="noopener noreferrer nofollow"` and `target="_blank"`, markdown
       with `<script>`, `<img onerror>`, an image and a `javascript:` link rendering no
       element that runs code or loads a resource.
-- [ ] 5.11 The error boundary (design D15): a generic localized message with a reload
+- [x] 5.11 The error boundary (design D15): a generic localized message with a reload
       action, never an error message or stack, and nothing written to the console.
       Verify: `error-boundary.test.tsx` covers a throwing child rendering the generic
       message, the message and stack absent from the DOM, and a spy on `console`

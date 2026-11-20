@@ -34,6 +34,7 @@
   },
   "routeError": {
     "title": "Something went wrong",
-    "description": "The page could not be loaded. Try again later."
+    "description": "The page could not be loaded. Try again later.",
+    "reload": "Reload the page"
   }
 }
