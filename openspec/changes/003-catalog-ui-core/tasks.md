@@ -293,7 +293,7 @@ stack of `scripts/ci/e2e.sh`.
       `redirect`, `returnTo` or `Host` value that is ignored) and the unchanged answers
       without the web app, against the OIDC stub; `step-up-sso-http.int.test.ts` and
       `reauthorization-limits.int.test.ts` stay green.
-- [ ] 3.11 Visma Connect step-up telemetry (design D11, Log events; Q27 B2, Q29): on
+- [x] 3.11 Visma Connect step-up telemetry (design D11, Log events; Q27 B2, Q29): on
       a successful `complete`, `sso/reauthorization.ts` emits
       `auth.security.step_up_succeeded` with `tayzu.auth.method` `visma_connect` and the
       tenant and actor of the session the state is bound to (`emitStepUpSucceeded` in

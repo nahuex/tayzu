@@ -115,6 +115,7 @@ import {
   currentFreshFactor,
   stepUpVerificationIdentifier,
 } from './step-up.js';
+import { emitStepUpSucceeded } from './step-up-telemetry.js';
 import {
   logger,
   mfaEventsCounter,
@@ -349,25 +350,6 @@ function emitLoginSucceeded(params: {
     attributes,
   });
   sessionEventsCounter.add(1, { [AUTH_EVENT_ATTRIBUTE]: 'login_succeeded' });
-}
-
-/** design.md, Log events table (Q77): `auth.security.step_up_succeeded`. */
-function emitStepUpSucceeded(params: {
-  readonly actorId: string;
-  readonly tenantId?: string;
-}): void {
-  const attributes: Record<string, string> = {
-    [sharedAttributeKeys.actorId]: params.actorId,
-    'tayzu.auth.method': 'local',
-  };
-  if (params.tenantId !== undefined) {
-    attributes[sharedAttributeKeys.tenantId] = params.tenantId;
-  }
-  logger.emit({
-    eventName: 'auth.security.step_up_succeeded',
-    severityNumber: SeverityNumber.INFO,
-    attributes,
-  });
 }
 
 /**
@@ -1659,12 +1641,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               ctx.context.authCookies.sessionToken.name,
               ctx.context.secret,
             );
-            const emit =
-              requestSessionToken === response.token ? emitStepUpSucceeded : emitLoginSucceeded;
-            emit({
+            const identity = {
               actorId: sessionRow.userId,
               tenantId: sessionRow.activeOrganizationId ?? undefined,
-            });
+            };
+            if (requestSessionToken === response.token) {
+              emitStepUpSucceeded({ ...identity, method: 'local' });
+            } else {
+              emitLoginSucceeded(identity);
+            }
           }
         }
         return undefined;

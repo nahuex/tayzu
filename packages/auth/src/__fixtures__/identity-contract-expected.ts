@@ -1,7 +1,7 @@
 /**
  * The identity change's telemetry contract as design.md's "Observability
  * contract" tables state it (043, task 15.1; extended by 044 task 12.1,
- * 045 task 9.1 and 003 task 3.9), written out once so that
+ * 045 task 9.1 and 003 tasks 3.9 and 3.11), written out once so that
  * `telemetry/identity-contract.test.ts` and `apps/api`'s
  * `otel-smoke-check.int.test.ts` assert the same thing. It is the spec side of
  * the comparison: nothing here is derived from `identity-contract.ts`.
@@ -592,4 +592,11 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'mfa_enrolment_required',
     'unauthenticated',
   ],
+  // 003 task 3.11 (design D11 and "Observability contract" -> Log events, Q27 B2): the value
+  // 003 starts emitting on 002's `auth.security.step_up_succeeded`, recorded like the
+  // `session_revoked` reason above.
+  'tayzu.auth.method': ['visma_connect'],
+  // 003 task 3.11 (Q29): the reason of 002's contract's new `auth.security.reauthorization_failed`
+  // (declared in `telemetry/contract.ts`, where every `auth.security.*` event lives).
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed'],
 };

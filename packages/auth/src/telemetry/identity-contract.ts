@@ -523,4 +523,9 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'mfa_enrolment_required',
     'unauthenticated',
   ],
+  // 003 task 3.11 (design D11, Q27 B2): the value 003 starts emitting on 002's
+  // `auth.security.step_up_succeeded`, recorded like the revocation reasons above.
+  'tayzu.auth.method': ['visma_connect'],
+  // 003 task 3.11 (Q29): the reason of 002's `auth.security.reauthorization_failed`.
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed'],
 };

@@ -66,6 +66,12 @@ export { toCerbosRole } from './context-resolver.js';
 export { isIdle } from './session-idle.js';
 export { wouldLeaveNoSignInMethod } from './sign-in-methods.js';
 export { emitAccountLinkEvent, type AccountLinkActor } from './account-link-telemetry.js';
+export {
+  emitReauthorizationFailed,
+  emitStepUpSucceeded,
+  type ReauthorizationFailureReason,
+  type StepUpMethod,
+} from './step-up-telemetry.js';
 export { emitInternalError } from './internal-error-telemetry.js';
 export {
   verifyLogoutToken,
