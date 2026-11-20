@@ -418,7 +418,7 @@ stack of `scripts/ci/e2e.sh`.
       stored", `fr-FR` falling back to `en`, a stored choice winning, storage that
       throws, the `{ en, es? }` fallback, a date in a fixed time zone, and key parity
       between `en` and `es` for every namespace.
-- [ ] 5.6 The theme (design D12): the Zustand store (`system`, `light`, `dark`), the
+- [x] 5.6 The theme (design D12): the Zustand store (`system`, `light`, `dark`), the
       toggle, `localStorage` `tayzu.theme` behind `try`/`catch`, and
       `public/theme-init.js` applying the class before first paint. Verify:
       `theme.test.tsx` covers the three choices, the system preference, the stored

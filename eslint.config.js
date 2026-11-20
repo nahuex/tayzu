@@ -221,6 +221,15 @@ export default defineConfig(
     extends: [tseslint.configs.disableTypeChecked],
   },
   {
+    // 003 Q46: the source of `/theme-init.js`, a classic browser script (no
+    // `import` or `export`) that runs before the app, with only these globals.
+    files: ['apps/web/src/state/theme-init.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: { window: 'readonly', document: 'readonly' },
+    },
+  },
+  {
     // Idioms that are normal in tests but not in production code: an async
     // iterable stub with no `await`, and asserting on a void-returning call
     // (`expect(() => voidFn()).not.toThrow()`).

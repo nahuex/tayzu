@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig, minify, type Plugin } from 'vite';
 
 /** The dev server binds loopback only and never moves to another port (design D2). */
 const DEV_HOST = '127.0.0.1';
@@ -43,13 +44,58 @@ const DEV_CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join('; ');
 
+/** The commented source of `/theme-init.js`, resolved from this file, never from `root`. */
+const THEME_INIT_SOURCE = fileURLToPath(new URL('./src/state/theme-init.js', import.meta.url));
+
+/** The unhashed root build file `index.html` loads before first paint (Q28, Q46). */
+const THEME_INIT_FILE = 'theme-init.js';
+const THEME_INIT_PATH = `/${THEME_INIT_FILE}`;
+
+/**
+ * Ships `src/state/theme-init.js` as the classic script `/theme-init.js` (design D12,
+ * Q46). A build minifies it with Vite's own minifier, which drops every comment, and
+ * emits it unhashed at the build root. The dev server serves the source as is.
+ */
+export function themeInitPlugin(): Plugin {
+  return {
+    name: 'tayzu:theme-init',
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url?.split('?')[0] !== THEME_INIT_PATH) {
+          next();
+          return;
+        }
+        readFile(THEME_INIT_SOURCE, 'utf8').then(
+          (source) => {
+            response.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+            response.setHeader('Cache-Control', 'no-cache');
+            response.end(source);
+          },
+          (error: unknown) => {
+            next(error);
+          },
+        );
+      });
+    },
+    async generateBundle() {
+      this.addWatchFile(THEME_INIT_SOURCE);
+      const source = await readFile(THEME_INIT_SOURCE, 'utf8');
+      const result = await minify(THEME_INIT_FILE, source, { module: false });
+      if (result.errors.length > 0) {
+        this.error(`${THEME_INIT_FILE} failed to minify`);
+      }
+      this.emitFile({ type: 'asset', fileName: THEME_INIT_FILE, source: result.code });
+    },
+  };
+}
+
 export default defineConfig(({ command, isPreview }) => {
   // `vite preview` inherits `server.headers` and `server.proxy` unless they
   // are scoped to the dev server.
   const isDevServer = command === 'serve' && isPreview !== true;
 
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), themeInitPlugin()],
     // An empty directory: no `.env` file can reach `import.meta.env`.
     envDir: fileURLToPath(new URL('./env', import.meta.url)),
     resolve: {

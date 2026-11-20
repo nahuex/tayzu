@@ -8,8 +8,12 @@ When code and design disagree, stop and ask.
 
 ## Layout
 
-- `index.html` has no inline script or style. `public/theme-init.js` applies
-  the stored theme before first paint, as an external classic script.
+- `index.html` has no inline script or style. `/theme-init.js` applies the
+  stored theme before first paint, as an external classic script. Its
+  commented source is `src/state/theme-init.js` (no `import` or `export`);
+  the `tayzu:theme-init` plugin of `vite.config.ts` minifies it with Vite's
+  own minifier and emits it, with no comment, unhashed at the build root, and
+  serves the source in dev (Q46). Never put it back under `public/`.
 - `src/main.tsx` is the entry point (providers, router). The rest of `src/` is
   split by concern: `api/` (the oRPC client, the auth client, the error
   model), `app/` (shell, session gate, error boundary), `auth/`, `catalog/`,
@@ -23,7 +27,8 @@ When code and design disagree, stop and ask.
   `tsc -b`, which checks both.
 - `vite.config.ts` sets `envDir` to the empty `env/` directory, so no `.env`
   file reaches the bundle. The build output is `dist/` (`index.html`, hashed
-  files under `dist/assets/`, and the root files of `public/`).
+  files under `dist/assets/`, `theme-init.js`, and the root files of
+  `public/`).
 
 ## Page rules
 

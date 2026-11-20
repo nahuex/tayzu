@@ -65,13 +65,19 @@ export function definePackageConfig(name: string): UserWorkspaceConfig {
  * and the setup file (owned by the `test-writer`) registers the
  * `@testing-library/jest-dom` matchers. There is no `int` project: component
  * tests replace the network with a fake `fetch` and never need a database.
+ * `alias` is the app's `resolve.alias` (the `@/` of `vite.config.ts`), given to
+ * the nested project because inline projects do not inherit the parent config.
  */
-export function defineWebPackageConfig(name: string): UserWorkspaceConfig {
+export function defineWebPackageConfig(
+  name: string,
+  alias: Record<string, string> = {},
+): UserWorkspaceConfig {
   return defineProject({
     test: {
       name,
       projects: [
         {
+          resolve: { alias },
           test: {
             name: 'unit',
             environment: 'jsdom',
