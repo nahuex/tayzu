@@ -10,6 +10,7 @@
  * headers, body limits, rate limiting, the route allowlist and error mapping.
  */
 import { randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import fastifyCors from '@fastify/cors';
 import fastifyHelmet, { type FastifyHelmetOptions } from '@fastify/helmet';
@@ -76,6 +77,7 @@ import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
 import { assertDiscoverable } from './sso-discovery.js';
 import { DEFAULT_SPA_FALLBACK_RATE_LIMIT, registerSpaFallback } from './spa-fallback.js';
+import { assignStyleNonce, styleNonceOf } from './style-nonce.js';
 import { registerWebStatic } from './web-static.js';
 
 type Pool = ReturnType<typeof createPool>;
@@ -267,13 +269,17 @@ const STEP_UP_RATE_LIMITED_LOCATION = '/step-up/complete?result=rate_limited';
 
 /**
  * 003 D10 (ADR-0026, Q5, Q25): the exact directive list, with no helmet defaults, so
- * neither `upgrade-insecure-requests` nor `script-src-attr` is sent. `style-src` is a
- * list so that task 4.5 can append the per-request nonce as a directive function.
+ * neither `upgrade-insecure-requests` nor `script-src-attr` is sent. `style-src` carries
+ * the per-response nonce (Q15, task 4.5) through a directive function; `script-src` has
+ * none, which is why helmet's `enableCSPNonces` (hex, and on `script-src` too) is unused.
  */
 const CSP_DIRECTIVES = {
   'default-src': ["'self'"],
   'script-src': ["'self'"],
-  'style-src': ["'self'"],
+  'style-src': [
+    "'self'",
+    (_req: IncomingMessage, res: ServerResponse) => `'nonce-${styleNonceOf(res)}'`,
+  ],
   'img-src': ["'self'"],
   'font-src': ["'self'"],
   'connect-src': ["'self'"],
@@ -668,6 +674,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // of the Q74 hook so that its 404 carries the headers too: helmet's hooks and
   // the `Permissions-Policy` hook only write response headers and never read the
   // request target. HSTS (task 11.12): one year, subdomains included.
+  // Q15, task 4.5: the style nonce is drawn first, so helmet's `style-src` directive
+  // function and the SPA fallback read the same value. It never reads the request.
+  app.addHook('onRequest', async (_request, reply) => {
+    assignStyleNonce(reply.raw);
+  });
   await app.register(fastifyHelmet, SECURITY_HEADERS);
   // Helmet does not set `Permissions-Policy`; this hook runs right after helmet's own.
   app.addHook('onRequest', async (_request, reply) => {

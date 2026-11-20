@@ -353,7 +353,7 @@ stack of `scripts/ci/e2e.sh`.
       and HSTS and `no-store` unchanged; its two assertions that this decision changes,
       `X-Frame-Options: SAMEORIGIN` (lines 83-84) and the absence of a CSP (lines
       103-106), are rewritten in the red step, not loosened.
-- [ ] 4.5 The style nonce (design D10, Q15): Tayzu's own `onRequest` hook draws a
+- [x] 4.5 The style nonce (design D10, Q15): Tayzu's own `onRequest` hook draws a
       fresh 128-bit nonce from `crypto.randomBytes(16)` (base64) per request, the
       `style-src` directive function reads it, and the fallback substitutes it into the
       `tayzu-style-nonce` meta of the in-memory `index.html`; helmet's `enableCSPNonces`

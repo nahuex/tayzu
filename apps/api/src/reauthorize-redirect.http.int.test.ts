@@ -15,10 +15,10 @@
  * ## Harness
  *
  * Two apps built with `createApp` over the harness pools, with SSO pointed at the local
- * OIDC stub so the callback route is mounted: one with `webDistDir` (a temporary build
- * directory holding an `index.html`), one without. The callback's limiter is set low so
- * the rate-limit case is reachable; every test uses its own random `x-forwarded-for`, so
- * the buckets of the other cases are never touched. A successful callback is driven like
+ * OIDC stub so the callback route is mounted: one with `webDistDir` set to the committed
+ * fixture `__fixtures__/web-dist/` (read only; nothing is written to it), one without.
+ * The callback's limiter is set low so the rate-limit case is reachable; every test uses
+ * its own random `x-forwarded-for`, so the buckets of the other cases are never touched. A successful callback is driven like
  * `step-up-sso-http.int.test.ts`: an SSO-session owner's high-risk call hands out the
  * re-authorization URL, the stub auto-approves it, and the code and state it returns reach
  * the callback as a `GET` query or as a `form_post` `POST`. A failed exchange presents a
@@ -37,9 +37,7 @@
  * - Without it, the answers are those of today (`server.ts:869-932`).
  */
 import { randomInt, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -57,6 +55,7 @@ import { createApp, type App } from './server.js';
 const ORIGIN = 'https://app.tayzu.test';
 const CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
 const LIMIT = 2;
+const FIXTURE_WEB_DIST = fileURLToPath(new URL('./__fixtures__/web-dist/', import.meta.url));
 
 const COMPLETE = '/step-up/complete';
 const FAILED = '/step-up/complete?result=failed';
@@ -85,24 +84,6 @@ function randomIp(): string {
 
 let stub: OidcStub;
 let pools: Awaited<ReturnType<typeof harnessPools>>;
-let webDistDir: string;
-
-async function writeFixtureBuild(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'tayzu-web-dist-'));
-  await mkdir(join(dir, 'assets'));
-  await writeFile(
-    join(dir, 'index.html'),
-    '<!doctype html><html><head><meta charset="utf-8"><title>Tayzu</title></head>' +
-      '<body><div id="root"></div><script type="module" src="/assets/index-a1b2c3.js"></script></body></html>\n',
-  );
-  await writeFile(join(dir, 'assets', 'index-a1b2c3.js'), 'export {};\n');
-  await writeFile(join(dir, 'theme-init.js'), 'void 0;\n');
-  await writeFile(
-    join(dir, 'favicon.svg'),
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>\n',
-  );
-  return dir;
-}
 
 async function buildApp(withWeb: boolean): Promise<App> {
   return createApp({
@@ -117,19 +98,17 @@ async function buildApp(withWeb: boolean): Promise<App> {
       clientSecret: stub.clientSecret,
     },
     reauthorizationCallbackRateLimit: { max: LIMIT, window: 60 },
-    ...(withWeb ? { webDistDir } : {}),
+    ...(withWeb ? { webDistDir: FIXTURE_WEB_DIST } : {}),
   });
 }
 
 beforeAll(async () => {
   pools = await harnessPools();
   stub = await startOidcStub();
-  webDistDir = await writeFixtureBuild();
 }, 60_000);
 
 afterAll(async () => {
   await stub.close();
-  await rm(webDistDir, { recursive: true, force: true });
 }, 60_000);
 
 /** Drives one app: the SSO session, the started re-authorization and the callback. */
