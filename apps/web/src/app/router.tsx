@@ -3,9 +3,9 @@
  * D12 route, plus the not-found page for any other path.
  *
  * Each route renders one page slot. `createAppRouter` lays the given pages over the
- * defaults (placeholders until groups 6 to 9 bring the real pages). Path params may
- * hold `@`, `:` and `=` unencoded, like the API calls of D4, so an entity such as
- * `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
+ * defaults (the real sign-in page, and placeholders until groups 6 to 9 bring the
+ * others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
+ * an entity such as `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
  *
  * Given a `session` source (task 5.8, Q68), every protected route runs the session
  * gate of `./session-gate.js` before its page renders; the public pages (sign-in,
@@ -33,6 +33,8 @@ import {
 } from '@tanstack/react-router';
 import type { RouteComponent, RouterHistory } from '@tanstack/react-router';
 import type { ComponentType } from 'react';
+
+import { SignInPage } from '../auth/sign-in-page.js';
 
 import { AppShell, type ShellSources } from './app-shell.js';
 import { AppErrorBoundary, ErrorPage } from './error-boundary.js';
@@ -85,7 +87,7 @@ function PlaceholderPage(): null {
 }
 
 const DEFAULT_PAGES: AppPageOptions = {
-  signIn: PlaceholderPage,
+  signIn: SignInPage,
   forgotPassword: PlaceholderPage,
   resetPassword: PlaceholderPage,
   acceptInvitation: PlaceholderPage,

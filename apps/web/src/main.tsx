@@ -10,6 +10,7 @@ import { setNonce } from 'get-nonce';
 import { StrictMode } from 'react';
 import { I18nextProvider } from 'react-i18next';
 
+import { AuthClientProvider } from './api/auth-client-context.js';
 import { createAuthClient } from './api/auth-client.js';
 import { createApiClient } from './api/client.js';
 import { createQueryClient } from './api/query-client.js';
@@ -47,7 +48,9 @@ async function start(rootElement: HTMLElement): Promise<void> {
       <I18nextProvider i18n={i18n}>
         <AppErrorBoundary>
           <QueryClientProvider client={queryClient}>
-            <RouterProvider router={router} />
+            <AuthClientProvider client={authClient}>
+              <RouterProvider router={router} />
+            </AuthClientProvider>
           </QueryClientProvider>
         </AppErrorBoundary>
       </I18nextProvider>

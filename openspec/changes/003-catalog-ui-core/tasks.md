@@ -459,7 +459,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 6. Authentication pages
 
-- [ ] 6.1 Local sign-in (design D11): `/sign-in` with email and password, the
+- [x] 6.1 Local sign-in (design D11): `/sign-in` with email and password, the
       uniform failure message, the rate-limit message from `Retry-After`, then the TOTP
       step with a switch to a backup code, and the validated `returnTo`. Verify:
       `sign-in.test.tsx` covers "Local sign-in with a second factor" (with a fake API),
