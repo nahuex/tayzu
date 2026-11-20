@@ -9,7 +9,8 @@
     "open": "Search"
   },
   "userMenu": {
-    "label": "User menu"
+    "label": "User menu",
+    "setUpMfa": "Set up two-factor authentication"
   },
   "role": {
     "owner": "Owner",

@@ -1,13 +1,13 @@
 /**
- * The session gate (design D12, D8, D4 and Q64, Q65, Q68, Q73).
+ * The session gate (design D12, D8, D4 and Q64, Q65, Q68, Q73, Q74).
  *
  * Every protected route reads `GET /v1/me` through TanStack Query before its page
  * renders. Only `unauthenticated` (the uniform `401` of D8) sends the visitor to
  * `/sign-in`, with `returnTo` the raw path and query through `safeReturnPath`. Any
  * other failure fails closed: the route throws and the root error component shows a
  * generic message. A gate other than `none` sends every protected route but its own
- * page to that page, `/change-password` with the same `returnTo` (Q73). The gate
- * follows only the server's `gate` field. The public pages never call this.
+ * page to that page, with the requested path and query as `returnTo` (Q73, Q74). The
+ * gate follows only the server's `gate` field. The public pages never call this.
  */
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
 import { redirect, type RouterHistory } from '@tanstack/react-router';
@@ -96,16 +96,14 @@ function rawPathAndQuery(history: RouterHistory): string {
 }
 
 /**
- * The redirect to a gate's page. `/change-password` carries the requested path and query
- * as `returnTo`, so a changed password lands where the user was going (Q73).
+ * The redirect to a gate's page. It carries the requested path and query as `returnTo`,
+ * so a changed password (Q73) or an enrolled factor (Q74) lands where the user was going.
  */
 function gateRedirect(gatePath: GatePath, history: RouterHistory) {
-  return gatePath === '/change-password'
-    ? redirect({
-        to: gatePath,
-        search: { returnTo: safeReturnPath(rawPathAndQuery(history)) },
-      })
-    : redirect({ to: gatePath });
+  return redirect({
+    to: gatePath,
+    search: { returnTo: safeReturnPath(rawPathAndQuery(history)) },
+  });
 }
 
 /**

@@ -3,8 +3,8 @@
  * D12 route, plus the not-found page for any other path.
  *
  * Each route renders one page slot. `createAppRouter` lays the given pages over the
- * defaults (the real sign-in, change-password and expired-password pages, and
- * placeholders until groups 6 to 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
+ * defaults (the real sign-in, change-password, expired-password and MFA enrolment
+ * pages, and placeholders until groups 6 to 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
  * an entity such as `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
  *
  * Given a `session` source (task 5.8, Q68), every protected route runs the session
@@ -35,6 +35,7 @@ import type { RouteComponent, RouterHistory } from '@tanstack/react-router';
 import type { ComponentType } from 'react';
 
 import { ChangePasswordPage } from '../auth/change-password-page.js';
+import { MfaEnrolPage } from '../auth/mfa-enrol-page.js';
 import { PasswordExpiredPage } from '../auth/password-expired-page.js';
 import { SignInPage } from '../auth/sign-in-page.js';
 
@@ -44,8 +45,8 @@ import { NotFoundPage } from './not-found-page.js';
 import {
   ENTITY_SEARCH_DEFAULTS,
   TABLE_SEARCH_DEFAULTS,
-  changePasswordSearchSchema,
   entitySearchSchema,
+  gatePageSearchSchema,
   omitDefaultReturnTo,
   parseSearch,
   searchPageSearchSchema,
@@ -96,7 +97,7 @@ const DEFAULT_PAGES: AppPageOptions = {
   resetPassword: PlaceholderPage,
   acceptInvitation: PlaceholderPage,
   changePassword: ChangePasswordPage,
-  mfaEnrol: PlaceholderPage,
+  mfaEnrol: MfaEnrolPage,
   stepUpComplete: PlaceholderPage,
   home: PlaceholderPage,
   catalogTable: PlaceholderPage,
@@ -188,13 +189,14 @@ function buildRouteTree(
     createRoute({
       getParentRoute: () => rootRoute,
       path: 'change-password',
-      validateSearch: changePasswordSearchSchema,
+      validateSearch: gatePageSearchSchema,
       beforeLoad: guard('/change-password'),
       component: changePasswordComponent(pages),
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: 'mfa/enrol',
+      validateSearch: gatePageSearchSchema,
       beforeLoad: guard('/mfa/enrol'),
       component: routeComponent(pages.mfaEnrol),
     }),

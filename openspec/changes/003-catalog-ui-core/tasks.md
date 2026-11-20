@@ -476,7 +476,7 @@ stack of `scripts/ci/e2e.sh`.
       `change-password.test.tsx` covers "A temporary password is changed", a policy
       failure showing only the rule name, a wrong current password, and the expired
       page.
-- [ ] 6.4 MFA enrolment and re-enrolment (design D11, Q17): password re-entry,
+- [x] 6.4 MFA enrolment and re-enrolment (design D11, Q17): password re-entry,
       `/two-factor/enable`, the QR code as inline SVG and the secret as text, the
       backup codes shown once with confirmation, then `/two-factor/verify-totp`.
       Verify: `mfa-enrol.test.tsx` covers "MFA enrolment completes only with a valid

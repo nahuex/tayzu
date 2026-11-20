@@ -9,7 +9,8 @@
     "open": "Buscar"
   },
   "userMenu": {
-    "label": "Menú de usuario"
+    "label": "Menú de usuario",
+    "setUpMfa": "Configurar la autenticación de dos factores"
   },
   "role": {
     "owner": "Propietario",

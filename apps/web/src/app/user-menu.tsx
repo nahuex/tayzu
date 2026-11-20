@@ -1,8 +1,10 @@
 /**
- * The header's user menu (design D12, Shell): the user's name, the organization's name
- * and the localized role, from the session (`GET /v1/me`), and sign-out. Server strings
- * are rendered as text only.
+ * The header's user menu (design D12, Shell, and D11): the user's name, the
+ * organization's name and the localized role, from the session (`GET /v1/me`), the MFA
+ * enrolment page when the user is not enrolled (Q74), and sign-out. Server strings are
+ * rendered as text only.
  */
+import { Link } from '@tanstack/react-router';
 import { UserIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -44,6 +46,11 @@ export function UserMenu({
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
           </>
+        )}
+        {me?.mfa.enrolled === false && (
+          <DropdownMenuItem asChild>
+            <Link to="/mfa/enrol">{t('userMenu.setUpMfa')}</Link>
+          </DropdownMenuItem>
         )}
         <DropdownMenuItem onSelect={onSignOut}>{t('signOut')}</DropdownMenuItem>
       </DropdownMenuContent>

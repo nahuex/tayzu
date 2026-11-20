@@ -154,10 +154,11 @@ export const signInSearchSchema = z
   .transform(({ returnTo, error }) => ({ returnTo: safeReturnPath(returnTo), error }));
 
 /**
- * `/change-password`: where to go once the temporary password is changed (Q73), always
- * through `safeReturnPath`.
+ * The gate pages, `/change-password` and `/mfa/enrol`: where to go once the temporary
+ * password is changed (Q73) or the factor is enrolled (Q74), always through
+ * `safeReturnPath`.
  */
-export const changePasswordSearchSchema = z
+export const gatePageSearchSchema = z
   .object({ returnTo: rawReturnTo })
   .transform(({ returnTo }) => ({ returnTo: safeReturnPath(returnTo) }));
 
@@ -188,4 +189,4 @@ export type TableSearch = z.output<typeof tableSearchSchema>;
 export type EntitySearch = z.output<typeof entitySearchSchema>;
 export type SearchPageSearch = z.output<typeof searchPageSearchSchema>;
 export type SignInSearch = z.output<typeof signInSearchSchema>;
-export type ChangePasswordSearch = z.output<typeof changePasswordSearchSchema>;
+export type GatePageSearch = z.output<typeof gatePageSearchSchema>;
