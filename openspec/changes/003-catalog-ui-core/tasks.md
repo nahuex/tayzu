@@ -388,7 +388,7 @@ stack of `scripts/ci/e2e.sh`.
       `entities.list` with `sort` and `cursor`, an entity `team@example.com:prod=1`
       requested with no `%` in its path, `credentials` left at `same-origin`, and no
       `Authorization` header.
-- [ ] 5.2 The error model (design D4): `src/api/errors.ts` maps oRPC and plain-route
+- [x] 5.2 The error model (design D4): `src/api/errors.ts` maps oRPC and plain-route
       failures to the closed set of kinds, keeping `reauthorizationUrl`, issue paths
       (catalog issues are `{ path, message }`), the reference-violation counts and
       `Retry-After`, and never the message, except a password-policy rule name on
