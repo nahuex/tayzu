@@ -423,7 +423,7 @@ stack of `scripts/ci/e2e.sh`.
       `public/theme-init.js` applying the class before first paint. Verify:
       `theme.test.tsx` covers the three choices, the system preference, the stored
       value read by `theme-init.js` (evaluated in jsdom) and "Storage unavailable".
-- [ ] 5.7 The router (design D12, Q36): the TanStack Router code-based tree with every
+- [x] 5.7 The router (design D12, Q36): the TanStack Router code-based tree with every
       route of D12, `pathParamsAllowedCharacters: ['@', ':', '=']`, Zod-validated search
       params (`sort`, `order`, `pageSize`, `cursor`, `tab`, `q`, `returnTo`) falling back
       to defaults, and the not-found page. Verify: `router.test.tsx` covers each route
