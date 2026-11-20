@@ -397,7 +397,7 @@ stack of `scripts/ci/e2e.sh`.
       only, a password-policy rule mapped, an unknown rule shown as the generic message, a
       network failure, an unknown code mapped to `server`, and "An internal error shows no
       server text" at the model level.
-- [ ] 5.3 The auth client (design D4, Q24): `src/api/auth-client.ts` for the
+- [x] 5.3 The auth client (design D4, Q24): `src/api/auth-client.ts` for the
       allowlisted Better Auth routes the pages use, the accept and reset routes and
       `GET /v1/me`, each response parsed by a Zod schema, each non-`GET` with the CSRF
       header and `application/json`. Verify: `auth-client.test.ts` covers every call's
