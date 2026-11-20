@@ -51,7 +51,7 @@ import {
   createUserSync,
 } from '@tayzu/catalog';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { createIdentityRouter } from './identity-router.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
@@ -186,6 +186,12 @@ export interface CreateAppOptions {
   /** 045 D1 (Q21): the org-deletion window in days, validated by `loadConfig` (7 to 14). */
   readonly orgDeletionWindowDays?: number;
   /**
+   * 003 D9 (Q21): the absolute path of the web build (`WEB_DIST_DIR`). Omitted: the API
+   * alone, every answer exactly as before. Set: the Visma Connect re-authorization
+   * callback answers `303` to a fixed `/step-up/complete` path instead of JSON (D11, Q14).
+   */
+  readonly webDistDir?: string;
+  /**
    * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
    */
@@ -241,6 +247,13 @@ const DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE = 600;
 const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 /** Q36: where Visma Connect returns from a step-up re-authorization. */
 const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
+/**
+ * 003 D11 (Q14): where the callback sends the browser back when the web app is served.
+ * Constants only, never derived from the request or the OIDC state (no open redirect).
+ */
+const STEP_UP_COMPLETE_LOCATION = '/step-up/complete';
+const STEP_UP_FAILED_LOCATION = '/step-up/complete?result=failed';
+const STEP_UP_RATE_LIMITED_LOCATION = '/step-up/complete?result=rate_limited';
 
 /** Q74: the path of the request target, without its query. Every guard keys on this. */
 /** A configured cap as the bucket store's rule. */
@@ -893,9 +906,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   // Q36: the re-authorization callback (query redirect or `form_post`). The
-  // single-use `state` binds it to the session; it answers a bare 200 or 400.
+  // single-use `state` binds it to the session; it answers a bare 200 or 400, or, with
+  // the web app served (003 D11), a `303` to one of the fixed step-up locations.
   // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
+  const redirectToWebApp = options.webDistDir !== undefined;
+  const seeOther = (reply: FastifyReply, location: string): FastifyReply =>
+    reply.status(303).header('location', location).send();
   const reauthorizationCallbackLimit = createAcceptRateLimitPreHandler({
+    ...(redirectToWebApp && {
+      onLimited: (reply: FastifyReply) => seeOther(reply, STEP_UP_RATE_LIMITED_LOCATION),
+    }),
     scope: 'reauthorization_callback',
     store: createRateLimitBucketStore({
       adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
@@ -923,9 +943,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     );
     const handle = async (
       params: { code?: unknown; state?: unknown },
-      reply: import('fastify').FastifyReply,
+      reply: FastifyReply,
     ): Promise<unknown> => {
       const ok = reauthorization !== undefined && (await reauthorization.complete(params));
+      if (redirectToWebApp) {
+        return seeOther(reply, ok ? STEP_UP_COMPLETE_LOCATION : STEP_UP_FAILED_LOCATION);
+      }
       return ok
         ? reply.status(200).send({})
         : reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });

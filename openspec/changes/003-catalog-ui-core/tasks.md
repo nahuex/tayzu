@@ -283,7 +283,7 @@ stack of `scripts/ci/e2e.sh`.
       ignored; the `apps/api` `otel-smoke-check.int.test.ts` asserts the span and that no
       organization name, user name or email reaches it; `route-auth-allowlist.int.test.ts`
       stays green.
-- [ ] 3.10 The re-authorization redirect (design D11): with `WEB_DIST_DIR` set, `GET`
+- [x] 3.10 The re-authorization redirect (design D11): with `WEB_DIST_DIR` set, `GET`
       and `POST /v1/auth/visma-connect/reauthorize/callback` answer `303` to
       `/step-up/complete` on success, `/step-up/complete?result=failed` on failure, and
       `/step-up/complete?result=rate_limited` with `Retry-After` when the callback's
