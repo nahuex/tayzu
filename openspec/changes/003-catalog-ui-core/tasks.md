@@ -371,7 +371,7 @@ stack of `scripts/ci/e2e.sh`.
       `POST /catalog/_user/alice@example.com` and `/catalog/_user/a%40b.com` (the Q74
       404), `/catalog/service/payments.api`, the same paths with the app not served, and
       an asset path kept as is; the marker check finds no email in any exported span.
-- [ ] 4.7 DAST over the app (design D10, Q22, Q42): `scripts/ci/dast.sh up` builds
+- [x] 4.7 DAST over the app (design D10, Q22, Q42): `scripts/ci/dast.sh up` builds
       `@tayzu/web` and starts the API with `WEB_DIST_DIR`; `.zap/rules.tsv` sets 10109
       to `INFO` with its note, plus only what the human decided after task 2.1b; every
       other new alert is fixed. Verify: `dast-script.test.ts` asserts the build step and
