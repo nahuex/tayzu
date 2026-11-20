@@ -316,7 +316,7 @@ stack of `scripts/ci/e2e.sh`.
       fails with an error that names the variable and not its value. Verify:
       `config.test.ts` covers unset, valid, relative, missing directory and missing
       `index.html`, and that no error message contains the value.
-- [ ] 4.2 The asset route (design D9): `@fastify/static` on `<WEB_DIST_DIR>/assets/`
+- [x] 4.2 The asset route (design D9): `@fastify/static` on `<WEB_DIST_DIR>/assets/`
       at `/assets/` with `wildcard: false`, `dotfiles: 'deny'`, `index: false`,
       `Cache-Control: public, max-age=31536000, immutable`, and the root build files
       (`theme-init.js`, the favicon) from the build root with `no-cache`. Verify:

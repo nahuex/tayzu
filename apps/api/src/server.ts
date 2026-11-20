@@ -75,6 +75,7 @@ import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
 import { assertDiscoverable } from './sso-discovery.js';
+import { registerWebStatic } from './web-static.js';
 
 type Pool = ReturnType<typeof createPool>;
 
@@ -188,7 +189,8 @@ export interface CreateAppOptions {
   /**
    * 003 D9 (Q21): the absolute path of the web build (`WEB_DIST_DIR`). Omitted: the API
    * alone, every answer exactly as before. Set: the Visma Connect re-authorization
-   * callback answers `303` to a fixed `/step-up/complete` path instead of JSON (D11, Q14).
+   * callback answers `303` to a fixed `/step-up/complete` path instead of JSON (D11, Q14),
+   * and the build's assets and root build files are served (D9, `web-static.ts`).
    */
   readonly webDistDir?: string;
   /**
@@ -1302,6 +1304,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return undefined;
     },
   });
+
+  // 003 D9: the web build's assets and root build files, only when a build is configured.
+  // Their own `Cache-Control` is set before `onSend`, so the `no-store` default leaves it.
+  if (options.webDistDir !== undefined) {
+    await registerWebStatic(app, options.webDistDir);
+  }
 
   await app.ready();
 

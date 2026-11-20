@@ -424,7 +424,7 @@ audit) by the task that installs them, which then drops the mark.
 | `@testing-library/user-event`                                           | 14.6.8   | MIT        | test           | 2.4      |
 | `@testing-library/jest-dom`                                             | 7.0.1    | MIT        | test           | 2.4      |
 | `jsdom`                                                                 | 30.1.3   | MIT        | test           | 2.4      |
-| `@fastify/static` (in `@tayzu/api`), _planned_                          | 10.1.10  | MIT        | server runtime | 4.2      |
+| `@fastify/static` (in `@tayzu/api`)                                     | 10.1.10  | MIT        | server runtime | 4.2      |
 | `@playwright/test` (with `playwright` and `playwright-core`), _planned_ | 1.63.0   | Apache-2.0 | test           | 10.1     |
 | `@axe-core/playwright`, _planned_                                       | 4.14.0   | MPL-2.0    | test           | 10.1     |
 
@@ -436,6 +436,18 @@ for `eslint-plugin-jsx-a11y` satisfies, and declares `playwright-core
 > =1.0.0`as a peer, which is why`pnpm why playwright-core`must show 1.63.0
 only.`@fastify/static`10.1.10 depends on`glob` `^14`, whose license is
 > BlueOak-1.0.0 (see the next table); task 4.2 records it.
+
+`@fastify/static` 10.1.10 was published on 2026-11-04, 16 days before task 4.2
+(Q43; 10.1.11 and 10.1.12 are under 14 days old). It declares no peer dependency;
+its `fastify-plugin` guard requires `fastify` `5.x`, which the locked 5.12.5
+satisfies. Its lockfile diff adds 17 package versions, all MIT or ISC apart
+from the BlueOak-1.0.0 `glob` family in the next table: `@fastify/send` 4.2.1,
+`@fastify/accept-negotiator` 2.1.2, `content-disposition` 3.1.0, `mime` 3.0.0,
+`http-errors` 2.0.1 (with `depd`, `inherits`, `setprototypeof`, `statuses` and
+`toidentifier`), `escape-html` 1.0.3, and `glob` 14.0.6 with `minimatch` 11.0.9,
+`@isaacs/nonrecursive-glob-match` 1.1.0, `path-scurry` 3.0.0 and `minipass`
+7.1.3. `path-scurry` reuses the locked `lru-cache` 11.5.3. None declares a
+`preinstall`, `install` or `postinstall` script.
 
 ### Notable transitive packages
 
@@ -483,16 +495,17 @@ families:
 `pnpm licenses list --json` over the installed tree finds these licenses
 outside the allowlist among the packages the review covers:
 
-| Package                                                               | Version       | License       | Path                                                       | Ships?                                                                                               | Status                                                        |
-| --------------------------------------------------------------------- | ------------- | ------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `axe-core`                                                            | 4.14.1        | MPL-2.0       | `eslint-plugin-jsx-a11y`                                   | No, lint only                                                                                        | Accepted, test-only and lint-only MPL-2.0 (`003` Q26 and Q40) |
-| `@axe-core/playwright` (and its `axe-core`), _planned_                | 4.14.0        | MPL-2.0       | direct, task 10.1                                          | No, e2e only                                                                                         | Accepted, test-only MPL-2.0 (`003` Q26)                       |
-| `lightningcss`, `lightningcss-<platform>`                             | 1.33.0        | MPL-2.0       | `vite`, `@tailwindcss/node`                                | No, it compiles CSS at build time; locked since Vite 8, before `003`                                 | Accepted, `003` Q50                                           |
-| `isbot`                                                               | 5.2.3         | Unlicense     | `@tanstack/react-router` (a production dependency)         | No: only the router's server-rendering entry imports it, and the client build never loads that entry | Accepted, `003` Q50                                           |
-| `caniuse-lite`                                                        | 1.0.30001826  | CC-BY-4.0     | `browserslist`, under Babel in `eslint-plugin-react-hooks` | No, lint only (browser data)                                                                         | Accepted, `003` Q50                                           |
-| `graceful-fs`                                                         | 4.2.12        | BlueOak-1.0.0 | `enhanced-resolve`, under `@tailwindcss/node`              | No, build only                                                                                       | Accepted, `003` Q50                                           |
-| `lru-cache`                                                           | 11.5.3        | BlueOak-1.0.0 | `@asamuzakjp/css-color`, under `jsdom`                     | No, test only                                                                                        | Accepted, `003` Q50                                           |
-| `@csstools/color-helpers`, `@csstools/css-syntax-patches-for-csstree` | 6.1.3, 1.1.17 | MIT-0         | `@asamuzakjp/css-color`, under `jsdom`                     | No, test only                                                                                        | Accepted, `003` Q50                                           |
+| Package                                                                           | Version                             | License       | Path                                                                           | Ships?                                                                                               | Status                                                        |
+| --------------------------------------------------------------------------------- | ----------------------------------- | ------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `axe-core`                                                                        | 4.14.1                              | MPL-2.0       | `eslint-plugin-jsx-a11y`                                                       | No, lint only                                                                                        | Accepted, test-only and lint-only MPL-2.0 (`003` Q26 and Q40) |
+| `@axe-core/playwright` (and its `axe-core`), _planned_                            | 4.14.0                              | MPL-2.0       | direct, task 10.1                                                              | No, e2e only                                                                                         | Accepted, test-only MPL-2.0 (`003` Q26)                       |
+| `lightningcss`, `lightningcss-<platform>`                                         | 1.33.0                              | MPL-2.0       | `vite`, `@tailwindcss/node`                                                    | No, it compiles CSS at build time; locked since Vite 8, before `003`                                 | Accepted, `003` Q50                                           |
+| `isbot`                                                                           | 5.2.3                               | Unlicense     | `@tanstack/react-router` (a production dependency)                             | No: only the router's server-rendering entry imports it, and the client build never loads that entry | Accepted, `003` Q50                                           |
+| `caniuse-lite`                                                                    | 1.0.30001826                        | CC-BY-4.0     | `browserslist`, under Babel in `eslint-plugin-react-hooks`                     | No, lint only (browser data)                                                                         | Accepted, `003` Q50                                           |
+| `graceful-fs`                                                                     | 4.2.12                              | BlueOak-1.0.0 | `enhanced-resolve`, under `@tailwindcss/node`                                  | No, build only                                                                                       | Accepted, `003` Q50                                           |
+| `lru-cache`                                                                       | 11.5.3                              | BlueOak-1.0.0 | `@asamuzakjp/css-color`, under `jsdom`; `path-scurry`, under `@fastify/static` | Yes, in the API image (task 4.2)                                                                     | Accepted, `003` Q50                                           |
+| `glob`, `minimatch`, `path-scurry`, `minipass`, `@isaacs/nonrecursive-glob-match` | 14.0.6, 11.0.9, 3.0.0, 7.1.3, 1.1.0 | BlueOak-1.0.0 | `@fastify/static` (a production dependency of `@tayzu/api`)                    | Yes, in the API image: `glob` lists the asset files once at startup                                  | Accepted, `003` Q50                                           |
+| `@csstools/color-helpers`, `@csstools/css-syntax-patches-for-csstree`             | 6.1.3, 1.1.17                       | MIT-0         | `@asamuzakjp/css-color`, under `jsdom`                                         | No, test only                                                                                        | Accepted, `003` Q50                                           |
 
 MIT-0, BlueOak-1.0.0 and the Unlicense are OSI-approved permissive licenses;
 CC-BY-4.0 is a data license that asks for attribution. None is in the "flag
