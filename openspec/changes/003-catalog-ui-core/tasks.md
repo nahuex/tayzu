@@ -403,7 +403,7 @@ stack of `scripts/ci/e2e.sh`.
       header and `application/json`. Verify: `auth-client.test.ts` covers every call's
       method, path, headers and body shape, unknown response fields dropped, and a
       malformed response mapped to `server`.
-- [ ] 5.4 Untrusted input and return paths (design D15): `src/lib/untrusted.ts`
+- [x] 5.4 Untrusted input and return paths (design D15): `src/lib/untrusted.ts`
       parses into null-prototype objects, rejects `__proto__`, `constructor` and
       `prototype` at every depth and checks lengths first; `src/lib/return-path.ts`
       accepts only an in-app path of the route tree. Verify: `untrusted.test.ts`

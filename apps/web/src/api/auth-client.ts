@@ -12,6 +12,8 @@
  */
 import { z } from 'zod';
 
+import { toNullPrototype } from '../lib/untrusted.js';
+
 import { apiErrorFromResponse, type ApiError } from './errors.js';
 
 export type AuthResult<T> =
@@ -91,15 +93,6 @@ const SERVER_FAILURE: AuthResult<never> = { ok: false, error: { kind: 'server' }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Copies a parsed (already schema-checked) value into null-prototype objects. */
-function toNullPrototype<T>(value: T): T {
-  if (Array.isArray(value)) return value.map((item: unknown) => toNullPrototype(item)) as T;
-  if (!isPlainObject(value)) return value;
-  const copy = Object.create(null) as Record<string, unknown>;
-  for (const [key, nested] of Object.entries(value)) copy[key] = toNullPrototype(nested);
-  return copy as T;
 }
 
 /** Reads a 2xx body: anything but a JSON object is `undefined`. */
