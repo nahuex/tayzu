@@ -12,7 +12,8 @@
  * answer of a query or mutation while the shell is mounted, which keeps the current
  * path as `returnTo`. Theme and locale stay.
  *
- * The shell mounts the app's one step-up dialog (D11, Q75), which reads this session.
+ * The shell mounts the app's one step-up dialog (D11, Q75), which reads this session, and
+ * shows the notice of a Visma Connect step-up return above the page (Q76).
  */
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from '@tanstack/react-router';
@@ -31,6 +32,7 @@ import { BlueprintSidebar } from './blueprint-sidebar.js';
 import { LocaleSelector } from './locale-selector.js';
 import { sessionQueryOptions, type SessionSource } from './session-gate.js';
 import { subscribeToUnauthenticated } from './session-end.js';
+import { StepUpReturnNotice } from './step-up-return-notice.js';
 import { ThemeToggle } from './theme-toggle.js';
 import { useEndSession } from './use-end-session.js';
 import { UserMenu } from './user-menu.js';
@@ -121,6 +123,7 @@ export function AppShell({
           <BlueprintSidebar apiClient={apiClient} queryClient={queryClient} />
         </aside>
         <main id={MAIN_ID} ref={mainRef} tabIndex={-1} className="flex-1 outline-none">
+          <StepUpReturnNotice />
           {children}
         </main>
       </div>

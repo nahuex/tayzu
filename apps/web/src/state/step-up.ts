@@ -6,6 +6,10 @@
  * request (the answer's optional `reauthorizationUrl`), never a code or a password, and
  * nothing of it reaches storage. It is session-bound: `resetSessionStores()` settles an
  * open request as `cancelled` when the session ends.
+ *
+ * It also carries, in memory only, the "you are back, repeat the action" notice of the
+ * Visma Connect return (Q76): `/step-up/complete` raises it before returning to the stored
+ * path, and the shell there shows it once and clears it.
  */
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 
@@ -24,6 +28,12 @@ export interface StepUpState {
   requestStepUp(request: StepUpRequest): Promise<StepUpOutcome>;
   /** Closes the dialog and resolves the pending request with `outcome`. */
   settleStepUp(outcome: StepUpOutcome): void;
+  /** True from the Visma Connect return until the shell takes the notice. */
+  readonly returnNotice: boolean;
+  /** Asks the next shell to show the "you are back, repeat the action" notice once. */
+  raiseReturnNotice(): void;
+  /** The shell has taken the notice. */
+  clearReturnNotice(): void;
 }
 
 interface Pending {
@@ -61,12 +71,21 @@ export const useStepUpStore: UseBoundStore<StoreApi<StepUpState>> = create<StepU
       set({ request: null });
       settled?.resolve(outcome);
     },
+    returnNotice: false,
+    raiseReturnNotice() {
+      set({ returnNotice: true });
+    },
+    clearReturnNotice() {
+      set({ returnNotice: false });
+    },
   }),
 );
 
-/** Resolves a pending request as `cancelled` and clears it (Q69). */
+/** Resolves a pending request as `cancelled` and clears it and the notice (Q69, Q76). */
 export function resetStepUpStore(): void {
-  useStepUpStore.getState().settleStepUp('cancelled');
+  const state = useStepUpStore.getState();
+  state.settleStepUp('cancelled');
+  state.clearReturnNotice();
 }
 
 /**

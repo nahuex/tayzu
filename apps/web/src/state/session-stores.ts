@@ -6,6 +6,7 @@
 import { resetStepUpStore } from './step-up.js';
 
 export function resetSessionStores(): void {
-  // An open step-up dialog closes, and the call waiting on it fails as cancelled.
+  // An open step-up dialog closes, the call waiting on it fails as cancelled, and a
+  // pending step-up return notice is dropped.
   resetStepUpStore();
 }

@@ -490,7 +490,7 @@ stack of `scripts/ci/e2e.sh`.
       verifies with TOTP" and "A user without MFA verifies with the password" against a
       fake API, a wrong code refused without a retry, exactly one retry after success, and
       a Visma Connect session never offered a code or password field.
-- [ ] 6.6 The Visma Connect step-up and its completion page (design D11, Q14): for a
+- [x] 6.6 The Visma Connect step-up and its completion page (design D11, Q14): for a
       session whose `signInMethod` is `visma-connect`, the "Continue with Visma Connect"
       button when the answer has a `reauthorizationUrl`, storing only the in-app path in
       `sessionStorage` and navigating on click, and a "try again in a few minutes"

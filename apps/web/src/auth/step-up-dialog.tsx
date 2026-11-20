@@ -13,13 +13,19 @@
  *   lost session (Q74);
  * - a local session without MFA: the password, `/api/auth/verify-password`. A wrong
  *   password marks the field; anything else is one generic alert;
- * - a Visma Connect session: no local field and no local call (task 6.6 fills it).
+ * - a Visma Connect session: no local field and no local call. With an absolute `https:`
+ *   `reauthorizationUrl`, a "Continue with Visma Connect" button; its click stores the
+ *   router's current path (`./step-up-return.js`) and leaves for the URL, and never
+ *   settles `verified`, so nothing is retried: the user repeats the action on return
+ *   (Q14, Q76). Without one (or with any other value, fail closed as Q72), a "try again
+ *   in a few minutes" message.
  *
  * The auth client is called directly, never through the query or mutation cache, so no
  * code or password reaches the cache and the shell's session-end listener never sees a
  * refused code. The field is emptied after every request. No server text is ever shown.
  */
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useRouter } from '@tanstack/react-router';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
@@ -39,9 +45,12 @@ import {
 import { useAuthClient } from '../api/auth-client-context.js';
 import type { AuthResult, Me } from '../api/auth-client.js';
 import type { ApiError } from '../api/errors.js';
+import { isAbsoluteHttpsUrl } from '../lib/external-url.js';
+import { navigateToExternal } from '../lib/navigate-away.js';
 import { useStepUpStore, type StepUpOutcome } from '../state/step-up.js';
 
 import { Field } from './field.js';
+import { saveStepUpReturnPath } from './step-up-return.js';
 
 /** Only emptiness is checked here; the server decides everything else. */
 const codeSchema = z.object({ code: z.string().min(1) });
@@ -203,11 +212,28 @@ function PasswordForm({ onVerified }: VerifyProps): React.JSX.Element {
 
 /**
  * The Visma Connect step-up: no local factor and no local call, since none satisfies an
- * SSO session. Task 6.6 adds the "Continue with Visma Connect" button and the
- * "try again in a few minutes" message here.
+ * SSO session. The round trip starts only on the click, and only to an absolute `https:`
+ * URL; the dialog stays open until the browser leaves.
  */
-function SsoStepUp(): null {
-  return null;
+function SsoStepUp(): React.JSX.Element {
+  const { t } = useTranslation('auth');
+  const router = useRouter();
+  const url = useStepUpStore((state) => state.request?.reauthorizationUrl);
+
+  if (url === undefined || !isAbsoluteHttpsUrl(url)) return <p>{t('stepUp.ssoUnavailable')}</p>;
+  return (
+    <Button
+      type="button"
+      onClick={() => {
+        // The router's location, never `window.location`, and never its fragment.
+        const { pathname, search } = router.history.location;
+        saveStepUpReturnPath(`${pathname}${search}`);
+        navigateToExternal(url);
+      }}
+    >
+      {t('stepUp.vismaConnect')}
+    </Button>
+  );
 }
 
 function CodeStepUp({ onVerified }: VerifyProps): React.JSX.Element {

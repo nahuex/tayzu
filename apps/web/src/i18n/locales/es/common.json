@@ -37,5 +37,8 @@
     "title": "Algo salió mal",
     "description": "No se pudo cargar la página. Inténtalo de nuevo más tarde.",
     "reload": "Recargar la página"
+  },
+  "stepUpNotice": {
+    "returned": "Has vuelto. Repite la acción para continuar."
   }
 }

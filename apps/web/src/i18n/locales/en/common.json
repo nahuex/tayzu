@@ -37,5 +37,8 @@
     "title": "Something went wrong",
     "description": "The page could not be loaded. Try again later.",
     "reload": "Reload the page"
+  },
+  "stepUpNotice": {
+    "returned": "You are back. Repeat the action to continue."
   }
 }

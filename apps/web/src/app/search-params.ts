@@ -162,6 +162,16 @@ export const gatePageSearchSchema = z
   .object({ returnTo: rawReturnTo })
   .transform(({ returnTo }) => ({ returnTo: safeReturnPath(returnTo) }));
 
+export const STEP_UP_RESULTS = ['failed', 'rate_limited'] as const;
+
+/**
+ * `/step-up/complete`: the re-authorization callback's `result` (D11, Q76), `failed` or
+ * `rate_limited`; anything else, and no value, is absent (a completed re-authorization).
+ */
+export const stepUpCompleteSearchSchema = z
+  .object({ result: z.enum(STEP_UP_RESULTS).optional().catch(undefined) })
+  .transform(({ result }) => ({ result }));
+
 /** The search middleware `next` with its metadata, as the router's own middlewares call it. */
 type NextWithMeta = (
   search: SignInSearch,
@@ -190,3 +200,4 @@ export type EntitySearch = z.output<typeof entitySearchSchema>;
 export type SearchPageSearch = z.output<typeof searchPageSearchSchema>;
 export type SignInSearch = z.output<typeof signInSearchSchema>;
 export type GatePageSearch = z.output<typeof gatePageSearchSchema>;
+export type StepUpCompleteSearch = z.output<typeof stepUpCompleteSearchSchema>;
