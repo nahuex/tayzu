@@ -39,7 +39,7 @@
  * generation and drift check stay in `./contract.ts`, which re-exports
  * `catalogContract`.
  */
-import { oc, type OpenAPI } from '@orpc/contract';
+import { oc, type ContractRouterClient, type OpenAPI } from '@orpc/contract';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -496,3 +496,10 @@ export const catalogContract = oc.router({
       .output(searchEntitiesOutputSchema),
   },
 });
+
+/**
+ * The typed client of `catalogContract` (003 Q62). Exported here so that
+ * `@tayzu/web` can name its oRPC client type without depending on
+ * `@orpc/contract` itself. Type-only: no runtime export is added.
+ */
+export type CatalogContractClient = ContractRouterClient<typeof catalogContract>;

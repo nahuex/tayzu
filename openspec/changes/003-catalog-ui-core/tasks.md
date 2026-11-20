@@ -380,7 +380,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 5. Web shell, routing, i18n and theme
 
-- [ ] 5.1 The oRPC client (design D4, Q36): `src/api/client.ts` with `OpenAPILink` over
+- [x] 5.1 The oRPC client (design D4, Q36): `src/api/client.ts` with `OpenAPILink` over
       `@tayzu/catalog/contract`, `SimpleCsrfProtectionLinkPlugin`, the page origin and
       the custom path-parameter serializer that leaves `@`, `:` and `=` unencoded.
       Verify: `client.test.ts`, with a fake `fetch`, covers "A mutating call carries the
