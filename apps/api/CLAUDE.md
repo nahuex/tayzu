@@ -64,7 +64,7 @@ orchestration described below. When code and design disagree, stop and ask.
   `${tenantId}:${actorType}:${actorId}` for authenticated traffic, and
   separately by IP alone for `POST /v1/auth/token` (D20). Neither key
   component is ever logged or exported as a telemetry attribute.
-- `@fastify/helmet` with `contentSecurityPolicy: false`; `CORSPlugin` with an
+- `@fastify/helmet` with the strict self-only CSP of `003` D10 on every response (registered before the Q74 hook, which stays the first hook that reads the request) and `X-Frame-Options: DENY`; `CORSPlugin` with an
   explicit origin allowlist and `credentials: true`;
   `SimpleCsrfProtectionHandlerPlugin` on every mutating route.
 

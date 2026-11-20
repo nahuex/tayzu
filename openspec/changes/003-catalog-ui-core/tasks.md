@@ -342,7 +342,7 @@ stack of `scripts/ci/e2e.sh`.
       `route-auth-allowlist.int.test.ts` gains a second harness app started with the
       fixture `web-dist` and `WEB_DIST_DIR`, in which the new entries are registered
       routes, and the first app still proves every other route closed.
-- [ ] 4.4 The CSP and security headers on every response, with or without
+- [x] 4.4 The CSP and security headers on every response, with or without
       `WEB_DIST_DIR` (design D10): helmet with `contentSecurityPolicy.useDefaults: false`
       and the exact directive list, `xFrameOptions: { action: 'deny' }`,
       `Cross-Origin-Embedder-Policy: require-corp` and the `Permissions-Policy` without

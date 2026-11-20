@@ -12,7 +12,7 @@
 import { randomUUID } from 'node:crypto';
 
 import fastifyCors from '@fastify/cors';
-import fastifyHelmet from '@fastify/helmet';
+import fastifyHelmet, { type FastifyHelmetOptions } from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
 import { ORPCError } from '@orpc/server';
@@ -264,6 +264,46 @@ const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
 const STEP_UP_COMPLETE_LOCATION = '/step-up/complete';
 const STEP_UP_FAILED_LOCATION = '/step-up/complete?result=failed';
 const STEP_UP_RATE_LIMITED_LOCATION = '/step-up/complete?result=rate_limited';
+
+/**
+ * 003 D10 (ADR-0026, Q5, Q25): the exact directive list, with no helmet defaults, so
+ * neither `upgrade-insecure-requests` nor `script-src-attr` is sent. `style-src` is a
+ * list so that task 4.5 can append the per-request nonce as a directive function.
+ */
+const CSP_DIRECTIVES = {
+  'default-src': ["'self'"],
+  'script-src': ["'self'"],
+  'style-src': ["'self'"],
+  'img-src': ["'self'"],
+  'font-src': ["'self'"],
+  'connect-src': ["'self'"],
+  'media-src': ["'none'"],
+  'object-src': ["'none'"],
+  'frame-src': ["'none'"],
+  'worker-src': ["'none'"],
+  'manifest-src': ["'self'"],
+  'base-uri': ["'none'"],
+  'form-action': ["'self'"],
+  'frame-ancestors': ["'none'"],
+};
+
+/**
+ * 003 D10: `X-Frame-Options: DENY` (matching `frame-ancestors 'none'`) and COEP
+ * `require-corp`; COOP and CORP `same-origin`, `Referrer-Policy: no-referrer` and the
+ * rest are helmet's defaults. HSTS is 002's (task 11.12).
+ */
+const SECURITY_HEADERS: FastifyHelmetOptions = {
+  contentSecurityPolicy: { useDefaults: false, directives: CSP_DIRECTIVES },
+  xFrameOptions: { action: 'deny' },
+  crossOriginEmbedderPolicy: { policy: 'require-corp' },
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
+  crossOriginResourcePolicy: { policy: 'same-origin' },
+  referrerPolicy: { policy: 'no-referrer' },
+  strictTransportSecurity: { maxAge: 31_536_000, includeSubDomains: true },
+};
+
+/** 003 D10: every powerful feature off; no `interest-cohort` (a Chromium console error). */
+const PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=(), usb=()';
 
 /** Q74: the path of the request target, without its query. Every guard keys on this. */
 /** A configured cap as the bucket store's rule. */
@@ -623,9 +663,20 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
   await options.configureApp?.(app);
-  // Q74, D18: first hook of all. A target that is not origin-form, or whose
-  // path (before the query) holds `%`, `//` or a backslash, answers the
-  // allowlist's own 404 before any other hook or the router can normalize it.
+  // 003 D10: one strict, self-only policy and header set on every response (HTML,
+  // JSON, assets and 404s), whether or not `webDistDir` is set. Registered ahead
+  // of the Q74 hook so that its 404 carries the headers too: helmet's hooks and
+  // the `Permissions-Policy` hook only write response headers and never read the
+  // request target. HSTS (task 11.12): one year, subdomains included.
+  await app.register(fastifyHelmet, SECURITY_HEADERS);
+  // Helmet does not set `Permissions-Policy`; this hook runs right after helmet's own.
+  app.addHook('onRequest', async (_request, reply) => {
+    reply.header('permissions-policy', PERMISSIONS_POLICY);
+  });
+  // Q74, D18: the first hook that reads the request. A target that is not
+  // origin-form, or whose path (before the query) holds `%`, `//` or a
+  // backslash, answers the allowlist's own 404 before any other hook or the
+  // router can normalize it.
   app.addHook('onRequest', async (request, reply) => {
     const url: string = request.url;
     const pathname: string = url.split('?', 1)[0] ?? '';
@@ -649,12 +700,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       emitInternalError(error);
     }
     return reply.status(mapped.status).send(mapped.toJSON());
-  });
-  // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
-  // HSTS (task 11.12): one year, subdomains included (helmet's default is 180 days).
-  await app.register(fastifyHelmet, {
-    contentSecurityPolicy: false,
-    strictTransportSecurity: { maxAge: 31_536_000, includeSubDomains: true },
   });
   // D13, ZAP finding [10049] (Storable and Cacheable Content): default to
   // `no-store` on every response, including Fastify's 404, unless the handler
