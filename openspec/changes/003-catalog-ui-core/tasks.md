@@ -465,7 +465,7 @@ stack of `scripts/ci/e2e.sh`.
       `sign-in.test.tsx` covers "Local sign-in with a second factor" (with a fake API),
       "A wrong password and an unknown email look the same", the rate-limited answer,
       the backup-code path and `autocomplete` attributes.
-- [ ] 6.2 Visma Connect sign-in (design D11): the button posting
+- [x] 6.2 Visma Connect sign-in (design D11): the button posting
       `/api/auth/sign-in/social` and navigating only on click to an absolute `https:`
       URL, and the generic `?error=sso` message. Verify: `sign-in-sso.test.tsx` covers
       the request body, navigation to an `https:` URL, a non-`https:` or relative URL

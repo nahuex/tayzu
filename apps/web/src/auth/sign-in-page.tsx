@@ -9,6 +9,11 @@
  * and anything else is "the email or password is incorrect". The password is emptied
  * after every request. Nothing is sent without the user's submit.
  *
+ * "Sign in with Visma Connect" posts `/api/auth/sign-in/social` only on the user's click
+ * and leaves the app only when the returned URL is an absolute `https:` URL (Q72). A
+ * refused URL, any failed answer and the `?error=sso` return show one generic message;
+ * neither the URL nor the server's text is ever shown.
+ *
  * On success the cached session is removed, so the session gate reads `GET /v1/me`
  * again (it reads with `staleTime: 'static'`, which an invalidation would not move),
  * and the page goes to the route's validated `returnTo`, query included.
@@ -29,6 +34,8 @@ import { Label } from '@/components/ui/label';
 import { useAuthClient } from '../api/auth-client-context.js';
 import type { AuthResult } from '../api/auth-client.js';
 import { SESSION_QUERY_KEY } from '../app/session-gate.js';
+import { isAbsoluteHttpsUrl } from '../lib/external-url.js';
+import { navigateToExternal } from '../lib/navigate-away.js';
 import { safeReturnPath } from '../lib/return-path.js';
 
 /** Only emptiness is checked here; the server decides everything else (Q71). */
@@ -44,6 +51,7 @@ type CodeStep = 'totp' | 'backup';
 type Notice =
   | { readonly kind: 'failed' }
   | { readonly kind: 'invalidCode' }
+  | { readonly kind: 'ssoFailed' }
   | { readonly kind: 'rateLimited'; readonly retryAfterSeconds?: number };
 
 /** A failed answer's notice: a rate limit is told apart, anything else is `fallback`. */
@@ -54,15 +62,23 @@ function noticeOf(result: AuthResult<unknown>, fallback: Notice): Notice | undef
 }
 
 /**
- * The route's `returnTo`. The search is read as `unknown` (the hook is typed `any` inside
- * the tree the router type comes from) and checked again, failing closed on `/`.
+ * One own field of the route's search. The search is read as `unknown` (the hook is typed
+ * `any` inside the tree the router type comes from), so each field is checked again.
  */
+function searchField(search: unknown, key: string): unknown {
+  return typeof search === 'object' && search !== null && Object.hasOwn(search, key)
+    ? (search as Record<string, unknown>)[key]
+    : undefined;
+}
+
+/** The route's `returnTo`, failing closed on `/`. */
 function returnToOf(search: unknown): string {
-  const returnTo =
-    typeof search === 'object' && search !== null && Object.hasOwn(search, 'returnTo')
-      ? (search as { returnTo: unknown }).returnTo
-      : undefined;
-  return safeReturnPath(returnTo);
+  return safeReturnPath(searchField(search, 'returnTo'));
+}
+
+/** True on the Visma Connect error return (`?error=sso`), as the route parsed it. */
+function isSsoErrorReturn(search: unknown): boolean {
+  return searchField(search, 'error') === 'sso';
 }
 
 /** A labelled input with its error tied to it (`aria-invalid`, `aria-describedby`). */
@@ -206,6 +222,33 @@ function CodeForm({
   );
 }
 
+/**
+ * The Visma Connect button. It is not the credentials form's submit: a click posts the
+ * social sign-in and follows the answer only when it is an absolute `https:` URL.
+ */
+function VismaConnectButton({ onFailed }: { onFailed: () => void }): React.JSX.Element {
+  const { t } = useTranslation('auth');
+  const authClient = useAuthClient();
+
+  async function signIn(): Promise<void> {
+    const result = await authClient.signInWithVismaConnect();
+    if (result.ok && isAbsoluteHttpsUrl(result.value.url)) navigateToExternal(result.value.url);
+    else onFailed();
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      onClick={() => {
+        void signIn();
+      }}
+    >
+      {t('signIn.vismaConnect')}
+    </Button>
+  );
+}
+
 function SignInContent(): React.JSX.Element {
   const { t } = useTranslation('auth');
   const search: unknown = useSearch({ from: '/sign-in' });
@@ -213,7 +256,9 @@ function SignInContent(): React.JSX.Element {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [step, setStep] = useState<'credentials' | CodeStep>('credentials');
-  const [notice, setNotice] = useState<Notice>();
+  const [notice, setNotice] = useState<Notice | undefined>(() =>
+    isSsoErrorReturn(search) ? { kind: 'ssoFailed' } : undefined,
+  );
   // Remounts the alert on every answer, so a repeated message is announced again.
   const [answers, setAnswers] = useState(0);
 
@@ -232,16 +277,23 @@ function SignInContent(): React.JSX.Element {
       <h1 className="text-2xl font-semibold">{t('signIn.title')}</h1>
       {notice !== undefined && <NoticeAlert key={answers} notice={notice} />}
       {step === 'credentials' ? (
-        <CredentialsForm
-          onResult={(result) => {
-            if (!result.ok) show(noticeOf(result, { kind: 'failed' }));
-            else if (!result.value.twoFactorRequired) signedIn();
-            else {
-              show(undefined);
-              setStep('totp');
-            }
-          }}
-        />
+        <>
+          <CredentialsForm
+            onResult={(result) => {
+              if (!result.ok) show(noticeOf(result, { kind: 'failed' }));
+              else if (!result.value.twoFactorRequired) signedIn();
+              else {
+                show(undefined);
+                setStep('totp');
+              }
+            }}
+          />
+          <VismaConnectButton
+            onFailed={() => {
+              show({ kind: 'ssoFailed' });
+            }}
+          />
+        </>
       ) : (
         <CodeForm
           key={step}

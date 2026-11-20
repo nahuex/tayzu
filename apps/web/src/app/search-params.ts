@@ -11,6 +11,7 @@
  * (`undefined` when absent), so a raw value the schema refused never shows through the
  * router's merge of the location search with the validated one.
  */
+import type { SearchMiddleware } from '@tanstack/react-router';
 import { z } from 'zod';
 
 import { safeReturnPath } from '../lib/return-path.js';
@@ -128,10 +129,49 @@ export const searchPageSearchSchema = z
   .object({ q: boundedText(MAX_QUERY_LENGTH) })
   .transform(({ q }) => ({ q }));
 
-/** `/sign-in`: where to go after signing in, always through `safeReturnPath`. */
+/**
+ * The `error` of the Visma Connect return (Q72): `sso` when the raw value is exactly
+ * `sso`, or a list whose first value is `sso`, because Better Auth appends its own code
+ * to `errorCallbackURL`. Anything else is absent; the appended code is never kept.
+ */
+const ssoError = z
+  .unknown()
+  .transform((value): 'sso' | undefined => {
+    const first: unknown = Array.isArray(value) ? (value as unknown[])[0] : value;
+    return first === 'sso' ? 'sso' : undefined;
+  })
+  .optional();
+
+/**
+ * `/sign-in`: where to go after signing in, always through `safeReturnPath`, and whether
+ * the page is the Visma Connect error return.
+ */
 export const signInSearchSchema = z
-  .object({ returnTo: z.string().optional().catch(undefined) })
-  .transform(({ returnTo }) => ({ returnTo: safeReturnPath(returnTo) }));
+  .object({ returnTo: z.string().optional().catch(undefined), error: ssoError })
+  .transform(({ returnTo, error }) => ({ returnTo: safeReturnPath(returnTo), error }));
+
+/** The search middleware `next` with its metadata, as the router's own middlewares call it. */
+type NextWithMeta = (
+  search: SignInSearch,
+  collectMeta: true,
+) => { search: SignInSearch; meta: { explicit?: unknown } };
+
+/**
+ * Leaves the default `returnTo` of `/sign-in` out of its URL, unless the navigation gave
+ * it explicitly. The router writes the validated search back on load, so without this a
+ * plain `/sign-in` became `/sign-in?returnTo=%2F` (task 6.2); the session gate's redirect
+ * passes `returnTo: '/'` explicitly and keeps it (Q65).
+ */
+export const omitDefaultReturnTo: SearchMiddleware<SignInSearch> = ({ search, next }) => {
+  const { search: result, meta } = (next as unknown as NextWithMeta)(search, true);
+  const { explicit } = meta;
+  const explicitReturnTo =
+    typeof explicit === 'object' && explicit !== null && Object.hasOwn(explicit, 'returnTo');
+  if (result.returnTo !== '/' || explicitReturnTo) return result;
+  const withoutReturnTo: Partial<SignInSearch> = { ...result };
+  delete withoutReturnTo.returnTo;
+  return withoutReturnTo as SignInSearch;
+};
 
 export type TableSearch = z.output<typeof tableSearchSchema>;
 export type EntitySearch = z.output<typeof entitySearchSchema>;
