@@ -547,7 +547,7 @@ stack of `scripts/ci/e2e.sh`.
       cleared when the sort changes. Verify: `catalog-table.test.tsx` covers "Sort by
       title and page forward" against a fake API (the request sequence and the URL),
       "Previous" returning to the first page, the page-size choice and `aria-sort`.
-- [ ] 7.4 Table states (design D13): loading, empty, a denied list shown as empty,
+- [x] 7.4 Table states (design D13): loading, empty, a denied list shown as empty,
       the not-found page for an unknown blueprint and an error message by kind.
       Verify: `catalog-table-states.test.tsx` covers each state and "Another tenant's
       blueprint is not found" (a `CATALOG_NOT_FOUND` answer).

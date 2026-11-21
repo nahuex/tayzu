@@ -15,6 +15,12 @@
  *
  * Only identifier, title and updated, the API's sort keys (D6), are sortable. A newly
  * chosen column sorts ascending; the sorted one toggles its order.
+ *
+ * States (D13, Q84): a busy status while either call is pending; the empty text for a
+ * page with no items, which is also how a denied list answers; the not-found page for a
+ * `not_found` answer of either call; otherwise one alert whose localized text depends on
+ * the error kind only, never on the server's message. A cursor the server refuses
+ * (`validation` on `/cursor`, D6) restarts from the first page, with no message.
  */
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useRouter, useSearch } from '@tanstack/react-router';
@@ -22,6 +28,7 @@ import { ArrowDownIcon, ArrowUpIcon, ArrowUpDownIcon } from 'lucide-react';
 import { Suspense, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -36,6 +43,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 
 import { useApiClient } from '../api/api-client-context.js';
 import type { ApiClient } from '../api/client.js';
+import { toApiError, type ApiError } from '../api/errors.js';
+import { NotFoundPage } from '../app/not-found-page.js';
 import { PAGE_SIZES, tableSearchSchema, type TableSearch } from '../app/search-params.js';
 import { currentLocale, localizedText, type Locale } from '../i18n/i18n.js';
 import { formatDate } from '../lib/format.js';
@@ -69,6 +78,48 @@ const SORTABLE: Readonly<Partial<Record<CatalogColumn['kind'], SortField>>> = {
 };
 
 const ARIA_SORT = { asc: 'ascending', desc: 'descending' } as const;
+
+type ErrorMessageKey = 'table.error.forbidden' | 'table.error.server' | 'table.error.rateLimited';
+
+/** The localized text of a failure, by kind only; every other kind is the generic one. */
+function errorMessageKey(error: ApiError): ErrorMessageKey {
+  switch (error.kind) {
+    case 'forbidden':
+      return 'table.error.forbidden';
+    case 'rate_limited':
+      return 'table.error.rateLimited';
+    default:
+      return 'table.error.server';
+  }
+}
+
+/** True when `entities.list` refused the cursor it was sent (D6). */
+function isCursorRefusal(error: ApiError | undefined): boolean {
+  return error?.kind === 'validation' && error.issues.some((issue) => issue.path === '/cursor');
+}
+
+/** A row spanning every column, for the loading status or the empty text. */
+function FullWidthRow(props: {
+  readonly columns: number;
+  readonly children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <TableRow>
+      <TableCell colSpan={props.columns} className="text-center text-muted-foreground">
+        {props.children}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function LoadingStatus(): React.JSX.Element {
+  const { t } = useTranslation('catalog');
+  return (
+    <p role="status" aria-busy="true">
+      {t('table.loading')}
+    </p>
+  );
+}
 
 /** The blueprint and paging inputs that, when they change, start over on page 1. */
 function pagingKey(blueprint: string, search: TableSearch): string {
@@ -230,11 +281,47 @@ function CatalogTableContent(): React.JSX.Element | null {
       }),
   });
 
+  const blueprintError =
+    blueprintQuery.error === null ? undefined : toApiError(blueprintQuery.error);
+  const pageError = page.error === null ? undefined : toApiError(page.error);
+
+  // D6: a refused cursor forgets the visited ones, so this page renders again at once on
+  // the first page (state set while rendering, as React allows), and the effect above
+  // drops the cursor from the URL.
+  if (cursor !== undefined && isCursorRefusal(pageError)) {
+    setTrail({ key, cursors: [] });
+    return null;
+  }
+
+  const errors = [blueprintError, pageError].filter(
+    (error): error is ApiError => error !== undefined,
+  );
+  if (errors.some((error) => error.kind === 'not_found')) return <NotFoundPage />;
+  // The shell clears the session and lands on sign-in (Q69).
+  if (errors.some((error) => error.kind === 'unauthenticated')) return null;
+  const failure = errors[0];
+  if (failure !== undefined) {
+    return (
+      <div className="flex flex-col gap-4 p-4">
+        <Alert variant="destructive">
+          <AlertDescription>{t(errorMessageKey(failure))}</AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
   const definition = blueprintQuery.data;
-  if (definition === undefined) return null;
+  if (definition === undefined) {
+    return (
+      <div className="p-4">
+        <LoadingStatus />
+      </div>
+    );
+  }
 
   const title = localizedText(definition.title, locale);
   const columns = columnsFor(definition, locale, (text) => t(text));
+  const items = page.data?.items;
   const nextCursor = page.data?.cursor;
 
   const onSort = (field: SortField): void => {
@@ -267,7 +354,15 @@ function CatalogTableContent(): React.JSX.Element | null {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {(page.data?.items ?? []).map((entity) => (
+          {items === undefined && (
+            <FullWidthRow columns={columns.length}>
+              <LoadingStatus />
+            </FullWidthRow>
+          )}
+          {items?.length === 0 && (
+            <FullWidthRow columns={columns.length}>{t('table.empty')}</FullWidthRow>
+          )}
+          {items?.map((entity) => (
             <TableRow key={entity.identifier}>
               {columns.map((column) => (
                 <TableCell key={column.id}>

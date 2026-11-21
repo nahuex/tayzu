@@ -1,5 +1,6 @@
 {
   "table": {
+    "loading": "Cargando entidades...",
     "empty": "Todavía no hay entidades.",
     "columns": {
       "identifier": "Identificador",
@@ -13,7 +14,12 @@
     "pageSize": {
       "label": "Filas por página"
     },
-    "notAddressable": "Esta entidad no se puede abrir por URL."
+    "notAddressable": "Esta entidad no se puede abrir por URL.",
+    "error": {
+      "forbidden": "No tienes permiso para ver este blueprint.",
+      "server": "No se pudieron cargar las entidades. Inténtalo de nuevo más tarde.",
+      "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo."
+    }
   },
   "cells": {
     "empty": "Sin valor",

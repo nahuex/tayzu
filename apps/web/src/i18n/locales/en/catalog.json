@@ -1,5 +1,6 @@
 {
   "table": {
+    "loading": "Loading entities...",
     "empty": "No entities yet.",
     "columns": {
       "identifier": "Identifier",
@@ -13,7 +14,12 @@
     "pageSize": {
       "label": "Rows per page"
     },
-    "notAddressable": "This entity cannot be opened by URL."
+    "notAddressable": "This entity cannot be opened by URL.",
+    "error": {
+      "forbidden": "You do not have permission to view this blueprint.",
+      "server": "The entities could not be loaded. Try again later.",
+      "rateLimited": "Too many requests. Wait a moment and try again."
+    }
   },
   "cells": {
     "empty": "No value",
