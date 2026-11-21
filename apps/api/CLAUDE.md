@@ -25,6 +25,36 @@ orchestration described below. When code and design disagree, stop and ask.
   (`mfa-reset.ts`, behind `identity.users.resetMfa`) and the auth repository
   module (`auth-repository.ts`), the only place that writes `auth.*` SQL for
   the reset. Both public routes sit behind `MOUNT_IDENTITY_ROUTES`.
+- Change `003` (design D8 to D11) adds the web app's server side:
+  - `src/web-static.ts` serves the Vite build of `apps/web` when
+    `WEB_DIST_DIR` is set: the hashed files under `/assets/` through
+    `@fastify/static` (`wildcard: false`, one route per file read once at
+    startup, `dotfiles: 'deny'`, `immutable`), and the explicit root build
+    files `/theme-init.js` and `/favicon.svg`, read into memory once
+    (`no-cache`). Nothing else in the build root is ever served.
+  - `src/spa-fallback.ts` is the SPA fallback, one `GET /*` route that answers
+    the in-memory `index.html` (`no-store`, the response's style nonce in place
+    of `__TAYZU_STYLE_NONCE__`) for an app path, and `callNotFound()` for any
+    other path. It never reads the session, and it has its own rate-limit
+    bucket of 300 per minute per address.
+  - `src/spa-paths.ts` exports `isSpaPath(pathname)`, the one predicate for
+    "an app path": not `/v1`, `/api` or `/assets` (whole segments), not
+    `/healthz` and not a root build file, case-sensitive, with no
+    file-extension rule. The fallback and the `/{spa}` span template of
+    `src/telemetry.ts` both use it; never write a second one.
+  - `src/style-nonce.ts` draws the 128-bit style nonce per response.
+  - `GET /v1/me` (in `server.ts`) answers the shell's view of its own session
+    through `createSessionStateResolver` of `@tayzu/auth`. It is a plain
+    Fastify route registered before the `/v1/*` catch-all, reads the session
+    cookie only (never the path, query, body or a bearer token), answers every
+    rejection with the catch-all's uniform `401`, and uses the per-principal
+    bucket.
+  - With `WEB_DIST_DIR` set, the Visma Connect re-authorization callback
+    answers `303` to the constant `/step-up/complete` paths instead of JSON.
+  - `WEB_DIST_DIR` is optional and validated by `loadConfig` (an absolute path
+    to a readable directory containing `index.html`); unset, none of the web
+    routes exists. Every web route is a reviewed entry of
+    `PUBLIC_ROUTE_ALLOWLIST` in `src/public-routes.ts`.
 - `scripts/` holds the `tsx` scripts (`bootstrap-admin.ts`,
   `backfill-user-blueprint.ts`, `reconcile-users.ts`, the break-glass `recover-admin-mfa.ts`, the identity contract
   generate and check scripts). Vitest includes only `src/**`, so a script has
@@ -64,9 +94,17 @@ orchestration described below. When code and design disagree, stop and ask.
   `${tenantId}:${actorType}:${actorId}` for authenticated traffic, and
   separately by IP alone for `POST /v1/auth/token` (D20). Neither key
   component is ever logged or exported as a telemetry attribute.
-- `@fastify/helmet` with the strict self-only CSP of `003` D10 on every response (registered before the Q74 hook, which stays the first hook that reads the request) and `X-Frame-Options: DENY`; `CORSPlugin` with an
-  explicit origin allowlist and `credentials: true`;
-  `SimpleCsrfProtectionHandlerPlugin` on every mutating route.
+- `@fastify/helmet` sets the strict self-only CSP of `003` D10 (ADR-0026) on
+  every response, HTML, JSON, assets and `404`s alike, with
+  `useDefaults: false` and a `style-src` nonce read from `style-nonce.ts`,
+  plus `X-Frame-Options: DENY`, COEP `require-corp` and HSTS; a hook beside it
+  sets `Permissions-Policy`. Helmet and that hook are registered just before
+  the Q74 hook, which stays the first hook that reads the request, so its
+  `404`s carry the headers too. `CORSPlugin` with an explicit origin allowlist
+  and `credentials: true`; `SimpleCsrfProtectionHandlerPlugin` on every
+  mutating route.
+- `@fastify/rate-limit` runs with `global: false`: a route opts in to its own
+  bucket through `config.rateLimit`.
 
 ## Tests
 

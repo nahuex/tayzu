@@ -36,6 +36,9 @@ export function definePackageConfig(name: string): UserWorkspaceConfig {
             environment: 'node',
             include: [UNIT_TEST_GLOB],
             exclude: [...configDefaults.exclude, INTEGRATION_TEST_GLOB],
+            // Under Turborepo's parallel runs a cold dynamic import of a package
+            // entry can pass 5 s (the default). A timeout is not an assertion.
+            testTimeout: 15_000,
           },
         },
         {
@@ -83,6 +86,11 @@ export function defineWebPackageConfig(
             environment: 'jsdom',
             include: [WEB_TEST_GLOB],
             setupFiles: ['src/__fixtures__/setup-tests.ts'],
+            // jsdom flows through the real router, query client and Radix
+            // components take several seconds on a loaded CI runner, so 5 s
+            // (the default) is too tight. A timeout is not an assertion: a
+            // wrong answer still fails, and the paging tests wait on results.
+            testTimeout: 20_000,
           },
         },
       ],

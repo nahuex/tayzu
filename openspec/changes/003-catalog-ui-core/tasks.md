@@ -676,26 +676,26 @@ stack of `scripts/ci/e2e.sh`.
       including the style nonce and its removal condition, `form-action` and the dev
       policy. Verify: the file exists with the four sections, design D10 links to it,
       and `pnpm lint` passes.
-- [ ] 11.5 Update `docs/security/attack-surfaces.md`: rows for the HTML pages and
+- [x] 11.5 Update `docs/security/attack-surfaces.md`: rows for the HTML pages and
       assets, `GET /v1/me`, `GET /v1/search/entities` and the callback redirect, each
       with its actor, authentication and authorization; the helmet row (CSP on, the
       headers of D10); the planned "Web UI (003)" row made current; the `043` and `044`
       "inert link" notes updated. Verify: `pnpm lint` passes and each surface has a row.
-- [ ] 11.6 Update `docs/architecture/system-diagram.md`: the browser SPA served by the
+- [x] 11.6 Update `docs/architecture/system-diagram.md`: the browser SPA served by the
       API container, its HTTPS calls to `/v1` and `/api/auth` on the same origin, the
       asset and page routes, and the Visma Connect sign-in and step-up redirects, in the
       full diagram and in each zone diagram it touches, with each image rendered again.
       Verify: every Mermaid block renders with `npx -y @mermaid-js/mermaid-cli`, and
       `apps/api/src/system-diagram.test.ts` (extended for the new nodes and arrows, each
       with its protocol) passes.
-- [ ] 11.7 Update `docs/catalog/auth-and-rbac.md` (`GET /v1/me` and
+- [x] 11.7 Update `docs/catalog/auth-and-rbac.md` (`GET /v1/me` and
       `resolveSessionState`, the step-up UX by sign-in method, the callback redirect, the
       two step-up events, the page rules met), `docs/security/crypto-inventory.md` (the
       style nonce: source, size, lifetime) and `docs/security/secrets.md` (a Setting row
       for `WEB_DIST_DIR`: a path, not a secret, optional, validated at startup). Verify:
       `pnpm lint` passes, and the route, the redirect, the two events, the nonce and the
       setting are listed.
-- [ ] 11.8 Write `docs/catalog/catalog-ui.md` (pages and routes, i18n and how to add a
+- [x] 11.8 Write `docs/catalog/catalog-ui.md` (pages and routes, i18n and how to add a
       key, theme, the CSP and how to keep a component within it, the browser storage
       inventory of D15, the bundle budget, the identifier rules of Q36, how to run the
       app, the dev server and the e2e suite with its TLS proxy) and update
