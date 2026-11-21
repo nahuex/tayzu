@@ -48,6 +48,18 @@ advisory_step() {
   echo "WARNING (non-blocking): $desc reported findings"
 }
 
+# The e2e suite needs Docker (e2e.sh exits 77 without it) and the Playwright
+# Chromium (preinstalled at /opt/pw-browsers in the sandbox, or installed by
+# `pnpm --filter @tayzu/web exec playwright install chromium`).
+e2e_suite() {
+  local browsers="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+  if ! compgen -G "$browsers/chromium*" >/dev/null; then
+    echo "SKIP: no Playwright chromium under $browsers"
+    return "$SKIP_EXIT_CODE"
+  fi
+  bash "$SCRIPT_DIR/e2e.sh" all
+}
+
 step "lint" pnpm lint
 step "format:check" pnpm format:check
 step "typecheck" pnpm typecheck
@@ -63,6 +75,7 @@ advisory_step "pnpm audit --audit-level=critical" pnpm audit --audit-level=criti
 step "gitleaks" bash "$SCRIPT_DIR/gitleaks.sh"
 step "semgrep" bash "$SCRIPT_DIR/semgrep.sh"
 step "dast (OWASP ZAP baseline)" bash "$SCRIPT_DIR/dast.sh" all
+step "e2e (Playwright, Chromium)" e2e_suite
 
 step "syft (SBOM)" bash "$SCRIPT_DIR/syft.sh"
 

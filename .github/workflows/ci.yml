@@ -266,3 +266,50 @@ jobs:
       - name: Stop the DAST stack
         if: always()
         run: bash scripts/ci/dast.sh down
+
+  e2e:
+    name: E2E (Playwright, Chromium)
+    runs-on: ubuntu-latest
+    env:
+      CERBOS_ADDRESS: localhost:3593
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Start Cerbos
+        # Same pinned image as the test job (design D7).
+        run: |
+          docker run -d --name tayzu-cerbos \
+            -p 3592:3592 -p 3593:3593 \
+            -e CERBOS_NO_TELEMETRY=1 \
+            -v "$GITHUB_WORKSPACE/policies:/policies:ro" \
+            -v "$GITHUB_WORKSPACE/config/cerbos.yaml:/config/.cerbos.yaml:ro" \
+            ghcr.io/cerbos/cerbos@sha256:4b9d3b58c4f11c1b8953bc798d8d086e64f276882253ab169625fddc7f432515 \
+            server --config=/config/.cerbos.yaml
+      - name: Wait for Cerbos
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3592/_cerbos/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Cerbos did not become healthy in time" >&2
+          exit 1
+      - name: Install Chromium
+        # The pinned @playwright/test of @tayzu/web (1.63.0, design D3) installs
+        # its own Chromium revision with the system dependencies it needs.
+        run: pnpm --filter @tayzu/web exec playwright install --with-deps chromium
+      - name: Run the e2e suite
+        # scripts/ci/e2e.sh all: PostgreSQL 18 behind verified TLS in its own
+        # pinned container (no service: a service could not get the run's
+        # throwaway certificate, Q95), the OIDC stub, apps/api in production
+        # mode, the TLS proxy and the seed, then Playwright.
+        run: pnpm e2e
+      - name: Upload the Playwright report
+        # Only the report folder, never the state directory (seed.json, tls/).
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: ${{ runner.temp }}/tayzu-e2e/playwright/
+          retention-days: 3

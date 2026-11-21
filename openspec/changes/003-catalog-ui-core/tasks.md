@@ -649,7 +649,7 @@ stack of `scripts/ci/e2e.sh`.
 - [x] 10.10 Tenant isolation through the UI. Verify: `apps/web/e2e/isolation.spec.ts`
       covers "Another tenant's blueprint is not found", a cross-tenant entity URL showing
       the not-found page, and "Search never shows another tenant's entity".
-- [ ] 10.11 _(setup)_ The CI job (design D2): `.github/workflows/ci.yml` gains `e2e`
+- [x] 10.11 _(setup)_ The CI job (design D2): `.github/workflows/ci.yml` gains `e2e`
       (checkout with `persist-credentials: false`, PostgreSQL 18 service, the pinned
       Cerbos image, `pnpm exec playwright install --with-deps chromium` from the pinned
       package, `pnpm e2e`, the report uploaded only on failure with `retention-days: 3`,
