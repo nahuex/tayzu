@@ -428,7 +428,7 @@ async function seedCatalogA(
     return created;
   };
 
-  const payments = await add({
+  await add({
     blueprint: 'team',
     identifier: 'team-payments',
     title: 'Payments team',
@@ -440,7 +440,7 @@ async function seedCatalogA(
     title: 'Platform team',
     spec: { properties: { channel: 'platform' } },
   });
-  await add({
+  const ledger = await add({
     blueprint: 'service',
     identifier: 'svc-ledger',
     title: 'Ledger',
@@ -453,6 +453,17 @@ async function seedCatalogA(
     spec: {
       properties: { language: 'typescript' },
       relations: { owner: 'team-payments', dependsOn: ['svc-ledger'] },
+    },
+  });
+  // "Related entities in both directions" and "Search by identifier prefix": the only
+  // identifier of tenant A that starts with `paym`.
+  const paymentsApi = await add({
+    blueprint: 'service',
+    identifier: 'payments-api',
+    title: 'Payments API',
+    spec: {
+      properties: { language: 'go' },
+      relations: { owner: 'team-platform', dependsOn: ['svc-ledger'] },
     },
   });
   await add({
@@ -496,17 +507,20 @@ async function seedCatalogA(
     entities,
     paging: { blueprint: component.identifier, entityCount: PAGING_ENTITY_COUNT },
     relation: {
-      from: checkout.entity,
-      to: payments.entity,
-      relation: 'owner',
-      relationTitle: 'Owner',
+      from: paymentsApi.entity,
+      to: ledger.entity,
+      relation: 'dependsOn',
+      relationTitle: 'Depends on',
     },
+    prefixSearch: { entity: paymentsApi.entity, query: 'paym' },
     status: {
       entity: checkout.entity,
       property: 'health',
       propertyTitle: 'Health',
       value: 'degraded',
       source: STATUS_SOURCE,
+      observedGeneration: checkout.generation,
+      specProperty: { title: 'Language', value: 'typescript' },
     },
   };
 }
@@ -528,6 +542,13 @@ async function seedCatalogB(client: SeedClient, jar: CookieJar): Promise<SeedTen
     title: 'Tenant B only service',
     spec: { properties: { language: 'go' } },
   });
+  // Tenant A has a `service` blueprint too, and nothing of A matches `secret`.
+  const secret = await createEntity(client, jar, {
+    blueprint: 'service',
+    identifier: 'secret-svc',
+    title: 'Secret service',
+    spec: { properties: { language: 'go' } },
+  });
   const own = await createEntity(client, jar, {
     blueprint: 'vault',
     identifier: 'vault-main',
@@ -536,9 +557,10 @@ async function seedCatalogB(client: SeedClient, jar: CookieJar): Promise<SeedTen
   });
   return {
     blueprints: [service, vault],
-    entities: [shared.entity, own.entity],
+    entities: [shared.entity, secret.entity, own.entity],
     ownBlueprint: vault,
     sharedIdentifierEntity: shared.entity,
+    searchOnly: { entity: secret.entity, query: 'secret' },
   };
 }
 

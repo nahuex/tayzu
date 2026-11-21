@@ -113,13 +113,23 @@ export interface SeedTenantA {
   readonly catalog: SeedTenantCatalog & {
     /** The blueprint with at least 120 entities (task 10.7, "Sort by title and page forward"). */
     readonly paging: { readonly blueprint: string; readonly entityCount: number };
-    /** `from` points at `to` through `relation` (task 10.7, "Related entities in both directions"). */
+    /**
+     * `from` points at `to` through `relation` (task 10.7, "Related entities in both
+     * directions": `payments-api` depends on `svc-ledger`). `to` is the target of no
+     * other relation of `from`, and `from` points at nothing else in `to`'s blueprint.
+     */
     readonly relation: {
       readonly from: SeedEntity;
       readonly to: SeedEntity;
       readonly relation: string;
       readonly relationTitle: string;
     };
+    /**
+     * `entity`'s identifier starts with `query`, and no other identifier of tenant A
+     * does, so the server ranks it the first entity result (task 10.7, "Search by
+     * identifier prefix from the keyboard").
+     */
+    readonly prefixSearch: { readonly entity: SeedEntity; readonly query: string };
     /**
      * An entity the Visma Connect user created (through a local session of the same
      * user), so that member may delete it (`catalog_entity.yaml`: a member deletes what
@@ -140,6 +150,10 @@ export interface SeedTenantA {
       readonly propertyTitle: string;
       readonly value: string;
       readonly source: string;
+      /** The generation the status was written for: the entity's generation at the time. */
+      readonly observedGeneration: number;
+      /** A spec property of the same entity, shown next to the status (Q86). */
+      readonly specProperty: { readonly title: string; readonly value: string };
     };
   };
 }
@@ -154,6 +168,12 @@ export interface SeedTenantB {
     readonly ownBlueprint: SeedBlueprint;
     /** An entity of B in a blueprint identifier tenant A also has (task 10.10). */
     readonly sharedIdentifierEntity: SeedEntity;
+    /**
+     * An entity of B whose identifier and title start with `query`, while nothing of
+     * tenant A matches `query` by prefix or by title similarity (task 10.10, "Search
+     * never shows another tenant's entity").
+     */
+    readonly searchOnly: { readonly entity: SeedEntity; readonly query: string };
   };
 }
 

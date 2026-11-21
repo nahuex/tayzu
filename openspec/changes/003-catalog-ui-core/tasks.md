@@ -634,7 +634,7 @@ stack of `scripts/ci/e2e.sh`.
       an MFA-enrolled user asks for the factor" from the seeded link, the forgot-password
       message, every request of both pages same-origin with no `Referer` header, and
       `location.hash` empty before the first request.
-- [ ] 10.7 The catalog end to end. Verify: `apps/web/e2e/catalog.spec.ts` covers "Sort
+- [x] 10.7 The catalog end to end. Verify: `apps/web/e2e/catalog.spec.ts` covers "Sort
       by title and page forward" on 120 seeded entities, "Related entities in both
       directions", "Status shown next to spec" and "Search by identifier prefix from the
       keyboard".
@@ -646,7 +646,7 @@ stack of `scripts/ci/e2e.sh`.
       `@axe-core/playwright` with the WCAG 2.2 A and AA tags on every route, in both
       themes and with each dialog open, covering "No accessibility violation on any
       page", and walks the main flows with the keyboard only.
-- [ ] 10.10 Tenant isolation through the UI. Verify: `apps/web/e2e/isolation.spec.ts`
+- [x] 10.10 Tenant isolation through the UI. Verify: `apps/web/e2e/isolation.spec.ts`
       covers "Another tenant's blueprint is not found", a cross-tenant entity URL showing
       the not-found page, and "Search never shows another tenant's entity".
 - [ ] 10.11 _(setup)_ The CI job (design D2): `.github/workflows/ci.yml` gains `e2e`
