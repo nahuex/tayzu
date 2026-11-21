@@ -9,10 +9,15 @@
  * guard, which validates `auth_time`, `acr`, `amr` and `sid` server-side (D25).
  * The callback never needs the cookie: the single-use, unguessable `state` is
  * the binding. Nothing from the provider or the token reaches logs or errors.
+ *
+ * 003 design D11 (Q27 B2, Q29): a completed callback emits
+ * `auth.security.step_up_succeeded` (`visma_connect`) for the bound session's
+ * tenant and actor; a failed one emits `auth.security.reauthorization_failed`
+ * with only its reason.
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
-import type { AuthInstance } from '@tayzu/auth';
+import { emitReauthorizationFailed, emitStepUpSucceeded, type AuthInstance } from '@tayzu/auth';
 import type { createPool } from '@tayzu/db';
 
 type Pool = ReturnType<typeof createPool>;
@@ -47,6 +52,17 @@ interface SessionSurface {
   } | null>;
 }
 
+/** What `start` binds to a state: the session's token and the PKCE verifier. */
+interface StateBinding {
+  readonly token: string;
+  readonly verifier: string;
+}
+
+interface BoundSession {
+  readonly userId: string;
+  readonly activeOrganizationId: string | null;
+}
+
 interface Discovery {
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
@@ -59,6 +75,23 @@ export interface Reauthorization {
   lookup(headers: Headers): Promise<{ readonly idToken: string } | null>;
   /** Handles the callback; resolves `true` when an ID token was stored for the bound session. */
   complete(params: { readonly code?: unknown; readonly state?: unknown }): Promise<boolean>;
+}
+
+/** The stored value of a consumed state row; `null` when absent or not the shape `start` wrote. */
+function parseBinding(raw: string | undefined): StateBinding | null {
+  if (raw === undefined) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) {
+      return null;
+    }
+    const { token, verifier } = parsed as Record<string, unknown>;
+    return typeof token === 'string' && typeof verifier === 'string' ? { token, verifier } : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchDiscovery(url: string): Promise<Discovery | null> {
@@ -90,6 +123,43 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
        values ($1, $2, $3, now() + make_interval(secs => $4))`,
       [randomUUID(), identifier, value, ttlSeconds],
     );
+  }
+
+  /** The `auth.session` row a state is bound to, or `null` when that session no longer exists. */
+  async function boundSession(token: string): Promise<BoundSession | null> {
+    const found = await options.authPool.query<BoundSession>(
+      `select user_id as "userId", active_organization_id as "activeOrganizationId"
+       from auth.session where token = $1`,
+      [token],
+    );
+    return found.rows[0] ?? null;
+  }
+
+  /** Exchanges the callback's code for an ID token; `null` when the provider returns none. */
+  async function exchangeCode(code: string, verifier: string): Promise<string | null> {
+    const discovery = await fetchDiscovery(options.discoveryUrl);
+    if (discovery === null) {
+      return null;
+    }
+    const response = await fetch(discovery.tokenEndpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: options.redirectUri,
+        client_id: options.clientId,
+        client_secret: options.clientSecret,
+        code_verifier: verifier,
+      }),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as Record<string, unknown>;
+    const idToken = body['id_token'];
+    return typeof idToken === 'string' ? idToken : null;
   }
 
   return {
@@ -159,6 +229,7 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
 
     async complete(params) {
       if (typeof params.code !== 'string' || typeof params.state !== 'string') {
+        emitReauthorizationFailed('invalid_state');
         return false;
       }
       // Single use: the state row is consumed by the first callback that presents it.
@@ -168,46 +239,34 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
          returning value`,
         [`${STATE_PREFIX}${params.state}`],
       );
-      const raw = consumed.rows[0]?.value;
-      if (raw === undefined) {
+      const binding = parseBinding(consumed.rows[0]?.value);
+      const session = binding === null ? null : await boundSession(binding.token);
+      if (binding === null || session === null) {
+        emitReauthorizationFailed('invalid_state');
         return false;
       }
       try {
-        const { token, verifier } = JSON.parse(raw) as { token: string; verifier: string };
-        const discovery = await fetchDiscovery(options.discoveryUrl);
-        if (discovery === null) {
-          return false;
-        }
-        const response = await fetch(discovery.tokenEndpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            grant_type: 'authorization_code',
-            code: params.code,
-            redirect_uri: options.redirectUri,
-            client_id: options.clientId,
-            client_secret: options.clientSecret,
-            code_verifier: verifier,
-          }),
-          signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-        });
-        if (!response.ok) {
-          return false;
-        }
-        const body = (await response.json()) as Record<string, unknown>;
-        const idToken = body['id_token'];
-        if (typeof idToken !== 'string') {
+        const idToken = await exchangeCode(params.code, binding.verifier);
+        if (idToken === null) {
+          emitReauthorizationFailed('exchange_failed');
           return false;
         }
         // The guard verifies signature and claims (D25); this only records the result.
         await options.authPool.query('delete from auth.verification where identifier = $1', [
-          `${RESULT_PREFIX}${token}`,
+          `${RESULT_PREFIX}${binding.token}`,
         ]);
-        await store(`${RESULT_PREFIX}${token}`, idToken, RESULT_TTL_SECONDS);
-        return true;
+        await store(`${RESULT_PREFIX}${binding.token}`, idToken, RESULT_TTL_SECONDS);
       } catch {
+        emitReauthorizationFailed('exchange_failed');
         return false;
       }
+      // design D11 (Q27 B2): the tenant and actor of the session the state is bound to.
+      emitStepUpSucceeded({
+        actorId: session.userId,
+        tenantId: session.activeOrganizationId ?? undefined,
+        method: 'visma_connect',
+      });
+      return true;
     },
   };
 }

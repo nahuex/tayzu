@@ -107,6 +107,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       credentialCap: config.credentialCap,
       serviceAccountCap: config.serviceAccountCap,
       orgDeletionWindowDays: config.orgDeletionWindowDays,
+      ...(config.webDistDir === undefined ? {} : { webDistDir: config.webDistDir }),
       email: {
         sender: emailSender,
         ...(config.invitationLinkBaseUrl === undefined

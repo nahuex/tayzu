@@ -5,7 +5,9 @@
 # time; if a tool truly cannot run here (no network, unsupported platform),
 # its step prints an explicit SKIP and is not counted as a failure. The DAST
 # step (scripts/ci/dast.sh) needs Docker and skips the same way without it.
-# Every other step failure is fatal, Syft included, as in CI.
+# Every other step failure is fatal, Syft included, as in CI, except the
+# steps run with advisory_step, which CI marks continue-on-error: their
+# failure prints a WARNING and does not fail the run.
 
 set -uo pipefail
 
@@ -33,17 +35,47 @@ step() {
   fi
 }
 
+# A non-blocking step (continue-on-error in CI): a failure is reported as a
+# WARNING and never sets FAILED.
+advisory_step() {
+  local desc="$1"
+  shift
+  echo
+  echo "== $desc (non-blocking) =="
+  if "$@"; then
+    return 0
+  fi
+  echo "WARNING (non-blocking): $desc reported findings"
+}
+
+# The e2e suite needs Docker (e2e.sh exits 77 without it) and the Playwright
+# Chromium (preinstalled at /opt/pw-browsers in the sandbox, or installed by
+# `pnpm --filter @tayzu/web exec playwright install chromium`).
+e2e_suite() {
+  local browsers="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+  if ! compgen -G "$browsers/chromium*" >/dev/null; then
+    echo "SKIP: no Playwright chromium under $browsers"
+    return "$SKIP_EXIT_CODE"
+  fi
+  bash "$SCRIPT_DIR/e2e.sh" all
+}
+
 step "lint" pnpm lint
 step "format:check" pnpm format:check
 step "typecheck" pnpm typecheck
+step "web build" pnpm --filter @tayzu/web build
+step "web bundle check" pnpm --filter @tayzu/web check:bundle
+step "gitleaks (web dist)" bash "$SCRIPT_DIR/gitleaks.sh" dir apps/web/dist
 step "policy:compile" pnpm policy:compile
 step "test" pnpm test
 step "contract:check" pnpm contract:check
 step "otel-smoke-check" pnpm otel-smoke-check
 step "pnpm audit --prod --audit-level=high" pnpm audit --prod --audit-level=high
+advisory_step "pnpm audit --audit-level=critical" pnpm audit --audit-level=critical
 step "gitleaks" bash "$SCRIPT_DIR/gitleaks.sh"
 step "semgrep" bash "$SCRIPT_DIR/semgrep.sh"
 step "dast (OWASP ZAP baseline)" bash "$SCRIPT_DIR/dast.sh" all
+step "e2e (Playwright, Chromium)" e2e_suite
 
 step "syft (SBOM)" bash "$SCRIPT_DIR/syft.sh"
 

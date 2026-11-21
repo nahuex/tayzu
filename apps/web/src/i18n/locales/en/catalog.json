@@ -1,0 +1,129 @@
+{
+  "home": {
+    "title": "Blueprints",
+    "loading": "Loading blueprints...",
+    "empty": "No blueprints yet.",
+    "error": {
+      "forbidden": "You do not have permission to view the blueprints.",
+      "server": "The blueprints could not be loaded. Try again later.",
+      "rateLimited": "Too many requests. Wait a moment and try again."
+    }
+  },
+  "table": {
+    "loading": "Loading entities...",
+    "empty": "No entities yet.",
+    "columns": {
+      "identifier": "Identifier",
+      "title": "Title",
+      "updatedAt": "Updated"
+    },
+    "pagination": {
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "pageSize": {
+      "label": "Rows per page"
+    },
+    "notAddressable": "This entity cannot be opened by URL.",
+    "error": {
+      "forbidden": "You do not have permission to view this blueprint.",
+      "server": "The entities could not be loaded. Try again later.",
+      "rateLimited": "Too many requests. Wait a moment and try again."
+    }
+  },
+  "cells": {
+    "empty": "No value",
+    "yes": "Yes",
+    "no": "No",
+    "more": "+{{count}}"
+  },
+  "entity": {
+    "loading": "Loading entity...",
+    "fields": {
+      "identifier": "Identifier",
+      "blueprint": "Blueprint",
+      "createdAt": "Created",
+      "createdBy": "Created by",
+      "updatedAt": "Updated",
+      "updatedBy": "Updated by",
+      "version": "Version",
+      "generation": "Generation"
+    },
+    "actorType": {
+      "user": "User",
+      "agent": "Agent",
+      "integration": "Integration",
+      "system": "System"
+    },
+    "tabs": {
+      "label": "Entity sections",
+      "details": "Details",
+      "related": "Related"
+    },
+    "details": {
+      "spec": {
+        "title": "Spec"
+      },
+      "status": {
+        "title": "Status",
+        "observedGeneration": "Observed generation",
+        "source": "Source",
+        "observedAt": "Observed",
+        "none": "No status has been reported for this entity."
+      }
+    },
+    "related": {
+      "caption": "Related entities",
+      "direction": {
+        "label": "Direction",
+        "forward": "Forward",
+        "backward": "Backward"
+      },
+      "scope": {
+        "label": "Scope",
+        "both": "Spec and status",
+        "spec": "Spec",
+        "status": "Status"
+      },
+      "columns": {
+        "relation": "Relation",
+        "identifier": "Identifier",
+        "title": "Title",
+        "blueprint": "Blueprint",
+        "scope": "Scope"
+      },
+      "empty": "No related entities.",
+      "loading": "Loading related entities...",
+      "pagination": {
+        "previous": "Previous",
+        "next": "Next"
+      },
+      "error": {
+        "forbidden": "You do not have permission to view the related entities.",
+        "server": "The related entities could not be loaded. Try again later.",
+        "rateLimited": "Too many requests. Wait a moment and try again."
+      }
+    },
+    "delete": {
+      "open": "Delete entity",
+      "title": "Delete this entity?",
+      "description": "The entity is deleted permanently. This cannot be undone.",
+      "detachReferences": "Remove the references other entities hold to it",
+      "confirm": "Delete",
+      "cancel": "Cancel",
+      "blocked": "Other entities still reference this entity.",
+      "referrers": "Referencing entities",
+      "notVisible": "+{{count}} not visible",
+      "error": {
+        "forbidden": "You do not have permission to delete this entity.",
+        "server": "The entity could not be deleted. Try again later."
+      }
+    },
+    "notAddressable": "This entity cannot be opened by URL.",
+    "error": {
+      "forbidden": "You do not have permission to view this entity.",
+      "server": "The entity could not be loaded. Try again later.",
+      "rateLimited": "Too many requests. Wait a moment and try again."
+    }
+  }
+}

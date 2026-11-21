@@ -236,6 +236,13 @@ const DESIGN_LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'INFO',
     attributes: [TENANT, ACTOR_ID, METHOD],
   },
+  // 003 task 3.11 (design "Observability contract" -> Log events, Q29): every
+  // `auth.security.*` event is mirrored here, as `@tayzu/auth`'s contract test requires.
+  {
+    name: 'auth.security.reauthorization_failed',
+    severity: 'WARN',
+    attributes: ['tayzu.auth.reauthorization.reason'],
+  },
 ];
 
 /**
@@ -319,7 +326,7 @@ describe('authz telemetry/contract.ts mirrors design.md, "Observability contract
   });
 
   describe('Log events', () => {
-    it('declares exactly the 15 log events design.md names, no more and no fewer', () => {
+    it('declares exactly the 16 log events the design names (002, plus 003 Q29), no more and no fewer', () => {
       expect(sorted(LOG_EVENTS.map((event) => event.name))).toEqual(
         sorted(DESIGN_LOG_EVENTS.map((event) => event.name)),
       );

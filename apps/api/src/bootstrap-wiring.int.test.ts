@@ -941,14 +941,23 @@ describe('production app wiring guard: remaining protections (task 11.19)', () =
     expect(response.json()).toEqual({ status: 'ok' });
   }, 60_000);
 
-  it('helmet is active on the production app: security headers and HSTS are sent, no CSP', async () => {
+  it('helmet is active on the production app: security headers, HSTS and the CSP are sent', async () => {
     const response = await app.app.inject({ method: 'GET', url: '/healthz' });
 
     expect(response.headers['x-content-type-options']).toBe('nosniff');
-    expect(response.headers['x-frame-options']).toBeDefined();
+    // 003 design D10 (task 4.4): one CSP on every response, with or without
+    // WEB_DIST_DIR, and X-Frame-Options DENY to match frame-ancestors 'none'.
+    // This replaces the 002-era "no CSP" assertion; it is not loosened.
+    expect(response.headers['x-frame-options']).toBe('DENY');
     expect(response.headers['referrer-policy']).toBe('no-referrer');
     expect(response.headers['strict-transport-security']).toMatch(/max-age=\d+/);
-    expect(response.headers['content-security-policy']).toBeUndefined();
+    const csp = response.headers['content-security-policy'];
+    expect(typeof csp).toBe('string');
+    const directives = String(csp)
+      .split(';')
+      .map((directive) => directive.trim());
+    expect(directives).toContain("default-src 'self'");
+    expect(directives).toContain("frame-ancestors 'none'");
     expect(response.headers['x-powered-by']).toBeUndefined();
   }, 60_000);
 

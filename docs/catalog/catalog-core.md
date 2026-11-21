@@ -122,8 +122,8 @@ verifies that every signal below is emitted with its attributes, that
 metrics carry no undeclared attribute, and that no tenant data reaches
 telemetry.
 
-Telemetry never contains property values, entity or blueprint titles and
-descriptions, validation messages, SQL text or bind values. Internal errors
+Telemetry never contains property values, the search query text, entity or
+blueprint titles and descriptions, validation messages, SQL text or bind values. Internal errors
 are recorded with their type, SQLSTATE and constraint name only.
 
 ### Spans
@@ -142,7 +142,8 @@ catalog error code, or to `internal` for unexpected errors.
 | `catalog.entity.create`                 | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`                                                                   | `tayzu.catalog.relation.target.count`         |
 | `catalog.entity.upsert`                 | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.upsert.mode`                                      | `tayzu.catalog.mutation`                      |
 | `catalog.entity.get`                    | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`                                                                   | —                                             |
-| `catalog.entity.list`                   | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.page.size`                                                                           | `tayzu.catalog.result.count`                  |
+| `catalog.entity.list`                   | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.page.size`, `tayzu.catalog.sort.field`, `tayzu.catalog.sort.order`                   | `tayzu.catalog.result.count`                  |
+| `catalog.entity.search`                 | operation | `tayzu.catalog.search.query_length`, `tayzu.catalog.page.size`                                                                            | `tayzu.catalog.result.count`                  |
 | `catalog.entity.delete`                 | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.detach_references`                                | `tayzu.catalog.detached.count`                |
 | `catalog.entity.status.write`           | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.status.source`                                    | `tayzu.catalog.relation.target.count`         |
 | `catalog.entity.related.list`           | operation | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.entity.identifier`, `tayzu.catalog.related.direction`, `tayzu.catalog.related.scope` | `tayzu.catalog.result.count`                  |
@@ -150,6 +151,16 @@ catalog error code, or to `internal` for unexpected errors.
 | `catalog.blueprint.compatibility_check` | child     | `tayzu.catalog.blueprint.identifier`, `tayzu.catalog.compatibility.entities_checked`                                                      | `tayzu.catalog.compatibility.violation.count` |
 | `catalog.entity.validate`               | child     | `tayzu.catalog.blueprint.identifier`                                                                                                      | `tayzu.catalog.validation.issue.count`        |
 | `catalog.relations.resolve`             | child     | `tayzu.catalog.relation.target.count`                                                                                                     | `tayzu.catalog.relation.missing.count`        |
+
+`catalog.entity.list` records its sort as `tayzu.catalog.sort.field`
+(`identifier`, `title` or `updated_at`) and `tayzu.catalog.sort.order` (`asc` or
+`desc`), the default sort included. `catalog.entity.search` records the query
+length after trimming and NFC normalization (an integer) as
+`tayzu.catalog.search.query_length`, the requested limit (or the default of 20)
+as `tayzu.catalog.page.size`, and the number of results as
+`tayzu.catalog.result.count`, which is 0 when the authorization plan denies
+everything. A rejected search records the first two too. The query text and the
+titles of the results never reach any signal.
 
 Database spans (`pg.*`) come from `@opentelemetry/instrumentation-pg`, with
 `enhancedDatabaseReporting: false`, so bind values are never recorded.
@@ -164,7 +175,9 @@ keep their paths and identifiers.
 ### Metrics
 
 Each metric carries only the attributes listed here. Entity identifiers and
-actor IDs are never metric attributes.
+actor IDs are never metric attributes. The value of `tayzu.catalog.operation` is
+the operation name without the `catalog.` prefix, such as `entity.list` or
+`entity.search`.
 
 | Metric                                  | Instrument | Unit          | Allowed attributes                                                                                      |
 | --------------------------------------- | ---------- | ------------- | ------------------------------------------------------------------------------------------------------- |

@@ -2553,7 +2553,9 @@ describe('The accept route honors the temporary-password marker (task 13.5c, VCD
   }, 60_000);
 
   // Task 16.11a (Resolved decisions Q36 and Q146): a session opened under the marker
-  // that has since expired reads as none on the existing-account acceptance.
+  // that has since expired reads as none on the existing-account acceptance. 003 Q55
+  // lets `/get-session` read such a session, but the flow's own marker check keeps
+  // rejecting it: the acceptance still treats it as none.
   it('A session opened under a marker that has since expired cannot accept: the uniform rejection, session_required, nothing created', async () => {
     const tenant = await freshTenant();
     const email = `carol-${randomUUID()}@example.test`;

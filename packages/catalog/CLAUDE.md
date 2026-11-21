@@ -23,8 +23,37 @@ imports from another layer.
 
 ## Operations
 
-- Every service operation is declared with
-  `defineCatalogOperation(name, handler)`. There is no second entry point.
+- Every service operation is declared with `defineCatalogOperation(options)`
+  in `service/pipeline.ts`. There is no second entry point. It takes one
+  options object (`DefineCatalogOperationOptions<Input, Output>`) and returns
+  `(rawContext, input) => Promise<Output>`:
+
+  ```ts
+  const search = defineCatalogOperation<SearchEntitiesInput, SearchEntitiesOutput>({
+    name: 'entity.search', // span `catalog.entity.search`
+    pool,
+    authz,
+    authorization: PLAN_AUTHORIZED, // or ({ ctx, input }) => ({ kind, action, resourceId, ... })
+    validateInput: (input) => parseSearchQuery(input, limits), // optional, pure
+    handler: async ({ ctx, client, input }) => ({ output: { items } }),
+  });
+  ```
+
+  - Required: `name`, `pool`, `authz`, `handler` and `authorization`, either a
+    function returning one `AuthorizationDeclaration` or `PLAN_AUTHORIZED` for
+    a list that folds a Cerbos plan into its query.
+  - Optional: `validateInput` (`003` D5, Q53: a pure check of the untrusted
+    input that throws a `CatalogError`; it runs inside the operation span,
+    after the context is parsed and before authorization and the tenant
+    transaction, so a rejected input opens no connection), `loadAttributes`
+    and `authorizationWhenMissing` (the entity attributes the check sends),
+    `additionalAuthorization` (a second check when the entity exists) and
+    `statementTimeoutMs`.
+  - The handler receives `{ ctx, client, input, authorizedAttributes }`, with
+    `app.tenant_id` already set on `client`, and returns `{ output, audit? }`.
+    `audit`, for a successful mutation, is emitted after commit and never
+    returned.
+
 - The `CatalogContext` (`tenantId`, `actor`, optional `actor.onBehalfOf`) is
   host-supplied and never part of a procedure's input schema.
   `contract:check` rejects any `tenantId` or `actor` field in the OpenAPI

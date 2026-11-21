@@ -30,10 +30,13 @@
  *
  * `./config.js` and `docs/security/secrets.md` do not exist.
  */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@tayzu/db', async (importActual) => {
   const actual = await importActual<typeof import('@tayzu/db')>();
@@ -1224,4 +1227,93 @@ describe('the org-deletion window (045 task 5.2, D1, Q21)', () => {
       expect(error.message).toContain('ORG_DELETION_WINDOW_DAYS');
     },
   );
+});
+
+/**
+ * Task 4.1 of `003-catalog-ui-core` (design D9 "Setting", Resolved decision Q21): the
+ * optional `WEB_DIST_DIR` is the absolute path of the Vite build. Unset, the API runs
+ * alone. Set, startup fails unless it is an absolute path to a readable directory
+ * containing `index.html`, and the error names the variable, never its value.
+ *
+ * Production symbol expected on `Config` (`apps/api/src/config.ts`), following the
+ * optional-field convention of `betterAuthUrl` and `sso` (absent, not `undefined`, when
+ * unset): `readonly webDistDir?: string`, read synchronously by `loadConfig`.
+ *
+ * Every rejected path carries the marker `web-dist-marker-q21`, so a message that echoes
+ * the value, or any part of it, is caught.
+ */
+describe('WEB_DIST_DIR (003 task 4.1, D9, Q21)', () => {
+  const MARKER = 'web-dist-marker-q21';
+  const read = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['webDistDir'];
+
+  let scratch: string;
+  let validBuild: string;
+  let buildWithoutIndex: string;
+  let buildWithIndexDirectory: string;
+  let plainFile: string;
+
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), `${MARKER}-`));
+    validBuild = join(scratch, `${MARKER}-valid`);
+    mkdirSync(validBuild);
+    writeFileSync(join(validBuild, 'index.html'), '<!doctype html><title>t</title>');
+    buildWithoutIndex = join(scratch, `${MARKER}-no-index`);
+    mkdirSync(buildWithoutIndex);
+    writeFileSync(join(buildWithoutIndex, 'theme-init.js'), '');
+    buildWithIndexDirectory = join(scratch, `${MARKER}-index-is-a-directory`);
+    mkdirSync(join(buildWithIndexDirectory, 'index.html'), { recursive: true });
+    plainFile = join(scratch, `${MARKER}-a-file`);
+    writeFileSync(plainFile, '<!doctype html>');
+  });
+
+  afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  /** The startup error names `WEB_DIST_DIR` and holds neither the value nor its marker. */
+  function expectRejected(value: string): void {
+    const error = thrown(() => loadConfig(env({ WEB_DIST_DIR: value })));
+    expect(error.message).toContain('WEB_DIST_DIR');
+    expect(error.message).not.toContain(value);
+    expect(error.message).not.toContain(MARKER);
+  }
+
+  it('unset: the config has no webDistDir', () => {
+    const config = loadConfig(env());
+    expect(Object.hasOwn(config, 'webDistDir')).toBe(false);
+    expect(read(config)).toBeUndefined();
+  });
+
+  it('an absolute path to a readable directory containing index.html is accepted as is', () => {
+    expect(read(loadConfig(env({ WEB_DIST_DIR: validBuild })))).toBe(validBuild);
+  });
+
+  it.each([`${MARKER}/dist`, `./${MARKER}/dist`, `../${MARKER}`])(
+    'a relative path (%j) fails startup naming the variable, not the value',
+    (value) => {
+      expectRejected(value);
+    },
+  );
+
+  it('an empty value is set and not absolute, so it fails startup naming the variable', () => {
+    const error = thrown(() => loadConfig(env({ WEB_DIST_DIR: '' })));
+    expect(error.message).toContain('WEB_DIST_DIR');
+  });
+
+  it('a directory that does not exist fails startup naming the variable, not the value', () => {
+    expectRejected(join(scratch, `${MARKER}-missing`, 'dist'));
+  });
+
+  it('a directory without index.html fails startup naming the variable, not the value', () => {
+    expectRejected(buildWithoutIndex);
+  });
+
+  it('a directory whose index.html is not a file fails startup naming the variable, not the value', () => {
+    expectRejected(buildWithIndexDirectory);
+  });
+
+  it('a path to a file instead of a directory fails startup naming the variable, not the value', () => {
+    expectRejected(plainFile);
+  });
 });

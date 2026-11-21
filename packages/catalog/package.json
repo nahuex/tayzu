@@ -5,7 +5,8 @@
   "description": "Tenant-scoped software catalog core: blueprints, entities, relations and properties.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./contract": "./src/api/contract-definition.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

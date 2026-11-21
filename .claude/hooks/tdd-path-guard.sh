@@ -11,9 +11,10 @@ path="$(python3 -c 'import json,sys; d=json.load(sys.stdin); t=d.get("tool_input
 is_test=0
 case "$path" in
   *.test.ts|*.test.tsx|*.int.test.ts|*/__fixtures__/*|*/test/fixtures/*) is_test=1 ;;
+  *apps/web/e2e/*.spec.ts|*apps/web/e2e/fixtures/*) is_test=1 ;;
 esac
 if [ "$mode" = "test" ] && [ "$is_test" -eq 0 ]; then
-  echo "tdd-path-guard: test-writer may only write test files (*.test.ts, *.int.test.ts, __fixtures__/). Blocked: $path" >&2
+  echo "tdd-path-guard: test-writer may only write test files (*.test.ts, *.int.test.ts, __fixtures__/, apps/web/e2e/*.spec.ts, apps/web/e2e/fixtures/). Blocked: $path" >&2
   exit 2
 fi
 if [ "$mode" = "policy" ]; then

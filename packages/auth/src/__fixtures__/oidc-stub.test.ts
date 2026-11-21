@@ -9,6 +9,7 @@ import {
   randomBytes,
   type JsonWebKey,
 } from 'node:crypto';
+import { createServer } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { startOidcStub } from './oidc-stub.js';
 
@@ -150,6 +151,138 @@ describe('OIDC stub fixture', () => {
       expect(html).toContain('name="state" value="s"');
     } finally {
       await stub.close();
+    }
+  });
+
+  it('with neither issuer nor port, it is its own issuer on a random 127.0.0.1 port', async () => {
+    const stub = await startOidcStub();
+    try {
+      expect(stub.localUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(stub.issuer).toBe(stub.localUrl);
+      expect(stub.discoveryUrl).toBe(`${stub.localUrl}/.well-known/openid-configuration`);
+    } finally {
+      await stub.close();
+    }
+  });
+});
+
+/** A port that was free a moment ago on 127.0.0.1. */
+async function freePort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const address = probe.address();
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  if (address === null || typeof address === 'string') throw new Error('no port');
+  return address.port;
+}
+
+/**
+ * 003 task 10.1 (design D16, Q38): behind the e2e TLS reverse proxy the stub
+ * advertises the proxy's public https issuer, while it listens on a fixed
+ * 127.0.0.1 port the proxy forwards to.
+ */
+describe('OIDC stub fixture behind a TLS proxy (issuer and port options)', () => {
+  const ENDPOINTS = ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'jwks_uri'];
+
+  it('advertises the public issuer everywhere and signs the ID token with it, on the fixed port', async () => {
+    const port = await freePort();
+    const issuer = 'https://localhost:8443/oidc';
+    const stub = await startOidcStub({ issuer: `${issuer}/`, port, clientSecret: 'e2e-secret' });
+    try {
+      expect(stub.issuer).toBe(issuer);
+      expect(stub.discoveryUrl).toBe(`${issuer}/.well-known/openid-configuration`);
+      expect(stub.localUrl).toBe(`http://127.0.0.1:${String(port)}`);
+
+      // Reached as the proxy reaches it: with the issuer's path, or with it stripped.
+      for (const path of [
+        '/oidc/.well-known/openid-configuration',
+        '/.well-known/openid-configuration',
+      ]) {
+        const disc = (await (await fetch(`${stub.localUrl}${path}`)).json()) as Record<
+          string,
+          unknown
+        >;
+        expect(disc['issuer'], path).toBe(issuer);
+        for (const key of ENDPOINTS) {
+          expect(String(disc[key]), `${path} ${key}`).toMatch(/^https:\/\/localhost:8443\/oidc\//);
+        }
+      }
+
+      const local = (endpoint: string): URL =>
+        new URL(endpoint.replace(issuer, `${stub.localUrl}/oidc`));
+      stub.setSubject({ sub: 'e2e-sub', email: 'vc@example.test', name: 'VC' });
+      const authorize = local(`${issuer}/authorize`);
+      authorize.search = new URLSearchParams({
+        response_type: 'code',
+        client_id: stub.clientId,
+        redirect_uri: 'https://localhost:8443/api/auth/callback',
+        state: 'st',
+        nonce: 'n',
+      }).toString();
+      const redirect = await fetch(authorize, { redirect: 'manual' });
+      expect(redirect.status).toBe(302);
+      const back = new URL(redirect.headers.get('location') ?? '');
+      expect(back.searchParams.get('iss')).toBe(issuer);
+
+      const token = await fetch(local(`${issuer}/token`), {
+        method: 'POST',
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: back.searchParams.get('code') ?? '',
+          redirect_uri: 'https://localhost:8443/api/auth/callback',
+          client_id: stub.clientId,
+          client_secret: 'e2e-secret',
+        }),
+      });
+      expect(token.status).toBe(200);
+      const { id_token: idToken } = (await token.json()) as { id_token: string };
+      expect(decode(idToken.split('.')[1] ?? '')).toMatchObject({
+        iss: issuer,
+        sub: 'e2e-sub',
+        email: 'vc@example.test',
+        nonce: 'n',
+      });
+    } finally {
+      await stub.close();
+    }
+  });
+
+  it('an origin issuer (no path) is served at the root', async () => {
+    const stub = await startOidcStub({ issuer: 'https://localhost:8444' });
+    try {
+      const disc = (await (
+        await fetch(`${stub.localUrl}/.well-known/openid-configuration`)
+      ).json()) as Record<string, unknown>;
+      expect(disc['issuer']).toBe('https://localhost:8444');
+      expect(disc['jwks_uri']).toBe('https://localhost:8444/jwks');
+      expect((await fetch(`${stub.localUrl}/jwks`)).status).toBe(200);
+    } finally {
+      await stub.close();
+    }
+  });
+
+  it('refuses an issuer that is not a plain https URL, and an invalid port, before listening', async () => {
+    for (const issuer of [
+      'http://localhost:8443',
+      'https://localhost:8443/?q=1',
+      'https://localhost:8443/#f',
+      'https://user:pass@localhost:8443',
+      'not a url',
+    ]) {
+      await expect(startOidcStub({ issuer }), issuer).rejects.toThrow(/issuer/);
+    }
+    for (const port of [0, -1, 65536, 1.5, Number.NaN]) {
+      await expect(startOidcStub({ port }), String(port)).rejects.toThrow(/port/);
+    }
+  });
+
+  it('rejects when the fixed port is already taken', async () => {
+    const first = await startOidcStub();
+    try {
+      const taken = Number(new URL(first.localUrl).port);
+      await expect(startOidcStub({ port: taken })).rejects.toThrow(/EADDRINUSE/);
+    } finally {
+      await first.close();
     }
   });
 });

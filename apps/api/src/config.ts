@@ -4,6 +4,9 @@
  * vars; `.env` locally). A missing or malformed value throws an error that
  * names the variable and never contains a value.
  */
+import { accessSync, constants, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+
 type Env = Readonly<Record<string, string | undefined>>;
 
 export interface Config {
@@ -98,6 +101,8 @@ export interface Config {
   readonly telemetryDisabled: boolean;
   /** `MOUNT_IDENTITY_ROUTES` (043 task 14.3, D15); off by default. */
   readonly mountIdentityRoutes: boolean;
+  /** `WEB_DIST_DIR` (003 D9, Q21): absolute path of the web build; undefined when unset. */
+  readonly webDistDir?: string;
 }
 
 interface RateLimit {
@@ -400,6 +405,38 @@ function loadMountIdentityRoutes(env: Env): boolean {
   throw new Error('MOUNT_IDENTITY_ROUTES is malformed (true or false is required).');
 }
 
+const WEB_DIST_DIR_MALFORMED =
+  'WEB_DIST_DIR is malformed (an absolute path to a readable directory containing index.html is required).';
+
+/**
+ * `WEB_DIST_DIR` (003 D9, Q21): optional; when set (even empty) it must be an absolute
+ * path to a readable directory containing an `index.html` file. Synchronous, since
+ * `loadConfig` is. The error is fixed text: an fs error is never rethrown, because its
+ * message carries the path.
+ */
+function loadWebDistDir(env: Env): string | undefined {
+  const value = env['WEB_DIST_DIR'];
+  if (value === undefined) {
+    return undefined;
+  }
+  let valid: boolean;
+  try {
+    valid =
+      isAbsolute(value) &&
+      statSync(value).isDirectory() &&
+      statSync(join(value, 'index.html')).isFile();
+    if (valid) {
+      accessSync(value, constants.R_OK);
+    }
+  } catch {
+    valid = false;
+  }
+  if (!valid) {
+    throw new Error(WEB_DIST_DIR_MALFORMED);
+  }
+  return value;
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
@@ -425,6 +462,7 @@ export function loadConfig(env: Env): Config {
   const identityTokenHmacSecret = loadIdentityTokenHmacSecret(env);
   const email = loadEmail(env);
   const sso = loadSso(env);
+  const webDistDir = loadWebDistDir(env);
   const signIn = limitWithDefaults(
     env,
     'PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX',
@@ -560,5 +598,6 @@ export function loadConfig(env: Env): Config {
     orgDeletionWindowDays: loadOrgDeletionWindowDays(env),
     telemetryDisabled: loadTelemetryDisabled(env),
     mountIdentityRoutes: loadMountIdentityRoutes(env),
+    ...(webDistDir === undefined ? {} : { webDistDir }),
   };
 }

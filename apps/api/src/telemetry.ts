@@ -12,7 +12,9 @@ import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
-import { core, logs, metrics, NodeSDK, tracing } from '@opentelemetry/sdk-node';
+import { api, core, logs, metrics, NodeSDK, tracing } from '@opentelemetry/sdk-node';
+
+import { isSpaPath } from './spa-paths.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -45,7 +47,10 @@ function signalUrl(env: Env, signal: 'traces' | 'metrics' | 'logs'): string | un
   return `${base.replace(/\/+$/, '')}/v1/${signal}`;
 }
 
-const URL_ATTRIBUTES = ['url.full', 'http.url', 'http.target', 'url.path'] as const;
+const URL_ATTRIBUTES = ['url.full', 'http.url', 'http.target', 'url.path', 'http.route'] as const;
+
+/** The one export template of every app path (003 Observability contract, Q27 B1). */
+const SPA_TEMPLATE = '/{spa}';
 
 /**
  * The seventeen route templates whose path carries an identifier (email, invitation id,
@@ -99,21 +104,26 @@ function pathnameOf(value: string): string {
 
 /**
  * Removes the URL query (OAuth `code`/`state`, tokens) from one span's attributes, and
- * replaces the path of an identifier-carrying route with its template.
+ * replaces the path of an identifier-carrying route with its template. On a server span,
+ * an app path (`isSpaPath` on the raw pathname, at any status and for any method) becomes
+ * `/{spa}`, so a `_user` email in the address bar never reaches a span (003 Q27 B1).
  */
 function stripQuery(span: tracing.ReadableSpan): tracing.ReadableSpan {
   const attributes: Record<string, unknown> = { ...span.attributes };
   delete attributes['url.query'];
+  const server = span.kind === api.SpanKind.SERVER;
   for (const key of URL_ATTRIBUTES) {
     const value = attributes[key];
     if (typeof value === 'string') {
       const index = value.search(/[?#]/);
       const clean = index === -1 ? value : value.slice(0, index);
-      const template = routeTemplate(pathnameOf(clean));
+      const pathname = pathnameOf(clean);
+      const template =
+        routeTemplate(pathname) ?? (server && isSpaPath(pathname) ? SPA_TEMPLATE : undefined);
       if (template === undefined) {
         attributes[key] = clean;
       } else {
-        const prefix = clean.slice(0, clean.length - pathnameOf(clean).length);
+        const prefix = clean.slice(0, clean.length - pathname.length);
         attributes[key] = `${prefix}${template}`;
       }
     }

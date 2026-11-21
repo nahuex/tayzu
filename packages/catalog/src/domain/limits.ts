@@ -28,6 +28,12 @@ export interface CatalogLimits {
   statusSource: { pattern: RegExp };
   detach: { maxReferrers: number };
   cursor: { maxLength: number };
+  search: {
+    minQueryLength: number;
+    maxQueryLength: number;
+    defaultLimit: number;
+    maxLimit: number;
+  };
 }
 
 /** A deep-partial override tree, `RegExp` leaves left as-is (never recursed into). */
@@ -53,6 +59,7 @@ export const defaultCatalogLimits: CatalogLimits = {
   statusSource: { pattern: IDENTIFIER_PATTERN },
   detach: { maxReferrers: 1000 },
   cursor: { maxLength: 512 },
+  search: { minQueryLength: 2, maxQueryLength: 100, defaultLimit: 20, maxLimit: 50 },
 };
 
 function isPositiveInteger(value: unknown): value is number {

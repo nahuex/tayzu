@@ -1,0 +1,44 @@
+{
+  "appName": "Tayzu",
+  "skipToContent": "Skip to main content",
+  "signOut": "Sign out",
+  "nav": {
+    "catalog": "Catalog"
+  },
+  "search": {
+    "open": "Search"
+  },
+  "userMenu": {
+    "label": "User menu",
+    "setUpMfa": "Set up two-factor authentication"
+  },
+  "role": {
+    "owner": "Owner",
+    "admin": "Admin",
+    "member": "Member"
+  },
+  "theme": {
+    "label": "Theme",
+    "system": "System",
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "locale": {
+    "label": "Language",
+    "en": "English",
+    "es": "Español"
+  },
+  "notFound": {
+    "title": "Page not found",
+    "description": "The page you are looking for does not exist or is not available.",
+    "home": "Go to the home page"
+  },
+  "routeError": {
+    "title": "Something went wrong",
+    "description": "The page could not be loaded. Try again later.",
+    "reload": "Reload the page"
+  },
+  "stepUpNotice": {
+    "returned": "You are back. Repeat the action to continue."
+  }
+}

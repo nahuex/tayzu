@@ -178,6 +178,174 @@ scripts with no Cerbos check.
 - The two password-reset routes are left untouched (`045` Q152): a reset grants
   no access, because every session it leads to is rejected.
 
+### The web app's view of its session (change 003)
+
+Change
+[`003-catalog-ui-core`](../../openspec/changes/003-catalog-ui-core/design.md)
+adds a browser app, served by `apps/api` on its own origin (design D9). It is
+one more client of the routes above, with the same session cookie: it adds no
+second authentication path and no Cerbos rule. The pages are described in
+[Catalog UI](catalog-ui.md).
+
+#### `GET /v1/me` and `resolveSessionState`
+
+`/api/auth/get-session` returns the user and the session but not the role,
+the organization or the gates, and `resolveContext` refuses a gated session
+with the same error as no session. So the shell reads `GET /v1/me` (design D8,
+Q13), a plain Fastify route registered before the `/v1/*` catch-all.
+
+- **The resolver.** `@tayzu/auth` exports
+  `createSessionStateResolver(options: ContextResolverOptions)`, which returns
+  `resolveSessionState(headers): Promise<SessionState>` (Q54,
+  `packages/auth/src/session-state.ts`). It drops the `authorization` header,
+  then runs `resolveContext`'s own session checks through the shared
+  `SessionChecks` of `context-resolver.ts`, in the same order: the session
+  read (idle timeout, expiry, `banned`), the markers, then the active
+  organization, the membership, the open tenant and the `_user` state. Where
+  `resolveContext` rejects a marker, the resolver records it as the gate and
+  goes on, so a gated session that fails a later check is still rejected.
+- **Uniform rejection.** Every failure, a failed marker lookup included, is
+  `AuthContextError`, answered as the same `401 CATALOG_CONTEXT_REQUIRED` body
+  as the catch-all. A machine access token is no session, so it gets that
+  `401` too.
+- **The answer.** `200` with `Cache-Control: no-store`:
+
+  | Field          | Value                                                                                                           |
+  | -------------- | --------------------------------------------------------------------------------------------------------------- |
+  | `user`         | `{ id, name, email }` of the session's user                                                                     |
+  | `organization` | `{ id, name }` of the active organization, which is the tenant                                                  |
+  | `role`         | The highest of `owner`, `admin` and `member` in the stored membership role (a comma-separated list is allowed)  |
+  | `signInMethod` | `visma-connect` when the session carries an `ssoSid`, else `password`                                           |
+  | `mfa`          | `{ enrolled }`, the local `twoFactorEnabled` flag                                                               |
+  | `gate`         | `password_expired`, `password_change_required`, `mfa_enrolment_required` or `none`, in that order of precedence |
+
+  `mfa_enrolment_required` comes from the re-enrolment marker, or from an
+  admin (an owner folds to admin, as in `toCerbosRole`) without an enrolled
+  factor, the case the admin MFA enrollment gate refuses on `/v1`.
+
+- **Reading a session under an expired temporary password.** `043` Q146 is
+  amended by `003` Q55: the `/api/auth/*` before-hook lets `/get-session`
+  through under an expired marker too, so the in-process `getSession` of the
+  route can read it and report `password_expired`. Every other `/api/auth/*`
+  route stays refused, `/change-password` included, and `/v1` still rejects
+  the session.
+- **The shell's rules** (design D12, Q68). Only the protected routes read
+  `GET /v1/me`. A `401` sends them to `/sign-in?returnTo=<path>`. A gate other
+  than `none` sends them to its page: `/change-password` for both temporary
+  password gates (it shows the "ask an administrator" page under
+  `password_expired`) and `/mfa/enrol` for `mfa_enrolment_required`. The public
+  pages (sign-in, forgot password, reset, accept invitation, step-up complete)
+  never read it. The gate in the UI is only a redirect: the server refuses a
+  gated session on `/v1` on its own.
+- Rate limit, span and route list are in
+  [Attack surfaces](../security/attack-surfaces.md#get-v1me) and under
+  [Telemetry](#identity-spans).
+
+#### Step-up in the web app (change 003)
+
+Any call answered `403 AUTH_STEP_UP_REQUIRED` opens one step-up dialog, which
+the shell mounts once (design D11, Q75). Its variant follows the session's
+`signInMethod` and `mfa.enrolled` from `GET /v1/me`, never the shape of the
+error, because a local factor never satisfies a Visma Connect session:
+
+| Session                                    | What the dialog offers                                                                                                                      | Then                                                                                                |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Local, with MFA                            | A TOTP code (`/two-factor/verify-totp`), with a switch to a backup code (`/two-factor/verify-backup-code`)                                  | The original call is retried once; a second `AUTH_STEP_UP_REQUIRED` fails it                        |
+| Local, without MFA                         | The password (`/api/auth/verify-password`)                                                                                                  | The same single retry                                                                               |
+| Visma Connect, with a `reauthorizationUrl` | A "Continue with Visma Connect" button, shown only for an absolute `https:` URL                                                             | A round trip to Visma Connect; nothing is retried, the user repeats the action on return (Q14, Q76) |
+| Visma Connect, without a usable URL        | A "try again in a few minutes" message and no field (the server returns no URL when five re-authorizations are pending or discovery failed) | Nothing                                                                                             |
+
+A refused code or password never ends the session and shows one message. The
+code and password are sent directly by the auth client, never through the
+query cache, and the field is emptied after every request. Cancel rejects the
+call with the original error. The reset and invitation pages, which are
+public and have no shell, show their own factor field instead (Q78, Q80).
+
+**The Visma Connect round trip.** On the click, the app stores the router's
+current path, through `safeReturnPath`, in `sessionStorage` under
+`tayzu.stepUp.returnTo` (`/search` without its query) and navigates to the
+URL. Visma Connect returns to
+`/v1/auth/visma-connect/reauthorize/callback`, which completes the exchange
+and, when `WEB_DIST_DIR` is set, redirects:
+
+| Callback outcome                                        | Answer                                                   |
+| ------------------------------------------------------- | -------------------------------------------------------- |
+| Exchange succeeded                                      | `303`, `Location: /step-up/complete`                     |
+| Unknown or expired `state`, or a failed exchange        | `303`, `Location: /step-up/complete?result=failed`       |
+| The callback's limiter refused it                       | `303`, `Location: /step-up/complete?result=rate_limited` |
+| A limiter-store or database failure before the exchange | The sanitized JSON `500`, no `Location` (Q56)            |
+
+Every `Location` is a constant, never built from the request or the OIDC
+state. Without `WEB_DIST_DIR` the callback keeps its `200`, `400` and JSON
+`429` answers. `/step-up/complete` is public, reads the stored path once and
+deletes it, and validates it again. With no `result` it replaces itself with
+that path, where the shell shows "you are back, repeat the action"; it never
+says "verified", because it cannot know whether the next request will pass.
+With `result=failed` or `result=rate_limited` it stays, with an alert and a
+"Go back" link. `Retry-After` does not survive the browser's `303`, so the
+rate-limit message names no number of seconds.
+
+**The two step-up events.**
+
+- `auth.security.step_up_succeeded` is now also emitted by a successful
+  re-authorization callback, with `tayzu.auth.method` `visma_connect` and the
+  actor (and, when the session has an active organization, the tenant) of the
+  session the `state` is bound to. `emitStepUpSucceeded` takes the method as a
+  parameter instead of always writing `local`.
+  With `visma_connect` it means "the Visma Connect re-authorization returned"
+  (Q99): the callback stores the new ID token, and the step-up check then
+  validates its `auth_time`, `acr`, `amr` and `sid` on the retried call. A token
+  that fails that check is logged as `auth.security.step_up_insufficient`, so a
+  `step_up_succeeded` followed by `step_up_insufficient` is a returned
+  re-authorization that did not meet the step-up rules.
+- `auth.security.reauthorization_failed` (WARN, new in `003`, Q29, Q57) is
+  emitted by a failed callback, with `tayzu.auth.reauthorization.reason`
+  `invalid_state` or `exchange_failed`. It carries no tenant, because an
+  unknown state is bound to none.
+
+Neither event carries a code, a `state`, a token or a claim. Both emitters live
+in `packages/auth/src/step-up-telemetry.ts`, and both names are declared in the
+`@tayzu/auth` and `@tayzu/authz` contracts.
+
+#### Page rules met
+
+Design D11's page rules, and the parts of D15 that concern authentication, as
+built and tested:
+
+- **The tenant comes from the session.** No page sends a `tenantId`, an
+  organization id or an actor, and there is no organization switcher.
+- **No submit without a user action**, on every authentication page.
+  `/accept-invitation` does not even read `GET /v1/me` before the user picks
+  "I already have an account" (Q79).
+- **Fragments.** `/reset-password` and `/accept-invitation` read their
+  fragment before the first render, remove it with `history.replaceState`
+  before any request, and keep the values in component state only (never
+  storage, the URL, the query cache or a log). A missing or malformed fragment
+  shows the same invalid-link message as a refused one.
+- **`Referrer-Policy: no-referrer`** on every response, and **no third-party
+  request** of any kind (the CSP and the e2e network check).
+- **Secrets stay in memory.** Passwords use `autocomplete="current-password"`
+  or `"new-password"` and are cleared after each submit. The TOTP URI, the
+  secret and the backup codes of `/mfa/enrol` live only in component state and
+  are dropped when the page is left.
+- **Uniform messages.** Sign-in shows one failure message for every reason
+  but a rate limit (which names the seconds from `Retry-After`); the forgot
+  password page shows the same message for every answer but a rate limit; the
+  link pages show one invalid-link message for every refusal. Server
+  `message` text is never shown, except a password-policy rule, mapped to its
+  localized name.
+- **No open redirect.** The Visma Connect sign-in posts `callbackURL: "/"` and
+  `errorCallbackURL: "/sign-in?error=sso"`, and follows the returned URL only
+  if it is an absolute `https:` URL, after a click. `returnTo` and the stored
+  step-up path are accepted only as a signed-in in-app route.
+- **The session cookie stays HTTP-only.** No code reads `document.cookie`
+  (lint-enforced), and sign-out clears the query cache and the session-bound
+  stores whatever `/api/auth/sign-out` answers.
+
+They are asserted over HTTP by `apps/api/src/web-page-rules.http.int.test.ts`
+and in the browser by `apps/web/e2e/links.spec.ts`, `sign-in.spec.ts`,
+`step-up.spec.ts` and `sso.spec.ts`.
+
 ## Resource kinds
 
 Cerbos knows seven fixed resource kinds (constants in
@@ -399,7 +567,7 @@ change 043 adds (see [Amendments by change 043](#amendments-by-change-043)).
 | Event                                       | Severity | Attributes                                                                                                 | Purpose                                                             |
 | ------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | `auth.security.login_succeeded`             | INFO     | `tayzu.actor.id`, `tayzu.tenant.id` when the session has an active organization                            | Authentication audit trail                                          |
-| `auth.security.step_up_succeeded`           | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.method` (`local`)                                         | A fresh step-up verification on an existing session, not a login    |
+| `auth.security.step_up_succeeded`           | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.method` (`local`, or `visma_connect` since `003`)         | A fresh step-up verification on an existing session, not a login    |
 | `auth.internal_error`                       | ERROR    | `error.type`, `db.response.status_code` (SQLSTATE) when present                                            | An unmapped error, sanitized: no message, stack text or bind values |
 | `auth.security.login_failed`                | WARN     | `tayzu.auth.failure_reason`                                                                                | Brute-force and misuse signal                                       |
 | `auth.security.session_revoked`             | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.revocation.reason`                                        | Session revocation audit trail                                      |
@@ -413,11 +581,18 @@ change 043 adds (see [Amendments by change 043](#amendments-by-change-043)).
 | `auth.security.account_linked`              | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.link.actor`                                               | Account-linking audit trail                                         |
 | `auth.security.account_unlinked`            | INFO     | `tayzu.tenant.id`, `tayzu.actor.id`, `tayzu.auth.link.actor`                                               | Account-linking audit trail                                         |
 | `auth.security.backchannel_logout_received` | INFO     | `tayzu.auth.backchannel_logout.outcome`                                                                    | Back-channel logout audit trail, no `sub`, `sid` or session id      |
+| `auth.security.reauthorization_failed`      | WARN     | `tayzu.auth.reauthorization.reason` (`invalid_state` or `exchange_failed`)                                 | A failed Visma Connect re-authorization callback (`003`), no tenant |
 
 `tayzu.auth.failure_reason` is `bad_credentials`, `mfa_failed` or
 `account_disabled` on `login_failed`, and `sso_unlinked`, `sso_state_mismatch`
 or `sso_token_invalid` on `sso_sign_in_failed`. It is the only place the real
 cause of an SSO rejection is recorded, because the HTTP response never says.
+
+`tayzu.auth.reauthorization.reason` is `invalid_state` (an unknown, expired,
+consumed or corrupt `state`, a missing or non-string `code` or `state`, or a
+session gone by callback time, all refused before any exchange) or
+`exchange_failed` (the token exchange failed, or storing its result did). See
+[Step-up in the web app](#step-up-in-the-web-app-change-003).
 
 `tayzu.auth.revocation.reason` is `password_change` or `admin_action` as
 `002` declares them, plus `sso_link_shed` (see below).
@@ -493,11 +668,18 @@ All are `INTERNAL`, one per operation.
 | `identity.credential.rotate`      | Operation          | `tayzu.identity.credential.kind`                                                                                        |
 | `identity.credential.revoke`      | Operation          | `tayzu.identity.credential.kind`                                                                                        |
 | `identity.user.reconcile`         | Maintenance script | `tayzu.tenant.id`, `tayzu.identity.operator.id`, `tayzu.identity.reconcile.created`, `tayzu.identity.reconcile.orphans` |
+| `identity.session.me`             | Route (`003`)      | `tayzu.identity.session.gate`; `tayzu.tenant.id` when the session resolves                                              |
 
 `tayzu.identity.invitation.id` is the constant `invalid` on
 `identity.invitation.accept` for an id that fails its shape or length check.
 `tayzu.identity.invitation.path` (`new_account` or `existing_account`) is a
 conditional attribute of `identity.invitation.accept`.
+
+`identity.session.me` (`003` D8) is the span of `GET /v1/me`, in the same
+identity contract module. `tayzu.identity.session.gate` is `none`,
+`password_change_required`, `password_expired`, `mfa_enrolment_required` or
+`unauthenticated` (every uniform `401`). It never carries the user's name or
+email or the organization's name.
 
 #### Identity metrics
 

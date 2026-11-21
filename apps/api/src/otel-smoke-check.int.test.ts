@@ -92,6 +92,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   bootstrapTestTenant,
   createAdminUser,
+  seedUserRow,
   signInAdminUser,
   type BootstrappedTenant,
   testAppPool,
@@ -106,6 +107,7 @@ import {
 } from '../../../packages/catalog/src/telemetry/contract.js';
 import * as identityContract from '../../../packages/auth/src/telemetry/identity-contract.js';
 import {
+  EXPECTED_ATTRIBUTE_VALUES,
   EXPECTED_LOG_EVENTS,
   EXPECTED_METRICS,
   EXPECTED_SPANS,
@@ -115,7 +117,12 @@ import {
   getPurgeTestDatabase,
 } from '../../../packages/db/src/harness.js';
 import { csrfHeaders } from './__fixtures__/csrf.js';
-import { enrolledAdminSession, sessionTokenOfCookie } from './__fixtures__/fresh-mfa.js';
+import {
+  enrolledAdminSession,
+  enrollTotp,
+  sessionTokenOfCookie,
+  signInWithTotp,
+} from './__fixtures__/fresh-mfa.js';
 import { harnessPools, type HarnessPools } from './__fixtures__/pools.js';
 import { oidcRoundTrip, poolFailing } from './__fixtures__/sso-shed.js';
 import { createAcceptFlow, type AcceptFlowOptions } from './identity/accept-flow.js';
@@ -873,6 +880,372 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
     } finally {
       spy.mockRestore();
     }
+  }, 60_000);
+});
+
+/*
+ * Task 3.11 of openspec/changes/003-catalog-ui-core (design D11 "Step-up telemetry for Visma
+ * Connect", "Observability contract" -> Log events; Resolved decisions Q27 B2 and Q29). Verify
+ * clause: "the `apps/api` `otel-smoke-check.int.test.ts` covers "A Visma Connect step-up is
+ * logged" against the OIDC stub (success with the bound tenant and actor, an unknown state and
+ * a failed token exchange each with its reason), with a marker check that no code, state, token
+ * or claim reaches any attribute; the local step-up still emits `local`."
+ *
+ * Design D11: "On a successful `complete`, the server emits the already-declared
+ * `auth.security.step_up_succeeded` with `tayzu.auth.method` `visma_connect` and the tenant and
+ * actor of the session the state is bound to ...; a failed callback emits the new
+ * `auth.security.reauthorization_failed` (WARN, reason `invalid_state` or `exchange_failed`, no
+ * tenant, since none is bound to an unknown state). No code, state, token or claim reaches
+ * either event." Log events: both events belong to `@tayzu/auth`'s logger.
+ *
+ * Drive: the real HTTP flow of `step-up-sso-http.int.test.ts` (an MFA-enrolled owner whose
+ * session carries an `sso_sid`; a high-risk `DELETE` answered `403 AUTH_STEP_UP_REQUIRED` with
+ * `data.reauthorizationUrl`; the stub's authorization endpoint; the re-authorization callback
+ * `GET /v1/auth/visma-connect/reauthorize/callback`). The unknown state is a state no `start`
+ * issued; the failed token exchange presents a real state with a code the stub never issued,
+ * which its token endpoint answers `400 invalid_grant`. `WEB_DIST_DIR` is unset, so the callback
+ * answers `200 {}` or `400` (task 3.10 changes that only with the web app).
+ *
+ * The describe sits before the 002 per-event check below because that check iterates
+ * `@tayzu/authz`'s `LOG_EVENTS`, which declares `auth.security.reauthorization_failed` too.
+ *
+ * ## Production symbols expected (the red phase)
+ *
+ * - `emitStepUpSucceeded` (`packages/auth/src/auth.ts`) takes the method
+ *   (`'local' | 'visma_connect'`) instead of hard-coding `local`, and is reachable from the
+ *   re-authorization `complete` (`apps/api/src/reauthorization.ts`), which on success emits it
+ *   with `visma_connect` and the `userId` and `activeOrganizationId` of the `auth.session` row
+ *   whose token the consumed state carries.
+ * - `auth.security.reauthorization_failed` (WARN, `@tayzu/auth` logger, attribute only
+ *   `tayzu.auth.reauthorization.reason`): `invalid_state` when no unexpired state row is
+ *   consumed, `exchange_failed` when discovery, the token request or its `id_token` fails.
+ */
+describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)', () => {
+  const STEP_UP_SUCCEEDED = 'auth.security.step_up_succeeded';
+  const REAUTH_FAILED = 'auth.security.reauthorization_failed';
+  const METHOD = 'tayzu.auth.method';
+  const REASON = 'tayzu.auth.reauthorization.reason';
+  const TENANT = 'tayzu.tenant.id';
+  const ACTOR_ID = 'tayzu.actor.id';
+  const ORIGIN = 'https://app.tayzu.test';
+  const CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
+  const RESULT_PREFIX = 'sso-reauth-result:';
+  const SEVERITY_INFO = 9;
+  const SEVERITY_WARN = 13;
+
+  let app: App;
+  let stub: OidcStub;
+  let authPool: Pool;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    await runMigrations(authPool);
+    stub = await startOidcStub();
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    await stub.close();
+  });
+
+  interface EnrolledSession {
+    readonly tenant: BootstrappedTenant;
+    readonly cookie: string;
+    readonly secret: string;
+  }
+
+  /** An MFA-enrolled org owner (Q43) signed in through a real TOTP challenge. */
+  async function enrolledSession(label: string): Promise<EnrolledSession> {
+    const suffix = randomUUID();
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: `Reauth Smoke ${label}`,
+      email: `reauth-smoke-${suffix}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: `Reauth Smoke Org ${suffix}`,
+      organizationSlug: `reauth-smoke-${suffix}`,
+      ip: randomIp(),
+    });
+    const secret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      secret,
+      origin: ORIGIN,
+    });
+    return { tenant, cookie, secret };
+  }
+
+  /** The same owner, with the session marked as established through Visma Connect (D25). */
+  async function ssoSession(label: string): Promise<EnrolledSession & { readonly sid: string }> {
+    const session = await enrolledSession(label);
+    const sid = `ReauthSidMarker-${randomUUID()}`;
+    await authPool.query('update auth.session set sso_sid = $1 where user_id = $2', [
+      sid,
+      session.tenant.userId,
+    ]);
+    return { ...session, sid };
+  }
+
+  /** The step-up interceptor refuses a high-risk call and hands out the authorization URL. */
+  async function startReauthorization(cookie: string): Promise<URL> {
+    const refused = await app.app.inject({
+      method: 'DELETE',
+      url: `/v1/blueprints/reauth-smoke-${randomUUID().slice(0, 8)}`,
+      headers: { cookie, origin: ORIGIN, 'x-forwarded-for': randomIp(), ...csrfHeaders('DELETE') },
+    });
+    expect(refused.statusCode, refused.body).toBe(403);
+    const body = refused.json<{ code?: unknown; data?: { reauthorizationUrl?: unknown } }>();
+    expect(body.code).toBe('AUTH_STEP_UP_REQUIRED');
+    const raw = body.data?.reauthorizationUrl;
+    if (typeof raw !== 'string') {
+      throw new Error('the step-up refusal must carry data.reauthorizationUrl');
+    }
+    return new URL(raw);
+  }
+
+  function callback(params: { readonly code: string; readonly state: string }) {
+    return app.app.inject({
+      method: 'GET',
+      url: `${CALLBACK_PATH}?${new URLSearchParams(params).toString()}`,
+      headers: { 'x-forwarded-for': randomIp(), host: 'localhost:3000', origin: ORIGIN },
+    });
+  }
+
+  /** The records of `name` emitted since `before` records of it existed. */
+  async function recordsSince(name: string, before: number) {
+    await harness.forceFlush();
+    return logRecords(harness, name).slice(before);
+  }
+
+  async function flushedCount(name: string): Promise<number> {
+    await harness.forceFlush();
+    return logRecords(harness, name).length;
+  }
+
+  interface Drive {
+    readonly tenantId?: string;
+    readonly actorId?: string;
+    readonly markers: Readonly<Record<string, string>>;
+  }
+
+  /** A completed re-authorization: the person approves at the stub and the callback succeeds. */
+  async function driveSuccess(): Promise<Drive> {
+    const user = await ssoSession('Success');
+    const id = randomUUID();
+    const claimEmail = `reauth-claim-marker-${id}@example.test`;
+    const markers: Record<string, string> = {
+      sub: `ReauthSubMarker-${id}`,
+      'claim email': claimEmail,
+      'claim email local part': claimEmail.split('@')[0] ?? claimEmail,
+      'claim name': `ReauthNameMarker-${id}`,
+      'custom claim': `ReauthClaimMarker-${id}`,
+      sid: user.sid,
+      'session token': sessionTokenOfCookie(user.cookie),
+    };
+    const now = Math.floor(Date.now() / 1000);
+    stub.setSubject({
+      sub: markers['sub'] ?? '',
+      email: claimEmail,
+      name: markers['claim name'] ?? '',
+      sid: user.sid,
+      claims: {
+        auth_time: now - 10,
+        acr: 3,
+        amr: ['pwd', 'otp'],
+        tayzu_marker: markers['custom claim'],
+      },
+    });
+    const url = await startReauthorization(user.cookie);
+    const state = url.searchParams.get('state') ?? '';
+    const approval = await fetch(url, { redirect: 'manual' });
+    const location = approval.headers.get('location');
+    expect(approval.status, 'the stub approves with a query redirect').toBe(302);
+    if (location === null) {
+      throw new Error('the OIDC stub did not redirect to the callback');
+    }
+    const returned = new URL(location);
+    expect(returned.pathname).toBe(CALLBACK_PATH);
+    expect(returned.searchParams.get('state')).toBe(state);
+    const code = returned.searchParams.get('code') ?? '';
+    const answered = await callback({ code, state });
+    expect(answered.statusCode, `the callback succeeds: ${answered.body}`).toBeLessThan(400);
+    const stored = await authPool.query<{ value: string }>(
+      'select value from auth.verification where identifier = $1',
+      [`${RESULT_PREFIX}${markers['session token'] ?? ''}`],
+    );
+    const idToken = stored.rows[0]?.value ?? '';
+    expect(idToken, 'precondition: the callback stored the returned ID token').not.toBe('');
+    return {
+      tenantId: user.tenant.organizationId,
+      actorId: user.tenant.userId,
+      markers: {
+        ...markers,
+        'authorization code': code,
+        state,
+        'id token': idToken,
+        'id token signature': idToken.split('.')[2] ?? idToken,
+      },
+    };
+  }
+
+  /** A callback whose state no `start` ever issued. */
+  async function driveUnknownState(): Promise<Drive> {
+    const id = randomUUID();
+    const markers = {
+      'unknown state': `ReauthUnknownStateMarker-${id}`,
+      'unknown-state code': `ReauthUnknownCodeMarker-${id}`,
+    };
+    const answered = await callback({
+      code: markers['unknown-state code'],
+      state: markers['unknown state'],
+    });
+    expect(answered.statusCode, answered.body).toBe(400);
+    return { markers };
+  }
+
+  /** A real, bound state presented with a code the stub never issued: the token exchange fails. */
+  async function driveFailedExchange(): Promise<Drive> {
+    const user = await ssoSession('Exchange');
+    const url = await startReauthorization(user.cookie);
+    const state = url.searchParams.get('state') ?? '';
+    expect(state, 'precondition: the authorization URL carries a state').not.toBe('');
+    const code = `ReauthRejectedCodeMarker-${randomUUID()}`;
+    const answered = await callback({ code, state });
+    expect(answered.statusCode, answered.body).toBe(400);
+    return {
+      tenantId: user.tenant.organizationId,
+      actorId: user.tenant.userId,
+      markers: {
+        'bound state': state,
+        'rejected code': code,
+        'exchange sid': user.sid,
+        'exchange session token': sessionTokenOfCookie(user.cookie),
+      },
+    };
+  }
+
+  function expectFailureRecords(
+    records: ReturnType<typeof logRecords>,
+    reason: 'invalid_state' | 'exchange_failed',
+  ): void {
+    expect(records.length, `no "${REAUTH_FAILED}" record was captured`).toBeGreaterThan(0);
+    expect(EXPECTED_ATTRIBUTE_VALUES[REASON], 'the reason is in the fixture set').toContain(reason);
+    for (const record of records) {
+      expect(record.instrumentationScope.name).toBe('@tayzu/auth');
+      expect(record.severityNumber, `${REAUTH_FAILED} is WARN`).toBe(SEVERITY_WARN);
+      expect(Object.keys(record.attributes), 'only the reason, no tenant').toEqual([REASON]);
+      expect(record.attributes[REASON]).toBe(reason);
+    }
+  }
+
+  it('a successful callback emits step_up_succeeded with tayzu.auth.method=visma_connect and the tenant and actor of the bound session', async () => {
+    const drive = await driveSuccess();
+
+    await harness.forceFlush();
+    const ofTenant = logRecords(harness, STEP_UP_SUCCEEDED).filter(
+      (record) => record.attributes[TENANT] === drive.tenantId,
+    );
+    const visma = ofTenant.filter((record) => record.attributes[METHOD] === 'visma_connect');
+    expect(visma.length, `no visma_connect "${STEP_UP_SUCCEEDED}" for the bound tenant`).toBe(1);
+    expect(EXPECTED_ATTRIBUTE_VALUES[METHOD], 'the method is in the fixture set').toContain(
+      'visma_connect',
+    );
+    for (const record of visma) {
+      expect(record.instrumentationScope.name).toBe('@tayzu/auth');
+      expect(record.severityNumber, `${STEP_UP_SUCCEEDED} is INFO`).toBe(SEVERITY_INFO);
+      expect(record.attributes[ACTOR_ID], 'the actor of the bound session').toBe(drive.actorId);
+      expect(Object.keys(record.attributes).sort()).toEqual([ACTOR_ID, METHOD, TENANT].sort());
+    }
+  }, 60_000);
+
+  it('an unknown state emits reauthorization_failed with reason invalid_state and no tenant', async () => {
+    const before = await flushedCount(REAUTH_FAILED);
+
+    await driveUnknownState();
+
+    expectFailureRecords(await recordsSince(REAUTH_FAILED, before), 'invalid_state');
+  }, 60_000);
+
+  it('a failed token exchange emits reauthorization_failed with reason exchange_failed and no tenant, and no step_up_succeeded', async () => {
+    const before = await flushedCount(REAUTH_FAILED);
+
+    const drive = await driveFailedExchange();
+
+    expectFailureRecords(await recordsSince(REAUTH_FAILED, before), 'exchange_failed');
+    const visma = logRecords(harness, STEP_UP_SUCCEEDED).filter(
+      (record) =>
+        record.attributes[TENANT] === drive.tenantId &&
+        record.attributes[METHOD] === 'visma_connect',
+    );
+    expect(visma, 'a failed callback records no Visma Connect step-up').toEqual([]);
+  }, 60_000);
+
+  it('no code, state, token or claim value of a Visma Connect step-up reaches any signal', async () => {
+    const drives = [await driveSuccess(), await driveUnknownState(), await driveFailedExchange()];
+
+    await harness.forceFlush();
+    expect(
+      logRecords(harness, STEP_UP_SUCCEEDED).some(
+        (record) =>
+          record.attributes[TENANT] === drives[0]?.tenantId &&
+          record.attributes[METHOD] === 'visma_connect',
+      ),
+      'precondition: the success drive was logged',
+    ).toBe(true);
+    expect(
+      new Set(logRecords(harness, REAUTH_FAILED).map((record) => record.attributes[REASON])),
+      'precondition: both failure drives were logged',
+    ).toEqual(new Set(['invalid_state', 'exchange_failed']));
+    const corpus = exportedCorpus(harness);
+    for (const drive of drives) {
+      for (const [label, marker] of Object.entries(drive.markers)) {
+        expect(marker.length, `${label} marker is non-trivial`).toBeGreaterThanOrEqual(6);
+        expect(leaks(corpus, marker), `the ${label} must never appear on any signal`).toEqual([]);
+      }
+    }
+  }, 120_000);
+
+  it('the local step-up still emits step_up_succeeded with tayzu.auth.method=local', async () => {
+    const { tenant, cookie, secret } = await enrolledSession('Local');
+    const totpApi = app.auth.api as TotpApi;
+
+    const stepUp = await postJson(
+      handlerOf(app.auth),
+      '/two-factor/verify-totp',
+      { code: (await totpApi.generateTOTP({ body: { secret } })).code },
+      { cookie },
+    );
+    expect(stepUp.status, 'the step-up verification succeeds').toBe(200);
+
+    await harness.forceFlush();
+    const ofTenant = logRecords(harness, STEP_UP_SUCCEEDED).filter(
+      (record) => record.attributes[TENANT] === tenant.organizationId,
+    );
+    expect(
+      ofTenant.some((record) => record.attributes[ACTOR_ID] === tenant.userId),
+      `no "${STEP_UP_SUCCEEDED}" for the local actor`,
+    ).toBe(true);
+    expect(new Set(ofTenant.map((record) => record.attributes[METHOD]))).toEqual(
+      new Set(['local']),
+    );
   }, 60_000);
 });
 
@@ -3994,6 +4367,176 @@ describe('otel-smoke-check, 045: every org-deletion operation is driven (task 9.
     }
   }, 120_000);
 });
+
+/*
+ * Task 3.9 of openspec/changes/003-catalog-ui-core (design D8 and "Observability contract",
+ * Spans; spec requirement "The web app adds no browser telemetry and the server's new signals
+ * carry no tenant free text"): "The server MUST declare in its telemetry contract the span of
+ * `GET /v1/me` with its gate attribute ... An organization name, a user name or an email MUST
+ * NOT reach any signal." Design: "`identity.session.me` | route |
+ * `tayzu.identity.session.gate` (`none`|`password_change_required`|`password_expired`|
+ * `mfa_enrolment_required`|`unauthenticated`) | `tayzu.tenant.id` (when the session has an
+ * active organization)", tracer `@tayzu/auth`; and D8: `organization.name` "never reaches
+ * telemetry".
+ *
+ * Drives `GET /v1/me` over HTTP once per gate (an owner without a factor, a member, an unexpired
+ * and an expired temporary password) and once anonymously, with every organization name, user
+ * name and email a marker string, then asserts the span and that no marker reached any signal.
+ * It runs before the 043 check below, which requires every span the module declares to have
+ * been captured.
+ *
+ * Production symbols expected: the `GET /v1/me` route of `createApp` and its span
+ * `identity.session.me` on the `@tayzu/auth` tracer (design D8; the declaration is in
+ * `packages/auth/src/telemetry/identity-contract.ts`).
+ */
+describe('otel-smoke-check, 003: GET /v1/me records identity.session.me with its gate and no names (task 3.9)', () => {
+  const SESSION_GATES = [
+    'none',
+    'password_change_required',
+    'password_expired',
+    'mfa_enrolment_required',
+    'unauthenticated',
+  ];
+  const GATE = 'tayzu.identity.session.gate';
+  const TENANT = 'tayzu.tenant.id';
+  let app: App;
+  let pools: HarnessPools;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    pools = await harnessPools();
+    await runMigrations(pools.authPool);
+    app = await createApp({
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: IDENTITY_CERBOS,
+      allowedOrigins: [IDENTITY_ORIGIN],
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  function me(cookie?: string) {
+    return app.app.inject({
+      method: 'GET',
+      url: '/v1/me',
+      headers: { 'x-forwarded-for': randomIp(), ...(cookie === undefined ? {} : { cookie }) },
+    });
+  }
+
+  it('identity.session.me carries the gate on every answer, the tenant only with an active organization, and no organization name, user name or email', async () => {
+    const id = randomUUID();
+    const markers = {
+      'organization name': `MeOrgNameMarker-${id}`,
+      'owner name': `MeOwnerNameMarker-${id}`,
+      'owner email': `me-owner-marker-${id}@example.test`,
+      'member name': `MeMemberNameMarker-${id}`,
+      'member email': `me-member-marker-${id}@example.test`,
+      'temporary user name': `MeTemporaryNameMarker-${id}`,
+      'temporary user email': `me-temporary-marker-${id}@example.test`,
+      'expired user name': `MeExpiredNameMarker-${id}`,
+      'expired user email': `me-expired-marker-${id}@example.test`,
+    };
+    const owner = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: markers['owner name'],
+      email: markers['owner email'],
+      password: TEST_PASSWORD,
+      organizationName: markers['organization name'],
+      organizationSlug: `me-smoke-${id}`,
+      ip: randomIp(),
+    });
+    const tenantId = owner.organizationId;
+
+    async function memberSession(name: string, email: string): Promise<SessionUser> {
+      const created = await createAdminUser(app.auth, { name, email, password: TEST_PASSWORD });
+      await (app.auth.api as MemberAdminApi).addMember({
+        body: { userId: created.userId, organizationId: tenantId, role: 'member' },
+      });
+      await seedUserRow(testAppPool(), { tenantId, email, name });
+      const signedIn = await signInAdminUser(app.auth, {
+        email,
+        password: TEST_PASSWORD,
+        ip: randomIp(),
+      });
+      return { userId: created.userId, cookie: signedIn.cookie };
+    }
+
+    async function writeTemporaryPasswordMarker(userId: string, offsetMs: number): Promise<void> {
+      await pools.authPool.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, $3, '9999-12-31T23:59:59.000Z'::timestamptz)`,
+        [randomUUID(), `temp-password:${userId}`, new Date(Date.now() + offsetMs).toISOString()],
+      );
+    }
+
+    const member = await memberSession(markers['member name'], markers['member email']);
+    const temporary = await memberSession(
+      markers['temporary user name'],
+      markers['temporary user email'],
+    );
+    await writeTemporaryPasswordMarker(temporary.userId, 48 * 60 * 60 * 1000);
+    const expired = await memberSession(
+      markers['expired user name'],
+      markers['expired user email'],
+    );
+    await writeTemporaryPasswordMarker(expired.userId, -60 * 60 * 1000);
+
+    const answers = {
+      owner: await me(owner.cookie),
+      member: await me(member.cookie),
+      temporary: await me(temporary.cookie),
+      expired: await me(expired.cookie),
+      anonymous: await me(),
+    };
+    // The drive behaved as its class says (not a telemetry finding).
+    const gateOf = (answer: (typeof answers)['owner']): unknown =>
+      answer.json<{ gate?: unknown }>().gate;
+    for (const [label, answer] of Object.entries(answers)) {
+      expect(answer.statusCode, `${label}: ${answer.body}`).toBe(label === 'anonymous' ? 401 : 200);
+    }
+    expect(gateOf(answers.owner)).toBe('mfa_enrolment_required');
+    expect(gateOf(answers.member)).toBe('none');
+    expect(gateOf(answers.temporary)).toBe('password_change_required');
+    expect(gateOf(answers.expired)).toBe('password_expired');
+
+    await harness.forceFlush();
+    const spans = spansNamed(harness, 'identity.session.me');
+    expect(spans.length, 'no "identity.session.me" span was captured').toBeGreaterThan(0);
+    for (const span of spans) {
+      expect(span.instrumentationScope.name).toBe('@tayzu/auth');
+      expect(SESSION_GATES, `${GATE} is in its closed set`).toContain(span.attributes[GATE]);
+      for (const key of Object.keys(span.attributes)) {
+        expect([GATE, TENANT, 'error.type'], `undeclared attribute ${key}`).toContain(key);
+      }
+    }
+    const ofTenant = spans.filter((span) => span.attributes[TENANT] === tenantId);
+    expect(new Set(ofTenant.map((span) => span.attributes[GATE]))).toEqual(
+      new Set(['mfa_enrolment_required', 'none', 'password_change_required', 'password_expired']),
+    );
+    const unauthenticated = spans.filter((span) => span.attributes[GATE] === 'unauthenticated');
+    expect(unauthenticated.length, 'the anonymous answer has its span').toBeGreaterThan(0);
+    expect(
+      unauthenticated.some((span) => !(TENANT in span.attributes)),
+      'a span without a session carries no tenant',
+    ).toBe(true);
+
+    const corpus = exportedCorpus(harness);
+    for (const [label, marker] of Object.entries(markers)) {
+      expect(leaks(corpus, marker), `the ${label} must never appear on any signal`).toEqual([]);
+      const local = marker.split('@')[0] ?? marker;
+      expect(leaks(corpus, local), `the ${label} must never appear in part`).toEqual([]);
+    }
+  }, 120_000);
+});
+
+interface SessionUser {
+  readonly userId: string;
+  readonly cookie: string;
+}
 
 describe('otel-smoke-check, 043: every declared identity signal appears with its declared attributes (task 15.2)', () => {
   let harness: TelemetryTestHarness;

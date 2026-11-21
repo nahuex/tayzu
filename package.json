@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "engines": {
-    "node": ">=22.12.0",
+    "node": ">=22.22.2",
     "pnpm": ">=10.0.0"
   },
   "scripts": {
@@ -24,20 +24,23 @@
     "otel-smoke-check": "turbo run otel-smoke-check",
     "db:migrate": "turbo run db:migrate",
     "policy:compile": "bash scripts/policy-compile.sh",
-    "ci:local": "bash scripts/ci/local.sh"
+    "ci:local": "bash scripts/ci/local.sh",
+    "e2e": "bash scripts/ci/e2e.sh all"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.4",
     "@vitest/coverage-v8": "^5.0.2",
     "eslint": "^10.11.0",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react-hooks": "7.1.1",
     "markdownlint-cli2": "^0.23.3",
     "prettier": "^3.9.9",
     "tsx": "^4.23.15",
     "turbo": "^2.11.4",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.1",
-    "vite": "^8.3.3",
+    "vite": "8.3.5",
     "vitest": "^5.0.2"
   },
   "pnpm": {
@@ -49,7 +52,13 @@
     },
     "overrides": {
       "@esbuild-kit/core-utils>esbuild": "^0.25.0",
-      "source-map-js": "^1.2.2"
+      "source-map-js": "^1.2.2",
+      "axe-core": "4.14.0"
+    },
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "eslint-plugin-jsx-a11y@6.10.2>eslint": "10"
+      }
     }
   }
 }

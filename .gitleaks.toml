@@ -15,3 +15,18 @@ regexes = [
 paths = [
   '''^\.claude/hooks/session-start\.sh$''',
 ]
+
+# Scoped allowlist for the made-up link tokens and TOTP secret the 003 web
+# component tests use as fixtures (task 6.4, 6.8, 6.9). They are random-looking
+# literals that reach no server; each is matched exactly, only in these files.
+[[allowlists]]
+description = "003 web test fixtures: made-up link tokens and TOTP secret"
+condition = "AND"
+regexes = [
+  '''KRSXG5DTMVRXEZLUOBQWO2LMMNXWIZJAMFXGIIDTMVRXEZLUOBQXGZ3H''',
+  '''Tk9_mQ2\-vX7wLp4ZrB8nYc1HdJ6sKf3GuE5aW0oNiTx''',
+  '''Zq8\-Wm3_Rt5Yu7Io9Pa1Sd2Fg4Hj6Kl0Xc3Vb5Nm7Qw''',
+]
+paths = [
+  '''^apps/web/src/auth/(accept-invitation|accept-invitation-step-up|reset-password|mfa-enrol)\.test\.tsx$''',
+]

@@ -4,6 +4,9 @@ import { configDefaults, defineProject, type UserWorkspaceConfig } from 'vitest/
 /** Unit tests: pure, no database. */
 export const UNIT_TEST_GLOB = 'src/**/*.test.ts';
 
+/** Web component tests: jsdom, `.ts` and `.tsx`. */
+export const WEB_TEST_GLOB = 'src/**/*.test.{ts,tsx}';
+
 /** Integration tests: need a real PostgreSQL 18 through `DATABASE_URL`. */
 export const INTEGRATION_TEST_GLOB = 'src/**/*.int.test.ts';
 
@@ -33,6 +36,9 @@ export function definePackageConfig(name: string): UserWorkspaceConfig {
             environment: 'node',
             include: [UNIT_TEST_GLOB],
             exclude: [...configDefaults.exclude, INTEGRATION_TEST_GLOB],
+            // Under Turborepo's parallel runs a cold dynamic import of a package
+            // entry can pass 5 s (the default). A timeout is not an assertion.
+            testTimeout: 15_000,
           },
         },
         {
@@ -48,6 +54,43 @@ export function definePackageConfig(name: string): UserWorkspaceConfig {
             // is not an assertion: tests still fail on any wrong result.
             testTimeout: 30_000,
             hookTimeout: 60_000,
+          },
+        },
+      ],
+    },
+  });
+}
+
+/**
+ * The Vitest config of the web app (`apps/web`). It declares one nested
+ * project, `<name> (unit)`, so `pnpm test:unit` (`--project "*unit*"`)
+ * selects it like the other packages' unit projects. Tests run under jsdom,
+ * and the setup file (owned by the `test-writer`) registers the
+ * `@testing-library/jest-dom` matchers. There is no `int` project: component
+ * tests replace the network with a fake `fetch` and never need a database.
+ * `alias` is the app's `resolve.alias` (the `@/` of `vite.config.ts`), given to
+ * the nested project because inline projects do not inherit the parent config.
+ */
+export function defineWebPackageConfig(
+  name: string,
+  alias: Record<string, string> = {},
+): UserWorkspaceConfig {
+  return defineProject({
+    test: {
+      name,
+      projects: [
+        {
+          resolve: { alias },
+          test: {
+            name: 'unit',
+            environment: 'jsdom',
+            include: [WEB_TEST_GLOB],
+            setupFiles: ['src/__fixtures__/setup-tests.ts'],
+            // jsdom flows through the real router, query client and Radix
+            // components take several seconds on a loaded CI runner, so 5 s
+            // (the default) is too tight. A timeout is not an assertion: a
+            // wrong answer still fails, and the paging tests wait on results.
+            testTimeout: 20_000,
           },
         },
       ],

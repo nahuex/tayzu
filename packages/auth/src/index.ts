@@ -37,6 +37,13 @@ export {
   type ResolvedActor,
   type ResolvedContext,
 } from './context-resolver.js';
+export {
+  createSessionStateResolver,
+  type SessionGate,
+  type SessionRole,
+  type SessionState,
+  type SessionStateResolver,
+} from './session-state.js';
 export * as authSchema from './persistence/schema.js';
 export { AuthContextError, AuthRateLimitedError, AuthStepUpError } from './errors.js';
 export {
@@ -59,6 +66,12 @@ export { toCerbosRole } from './context-resolver.js';
 export { isIdle } from './session-idle.js';
 export { wouldLeaveNoSignInMethod } from './sign-in-methods.js';
 export { emitAccountLinkEvent, type AccountLinkActor } from './account-link-telemetry.js';
+export {
+  emitReauthorizationFailed,
+  emitStepUpSucceeded,
+  type ReauthorizationFailureReason,
+  type StepUpMethod,
+} from './step-up-telemetry.js';
 export { emitInternalError } from './internal-error-telemetry.js';
 export {
   verifyLogoutToken,

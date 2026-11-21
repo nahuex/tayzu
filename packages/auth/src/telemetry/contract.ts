@@ -207,7 +207,23 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'INFO',
     attributes: ['tayzu.auth.backchannel_logout.outcome'],
   },
+  // 003 design "Observability contract" -> Log events (Q29): a failed Visma Connect
+  // re-authorization callback. No tenant: an unknown or expired state is bound to none.
+  {
+    name: 'auth.security.reauthorization_failed',
+    severity: 'WARN',
+    attributes: ['tayzu.auth.reauthorization.reason'],
+  },
 ];
+
+/**
+ * The closed value sets of the bounded attributes the step-up events carry
+ * (002 Q77; 003 design D11, Q27 B2 and Q29).
+ */
+export const ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>> = {
+  'tayzu.auth.method': ['local', 'visma_connect'],
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed'],
+};
 
 /**
  * design.md, "Sampling exemption": every `auth.security.*` event is exempt

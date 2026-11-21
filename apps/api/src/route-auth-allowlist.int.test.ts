@@ -42,6 +42,7 @@
  *   registered with the switch on.
  */
 import { randomInt, randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import {
   ALLOWED_AUTH_ROUTES,
@@ -58,6 +59,7 @@ import { testEmailOptions } from './__fixtures__/email-options.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { PUBLIC_ROUTE_ALLOWLIST } from './public-routes.js';
 import { createApp, type App } from './server.js';
+import { ROOT_BUILD_FILES } from './web-static.js';
 
 const ORIGIN = 'https://app.tayzu.test';
 const ACCEPT_PATH = '/v1/auth/invitations/accept';
@@ -66,6 +68,8 @@ interface AllowlistEntry {
   readonly method: string;
   readonly path: string;
   readonly reason: string;
+  /** 003 task 4.3 (Q39): `true` covers every registered route whose path starts with `path`. */
+  readonly prefix?: boolean;
 }
 
 interface RoutePair {
@@ -83,13 +87,48 @@ function concrete(pattern: string): string {
   return pattern.replace(/\*|:[A-Za-z0-9_]+/g, () => `probe-${randomUUID().slice(0, 8)}`);
 }
 
+/** An exact entry names the route as registered; a prefix entry covers every route under it. */
+function coversPath(entry: AllowlistEntry, path: string): boolean {
+  return entry.prefix === true ? path.startsWith(entry.path) : entry.path === path;
+}
+
 function isAllowlisted(allowlist: readonly AllowlistEntry[], pair: RoutePair): boolean {
   const matches = (method: string): boolean =>
     allowlist.some(
-      (entry) => entry.path === pair.path && (entry.method === '*' || entry.method === method),
+      (entry) => coversPath(entry, pair.path) && (entry.method === '*' || entry.method === method),
     );
   // Fastify derives a HEAD route from every GET route.
   return matches(pair.method) || (pair.method === 'HEAD' && matches('GET'));
+}
+
+/** The entry is a registered route of the table (a prefix entry: at least one route under it). */
+function isRegistered(entry: AllowlistEntry, pairs: readonly RoutePair[]): boolean {
+  return pairs.some(
+    (pair) =>
+      coversPath(entry, pair.path) &&
+      (entry.method === '*' || pair.method === entry.method || pair.method === 'HEAD'),
+  );
+}
+
+/**
+ * 003 task 4.3 (design D9, Q39): the reviewed entries of the web build's routes, which are
+ * registered only when `webDistDir` (`WEB_DIST_DIR`) is set: a prefix entry for the hashed
+ * assets (`wildcard: false` registers one route per file), and exact entries for the SPA
+ * fallback (`GET /*`) and each root build file.
+ */
+const WEB_ENTRIES: readonly Omit<AllowlistEntry, 'reason'>[] = [
+  { method: 'GET', path: '/assets/', prefix: true },
+  { method: 'GET', path: '/*' },
+  ...Object.keys(ROOT_BUILD_FILES).map((name) => ({ method: 'GET', path: `/${name}` })),
+];
+
+function isWebEntry(entry: AllowlistEntry): boolean {
+  return WEB_ENTRIES.some(
+    (web) =>
+      web.method === entry.method &&
+      web.path === entry.path &&
+      (web.prefix === true) === (entry.prefix === true),
+  );
 }
 
 interface Collected {
@@ -201,6 +240,17 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
     expect(real.pairs).toContainEqual({ method: 'GET', path: '/v1/*' });
   });
 
+  /*
+   * 003 task 3.9 (design D8): "The route is in no public allowlist;
+   * `route-auth-allowlist.int.test.ts` keeps covering it." `GET /v1/me` is its own route,
+   * registered before the catch-all, so the behavioral check below reaches it as itself; it
+   * answers an anonymous caller like the catch-all only because it is not on the allowlist.
+   */
+  it('GET /v1/me (003 task 3.9, design D8) is a registered route of its own and on no public allowlist', () => {
+    expect(real.pairs).toContainEqual({ method: 'GET', path: '/v1/me' });
+    expect(allowlist.filter((entry) => entry.path === '/v1/me')).toEqual([]);
+  });
+
   it('A new Fastify route cannot be public by accident: every route outside the allowlist answers 401 CATALOG_CONTEXT_REQUIRED to an anonymous caller', async () => {
     expect(await unguardedRoutes(app, real.pairs, allowlist)).toEqual([]);
   }, 120_000);
@@ -211,12 +261,19 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
     );
     for (const entry of allowlist) {
       expect(entry.reason.trim(), `${entry.method} ${entry.path}`).not.toBe('');
-      const registered = real.pairs.some(
-        (pair) =>
-          pair.path === entry.path &&
-          (entry.method === '*' || pair.method === entry.method || pair.method === 'HEAD'),
-      );
-      expect(registered, `${entry.method} ${entry.path} is not a registered route`).toBe(true);
+      // 003 task 4.3 (Q39): a web build entry is registered only with a build, so the
+      // second harness app below proves it registered; without a build it must not be.
+      if (isWebEntry(entry)) {
+        expect(
+          isRegistered(entry, real.pairs),
+          `${entry.method} ${entry.path} is registered without a build directory`,
+        ).toBe(false);
+        continue;
+      }
+      expect(
+        isRegistered(entry, real.pairs),
+        `${entry.method} ${entry.path} is not a registered route`,
+      ).toBe(true);
     }
   });
 
@@ -244,6 +301,150 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
     ];
 
     expect(await unguardedRoutes(scratchApp, scratch.pairs, extended)).toEqual([]);
+  }, 120_000);
+});
+
+/**
+ * Task 4.3 of change `003-catalog-ui-core` (design D9 "Allowlists", Resolved decision Q39).
+ *
+ * Task 4.3: "`PUBLIC_ROUTE_ALLOWLIST` gains a reviewed prefix entry for `/assets/` and exact
+ * entries for the fallback and each root build file, each with its reason. Verify: [...]
+ * `route-auth-allowlist.int.test.ts` gains a second harness app started with the fixture
+ * `web-dist` and `WEB_DIST_DIR`, in which the new entries are registered routes, and the
+ * first app still proves every other route closed."
+ *
+ * Design D9 (excerpt): "`PUBLIC_ROUTE_ALLOWLIST` gains reviewed entries, each with its reason
+ * ("static, public by nature, no data"): a prefix entry for `/assets/`, because
+ * `wildcard: false` registers one route per file, and exact entries for the fallback and each
+ * root build file."
+ *
+ * ## Harness
+ *
+ * The first describe's app (no build) keeps proving every route closed and, through its
+ * stale-entry check, that no web entry is registered without a build. This second app is
+ * the same `createApp` with `webDistDir` (the host's `WEB_DIST_DIR`) set to the committed
+ * fixture build, so the asset routes, the root build files and the fallback are registered.
+ *
+ * ## Production symbols expected (the red phase)
+ *
+ * - `PublicRoute` (`./public-routes.js`) gains `readonly prefix?: boolean`: `true` makes the
+ *   entry cover every registered route whose path starts with `path`.
+ * - `PUBLIC_ROUTE_ALLOWLIST` gains, each with a non-empty reason:
+ *   `{ method: 'GET', path: '/assets/', prefix: true }`, `{ method: 'GET', path: '/*' }` (the
+ *   SPA fallback route) and `{ method: 'GET', path: '/<name>' }` for each key of
+ *   `ROOT_BUILD_FILES` (`/theme-init.js`, `/favicon.svg`). No other entry is a prefix entry.
+ *
+ * ## Why this fails right now
+ *
+ * The allowlist holds none of the web entries and no fallback route exists, so the entry,
+ * registration and offender checks fail.
+ */
+describe('the web build routes are reviewed public routes (003 task 4.3, design D9, Q39)', () => {
+  const FIXTURE_WEB_DIST = fileURLToPath(new URL('./__fixtures__/web-dist/', import.meta.url));
+  const bare = routeCollector();
+  const withWeb = routeCollector();
+  let bareApp: App;
+  let webApp: App;
+  const allowlist: readonly AllowlistEntry[] = PUBLIC_ROUTE_ALLOWLIST;
+  const key = (pair: RoutePair): string => `${pair.method} ${pair.path}`;
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    const base = {
+      ...pools,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: 'mount-wiring-test-only-secret-0123456789-abcdef',
+      email: testEmailOptions(),
+    };
+    bareApp = await createApp({ ...base, configureApp: bare.install });
+    webApp = await createApp({
+      ...base,
+      webDistDir: FIXTURE_WEB_DIST,
+      configureApp: withWeb.install,
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await bareApp.close();
+    await webApp.close();
+  }, 60_000);
+
+  it('the allowlist holds the reviewed web entries, each with its reason', () => {
+    for (const web of WEB_ENTRIES) {
+      const entry = allowlist.find(
+        (candidate) =>
+          candidate.method === web.method &&
+          candidate.path === web.path &&
+          (candidate.prefix === true) === (web.prefix === true),
+      );
+      expect(entry, `${web.method} ${web.path} is on the allowlist`).toBeDefined();
+      expect(entry?.reason.trim(), `${web.method} ${web.path}`).not.toBe('');
+    }
+    // The `/assets/` entry is the only prefix entry.
+    expect(
+      allowlist
+        .filter((entry) => entry.prefix === true)
+        .map((entry) => `${entry.method} ${entry.path}`),
+    ).toEqual(['GET /assets/']);
+  });
+
+  it('with the fixture build, every allowlist entry is a registered route, web entries included', () => {
+    for (const entry of allowlist) {
+      expect(
+        isRegistered(entry, withWeb.pairs),
+        `${entry.method} ${entry.path} is not a registered route`,
+      ).toBe(true);
+    }
+    for (const web of WEB_ENTRIES) {
+      expect(
+        isRegistered({ ...web, reason: 'web' }, withWeb.pairs),
+        `${web.method} ${web.path} is registered with a build`,
+      ).toBe(true);
+    }
+    expect(withWeb.pairs).toContainEqual({ method: 'GET', path: '/*' });
+    expect(withWeb.pairs).toContainEqual({ method: 'GET', path: '/assets/index-Fx7Wd1Aa.js' });
+  });
+
+  it('the build adds only routes the web entries cover', () => {
+    const bareKeys = new Set(bare.pairs.map(key));
+    const added = withWeb.pairs.filter((pair) => !bareKeys.has(key(pair)));
+    const webEntries: readonly AllowlistEntry[] = WEB_ENTRIES.map((web) => ({
+      ...web,
+      reason: 'web',
+    }));
+
+    expect(added.length).toBeGreaterThan(0);
+    expect(added.filter((pair) => !isAllowlisted(webEntries, pair)).map(key)).toEqual([]);
+    expect(bare.pairs.filter((pair) => isAllowlisted(webEntries, pair)).map(key)).toEqual([]);
+  });
+
+  it('with the fixture build, every route outside the allowlist still answers 401 CATALOG_CONTEXT_REQUIRED to an anonymous caller', async () => {
+    expect(await unguardedRoutes(webApp, withWeb.pairs, allowlist)).toEqual([]);
+  }, 120_000);
+
+  it('without the web entries the web routes would be offenders (they are public)', async () => {
+    const withoutWeb = allowlist.filter((entry) => !isWebEntry(entry));
+
+    const offenders = await unguardedRoutes(webApp, withWeb.pairs, withoutWeb);
+
+    expect(offenders).toContain('GET /*');
+    expect(offenders).toContain('GET /assets/index-Fx7Wd1Aa.js');
+    for (const name of Object.keys(ROOT_BUILD_FILES)) {
+      expect(offenders).toContain(`GET /${name}`);
+    }
+    const webEntries: readonly AllowlistEntry[] = WEB_ENTRIES.map((web) => ({
+      ...web,
+      reason: 'web',
+    }));
+    expect(
+      offenders.filter((offender) => {
+        const [method = '', path = ''] = offender.split(' ');
+        return !isAllowlisted(webEntries, { method, path });
+      }),
+    ).toEqual([]);
   }, 120_000);
 });
 

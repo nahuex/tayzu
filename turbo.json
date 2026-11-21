@@ -43,6 +43,10 @@
     "db:migrate": {
       "env": ["DATABASE_URL"],
       "cache": false
+    },
+    "e2e": {
+      "dependsOn": ["@tayzu/web#build"],
+      "cache": false
     }
   }
 }
