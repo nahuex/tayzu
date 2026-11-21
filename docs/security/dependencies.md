@@ -385,53 +385,54 @@ Rows marked _planned_ are not installed yet. They carry the version design D3
 pins and are re-checked (license, install scripts, lockfile diff, SBOM and
 audit) by the task that installs them, which then drops the mark.
 
-| Package                                                                 | Version  | License    | Kind           | Added by |
-| ----------------------------------------------------------------------- | -------- | ---------- | -------------- | -------- |
-| `react`, `react-dom`                                                    | 19.3.1   | MIT        | runtime        | 2.1      |
-| `@tanstack/react-query`                                                 | 5.106.0  | MIT        | runtime        | 2.1      |
-| `@tanstack/react-router`                                                | 1.170.46 | MIT        | runtime        | 2.1      |
-| `zustand`                                                               | 5.0.16   | MIT        | runtime        | 2.1      |
-| `react-hook-form`                                                       | 7.91.0   | MIT        | runtime        | 2.1      |
-| `@hookform/resolvers`                                                   | 7.0.2    | MIT        | runtime        | 2.1      |
-| `zod`                                                                   | 4.6.7    | MIT        | runtime        | 2.1      |
-| `i18next`                                                               | 26.7.1   | MIT        | runtime        | 2.1      |
-| `react-i18next`                                                         | 17.1.12  | MIT        | runtime        | 2.1      |
-| `@orpc/client`, `@orpc/openapi-client`                                  | 1.15.4   | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-dialog`, `-popover`                                    | 1.3.1    | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-dropdown-menu`                                         | 2.2.1    | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-tabs`                                                  | 1.2.1    | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-select`                                                | 2.4.1    | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-label`                                                 | 2.1.17   | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-slot`                                                  | 1.5.0    | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-tooltip`                                               | 1.4.1    | MIT        | runtime        | 2.1      |
-| `@radix-ui/react-separator`                                             | 1.2.0    | MIT        | runtime        | 2.1      |
-| `class-variance-authority`                                              | 0.7.1    | Apache-2.0 | runtime        | 2.1      |
-| `clsx`                                                                  | 2.1.1    | MIT        | runtime        | 2.1      |
-| `tailwind-merge`                                                        | 3.7.0    | MIT        | runtime        | 2.1      |
-| `lucide-react`                                                          | 1.68.0   | ISC        | runtime        | 2.1      |
-| `cmdk`                                                                  | 1.1.1    | MIT        | runtime        | 2.1      |
-| `react-markdown`                                                        | 10.1.0   | MIT        | runtime        | 2.1      |
-| `qrcode.react`                                                          | 4.2.0    | ISC        | runtime        | 2.1      |
-| `get-nonce`                                                             | 1.0.1    | MIT        | runtime        | 2.1      |
-| `tailwindcss`, `@tailwindcss/vite`                                      | 4.3.4    | MIT        | build          | 2.1      |
-| `tw-animate-css`                                                        | 1.4.0    | MIT        | build          | 2.1      |
-| `@vitejs/plugin-react`                                                  | 6.2.1    | MIT        | build          | 2.1      |
-| `@types/react`, `@types/react-dom`                                      | 19.3.0   | MIT        | build          | 2.1      |
-| `eslint-plugin-react-hooks` (root)                                      | 7.1.1    | MIT        | lint           | 2.3      |
-| `eslint-plugin-jsx-a11y` (root)                                         | 6.10.2   | MIT        | lint           | 2.3      |
-| `@testing-library/react`                                                | 16.3.3   | MIT        | test           | 2.4      |
-| `@testing-library/dom`                                                  | 10.4.2   | MIT        | test           | 2.4      |
-| `@testing-library/user-event`                                           | 14.6.8   | MIT        | test           | 2.4      |
-| `@testing-library/jest-dom`                                             | 7.0.1    | MIT        | test           | 2.4      |
-| `jsdom`                                                                 | 30.1.3   | MIT        | test           | 2.4      |
-| `@fastify/static` (in `@tayzu/api`)                                     | 10.1.10  | MIT        | server runtime | 4.2      |
-| `@playwright/test` (with `playwright` and `playwright-core`), _planned_ | 1.63.0   | Apache-2.0 | test           | 10.1     |
-| `@axe-core/playwright`, _planned_                                       | 4.14.0   | MPL-2.0    | test           | 10.1     |
+| Package                                                      | Version  | License    | Kind           | Added by |
+| ------------------------------------------------------------ | -------- | ---------- | -------------- | -------- |
+| `react`, `react-dom`                                         | 19.3.1   | MIT        | runtime        | 2.1      |
+| `@tanstack/react-query`                                      | 5.106.0  | MIT        | runtime        | 2.1      |
+| `@tanstack/react-router`                                     | 1.170.46 | MIT        | runtime        | 2.1      |
+| `zustand`                                                    | 5.0.16   | MIT        | runtime        | 2.1      |
+| `react-hook-form`                                            | 7.91.0   | MIT        | runtime        | 2.1      |
+| `@hookform/resolvers`                                        | 7.0.2    | MIT        | runtime        | 2.1      |
+| `zod`                                                        | 4.6.7    | MIT        | runtime        | 2.1      |
+| `i18next`                                                    | 26.7.1   | MIT        | runtime        | 2.1      |
+| `react-i18next`                                              | 17.1.12  | MIT        | runtime        | 2.1      |
+| `@orpc/client`, `@orpc/openapi-client`                       | 1.15.4   | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-dialog`, `-popover`                         | 1.3.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-dropdown-menu`                              | 2.2.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-tabs`                                       | 1.2.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-select`                                     | 2.4.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-label`                                      | 2.1.17   | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-slot`                                       | 1.5.0    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-tooltip`                                    | 1.4.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-separator`                                  | 1.2.0    | MIT        | runtime        | 2.1      |
+| `class-variance-authority`                                   | 0.7.1    | Apache-2.0 | runtime        | 2.1      |
+| `clsx`                                                       | 2.1.1    | MIT        | runtime        | 2.1      |
+| `tailwind-merge`                                             | 3.7.0    | MIT        | runtime        | 2.1      |
+| `lucide-react`                                               | 1.68.0   | ISC        | runtime        | 2.1      |
+| `cmdk`                                                       | 1.1.1    | MIT        | runtime        | 2.1      |
+| `react-markdown`                                             | 10.1.0   | MIT        | runtime        | 2.1      |
+| `qrcode.react`                                               | 4.2.0    | ISC        | runtime        | 2.1      |
+| `get-nonce`                                                  | 1.0.1    | MIT        | runtime        | 2.1      |
+| `tailwindcss`, `@tailwindcss/vite`                           | 4.3.4    | MIT        | build          | 2.1      |
+| `tw-animate-css`                                             | 1.4.0    | MIT        | build          | 2.1      |
+| `@vitejs/plugin-react`                                       | 6.2.1    | MIT        | build          | 2.1      |
+| `@types/react`, `@types/react-dom`                           | 19.3.0   | MIT        | build          | 2.1      |
+| `eslint-plugin-react-hooks` (root)                           | 7.1.1    | MIT        | lint           | 2.3      |
+| `eslint-plugin-jsx-a11y` (root)                              | 6.10.2   | MIT        | lint           | 2.3      |
+| `@testing-library/react`                                     | 16.3.3   | MIT        | test           | 2.4      |
+| `@testing-library/dom`                                       | 10.4.2   | MIT        | test           | 2.4      |
+| `@testing-library/user-event`                                | 14.6.8   | MIT        | test           | 2.4      |
+| `@testing-library/jest-dom`                                  | 7.0.1    | MIT        | test           | 2.4      |
+| `jsdom`                                                      | 30.1.3   | MIT        | test           | 2.4      |
+| `@fastify/static` (in `@tayzu/api`)                          | 10.1.10  | MIT        | server runtime | 4.2      |
+| `@playwright/test` (with `playwright` and `playwright-core`) | 1.63.0   | Apache-2.0 | test           | 10.1     |
+| `@axe-core/playwright`                                       | 4.14.0   | MPL-2.0    | test           | 10.1     |
 
 The planned rows were read from the npm registry metadata: none declares a
 `preinstall`, `install` or `postinstall` script. `@axe-core/playwright` 4.14.0
-depends on `axe-core` `~4.14.0`, which the `axe-core` 4.14.1 already locked
-for `eslint-plugin-jsx-a11y` satisfies, and declares `playwright-core
+depends on `axe-core` `~4.14.0`; a root pnpm override pins `axe-core` to
+4.14.0 for it and for `eslint-plugin-jsx-a11y` (4.14.1 was under the 14-day
+age of Q43 when task 10.1 installed these), and declares `playwright-core
 
 > =1.0.0`as a peer, which is why`pnpm why playwright-core`must show 1.63.0
 only.`@fastify/static`10.1.10 depends on`glob` `^14`, whose license is
@@ -479,7 +480,7 @@ families:
   platform (MIT; pnpm installs the host's and the `wasm32-wasi` fallback), and
   `lightningcss` 1.33.0 with its `lightningcss-<platform>` binaries
   (MPL-2.0, see below), which Vite 8 already locked.
-- **`axe-core`** 4.14.1 (MPL-2.0), pulled in by `eslint-plugin-jsx-a11y`, with
+- **`axe-core`** 4.14.0 (MPL-2.0, pinned by a root override, task 10.1), pulled in by `eslint-plugin-jsx-a11y`, with
   its lint helpers (`aria-query`, `axobject-query`, `jsx-ast-utils`,
   `language-tags` and the `es-abstract` shim family), all on the allowlist
   apart from `axe-core`.
@@ -497,8 +498,8 @@ outside the allowlist among the packages the review covers:
 
 | Package                                                                           | Version                             | License       | Path                                                                           | Ships?                                                                                               | Status                                                        |
 | --------------------------------------------------------------------------------- | ----------------------------------- | ------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `axe-core`                                                                        | 4.14.1                              | MPL-2.0       | `eslint-plugin-jsx-a11y`                                                       | No, lint only                                                                                        | Accepted, test-only and lint-only MPL-2.0 (`003` Q26 and Q40) |
-| `@axe-core/playwright` (and its `axe-core`), _planned_                            | 4.14.0                              | MPL-2.0       | direct, task 10.1                                                              | No, e2e only                                                                                         | Accepted, test-only MPL-2.0 (`003` Q26)                       |
+| `axe-core`                                                                        | 4.14.0                              | MPL-2.0       | `eslint-plugin-jsx-a11y`                                                       | No, lint only                                                                                        | Accepted, test-only and lint-only MPL-2.0 (`003` Q26 and Q40) |
+| `@axe-core/playwright` (and its `axe-core`)                                       | 4.14.0                              | MPL-2.0       | direct, task 10.1                                                              | No, e2e only                                                                                         | Accepted, test-only MPL-2.0 (`003` Q26)                       |
 | `lightningcss`, `lightningcss-<platform>`                                         | 1.33.0                              | MPL-2.0       | `vite`, `@tailwindcss/node`                                                    | No, it compiles CSS at build time; locked since Vite 8, before `003`                                 | Accepted, `003` Q50                                           |
 | `isbot`                                                                           | 5.2.3                               | Unlicense     | `@tanstack/react-router` (a production dependency)                             | No: only the router's server-rendering entry imports it, and the client build never loads that entry | Accepted, `003` Q50                                           |
 | `caniuse-lite`                                                                    | 1.0.30001826                        | CC-BY-4.0     | `browserslist`, under Babel in `eslint-plugin-react-hooks`                     | No, lint only (browser data)                                                                         | Accepted, `003` Q50                                           |
@@ -558,9 +559,8 @@ the same adaptation the rule for every later `shadcn add`:
 
 - `pnpm why get-nonce`: one version, 1.0.1, shared by the Radix scroll lock
   of `dialog`, `dropdown-menu`, `popover` and `select`.
-- `pnpm why playwright-core`: not installed yet. Task 10.1 installs
-  `@playwright/test` 1.63.0 and `@axe-core/playwright`, and then checks that
-  1.63.0 is the only copy. Dependabot never bumps either (above).
+- `pnpm why playwright-core`: one version, 1.63.0, shared by
+  `@playwright/test` and `@axe-core/playwright` (task 10.1). Dependabot never bumps either (above).
 
 ### SBOM and advisories
 

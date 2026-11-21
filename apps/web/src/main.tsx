@@ -4,6 +4,9 @@
  * router (with the session gate and the shell), and renders them with their providers,
  * through the app root with silent error handlers and inside the error boundary (D15).
  */
+// Must stay the first import: zod reads `jitless` when a schema is created (D10).
+import './lib/zod-config.js';
+
 import { QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createBrowserHistory } from '@tanstack/react-router';
 import { setNonce } from 'get-nonce';

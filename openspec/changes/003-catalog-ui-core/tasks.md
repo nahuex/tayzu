@@ -592,7 +592,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 10. E2E and accessibility
 
-- [ ] 10.1 _(setup)_ The e2e stack (design D16, Q38): `apps/web/playwright.config.ts`
+- [x] 10.1 _(setup)_ The e2e stack (design D16, Q38): `apps/web/playwright.config.ts`
       (Chromium only, `@playwright/test` pinned to `1.63.0` to match the preinstalled
       revision 1243 at `/opt/pw-browsers`, `PLAYWRIGHT_BROWSERS_PATH` respected, retries
       off, traces on failure, the throwaway certificate trusted by its SPKI hash and never
