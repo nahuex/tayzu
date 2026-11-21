@@ -554,7 +554,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 8. Entity page
 
-- [ ] 8.1 The entity page header (design D13): title, identifier, blueprint, created
+- [x] 8.1 The entity page header (design D13): title, identifier, blueprint, created
       and updated time and actor, version and generation, the `details` and `related`
       tabs from the `tab` search param, and the not-found page. Verify:
       `entity-page.test.tsx` covers the header fields, the tab switch updating the URL,

@@ -26,5 +26,35 @@
     "yes": "Yes",
     "no": "No",
     "more": "+{{count}}"
+  },
+  "entity": {
+    "loading": "Loading entity...",
+    "fields": {
+      "identifier": "Identifier",
+      "blueprint": "Blueprint",
+      "createdAt": "Created",
+      "createdBy": "Created by",
+      "updatedAt": "Updated",
+      "updatedBy": "Updated by",
+      "version": "Version",
+      "generation": "Generation"
+    },
+    "actorType": {
+      "user": "User",
+      "agent": "Agent",
+      "integration": "Integration",
+      "system": "System"
+    },
+    "tabs": {
+      "label": "Entity sections",
+      "details": "Details",
+      "related": "Related"
+    },
+    "notAddressable": "This entity cannot be opened by URL.",
+    "error": {
+      "forbidden": "You do not have permission to view this entity.",
+      "server": "The entity could not be loaded. Try again later.",
+      "rateLimited": "Too many requests. Wait a moment and try again."
+    }
   }
 }

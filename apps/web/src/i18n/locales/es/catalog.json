@@ -26,5 +26,35 @@
     "yes": "Sí",
     "no": "No",
     "more": "+{{count}}"
+  },
+  "entity": {
+    "loading": "Cargando entidad...",
+    "fields": {
+      "identifier": "Identificador",
+      "blueprint": "Blueprint",
+      "createdAt": "Creado",
+      "createdBy": "Creado por",
+      "updatedAt": "Actualizado",
+      "updatedBy": "Actualizado por",
+      "version": "Versión",
+      "generation": "Generación"
+    },
+    "actorType": {
+      "user": "Usuario",
+      "agent": "Agente",
+      "integration": "Integración",
+      "system": "Sistema"
+    },
+    "tabs": {
+      "label": "Secciones de la entidad",
+      "details": "Detalles",
+      "related": "Relacionadas"
+    },
+    "notAddressable": "Esta entidad no se puede abrir por URL.",
+    "error": {
+      "forbidden": "No tienes permiso para ver esta entidad.",
+      "server": "No se pudo cargar la entidad. Inténtalo de nuevo más tarde.",
+      "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo."
+    }
   }
 }

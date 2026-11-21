@@ -4,7 +4,7 @@
  *
  * Each route renders one page slot. `createAppRouter` lays the given pages over the
  * defaults (the real sign-in, forgot-password, reset-password, accept-invitation, change-password, expired-password, MFA
- * enrolment and step-up completion pages, the catalog table page, and placeholders until groups 8 and 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
+ * enrolment and step-up completion pages, the catalog table page, the entity page, and placeholders until groups 8 and 9 bring the others). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
  * an entity such as `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
  *
  * Given a `session` source (task 5.8, Q68), every protected route runs the session
@@ -43,6 +43,7 @@ import { ResetPasswordPage } from '../auth/reset-password-page.js';
 import { SignInPage } from '../auth/sign-in-page.js';
 import { StepUpCompletePage } from '../auth/step-up-complete-page.js';
 import { CatalogTablePage } from '../catalog/catalog-table-page.js';
+import { EntityPage } from '../catalog/entity-page.js';
 
 import { AppShell, type ShellSources } from './app-shell.js';
 import { AppErrorBoundary, ErrorPage } from './error-boundary.js';
@@ -107,7 +108,7 @@ const DEFAULT_PAGES: AppPageOptions = {
   stepUpComplete: StepUpCompletePage,
   home: PlaceholderPage,
   catalogTable: CatalogTablePage,
-  entity: PlaceholderPage,
+  entity: EntityPage,
   search: PlaceholderPage,
   passwordExpired: PasswordExpiredPage,
 };
