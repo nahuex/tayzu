@@ -381,7 +381,9 @@ async function createdBy(
 async function seedCatalogA(
   client: SeedClient,
   jar: CookieJar,
-): Promise<Omit<SeedTenantA['catalog'], 'vismaConnectDeletable' | 'stepUpDeletable'>> {
+): Promise<
+  Omit<SeedTenantA['catalog'], 'vismaConnectDeletable' | 'stepUpDeletable' | 'dialogEntities'>
+> {
   const team = await createBlueprint(client, jar, {
     identifier: 'team',
     title: { en: 'Team', es: 'Equipo' },
@@ -720,6 +722,11 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
         name: 'E2E Step-up Password',
         role: 'member',
       }),
+      dialogOwner: await createUser(client, a.jar, {
+        email: address('dialog-owner'),
+        name: 'E2E Dialog Owner',
+        role: 'member',
+      }),
     };
     await client.request(
       'identity.users.linkSsoAccount',
@@ -742,6 +749,7 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
     const vismaConnectLocal = await settlePassword(client, created.vismaConnect);
     const mfaEnrolee = await settlePassword(client, created.mfaEnrolee);
     const stepUpPassword = await settlePassword(client, created.stepUpPassword);
+    const dialogOwner = await settlePassword(client, created.dialogOwner);
     // Enrolled after it creates its entity (below), which needs a sign-in without a factor.
     const stepUpTotpSettled = await settlePassword(client, created.stepUpTotp);
     const resetWithoutMfa = await settlePassword(client, created.resetWithoutMfa);
@@ -794,6 +802,21 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
           spec: { properties: { channel: 'step-up-password' } },
         }),
       },
+      // Tasks 10.8 and 10.9 open the step-up prompt of their deletes and cancel it.
+      dialogEntities: {
+        local: await createdBy(client, dialogOwner, {
+          blueprint: 'team',
+          identifier: 'team-dialog-local',
+          title: 'Dialog team',
+          spec: { properties: { channel: 'dialog-local' } },
+        }),
+        vismaConnect: await createdBy(client, vismaConnectLocal, {
+          blueprint: 'team',
+          identifier: 'team-dialog-sso',
+          title: 'Visma Connect dialog team',
+          spec: { properties: { channel: 'dialog-sso' } },
+        }),
+      },
     };
     const stepUpTotpSession = await signIn(
       client,
@@ -840,6 +863,7 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
             mfaEnrolee,
             stepUpTotp,
             stepUpPassword,
+            dialogOwner,
           },
           links: {
             invitation: { email: inviteeEmail, link: invitationLink, password: randomPassword() },

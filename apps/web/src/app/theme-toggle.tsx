@@ -1,6 +1,9 @@
 /**
  * The header's theme toggle (design D12, Shell and Theme): a menu of the three theme
  * choices, the current one checked. The texts come from the `common` namespace.
+ * The menu is not modal: a modal Radix menu hides the rest of the page with `aria-hidden`
+ * while its controls stay focusable (axe `aria-hidden-focus`, design D16). Focus still
+ * moves into the menu, and Escape returns it to the trigger.
  */
 import type { LucideIcon } from 'lucide-react';
 import { MonitorIcon, MoonIcon, SunIcon } from 'lucide-react';
@@ -30,7 +33,7 @@ export function ThemeToggle({ store }: { store: ThemeStore }): React.JSX.Element
   const CurrentIcon = THEME_ICONS[theme];
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" aria-label={t('theme.label')}>
           <CurrentIcon aria-hidden="true" />

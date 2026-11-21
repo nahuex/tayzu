@@ -1,6 +1,9 @@
 /**
  * The header's locale selector (design D12, i18n): a menu of the supported locales, the
  * current one checked. Choosing one stores it, switches the texts and `<html lang>`.
+ * The menu is not modal: a modal Radix menu hides the rest of the page with `aria-hidden`
+ * while its controls stay focusable (axe `aria-hidden-focus`, design D16). Focus still
+ * moves into the menu, and Escape returns it to the trigger.
  */
 import { LanguagesIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -20,7 +23,7 @@ export function LocaleSelector(): React.JSX.Element {
   const { t, i18n } = useTranslation('common');
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" aria-label={t('locale.label')}>
           <LanguagesIcon aria-hidden="true" />

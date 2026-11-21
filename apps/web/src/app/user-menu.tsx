@@ -3,6 +3,9 @@
  * organization's name and the localized role, from the session (`GET /v1/me`), the MFA
  * enrolment page when the user is not enrolled (Q74), and sign-out. Server strings are
  * rendered as text only.
+ * The menu is not modal: a modal Radix menu hides the rest of the page with `aria-hidden`
+ * while its controls stay focusable (axe `aria-hidden-focus`, design D16). Focus still
+ * moves into the menu, and Escape returns it to the trigger.
  */
 import { Link } from '@tanstack/react-router';
 import { UserIcon } from 'lucide-react';
@@ -30,7 +33,7 @@ export function UserMenu({
   const { t } = useTranslation('common');
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" aria-label={t('userMenu.label')}>
           <UserIcon aria-hidden="true" />

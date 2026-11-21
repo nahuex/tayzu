@@ -638,11 +638,11 @@ stack of `scripts/ci/e2e.sh`.
       by title and page forward" on 120 seeded entities, "Related entities in both
       directions", "Status shown next to spec" and "Search by identifier prefix from the
       keyboard".
-- [ ] 10.8 No CSP violation anywhere (design D10). Verify: `apps/web/e2e/csp.spec.ts`
+- [x] 10.8 No CSP violation anywhere (design D10). Verify: `apps/web/e2e/csp.spec.ts`
       visits every route in both themes, opens every dialog, and covers "Using the app
       raises no policy violation"; it also records whether any runtime `<style>` element
       was inserted, which decides whether the style nonce stays (design D10).
-- [ ] 10.9 Accessibility (design D16). Verify: `apps/web/e2e/a11y.spec.ts` runs
+- [x] 10.9 Accessibility (design D16). Verify: `apps/web/e2e/a11y.spec.ts` runs
       `@axe-core/playwright` with the WCAG 2.2 A and AA tags on every route, in both
       themes and with each dialog open, covering "No accessibility violation on any
       page", and walks the main flows with the keyboard only.

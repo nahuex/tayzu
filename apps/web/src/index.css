@@ -120,6 +120,12 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * The shadcn/ui neutral theme, adapted for WCAG 2.2 AA (design D12 and D16): the light
+ * `--muted-foreground` and both `--destructive` values are adjusted so muted text on
+ * `--muted` and `--accent`, and destructive text on its own tint (`bg-destructive/10`
+ * to `/30`, also over the dialog footer), reach 4.5:1.
+ */
 :root {
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -132,10 +138,10 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  --muted-foreground: oklch(0.52 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
+  --destructive: oklch(0.48 0.18 27.5);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -170,7 +176,7 @@
   --muted-foreground: oklch(0.708 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
+  --destructive: oklch(0.825 0.093 20);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);

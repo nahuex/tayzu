@@ -86,6 +86,13 @@ export interface SeedTenantA {
     readonly stepUpTotp: SeedTotpUser;
     /** Member without MFA who deletes `catalog.stepUpDeletable.password` (task 10.5). */
     readonly stepUpPassword: SeedUser;
+    /**
+     * Member without MFA, own password set, who created `catalog.dialogEntities.local`.
+     * The CSP and accessibility specs (tasks 10.8 and 10.9) sign it in to open every
+     * dialog, the step-up dialog included, and always cancel: it and its entity never
+     * change, so those two specs share it. No other spec signs it in.
+     */
+    readonly dialogOwner: SeedUser;
   };
   readonly links: {
     /**
@@ -143,6 +150,14 @@ export interface SeedTenantA {
      * so they are not in `entities` and no other spec may rely on them.
      */
     readonly stepUpDeletable: { readonly totp: SeedEntity; readonly password: SeedEntity };
+    /**
+     * Entities whose delete opens the step-up dialog without ever completing (tasks 10.8
+     * and 10.9): `local` was created by `users.dialogOwner`, `vismaConnect` by the Visma
+     * Connect user, so each may delete theirs and meets the step-up prompt of their
+     * session. The specs cancel that prompt, so both entities stay; they are not in
+     * `entities`, and no other spec may rely on them.
+     */
+    readonly dialogEntities: { readonly local: SeedEntity; readonly vismaConnect: SeedEntity };
     /** An entity with a written status (task 10.7, "Status shown next to spec"). */
     readonly status: {
       readonly entity: SeedEntity;
