@@ -613,11 +613,11 @@ stack of `scripts/ci/e2e.sh`.
       like `dast-script.test.ts`) asserts the TLS mode of the database and of the proxy,
       the pinned images, `NODE_ENV` not `test`, and that no secret, credential or link is
       echoed; and `pnpm e2e` runs a smoke spec green over `https:`.
-- [ ] 10.2 Sign-in end to end. Verify: `apps/web/e2e/sign-in.spec.ts` covers "Local
+- [x] 10.2 Sign-in end to end. Verify: `apps/web/e2e/sign-in.spec.ts` covers "Local
       sign-in with a second factor", the shell with the sidebar, "Spanish browser, no
       choice stored" through a browser locale of `es-AR`, the theme toggle surviving a
       reload, and sign-out.
-- [ ] 10.3 Visma Connect end to end, through the OIDC stub. Verify:
+- [x] 10.3 Visma Connect end to end, through the OIDC stub. Verify:
       `apps/web/e2e/sso.spec.ts` covers "Visma Connect sign-in" and "A Visma Connect
       user re-authorizes" (the `form_post` callbacks, the `303` to `/step-up/complete`,
       the repeated delete succeeding).

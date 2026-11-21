@@ -262,10 +262,13 @@ up() {
   export MOUNT_IDENTITY_ROUTES="true"
   export EMAIL_PROVIDER=none
   # The OIDC stub stands in for Visma Connect, behind the proxy's second port.
-  export VISMA_CONNECT_DISCOVERY_URL="https://localhost:${OIDC_PORT}/.well-known/openid-configuration"
+  # The stub is served at 127.0.0.1, a different site from the app at localhost, as Visma
+  # Connect is in production: its form_post callback then carries no SameSite=Lax cookie,
+  # so Better Auth's origin check never sees a provider origin (003 Q92).
+  export VISMA_CONNECT_DISCOVERY_URL="https://127.0.0.1:${OIDC_PORT}/.well-known/openid-configuration"
   export VISMA_CONNECT_CLIENT_ID="tayzu-e2e"
   export VISMA_CONNECT_CLIENT_SECRET="$oidc_client_secret"
-  export E2E_OIDC_ISSUER="https://localhost:${OIDC_PORT}"
+  export E2E_OIDC_ISSUER="https://127.0.0.1:${OIDC_PORT}"
   export E2E_OIDC_STUB_PORT="$OIDC_STUB_PORT"
   export E2E_OIDC_SUBJECT="e2e-visma-connect-${run_tag}"
   export E2E_OIDC_EMAIL="e2e-visma-connect-${run_tag}@example.test"

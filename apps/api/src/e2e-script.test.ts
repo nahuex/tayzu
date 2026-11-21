@@ -31,9 +31,11 @@
  *   `https://localhost:<port>` origin: the proxy's.
  * - The OIDC stub of `@tayzu/auth` (`packages/auth/src/__fixtures__/oidc-stub.ts`)
  *   runs through `scripts/ci/e2e-oidc-stub.ts`; `VISMA_CONNECT_DISCOVERY_URL` is an
- *   `https://localhost:` URL (behind the proxy), and `VISMA_CONNECT_CLIENT_SECRET` is
- *   random per run. `E2E_OIDC_SUBJECT` and `E2E_OIDC_EMAIL` are exported for the stub
- *   and the seed.
+ *   `https://127.0.0.1:` URL (behind the proxy): the stub must be cross-site to the
+ *   app at `localhost`, as Visma Connect is in production (Resolved decision Q92), so
+ *   its `form_post` callback carries no `SameSite=Lax` cookie.
+ *   `VISMA_CONNECT_CLIENT_SECRET` is random per run. `E2E_OIDC_SUBJECT` and
+ *   `E2E_OIDC_EMAIL` are exported for the stub and the seed.
  * - The test-only TLS reverse proxy is `scripts/ci/e2e-tls-proxy.ts`: `node:https`,
  *   bound to `127.0.0.1`, with a `localhost` certificate signed by the same CA.
  * - The seed `apps/web/e2e/fixtures/seed.ts` runs after `apps/api` is healthy and the
@@ -322,7 +324,10 @@ describe('e2e.sh: the API runs with its production configuration (task 10.1, D16
     expect(read(STUB_RUNNER_PATH)).toMatch(
       /from '(\.\.\/)+packages\/auth\/src\/__fixtures__\/oidc-stub\.js'/,
     );
-    expect(discovery).toMatch(/^https:\/\/localhost:[^\n]*\/\.well-known\/openid-configuration$/);
+    // Q92: cross-site to the app (`localhost`), so `127.0.0.1`, never `localhost`.
+    expect(discovery).toMatch(
+      /^https:\/\/127\.0\.0\.1:[^\n]*\/\.well-known\/openid-configuration$/,
+    );
     expect(exportedValues('VISMA_CONNECT_CLIENT_ID')).toHaveLength(1);
     expect(exportedValues('VISMA_CONNECT_CLIENT_SECRET')).toHaveLength(1);
     expect(exportedValues('E2E_OIDC_SUBJECT')).toHaveLength(1);

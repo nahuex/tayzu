@@ -86,6 +86,13 @@ export interface SeedTenantA {
       readonly relation: string;
       readonly relationTitle: string;
     };
+    /**
+     * An entity the Visma Connect user created (through a local session of the same
+     * user), so that member may delete it (`catalog_entity.yaml`: a member deletes what
+     * they created). Task 10.3 deletes it, so it is not in `entities` and no other spec
+     * may rely on it.
+     */
+    readonly vismaConnectDeletable: SeedEntity;
     /** An entity with a written status (task 10.7, "Status shown next to spec"). */
     readonly status: {
       readonly entity: SeedEntity;

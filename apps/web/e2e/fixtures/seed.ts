@@ -364,7 +364,24 @@ async function createEntity(
   };
 }
 
-async function seedCatalogA(client: SeedClient, jar: CookieJar): Promise<SeedTenantA['catalog']> {
+/**
+ * An entity created by `user` through a local session of their own, so `created_by_id`
+ * is that user's id: the attribute that lets a member delete it.
+ */
+async function createdBy(
+  client: SeedClient,
+  user: SeedUser,
+  entity: SeedEntity & { readonly spec?: Record<string, unknown> },
+): Promise<SeedEntity> {
+  const { jar, twoFactor } = await signIn(client, user.email, user.password);
+  if (twoFactor) throw new Error('sign-in of a user without a factor asked for one.');
+  return (await createEntity(client, jar, entity)).entity;
+}
+
+async function seedCatalogA(
+  client: SeedClient,
+  jar: CookieJar,
+): Promise<Omit<SeedTenantA['catalog'], 'vismaConnectDeletable'>> {
   const team = await createBlueprint(client, jar, {
     identifier: 'team',
     title: { en: 'Team', es: 'Equipo' },
@@ -678,8 +695,9 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
     const adminWithoutMfa = await settlePassword(client, created.adminWithoutMfa);
     const member = await settlePassword(client, created.member);
     // Signed in once with a password of its own, so the Visma Connect session meets no
-    // temporary-password gate; the stub's subject is what it signs in with.
-    await settlePassword(client, created.vismaConnect);
+    // temporary-password gate; the stub's subject is what it signs in with. The password
+    // is kept in memory only, for the entity it creates below, and never written.
+    const vismaConnectLocal = await settlePassword(client, created.vismaConnect);
     const resetWithoutMfa = await settlePassword(client, created.resetWithoutMfa);
     const resetWithMfaSettled = await settlePassword(client, created.resetWithMfa);
     const resetMfaSession = await signIn(
@@ -708,7 +726,15 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
       'PasswordResetEmail',
     );
 
-    const catalogA = await seedCatalogA(client, a.jar);
+    const catalogA = {
+      ...(await seedCatalogA(client, a.jar)),
+      vismaConnectDeletable: await createdBy(client, vismaConnectLocal, {
+        blueprint: 'team',
+        identifier: 'team-sso-deletable',
+        title: 'Visma Connect deletable team',
+        spec: { properties: { channel: 'sso-deletable' } },
+      }),
+    };
     const me = await client.request('GET /v1/me', 'GET', '/v1/me', { jar: a.jar });
     const tenantAId = (me.body['organization'] as { id?: unknown } | undefined)?.id;
 
