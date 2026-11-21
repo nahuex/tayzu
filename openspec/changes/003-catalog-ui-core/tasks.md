@@ -530,7 +530,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 7. Catalog table
 
-- [ ] 7.1 Columns from the blueprint (design D13): identifier, title, the spec
+- [x] 7.1 Columns from the blueprint (design D13): identifier, title, the spec
       properties in schema order, the relations and `updatedAt`, with localized
       headers. Verify: `columns.test.ts` covers the order for a blueprint with
       properties, relations and a status schema, localized and fallback titles, an entity

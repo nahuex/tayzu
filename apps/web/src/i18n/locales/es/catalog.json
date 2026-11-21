@@ -1,5 +1,10 @@
 {
   "table": {
-    "empty": "Todavía no hay entidades."
+    "empty": "Todavía no hay entidades.",
+    "columns": {
+      "identifier": "Identificador",
+      "title": "Título",
+      "updatedAt": "Actualizado"
+    }
   }
 }

@@ -412,7 +412,7 @@ Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la docume
 | `044-password-reset-and-account-recovery` | Password reset and account recovery: forgot-password email link, single-use short-lived reset tokens, enumeration-resistant responses, session revocation on reset, MFA recovery (decision D10) | 002, 043 |
 | `045-org-deletion-and-data-retention` | Org deletion and data retention: two-phase org deletion (access revoked at once, purge after a 7-to-14-day window), the deletion marker with the `tayzu_purge` and `tayzu_deletion_admin` roles, the audited operator reversal and its reviewed maintenance workflow, and the retention policy (decision D12) | 002, 043 |
 | `046-azure-deployment-and-first-release` | Azure deployment and first release: the IaC for Container Apps, PostgreSQL Flexible Server, Key Vault and Azure Monitor, the sandbox rehearsal, and every first-deployment gate that `002` to `045` attribute to `010`, plus the gates `003` names (decision D13) | 002, 043, 044, 045, 003 |
-| `047-catalog-ui-customization` | Catalog UI customization: blueprint page layouts, saved views, organization branding and announcement banner, the icon library and enum colors, with their storage (decision D13) | 003 |
+| `047-catalog-ui-customization` | Catalog UI customization: blueprint page layouts, saved views, organization branding and announcement banner, the icon library and enum colors, with their storage (decision D13); also the authored column order, since the `jsonb` schema does not keep property order (`003` Q82) | 003 |
 
 **Execution order note (2026-09-28, amended 2026-11-18):** `002-auth-and-rbac` runs before
 `043-identity-lifecycle-and-org-admin`, which runs before

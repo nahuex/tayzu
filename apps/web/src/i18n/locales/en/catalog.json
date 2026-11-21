@@ -1,5 +1,10 @@
 {
   "table": {
-    "empty": "No entities yet."
+    "empty": "No entities yet.",
+    "columns": {
+      "identifier": "Identifier",
+      "title": "Title",
+      "updatedAt": "Updated"
+    }
   }
 }
