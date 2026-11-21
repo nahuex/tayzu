@@ -714,6 +714,6 @@ stack of `scripts/ci/e2e.sh`.
       report is attached to the PR with zero open blocking gaps.
 - [x] 11.11 Run `/security-review` on the branch and fix or justify every finding.
       Verify: the review output is attached to the PR.
-- [ ] 11.12 `openspec validate 003-catalog-ui-core --strict` passes, and design, specs
+- [x] 11.12 `openspec validate 003-catalog-ui-core --strict` passes, and design, specs
       and code agree (update the design only if an implementation finding forced a
       change, noted in the PR). Verify: the command output is attached to the PR.
