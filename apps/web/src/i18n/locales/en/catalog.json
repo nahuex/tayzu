@@ -62,6 +62,38 @@
         "none": "No status has been reported for this entity."
       }
     },
+    "related": {
+      "caption": "Related entities",
+      "direction": {
+        "label": "Direction",
+        "forward": "Forward",
+        "backward": "Backward"
+      },
+      "scope": {
+        "label": "Scope",
+        "both": "Spec and status",
+        "spec": "Spec",
+        "status": "Status"
+      },
+      "columns": {
+        "relation": "Relation",
+        "identifier": "Identifier",
+        "title": "Title",
+        "blueprint": "Blueprint",
+        "scope": "Scope"
+      },
+      "empty": "No related entities.",
+      "loading": "Loading related entities...",
+      "pagination": {
+        "previous": "Previous",
+        "next": "Next"
+      },
+      "error": {
+        "forbidden": "You do not have permission to view the related entities.",
+        "server": "The related entities could not be loaded. Try again later.",
+        "rateLimited": "Too many requests. Wait a moment and try again."
+      }
+    },
     "notAddressable": "This entity cannot be opened by URL.",
     "error": {
       "forbidden": "You do not have permission to view this entity.",

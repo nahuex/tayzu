@@ -56,6 +56,7 @@ import {
   type CatalogColumn,
   type PropertyDefinition,
 } from './columns.js';
+import { isCursorRefusal } from './paging.js';
 
 type Entity = Awaited<ReturnType<ApiClient['entities']['list']>>['items'][number];
 type SortField = TableSearch['sort'];
@@ -91,11 +92,6 @@ function errorMessageKey(error: ApiError): ErrorMessageKey {
     default:
       return 'table.error.server';
   }
-}
-
-/** True when `entities.list` refused the cursor it was sent (D6). */
-function isCursorRefusal(error: ApiError | undefined): boolean {
-  return error?.kind === 'validation' && error.issues.some((issue) => issue.path === '/cursor');
 }
 
 /** A row spanning every column, for the loading status or the empty text. */

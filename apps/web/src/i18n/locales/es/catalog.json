@@ -62,6 +62,38 @@
         "none": "No se ha informado ningún estado para esta entidad."
       }
     },
+    "related": {
+      "caption": "Entidades relacionadas",
+      "direction": {
+        "label": "Dirección",
+        "forward": "Hacia delante",
+        "backward": "Hacia atrás"
+      },
+      "scope": {
+        "label": "Ámbito",
+        "both": "Especificación y estado",
+        "spec": "Especificación",
+        "status": "Estado"
+      },
+      "columns": {
+        "relation": "Relación",
+        "identifier": "Identificador",
+        "title": "Título",
+        "blueprint": "Blueprint",
+        "scope": "Ámbito"
+      },
+      "empty": "No hay entidades relacionadas.",
+      "loading": "Cargando entidades relacionadas...",
+      "pagination": {
+        "previous": "Anterior",
+        "next": "Siguiente"
+      },
+      "error": {
+        "forbidden": "No tienes permiso para ver las entidades relacionadas.",
+        "server": "No se pudieron cargar las entidades relacionadas. Inténtalo de nuevo más tarde.",
+        "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo."
+      }
+    },
     "notAddressable": "Esta entidad no se puede abrir por URL.",
     "error": {
       "forbidden": "No tienes permiso para ver esta entidad.",

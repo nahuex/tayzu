@@ -565,7 +565,7 @@ stack of `scripts/ci/e2e.sh`.
       properties with observed generation, source and time, markdown values through the
       safe renderer. Verify: `entity-details.test.tsx` covers "Status shown next to
       spec", an entity with no status, and a markdown value rendered without raw HTML.
-- [ ] 8.3 The Related tab (design D13): `entities.listRelated` with the direction
+- [x] 8.3 The Related tab (design D13): `entities.listRelated` with the direction
       toggle, the scope select and cursor paging, each row linking to its target.
       Verify: `entity-related.test.tsx` covers "Related entities in both directions",
       the scope choice in the request, paging and an empty list.

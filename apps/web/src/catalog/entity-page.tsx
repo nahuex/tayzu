@@ -11,7 +11,7 @@
  *
  * The selected tab is the URL's `tab`; choosing one writes it there, and the route strips
  * the default `details` (Q68). Only the selected tab's panel is rendered. The Details
- * panel is `EntityDetails` (Q86).
+ * panel is `EntityDetails` (Q86) and the Related panel `EntityRelated` (Q87).
  *
  * States, as the table's (Q84): a busy status while either call is pending; the
  * not-found page for a `not_found` answer of either call, the same for another tenant's
@@ -35,6 +35,7 @@ import { currentLocale, localizedText } from '../i18n/i18n.js';
 import { formatDate } from '../lib/format.js';
 
 import { EntityDetails } from './entity-details.js';
+import { EntityRelated } from './entity-related.js';
 import { Field } from './field.js';
 
 type Entity = Awaited<ReturnType<ApiClient['entities']['get']>>;
@@ -178,8 +179,14 @@ function EntityPageContent(): React.JSX.Element | null {
         <TabsContent value="details">
           <EntityDetails blueprint={definition} entity={item} locale={locale} />
         </TabsContent>
-        {/* The Related panel's content comes with task 8.3. */}
-        <TabsContent value="related" />
+        <TabsContent value="related">
+          {/* Keyed by the entity: another entity starts with the default direction, scope and page. */}
+          <EntityRelated
+            key={JSON.stringify([blueprint, entity])}
+            blueprint={blueprint}
+            entity={entity}
+          />
+        </TabsContent>
       </Tabs>
     </div>
   );
