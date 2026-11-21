@@ -662,17 +662,17 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 11. Docs, ADRs, diagram, and integration checks (Checkpoint 2 readiness)
 
-- [ ] 11.1 Write `docs/adr/0004-tanstack-query-and-zustand.md` (backfill, Q11): server
+- [x] 11.1 Write `docs/adr/0004-tanstack-query-and-zustand.md` (backfill, Q11): server
       state in TanStack Query and local UI state in Zustand, from `project.md` §2 line
       39, with `003`'s use (D4, D12). Verify: the file exists with Context, Decision,
       Alternatives and Consequences, marked as a backfill, and `pnpm lint` passes.
-- [ ] 11.2 Write `docs/adr/0007-shadcn-ui-on-radix-and-tailwind.md` (backfill, Q11),
+- [x] 11.2 Write `docs/adr/0007-shadcn-ui-on-radix-and-tailwind.md` (backfill, Q11),
       from `project.md` §2 line 59, with the copy-not-install rule and `components.json`.
       Verify: the file exists with the four sections, marked as a backfill, and `pnpm
       lint` passes.
-- [ ] 11.3 Write `docs/adr/0025-same-origin-web-hosting.md` (design D9, Q2). Verify: the
+- [x] 11.3 Write `docs/adr/0025-same-origin-web-hosting.md` (design D9, Q2). Verify: the
       file exists with the four sections, design D9 links to it, and `pnpm lint` passes.
-- [ ] 11.4 Write `docs/adr/0026-strict-content-security-policy.md` (design D10, Q5),
+- [x] 11.4 Write `docs/adr/0026-strict-content-security-policy.md` (design D10, Q5),
       including the style nonce and its removal condition, `form-action` and the dev
       policy. Verify: the file exists with the four sections, design D10 links to it,
       and `pnpm lint` passes.
