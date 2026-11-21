@@ -381,7 +381,7 @@ async function createdBy(
 async function seedCatalogA(
   client: SeedClient,
   jar: CookieJar,
-): Promise<Omit<SeedTenantA['catalog'], 'vismaConnectDeletable'>> {
+): Promise<Omit<SeedTenantA['catalog'], 'vismaConnectDeletable' | 'stepUpDeletable'>> {
   const team = await createBlueprint(client, jar, {
     identifier: 'team',
     title: { en: 'Team', es: 'Equipo' },
@@ -678,6 +678,26 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
         name: 'E2E Reset With MFA',
         role: 'member',
       }),
+      temporaryPasswordChange: await createUser(client, a.jar, {
+        email: address('temporary-change'),
+        name: 'E2E Temporary Password Change',
+        role: 'member',
+      }),
+      mfaEnrolee: await createUser(client, a.jar, {
+        email: address('mfa-enrolee'),
+        name: 'E2E MFA Enrolee',
+        role: 'admin',
+      }),
+      stepUpTotp: await createUser(client, a.jar, {
+        email: address('step-up-totp'),
+        name: 'E2E Step-up TOTP',
+        role: 'member',
+      }),
+      stepUpPassword: await createUser(client, a.jar, {
+        email: address('step-up-password'),
+        name: 'E2E Step-up Password',
+        role: 'member',
+      }),
     };
     await client.request(
       'identity.users.linkSsoAccount',
@@ -698,6 +718,10 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
     // temporary-password gate; the stub's subject is what it signs in with. The password
     // is kept in memory only, for the entity it creates below, and never written.
     const vismaConnectLocal = await settlePassword(client, created.vismaConnect);
+    const mfaEnrolee = await settlePassword(client, created.mfaEnrolee);
+    const stepUpPassword = await settlePassword(client, created.stepUpPassword);
+    // Enrolled after it creates its entity (below), which needs a sign-in without a factor.
+    const stepUpTotpSettled = await settlePassword(client, created.stepUpTotp);
     const resetWithoutMfa = await settlePassword(client, created.resetWithoutMfa);
     const resetWithMfaSettled = await settlePassword(client, created.resetWithMfa);
     const resetMfaSession = await signIn(
@@ -734,6 +758,29 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
         title: 'Visma Connect deletable team',
         spec: { properties: { channel: 'sso-deletable' } },
       }),
+      stepUpDeletable: {
+        totp: await createdBy(client, stepUpTotpSettled, {
+          blueprint: 'team',
+          identifier: 'team-step-up-totp',
+          title: 'Step-up TOTP deletable team',
+          spec: { properties: { channel: 'step-up-totp' } },
+        }),
+        password: await createdBy(client, stepUpPassword, {
+          blueprint: 'team',
+          identifier: 'team-step-up-password',
+          title: 'Step-up password deletable team',
+          spec: { properties: { channel: 'step-up-password' } },
+        }),
+      },
+    };
+    const stepUpTotpSession = await signIn(
+      client,
+      stepUpTotpSettled.email,
+      stepUpTotpSettled.password,
+    );
+    const stepUpTotp: SeedTotpUser = {
+      ...stepUpTotpSettled,
+      totpSecret: await enrolTotp(client, stepUpTotpSession.jar, stepUpTotpSettled.password),
     };
     const me = await client.request('GET /v1/me', 'GET', '/v1/me', { jar: a.jar });
     const tenantAId = (me.body['organization'] as { id?: unknown } | undefined)?.id;
@@ -764,11 +811,26 @@ export async function seed(env: Env = process.env): Promise<E2eSeed> {
             vismaConnect: { email: ssoEmail, name: created.vismaConnect.name, subject: ssoSubject },
             resetWithoutMfa,
             resetWithMfa,
+            temporaryPasswordChange: {
+              ...created.temporaryPasswordChange,
+              newPassword: randomPassword(),
+            },
+            mfaEnrolee,
+            stepUpTotp,
+            stepUpPassword,
           },
           links: {
-            invitation: { email: inviteeEmail, link: invitationLink },
-            passwordReset: { email: resetWithoutMfa.email, link: passwordResetLink },
-            passwordResetWithMfa: { email: resetWithMfa.email, link: passwordResetWithMfaLink },
+            invitation: { email: inviteeEmail, link: invitationLink, password: randomPassword() },
+            passwordReset: {
+              email: resetWithoutMfa.email,
+              link: passwordResetLink,
+              newPassword: randomPassword(),
+            },
+            passwordResetWithMfa: {
+              email: resetWithMfa.email,
+              link: passwordResetWithMfaLink,
+              newPassword: randomPassword(),
+            },
           },
           catalog: catalogA,
         },

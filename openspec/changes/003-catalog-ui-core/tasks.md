@@ -621,14 +621,14 @@ stack of `scripts/ci/e2e.sh`.
       `apps/web/e2e/sso.spec.ts` covers "Visma Connect sign-in" and "A Visma Connect
       user re-authorizes" (the `form_post` callbacks, the `303` to `/step-up/complete`,
       the repeated delete succeeding).
-- [ ] 10.4 The gates end to end. Verify: `apps/web/e2e/gates.spec.ts` covers "A
+- [x] 10.4 The gates end to end. Verify: `apps/web/e2e/gates.spec.ts` covers "A
       temporary password is changed" and "MFA enrolment completes only with a valid
       code" (the code computed from the secret shown on the page), and an admin without
       MFA sent to enrolment.
-- [ ] 10.5 Local step-up end to end. Verify: `apps/web/e2e/step-up.spec.ts` covers "A
+- [x] 10.5 Local step-up end to end. Verify: `apps/web/e2e/step-up.spec.ts` covers "A
       local user verifies with TOTP" and "A user without MFA verifies with the
       password" on entity delete.
-- [ ] 10.6 The link pages end to end (the `043` and `044` page gates). Verify:
+- [x] 10.6 The link pages end to end (the `043` and `044` page gates). Verify:
       `apps/web/e2e/links.spec.ts` covers "A new invitee creates their account" from the
       seeded link, "The reset fragment is stripped before any request" and "A reset for
       an MFA-enrolled user asks for the factor" from the seeded link, the forgot-password

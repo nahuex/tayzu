@@ -69,12 +69,46 @@ export interface SeedTenantA {
     readonly resetWithoutMfa: SeedUser;
     /** Member with TOTP whose reset link is `links.passwordResetWithMfa`. */
     readonly resetWithMfa: SeedTotpUser;
+    /**
+     * Member under a temporary password that `gates.spec.ts` changes to `newPassword`
+     * (task 10.4, "A temporary password is changed"). Single-use: no other spec may sign
+     * it in. `temporaryPassword` above stays under its temporary password for the
+     * specs that only visit the gate.
+     */
+    readonly temporaryPasswordChange: SeedUser & { readonly newPassword: string };
+    /**
+     * Organization admin without a factor, own password set, that `gates.spec.ts`
+     * enrols (task 10.4, "MFA enrolment completes only with a valid code"). Single-use:
+     * after that spec it has a factor. `adminWithoutMfa` above is never enrolled.
+     */
+    readonly mfaEnrolee: SeedUser;
+    /** Member with TOTP who deletes `catalog.stepUpDeletable.totp` (task 10.5). */
+    readonly stepUpTotp: SeedTotpUser;
+    /** Member without MFA who deletes `catalog.stepUpDeletable.password` (task 10.5). */
+    readonly stepUpPassword: SeedUser;
   };
   readonly links: {
-    /** An invitation of `email` as a member, as the invitation email carried it. */
-    readonly invitation: { readonly email: string; readonly link: string };
-    readonly passwordReset: { readonly email: string; readonly link: string };
-    readonly passwordResetWithMfa: { readonly email: string; readonly link: string };
+    /**
+     * An invitation of `email` (no account yet) as a member, as the invitation email
+     * carried it, and the policy-compliant password the invitee chooses (task 10.6).
+     */
+    readonly invitation: {
+      readonly email: string;
+      readonly link: string;
+      readonly password: string;
+    };
+    /** The reset link of `resetWithoutMfa`, and the new password `links.spec.ts` sets. */
+    readonly passwordReset: {
+      readonly email: string;
+      readonly link: string;
+      readonly newPassword: string;
+    };
+    /** The reset link of `resetWithMfa`, and the new password `links.spec.ts` sets. */
+    readonly passwordResetWithMfa: {
+      readonly email: string;
+      readonly link: string;
+      readonly newPassword: string;
+    };
   };
   readonly catalog: SeedTenantCatalog & {
     /** The blueprint with at least 120 entities (task 10.7, "Sort by title and page forward"). */
@@ -93,6 +127,12 @@ export interface SeedTenantA {
      * may rely on it.
      */
     readonly vismaConnectDeletable: SeedEntity;
+    /**
+     * Entities `users.stepUpTotp` and `users.stepUpPassword` created through local
+     * sessions of their own, so each member may delete theirs. Task 10.5 deletes both,
+     * so they are not in `entities` and no other spec may rely on them.
+     */
+    readonly stepUpDeletable: { readonly totp: SeedEntity; readonly password: SeedEntity };
     /** An entity with a written status (task 10.7, "Status shown next to spec"). */
     readonly status: {
       readonly entity: SeedEntity;

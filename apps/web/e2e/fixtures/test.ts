@@ -37,10 +37,18 @@
  *
  * It also exposes the run's seed file (`seed`, and `readSeed` for code outside a test)
  * and the TOTP code of a seeded factor (`totpCode`).
+ *
+ * Sign-in pacing (`./sign-in-pace.ts`): the API's production limit of 10 local sign-ins
+ * per minute and client IP applies to the whole suite, which reaches the API from one
+ * address. The context records every sign-in request in the run's ledger, and before a
+ * test starts the fixture waits until the trailing minute leaves room for the sign-ins
+ * the test declares (`signInBudget`, one by default), extending the test's timeout by
+ * the wait. A test that signs in more than once declares it with `test.use`.
  */
 import { expect, test as base, type Page } from '@playwright/test';
 
 import { readSeed, seedFilePath, type E2eSeed } from './seed-file.js';
+import { recordSignIns, SIGN_IN_PATH, signInWaitMs } from './sign-in-pace.js';
 
 export { expect };
 export { readSeed, seedFilePath };
@@ -84,11 +92,15 @@ export interface E2eOptions {
   readonly allowOidcOrigin: boolean;
   /** The error answers the test's flow requires (Q92); none by default. */
   readonly expectedApiErrors: readonly ExpectedApiError[];
+  /** The local sign-ins the test makes at most, for the pacing of `./sign-in-pace.ts`; one by default. */
+  readonly signInBudget: number;
 }
 
 export interface E2eFixtures {
   readonly seed: E2eSeed;
   readonly guard: PageGuard;
+  /** Waits, before the test, for room in the sign-in limit's trailing window (automatic). */
+  readonly signInPace: undefined;
 }
 
 const CSP_BINDING = '__tayzuCspViolation';
@@ -239,6 +251,19 @@ export async function settle(page: Page): Promise<void> {
 export const test = base.extend<E2eFixtures & E2eOptions>({
   allowOidcOrigin: [false, { option: true }],
   expectedApiErrors: [[], { option: true }],
+  signInBudget: [1, { option: true }],
+
+  signInPace: [
+    async ({ signInBudget }, provide, testInfo) => {
+      const wait = signInWaitMs(signInBudget);
+      if (wait > 0) {
+        testInfo.setTimeout(testInfo.timeout + wait);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+      await provide(undefined);
+    },
+    { auto: true },
+  ],
 
   // eslint-disable-next-line no-empty-pattern -- Playwright reads the fixture's dependencies from this pattern
   seed: async ({}, provide) => {
@@ -290,7 +315,15 @@ export const test = base.extend<E2eFixtures & E2eOptions>({
     context.on('request', (request) => {
       const url = request.url();
       if (!isNetworkRequest(url)) return;
-      if (!allowed.has(new URL(url).origin)) {
+      const target = new URL(url);
+      if (
+        request.method() === 'POST' &&
+        target.origin === seed.appOrigin &&
+        target.pathname === SIGN_IN_PATH
+      ) {
+        recordSignIns([Date.now()]);
+      }
+      if (!allowed.has(target.origin)) {
         guard.unexpectedRequests.push(`${request.method()} ${withoutSecrets(url)}`);
       }
     });
