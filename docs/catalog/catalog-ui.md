@@ -323,4 +323,6 @@ does without a Playwright Chromium. A full run takes about 8 minutes.
 - **Reports.** One worker, no retry, a trace and a screenshot only on
   failure, written under the state directory, outside the repository. A trace
   can hold the run's credentials, so CI uploads the report only on failure and
-  keeps it 3 days.
+  keeps it 3 days. The repository is public, so that artifact can be downloaded
+  by anyone for those 3 days; this is accepted because every credential is
+  random per run and the stack is thrown away when the job ends (D2, D16).
