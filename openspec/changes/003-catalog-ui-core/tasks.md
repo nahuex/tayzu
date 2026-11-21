@@ -561,7 +561,7 @@ stack of `scripts/ci/e2e.sh`.
       the not-found page for a missing or cross-tenant entity, "An identifier with
       reserved characters opens" at the component level, and a disabled link with its
       note for an identifier containing `/` or made only of dots.
-- [ ] 8.2 The Details tab (design D13): spec properties in schema order, status
+- [x] 8.2 The Details tab (design D13): spec properties in schema order, status
       properties with observed generation, source and time, markdown values through the
       safe renderer. Verify: `entity-details.test.tsx` covers "Status shown next to
       spec", an entity with no status, and a markdown value rendered without raw HTML.

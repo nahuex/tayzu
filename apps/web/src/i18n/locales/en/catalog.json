@@ -50,6 +50,18 @@
       "details": "Details",
       "related": "Related"
     },
+    "details": {
+      "spec": {
+        "title": "Spec"
+      },
+      "status": {
+        "title": "Status",
+        "observedGeneration": "Observed generation",
+        "source": "Source",
+        "observedAt": "Observed",
+        "none": "No status has been reported for this entity."
+      }
+    },
     "notAddressable": "This entity cannot be opened by URL.",
     "error": {
       "forbidden": "You do not have permission to view this entity.",

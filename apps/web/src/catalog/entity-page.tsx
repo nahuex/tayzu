@@ -10,7 +10,8 @@
  * version and generation.
  *
  * The selected tab is the URL's `tab`; choosing one writes it there, and the route strips
- * the default `details` (Q68). Only the selected tab's panel is rendered.
+ * the default `details` (Q68). Only the selected tab's panel is rendered. The Details
+ * panel is `EntityDetails` (Q86).
  *
  * States, as the table's (Q84): a busy status while either call is pending; the
  * not-found page for a `not_found` answer of either call, the same for another tenant's
@@ -19,7 +20,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useRouter, useSearch } from '@tanstack/react-router';
-import { Suspense, type ReactNode } from 'react';
+import { Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -32,6 +33,9 @@ import { NotFoundPage } from '../app/not-found-page.js';
 import { ENTITY_TABS, entitySearchSchema, type EntitySearch } from '../app/search-params.js';
 import { currentLocale, localizedText } from '../i18n/i18n.js';
 import { formatDate } from '../lib/format.js';
+
+import { EntityDetails } from './entity-details.js';
+import { Field } from './field.js';
 
 type Entity = Awaited<ReturnType<ApiClient['entities']['get']>>;
 type Actor = Entity['createdBy'];
@@ -75,16 +79,6 @@ function ActorValue({ actor }: { readonly actor: Actor }): React.JSX.Element {
       <span>{t(ACTOR_TYPE_KEYS[actor.type])}</span>{' '}
       <span className="font-mono text-xs">{actor.id}</span>
     </>
-  );
-}
-
-/** One `<dt>` and its `<dd>`, kept adjacent inside a grouping `<div>`. */
-function Field(props: { readonly label: string; readonly children: ReactNode }): React.JSX.Element {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-xs text-muted-foreground">{props.label}</dt>
-      <dd>{props.children}</dd>
-    </div>
   );
 }
 
@@ -181,10 +175,11 @@ function EntityPageContent(): React.JSX.Element | null {
             </TabsTrigger>
           ))}
         </TabsList>
-        {/* The panels' content comes with tasks 8.2 (Details) and 8.3 (Related). */}
-        {ENTITY_TABS.map((value) => (
-          <TabsContent key={value} value={value} />
-        ))}
+        <TabsContent value="details">
+          <EntityDetails blueprint={definition} entity={item} locale={locale} />
+        </TabsContent>
+        {/* The Related panel's content comes with task 8.3. */}
+        <TabsContent value="related" />
       </Tabs>
     </div>
   );

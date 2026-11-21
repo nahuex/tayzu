@@ -50,6 +50,18 @@
       "details": "Detalles",
       "related": "Relacionadas"
     },
+    "details": {
+      "spec": {
+        "title": "Especificación"
+      },
+      "status": {
+        "title": "Estado",
+        "observedGeneration": "Generación observada",
+        "source": "Origen",
+        "observedAt": "Observado",
+        "none": "No se ha informado ningún estado para esta entidad."
+      }
+    },
     "notAddressable": "Esta entidad no se puede abrir por URL.",
     "error": {
       "forbidden": "No tienes permiso para ver esta entidad.",

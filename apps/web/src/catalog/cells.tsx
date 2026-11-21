@@ -1,11 +1,16 @@
 /**
- * Table cells by property type (design D13 and D16, ADR-0008).
+ * Property values by type, for table cells and the Details tab (design D13 and D16,
+ * ADR-0008, Q86).
  *
- * A cell renders one raw JSON property value by its blueprint property definition.
- * Every server string is React text, except `url` and `email` values, which go through
- * the safe links of `lib/`. A value whose JSON type does not match its definition is
- * shown as JSON text, so a cell never throws on unexpected data. Long text is cut to
- * `TRUNCATE_AT` code points, with the full text in a keyboard-reachable tooltip.
+ * A value renders one raw JSON property value by its blueprint property definition.
+ * Every server string is React text, except `url`, `email` and `markdown` values, which
+ * go through the safe renderers of `lib/`. A value whose JSON type does not match its
+ * definition is shown as JSON text, so it never throws on unexpected data.
+ *
+ * Two modes. A table cell (`PropertyCell`) cuts long text to `TRUNCATE_AT` code points,
+ * with the full text in a keyboard-reachable tooltip, shows a markdown value as its first
+ * line and caps arrays at `MAX_ARRAY_ITEMS`. The full mode (`PropertyValue` with `full`)
+ * shows every value whole, with markdown through the `Markdown` renderer.
  */
 import type { JSX } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +19,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 
 import type { Locale } from '../i18n/i18n.js';
 import { formatDate, formatNumber } from '../lib/format.js';
+import { Markdown } from '../lib/markdown.js';
 import { SafeEmailLink, SafeLink } from '../lib/safe-link.js';
 
 import type { PropertyDefinition } from './columns.js';
@@ -130,10 +136,15 @@ function TruncatedText({ text }: { readonly text: string }): JSX.Element {
   );
 }
 
-function Monospace({ text }: { readonly text: string }): JSX.Element {
+/** `text` whole in full mode, otherwise truncated as a table cell. */
+function DisplayText(props: { readonly text: string; readonly full: boolean }): JSX.Element {
+  return props.full ? <>{props.text}</> : <TruncatedText text={props.text} />;
+}
+
+function Monospace(props: { readonly text: string; readonly full: boolean }): JSX.Element {
   return (
-    <code className="font-mono">
-      <TruncatedText text={text} />
+    <code className={props.full ? 'font-mono whitespace-pre-wrap break-all' : 'font-mono'}>
+      <DisplayText text={props.text} full={props.full} />
     </code>
   );
 }
@@ -164,19 +175,20 @@ function ScalarValue(props: {
   readonly value: unknown;
   readonly kind: ScalarKind;
   readonly locale: Locale;
+  readonly full: boolean;
 }): JSX.Element {
-  const { value, kind, locale } = props;
+  const { value, kind, locale, full } = props;
   if (value === null || value === undefined) return <EmptyMarker />;
   switch (kind) {
     case 'text':
-      if (typeof value === 'string') return <TruncatedText text={value} />;
+      if (typeof value === 'string') return <DisplayText text={value} full={full} />;
       break;
     case 'date-time':
       if (typeof value === 'string') {
         return isValidDate(value) ? (
           <>{formatDate(value, locale)}</>
         ) : (
-          <TruncatedText text={value} />
+          <DisplayText text={value} full={full} />
         );
       }
       break;
@@ -187,10 +199,12 @@ function ScalarValue(props: {
       if (typeof value === 'string') return <SafeEmailLink address={value} />;
       break;
     case 'markdown':
-      if (typeof value === 'string') return <TruncatedText text={firstLine(value)} />;
+      if (typeof value === 'string') {
+        return full ? <Markdown source={value} /> : <TruncatedText text={firstLine(value)} />;
+      }
       break;
     case 'yaml':
-      if (typeof value === 'string') return <Monospace text={value} />;
+      if (typeof value === 'string') return <Monospace text={value} full={full} />;
       break;
     case 'number':
       if (typeof value === 'number') return <>{formatNumber(value, locale)}</>;
@@ -202,30 +216,41 @@ function ScalarValue(props: {
     case 'unknown':
       break;
   }
-  return <Monospace text={toJson(value)} />;
+  return <Monospace text={toJson(value)} full={full} />;
 }
 
-/** One property value of an entity, rendered by its blueprint property definition. */
-export function PropertyCell(props: {
+interface PropertyValueProps {
   readonly value: unknown;
   readonly schema: PropertyDefinition;
   readonly locale: Locale;
-}): JSX.Element {
+}
+
+/**
+ * One property value of an entity, rendered by its blueprint property definition. With
+ * `full`, nothing is cut: no truncation, every array item, and markdown rendered whole.
+ */
+export function PropertyValue(
+  props: PropertyValueProps & { readonly full?: boolean },
+): JSX.Element {
   const { value, locale } = props;
+  const full = props.full ?? false;
   const kind = cellKind(props.schema);
-  if (typeof kind === 'string') return <ScalarValue value={value} kind={kind} locale={locale} />;
+  if (typeof kind === 'string') {
+    return <ScalarValue value={value} kind={kind} locale={locale} full={full} />;
+  }
   if (value === null || value === undefined) return <EmptyMarker />;
-  if (!Array.isArray(value)) return <Monospace text={toJson(value)} />;
+  if (!Array.isArray(value)) return <Monospace text={toJson(value)} full={full} />;
   if (value.length === 0) return <EmptyMarker />;
   const items: readonly unknown[] = value;
-  const hidden = items.length - MAX_ARRAY_ITEMS;
+  const shownCount = full ? items.length : MAX_ARRAY_ITEMS;
+  const hidden = items.length - shownCount;
   return (
     <>
-      {items.slice(0, MAX_ARRAY_ITEMS).map((item, index) => (
+      {items.slice(0, shownCount).map((item, index) => (
         // Items have no identity of their own, and the list never reorders.
         <span key={index}>
           {index > 0 && ARRAY_SEPARATOR}
-          <ScalarValue value={item} kind={kind.array} locale={locale} />
+          <ScalarValue value={item} kind={kind.array} locale={locale} full={full} />
         </span>
       ))}
       {hidden > 0 && (
@@ -236,4 +261,9 @@ export function PropertyCell(props: {
       )}
     </>
   );
+}
+
+/** One property value in a table cell: truncated, markdown as its first line. */
+export function PropertyCell(props: PropertyValueProps): JSX.Element {
+  return <PropertyValue {...props} />;
 }
