@@ -705,14 +705,14 @@ stack of `scripts/ci/e2e.sh`.
       handler)`), and `docs/dev-environment/README.md` (the Chromium row now also serves
       Playwright, pinned to 1.63.0, and the Node floor of `>=22.22.2`). Verify: `pnpm
       lint` passes (markdownlint covers the three `CLAUDE.md` files).
-- [ ] 11.9 `pnpm ci:local` is fully green (lint, format, typecheck, the web build and
+- [x] 11.9 `pnpm ci:local` is fully green (lint, format, typecheck, the web build and
       its check, policy compile, unit and integration tests, contract-check,
       otel-smoke-check, audit, gitleaks, Semgrep, DAST, e2e, SBOM). Verify: attach the
       command output to the PR description.
-- [ ] 11.10 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
+- [x] 11.10 Re-run the `vcdm-ssa-validator` pre-assessment in Mode A against the
       implemented code, and resolve or explicitly defer every blocking gap. Verify: the
       report is attached to the PR with zero open blocking gaps.
-- [ ] 11.11 Run `/security-review` on the branch and fix or justify every finding.
+- [x] 11.11 Run `/security-review` on the branch and fix or justify every finding.
       Verify: the review output is attached to the PR.
 - [ ] 11.12 `openspec validate 003-catalog-ui-core --strict` passes, and design, specs
       and code agree (update the design only if an implementation finding forced a
