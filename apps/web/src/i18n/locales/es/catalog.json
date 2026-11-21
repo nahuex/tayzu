@@ -94,6 +94,21 @@
         "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo."
       }
     },
+    "delete": {
+      "open": "Eliminar entidad",
+      "title": "¿Eliminar esta entidad?",
+      "description": "La entidad se elimina de forma permanente. Esta acción no se puede deshacer.",
+      "detachReferences": "Quitar las referencias que otras entidades tienen hacia ella",
+      "confirm": "Eliminar",
+      "cancel": "Cancelar",
+      "blocked": "Otras entidades todavía hacen referencia a esta entidad.",
+      "referrers": "Entidades que hacen referencia",
+      "notVisible": "+{{count}} no visibles",
+      "error": {
+        "forbidden": "No tienes permiso para eliminar esta entidad.",
+        "server": "No se pudo eliminar la entidad. Inténtalo de nuevo más tarde."
+      }
+    },
     "notAddressable": "Esta entidad no se puede abrir por URL.",
     "error": {
       "forbidden": "No tienes permiso para ver esta entidad.",

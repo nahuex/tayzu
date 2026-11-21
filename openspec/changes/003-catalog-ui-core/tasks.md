@@ -569,7 +569,7 @@ stack of `scripts/ci/e2e.sh`.
       toggle, the scope select and cursor paging, each row linking to its target.
       Verify: `entity-related.test.tsx` covers "Related entities in both directions",
       the scope choice in the request, paging and an empty list.
-- [ ] 8.4 Entity delete (design D13, Q12): the confirmation dialog with the
+- [x] 8.4 Entity delete (design D13, Q12): the confirmation dialog with the
       `detachReferences` option, the reference violation with its readable referrers
       and "+N not visible", the step-up dialog of 6.5 and 6.6, and the return to the
       table after success. Verify: `entity-delete.test.tsx` covers a delete without

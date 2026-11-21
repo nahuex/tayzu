@@ -94,6 +94,21 @@
         "rateLimited": "Too many requests. Wait a moment and try again."
       }
     },
+    "delete": {
+      "open": "Delete entity",
+      "title": "Delete this entity?",
+      "description": "The entity is deleted permanently. This cannot be undone.",
+      "detachReferences": "Remove the references other entities hold to it",
+      "confirm": "Delete",
+      "cancel": "Cancel",
+      "blocked": "Other entities still reference this entity.",
+      "referrers": "Referencing entities",
+      "notVisible": "+{{count}} not visible",
+      "error": {
+        "forbidden": "You do not have permission to delete this entity.",
+        "server": "The entity could not be deleted. Try again later."
+      }
+    },
     "notAddressable": "This entity cannot be opened by URL.",
     "error": {
       "forbidden": "You do not have permission to view this entity.",

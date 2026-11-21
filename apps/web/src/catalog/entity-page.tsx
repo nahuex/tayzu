@@ -11,7 +11,8 @@
  *
  * The selected tab is the URL's `tab`; choosing one writes it there, and the route strips
  * the default `details` (Q68). Only the selected tab's panel is rendered. The Details
- * panel is `EntityDetails` (Q86) and the Related panel `EntityRelated` (Q87).
+ * panel is `EntityDetails` (Q86) and the Related panel `EntityRelated` (Q87). The
+ * "Delete entity" button next to the title is `EntityDelete` (Q88).
  *
  * States, as the table's (Q84): a busy status while either call is pending; the
  * not-found page for a `not_found` answer of either call, the same for another tenant's
@@ -34,6 +35,7 @@ import { ENTITY_TABS, entitySearchSchema, type EntitySearch } from '../app/searc
 import { currentLocale, localizedText } from '../i18n/i18n.js';
 import { formatDate } from '../lib/format.js';
 
+import { EntityDelete } from './entity-delete.js';
 import { EntityDetails } from './entity-details.js';
 import { EntityRelated } from './entity-related.js';
 import { Field } from './field.js';
@@ -143,7 +145,10 @@ function EntityPageContent(): React.JSX.Element | null {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <h1 className="text-xl font-semibold">{item.title}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-xl font-semibold">{item.title}</h1>
+        <EntityDelete blueprint={blueprint} entity={entity} />
+      </div>
       <dl className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
         <Field label={t('entity.fields.identifier')}>
           <span className="font-mono">{item.identifier}</span>
