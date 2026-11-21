@@ -1,4 +1,14 @@
 {
+  "home": {
+    "title": "Blueprints",
+    "loading": "Cargando blueprints...",
+    "empty": "Todavía no hay blueprints.",
+    "error": {
+      "forbidden": "No tienes permiso para ver los blueprints.",
+      "server": "No se pudieron cargar los blueprints. Inténtalo de nuevo más tarde.",
+      "rateLimited": "Demasiadas solicitudes. Espera un momento y vuelve a intentarlo."
+    }
+  },
   "table": {
     "loading": "Cargando entidades...",
     "empty": "Todavía no hay entidades.",

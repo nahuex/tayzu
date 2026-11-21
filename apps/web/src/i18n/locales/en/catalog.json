@@ -1,4 +1,14 @@
 {
+  "home": {
+    "title": "Blueprints",
+    "loading": "Loading blueprints...",
+    "empty": "No blueprints yet.",
+    "error": {
+      "forbidden": "You do not have permission to view the blueprints.",
+      "server": "The blueprints could not be loaded. Try again later.",
+      "rateLimited": "Too many requests. Wait a moment and try again."
+    }
+  },
   "table": {
     "loading": "Loading entities...",
     "empty": "No entities yet.",

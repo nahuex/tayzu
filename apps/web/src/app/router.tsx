@@ -3,9 +3,11 @@
  * D12 route, plus the not-found page for any other path.
  *
  * Each route renders one page slot. `createAppRouter` lays the given pages over the
- * defaults (the real sign-in, forgot-password, reset-password, accept-invitation, change-password, expired-password, MFA
- * enrolment and step-up completion pages, the catalog table page, the entity page, the search page, and a placeholder home page). Path params may hold `@`, `:` and `=` unencoded, like the API calls of D4, so
- * an entity such as `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
+ * defaults (the real sign-in, forgot-password, reset-password, accept-invitation,
+ * change-password, expired-password, MFA enrolment and step-up completion pages, the home
+ * page, the catalog table page, the entity page and the search page). Path params may hold
+ * `@`, `:` and `=` unencoded, like the API calls of D4, so an entity such as
+ * `team@example.com:prod=1` opens. Search params go through `./search-params.js`.
  *
  * Given a `session` source (task 5.8, Q68), every protected route runs the session
  * gate of `./session-gate.js` before its page renders; the public pages (sign-in,
@@ -44,6 +46,7 @@ import { SignInPage } from '../auth/sign-in-page.js';
 import { StepUpCompletePage } from '../auth/step-up-complete-page.js';
 import { CatalogTablePage } from '../catalog/catalog-table-page.js';
 import { EntityPage } from '../catalog/entity-page.js';
+import { HomePage } from '../catalog/home-page.js';
 import { SearchPage } from '../search/search-page.js';
 
 import { AppShell, type ShellSources } from './app-shell.js';
@@ -94,11 +97,6 @@ export type AppPages = Record<PageName, ComponentType>;
  */
 export type AppPageOptions = AppPages & { passwordExpired: ComponentType };
 
-/** Stands in for a page until its group replaces it. */
-function PlaceholderPage(): null {
-  return null;
-}
-
 const DEFAULT_PAGES: AppPageOptions = {
   signIn: SignInPage,
   forgotPassword: ForgotPasswordPage,
@@ -107,7 +105,7 @@ const DEFAULT_PAGES: AppPageOptions = {
   changePassword: ChangePasswordPage,
   mfaEnrol: MfaEnrolPage,
   stepUpComplete: StepUpCompletePage,
-  home: PlaceholderPage,
+  home: HomePage,
   catalogTable: CatalogTablePage,
   entity: EntityPage,
   search: SearchPage,
