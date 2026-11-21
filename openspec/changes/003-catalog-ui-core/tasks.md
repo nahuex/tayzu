@@ -541,7 +541,7 @@ stack of `scripts/ci/e2e.sh`.
       Verify: `cells.test.tsx` covers each type and format, a markdown value shown as
       its first line in plain text, an `email` value as a `mailto:` link, and a 3000
       character value truncated with its tooltip.
-- [ ] 7.3 The table page with paging and sort (design D13): `entities.list` with
+- [x] 7.3 The table page with paging and sort (design D13): `entities.list` with
       `sort`, `order`, `pageSize` and `cursor` from the URL, "Next" and "Previous" with
       the in-memory cursor stack, sortable headers with `aria-sort`, and the cursor
       cleared when the sort changes. Verify: `catalog-table.test.tsx` covers "Sort by

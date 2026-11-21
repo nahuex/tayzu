@@ -5,7 +5,15 @@
       "identifier": "Identificador",
       "title": "Título",
       "updatedAt": "Actualizado"
-    }
+    },
+    "pagination": {
+      "previous": "Anterior",
+      "next": "Siguiente"
+    },
+    "pageSize": {
+      "label": "Filas por página"
+    },
+    "notAddressable": "Esta entidad no se puede abrir por URL."
   },
   "cells": {
     "empty": "Sin valor",

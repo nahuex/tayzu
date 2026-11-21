@@ -5,7 +5,15 @@
       "identifier": "Identifier",
       "title": "Title",
       "updatedAt": "Updated"
-    }
+    },
+    "pagination": {
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "pageSize": {
+      "label": "Rows per page"
+    },
+    "notAddressable": "This entity cannot be opened by URL."
   },
   "cells": {
     "empty": "No value",

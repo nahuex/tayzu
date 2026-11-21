@@ -14,6 +14,9 @@
  *
  * The shell mounts the app's one step-up dialog (D11, Q75), which reads this session, and
  * shows the notice of a Visma Connect step-up return above the page (Q76).
+ *
+ * The page reads the catalog through the shell's API client, which the shell provides
+ * to its children with `ApiClientProvider` (Q83).
  */
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from '@tanstack/react-router';
@@ -23,6 +26,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 
+import { ApiClientProvider } from '../api/api-client-context.js';
 import type { AuthClient } from '../api/auth-client.js';
 import type { ApiClient } from '../api/client.js';
 import { StepUpDialog } from '../auth/step-up-dialog.js';
@@ -39,7 +43,8 @@ import { UserMenu } from './user-menu.js';
 
 /** What the shell needs besides the session source; `main.tsx` passes all of it. */
 export interface ShellSources {
-  readonly apiClient: Pick<ApiClient, 'blueprints'>;
+  /** The sidebar's `blueprints.list`, and every catalog call of the page (Q83). */
+  readonly apiClient: ApiClient;
   readonly authClient: Pick<AuthClient, 'signOut'>;
   readonly themeStore: ThemeStore;
 }
@@ -124,7 +129,7 @@ export function AppShell({
         </aside>
         <main id={MAIN_ID} ref={mainRef} tabIndex={-1} className="flex-1 outline-none">
           <StepUpReturnNotice />
-          {children}
+          <ApiClientProvider client={apiClient}>{children}</ApiClientProvider>
         </main>
       </div>
       <StepUpDialog me={me.data} />
