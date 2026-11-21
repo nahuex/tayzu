@@ -292,6 +292,12 @@ rate-limit message names no number of seconds.
   actor (and, when the session has an active organization, the tenant) of the
   session the `state` is bound to. `emitStepUpSucceeded` takes the method as a
   parameter instead of always writing `local`.
+  With `visma_connect` it means "the Visma Connect re-authorization returned"
+  (Q99): the callback stores the new ID token, and the step-up check then
+  validates its `auth_time`, `acr`, `amr` and `sid` on the retried call. A token
+  that fails that check is logged as `auth.security.step_up_insufficient`, so a
+  `step_up_succeeded` followed by `step_up_insufficient` is a returned
+  re-authorization that did not meet the step-up rules.
 - `auth.security.reauthorization_failed` (WARN, new in `003`, Q29, Q57) is
   emitted by a failed callback, with `tayzu.auth.reauthorization.reason`
   `invalid_state` or `exchange_failed`. It carries no tenant, because an

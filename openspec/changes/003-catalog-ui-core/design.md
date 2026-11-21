@@ -1195,23 +1195,26 @@ Human-owned, added to the gates `046` inherits from `002` to `045` (Q8):
 
 ## Tickets (not built in this change)
 
-| Ticket | Item |
-| ------ | ---- |
-| Browser RUM (`016`) | Browser telemetry with a sanitization contract (no tenant free text), `traceparent` propagation to the API, and CSP violation reporting to a same-origin endpoint (Q6). |
-| Catalog UI customization (`047`) | Page layouts, saved views, column configuration, branding, banner, the icon library, enum colors and their storage, each with its migration and Cerbos resource (Q1). |
-| Azure deployment and first release (`046`) | The IaC, the sandbox rehearsal and every first-deployment gate (Q8). |
-| Repoint the first-deployment gates | Replace each "`010`" first-deployment reference in `002` to `045` (designs, docs and `docs/security/*`) by `046`, or by `016` where it is observability work (Q8, Context). |
-| Filter language and full-text search (`005`) | The filter DSL, full-text search with its indexes, admin-chosen indexed blueprints, "My" and "My Teams" filters, and replacing `search.entities` (Q4). |
-| `pageSize` below 1 | Reject a `pageSize` of 0 or below on `entities.list` and `blueprints.list` with `CATALOG_VALIDATION_FAILED` on `/pageSize`, as `search.entities` does for `limit` (Q52). |
-| Entity identifiers with `/` | Revisit `002` Q74 for the entity segment of catalog routes, or add an id-based route, so the UI can open such an entity (Q18). |
-| ADR backfill | ADR-0001, 0002 (superseded by 0012), 0003, 0005 and 0006 remain unwritten (`001` T7). |
-| Trusted Types | Evaluate `require-trusted-types-for 'script'` once the dependency set is stable. |
-| CSP violation reporting (Q30) | The same-origin report endpoint with a sanitized log; a `046` gate, built with `016`'s browser telemetry or before it. |
-| Suspicious-location sign-in detection (Q34) | Detect and alert on sign-ins from unusual locations (SEC06). |
-| Misuse detection and WAF (Q34) | Misuse detection at the `046` ingress or a WAF (SEC06, SEC15). |
-| Remove version-1 cursor acceptance (`005`) | Drop the version-1 `{ k }` cursor of `entities.list` once no client can hold one (D6, Q37). |
-| Visma Connect URL origin check | Accept the sign-in and step-up navigation URL only when its origin is the discovered issuer's authorization endpoint origin, exposed to the app without a new public surface (D11). |
-| Entity and blueprint forms | Create and edit forms with the JSON Schema form generator (`project.md` §2), which Q12 keeps out. |
+| Ticket | Item | Issue |
+| ------ | ---- | ----- |
+| Browser RUM (`016`) | Browser telemetry with a sanitization contract (no tenant free text), `traceparent` propagation to the API, and CSP violation reporting to a same-origin endpoint (Q6). | [nahuex/tayzu#37](https://github.com/nahuex/tayzu/issues/37) |
+| Catalog UI customization (`047`) | Page layouts, saved views, column configuration, branding, banner, the icon library, enum colors and their storage, each with its migration and Cerbos resource (Q1). | [nahuex/tayzu#38](https://github.com/nahuex/tayzu/issues/38) |
+| Azure deployment and first release (`046`) | The IaC, the sandbox rehearsal and every first-deployment gate (Q8). | [nahuex/tayzu#39](https://github.com/nahuex/tayzu/issues/39) |
+| Repoint the first-deployment gates | Replace each "`010`" first-deployment reference in `002` to `045` (designs, docs and `docs/security/*`) by `046`, or by `016` where it is observability work (Q8, Context). | [nahuex/tayzu#40](https://github.com/nahuex/tayzu/issues/40) |
+| Filter language and full-text search (`005`) | The filter DSL, full-text search with its indexes, admin-chosen indexed blueprints, "My" and "My Teams" filters, and replacing `search.entities` (Q4). | [nahuex/tayzu#41](https://github.com/nahuex/tayzu/issues/41) |
+| `pageSize` below 1 | Reject a `pageSize` of 0 or below on `entities.list` and `blueprints.list` with `CATALOG_VALIDATION_FAILED` on `/pageSize`, as `search.entities` does for `limit` (Q52). | [nahuex/tayzu#42](https://github.com/nahuex/tayzu/issues/42) |
+| Entity identifiers with `/` | Revisit `002` Q74 for the entity segment of catalog routes, or add an id-based route, so the UI can open such an entity (Q18). | [nahuex/tayzu#43](https://github.com/nahuex/tayzu/issues/43) |
+| ADR backfill | ADR-0001, 0002 (superseded by 0012), 0003, 0005 and 0006 remain unwritten (`001` T7). | [nahuex/tayzu#44](https://github.com/nahuex/tayzu/issues/44) |
+| Trusted Types | Evaluate `require-trusted-types-for 'script'` once the dependency set is stable. | [nahuex/tayzu#45](https://github.com/nahuex/tayzu/issues/45) |
+| CSP violation reporting (Q30) | The same-origin report endpoint with a sanitized log; a `046` gate, built with `016`'s browser telemetry or before it. | [nahuex/tayzu#46](https://github.com/nahuex/tayzu/issues/46) |
+| Suspicious-location sign-in detection (Q34) | Detect and alert on sign-ins from unusual locations (SEC06). | [nahuex/tayzu#47](https://github.com/nahuex/tayzu/issues/47) |
+| Misuse detection and WAF (Q34) | Misuse detection at the `046` ingress or a WAF (SEC06, SEC15). | [nahuex/tayzu#48](https://github.com/nahuex/tayzu/issues/48) |
+| Remove version-1 cursor acceptance (`005`) | Drop the version-1 `{ k }` cursor of `entities.list` once no client can hold one (D6, Q37). | [nahuex/tayzu#49](https://github.com/nahuex/tayzu/issues/49) |
+| Visma Connect URL origin check | Accept the sign-in and step-up navigation URL only when its origin is the discovered issuer's authorization endpoint origin, exposed to the app without a new public surface (D11). | [nahuex/tayzu#50](https://github.com/nahuex/tayzu/issues/50) |
+| Entity and blueprint forms | Create and edit forms with the JSON Schema form generator (`project.md` §2), which Q12 keeps out. | [nahuex/tayzu#51](https://github.com/nahuex/tayzu/issues/51) |
+| Dependency bumps flagged by `pnpm audit` | fastify, fast-uri, vitest and markdownlint-cli2, once the 14-day rule allows (SSA G6). | [nahuex/tayzu#52](https://github.com/nahuex/tayzu/issues/52) |
+| The `/assets/` public prefix | Assert every route under the prefix is a static route (SSA G7). | [nahuex/tayzu#53](https://github.com/nahuex/tayzu/issues/53) |
+| A dev script for signed-in pages | An https dev path for the Vite dev server (Q97). | [nahuex/tayzu#54](https://github.com/nahuex/tayzu/issues/54) |
 
 ## Migration Plan
 
@@ -1337,6 +1340,8 @@ says so in italics, as `045` does. A new question becomes a row from Q44 on.
 | Q95 | (Implementation, task 10.11, orchestrator choice, open to Checkpoint 2) The CI e2e job's database | Task 10.11's "PostgreSQL 18 service" is read as the pinned PostgreSQL 18 container that `scripts/ci/e2e.sh` starts with `ssl=on` and the run's throwaway CA: a GitHub service starts before the checkout and cannot receive that certificate, so it would sit unused in plain text and break the `verify-full` invariant. The job, like `dast-zap`, declares no service and no database URL. Chromium is installed by `@tayzu/web`'s pinned Playwright (`pnpm --filter @tayzu/web exec`; the root has no `playwright` binary), and only the report folder is uploaded on failure, never the state directory. `local.sh`'s e2e step skips explicitly without Docker (exit 77) or a Playwright Chromium. _Rejected:_ a PostgreSQL service in plain text. |
 | Q96 | (Implementation, tasks 11.1 to 11.4, orchestrator choice, open to Checkpoint 2) Where the code and the design differ, found while writing the ADRs | The locale lives in the i18next instance (stored under `tayzu.locale`, Q66), not in a Zustand store: Zustand holds only the theme and the step-up dialog, so D12's "theme, locale and step-up dialog" is read with that correction (ADR-0004 states it). The Vite dev policy, as built, adds to D10's sketch the hash of the React Refresh preamble (Q45), `ws://127.0.0.1:5173` in `connect-src` and the dev `Referrer-Policy`, `nosniff` and `X-Frame-Options: DENY` headers, for `vite serve` only; no test starts the dev server and reads its headers (the built page and the served production header are tested). The shadcn MIT notice Q44 names is now in `apps/web/src/index.css`. _Rejected:_ a Zustand mirror of the i18next locale. |
 | Q97 | (Implementation, tasks 11.5 to 11.8, orchestrator choice, open to Checkpoint 2) Further differences found while writing the docs | `step_up_succeeded` carries the tenant only when the bound session has an active organization (D11 implied always). The Vite dev server is not a working path for signed-in pages: it proxies with the browser's `http://127.0.0.1:5173` origin, which `ALLOWED_ORIGINS` accepts only under `NODE_ENV=test`, and the session cookie is always `Secure`; the docs send signed-in work to the e2e stack, and a dev script is a follow-up ticket. No lint rule bans inline `style` props in `apps/web` (none exist; the CSP tour of task 10.8 is the guard). A non-app path reaching `GET /*` gets the same `404` as without a build. The home page `/` rendered nothing (the placeholder slot), so it gets the blueprint list D12 names in a follow-up cycle. The Vitest unit timeout is 15 s and the web one 20 s, since cold imports and jsdom flows passed 5 s under parallel CI runs (a timeout is not an assertion). |
+| Q98 | (Task 11.10, answered by the human in chat on 2026-11-21, recommended option) Creating and linking the improvement tickets | Every row of the Tickets table, plus the dependency bumps (SSA G6), the `/assets/` prefix (G7) and the dev script (Q97), is a GitHub issue (nahuex/tayzu#37 to #54), linked from the table, so the SSA's "created and linked" item holds. _Rejected:_ only the SSA-required items; keeping them in `design.md` until `046`. |
+| Q99 | (Task 11.10, answered by the human in chat on 2026-11-21, recommended option) What `step_up_succeeded` with `visma_connect` means | It stays where Q27 put it, at the re-authorization callback, and means "the Visma Connect re-authorization returned": the step-up check then validates `auth_time`, `acr`, `amr` and `sid`, and a token that fails is logged as `step_up_insufficient`. `docs/catalog/auth-and-rbac.md` states this. _Rejected:_ moving the event to the step-up check; a separate `reauthorization_completed` event. |
 
 ## Open Questions
 
