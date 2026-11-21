@@ -6,5 +6,11 @@
       "title": "Título",
       "updatedAt": "Actualizado"
     }
+  },
+  "cells": {
+    "empty": "Sin valor",
+    "yes": "Sí",
+    "no": "No",
+    "more": "+{{count}}"
   }
 }

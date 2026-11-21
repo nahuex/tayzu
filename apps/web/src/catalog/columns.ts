@@ -13,7 +13,7 @@ import { localizedText } from '../i18n/i18n.js';
 import type { Locale } from '../i18n/i18n.js';
 
 type Blueprint = Awaited<ReturnType<CatalogContractClient['blueprints']['get']>>;
-type PropertyDefinition = Blueprint['schema']['properties'][string];
+export type PropertyDefinition = Blueprint['schema']['properties'][string];
 type RelationDefinition = Blueprint['relations'][string];
 
 export type CatalogColumn =
@@ -53,15 +53,13 @@ export function columnsFor(
       definition,
     }),
   );
-  const relations = Object.entries(blueprint.relations).map(
-    ([key, definition]): CatalogColumn => ({
-      id: `relation:${key}`,
-      kind: 'relation',
-      key,
-      header: localizedText(definition.title, locale),
-      definition,
-    }),
-  );
+  const relations = Object.entries(blueprint.relations).map(([key, definition]): CatalogColumn => ({
+    id: `relation:${key}`,
+    kind: 'relation',
+    key,
+    header: localizedText(definition.title, locale),
+    definition,
+  }));
   return [
     { id: 'identifier', kind: 'identifier', header: t('table.columns.identifier') },
     { id: 'title', kind: 'title', header: t('table.columns.title') },

@@ -536,7 +536,7 @@ stack of `scripts/ci/e2e.sh`.
       properties, relations and a status schema, localized and fallback titles, an entity
       identifier containing `/` or made only of dots marked as not addressable, and one
       with `@`, `:` or `=` addressable (Q18, Q36).
-- [ ] 7.2 Cells by type (design D13): every type and format of ADR-0008, `enum` as
+- [x] 7.2 Cells by type (design D13): every type and format of ADR-0008, `enum` as
       text, truncation with an accessible full value, arrays capped with a count.
       Verify: `cells.test.tsx` covers each type and format, a markdown value shown as
       its first line in plain text, an `email` value as a `mailto:` link, and a 3000
