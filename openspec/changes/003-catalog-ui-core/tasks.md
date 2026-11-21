@@ -521,7 +521,7 @@ stack of `scripts/ci/e2e.sh`.
       embedded sign-in keeping the token in memory, the signed-in accept, "An invalid
       link shows the uniform message", the Visma Connect note, and no request before a
       click.
-- [ ] 6.10 The page rules over HTTP (design D11): `/accept-invitation` and
+- [x] 6.10 The page rules over HTTP (design D11): `/accept-invitation` and
       `/reset-password` are served with `Referrer-Policy: no-referrer` and a CSP that
       allows no other origin, and the served page references no other origin. Verify:
       `web-page-rules.http.int.test.ts` covers both paths with and without a fragment
