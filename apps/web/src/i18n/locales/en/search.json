@@ -1,5 +1,14 @@
 {
   "placeholder": "Search the catalog",
+  "command": {
+    "title": "Search the catalog",
+    "description": "Type to find blueprints and entities. Use the arrow keys to move and Enter to open.",
+    "inputLabel": "Search blueprints and entities",
+    "blueprints": "Blueprints",
+    "entities": "Entities",
+    "seeAll": "See all results",
+    "error": "The search failed. Try again later."
+  },
   "page": {
     "title": "Search results",
     "prompt": "Type a query in the search box to search the catalog.",

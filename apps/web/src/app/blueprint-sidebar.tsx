@@ -31,8 +31,11 @@ export function sidebarBlueprintsQuery(apiClient: Pick<ApiClient, 'blueprints'>)
 /** The reserved prefix of the system blueprints (`_team`, `_user`). */
 const SYSTEM_PREFIX = '_';
 
-/** Tenant blueprints first, then the system ones; each group keeps its order. */
-function systemLast<T extends { identifier: string }>(blueprints: readonly T[]): T[] {
+/**
+ * Tenant blueprints first, then the system ones; each group keeps its order. The command
+ * dialog lists its blueprints in this same order (Q90).
+ */
+export function systemLast<T extends { identifier: string }>(blueprints: readonly T[]): T[] {
   const isSystem = (blueprint: T) => blueprint.identifier.startsWith(SYSTEM_PREFIX);
   return [
     ...blueprints.filter((blueprint) => !isSystem(blueprint)),

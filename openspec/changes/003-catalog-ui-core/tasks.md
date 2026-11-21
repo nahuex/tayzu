@@ -578,7 +578,7 @@ stack of `scripts/ci/e2e.sh`.
 
 ## 9. Search UI
 
-- [ ] 9.1 The command dialog (design D14): `Ctrl`+`K` and `Cmd`+`K` and the header
+- [x] 9.1 The command dialog (design D14): `Ctrl`+`K` and `Cmd`+`K` and the header
       button, the local blueprint group, the entity group from `search.entities` after
       2 characters with a 250 ms debounce and the previous request aborted, keyboard
       navigation and "See all results". Verify: `command-search.test.tsx` covers

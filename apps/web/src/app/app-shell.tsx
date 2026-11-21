@@ -13,23 +13,22 @@
  * path as `returnTo`. Theme and locale stay.
  *
  * The shell mounts the app's one step-up dialog (D11, Q75), which reads this session, and
- * shows the notice of a Visma Connect step-up return above the page (Q76).
+ * shows the notice of a Visma Connect step-up return above the page (Q76). Its header
+ * holds the search trigger and the command dialog it opens (D14, Q90).
  *
  * The page reads the catalog through the shell's API client, which the shell provides
  * to its children with `ApiClientProvider` (Q83).
  */
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from '@tanstack/react-router';
-import { SearchIcon } from 'lucide-react';
 import { useEffect, useRef, type MouseEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-
-import { Button } from '@/components/ui/button';
 
 import { ApiClientProvider } from '../api/api-client-context.js';
 import type { AuthClient } from '../api/auth-client.js';
 import type { ApiClient } from '../api/client.js';
 import { StepUpDialog } from '../auth/step-up-dialog.js';
+import { CommandSearch } from '../search/command-search.js';
 import type { ThemeStore } from '../state/theme.js';
 
 import { BlueprintSidebar } from './blueprint-sidebar.js';
@@ -105,14 +104,7 @@ export function AppShell({
       <header className="flex items-center gap-2 border-b px-4 py-2">
         <span className="text-lg font-semibold">{t('appName')}</span>
         <div className="ml-auto flex items-center gap-1">
-          {/* Task 9.1 makes the trigger open the search dialog. */}
-          <Button variant="outline" type="button">
-            <SearchIcon aria-hidden="true" />
-            <span>{t('search.open')}</span>
-            <kbd aria-hidden="true" className="ml-2 font-sans text-xs text-muted-foreground">
-              Ctrl K
-            </kbd>
-          </Button>
+          <CommandSearch apiClient={apiClient} queryClient={queryClient} />
           <LocaleSelector />
           <ThemeToggle store={themeStore} />
           <UserMenu

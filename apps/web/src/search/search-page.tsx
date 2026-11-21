@@ -36,21 +36,21 @@ import {
 } from '@/components/ui/table';
 
 import { useApiClient } from '../api/api-client-context.js';
-import type { ApiClient } from '../api/client.js';
 import { toApiError, type ApiError } from '../api/errors.js';
 import { sidebarBlueprintsQuery } from '../app/blueprint-sidebar.js';
 import { searchPageSearchSchema } from '../app/search-params.js';
 import { EntityLink } from '../catalog/entity-link.js';
-import { currentLocale, localizedText, type Locale } from '../i18n/i18n.js';
+import { currentLocale } from '../i18n/i18n.js';
 
-type SearchItem = Awaited<ReturnType<ApiClient['search']['entities']>>['items'][number];
-type Blueprint = Awaited<ReturnType<ApiClient['blueprints']['list']>>['items'][number];
+import {
+  MIN_QUERY_LENGTH,
+  blueprintTitle,
+  countedLength,
+  type SearchItem,
+} from './search-results.js';
 
 /** The most results the API answers in one call (`CatalogLimits`). */
 const SEARCH_LIMIT = 50;
-
-/** The shortest query the API accepts, after trimming and NFC normalization. */
-const MIN_QUERY_LENGTH = 2;
 
 const COLUMN_KEYS = [
   'page.columns.title',
@@ -77,20 +77,10 @@ type QueryState =
   { readonly kind: 'prompt' | 'tooShort' } | { readonly kind: 'search'; readonly q: string };
 
 function queryState(q: string | undefined): QueryState {
-  const counted = (q ?? '').trim().normalize('NFC');
-  if (q === undefined || counted === '') return { kind: 'prompt' };
-  if (counted.length < MIN_QUERY_LENGTH) return { kind: 'tooShort' };
+  const counted = countedLength(q ?? '');
+  if (q === undefined || counted === 0) return { kind: 'prompt' };
+  if (counted < MIN_QUERY_LENGTH) return { kind: 'tooShort' };
   return { kind: 'search', q };
-}
-
-/** A blueprint's localized title, or its identifier when the sidebar list lacks it. */
-function blueprintTitle(
-  blueprints: readonly Blueprint[] | undefined,
-  identifier: string,
-  locale: Locale,
-): string {
-  const found = blueprints?.find((blueprint) => blueprint.identifier === identifier);
-  return found === undefined ? identifier : localizedText(found.title, locale);
 }
 
 /** A row spanning every column, for the loading status or the empty text. */

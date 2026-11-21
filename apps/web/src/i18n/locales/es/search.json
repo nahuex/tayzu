@@ -1,5 +1,14 @@
 {
   "placeholder": "Buscar en el catálogo",
+  "command": {
+    "title": "Buscar en el catálogo",
+    "description": "Escribe para encontrar blueprints y entidades. Usa las flechas para moverte y Enter para abrir.",
+    "inputLabel": "Buscar blueprints y entidades",
+    "blueprints": "Blueprints",
+    "entities": "Entidades",
+    "seeAll": "Ver todos los resultados",
+    "error": "La búsqueda falló. Inténtalo de nuevo más tarde."
+  },
   "page": {
     "title": "Resultados de la búsqueda",
     "prompt": "Escribe una consulta en el cuadro de búsqueda para buscar en el catálogo.",

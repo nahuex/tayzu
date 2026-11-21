@@ -14,9 +14,57 @@ import {
 import { InputGroup, InputGroupAddon } from '@/components/ui/input-group';
 import { SearchIcon, CheckIcon } from 'lucide-react';
 
-function Command({ className, ...props }: React.ComponentProps<typeof CommandPrimitive>) {
+const SELECTED_ITEM = '[cmdk-item][aria-selected="true"]';
+const ACTIVE_DESCENDANT_OWNERS = '[cmdk-input], [cmdk-list]';
+
+/**
+ * Adapted from the shadcn/ui output. cmdk 1.1.1 computes `aria-activedescendant` before
+ * the DOM shows a selection it makes on its own (the first option, when options mount or
+ * the query changes), so the input and the list would point at nothing or at the old
+ * option. This points both at the option cmdk marks `aria-selected`, whenever that or
+ * the list changes.
+ */
+function observeSelectedItem(root: HTMLDivElement): () => void {
+  const sync = (): void => {
+    const id = root.querySelector(SELECTED_ITEM)?.id ?? '';
+    for (const owner of root.querySelectorAll(ACTIVE_DESCENDANT_OWNERS)) {
+      if (id === '') owner.removeAttribute('aria-activedescendant');
+      else if (owner.getAttribute('aria-activedescendant') !== id) {
+        owner.setAttribute('aria-activedescendant', id);
+      }
+    }
+  };
+  const observer = new MutationObserver(sync);
+  observer.observe(root, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['aria-selected'],
+  });
+  sync();
+  return () => {
+    observer.disconnect();
+  };
+}
+
+function Command({ className, ref, ...props }: React.ComponentProps<typeof CommandPrimitive>) {
+  const rootRef = React.useCallback(
+    (root: HTMLDivElement | null) => {
+      if (typeof ref === 'function') ref(root);
+      else if (ref) ref.current = root;
+      if (root === null) return undefined;
+      const stop = observeSelectedItem(root);
+      return () => {
+        stop();
+        if (typeof ref === 'function') ref(null);
+        else if (ref) ref.current = null;
+      };
+    },
+    [ref],
+  );
   return (
     <CommandPrimitive
+      ref={rootRef}
       data-slot="command"
       className={cn(
         'flex size-full flex-col overflow-hidden rounded-xl! bg-popover p-1 text-popover-foreground',
@@ -27,29 +75,38 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
   );
 }
 
+/**
+ * Adapted from the shadcn/ui output: the title and description sit inside the dialog
+ * content, so they never linger in the page while the dialog is closed, and
+ * `onCloseAutoFocus` reaches the content, so a dialog with no `DialogTrigger` can
+ * return focus where it was.
+ */
 function CommandDialog({
   title = 'Command Palette',
   description = 'Search for a command to run...',
   children,
   className,
   showCloseButton = false,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string;
   description?: string;
   className?: string;
   showCloseButton?: boolean;
+  onCloseAutoFocus?: React.ComponentProps<typeof DialogContent>['onCloseAutoFocus'];
 }) {
   return (
     <Dialog {...props}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
       <DialogContent
         className={cn('top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0', className)}
         showCloseButton={showCloseButton}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
         {children}
       </DialogContent>
     </Dialog>
