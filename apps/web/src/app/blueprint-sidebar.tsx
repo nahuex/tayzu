@@ -4,7 +4,7 @@
  * never follows the returned cursor. The `_`-prefixed system blueprints come after the
  * others, each group in the API's order. Titles are localized, with `en` as the fallback.
  */
-import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { queryOptions, useQuery, type QueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 
@@ -15,6 +15,18 @@ import { currentLocale, localizedText } from '../i18n/i18n.js';
 const SIDEBAR_PAGE_SIZE = 500;
 
 export const SIDEBAR_QUERY_KEY = ['blueprints', 'list', { pageSize: SIDEBAR_PAGE_SIZE }] as const;
+
+/**
+ * The sidebar's one `blueprints.list` call. Other views that need the blueprint titles
+ * (search, Q89) use these same options, so they share the sidebar's cached answer and
+ * never send a request of their own.
+ */
+export function sidebarBlueprintsQuery(apiClient: Pick<ApiClient, 'blueprints'>) {
+  return queryOptions({
+    queryKey: SIDEBAR_QUERY_KEY,
+    queryFn: () => apiClient.blueprints.list({ pageSize: SIDEBAR_PAGE_SIZE }),
+  });
+}
 
 /** The reserved prefix of the system blueprints (`_team`, `_user`). */
 const SYSTEM_PREFIX = '_';
@@ -37,13 +49,7 @@ export function BlueprintSidebar({
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('common');
   const locale = currentLocale(i18n);
-  const blueprints = useQuery(
-    {
-      queryKey: SIDEBAR_QUERY_KEY,
-      queryFn: () => apiClient.blueprints.list({ pageSize: SIDEBAR_PAGE_SIZE }),
-    },
-    queryClient,
-  );
+  const blueprints = useQuery(sidebarBlueprintsQuery(apiClient), queryClient);
 
   return (
     <nav aria-label={t('nav.catalog')} className="flex flex-col gap-1 p-3">

@@ -585,7 +585,7 @@ stack of `scripts/ci/e2e.sh`.
       "Search by identifier prefix from the keyboard" against a fake API, a 1-character
       query making no request, a stale answer never shown after a newer query, and
       `Escape` restoring focus.
-- [ ] 9.2 The search page (design D14): up to 50 results for the `q` in the URL, the
+- [x] 9.2 The search page (design D14): up to 50 results for the `q` in the URL, the
       empty and error states, and the query never stored. Verify: `search-page.test.tsx`
       covers the results with their blueprint titles, an empty result, an error by
       kind, and storage left empty.

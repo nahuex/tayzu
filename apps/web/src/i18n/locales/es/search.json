@@ -1,3 +1,20 @@
 {
-  "placeholder": "Buscar en el catálogo"
+  "placeholder": "Buscar en el catálogo",
+  "page": {
+    "title": "Resultados de la búsqueda",
+    "prompt": "Escribe una consulta en el cuadro de búsqueda para buscar en el catálogo.",
+    "tooShort": "Escribe al menos 2 caracteres para buscar.",
+    "loading": "Buscando...",
+    "empty": "Sin resultados.",
+    "columns": {
+      "title": "Título",
+      "identifier": "Identificador",
+      "blueprint": "Blueprint"
+    },
+    "error": {
+      "forbidden": "No tienes permiso para buscar en el catálogo.",
+      "server": "No se pudo completar la búsqueda. Inténtalo de nuevo más tarde.",
+      "rateLimited": "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo."
+    }
+  }
 }
