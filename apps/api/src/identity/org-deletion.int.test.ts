@@ -685,12 +685,17 @@ describe('identity.organization.delete requires the host tenant as confirmation 
       return { stateIdentifier, resultIdentifier };
     }
 
+    /**
+     * The identifiers present in `auth.verification`, sorted in JS (code-unit order) so that they
+     * compare with an expected `.sort()`: a SQL `order by` would follow the database's locale
+     * collation instead, and the base64url tokens in the identifiers make the two orders differ.
+     */
     async function verificationIdentifiers(identifiers: readonly string[]): Promise<string[]> {
       const result = await authPool.query<{ identifier: string }>(
-        'select identifier from auth.verification where identifier = any($1) order by identifier',
+        'select identifier from auth.verification where identifier = any($1)',
         [identifiers],
       );
-      return result.rows.map((row) => row.identifier);
+      return result.rows.map((row) => row.identifier).sort();
     }
 
     it("deletes the sso-reauth-state: and sso-reauth-result: rows keyed by the tokens of t1's deleted sessions, and leaves another tenant's rows (Q170)", async () => {
