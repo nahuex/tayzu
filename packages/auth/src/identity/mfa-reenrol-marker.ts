@@ -36,17 +36,28 @@ interface MarkerAdapter {
   }): Promise<unknown>;
 }
 
+/**
+ * Whether the user holds the marker. Rejects if the lookup fails, so a caller that must
+ * not report a state it could not confirm (`GET /v1/me`, 003 Q54) fails closed itself.
+ */
+export async function findMfaReenrolMarker(
+  adapter: Pick<MarkerAdapter, 'findOne'>,
+  userId: string,
+): Promise<boolean> {
+  const row = await adapter.findOne({
+    model: 'verification',
+    where: [{ field: 'identifier', value: mfaReenrolMarkerIdentifier(userId) }],
+  });
+  return row !== null && row !== undefined;
+}
+
 /** Whether the user holds the marker. A failed lookup reads as held (fail closed). */
 export async function hasMfaReenrolMarker(
   adapter: MarkerAdapter,
   userId: string,
 ): Promise<boolean> {
   try {
-    const row = await adapter.findOne({
-      model: 'verification',
-      where: [{ field: 'identifier', value: mfaReenrolMarkerIdentifier(userId) }],
-    });
-    return row !== null && row !== undefined;
+    return await findMfaReenrolMarker(adapter, userId);
   } catch {
     return true;
   }

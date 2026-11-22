@@ -48,6 +48,16 @@
  *    spans `@opentelemetry/instrumentation-pg` emits, task 1.4's deferred
  *    check), metric attribute, or log record (body or attributes), across
  *    the *entire* run, not just this scenario's own slice.
+ * 4. **003 task 3.7** (search and sort): `search.entities` runs on success,
+ *    with a denied plan and once per error class (a `/q` validation failure,
+ *    a limit over 50), and its span `catalog.entity.search` carries the
+ *    normalized query length (an integer), the limit as
+ *    `tayzu.catalog.page.size`, the result count and nothing else;
+ *    `catalog.entity.list` carries `tayzu.catalog.sort.field`
+ *    (`identifier`|`title`|`updated_at`) and `tayzu.catalog.sort.order`
+ *    (`asc`|`desc`), the default sort included; both catalog metrics carry the
+ *    operation value `entity.search`. The marker-leak case adds a query
+ *    marker (spec "The query text never reaches telemetry").
  *
  * ## Why a real Postgres constraint error, forced without touching production code
  *
@@ -186,6 +196,40 @@ function spanTracker(exporter: SpanExporterLike, name: string): () => ReadableSp
   };
 }
 
+/** 003 design, Spans table: `tayzu.catalog.search.query_length` is an integer, the normalized length. */
+function expectSearchQueryLength(span: ReadableSpanLike, expected: number): void {
+  const value = span.attributes['tayzu.catalog.search.query_length'];
+  expect(
+    typeof value === 'number' && Number.isInteger(value),
+    `catalog.entity.search must record tayzu.catalog.search.query_length as an integer, got ${String(value)}`,
+  ).toBe(true);
+  expect(value).toBe(expected);
+}
+
+/**
+ * Spec "Cross-blueprint entity search": "the operation's span MUST carry only
+ * the query length, the limit and the result count". So a
+ * `catalog.entity.search` span carries no key beyond the common operation
+ * attributes, the ones `contract.ts` declares for it, and `error.type` on a
+ * failure: no key can hold the query text.
+ */
+function expectOnlySearchSpanAttributes(span: ReadableSpanLike): void {
+  const spanContract = SPANS.find((entry) => entry.name === 'catalog.entity.search');
+  expect(spanContract, 'contract.ts must declare the span catalog.entity.search').toBeDefined();
+  const allowed = new Set<string>([
+    ...COMMON_OPERATION_SPAN_ATTRIBUTES,
+    ...(spanContract?.requiredAttributes ?? []),
+    ...(spanContract?.conditionalAttributes ?? []),
+    'error.type',
+  ]);
+  for (const key of Object.keys(span.attributes)) {
+    expect(
+      allowed.has(key),
+      `catalog.entity.search carries the undeclared attribute "${key}"`,
+    ).toBe(true);
+  }
+}
+
 /** As above, for a single new log record of `eventName`. */
 function logTracker(
   exporter: TelemetryTestHarness['logExporter'],
@@ -321,7 +365,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
     await endQuietly(db.$client);
   }, 60_000);
 
-  it('runs every operation once successfully and once per applicable error class, and every declared span, metric and log event is observed with its required (and, where the condition holds, conditional) attributes (spec "Declared telemetry is emitted"; task 10.1)', async () => {
+  it('runs every operation once successfully and once per applicable error class, and every declared span, metric and log event is observed with its required (and, where the condition holds, conditional) attributes (spec "Declared telemetry is emitted"; task 10.1; 003 task 3.7 search and sort)', async () => {
     const tenantId = randomTenantId();
     const hostContext = ctx(tenantId);
 
@@ -428,6 +472,97 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
     const entityListSpan = captureEntityList();
     expect(entityListSpan.attributes['tayzu.catalog.result.count']).toBe(entityPage.items.length);
     expect(entityPage.items.length).toBeGreaterThan(0);
+    // 003 design, Spans table: catalog.entity.list's sort field and order are
+    // *required* attributes, so the default sort (identifier asc, design D6)
+    // carries them too.
+    expect(entityListSpan.attributes['tayzu.catalog.sort.field']).toBe('identifier');
+    expect(entityListSpan.attributes['tayzu.catalog.sort.order']).toBe('asc');
+
+    // 7 (again). entities.list with non-default sorts (003 task 3.7): the
+    // attribute value is the snake_case sort key (`identifier`|`title`|
+    // `updated_at`), whatever the API's query enum spells it.
+    for (const [sort, order, expectedField] of [
+      ['updatedAt', 'desc', 'updated_at'],
+      ['title', 'asc', 'title'],
+      ['identifier', 'desc', 'identifier'],
+    ] as const) {
+      const captureSortedList = spanTracker(harness.spanExporter, 'catalog.entity.list');
+      await client.entities.list(
+        { blueprint: 'widget', pageSize: 10, sort, order },
+        { context: hostContext },
+      );
+      const sortedListSpan = captureSortedList();
+      expect(
+        sortedListSpan.attributes['tayzu.catalog.sort.field'],
+        `catalog.entity.list sorted by ${sort} ${order} must record its sort field`,
+      ).toBe(expectedField);
+      expect(
+        sortedListSpan.attributes['tayzu.catalog.sort.order'],
+        `catalog.entity.list sorted by ${sort} ${order} must record its sort order`,
+      ).toBe(order);
+    }
+
+    // 13. search.entities (003 task 3.7, design "Observability contract"):
+    // the span carries the *normalized* query length (trimmed, then NFC), the
+    // limit and the result count, and nothing else beyond the common
+    // attributes ("the operation's span MUST carry only the query length, the
+    // limit and the result count").
+    const captureSearch = spanTracker(harness.spanExporter, 'catalog.entity.search');
+    const searchResult = await client.search.entities(
+      { q: '  widget  ', limit: 10 },
+      { context: hostContext },
+    );
+    const searchSpan = captureSearch();
+    // Only widget-1 exists yet (widget-2 is created by step 8 below).
+    expect(searchResult.items.map((item) => item.identifier)).toEqual(
+      expect.arrayContaining(['widget-1']),
+    );
+    expect(searchResult.items.length).toBeGreaterThan(0);
+    expect(searchSpan.status.code).not.toBe(2 /* SpanStatusCode.ERROR */);
+    expect(searchSpan.attributes['error.type']).toBeUndefined();
+    expect(searchSpan.attributes['tayzu.catalog.operation']).toBe('entity.search');
+    for (const key of COMMON_OPERATION_SPAN_ATTRIBUTES) {
+      expect(
+        searchSpan.attributes[key],
+        `catalog.entity.search missing common attribute ${key}`,
+      ).not.toBeUndefined();
+    }
+    expectSearchQueryLength(searchSpan, 'widget'.length);
+    expect(searchSpan.attributes['tayzu.catalog.page.size']).toBe(10);
+    expect(searchSpan.attributes['tayzu.catalog.result.count']).toBe(searchResult.items.length);
+    expectOnlySearchSpanAttributes(searchSpan);
+
+    // 13 (again). The default limit (20, spec "Cross-blueprint entity search")
+    // is the recorded page size, and the length is the NFC-normalized one:
+    // `Cafe` + U+0301 is 5 code units raw, `Café` (4) after NFC.
+    const captureNfcSearch = spanTracker(harness.spanExporter, 'catalog.entity.search');
+    await client.search.entities({ q: ' Café ' }, { context: hostContext });
+    const nfcSearchSpan = captureNfcSearch();
+    expectSearchQueryLength(nfcSearchSpan, 4);
+    expect(nfcSearchSpan.attributes['tayzu.catalog.page.size']).toBe(20);
+    expectOnlySearchSpanAttributes(nfcSearchSpan);
+
+    // 13 (again). A denied plan (a viewer with no list grant: a real
+    // ALWAYS_DENIED plan) is no result, not an error: the span succeeds,
+    // with its required attributes and a result count of 0.
+    const viewerContext: CatalogContext = {
+      tenantId,
+      actor: { type: 'user', id: 'smoke-viewer-1' },
+      principal: { roles: ['viewer'], teams: ['platform'], moderatedBlueprints: [] },
+    };
+    const captureDeniedSearch = spanTracker(harness.spanExporter, 'catalog.entity.search');
+    const deniedResult = await client.search.entities(
+      { q: 'widget', limit: 5 },
+      { context: viewerContext },
+    );
+    const deniedSearchSpan = captureDeniedSearch();
+    expect(deniedResult).toEqual({ items: [] });
+    expect(deniedSearchSpan.status.code).not.toBe(2 /* SpanStatusCode.ERROR */);
+    expect(deniedSearchSpan.attributes['error.type']).toBeUndefined();
+    expectSearchQueryLength(deniedSearchSpan, 'widget'.length);
+    expect(deniedSearchSpan.attributes['tayzu.catalog.page.size']).toBe(5);
+    expect(deniedSearchSpan.attributes['tayzu.catalog.result.count']).toBe(0);
+    expectOnlySearchSpanAttributes(deniedSearchSpan);
 
     // 8. entities.upsert -- created, then updated, then unchanged: the
     // conditional tayzu.catalog.mutation attribute must record all three
@@ -766,6 +901,52 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
     const limitExceededSpan = captureLimitExceeded();
     expect(limitExceededSpan.attributes['error.type']).toBe('CATALOG_LIMIT_EXCEEDED');
 
+    // search.entities, one call per error class (003 task 3.7). Both
+    // attributes are *required* on catalog.entity.search (design, Spans
+    // table), so a rejected search records them too: the normalized length
+    // of a rejected query, and the requested limit of a rejected limit.
+    const searchErrorCases = [
+      {
+        label: 'a query too short after trimming (/q)',
+        input: { q: '  a  ' },
+        code: 'CATALOG_VALIDATION_FAILED',
+        queryLength: 1,
+        pageSize: 20,
+      },
+      {
+        label: 'a 101-character query (/q)',
+        input: { q: 'q'.repeat(101) },
+        code: 'CATALOG_VALIDATION_FAILED',
+        queryLength: 101,
+        pageSize: 20,
+      },
+      {
+        label: 'a limit of 51',
+        input: { q: 'widget', limit: 51 },
+        code: 'CATALOG_LIMIT_EXCEEDED',
+        queryLength: 'widget'.length,
+        pageSize: 51,
+      },
+    ] as const;
+    for (const errorCase of searchErrorCases) {
+      const captureSearchError = spanTracker(harness.spanExporter, 'catalog.entity.search');
+      await expectCatalogErrorCode(
+        client.search.entities(errorCase.input, { context: hostContext }),
+        errorCase.code,
+      );
+      const searchErrorSpan = captureSearchError();
+      expect(searchErrorSpan.status.code, errorCase.label).toBe(2 /* SpanStatusCode.ERROR */);
+      expect(searchErrorSpan.attributes['error.type'], errorCase.label).toBe(errorCase.code);
+      expect(searchErrorSpan.attributes['tayzu.catalog.operation'], errorCase.label).toBe(
+        'entity.search',
+      );
+      expectSearchQueryLength(searchErrorSpan, errorCase.queryLength);
+      expect(searchErrorSpan.attributes['tayzu.catalog.page.size'], errorCase.label).toBe(
+        errorCase.pageSize,
+      );
+      expectOnlySearchSpanAttributes(searchErrorSpan);
+    }
+
     // validation failed (entity-level: an entity property fails the
     // compiled Ajv schema), which also exercises catalog.entity.validate's
     // conditional tayzu.catalog.validation.issue.count.
@@ -950,6 +1131,45 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
         `expected a tayzu.catalog.validation.failures data point with error.type = ${expectedErrorType}`,
       ).toBe(true);
     }
+
+    // 003 design, Metrics table: `tayzu.catalog.operation` gains the value
+    // `entity.search` on both catalog metrics, on success and per error class.
+    const searchDurationPoints = allMetricDataPointAttributes(
+      harness.metricExporter,
+      'tayzu.catalog.operation.duration',
+    ).filter(
+      (attributes) =>
+        attributes['tayzu.catalog.operation'] === 'entity.search' &&
+        attributes['tayzu.tenant.id'] === tenantId,
+    );
+    expect(
+      searchDurationPoints.some(
+        (attributes) =>
+          attributes['tayzu.catalog.outcome'] === 'success' &&
+          attributes['error.type'] === undefined,
+      ),
+      'expected a tayzu.catalog.operation.duration data point for a successful entity.search',
+    ).toBe(true);
+    for (const expectedErrorType of ['CATALOG_VALIDATION_FAILED', 'CATALOG_LIMIT_EXCEEDED']) {
+      expect(
+        searchDurationPoints.some(
+          (attributes) =>
+            attributes['tayzu.catalog.outcome'] === 'client_error' &&
+            attributes['error.type'] === expectedErrorType,
+        ),
+        `expected a tayzu.catalog.operation.duration data point for entity.search with error.type = ${expectedErrorType}`,
+      ).toBe(true);
+      expect(
+        validationFailurePoints.some(
+          (point) =>
+            point.attributes['tayzu.catalog.operation'] === 'entity.search' &&
+            point.attributes['tayzu.tenant.id'] === tenantId &&
+            point.attributes['error.type'] === expectedErrorType &&
+            point.value > 0,
+        ),
+        `expected a tayzu.catalog.validation.failures data point for entity.search with error.type = ${expectedErrorType}`,
+      ).toBe(true);
+    }
   }, 120_000);
 
   it('every metric data point carries only attribute keys in its declared allowed set — the cardinality guard (design.md, "Cardinality budget"; task 10.2)', async () => {
@@ -972,9 +1192,10 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
     }
   });
 
-  it('property values never reach any exported span, metric or log, including after a forced database constraint error (spec "Property values never reach telemetry"; task 10.3)', async () => {
+  it('property values never reach any exported span, metric or log, including after a forced database constraint error, and The query text never reaches telemetry (spec "Property values never reach telemetry"; task 10.3; 003 spec "The query text never reaches telemetry", task 3.7)', async () => {
     const MARKER_PROPERTY_VALUE = 'secret-marker-123';
     const MARKER_TITLE = 'Title-marker-456';
+    const MARKER_QUERY = 'Query-marker-789';
 
     const tenantId = randomTenantId();
     const hostContext = ctx(tenantId);
@@ -1026,6 +1247,37 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
       'an unmapped database error must not be fabricated into a CatalogError',
     ).toBe(false);
 
+    // 003 task 3.7, spec "The query text never reaches telemetry": GIVEN a
+    // query that contains a unique marker string, WHEN the search runs (on
+    // success, with a result whose title is itself a marker, and rejected per
+    // error class) and its telemetry is exported, THEN no span, metric or log
+    // carries the marker, and the span carries the query length.
+    const captureMarkerSearch = spanTracker(harness.spanExporter, 'catalog.entity.search');
+    await client.search.entities({ q: MARKER_QUERY }, { context: hostContext });
+    const markerSearchSpan = captureMarkerSearch();
+    expectSearchQueryLength(markerSearchSpan, MARKER_QUERY.length);
+
+    // A search that finds the entity titled with a marker: the title reaches
+    // the result, never the telemetry.
+    const captureTitleSearch = spanTracker(harness.spanExporter, 'catalog.entity.search');
+    const titleSearch = await client.search.entities({ q: MARKER_TITLE }, { context: hostContext });
+    const titleSearchSpan = captureTitleSearch();
+    expect(titleSearch.items.map((item) => item.title)).toContain(MARKER_TITLE);
+    expectSearchQueryLength(titleSearchSpan, MARKER_TITLE.length);
+    expect(titleSearchSpan.attributes['tayzu.catalog.result.count']).toBe(titleSearch.items.length);
+
+    // The same marker in a rejected query and with a rejected limit.
+    const tooLongMarkerQuery = `${MARKER_QUERY} `.repeat(10).trim();
+    expect(tooLongMarkerQuery.length).toBeGreaterThan(100);
+    await expectCatalogErrorCode(
+      client.search.entities({ q: tooLongMarkerQuery }, { context: hostContext }),
+      'CATALOG_VALIDATION_FAILED',
+    );
+    await expectCatalogErrorCode(
+      client.search.entities({ q: MARKER_QUERY, limit: 51 }, { context: hostContext }),
+      'CATALOG_LIMIT_EXCEEDED',
+    );
+
     await harness.forceFlush();
 
     // Task 1.4's deferred check: real pg.* spans (from
@@ -1076,7 +1328,7 @@ describe('otel-smoke-check (tasks 10.1, 10.2, 10.3; design.md "Observability con
       })),
     );
 
-    for (const marker of [MARKER_PROPERTY_VALUE, MARKER_TITLE]) {
+    for (const marker of [MARKER_PROPERTY_VALUE, MARKER_TITLE, MARKER_QUERY]) {
       expect(
         allSpansText,
         `the marker "${marker}" must never reach any exported span`,

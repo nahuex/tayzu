@@ -33,6 +33,7 @@ import {
   SAMPLING_EXEMPT_SIGNALS as AUTHZ_SAMPLING_EXEMPT,
   SPANS as AUTHZ_SPANS,
 } from '../../../authz/src/telemetry/contract.js';
+import * as contractModule from './contract.js';
 import { LOG_EVENTS, METRICS, SAMPLING_EXEMPT_SIGNALS, SPANS } from './contract.js';
 
 const TENANT = 'tayzu.tenant.id';
@@ -211,5 +212,63 @@ describe('auth.security.step_up_succeeded is declared (task 27.5, design Q77)', 
     const actual = LOG_EVENTS.find((event) => event.name === 'auth.security.step_up_succeeded');
     expect(actual?.severity).toBe('INFO');
     expect(sorted(actual?.attributes)).toEqual(sorted([TENANT, ACTOR_ID, METHOD]));
+  });
+});
+
+/**
+ * Task 3.11 of openspec/changes/003-catalog-ui-core (design D11 "Step-up telemetry for
+ * Visma Connect", "Observability contract" -> Log events; Resolved decisions Q27 B2 and
+ * Q29). The two rows of the design's Log events table, transcribed verbatim:
+ *
+ * - `auth.security.step_up_succeeded` (`002`, existing) | INFO | `tayzu.tenant.id`,
+ *   `tayzu.actor.id`, `tayzu.auth.method` gains the emitted value `visma_connect`.
+ * - `auth.security.reauthorization_failed` | WARN |
+ *   `tayzu.auth.reauthorization.reason` (`invalid_state`|`exchange_failed`), "no tenant,
+ *   because an unknown or expired state is bound to none (Q29)".
+ *
+ * ## Production symbols expected from `./contract.js`
+ *
+ * - `LOG_EVENTS` gains `auth.security.reauthorization_failed` (WARN, attributes exactly
+ *   `['tayzu.auth.reauthorization.reason']`); `SAMPLING_EXEMPT_SIGNALS` follows from it.
+ * - A new export `ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>>`, the
+ *   closed value set of the bounded attributes these two events carry:
+ *   `tayzu.auth.method` (`local`, `visma_connect`; 002 Q77) and
+ *   `tayzu.auth.reauthorization.reason` (`invalid_state`, `exchange_failed`).
+ * - The agreement block above keeps both contracts equal on every `auth.security.*`
+ *   event, so `packages/authz/src/telemetry/contract.ts` declares the new event too
+ *   (its own `contract.test.ts` lists it).
+ */
+describe('Visma Connect step-up telemetry is declared (003 task 3.11, design D11, Q27 B2, Q29)', () => {
+  const REAUTH_REASON = 'tayzu.auth.reauthorization.reason';
+
+  const attributeValues = (): Readonly<Record<string, readonly string[]>> | undefined =>
+    (contractModule as Record<string, unknown>)['ATTRIBUTE_VALUES'] as
+      Readonly<Record<string, readonly string[]>> | undefined;
+
+  it('declares auth.security.reauthorization_failed: WARN, tayzu.auth.reauthorization.reason only, no tenant', () => {
+    const event = LOG_EVENTS.find((entry) => entry.name === 'auth.security.reauthorization_failed');
+    expect(event, 'auth.security.reauthorization_failed is declared').toBeDefined();
+    expect(event?.severity).toBe('WARN');
+    expect(sorted(event?.attributes)).toEqual([REAUTH_REASON]);
+    expect(event?.attributes).not.toContain(TENANT);
+    expect(event?.attributes).not.toContain(ACTOR_ID);
+  });
+
+  it('declares the reason value set of auth.security.reauthorization_failed: invalid_state and exchange_failed', () => {
+    const values = attributeValues();
+    expect(values, 'ATTRIBUTE_VALUES is exported').toBeDefined();
+    expect(sorted(values?.[REAUTH_REASON])).toEqual(['exchange_failed', 'invalid_state']);
+  });
+
+  it('declares visma_connect in the tayzu.auth.method set of auth.security.step_up_succeeded, next to local', () => {
+    const event = LOG_EVENTS.find((entry) => entry.name === 'auth.security.step_up_succeeded');
+    expect(event?.attributes).toContain(METHOD);
+    const values = attributeValues();
+    expect(values, 'ATTRIBUTE_VALUES is exported').toBeDefined();
+    expect(sorted(values?.[METHOD])).toEqual(['local', 'visma_connect']);
+  });
+
+  it('exempts auth.security.reauthorization_failed from sampling', () => {
+    expect(SAMPLING_EXEMPT_SIGNALS).toContain('auth.security.reauthorization_failed');
   });
 });

@@ -21,6 +21,12 @@ Dependabot opens weekly pull requests for three ecosystems
   `scripts/ci/Dockerfile.images`, so the pinned image digests below are
   bumped by pull request (task 13.12).
 
+Every entry has a 14-day `cooldown` (`default-days: 14`, `003` Q43 and Q49):
+Dependabot does not propose a release until it is at least 14 days old, the
+same rule that picks the pinned versions by hand. It applies to all three
+ecosystems, not only npm, because the 14-day rule is not npm-specific.
+`apps/api/src/dependabot-config.test.ts` asserts it.
+
 ### Pinned image digests
 
 | Image                     | Pinned in                                                                            | Tracking mechanism                                                | Owner    |
@@ -45,6 +51,11 @@ updates (`.github/dependabot.yml`); moving to a new Node major is an
 explicit decision that updates the runtime, `engines` and these types
 together.
 
+`@playwright/test` and `playwright-core` are ignored for every update type
+(`003` Q43). The pin (1.63.0) matches the Chromium revision preinstalled in
+the sandbox (`/opt/pw-browsers`, revision 1243), so a bump moves the sandbox
+browser, CI and the pin together, by hand.
+
 ## Fix SLA
 
 Once an advisory is confirmed against Tayzu's dependency graph:
@@ -63,6 +74,13 @@ are fixed opportunistically or with the next Dependabot update.
   the pipeline on any high or critical advisory in a production dependency.
   Dev-only dependencies are excluded (`--prod`) so a fix does not need to wait
   on, for example, a linter's transitive advisory.
+- **`pnpm audit --audit-level=critical`** (second step of the same job,
+  `continue-on-error: true`) covers every dependency, dev included, so the
+  build chain (Vite, Tailwind, the lint and test tools) is audited too
+  (`003` design D3). It is **non-blocking**: a critical finding is reported
+  in the job log and fixed under the SLA above, but it does not fail the
+  pipeline. `pnpm ci:local` runs it as an advisory step that prints a
+  `WARNING` and does not fail the run.
 - **Semgrep OSS** (`semgrep` job) runs the `p/typescript`, `p/nodejs` and
   `p/secrets` registry rulesets and blocks on `ERROR` severity. `--config auto`
   is never used: it requires a Semgrep login and sends telemetry that this
@@ -107,7 +125,23 @@ Before adding a dependency that is not already in the lockfile, check its
 declared license.
 
 **Allowlist (OSI-approved, adopt freely):** MIT, Apache-2.0, BSD-2-Clause,
-BSD-3-Clause, ISC, 0BSD, Python-2.0, CC0-1.0.
+BSD-3-Clause, ISC, 0BSD, Python-2.0, CC0-1.0, MIT-0, BlueOak-1.0.0, Unlicense
+(the last three added by `003` Q50).
+
+**Data-only CC-BY-4.0 (accepted, `003` Q50):** CC-BY-4.0 is accepted for a
+development dependency that only carries data, such as `caniuse-lite` (browser
+support tables under Babel and `browserslist`), and never ships in the web
+bundle or the API image.
+
+**Test-only and lint-only MPL-2.0 (accepted, `003` Q26 and Q40):** MPL-2.0 is
+an OSI-approved, file-level weak copyleft license. It is accepted only for a
+development dependency that never ships in the web bundle or the API image and
+that Tayzu does not modify: today `axe-core` (pulled in by
+`eslint-plugin-jsx-a11y` for lint, and by `@axe-core/playwright` for e2e) and
+`@axe-core/playwright` itself. Build-only use is accepted on the same terms
+(`003` Q50): `lightningcss`, which Vite and Tailwind run to compile CSS at build
+time and which never ships. A runtime MPL-2.0 dependency, or a modified copy,
+still needs a decision in chat.
 
 **Flag for review (source-available, not OSI-approved):** SSPL, BSL / Business
 Source License, Elastic License 2.0, and any other license that restricts
@@ -138,6 +172,17 @@ graph resolves to a patched version on its own.
 The `source-map-js` path enters through `vitest`, an optional peer of Better
 Auth that is test tooling and is not loaded at runtime; the override still
 fixes it so the `dependency-audit` job stays green without a waiver.
+
+## Peer dependency rules
+
+`pnpm.peerDependencyRules.allowedVersions` in the root `package.json` accepts
+a peer version that a package does not declare yet. JSON holds no comments, so
+each entry and its reason are listed here, and the entry is removed once the
+package declares the peer itself.
+
+| Entry                                       | Reason                                                                                                                                                                                                                                | Added      |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `eslint-plugin-jsx-a11y@6.10.2>eslint` `10` | 6.10.2, the latest release, declares ESLint peers only up to 9 and the repository runs ESLint 10. The human accepted the entry over dropping the plugin or pinning ESLint 9, with a lint test that proves its rules fire (`003` Q40). | 2026-11-19 |
 
 ## Security updates
 
@@ -322,6 +367,211 @@ plugin makes, instead of a hand-written RFC 6238 implementation.
 - **Upgrades**: a drift test (044 design D6) compares this verifier with the
   installed Better Auth endpoint, so a Better Auth upgrade cannot silently
   change one side. Keep this pin in step with the version Better Auth locks.
+
+## Web app dependencies (`003-catalog-ui-core`)
+
+Adopted by `003-catalog-ui-core` (tasks 2.1, 2.3 and 2.4, design D3) for
+`@tayzu/web` and the root lint configuration, and reviewed in task 2.2 on
+2026-11-19. Every version is pinned exactly, each the latest release published
+at least 14 days earlier (`003` Q43). Libraries that ship in the bundle are
+`dependencies` of `@tayzu/web`, so `pnpm audit --prod` covers them; build, lint
+and test tools are `devDependencies`. The root `vite` was re-pinned exactly to
+8.3.5 by task 2.1, because `^8.3.3` had resolved to 8.3.8, under 14 days old
+(`003` Q45).
+
+### Direct packages
+
+Rows marked _planned_ are not installed yet. They carry the version design D3
+pins and are re-checked (license, install scripts, lockfile diff, SBOM and
+audit) by the task that installs them, which then drops the mark.
+
+| Package                                                      | Version  | License    | Kind           | Added by |
+| ------------------------------------------------------------ | -------- | ---------- | -------------- | -------- |
+| `react`, `react-dom`                                         | 19.3.1   | MIT        | runtime        | 2.1      |
+| `@tanstack/react-query`                                      | 5.106.0  | MIT        | runtime        | 2.1      |
+| `@tanstack/react-router`                                     | 1.170.46 | MIT        | runtime        | 2.1      |
+| `zustand`                                                    | 5.0.16   | MIT        | runtime        | 2.1      |
+| `react-hook-form`                                            | 7.91.0   | MIT        | runtime        | 2.1      |
+| `@hookform/resolvers`                                        | 7.0.2    | MIT        | runtime        | 2.1      |
+| `zod`                                                        | 4.6.7    | MIT        | runtime        | 2.1      |
+| `i18next`                                                    | 26.7.1   | MIT        | runtime        | 2.1      |
+| `react-i18next`                                              | 17.1.12  | MIT        | runtime        | 2.1      |
+| `@orpc/client`, `@orpc/openapi-client`                       | 1.15.4   | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-dialog`, `-popover`                         | 1.3.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-dropdown-menu`                              | 2.2.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-tabs`                                       | 1.2.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-select`                                     | 2.4.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-label`                                      | 2.1.17   | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-slot`                                       | 1.5.0    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-tooltip`                                    | 1.4.1    | MIT        | runtime        | 2.1      |
+| `@radix-ui/react-separator`                                  | 1.2.0    | MIT        | runtime        | 2.1      |
+| `class-variance-authority`                                   | 0.7.1    | Apache-2.0 | runtime        | 2.1      |
+| `clsx`                                                       | 2.1.1    | MIT        | runtime        | 2.1      |
+| `tailwind-merge`                                             | 3.7.0    | MIT        | runtime        | 2.1      |
+| `lucide-react`                                               | 1.68.0   | ISC        | runtime        | 2.1      |
+| `cmdk`                                                       | 1.1.1    | MIT        | runtime        | 2.1      |
+| `react-markdown`                                             | 10.1.0   | MIT        | runtime        | 2.1      |
+| `qrcode.react`                                               | 4.2.0    | ISC        | runtime        | 2.1      |
+| `get-nonce`                                                  | 1.0.1    | MIT        | runtime        | 2.1      |
+| `tailwindcss`, `@tailwindcss/vite`                           | 4.3.4    | MIT        | build          | 2.1      |
+| `tw-animate-css`                                             | 1.4.0    | MIT        | build          | 2.1      |
+| `@vitejs/plugin-react`                                       | 6.2.1    | MIT        | build          | 2.1      |
+| `@types/react`, `@types/react-dom`                           | 19.3.0   | MIT        | build          | 2.1      |
+| `eslint-plugin-react-hooks` (root)                           | 7.1.1    | MIT        | lint           | 2.3      |
+| `eslint-plugin-jsx-a11y` (root)                              | 6.10.2   | MIT        | lint           | 2.3      |
+| `@testing-library/react`                                     | 16.3.3   | MIT        | test           | 2.4      |
+| `@testing-library/dom`                                       | 10.4.2   | MIT        | test           | 2.4      |
+| `@testing-library/user-event`                                | 14.6.8   | MIT        | test           | 2.4      |
+| `@testing-library/jest-dom`                                  | 7.0.1    | MIT        | test           | 2.4      |
+| `jsdom`                                                      | 30.1.3   | MIT        | test           | 2.4      |
+| `@fastify/static` (in `@tayzu/api`)                          | 10.1.10  | MIT        | server runtime | 4.2      |
+| `@playwright/test` (with `playwright` and `playwright-core`) | 1.63.0   | Apache-2.0 | test           | 10.1     |
+| `@axe-core/playwright`                                       | 4.14.0   | MPL-2.0    | test           | 10.1     |
+
+The planned rows were read from the npm registry metadata: none declares a
+`preinstall`, `install` or `postinstall` script. `@axe-core/playwright` 4.14.0
+depends on `axe-core` `~4.14.0`; a root pnpm override pins `axe-core` to
+4.14.0 for it and for `eslint-plugin-jsx-a11y` (4.14.1 was under the 14-day
+age of Q43 when task 10.1 installed these), and declares `playwright-core
+
+> =1.0.0`as a peer, which is why`pnpm why playwright-core`must show 1.63.0
+only.`@fastify/static`10.1.10 depends on`glob` `^14`, whose license is
+> BlueOak-1.0.0 (see the next table); task 4.2 records it.
+
+`@fastify/static` 10.1.10 was published on 2026-11-04, 16 days before task 4.2
+(Q43; 10.1.11 and 10.1.12 are under 14 days old). It declares no peer dependency;
+its `fastify-plugin` guard requires `fastify` `5.x`, which the locked 5.12.5
+satisfies. Its lockfile diff adds 17 package versions, all MIT or ISC apart
+from the BlueOak-1.0.0 `glob` family in the next table: `@fastify/send` 4.2.1,
+`@fastify/accept-negotiator` 2.1.2, `content-disposition` 3.1.0, `mime` 3.0.0,
+`http-errors` 2.0.1 (with `depd`, `inherits`, `setprototypeof`, `statuses` and
+`toidentifier`), `escape-html` 1.0.3, and `glob` 14.0.6 with `minimatch` 11.0.9,
+`@isaacs/nonrecursive-glob-match` 1.1.0, `path-scurry` 3.0.0 and `minipass`
+7.1.3. `path-scurry` reuses the locked `lru-cache` 11.5.3. None declares a
+`preinstall`, `install` or `postinstall` script.
+
+### Notable transitive packages
+
+The lockfile diff of tasks 2.1, 2.3 and 2.4 adds 356 package versions, every
+one a package above or a transitive dependency of one (checked by walking the
+lockfile graph from the direct packages). The other changed entries are 12
+existing packages re-keyed by new peers and the root `vite` moving from 8.3.8
+to 8.3.5. Every license not named below is on the allowlist. The notable
+families:
+
+- **unified and remark**, under `react-markdown`: `unified` 11.0.5,
+  `remark-parse` 11.0.0, `remark-rehype` 11.1.2, the `mdast-util-*`,
+  `hast-util-*` and `unist-util-*` packages, `vfile` 6.0.3 and
+  `hast-util-to-jsx-runtime` 2.3.7, all MIT apart from
+  `@ungap/structured-clone` (ISC). The `micromark` parser was
+  already locked through `markdownlint`. No `rehype-raw` is installed, so raw
+  HTML is never parsed (design D13).
+- **Radix internals and floating-ui**, under the Radix primitives and `cmdk`:
+  `@radix-ui/react-primitive`, `-presence`, `-portal`, `-dismissable-layer`,
+  `-focus-scope`, `-popper`, `-menu`, `-roving-focus`, `-collection` and their
+  hooks; `@floating-ui/core`, `@floating-ui/dom`, `@floating-ui/react-dom` and
+  `@floating-ui/utils` (positioning); and the scroll lock that reads
+  `get-nonce` (`react-remove-scroll`, `react-remove-scroll-bar`,
+  `react-style-singleton`, `use-sidecar`, `use-callback-ref`, `aria-hidden`).
+  All MIT.
+- **Tailwind oxide and lightningcss**, under `@tailwindcss/vite`:
+  `@tailwindcss/node` and `@tailwindcss/oxide` 4.3.4 (MIT), the Rust engine,
+  with one prebuilt `@tailwindcss/oxide-<platform>` optional package per
+  platform (MIT; pnpm installs the host's and the `wasm32-wasi` fallback), and
+  `lightningcss` 1.33.0 with its `lightningcss-<platform>` binaries
+  (MPL-2.0, see below), which Vite 8 already locked.
+- **`axe-core`** 4.14.0 (MPL-2.0, pinned by a root override, task 10.1), pulled in by `eslint-plugin-jsx-a11y`, with
+  its lint helpers (`aria-query`, `axobject-query`, `jsx-ast-utils`,
+  `language-tags` and the `es-abstract` shim family), all on the allowlist
+  apart from `axe-core`.
+- **Babel**, under `eslint-plugin-react-hooks` 7 (`@babel/core` 7.29.13 and
+  its helpers, MIT, with `browserslist` and `caniuse-lite`), which parses
+  components for the React Compiler rules at lint time only.
+- **jsdom's CSS and WHATWG packages** (`@asamuzakjp/*`, `@csstools/*`,
+  `css-tree`, `parse5`, `whatwg-url`, `tough-cookie`, `undici`), test only,
+  with the MIT-0 and BlueOak-1.0.0 exceptions below.
+
+### Licenses outside the allowlist
+
+`pnpm licenses list --json` over the installed tree finds these licenses
+outside the allowlist among the packages the review covers:
+
+| Package                                                                           | Version                             | License       | Path                                                                           | Ships?                                                                                               | Status                                                        |
+| --------------------------------------------------------------------------------- | ----------------------------------- | ------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `axe-core`                                                                        | 4.14.0                              | MPL-2.0       | `eslint-plugin-jsx-a11y`                                                       | No, lint only                                                                                        | Accepted, test-only and lint-only MPL-2.0 (`003` Q26 and Q40) |
+| `@axe-core/playwright` (and its `axe-core`)                                       | 4.14.0                              | MPL-2.0       | direct, task 10.1                                                              | No, e2e only                                                                                         | Accepted, test-only MPL-2.0 (`003` Q26)                       |
+| `lightningcss`, `lightningcss-<platform>`                                         | 1.33.0                              | MPL-2.0       | `vite`, `@tailwindcss/node`                                                    | No, it compiles CSS at build time; locked since Vite 8, before `003`                                 | Accepted, `003` Q50                                           |
+| `isbot`                                                                           | 5.2.3                               | Unlicense     | `@tanstack/react-router` (a production dependency)                             | No: only the router's server-rendering entry imports it, and the client build never loads that entry | Accepted, `003` Q50                                           |
+| `caniuse-lite`                                                                    | 1.0.30001826                        | CC-BY-4.0     | `browserslist`, under Babel in `eslint-plugin-react-hooks`                     | No, lint only (browser data)                                                                         | Accepted, `003` Q50                                           |
+| `graceful-fs`                                                                     | 4.2.12                              | BlueOak-1.0.0 | `enhanced-resolve`, under `@tailwindcss/node`                                  | No, build only                                                                                       | Accepted, `003` Q50                                           |
+| `lru-cache`                                                                       | 11.5.3                              | BlueOak-1.0.0 | `@asamuzakjp/css-color`, under `jsdom`; `path-scurry`, under `@fastify/static` | Yes, in the API image (task 4.2)                                                                     | Accepted, `003` Q50                                           |
+| `glob`, `minimatch`, `path-scurry`, `minipass`, `@isaacs/nonrecursive-glob-match` | 14.0.6, 11.0.9, 3.0.0, 7.1.3, 1.1.0 | BlueOak-1.0.0 | `@fastify/static` (a production dependency of `@tayzu/api`)                    | Yes, in the API image: `glob` lists the asset files once at startup                                  | Accepted, `003` Q50                                           |
+| `@csstools/color-helpers`, `@csstools/css-syntax-patches-for-csstree`             | 6.1.3, 1.1.17                       | MIT-0         | `@asamuzakjp/css-color`, under `jsdom`                                         | No, test only                                                                                        | Accepted, `003` Q50                                           |
+
+MIT-0, BlueOak-1.0.0 and the Unlicense are OSI-approved permissive licenses;
+CC-BY-4.0 is a data license that asks for attribution. None is in the "flag
+for review" list. The lockfile already held BlueOak-1.0.0 (`minimatch` 10.2.6,
+under ESLint) and PSF-2.0 (`argparse` 3.0.2, under `markdownlint-cli2`) before
+`003`.
+
+### Install scripts and `allowBuilds`
+
+No `allowBuilds` entry was needed, and `pnpm-workspace.yaml` is unchanged:
+`pnpm install` reports no ignored build script.
+
+- None of the added packages declares a `preinstall`, `install` or
+  `postinstall` script.
+- `@hookform/resolvers`, `aria-hidden`, `enhanced-resolve`, `i18next`,
+  `inline-style-parser`, `isbot`, `jsdom`, `lru-cache`, `react-hook-form`,
+  `react-i18next`, `style-to-object`, `undici`, `whatwg-url` and
+  `zod-validation-error` declare only `prepare`, which pnpm never runs for a
+  registry tarball.
+- `@tailwindcss/oxide` and `lightningcss` ship their native code prebuilt, as
+  per-platform optional packages selected by `os` and `cpu`, so nothing is
+  compiled or downloaded at install time.
+
+### shadcn/ui CLI output (`003` Q44)
+
+shadcn/ui is not a dependency (ADR-0007). Task 2.1 ran the CLI as
+`npx shadcn@4.23.0`, never installed, against the default public registry
+(`https://ui.shadcn.com/r`, style `radix-nova`, base color `neutral`, Lucide
+icons); `components.json` names no other registry (`"registries": {}`). It
+copied `alert`, `button`, `command`, `dialog`, `dropdown-menu`, `input`,
+`label`, `table`, `tabs` and `tooltip`, plus `input-group` and `textarea` as
+registry dependencies of `command`.
+
+The output was adapted as `003` Q44 decided, and `apps/web/CLAUDE.md` makes
+the same adaptation the rule for every later `shadcn add`:
+
+- The CLI's additions that design D3 does not name were removed: the
+  `@fontsource-variable/geist` web font, the monolithic `radix-ui` package,
+  the `cn` package and the `shadcn` package (for `shadcn/tailwind.css`). None
+  of them is in the lockfile.
+- The copied source imports the individual `@radix-ui/react-*` packages (the
+  same API; `radix-ui` 1.8.1 depends on exactly D3's primitive versions), `cn`
+  from `@/lib/utils` on `clsx` and `tailwind-merge`, and the system font
+  stack. The custom variants and the `no-scrollbar` utility of
+  `shadcn/tailwind.css` are copied into `src/index.css` with its MIT notice.
+- Every remaining dependency is pinned to D3's exact version, and the lockfile
+  diff adds only D3 packages and their transitive dependencies (above).
+
+### Single copies
+
+- `pnpm why get-nonce`: one version, 1.0.1, shared by the Radix scroll lock
+  of `dialog`, `dropdown-menu`, `popover` and `select`.
+- `pnpm why playwright-core`: one version, 1.63.0, shared by
+  `@playwright/test` and `@axe-core/playwright` (task 10.1). Dependabot never bumps either (above).
+
+### SBOM and advisories
+
+- **SBOM**: the SPDX SBOM of `scripts/ci/syft.sh` lists every direct package
+  above at its pinned version and all 356 added package versions.
+- **`pnpm audit --prod --audit-level=high`**: nothing at high or above, apart
+  from the existing `picomatch` waiver (GHSA-fc5q-39xc-vjpf). No advisory of
+  any severity names a package that `003` added.
+- **`pnpm audit --audit-level=critical`**: no critical advisory. Two high
+  advisories in `markdown-it` 15.0.1, under `markdownlint-cli2` (a root dev
+  dependency that predates `003`), are reported and tracked under the fix SLA.
 
 ## Bundled data: common-password denylist
 

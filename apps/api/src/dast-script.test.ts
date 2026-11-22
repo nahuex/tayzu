@@ -10,7 +10,19 @@
  * - `EMAIL_PROVIDER=none` is exported (6.5, Resolved decision Q96).
  *
  * No production symbol is needed by the cases above: they read `scripts/ci/dast.sh`.
- * The 045 task 8.2 cases at the end import `scripts/ci/dast-openapi.ts`.
+ * The 045 task 8.2 cases import `scripts/ci/dast-openapi.ts`.
+ *
+ * The 003 task 4.7 cases at the end (design D10, Resolved decisions Q22, Q42 and
+ * Q46) read `scripts/ci/dast.sh`, `.zap/rules.tsv` and `.github/workflows/ci.yml`:
+ *
+ * - `up()` builds `@tayzu/web` (`pnpm --filter @tayzu/web build`, rooted at
+ *   `$REPO_ROOT`, in the foreground) before it starts `apps/api`.
+ * - `up()` exports `WEB_DIST_DIR="$REPO_ROOT/apps/web/dist"`, the one assignment of
+ *   the variable in the script, before it starts `apps/api`.
+ * - `.zap/rules.tsv` has exactly one 10109 row, `INFO`, `(Modern Web Application)`,
+ *   with a non-empty note; it lists only 10049 and 10109, so 10027 stays a WARN.
+ * - The `dast-zap` CI job still runs `bash scripts/ci/dast.sh up` before the
+ *   baseline scan, so the job builds the app through the script.
  */
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -368,5 +380,129 @@ describe('dast.sh excludes destructive routes from the API scan (045 task 8.2)',
         `${String(method)} ${String(path)}`,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * 003 task 4.7 (design D10, Resolved decisions Q22, Q42 and Q46): the DAST stack
+ * serves the web app, so the ZAP baseline spiders its HTML pages and assets.
+ */
+const RULES_PATH = join(repoRoot, '.zap', 'rules.tsv');
+const WORKFLOW_PATH = join(repoRoot, '.github', 'workflows', 'ci.yml');
+
+/** The lines of `up` that the shell runs: comments and blank lines dropped. */
+function upCodeLines(): string[] {
+  return upFunction()
+    .split('\n')
+    .filter((line) => line.trim() !== '' && !line.trim().startsWith('#'));
+}
+
+/** The index, among `upCodeLines()`, of the line that starts `apps/api`. */
+function apiStartLine(lines: readonly string[]): number {
+  const at = lines.findIndex((line) => /--filter[= ]@tayzu\/api\s+start\b/.test(line));
+  if (at === -1) throw new Error('dast.sh no longer starts @tayzu/api in up()');
+  return at;
+}
+
+interface ZapRule {
+  readonly id: string;
+  readonly level: string | undefined;
+  readonly name: string | undefined;
+  readonly note: string | undefined;
+  readonly fields: number;
+}
+
+/** Every rule row of `.zap/rules.tsv` (comments and blank lines dropped). */
+function zapRules(): ZapRule[] {
+  return readFileSync(RULES_PATH, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '' && !line.startsWith('#'))
+    .map((line) => {
+      const fields = line.split('\t');
+      return {
+        id: fields[0] ?? '',
+        level: fields[1],
+        name: fields[2],
+        note: fields[3],
+        fields: fields.length,
+      };
+    });
+}
+
+/** The steps of the `dast-zap` job of the CI workflow, as text. */
+function dastZapJob(): string {
+  const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
+  const start = workflow.indexOf('\n  dast-zap:\n');
+  if (start === -1) return '';
+  const next = /\n {2}[A-Za-z0-9_-]+:\n/g;
+  next.lastIndex = start + 1;
+  const end = next.exec(workflow)?.index ?? workflow.length;
+  return workflow.slice(start, end);
+}
+
+describe('dast.sh serves the web app to the ZAP baseline (003 task 4.7, design D10)', () => {
+  it('up() builds @tayzu/web, from the repository root and in the foreground, before it starts apps/api', () => {
+    const lines = upCodeLines();
+    const buildAt = lines.findIndex((line) =>
+      /\bpnpm\b[^\n]*--filter[= ]@tayzu\/web\s+(run\s+)?build\b/.test(line),
+    );
+
+    expect(buildAt, 'a `pnpm --filter @tayzu/web build` line in up()').toBeGreaterThan(-1);
+    const build = lines[buildAt] ?? '';
+    // Rooted at the repository, like every other pnpm call of the script.
+    expect(build).toMatch(/\$\{?REPO_ROOT\}?/);
+    // A failed build fails `up` (set -e): never backgrounded, never swallowed.
+    expect(build).not.toMatch(/&\s*$/);
+    expect(build).not.toMatch(/\|\|/);
+    expect(buildAt).toBeLessThan(apiStartLine(lines));
+  });
+
+  it('up() exports WEB_DIST_DIR as the absolute path of apps/web/dist before it starts apps/api', () => {
+    const lines = upCodeLines();
+    const exportAt = lines.findIndex((line) => /^\s*export WEB_DIST_DIR=/.test(line));
+
+    expect(exportAt, 'an `export WEB_DIST_DIR=` line in up()').toBeGreaterThan(-1);
+    // loadWebDistDir requires an absolute path to a directory holding index.html:
+    // the Vite output dir of @tayzu/web, rooted at REPO_ROOT.
+    expect(lines[exportAt]).toMatch(
+      /^\s*export WEB_DIST_DIR="\$\{?REPO_ROOT\}?\/apps\/web\/dist\/?"\s*$/,
+    );
+    expect(exportAt).toBeLessThan(apiStartLine(lines));
+    // REPO_ROOT is itself absolute: resolved with `cd … && pwd`.
+    expect(script).toMatch(/^REPO_ROOT="\$\(cd "\$SCRIPT_DIR\/\.\.\/\.\." && pwd\)"$/m);
+    // Exactly one assignment, so nothing later points the API elsewhere.
+    expect([...script.matchAll(/\bWEB_DIST_DIR=/g)]).toHaveLength(1);
+  });
+
+  it('.zap/rules.tsv sets 10109 (Modern Web Application) to INFO, once, with a non-empty note (Q22)', () => {
+    const rows = zapRules().filter((rule) => rule.id === '10109');
+
+    expect(rows).toHaveLength(1);
+    const [rule] = rows;
+    expect(rule?.level).toBe('INFO');
+    expect(rule?.name).toBe('(Modern Web Application)');
+    expect(rule?.fields).toBe(4);
+    expect(rule?.note?.trim() ?? '').not.toBe('');
+  });
+
+  it('.zap/rules.tsv lists only 10049 and 10109, both INFO with a note: 10027 stays WARN (Q42, Q46)', () => {
+    const rules = zapRules();
+
+    expect(rules.map((rule) => rule.id).sort()).toEqual(['10049', '10109']);
+    expect(rules.some((rule) => rule.id === '10027')).toBe(false);
+    for (const rule of rules) {
+      expect(rule.level, rule.id).toBe('INFO');
+      expect(rule.note?.trim() ?? '', rule.id).not.toBe('');
+    }
+  });
+
+  it('the dast-zap CI job still starts the stack through dast.sh up, before the baseline scan', () => {
+    const job = dastZapJob();
+    expect(job).not.toBe('');
+
+    const upAt = job.search(/^\s*run: bash scripts\/ci\/dast\.sh up\s*$/m);
+    const scanAt = job.indexOf('zaproxy/action-baseline@');
+    expect(upAt).toBeGreaterThan(-1);
+    expect(scanAt).toBeGreaterThan(upAt);
   });
 });

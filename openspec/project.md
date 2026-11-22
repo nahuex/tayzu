@@ -368,7 +368,7 @@ Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la docume
 |---|---|---|
 | `001-catalog-core` | Catalog core (Blueprint/Entity/Relation/Property) | none |
 | `002-auth-and-rbac` | Authentication, RBAC and multi-tenant isolation | 001 |
-| `003-catalog-ui-core` | Catalog UI — pages, entity page, search, branding | 001, 002 |
+| `003-catalog-ui-core` | Catalog UI core: the web app shell (navigation, blueprint sidebar, light and dark theme), every authentication page, i18n (en, es), the per-blueprint catalog table (schema columns, keyset pagination, meta-field sort), the entity page (Details and Related tabs) and a minimal server-side search; page layouts, saved views, branding, banner, icons and enum colors moved to `047` (decision D13) | 001, 002 |
 | `004-integrations-sdk-core` | Integrations SDK ("Ocean" in TypeScript) + GitHub adapter | 001, 002 |
 | `005-search-and-query` | Unified search & query engine | 001, 002, 003 |
 | `006-workflow-engine-core` | Workflow graph engine (unified triggers/actions/conditions/input) | 001, 002, 005 |
@@ -411,11 +411,15 @@ Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la docume
 | `043-identity-lifecycle-and-org-admin` | Identity lifecycle and org admin: 4-state user status lifecycle + invitations, service accounts, org API-credentials viewer & rotation (decision D9; data retention & org deletion moved to `045`, decision D12) | 002 |
 | `044-password-reset-and-account-recovery` | Password reset and account recovery: forgot-password email link, single-use short-lived reset tokens, enumeration-resistant responses, session revocation on reset, MFA recovery (decision D10) | 002, 043 |
 | `045-org-deletion-and-data-retention` | Org deletion and data retention: two-phase org deletion (access revoked at once, purge after a 7-to-14-day window), the deletion marker with the `tayzu_purge` and `tayzu_deletion_admin` roles, the audited operator reversal and its reviewed maintenance workflow, and the retention policy (decision D12) | 002, 043 |
+| `046-azure-deployment-and-first-release` | Azure deployment and first release: the IaC for Container Apps, PostgreSQL Flexible Server, Key Vault and Azure Monitor, the sandbox rehearsal, and every first-deployment gate that `002` to `045` attribute to `010`, plus the gates `003` names (decision D13) | 002, 043, 044, 045, 003 |
+| `047-catalog-ui-customization` | Catalog UI customization: blueprint page layouts, saved views, organization branding and announcement banner, the icon library and enum colors, with their storage (decision D13); also the authored column order, since the `jsonb` schema does not keep property order (`003` Q82) | 003 |
 
-**Execution order note (2026-09-28):** `002-auth-and-rbac` runs before
+**Execution order note (2026-09-28, amended 2026-11-18):** `002-auth-and-rbac` runs before
 `043-identity-lifecycle-and-org-admin`, which runs before
-`003-catalog-ui-core` (`002 -> 043 -> 044 -> 045 -> 003`; `044` was added on the
-same day, see D10, and `045` on 2026-10-07, see D12). The numeric IDs in this table are
+`003-catalog-ui-core`, which runs before `046-azure-deployment-and-first-release`
+(`002 -> 043 -> 044 -> 045 -> 003 -> 046`; `044` was added on the
+same day, see D10, `045` on 2026-10-07, see D12, and `046` and `047` on 2026-11-18,
+see D13). `047-catalog-ui-customization` runs later, after `003`. The numeric IDs in this table are
 labels, not a sequencing rule — `043` was deliberately given a new id instead
 of renumbering the rest of the roadmap, and its real execution order is this
 dependency chain, not its position in the table.
@@ -472,3 +476,28 @@ dependency chain, not its position in the table.
   reviews, and executes after `044`. The decisions `043` recorded about it (Q14, Q21,
   Q26-Q27, Q35, Q41, Q48-Q49, Q55, Q59, Q64-Q65, Q68, Q82 and the deletion parts of
   others) carry over unchanged. D9's list of what `043` owns is narrowed accordingly.
+- **D13. `003`/`047` split and the `046` deployment change: approved (Q1, Q8 and Q9 of
+  `003`, 2026-11-18).** The roadmap scope of `003-catalog-ui-core` (the full catalog
+  table toolkit, page layouts, branding, icons and enum colors,
+  `docs/references/port/roadmap-analysis.md:61-76`) does not fit the ~30-80 TDD-task
+  budget once the authentication pages that `002`, `043` and `044` left to it are
+  counted. `003` keeps its id and its name with a reduced scope: the app shell
+  (navigation, the blueprint sidebar, light and dark theme), every authentication page
+  (sign-in, local and Visma Connect, the temporary-password change, MFA enrolment and
+  re-enrolment, step-up, `/accept-invitation` and `/reset-password`), i18n with
+  react-i18next (en and es), the per-blueprint catalog table (columns from the
+  blueprint schema, keyset pagination, sort by meta fields), the entity page with its
+  Details and Related tabs, and a minimal server-side search (title or identifier,
+  prefix and `pg_trgm`). Blueprint page layouts, saved views, organization branding,
+  the announcement banner, the icon library and enum colors, with their storage, move
+  to a new change, `047-catalog-ui-customization` (a new id, not a renumbering), which
+  depends on `003`. The filter language and full-text search stay in
+  `005-search-and-query`. A second new change, `046-azure-deployment-and-first-release`
+  (a new id, not a renumbering), owns the IaC for Container Apps, PostgreSQL Flexible
+  Server, Key Vault and Azure Monitor, the sandbox rehearsal and every first-deployment
+  gate that `002` to `045` attribute to "`010`" (the pre-renumbering id of the
+  observability-dogfood change, `016` in the table above); it depends on `002`, `043`,
+  `044`, `045` and `003` and runs right after `003`. Repointing those references is a
+  ticket of `003`, not part of this decision. The changes that depend on `003` keep
+  that dependency; one that needs page layouts or saved views (for example `014`'s page
+  ACLs or `020`'s dashboard pages) adds `047` when it is proposed.

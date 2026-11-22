@@ -10,7 +10,7 @@
  */
 import { ORPCError } from '@orpc/server';
 import type { RateLimitBucketStore, RateLimitScope } from '@tayzu/auth';
-import type { preHandlerAsyncHookHandler } from 'fastify';
+import type { FastifyReply, preHandlerAsyncHookHandler } from 'fastify';
 
 import { clientIpKey } from './client-ip-key.js';
 
@@ -18,6 +18,12 @@ export interface AcceptRateLimitOptions {
   readonly store: RateLimitBucketStore;
   /** The bucket scope; the accept route's own unless another public route reuses this limiter (13.9). */
   readonly scope?: RateLimitScope;
+  /**
+   * A route-specific answer to a refused request, in place of the JSON `AUTH_RATE_LIMITED`
+   * 429; `Retry-After` is already set on `reply`. Omitted: the JSON 429 (`003` task 3.10
+   * uses it for the re-authorization callback's redirect).
+   */
+  readonly onLimited?: (reply: FastifyReply) => FastifyReply;
 }
 
 export function createAcceptRateLimitPreHandler(
@@ -43,10 +49,10 @@ export function createAcceptRateLimitPreHandler(
       return reply.status(500).send(internal.toJSON());
     }
     if (!result.allowed) {
-      return reply
-        .status(429)
-        .header('retry-after', String(result.retryAfterSeconds))
-        .send(limited.toJSON());
+      reply.header('retry-after', String(result.retryAfterSeconds));
+      return options.onLimited === undefined
+        ? reply.status(429).send(limited.toJSON())
+        : options.onLimited(reply);
     }
     return undefined;
   };

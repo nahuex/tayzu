@@ -1,0 +1,29 @@
+{
+  "placeholder": "Search the catalog",
+  "command": {
+    "title": "Search the catalog",
+    "description": "Type to find blueprints and entities. Use the arrow keys to move and Enter to open.",
+    "inputLabel": "Search blueprints and entities",
+    "blueprints": "Blueprints",
+    "entities": "Entities",
+    "seeAll": "See all results",
+    "error": "The search failed. Try again later."
+  },
+  "page": {
+    "title": "Search results",
+    "prompt": "Type a query in the search box to search the catalog.",
+    "tooShort": "Type at least 2 characters to search.",
+    "loading": "Searching...",
+    "empty": "No results.",
+    "columns": {
+      "title": "Title",
+      "identifier": "Identifier",
+      "blueprint": "Blueprint"
+    },
+    "error": {
+      "forbidden": "You do not have permission to search the catalog.",
+      "server": "The search could not be completed. Try again later.",
+      "rateLimited": "Too many requests. Wait a moment and try again."
+    }
+  }
+}

@@ -190,6 +190,25 @@ export const catalogEntity = pgTable(
     }).onDelete('restrict'),
     check('catalog_entity_created_by_type_check', actorTypeCheck(t.createdByType)),
     check('catalog_entity_updated_by_type_check', actorTypeCheck(t.updatedByType)),
+    // Search and sort indexes (003 design D7, migration 0015). The trigram
+    // indexes need `pg_trgm`, which 0015 creates first; they do not lead with
+    // `tenant_id` (that would need `btree_gin`).
+    index('catalog_entity_title_trgm_idx').using('gin', t.title.op('gin_trgm_ops')),
+    index('catalog_entity_identifier_trgm_idx').using('gin', t.identifier.op('gin_trgm_ops')),
+    // Keyset sort indexes for `entities.list` (design D6): the sort key, then
+    // `identifier` as the tiebreaker.
+    index('catalog_entity_tenant_blueprint_title_idx').on(
+      t.tenantId,
+      t.blueprintId,
+      t.title,
+      t.identifier,
+    ),
+    index('catalog_entity_tenant_blueprint_updated_idx').on(
+      t.tenantId,
+      t.blueprintId,
+      t.updatedAt,
+      t.identifier,
+    ),
     tenantIsolationPolicy(t.tenantId),
   ],
 );

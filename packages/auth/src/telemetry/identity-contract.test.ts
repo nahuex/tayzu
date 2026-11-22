@@ -597,3 +597,59 @@ describe('the identity contract declares the 045 org-deletion telemetry (task 9.
     ]);
   });
 });
+
+/*
+ * Task 3.9 of openspec/changes/003-catalog-ui-core (design D8 and "Observability contract",
+ * Spans): "`identity.session.me` | route | `tayzu.identity.session.gate`
+ * (`none`|`password_change_required`|`password_expired`|`mfa_enrolment_required`|`unauthenticated`)
+ * | `tayzu.tenant.id` (when the session has an active organization)". The `me` names go to
+ * this module, which `otel-smoke-check` already imports.
+ *
+ * ## Production symbols expected (`./identity-contract.js`)
+ *
+ * - `IDENTITY_SPANS` gains `identity.session.me`, with the required attribute
+ *   `tayzu.identity.session.gate` and `conditional: ['tayzu.tenant.id']`.
+ * - `IDENTITY_ATTRIBUTE_VALUES` gains `tayzu.identity.session.gate` with the five values above.
+ *
+ * The 043 cases above compare the whole span list and every value set with the fixture, so they
+ * fail too until the span is declared; this block pins the 003 names on the spec side.
+ */
+const SESSION_GATES_003 = [
+  'none',
+  'password_change_required',
+  'password_expired',
+  'mfa_enrolment_required',
+  'unauthenticated',
+];
+
+describe('the identity contract declares the 003 span of GET /v1/me (task 3.9)', () => {
+  const contract = identityContract as unknown as {
+    IDENTITY_SPANS: readonly Declared[];
+    IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>>;
+  };
+  const spans = asDeclared(contract.IDENTITY_SPANS);
+
+  it('identity.session.me is declared exactly once and equals the fixture', () => {
+    const expected = EXPECTED_SPANS.find((s) => s.name === 'identity.session.me');
+    expect(expected, 'fixture has identity.session.me').toBeDefined();
+    expect(spans.filter((s) => s.name === 'identity.session.me')).toHaveLength(1);
+    const declared = byName(spans, 'identity.session.me');
+    expect(sorted(declared?.attributes)).toEqual(sorted(expected?.attributes));
+    expect(sorted(declared?.conditional)).toEqual(sorted(expected?.conditional));
+  });
+
+  it('the gate is required and the tenant is conditional, never required', () => {
+    const declared = byName(spans, 'identity.session.me');
+    expect(declared?.attributes).toEqual(['tayzu.identity.session.gate']);
+    expect(declared?.conditional).toEqual(['tayzu.tenant.id']);
+  });
+
+  it('the gate value set equals the design', () => {
+    expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES['tayzu.identity.session.gate'])).toEqual(
+      sorted(SESSION_GATES_003),
+    );
+    expect(sorted(EXPECTED_ATTRIBUTE_VALUES['tayzu.identity.session.gate'])).toEqual(
+      sorted(SESSION_GATES_003),
+    );
+  });
+});

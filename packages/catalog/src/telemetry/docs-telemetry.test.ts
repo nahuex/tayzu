@@ -128,4 +128,32 @@ describe('docs/catalog/catalog-core.md, "## Telemetry" section (task 10.4)', () 
       expect(docSignalTokens).toContain(name);
     },
   );
+
+  // 003 task 3.7: every attribute key contract.ts declares is listed in the
+  // section too, so a new span attribute (the search query length, the sort
+  // field and order) cannot be declared without being documented.
+  it.each(
+    [...vocabulary]
+      .filter((name) => !CONTRACT_SIGNAL_NAMES.includes(name))
+      .map((name) => [name] as const),
+  )(
+    'contract.ts attribute key `%s` is documented, backtick-quoted, in the "## Telemetry" section',
+    (name) => {
+      expect(docSignalTokens).toContain(name);
+    },
+  );
+
+  // 003 task 3.7: the search span and attributes are declared in contract.ts
+  // (so the generic checks above require them in the doc), and the operation
+  // value `entity.search` that both catalog metrics gain is listed.
+  it('declares catalog.entity.search with the query length, and catalog.entity.list with the sort field and order, in contract.ts (003 task 3.7)', () => {
+    expect(vocabulary.has('catalog.entity.search')).toBe(true);
+    expect(vocabulary.has('tayzu.catalog.search.query_length')).toBe(true);
+    expect(vocabulary.has('tayzu.catalog.sort.field')).toBe(true);
+    expect(vocabulary.has('tayzu.catalog.sort.order')).toBe(true);
+  });
+
+  it('lists the tayzu.catalog.operation value `entity.search`, backtick-quoted, in the "## Telemetry" section (003 task 3.7)', () => {
+    expect(section).toContain('`entity.search`');
+  });
 });

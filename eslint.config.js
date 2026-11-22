@@ -1,6 +1,8 @@
 // @ts-check
 import js from '@eslint/js';
 import { defineConfig, globalIgnores } from 'eslint/config';
+import jsxA11y from 'eslint-plugin-jsx-a11y';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 import {
@@ -85,11 +87,66 @@ const ACTOR_TYPE_ALLOWLIST = [
   'packages/auth/src/step-up.ts',
 ];
 
+/**
+ * Page rules of the web app (003 design D2 and D15, `apps/web/CLAUDE.md`):
+ * every server string is rendered as React text, so the raw-HTML sinks,
+ * dynamic code evaluation and direct cookie access are banned.
+ */
+const WEB_HTML_SINK_MESSAGE =
+  'Raw HTML sinks are banned in the web app (003 D15): render server strings as React text or through a renderer in src/lib/.';
+const WEB_COOKIE_MESSAGE =
+  'document.cookie is banned in the web app (003 D15): the session cookie is HttpOnly and owned by the server.';
+const WEB_EVAL_MESSAGE =
+  'Dynamic code evaluation is banned in the web app (003 D15): the CSP forbids it.';
+
+const webSyntaxRestrictions = [
+  { selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']", message: WEB_HTML_SINK_MESSAGE },
+  {
+    selector: "MemberExpression[object.name='document'][property.name='cookie']",
+    message: WEB_COOKIE_MESSAGE,
+  },
+  {
+    selector: "MemberExpression[object.name='document'][property.value='cookie']",
+    message: WEB_COOKIE_MESSAGE,
+  },
+  { selector: "CallExpression[callee.name='eval']", message: WEB_EVAL_MESSAGE },
+  { selector: "NewExpression[callee.name='Function']", message: WEB_EVAL_MESSAGE },
+  { selector: "CallExpression[callee.name='Function']", message: WEB_EVAL_MESSAGE },
+  {
+    selector: "MemberExpression[object.name='document'][property.name=/^write(ln)?$/]",
+    message: WEB_HTML_SINK_MESSAGE,
+  },
+  {
+    selector: 'AssignmentExpression > MemberExpression.left[property.name=/^(inner|outer)HTML$/]',
+    message: WEB_HTML_SINK_MESSAGE,
+  },
+  {
+    selector: 'AssignmentExpression > MemberExpression.left[property.value=/^(inner|outer)HTML$/]',
+    message: WEB_HTML_SINK_MESSAGE,
+  },
+];
+
+/**
+ * The web app imports `@tayzu/catalog/contract` and no other workspace
+ * package (003 design D2), so no Node-only module reaches the bundle. A regex
+ * is used because a gitignore-style negation cannot re-include a path whose
+ * parent (`@tayzu/catalog`) is already excluded.
+ */
+const webImportRestrictions = {
+  patterns: [
+    {
+      regex: '^@tayzu/(?!catalog/contract$)',
+      message:
+        'The web app may import only @tayzu/catalog/contract from the workspace (003 D2): never @tayzu/api, @tayzu/auth, @tayzu/db, @tayzu/authz or any other @tayzu/catalog path.',
+    },
+  ],
+};
+
 export default defineConfig(
   // Agent worktrees are full copies of the repository (Claude Code, `.claude/worktrees/`).
   globalIgnores(['**/dist/', '**/coverage/', '**/.turbo/', '.claude/worktrees/']),
   {
-    files: ['**/*.{js,ts}'],
+    files: ['**/*.{js,ts,tsx}'],
     extends: [js.configs.recommended, tseslint.configs.strictTypeChecked],
     languageOptions: {
       parserOptions: {
@@ -143,15 +200,40 @@ export default defineConfig(
     },
   },
   {
+    // 003 D2: the web app. Re-spreads the global selectors because this block
+    // replaces the rule's array (web code never compares the actor type).
+    files: ['apps/web/**/*.ts', 'apps/web/**/*.tsx'],
+    extends: [reactHooks.configs.flat.recommended, jsxA11y.flatConfigs.strict],
+    rules: {
+      'no-console': 'error',
+      'no-restricted-syntax': [
+        'error',
+        ...sqlRawRestrictions,
+        ...actorTypeRestrictions,
+        ...webSyntaxRestrictions,
+      ],
+      'no-restricted-imports': ['error', webImportRestrictions],
+    },
+  },
+  {
     // Plain JavaScript (this config file) is not part of any tsconfig.
     files: ['**/*.js'],
     extends: [tseslint.configs.disableTypeChecked],
   },
   {
+    // 003 Q46: the source of `/theme-init.js`, a classic browser script (no
+    // `import` or `export`) that runs before the app, with only these globals.
+    files: ['apps/web/src/state/theme-init.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: { window: 'readonly', document: 'readonly' },
+    },
+  },
+  {
     // Idioms that are normal in tests but not in production code: an async
     // iterable stub with no `await`, and asserting on a void-returning call
     // (`expect(() => voidFn()).not.toThrow()`).
-    files: ['**/*.test.ts', '**/*.int.test.ts'],
+    files: ['**/*.test.ts', '**/*.test.tsx', '**/*.int.test.ts'],
     rules: {
       '@typescript-eslint/require-await': 'off',
       '@typescript-eslint/no-confusing-void-expression': 'off',

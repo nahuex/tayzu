@@ -791,3 +791,678 @@ describe('system diagram, 045 org deletion purge, reversal and maintenance workf
     for (const e of touching) expect(e.label, e.text).toMatch(PROTOCOL);
   });
 });
+
+/**
+ * `003` task 11.6 (SEC01, design D9, D11, D16 and D17; Resolved decisions Q2,
+ * Q14, Q28 and Q56): the diagram shows the browser running the web app SPA, the
+ * asset and page routes the API container serves it from (`WEB_DIST_DIR`), the
+ * SPA's HTTPS calls to `/v1` and `/api/auth` on the same origin, and the Visma
+ * Connect sign-in and step-up redirects, in the full diagram and in the zone
+ * block of each trust zone it touches, under the projection rules of the `044`
+ * zone suite above. Every new arrow names its protocol and is drawn solid
+ * (`-->`), because the code exists in the repository.
+ *
+ * ## Contract the diagram must meet
+ *
+ * Nodes (declared once in the full diagram, and inside the zone box of their
+ * zone block with the same label):
+ *
+ * - `browserSpa`, in the `productActors` subgraph: the browser running the web
+ *   app SPA. Its label names "browser", "SPA" and "(003)", for example
+ *   `browserSpa(["Browser running the web app SPA (003)<br/>apps/web, loaded from the apps/api origin"])`.
+ * - `webRoutesApi`, in the `apiApp` subgraph (the API container serves the
+ *   build): the asset and page routes. Its label names "(003)", `WEB_DIST_DIR`,
+ *   `/assets/*`, `index.html` and the app pages, for example
+ *   `webRoutesApi["Web app routes (003)<br/>mounted only when WEB_DIST_DIR is set<br/>GET /assets/* (hashed, immutable) · root build files<br/>SPA fallback: index.html for / and every app page"]`.
+ *
+ * Arrows (solid, each from `browserSpa`, each label naming HTTPS):
+ *
+ * 1. to `webRoutesApi`: same origin, the root `/`, `/assets/*` and the app
+ *    pages, for example `"HTTPS GET (same origin): /, /assets/* and the app pages"`;
+ * 2. to `catalogApi`: same origin, `/v1`, for example
+ *    `"HTTPS (same origin, session cookie, CSRF header): /v1"`;
+ * 3. to `authApi`: same origin, `/api/auth`, for example
+ *    `"HTTPS (same origin, session cookie): /api/auth"`;
+ * 4. to `visma`: the sign-in redirect, naming "redirect" and "sign-in" and not
+ *    the step-up, for example `"HTTPS (browser redirect to the Visma Connect sign-in)"`;
+ * 5. to `ssoApi`: the `form_post` callback to `/api/auth/callback`, for example
+ *    `"HTTPS POST (form_post callback from Visma Connect): /api/auth/callback/visma-connect"`;
+ * 6. to `visma`: the step-up redirect, naming "redirect" and "step-up", for
+ *    example `"HTTPS (browser redirect to the Visma Connect step-up re-authorization)"`;
+ * 7. to `reauthApi`: the step-up callback answered `303` to `/step-up/complete`,
+ *    for example `"HTTPS (step-up callback, query or form_post): 303 See Other to /step-up/complete"`.
+ *
+ * Zones: every arrow crosses a zone boundary, so arrows 1, 2, 3, 5 and 7 are
+ * drawn in the Product actors block and in the API and sidecars block, and
+ * arrows 4 and 6 in the Product actors block and in the Supporting systems
+ * block, with the full diagram's labels (14 projections).
+ *
+ * Production symbols expected: none (the change is the Markdown document and
+ * its regenerated images; the render is checked with
+ * `npx -y @mermaid-js/mermaid-cli`).
+ *
+ * Why this fails right now: the diagram has neither node and none of the seven
+ * arrows (assertion failures only).
+ */
+const BROWSER_SPA = 'browserSpa';
+const WEB_ROUTES = 'webRoutesApi';
+
+const HTTPS = /\bHTTPS\b/;
+const SAME_ORIGIN = /same origin/i;
+const STEP_UP = /step-up|re-?authori[sz]/i;
+/** The root path `/` as a token of its own (not the start of `/assets` or `/v1`). */
+const ROOT_PATH = /(?:^|[\s(:,])\/(?=[\s,;)]|$)/;
+
+/** The two `003` nodes: name, required id, required subgraph, label check. */
+const NODES_003: [string, string, string, (label: string) => boolean][] = [
+  [
+    'browser running the web app SPA',
+    BROWSER_SPA,
+    'productActors',
+    (l) => /browser/i.test(l) && /\bSPA\b/.test(l) && l.includes('(003)'),
+  ],
+  [
+    'asset and page routes served from WEB_DIST_DIR',
+    WEB_ROUTES,
+    'apiApp',
+    (l) =>
+      l.includes('(003)') &&
+      l.includes('WEB_DIST_DIR') &&
+      l.includes('/assets/*') &&
+      l.includes('index.html') &&
+      /app pages?/i.test(l),
+  ],
+];
+
+/** The seven `003` arrows from the browser SPA: name, target id, target subgraph, label check. */
+const ARROWS_003: [string, string, string, (label: string) => boolean][] = [
+  [
+    'loads /, /assets/* and the app pages from the asset and page routes over HTTPS on the same origin',
+    WEB_ROUTES,
+    'apiApp',
+    (l) =>
+      HTTPS.test(l) &&
+      SAME_ORIGIN.test(l) &&
+      ROOT_PATH.test(l) &&
+      l.includes('/assets/*') &&
+      /app pages?/i.test(l),
+  ],
+  [
+    'calls /v1 over HTTPS on the same origin',
+    'catalogApi',
+    'apiApp',
+    (l) => HTTPS.test(l) && SAME_ORIGIN.test(l) && /\/v1\b/.test(l),
+  ],
+  [
+    'calls /api/auth over HTTPS on the same origin',
+    'authApi',
+    'apiApp',
+    (l) => HTTPS.test(l) && SAME_ORIGIN.test(l) && l.includes('/api/auth'),
+  ],
+  [
+    'is redirected to the Visma Connect sign-in over HTTPS',
+    'visma',
+    'external',
+    (l) => HTTPS.test(l) && /redirect/i.test(l) && /sign-in|sign in/i.test(l) && !STEP_UP.test(l),
+  ],
+  [
+    'brings the form_post sign-in callback back to /api/auth/callback over HTTPS',
+    'ssoApi',
+    'apiApp',
+    (l) => HTTPS.test(l) && l.includes('form_post') && l.includes('/api/auth/callback'),
+  ],
+  [
+    'is redirected to the Visma Connect step-up re-authorization over HTTPS',
+    'visma',
+    'external',
+    (l) => HTTPS.test(l) && /redirect/i.test(l) && STEP_UP.test(l),
+  ],
+  [
+    'returns from the step-up callback with a 303 to /step-up/complete over HTTPS',
+    'reauthApi',
+    'apiApp',
+    (l) => HTTPS.test(l) && /\b303\b/.test(l) && l.includes('/step-up/complete'),
+  ],
+];
+
+const ids003 = new Set(NODES_003.map(([, id]) => id));
+const is003Label = (label: string): boolean => NODES_003.some(([, , , pred]) => pred(label));
+const fullEdges003 = full.edges.filter((e) => ids003.has(e.srcId) || ids003.has(e.dstId));
+
+/** The arrows of the full diagram from the browser SPA to `dst` whose label passes `pred`. */
+function browserArrows(dst: string, pred: (label: string) => boolean): Edge[] {
+  return full.edges.filter((e) => e.srcId === BROWSER_SPA && e.dstId === dst && pred(e.label));
+}
+
+/** A zone block's own `003` nodes and arrows, by id or by label. */
+function drawn003(block: Block): { nodeIds: string[]; edges: Edge[] } {
+  const nodeIds = [...block.nodes]
+    .filter(([id, label]) => !block.subgraphs.has(id) && (ids003.has(id) || is003Label(label)))
+    .map(([id]) => id);
+  const edges = block.edges.filter((e) => nodeIds.includes(e.srcId) || nodeIds.includes(e.dstId));
+  return { nodeIds, edges };
+}
+
+describe('system diagram, 003 web app SPA, its same-origin routes and the Visma Connect redirects (task 11.6)', () => {
+  it('keeps every Mermaid block structurally sound after the 003 additions', () => {
+    for (const blockSource of readMermaidBlocks()) {
+      const lines = blockSource.split('\n').map((l) => l.trim());
+      expect(lines.filter((l) => l.startsWith('subgraph ')).length).toBe(
+        lines.filter((l) => l === 'end').length,
+      );
+      const parsed = parse(blockSource);
+      expect(parsed.unparsed).toEqual([]);
+      for (const e of parsed.edges) expect(e.label.trim(), e.text).not.toBe('');
+    }
+  });
+
+  it.each(NODES_003)(
+    'draws the %s as node %s of the full diagram, in subgraph %s',
+    (name, id, subgraph, pred) => {
+      expect(full.subgraphs.has(id), `${id} is a node, not a subgraph`).toBe(false);
+      expect(full.nodes.get(id), `${id} is declared in the full diagram`).toBeDefined();
+      expect(pred(full.nodes.get(id) ?? ''), `${id} label: ${full.nodes.get(id) ?? ''}`).toBe(true);
+      // The label check names one node only.
+      expect(fullNodeIds(pred), name).toEqual([id]);
+      expect(full.container.get(id), `${id} sits in subgraph ${subgraph}`).toBe(subgraph);
+    },
+  );
+
+  it.each(ARROWS_003)('has the browser SPA arrow that %s (to %s)', (_name, dst, subgraph, pred) => {
+    expect(full.nodes.get(dst), `${dst} is declared in the full diagram`).toBeDefined();
+    expect(full.container.get(dst), `${dst} sits in subgraph ${subgraph}`).toBe(subgraph);
+    const matches = browserArrows(dst, pred);
+    const present = full.edges.filter((e) => e.srcId === BROWSER_SPA && e.dstId === dst).map(arrow);
+    expect(matches.length, `arrows ${BROWSER_SPA} --> ${dst}:\n${present.join('\n')}`).toBe(1);
+    expectProtocol(matches);
+  });
+
+  it('draws the sign-in and the step-up redirects to Visma Connect as two different arrows', () => {
+    const [, , , signIn] = ARROWS_003[3] ?? [];
+    const [, , , stepUp] = ARROWS_003[5] ?? [];
+    const signInArrows = browserArrows('visma', signIn ?? (() => false));
+    const stepUpArrows = browserArrows('visma', stepUp ?? (() => false));
+    expect(signInArrows).toHaveLength(1);
+    expect(stepUpArrows).toHaveLength(1);
+    expect(signInArrows[0]?.label).not.toBe(stepUpArrows[0]?.label);
+  });
+
+  it('draws every 003 arrow solid, in every block, because the code exists', () => {
+    const touches = new RegExp(`(?:^|\\s)(?:${[...ids003].join('|')})(?:\\s|$)`);
+    const dashed: string[] = [];
+    for (const blockSource of readMermaidBlocks()) {
+      for (const line of blockSource.split('\n')) {
+        const ends = line.replace(/\|"[^"]*"\|/, ' ');
+        if (line.includes('-.->') && touches.test(ends)) dashed.push(line.trim());
+      }
+    }
+    expect(dashed).toEqual([]);
+  });
+
+  it('gives every arrow of the full diagram that touches a 003 node a protocol', () => {
+    // At least the seven arrows the cases above require.
+    expect(fullEdges003.length).toBeGreaterThanOrEqual(ARROWS_003.length);
+    for (const e of fullEdges003) expect(e.label, e.text).toMatch(PROTOCOL);
+  });
+
+  it.each(NODES_003)('the %s (%s) appears in the zone box of its zone block', (_name, id) => {
+    const subgraph = full.container.get(id);
+    expect(subgraph, `${id} is declared in a subgraph of the full diagram`).toBeDefined();
+    const block = blockOfSubgraph(subgraph ?? '');
+    expect(block, `a zone block for subgraph ${String(subgraph)}`).toBeDefined();
+    expect(
+      zoneMembers(block ?? full),
+      `${id} inside the zone box of ${String(subgraph)}`,
+    ).toContain(id);
+    expect(block?.nodes.get(id)).toBe(full.nodes.get(id));
+  });
+
+  it.each(ARROWS_003)(
+    'the browser SPA arrow that %s (to %s) appears with the same label in the Product actors block and in the block of subgraph %s',
+    (_name, dst, subgraph, pred) => {
+      const [e] = browserArrows(dst, pred);
+      expect(e, `the full diagram has the arrow ${BROWSER_SPA} --> ${dst}`).toBeDefined();
+      if (e === undefined) return;
+      const srcBlock = blockOfNode(BROWSER_SPA);
+      const dstBlock = blockOfNode(dst);
+      expect(srcBlock, `${BROWSER_SPA} lies in a zone with a zone block`).toBeDefined();
+      expect(srcBlock).toBe(blockOfSubgraph('productActors'));
+      expect(dstBlock, `${dst} lies in a zone with a zone block`).toBeDefined();
+      expect(dstBlock).toBe(blockOfSubgraph(subgraph));
+      // The arrow crosses a zone boundary, so both blocks draw it.
+      expect(srcBlock === dstBlock, `${BROWSER_SPA} and ${dst} share a zone`).toBe(false);
+      const missing: string[] = [];
+      for (const block of [srcBlock, dstBlock]) {
+        if (block === undefined) continue;
+        const drawn = block.edges.some(
+          (z) =>
+            z.srcId === e.srcId &&
+            z.dstId === e.dstId &&
+            z.label === e.label &&
+            // Both ends are declared in the block, with the full diagram's labels.
+            block.nodes.get(e.srcId) === e.src &&
+            block.nodes.get(e.dstId) === e.dst,
+        );
+        if (!drawn) missing.push(`[${block.nodes.get('zone') ?? '?'}] ${arrow(e)}`);
+      }
+      expect(missing).toEqual([]);
+    },
+  );
+
+  it('every arrow of the full diagram that touches a 003 node appears with the same label in the zone block of each of its ends that lies in a zone', () => {
+    expect(fullEdges003.length).toBeGreaterThanOrEqual(ARROWS_003.length);
+    const missing: string[] = [];
+    let required = 0;
+    for (const e of fullEdges003) {
+      const srcBlock = blockOfNode(e.srcId);
+      const dstBlock = blockOfNode(e.dstId);
+      // An arrow inside one zone appears only in the full diagram.
+      if (srcBlock !== undefined && srcBlock === dstBlock) continue;
+      for (const block of [srcBlock, dstBlock]) {
+        if (block === undefined) continue;
+        required += 1;
+        const drawn = block.edges.some(
+          (z) =>
+            z.srcId === e.srcId &&
+            z.dstId === e.dstId &&
+            z.label === e.label &&
+            block.nodes.get(e.srcId) === e.src &&
+            block.nodes.get(e.dstId) === e.dst,
+        );
+        if (!drawn) missing.push(`[${block.nodes.get('zone') ?? '?'}] ${arrow(e)}`);
+      }
+    }
+    expect(missing).toEqual([]);
+    // Not vacuous: each of the seven arrows crosses a zone, so it is drawn twice.
+    expect(required).toBeGreaterThanOrEqual(2 * ARROWS_003.length);
+  });
+
+  it('no zone block draws a 003 node or a 003 arrow that the full diagram does not have', () => {
+    const extra: string[] = [];
+    let drawn = 0;
+    for (const block of zoneBlocks) {
+      const zone = block.nodes.get('zone') ?? '?';
+      const { nodeIds, edges: zoneEdges } = drawn003(block);
+      drawn += nodeIds.length + zoneEdges.length;
+      for (const id of nodeIds) {
+        if (!ids003.has(id) || block.nodes.get(id) !== full.nodes.get(id)) {
+          extra.push(`[${zone}] node ${id}: ${block.nodes.get(id) ?? ''}`);
+        }
+      }
+      for (const z of zoneEdges) {
+        const inFull = fullEdges003.some(
+          (e) => e.srcId === z.srcId && e.dstId === z.dstId && e.label === z.label,
+        );
+        if (!inFull) extra.push(`[${zone}] ${arrow(z)}`);
+      }
+    }
+    expect(extra).toEqual([]);
+    // Not vacuous: the zone blocks do draw 003 nodes and arrows.
+    expect(drawn).toBeGreaterThan(0);
+  });
+
+  it('every arrow of a zone block that touches a 003 node names a protocol', () => {
+    const touching = zoneBlocks.flatMap((block) => drawn003(block).edges);
+    expect(touching.length).toBeGreaterThan(0);
+    for (const e of touching) expect(e.label, e.text).toMatch(PROTOCOL);
+  });
+});
+
+/**
+ * `003` SSA Mode A re-run (VCDM SEC01), gaps G1 and G2: the diagram draws the
+ * `GET /v1/me` attack surface (`docs/security/attack-surfaces.md`, item 7;
+ * design D8), and its CI part matches `.github/workflows/ci.yml`: the `e2e` job
+ * (`scripts/ci/e2e.sh`) with its Chromium download from the Playwright CDN, its
+ * image pull and its throwaway PostgreSQL over verified TLS; the web build and
+ * the gitleaks `dir` scan of the `lint-typecheck` job on the CI node; and a DAST
+ * arrow naming the served web app (`scripts/ci/dast.sh` sets `WEB_DIST_DIR`, so
+ * the ZAP baseline spiders the pages and assets). Every new arrow names its
+ * protocol and is drawn solid (`-->`), because the code exists, in the full
+ * diagram and in the zone block of each trust zone it touches, under the
+ * projection rules of the `044` zone suite above.
+ *
+ * ## Contract the diagram must meet
+ *
+ * Nodes (declared once in the full diagram, inside the zone box of their zone
+ * block, and with the full diagram's label in every block that declares them):
+ *
+ * - `meApi`, in the `apiApp` subgraph: the session-state route. Its label names
+ *   "(003)", `GET /v1/me` and "session", for example
+ *   `meApi["Session state route (003)<br/>GET /v1/me<br/>session cookie only, uniform 401, per-principal rate limit"]`.
+ *   It is the only node of the full diagram whose label names `GET /v1/me`.
+ * - `e2e`, in the `delivery` subgraph: the CI e2e job. Its label names "e2e",
+ *   `scripts/ci/e2e.sh`, "Playwright", "Chromium" and "throwaway stack", for
+ *   example
+ *   `e2e(["CI: E2E job e2e<br/>scripts/ci/e2e.sh, throwaway stack per run<br/>Playwright suite of apps/web on Chromium<br/>apps/api serving the web build, TLS proxy, OIDC stub"])`.
+ * - `playwrightCdn`, in the `external` subgraph: the Playwright CDN. Its label
+ *   names "Playwright" and "CDN", for example
+ *   `playwrightCdn(["Playwright CDN<br/>Chromium builds for the pinned @playwright/test"])`.
+ * - `ci` (existing, `delivery`): its label also names the web build and the
+ *   gitleaks `dir` scan, for example by adding
+ *   `web build · bundle check · gitleaks dir scan of apps/web/dist`.
+ *
+ * Arrows (solid, exactly one per row in the full diagram):
+ *
+ * 1. `browserSpa --> meApi`: HTTPS, GET, same origin and the session cookie, no
+ *    bearer token, for example `"HTTPS GET, same origin, session cookie: /v1/me"`;
+ * 2. `ci --> e2e`: the job pickup naming `e2e`, for example `"job pickup (e2e)"`;
+ * 3. `e2e --> playwrightCdn`: HTTPS, the Chromium download, for example
+ *    `"HTTPS (Chromium download: playwright install --with-deps chromium)"`;
+ * 4. `e2e --> ghcr`: the HTTPS image pull of the Cerbos image by digest, for
+ *    example `"HTTPS (docker pull of the Cerbos image by digest)"`;
+ * 5. `e2e --> pg`: PostgreSQL over verified TLS (`sslmode=verify-full`) as
+ *    `tayzu_app` and `tayzu_auth`, for example
+ *    `"PostgreSQL over verified TLS (per-run CA, sslmode=verify-full):<br/>owner migrates, apps/api and the seed run as tayzu_app and tayzu_auth"`;
+ * 6. `dast --> api` (existing, updated): still HTTP, `/v1` and `/api/auth`, and
+ *    now also the served web app, `/assets/*` and the app pages, for example
+ *    `"HTTP on localhost (ZAP, seeded session cookie):<br/>the served web app (/, the app pages, /assets/*), /healthz, /v1 and /api/auth/*; safe mode for the API scan"`.
+ *
+ * Zones: arrow 1 is drawn in the Product actors block and in the API and
+ * sidecars block; arrows 3 and 4 in the Development and delivery block and in
+ * the Supporting systems block; arrow 5 in the Development and delivery block
+ * and in the Catalog core block; arrow 6 in the Development and delivery block
+ * and in the API and sidecars block, each with the full diagram's label (10
+ * projections). Arrow 2 stays inside the delivery zone, so only the full
+ * diagram draws it.
+ *
+ * Production symbols expected: none (the change is the Markdown document and
+ * its regenerated images).
+ *
+ * Why this fails right now: the diagram has none of the three new nodes and
+ * none of arrows 1 to 5, the CI node names neither the web build nor the
+ * gitleaks `dir` scan, and the DAST arrow names neither the assets nor the app
+ * pages (assertion failures only).
+ */
+const ME_API = 'meApi';
+const E2E_JOB = 'e2e';
+const PLAYWRIGHT_CDN = 'playwrightCdn';
+
+/** The three nodes the gaps add: name, required id, required subgraph, label check. */
+const NODES_SSA: [string, string, string, (label: string) => boolean][] = [
+  [
+    'session-state route GET /v1/me',
+    ME_API,
+    'apiApp',
+    (l) => l.includes('(003)') && /GET \/v1\/me(?![\w/{-])/.test(l) && /session/i.test(l),
+  ],
+  [
+    'CI e2e job (scripts/ci/e2e.sh)',
+    E2E_JOB,
+    'delivery',
+    (l) =>
+      /\be2e\b/i.test(l) &&
+      l.includes('scripts/ci/e2e.sh') &&
+      /Playwright/.test(l) &&
+      /Chromium/.test(l) &&
+      /throwaway stack/i.test(l),
+  ],
+  ['Playwright CDN', PLAYWRIGHT_CDN, 'external', (l) => /Playwright/.test(l) && /\bCDN\b/.test(l)],
+];
+
+/** The six arrows: name, source id, target id, source subgraph, target subgraph, label check. */
+const ARROWS_SSA: [string, string, string, string, string, (label: string) => boolean][] = [
+  [
+    'the browser SPA reads its own session from GET /v1/me over HTTPS on the same origin with the session cookie',
+    BROWSER_SPA,
+    ME_API,
+    'productActors',
+    'apiApp',
+    (l) =>
+      HTTPS.test(l) &&
+      /\bGET\b/.test(l) &&
+      SAME_ORIGIN.test(l) &&
+      /session cookie/i.test(l) &&
+      !/Bearer/i.test(l),
+  ],
+  [
+    'CI picks up the e2e job',
+    'ci',
+    E2E_JOB,
+    'delivery',
+    'delivery',
+    (l) => /job pickup/i.test(l) && /\be2e\b/.test(l),
+  ],
+  [
+    'the e2e job downloads Chromium from the Playwright CDN over HTTPS',
+    E2E_JOB,
+    PLAYWRIGHT_CDN,
+    'delivery',
+    'external',
+    (l) => HTTPS.test(l) && /Chromium/.test(l) && /download|install/i.test(l),
+  ],
+  [
+    'the e2e job pulls the Cerbos image by digest from ghcr.io over HTTPS',
+    E2E_JOB,
+    'ghcr',
+    'delivery',
+    'external',
+    (l) =>
+      HTTPS.test(l) && /docker pull|image pull/i.test(l) && /Cerbos/.test(l) && /digest/i.test(l),
+  ],
+  [
+    'the e2e job reaches its throwaway PostgreSQL over verified TLS as tayzu_app and tayzu_auth',
+    E2E_JOB,
+    'pg',
+    'delivery',
+    'core',
+    (l) =>
+      /PostgreSQL/.test(l) &&
+      /\bTLS\b/.test(l) &&
+      l.includes('sslmode=verify-full') &&
+      /\btayzu_app\b/.test(l) &&
+      /\btayzu_auth\b/.test(l),
+  ],
+  [
+    'the DAST job scans the served web app (the app pages and /assets/*) as well as /v1 and /api/auth',
+    'dast',
+    'api',
+    'delivery',
+    'apiApp',
+    (l) =>
+      /\bHTTP\b/.test(l) &&
+      /web app/i.test(l) &&
+      /app pages?/i.test(l) &&
+      l.includes('/assets/*') &&
+      /\/v1\b/.test(l) &&
+      l.includes('/api/auth'),
+  ],
+];
+
+/** The arrows whose ends lie in two different zone blocks (all but the e2e job pickup). */
+const CROSSING_SSA = ARROWS_SSA.filter(([, , , srcSub, dstSub]) => srcSub !== dstSub);
+
+const idsSsa = new Set(NODES_SSA.map(([, id]) => id));
+const isSsaLabel = (label: string): boolean => NODES_SSA.some(([, , , pred]) => pred(label));
+const fullEdgesSsa = full.edges.filter((e) => idsSsa.has(e.srcId) || idsSsa.has(e.dstId));
+
+/** The arrows of the full diagram from `src` to `dst` whose label passes `pred`. */
+function fullArrows(src: string, dst: string, pred: (label: string) => boolean): Edge[] {
+  return full.edges.filter((e) => e.srcId === src && e.dstId === dst && pred(e.label));
+}
+
+/** A zone block's own gap nodes and the arrows touching them, by id or by label. */
+function drawnSsa(block: Block): { nodeIds: string[]; edges: Edge[] } {
+  const nodeIds = [...block.nodes]
+    .filter(([id, label]) => !block.subgraphs.has(id) && (idsSsa.has(id) || isSsaLabel(label)))
+    .map(([id]) => id);
+  const edges = block.edges.filter((e) => nodeIds.includes(e.srcId) || nodeIds.includes(e.dstId));
+  return { nodeIds, edges };
+}
+
+describe('system diagram, 003 SSA re-run: GET /v1/me, the CI e2e job, the web build checks and the DAST of the served app (SEC01 G1, G2)', () => {
+  it.each(NODES_SSA)(
+    'draws the %s as node %s of the full diagram, in subgraph %s',
+    (name, id, subgraph, pred) => {
+      expect(full.subgraphs.has(id), `${id} is a node, not a subgraph`).toBe(false);
+      expect(full.nodes.get(id), `${id} is declared in the full diagram`).toBeDefined();
+      expect(pred(full.nodes.get(id) ?? ''), `${id} label: ${full.nodes.get(id) ?? ''}`).toBe(true);
+      expect(full.container.get(id), `${id} sits in subgraph ${subgraph}`).toBe(subgraph);
+      // The label check names one node of its subgraph only.
+      expect(
+        fullNodeIds(pred).filter((n) => full.container.get(n) === subgraph),
+        name,
+      ).toEqual([id]);
+    },
+  );
+
+  it('names GET /v1/me on the session-state route node only', () => {
+    const naming = fullNodeIds((l) => /GET \/v1\/me(?![\w/{-])/.test(l));
+    expect(naming).toEqual([ME_API]);
+  });
+
+  it('names the web build and the gitleaks dir scan on the CI node, with the same label in every block that declares it', () => {
+    const label = full.nodes.get('ci') ?? '';
+    expect(label, 'ci label').toMatch(/\bweb build\b/i);
+    expect(label, 'ci label').toMatch(/\bgitleaks dir\b/);
+    const differing = zoneBlocks
+      .filter((b) => b.nodes.has('ci') && b.nodes.get('ci') !== label)
+      .map((b) => `[${b.nodes.get('zone') ?? '?'}] ci: ${b.nodes.get('ci') ?? ''}`);
+    expect(differing).toEqual([]);
+  });
+
+  it.each(ARROWS_SSA)('has the arrow: %s (%s --> %s)', (_name, src, dst, srcSub, dstSub, pred) => {
+    expect(full.nodes.get(src), `${src} is declared in the full diagram`).toBeDefined();
+    expect(full.nodes.get(dst), `${dst} is declared in the full diagram`).toBeDefined();
+    expect(full.container.get(src), `${src} sits in subgraph ${srcSub}`).toBe(srcSub);
+    expect(full.container.get(dst), `${dst} sits in subgraph ${dstSub}`).toBe(dstSub);
+    const matches = fullArrows(src, dst, pred);
+    const present = full.edges.filter((e) => e.srcId === src && e.dstId === dst).map(arrow);
+    expect(matches.length, `arrows ${src} --> ${dst}:\n${present.join('\n')}`).toBe(1);
+    expectProtocol(matches);
+  });
+
+  it('keeps the e2e job pickup inside the delivery zone (drawn in the full diagram only)', () => {
+    expect(blockOfNode('ci')).toBeDefined();
+    expect(blockOfNode(E2E_JOB), `${E2E_JOB} lies in the delivery zone block`).toBe(
+      blockOfNode('ci'),
+    );
+  });
+
+  it.each(CROSSING_SSA)(
+    'the arrow (%s, %s --> %s) appears with the same label in the zone blocks of subgraphs %s and %s',
+    (_name, src, dst, srcSub, dstSub, pred) => {
+      const [e] = fullArrows(src, dst, pred);
+      expect(e, `the full diagram has the arrow ${src} --> ${dst}`).toBeDefined();
+      if (e === undefined) return;
+      const srcBlock = blockOfNode(src);
+      const dstBlock = blockOfNode(dst);
+      expect(srcBlock, `${src} lies in a zone with a zone block`).toBeDefined();
+      expect(srcBlock).toBe(blockOfSubgraph(srcSub));
+      expect(dstBlock, `${dst} lies in a zone with a zone block`).toBeDefined();
+      expect(dstBlock).toBe(blockOfSubgraph(dstSub));
+      // The arrow crosses a zone boundary, so both blocks draw it.
+      expect(srcBlock === dstBlock, `${src} and ${dst} share a zone`).toBe(false);
+      const missing: string[] = [];
+      for (const block of [srcBlock, dstBlock]) {
+        if (block === undefined) continue;
+        const drawn = block.edges.some(
+          (z) =>
+            z.srcId === e.srcId &&
+            z.dstId === e.dstId &&
+            z.label === e.label &&
+            // Both ends are declared in the block, with the full diagram's labels.
+            block.nodes.get(e.srcId) === e.src &&
+            block.nodes.get(e.dstId) === e.dst,
+        );
+        if (!drawn) missing.push(`[${block.nodes.get('zone') ?? '?'}] ${arrow(e)}`);
+      }
+      expect(missing).toEqual([]);
+    },
+  );
+
+  it.each(NODES_SSA)('the %s (%s) appears in the zone box of its zone block', (_name, id) => {
+    const subgraph = full.container.get(id);
+    expect(subgraph, `${id} is declared in a subgraph of the full diagram`).toBeDefined();
+    const block = blockOfSubgraph(subgraph ?? '');
+    expect(block, `a zone block for subgraph ${String(subgraph)}`).toBeDefined();
+    expect(
+      zoneMembers(block ?? full),
+      `${id} inside the zone box of ${String(subgraph)}`,
+    ).toContain(id);
+    expect(block?.nodes.get(id)).toBe(full.nodes.get(id));
+  });
+
+  it('every arrow of the full diagram that touches a new node appears with the same label in the zone block of each of its ends that lies in a zone', () => {
+    // At least arrows 1 to 5 of the contract.
+    expect(fullEdgesSsa.length).toBeGreaterThanOrEqual(ARROWS_SSA.length - 1);
+    const missing: string[] = [];
+    let required = 0;
+    for (const e of fullEdgesSsa) {
+      const srcBlock = blockOfNode(e.srcId);
+      const dstBlock = blockOfNode(e.dstId);
+      // An arrow inside one zone appears only in the full diagram.
+      if (srcBlock !== undefined && srcBlock === dstBlock) continue;
+      for (const block of [srcBlock, dstBlock]) {
+        if (block === undefined) continue;
+        required += 1;
+        const drawn = block.edges.some(
+          (z) =>
+            z.srcId === e.srcId &&
+            z.dstId === e.dstId &&
+            z.label === e.label &&
+            block.nodes.get(e.srcId) === e.src &&
+            block.nodes.get(e.dstId) === e.dst,
+        );
+        if (!drawn) missing.push(`[${block.nodes.get('zone') ?? '?'}] ${arrow(e)}`);
+      }
+    }
+    expect(missing).toEqual([]);
+    // Not vacuous: arrows 1, 3, 4 and 5 cross a zone, so each is drawn twice.
+    expect(required).toBeGreaterThanOrEqual(8);
+  });
+
+  it('no zone block draws a new node or an arrow touching one that the full diagram does not have', () => {
+    const extra: string[] = [];
+    let drawn = 0;
+    for (const block of zoneBlocks) {
+      const zone = block.nodes.get('zone') ?? '?';
+      const { nodeIds, edges: zoneEdges } = drawnSsa(block);
+      drawn += nodeIds.length + zoneEdges.length;
+      for (const id of nodeIds) {
+        if (!idsSsa.has(id) || block.nodes.get(id) !== full.nodes.get(id)) {
+          extra.push(`[${zone}] node ${id}: ${block.nodes.get(id) ?? ''}`);
+        }
+      }
+      for (const z of zoneEdges) {
+        const inFull = fullEdgesSsa.some(
+          (e) => e.srcId === z.srcId && e.dstId === z.dstId && e.label === z.label,
+        );
+        if (!inFull) extra.push(`[${zone}] ${arrow(z)}`);
+      }
+    }
+    expect(extra).toEqual([]);
+    // Not vacuous: the zone blocks do draw the new nodes and their arrows.
+    expect(drawn).toBeGreaterThan(0);
+  });
+
+  it('draws every arrow touching a new node, and the DAST arrow, solid in every block, each naming a protocol', () => {
+    const touches = new RegExp(`(?:^|\\s)(?:${[...idsSsa].join('|')})(?:\\s|$)`);
+    const dashed: string[] = [];
+    const [, , , , , dastPred] = ARROWS_SSA[5] ?? [];
+    let checked = 0;
+    for (const blockSource of readMermaidBlocks()) {
+      for (const line of blockSource.split('\n')) {
+        const ends = line.replace(/\|"[^"]*"\|/, ' ');
+        const isArrow = line.includes('-->') || line.includes('-.->');
+        if (!isArrow || !touches.test(ends)) continue;
+        checked += 1;
+        if (line.includes('-.->')) dashed.push(line.trim());
+      }
+      for (const e of parse(blockSource).edges) {
+        const touching = idsSsa.has(e.srcId) || idsSsa.has(e.dstId);
+        const isDast = e.srcId === 'dast' && e.dstId === 'api';
+        if (touching || isDast) expect(e.label, e.text).toMatch(PROTOCOL);
+      }
+    }
+    expect(dashed).toEqual([]);
+    // Not vacuous: arrows 1 to 5 in the full diagram and their 8 projections.
+    expect(checked).toBeGreaterThanOrEqual(ARROWS_SSA.length - 1 + 8);
+    // The DAST arrow of the full diagram is solid and carries the served-app label.
+    const dastLine = source
+      .split('\n')
+      .find((l) => /^\s*dast\s+(?:-->|-\.->)\|"[^"]*"\|\s*api\s*$/.test(l));
+    expect(dastLine, 'the dast --> api line').toBeDefined();
+    expect(dastLine?.includes('-.->')).toBe(false);
+    expect(dastPred?.(flatten(/\|"([^"]*)"\|/.exec(dastLine ?? '')?.[1] ?? ''))).toBe(true);
+  });
+});

@@ -29,8 +29,17 @@ import { assertEntitySpecSize, assertEntityStatusSize } from '../domain/entity-l
 import { AuthorizationError, CatalogError, isCatalogError } from '../domain/errors.js';
 import { parseEntityIdentifier } from '../domain/identifiers.js';
 import { defaultCatalogLimits, type CatalogLimits } from '../domain/limits.js';
-import { assertCursorLength, decodeCursor, encodeCursor } from '../domain/pagination.js';
+import {
+  assertCursorLength,
+  decodeSortCursor,
+  encodeCursor,
+  encodeSortCursor,
+  invalidCursor,
+  type EntitySortField,
+  type EntitySortOrder,
+} from '../domain/pagination.js';
 import { assertReservedAccess, type ReservedOperationKind } from '../domain/reserved.js';
+import { normalizedQueryLength, parseSearchQuery } from '../domain/search-query.js';
 import { parseSafeInput } from '../domain/safe-parse.js';
 import { validateRelationValues } from '../domain/relation-values.js';
 import type { RelationDefinition } from '../domain/relation-definition.js';
@@ -59,18 +68,22 @@ import {
   selectBlueprintIdentifierById,
   selectDistinctStatusReferrerIds,
   selectEntitiesPage,
+  selectEntityPageBound,
   selectEntityRow,
   selectEntityRowById,
   selectForwardRelatedPage,
   selectRelationDefinitionsForSource,
   selectRelationEdgesForEntity,
   selectSpecReferrers,
+  searchEntities,
   updateEntitySpecRow,
   updateEntityStatusRow,
+  type EntityPageBound,
   type EntityRelationDefinitionById,
   type EntityRelationEdgeInput,
   type EntityRepositoryTx,
   type EntityRow,
+  type EntitySearchRow,
 } from '../persistence/entities-repository.js';
 import type { LocalizedText } from '../domain/localized-text.js';
 import {
@@ -145,10 +158,24 @@ export interface ListEntitiesInput {
   readonly blueprint: string;
   readonly pageSize?: number;
   readonly cursor?: string;
+  /** 003 design D6; defaults to `identifier`. */
+  readonly sort?: EntitySortField;
+  /** 003 design D6; defaults to `asc`. */
+  readonly order?: EntitySortOrder;
 }
 export interface ListEntitiesOutput {
   readonly items: readonly EntityOutput[];
   readonly cursor?: string;
+}
+
+/** 003 design D5: `q` is required, `limit` defaults to `search.defaultLimit`. */
+export interface SearchEntitiesInput {
+  readonly q: string;
+  readonly limit?: number;
+}
+/** 003 design D5: a ranked top-N list, so no cursor and no count. */
+export interface SearchEntitiesOutput {
+  readonly items: readonly EntitySearchRow[];
 }
 
 export type RelatedDirection = 'forward' | 'backward';
@@ -340,6 +367,10 @@ export interface EntityService {
   ) => Promise<EntityOutput>;
   readonly get: (rawContext: unknown, input: GetEntityInput) => Promise<EntityOutput>;
   readonly list: (rawContext: unknown, input: ListEntitiesInput) => Promise<ListEntitiesOutput>;
+  readonly search: (
+    rawContext: unknown,
+    input: SearchEntitiesInput,
+  ) => Promise<SearchEntitiesOutput>;
   readonly delete: (rawContext: unknown, input: DeleteEntityInput) => Promise<void>;
   readonly listRelated: (
     rawContext: unknown,
@@ -349,6 +380,59 @@ export interface EntityService {
 
 const BLUEPRINT_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.blueprint.identifier';
 const ENTITY_IDENTIFIER_ATTRIBUTE = 'tayzu.catalog.entity.identifier';
+
+const ENTITY_SORT_FIELDS: readonly EntitySortField[] = ['identifier', 'title', 'updatedAt'];
+const ENTITY_SORT_ORDERS: readonly EntitySortOrder[] = ['asc', 'desc'];
+
+/** 003 design, Spans table: the `tayzu.catalog.sort.field` value of each API sort field. */
+const SORT_FIELD_ATTRIBUTE_VALUES: Readonly<Record<EntitySortField, string>> = {
+  identifier: 'identifier',
+  title: 'title',
+  updatedAt: 'updated_at',
+};
+
+/**
+ * 003 design, Spans table: `tayzu.catalog.sort.field` and
+ * `tayzu.catalog.sort.order` are required on `catalog.entity.list`, so they
+ * are recorded before any check can throw. Only an enum value is recorded:
+ * an unknown one is caller input, which `resolveEntitySort` then rejects.
+ */
+function recordEntitySort(input: ListEntitiesInput): void {
+  const span = trace.getActiveSpan();
+  const sort = input.sort ?? 'identifier';
+  const order = input.order ?? 'asc';
+  if (ENTITY_SORT_FIELDS.includes(sort)) {
+    span?.setAttribute('tayzu.catalog.sort.field', SORT_FIELD_ATTRIBUTE_VALUES[sort]);
+  }
+  if (ENTITY_SORT_ORDERS.includes(order)) {
+    span?.setAttribute('tayzu.catalog.sort.order', order);
+  }
+}
+
+/**
+ * 003 design D6: the sort of `entities.list`, `identifier` `asc` by default.
+ * The contract already restricts both to their enums; a direct caller's
+ * unknown value fails closed with `CATALOG_VALIDATION_FAILED` rather than
+ * being ignored or reaching the repository's column mapping.
+ */
+function resolveEntitySort(input: ListEntitiesInput): {
+  sort: EntitySortField;
+  order: EntitySortOrder;
+} {
+  const sort = input.sort ?? 'identifier';
+  const order = input.order ?? 'asc';
+  const issues: { path: string; message: string }[] = [];
+  if (!ENTITY_SORT_FIELDS.includes(sort)) {
+    issues.push({ path: '/sort', message: 'Sort is invalid' });
+  }
+  if (!ENTITY_SORT_ORDERS.includes(order)) {
+    issues.push({ path: '/order', message: 'Order is invalid' });
+  }
+  if (issues.length > 0) {
+    throw new CatalogError('CATALOG_VALIDATION_FAILED', 'Sort is invalid', { issues });
+  }
+  return { sort, order };
+}
 
 /** design.md, "Log events" table: the reserved-identifier WARN, emitted before `assertReservedAccess` throws (mirrors `blueprints.ts`'s own `denyIfReserved`). */
 function denyIfReserved(
@@ -1665,13 +1749,18 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
       // attribute of catalog.entity.list, not conditional -- set it before
       // the CATALOG_LIMIT_EXCEEDED check below can throw.
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.page.size', pageSize);
+      recordEntitySort(input);
       if (pageSize > limits.pagination.maxPageSize) {
         throw new CatalogError('CATALOG_LIMIT_EXCEEDED', 'Page size exceeds the limit', {
           details: { limit: 'pagination.maxPageSize' },
         });
       }
-      if (input.cursor !== undefined) assertCursorLength(input.cursor, limits);
-      const afterIdentifier = input.cursor !== undefined ? decodeCursor(input.cursor) : undefined;
+      const { sort, order } = resolveEntitySort(input);
+      const isDefaultSort = sort === 'identifier' && order === 'asc';
+      const position =
+        input.cursor !== undefined
+          ? decodeSortCursor(input.cursor, { sort, order }, limits)
+          : undefined;
 
       const tx = drizzle(client);
       const blueprintId = await findBlueprintIdByIdentifier(tx, ctx.tenantId, input.blueprint);
@@ -1684,10 +1773,27 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         return { output: { items: [] } };
       }
 
+      // 003 design D6, Q37: a version-1 key bounds the default sort directly; a
+      // version-2 anchor is read under the page's own tenant, blueprint and plan
+      // filter, and one that cannot be read is the same error as a malformed cursor.
+      let after: EntityPageBound | undefined;
+      if (position?.kind === 'v1') {
+        after = { sortKey: position.key, identifier: position.key };
+      } else if (position?.kind === 'v2') {
+        after = await selectEntityPageBound(tx, ctx.tenantId, blueprintId, {
+          id: position.id,
+          sort,
+          authorizationFilter: planFilter.filter,
+        });
+        if (after === undefined) invalidCursor();
+      }
+
       const relationDefs = await loadEntityRelationDefinitions(tx, ctx.tenantId, blueprintId);
       const rows = await selectEntitiesPage(tx, ctx.tenantId, blueprintId, {
         limit: pageSize,
-        afterIdentifier,
+        sort,
+        order,
+        after,
         authorizationFilter: planFilter.filter,
       });
       const hasMore = rows.length > pageSize;
@@ -1700,8 +1806,14 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
         }),
       );
 
-      const lastItem = pageRows[pageRows.length - 1];
-      const cursor = hasMore && lastItem ? encodeCursor(lastItem.identifier) : undefined;
+      // The default sort keeps the version-1 cursor; every other sort is version 2 (D6).
+      const lastRow = pageRows[pageRows.length - 1];
+      const cursor =
+        hasMore && lastRow
+          ? isDefaultSort
+            ? encodeCursor(lastRow.identifier)
+            : encodeSortCursor({ sort, order, id: lastRow.id })
+          : undefined;
 
       trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', items.length);
 
@@ -1985,5 +2097,48 @@ export function createEntityService(options: CreateEntityServiceOptions): Entity
     },
   });
 
-  return { create, upsert, writeStatus, get, list, delete: doDelete, listRelated };
+  /**
+   * 003 design D5: the cross-blueprint search, narrowed by the same
+   * `catalog_entity` `list` plan as `entity.list`. The query and limit are
+   * checked by `validateInput`, before Cerbos and the tenant transaction.
+   */
+  const search = defineCatalogOperation<SearchEntitiesInput, SearchEntitiesOutput>({
+    name: 'entity.search',
+    pool,
+    authz,
+    authorization: PLAN_AUTHORIZED,
+    validateInput: (input) => {
+      // 003 design, Spans table: both attributes are required, so they are
+      // recorded before the checks below can throw. The query's length only,
+      // never its text; the limit as requested, even when it is rejected
+      // (a malformed number such as 1.5 included). Only a number is ever
+      // recorded, so a direct caller's non-number cannot reach the span.
+      trace.getActiveSpan()?.setAttributes({
+        'tayzu.catalog.search.query_length': normalizedQueryLength(input.q),
+        'tayzu.catalog.page.size':
+          typeof input.limit === 'number' ? input.limit : limits.search.defaultLimit,
+      });
+      parseSearchQuery(input, limits);
+    },
+    handler: async ({ ctx, client, input }) => {
+      // Pure and already checked by `validateInput`; parsed again for its values.
+      const query = parseSearchQuery(input, limits);
+      const planFilter = await planEntityList(authz, ctx);
+      if (planFilter.kind === 'denied') {
+        trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', 0);
+        return { output: { items: [] } };
+      }
+
+      const items = await searchEntities(drizzle(client), ctx.tenantId, {
+        q: query.q,
+        prefixPattern: query.prefixPattern,
+        limit: query.limit,
+        authorizationFilter: planFilter.filter,
+      });
+      trace.getActiveSpan()?.setAttribute('tayzu.catalog.result.count', items.length);
+      return { output: { items } };
+    },
+  });
+
+  return { create, upsert, writeStatus, get, list, search, delete: doDelete, listRelated };
 }

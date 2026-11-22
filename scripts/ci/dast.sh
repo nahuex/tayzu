@@ -2,8 +2,9 @@
 # DAST stack for the OWASP ZAP baseline scan (task 15.1, design D16), shared
 # by the `dast-zap` CI job and `pnpm ci:local`.
 #
-#   dast.sh up     PostgreSQL 18 behind verified TLS, migrations, apps/api
-#                  (main.ts) and one seeded organization and session
+#   dast.sh up     PostgreSQL 18 behind verified TLS, migrations, the built
+#                  apps/web served by apps/api (main.ts, 003 design D10) and
+#                  one seeded organization and session
 #   dast.sh scan   the ZAP baseline scan, with the same image and command
 #                  the pinned zaproxy/action-baseline runs in CI
 #   dast.sh api-scan
@@ -138,6 +139,12 @@ up() {
   mkdir -p "$STATE_DIR"
   chmod 700 "$STATE_DIR"
 
+  # 003 design D10: the API serves the built web app, so the baseline spiders
+  # its HTML pages and assets. Built before the stub import below, so Vite
+  # runs with the caller's NODE_OPTIONS; a failed build fails `up`.
+  log "building apps/web"
+  (cd "$REPO_ROOT" && pnpm --filter @tayzu/web build)
+
   # The breached-password plugin would call api.pwnedpasswords.com from the
   # API server and the seed's bootstrap child. Both load the shared stub of
   # task 8.1a (an empty range) for the whole `up` (Q71).
@@ -187,6 +194,8 @@ up() {
   export TAYZU_TELEMETRY_DISABLED="true"
   # Q96: no email provider in the throwaway stack.
   export EMAIL_PROVIDER=none
+  # 003 design D10: the Vite output of the build above, served by apps/api.
+  export WEB_DIST_DIR="$REPO_ROOT/apps/web/dist"
 
   log "waiting for PostgreSQL (verified TLS)"
   wait_for 60 postgres_accepts_tls || fail "PostgreSQL did not accept a verified TLS connection in time"

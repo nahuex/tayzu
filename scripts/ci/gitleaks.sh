@@ -3,6 +3,12 @@
 # once into CI_TOOLS_CACHE and verified by sha256. Blocking: any leak fails
 # the script. Used by both ci.yml and scripts/ci/local.sh (single source of
 # truth for the pinned version).
+#
+# Usage:
+#   gitleaks.sh             scan the git history of the repository (`detect`)
+#   gitleaks.sh dir <path>  scan the files under <path>, a directory of the
+#                           repository (`dir`), e.g. the web build apps/web/dist
+#                           (003 task 2.8, SEC09)
 
 set -euo pipefail
 
@@ -11,6 +17,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
+
+MODE="${1:-detect}"
+case "$MODE" in
+  detect)
+    [ "$#" -le 1 ] || { echo "usage: gitleaks.sh [dir <path>]" >&2; exit 2; }
+    ;;
+  dir)
+    [ "$#" -eq 2 ] || { echo "usage: gitleaks.sh [dir <path>]" >&2; exit 2; }
+    SCAN_DIR="$2"
+    # Fail closed: a missing build is a failure, never a silent pass.
+    [ -d "$SCAN_DIR" ] || { echo "ERROR: gitleaks dir: $SCAN_DIR is not a directory" >&2; exit 1; }
+    ;;
+  *)
+    echo "usage: gitleaks.sh [dir <path>]" >&2
+    exit 2
+    ;;
+esac
 
 VERSION="8.30.1"
 OS="$(host_os)"
@@ -57,4 +80,7 @@ if [ ! -x "$BIN" ]; then
   rm -rf "$TMP"
 fi
 
+if [ "$MODE" = "dir" ]; then
+  exec "$BIN" dir "$SCAN_DIR" --config .gitleaks.toml --redact
+fi
 exec "$BIN" detect --source . --config .gitleaks.toml --redact

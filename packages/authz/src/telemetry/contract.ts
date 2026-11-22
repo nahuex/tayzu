@@ -194,6 +194,12 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
     severity: 'INFO',
     attributes: [LOGOUT_OUTCOME],
   },
+  // 003 design "Observability contract" -> Log events (Q29), mirrored from `@tayzu/auth`.
+  {
+    name: 'auth.security.reauthorization_failed',
+    severity: 'WARN',
+    attributes: ['tayzu.auth.reauthorization.reason'],
+  },
   {
     name: 'auth.internal_error',
     severity: 'ERROR',

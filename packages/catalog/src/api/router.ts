@@ -131,5 +131,10 @@ export function createCatalogRouter(services: CatalogRouterServices) {
         ),
       ),
     },
+    search: {
+      entities: os.search.entities.handler(({ context, input }) =>
+        run(() => services.entities.search(context, input)),
+      ),
+    },
   };
 }

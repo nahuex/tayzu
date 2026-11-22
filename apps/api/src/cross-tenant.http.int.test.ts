@@ -527,6 +527,44 @@ describe('cross-tenant requests over HTTP, called by the admin of t1 (task 14.8)
     expect(await deletionStateOf(t2.organizationId), 'nothing of t2 changed').toEqual(t2Before);
   }, 120_000);
 
+  // ---- GET /v1/search/entities: the search is the host tenant's (003 task 3.8) ---------------
+
+  it("GET /v1/search/entities by t1's admin for an identifier of t2 returns an empty result, exactly like a query that matches nothing", async () => {
+    const { t1, t2 } = await twoTenants();
+    ok(
+      await send(t2.cookie, 'POST', '/v1/blueprints', {
+        identifier: 'service',
+        title: { en: 'Service' },
+        schema: { properties: {}, required: [] },
+      }),
+    );
+    ok(
+      await send(t2.cookie, 'POST', '/v1/blueprints/service/entities', {
+        identifier: 'secret-svc',
+        title: 'Secret Service',
+      }),
+    );
+    const search = (admin: BootstrappedTenant, q: string) =>
+      send(admin.cookie, 'GET', `/v1/search/entities?${new URLSearchParams({ q }).toString()}`);
+
+    // Not vacuous: t2's own admin finds the entity.
+    const own = await search(t2, 'secret');
+    ok(own);
+    expect(
+      (own.json['items'] as readonly { identifier: string }[]).map((item) => item.identifier),
+    ).toEqual(['secret-svc']);
+
+    const nothing = await search(t1, `nothing-${randomUUID().slice(0, 8)}`);
+    ok(nothing);
+    expect(nothing.json).toEqual({ items: [] });
+    for (const q of ['secret', 'secret-svc', 'Secret Service']) {
+      const foreign = await search(t1, q);
+      ok(foreign);
+      expect(foreign.json, `q=${q}`).toEqual({ items: [] });
+      expect(foreign.body, `q=${q}: same body as a query that matches nothing`).toBe(nothing.body);
+    }
+  }, 120_000);
+
   // ---- Routes without a target ---------------------------------------------------------------
 
   it('POST /v1/users/invitations lands only in t1 and rejects a body that names t2', async () => {

@@ -1,7 +1,7 @@
 /**
  * The identity change's telemetry contract as design.md's "Observability
- * contract" tables state it (043, task 15.1; extended by 044 task 12.1 and
- * 045 task 9.1), written out once so that
+ * contract" tables state it (043, task 15.1; extended by 044 task 12.1,
+ * 045 task 9.1 and 003 tasks 3.9 and 3.11), written out once so that
  * `telemetry/identity-contract.test.ts` and `apps/api`'s
  * `otel-smoke-check.int.test.ts` assert the same thing. It is the spec side of
  * the comparison: nothing here is derived from `identity-contract.ts`.
@@ -89,6 +89,13 @@ export const EXPECTED_SPANS: readonly ExpectedSpan[] = [
       'tayzu.identity.org_deletion.step',
       'tayzu.identity.org_deletion.entities_removed',
     ],
+  },
+  // 003 (design D8 and "Observability contract", Spans): `GET /v1/me`. The tenant is set only
+  // when the session has an active organization.
+  {
+    name: 'identity.session.me',
+    attributes: ['tayzu.identity.session.gate'],
+    conditional: [TENANT],
   },
 ];
 
@@ -576,4 +583,20 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
     'purge_begun',
     'purge_date_passed',
   ],
+  // 003 (design "Observability contract", Spans): the gate of `GET /v1/me`, and
+  // `unauthenticated` for its uniform `401`.
+  'tayzu.identity.session.gate': [
+    'none',
+    'password_change_required',
+    'password_expired',
+    'mfa_enrolment_required',
+    'unauthenticated',
+  ],
+  // 003 task 3.11 (design D11 and "Observability contract" -> Log events, Q27 B2): the value
+  // 003 starts emitting on 002's `auth.security.step_up_succeeded`, recorded like the
+  // `session_revoked` reason above.
+  'tayzu.auth.method': ['visma_connect'],
+  // 003 task 3.11 (Q29): the reason of 002's contract's new `auth.security.reauthorization_failed`
+  // (declared in `telemetry/contract.ts`, where every `auth.security.*` event lives).
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed'],
 };

@@ -10,9 +10,10 @@
  * headers, body limits, rate limiting, the route allowlist and error mapping.
  */
 import { randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import fastifyCors from '@fastify/cors';
-import fastifyHelmet from '@fastify/helmet';
+import fastifyHelmet, { type FastifyHelmetOptions } from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import { OpenAPIHandler } from '@orpc/openapi/fastify';
 import { ORPCError } from '@orpc/server';
@@ -22,6 +23,7 @@ import {
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  createSessionStateResolver,
   createRateLimitBucketStore,
   createServiceAccountLookup,
   createStepUpGuard,
@@ -50,7 +52,7 @@ import {
   createUserSync,
 } from '@tayzu/catalog';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { createIdentityRouter } from './identity-router.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
@@ -74,6 +76,9 @@ import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
 import { errorMappingInterceptor, toOrpcError } from './error-mapping.js';
 import { createReauthorization, type Reauthorization } from './reauthorization.js';
 import { assertDiscoverable } from './sso-discovery.js';
+import { DEFAULT_SPA_FALLBACK_RATE_LIMIT, registerSpaFallback } from './spa-fallback.js';
+import { assignStyleNonce, styleNonceOf } from './style-nonce.js';
+import { registerWebStatic } from './web-static.js';
 
 type Pool = ReturnType<typeof createPool>;
 
@@ -185,6 +190,20 @@ export interface CreateAppOptions {
   /** 045 D1 (Q21): the org-deletion window in days, validated by `loadConfig` (7 to 14). */
   readonly orgDeletionWindowDays?: number;
   /**
+   * 003 D9 (Q21): the absolute path of the web build (`WEB_DIST_DIR`). Omitted: the API
+   * alone, every answer exactly as before. Set: the Visma Connect re-authorization
+   * callback answers `303` to a fixed `/step-up/complete` path instead of JSON (D11, Q14),
+   * and the build's assets, root build files and SPA fallback are served (D9,
+   * `web-static.ts`, `spa-fallback.ts`).
+   */
+  readonly webDistDir?: string;
+  /**
+   * 003 D9 "Rate limit": the SPA fallback's own bucket, keyed by the client address and
+   * counting only requests answered with the app. Defaults to 300 per minute. Ignored
+   * without `webDistDir`.
+   */
+  readonly spaFallbackRateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /**
    * 043 task 14.3b: called once with the Fastify instance, before any hook or route is
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
    */
@@ -223,6 +242,10 @@ interface StepUpHandlerContext {
 }
 
 const TOKEN_EXCHANGE_PATH = '/v1/auth/token';
+/** 003 D8: the shell's view of its own session. */
+const ME_PATH = '/v1/me';
+/** 003 "Observability contract": the gate attribute of `identity.session.me`. */
+const SESSION_GATE = 'tayzu.identity.session.gate';
 const INVITATION_ACCEPT_PATH = '/v1/auth/invitations/accept';
 const PASSWORD_RESET_REQUEST_PATH = '/v1/auth/password-reset/request';
 const PASSWORD_RESET_CONFIRM_PATH = '/v1/auth/password-reset/confirm';
@@ -236,6 +259,57 @@ const DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE = 600;
 const BACKCHANNEL_LOGOUT_PATH = '/v1/auth/visma-connect/backchannel-logout';
 /** Q36: where Visma Connect returns from a step-up re-authorization. */
 const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
+/**
+ * 003 D11 (Q14): where the callback sends the browser back when the web app is served.
+ * Constants only, never derived from the request or the OIDC state (no open redirect).
+ */
+const STEP_UP_COMPLETE_LOCATION = '/step-up/complete';
+const STEP_UP_FAILED_LOCATION = '/step-up/complete?result=failed';
+const STEP_UP_RATE_LIMITED_LOCATION = '/step-up/complete?result=rate_limited';
+
+/**
+ * 003 D10 (ADR-0026, Q5, Q25): the exact directive list, with no helmet defaults, so
+ * neither `upgrade-insecure-requests` nor `script-src-attr` is sent. `style-src` carries
+ * the per-response nonce (Q15, task 4.5) through a directive function; `script-src` has
+ * none, which is why helmet's `enableCSPNonces` (hex, and on `script-src` too) is unused.
+ */
+const CSP_DIRECTIVES = {
+  'default-src': ["'self'"],
+  'script-src': ["'self'"],
+  'style-src': [
+    "'self'",
+    (_req: IncomingMessage, res: ServerResponse) => `'nonce-${styleNonceOf(res)}'`,
+  ],
+  'img-src': ["'self'"],
+  'font-src': ["'self'"],
+  'connect-src': ["'self'"],
+  'media-src': ["'none'"],
+  'object-src': ["'none'"],
+  'frame-src': ["'none'"],
+  'worker-src': ["'none'"],
+  'manifest-src': ["'self'"],
+  'base-uri': ["'none'"],
+  'form-action': ["'self'"],
+  'frame-ancestors': ["'none'"],
+};
+
+/**
+ * 003 D10: `X-Frame-Options: DENY` (matching `frame-ancestors 'none'`) and COEP
+ * `require-corp`; COOP and CORP `same-origin`, `Referrer-Policy: no-referrer` and the
+ * rest are helmet's defaults. HSTS is 002's (task 11.12).
+ */
+const SECURITY_HEADERS: FastifyHelmetOptions = {
+  contentSecurityPolicy: { useDefaults: false, directives: CSP_DIRECTIVES },
+  xFrameOptions: { action: 'deny' },
+  crossOriginEmbedderPolicy: { policy: 'require-corp' },
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
+  crossOriginResourcePolicy: { policy: 'same-origin' },
+  referrerPolicy: { policy: 'no-referrer' },
+  strictTransportSecurity: { maxAge: 31_536_000, includeSubDomains: true },
+};
+
+/** 003 D10: every powerful feature off; no `interest-cohort` (a Chromium console error). */
+const PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=(), usb=()';
 
 /** Q74: the path of the request target, without its query. Every guard keys on this. */
 /** A configured cap as the bucket store's rule. */
@@ -249,6 +323,30 @@ function pathnameOf(request: FastifyRequest): string {
 
 function isTokenExchange(request: FastifyRequest): boolean {
   return request.method === 'POST' && pathnameOf(request) === TOKEN_EXCHANGE_PATH;
+}
+
+/** A resolution's outcome, kept so a rejection is answered, never rethrown unhandled. */
+type Resolution<T> = { readonly value: T } | { readonly error: unknown };
+
+/**
+ * Runs `resolve` at most once per request over its headers: the rate-limit key generator
+ * and the handler share the result.
+ */
+function oncePerRequest<T>(
+  resolve: (headers: Headers) => Promise<T>,
+): (request: FastifyRequest) => Promise<Resolution<T>> {
+  const resolutions = new WeakMap<FastifyRequest, Promise<Resolution<T>>>();
+  return (request) => {
+    let pending = resolutions.get(request);
+    if (pending === undefined) {
+      pending = resolve(toWebHeaders(request)).then(
+        (value): Resolution<T> => ({ value }),
+        (error: unknown): Resolution<T> => ({ error }),
+      );
+      resolutions.set(request, pending);
+    }
+    return pending;
+  };
 }
 
 const CERBOS_TLS_LOOPBACK_ONLY = /^(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
@@ -571,9 +669,25 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
   await options.configureApp?.(app);
-  // Q74, D18: first hook of all. A target that is not origin-form, or whose
-  // path (before the query) holds `%`, `//` or a backslash, answers the
-  // allowlist's own 404 before any other hook or the router can normalize it.
+  // 003 D10: one strict, self-only policy and header set on every response (HTML,
+  // JSON, assets and 404s), whether or not `webDistDir` is set. Registered ahead
+  // of the Q74 hook so that its 404 carries the headers too: helmet's hooks and
+  // the `Permissions-Policy` hook only write response headers and never read the
+  // request target. HSTS (task 11.12): one year, subdomains included.
+  // Q15, task 4.5: the style nonce is drawn first, so helmet's `style-src` directive
+  // function and the SPA fallback read the same value. It never reads the request.
+  app.addHook('onRequest', async (_request, reply) => {
+    assignStyleNonce(reply.raw);
+  });
+  await app.register(fastifyHelmet, SECURITY_HEADERS);
+  // Helmet does not set `Permissions-Policy`; this hook runs right after helmet's own.
+  app.addHook('onRequest', async (_request, reply) => {
+    reply.header('permissions-policy', PERMISSIONS_POLICY);
+  });
+  // Q74, D18: the first hook that reads the request. A target that is not
+  // origin-form, or whose path (before the query) holds `%`, `//` or a
+  // backslash, answers the allowlist's own 404 before any other hook or the
+  // router can normalize it.
   app.addHook('onRequest', async (request, reply) => {
     const url: string = request.url;
     const pathname: string = url.split('?', 1)[0] ?? '';
@@ -597,12 +711,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       emitInternalError(error);
     }
     return reply.status(mapped.status).send(mapped.toJSON());
-  });
-  // D13: JSON API, so no CSP (003's concern); helmet's other defaults apply globally.
-  // HSTS (task 11.12): one year, subdomains included (helmet's default is 180 days).
-  await app.register(fastifyHelmet, {
-    contentSecurityPolicy: false,
-    strictTransportSecurity: { maxAge: 31_536_000, includeSubDomains: true },
   });
   // D13, ZAP finding [10049] (Storable and Cacheable Content): default to
   // `no-store` on every response, including Fastify's 404, unless the handler
@@ -644,6 +752,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return;
     }
     if (!isAllowedAuthPath(pathname)) {
+      // No route matched (`/api/auth` itself): the 404 handler already answers, and
+      // `callNotFound` inside it would send Fastify's bare text 404 instead.
+      if (request.is404) {
+        return;
+      }
       reply.callNotFound();
       return reply;
     }
@@ -864,9 +977,16 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   // Q36: the re-authorization callback (query redirect or `form_post`). The
-  // single-use `state` binds it to the session; it answers a bare 200 or 400.
+  // single-use `state` binds it to the session; it answers a bare 200 or 400, or, with
+  // the web app served (003 D11), a `303` to one of the fixed step-up locations.
   // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
+  const redirectToWebApp = options.webDistDir !== undefined;
+  const seeOther = (reply: FastifyReply, location: string): FastifyReply =>
+    reply.status(303).header('location', location).send();
   const reauthorizationCallbackLimit = createAcceptRateLimitPreHandler({
+    ...(redirectToWebApp && {
+      onLimited: (reply: FastifyReply) => seeOther(reply, STEP_UP_RATE_LIMITED_LOCATION),
+    }),
     scope: 'reauthorization_callback',
     store: createRateLimitBucketStore({
       adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
@@ -894,9 +1014,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     );
     const handle = async (
       params: { code?: unknown; state?: unknown },
-      reply: import('fastify').FastifyReply,
+      reply: FastifyReply,
     ): Promise<unknown> => {
       const ok = reauthorization !== undefined && (await reauthorization.complete(params));
+      if (redirectToWebApp) {
+        return seeOther(reply, ok ? STEP_UP_COMPLETE_LOCATION : STEP_UP_FAILED_LOCATION);
+      }
       return ok
         ? reply.status(200).send({})
         : reply.status(400).send({ defined: false, code: 'BAD_REQUEST', status: 400 });
@@ -913,19 +1036,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   // Resolved once per request: the rate-limit key generator and the handler share it.
-  type Resolution = { context: Awaited<ReturnType<typeof resolveContext>> } | { error: unknown };
-  const resolutions = new WeakMap<FastifyRequest, Promise<Resolution>>();
-  const resolveOnce = (request: FastifyRequest): Promise<Resolution> => {
-    let pending = resolutions.get(request);
-    if (pending === undefined) {
-      pending = resolveContext(toWebHeaders(request)).then(
-        (context): Resolution => ({ context }),
-        (error: unknown): Resolution => ({ error }),
-      );
-      resolutions.set(request, pending);
-    }
-    return pending;
-  };
+  const resolveOnce = oncePerRequest(resolveContext);
 
   const limited = new ORPCError('AUTH_RATE_LIMITED', {
     status: 429,
@@ -1164,32 +1275,70 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     });
   }
 
-  let v1Config: { rateLimit?: object } = {};
-  if (options.rateLimit !== undefined) {
-    v1Config = {
-      rateLimit: {
-        max: options.rateLimit.max,
-        timeWindow: options.rateLimit.timeWindowMs,
-        allowList: isTokenExchange,
-        // Internal bucket key only: never logged, returned or exported.
-        keyGenerator: async (request: FastifyRequest): Promise<string> => {
-          const resolved = await resolveOnce(request);
-          if ('error' in resolved) {
-            return `unauthenticated:${request.ip}`;
-          }
-          const { tenantId, actor } = resolved.context;
-          return `${tenantId}:${actor.type}:${actor.id}`;
-        },
-        errorResponseBuilder: () => ({ ...limited.toJSON(), statusCode: 429 }),
-      },
-    };
-  }
+  // D13: the authenticated per-principal budget. `principalKeyOf` resolves the request's
+  // principal; a request without one shares its IP's `unauthenticated` bucket.
+  const authenticatedRateLimit = (
+    principalKeyOf: (request: FastifyRequest) => Promise<string | undefined>,
+  ): { rateLimit?: object } =>
+    options.rateLimit === undefined
+      ? {}
+      : {
+          rateLimit: {
+            max: options.rateLimit.max,
+            timeWindow: options.rateLimit.timeWindowMs,
+            allowList: isTokenExchange,
+            // Internal bucket key only: never logged, returned or exported.
+            keyGenerator: async (request: FastifyRequest): Promise<string> =>
+              (await principalKeyOf(request)) ?? `unauthenticated:${request.ip}`,
+            errorResponseBuilder: () => ({ ...limited.toJSON(), statusCode: 429 }),
+          },
+        };
+
+  // 003 D8 (Q13, Q54): the shell's view of its own session, read from the session only.
+  // The span covers the resolution; its gate is `unauthenticated` unless a state resolves.
+  const resolveSessionState = createSessionStateResolver({ auth, revocationPool: appPool });
+  const resolveSessionStateOnce = oncePerRequest((headers) =>
+    withIdentitySpan('identity.session.me', { [SESSION_GATE]: 'unauthenticated' }, async (span) => {
+      const state = await resolveSessionState(headers);
+      span.setAttributes({ [SESSION_GATE]: state.gate, 'tayzu.tenant.id': state.organization.id });
+      return state;
+    }),
+  );
+  // Registered before the `/v1/*` catch-all, as token exchange is. Same bucket key shape as
+  // the catch-all's session principal, so the budget follows the person, gated or not.
+  app.get(
+    ME_PATH,
+    {
+      config: authenticatedRateLimit(async (request) => {
+        const resolved = await resolveSessionStateOnce(request);
+        return 'error' in resolved
+          ? undefined
+          : `${resolved.value.organization.id}:user:${resolved.value.user.id}`;
+      }),
+    },
+    async (request, reply) => {
+      const resolved = await resolveSessionStateOnce(request);
+      if ('error' in resolved) {
+        // The catch-all's own mapping, so the `401` body is the anonymous one.
+        const mapped = toOrpcError(resolved.error);
+        return reply.status(mapped.status).send(mapped.toJSON());
+      }
+      return reply.status(200).header('cache-control', 'no-store').send(resolved.value);
+    },
+  );
 
   // The methods the merged router routes (Q141); `HEAD` is derived from `GET`.
   app.route({
     method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     url: '/v1/*',
-    config: v1Config,
+    config: authenticatedRateLimit(async (request) => {
+      const resolved = await resolveOnce(request);
+      if ('error' in resolved) {
+        return undefined;
+      }
+      const { tenantId, actor } = resolved.value;
+      return `${tenantId}:${actor.type}:${actor.id}`;
+    }),
     handler: async (request, reply) => {
       const resolved = await resolveOnce(request);
       if ('error' in resolved) {
@@ -1197,7 +1346,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
         const mapped = toOrpcError(resolved.error);
         return reply.status(mapped.status).send(mapped.toJSON());
       }
-      const context = resolved.context;
+      const context = resolved.value;
       // Q43, D4: an `admin`/`owner` user without an enrolled factor may only reach
       // MFA enrollment (the `/api/auth/two-factor/*` routes, outside `/v1`). Machine
       // principals are always `member` (Q28), so only a user can carry `admin` here.
@@ -1224,6 +1373,17 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       return undefined;
     },
   });
+
+  // 003 D9: the web build's assets and root build files, only when a build is configured.
+  // Their own `Cache-Control` is set before `onSend`, so the `no-store` default leaves it.
+  // The SPA fallback (Q28): the router prefers every more specific route over `/*`.
+  if (options.webDistDir !== undefined) {
+    await registerWebStatic(app, options.webDistDir);
+    await registerSpaFallback(app, options.webDistDir, {
+      rateLimit: options.spaFallbackRateLimit ?? DEFAULT_SPA_FALLBACK_RATE_LIMIT,
+      rateLimitedBody: () => ({ ...limited.toJSON(), statusCode: 429 }),
+    });
+  }
 
   await app.ready();
 

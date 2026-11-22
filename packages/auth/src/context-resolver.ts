@@ -84,7 +84,7 @@
  * construction (task 3.4, design D3 -- this module never reads request
  * body, path, or query string at all) applies equally to this branch.
  */
-import { hasMfaReenrolMarker } from './identity/mfa-reenrol-marker.js';
+import { findMfaReenrolMarker } from './identity/mfa-reenrol-marker.js';
 import {
   hasActiveTemporaryPasswordMarker,
   hasExpiredTemporaryPasswordMarker,
@@ -145,12 +145,20 @@ export type ContextResolver = (headers: Headers) => Promise<ResolvedContext>;
  * locally, the same "introspect the narrower production type locally"
  * pattern `context-resolver.int.test.ts`'s own `AuthApiSurface` uses.
  */
-interface SessionResult {
+export interface SessionResult {
   readonly session: {
     readonly activeOrganizationId?: string | null;
     readonly updatedAt: Date;
+    /** Set for a Visma Connect session (`002` D25). */
+    readonly ssoSid?: string | null;
   };
-  readonly user: { readonly id: string; readonly email?: string; readonly banned?: boolean | null };
+  readonly user: {
+    readonly id: string;
+    readonly name?: string;
+    readonly email?: string;
+    readonly banned?: boolean | null;
+    readonly twoFactorEnabled?: boolean | null;
+  };
 }
 
 interface AuthApiSurface {
@@ -277,9 +285,13 @@ async function readServiceAccountState(
 interface AuthContextSurface {
   readonly adapter: {
     findOne(data: {
-      readonly model: 'member' | 'verification';
+      readonly model: 'member' | 'verification' | 'organization';
       readonly where: ReadonlyArray<{ readonly field: string; readonly value: string }>;
-    }): Promise<{ readonly role?: unknown; readonly value?: unknown } | null>;
+    }): Promise<{
+      readonly role?: unknown;
+      readonly value?: unknown;
+      readonly name?: unknown;
+    } | null>;
     /** Present for the shape `./identity/mfa-reenrol-marker.ts` takes; the resolver never calls it. */
     deleteMany(data: {
       readonly model: 'verification';
@@ -427,12 +439,43 @@ function rejectMissingContext(): never {
   throw new AuthContextError();
 }
 
-export function createContextResolver(options: ContextResolverOptions): ContextResolver {
+/**
+ * 003 design D8: the gate a marker sets, in precedence order. `resolveContext` refuses a
+ * session under any of them; `GET /v1/me` reports it.
+ */
+export type MarkerGate = 'password_expired' | 'password_change_required' | 'mfa_enrolment_required';
+
+/** What the session-cookie checks after the markers confirm (the membership and `_user`). */
+export interface AdmittedSession {
+  readonly tenantId: string;
+  /** The Better Auth member role as stored (possibly comma-separated). */
+  readonly memberRole: string;
+  readonly email: string;
+}
+
+/**
+ * The session-cookie branch's checks, shared by `resolveContext` and `GET /v1/me`'s
+ * `resolveSessionState` (003 design D8), which run them in the same order: `readSession`,
+ * `markerGate`, then `admitSession`. Each instance holds its own caches. Every rejection
+ * is the uniform `AuthContextError`, except `markerGate`, which rejects with the lookup's
+ * own error so each caller decides how a failed lookup fails closed.
+ */
+export interface SessionChecks {
+  /** The idle timeout, Better Auth's own session read and the `banned` check. */
+  readSession(headers: Headers): Promise<SessionResult>;
+  /** The marker the user holds, by precedence, or `null`. Rejects if a lookup fails. */
+  markerGate(userId: string): Promise<MarkerGate | null>;
+  /** The active organization, the membership, the open tenant and the `_user` state. */
+  admitSession(result: SessionResult): Promise<AdmittedSession>;
+  /** `045` D4 for any principal; resolves `true` when it may proceed. */
+  tenantIsOpen(tenantId: string, actorType: string): Promise<boolean>;
+  /** The organization's own name. Rejects with `AuthContextError` if it cannot be read. */
+  organizationName(organizationId: string): Promise<string>;
+}
+
+export function createSessionChecks(options: ContextResolverOptions): SessionChecks {
   const api = apiOf(options.auth);
-  const jwtApi = jwtApiOf(options.auth);
   const membershipCache = new Map<string, MembershipCacheEntry>();
-  const revocationCache = new Map<string, RevocationCacheEntry>();
-  const serviceAccountCache = new Map<string, ServiceAccountCacheEntry>();
   const humanStatusCache = new Map<string, HumanStatusCacheEntry>();
   const tenantDeletionCache = new Map<string, TenantDeletionCacheEntry>();
   const lookupTenantDeletion = createTenantDeletionLookup(options.revocationPool);
@@ -460,6 +503,199 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     }
     return !closed;
   }
+
+  // Task 11.8, design D13, Q105: a human is admitted only with an `Active`
+  // `_user` in the active tenant. Status only, cached at most 5 s per
+  // (tenant, user); a lookup failure is never cached (`null`).
+  async function humanState(
+    pool: ReturnType<typeof createPool>,
+    tenantId: string,
+    userId: string,
+    email: string,
+  ): Promise<HumanStatusCacheEntry['state'] | null> {
+    const now = Date.now();
+    const cacheKey = JSON.stringify([tenantId, userId]);
+    const cached = humanStatusCache.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.state;
+    }
+    try {
+      const state = await readHumanState(pool, tenantId, email);
+      humanStatusCache.set(cacheKey, { state, expiresAt: now + REVOCATION_CACHE_TTL_MS });
+      return state;
+    } catch {
+      return null;
+    }
+  }
+
+  // Task 3.6, design D19: the independent membership re-check. A cache hit
+  // (younger than `MEMBERSHIP_CACHE_TTL_MS`) skips the lookup; a miss
+  // queries Better Auth's own `member` table directly. Any lookup failure
+  // (the table or the database is unreachable) resolves to `false` and is
+  // never cached, so it fails closed for exactly this one request rather
+  // than widening the fail-closed window past the failure itself.
+  // Resolves to the member's role, or `null` when not a member / on failure.
+  async function memberRoleOf(userId: string, organizationId: string): Promise<string | null> {
+    const key = membershipCacheKey(userId, organizationId);
+    const now = Date.now();
+    const cached = membershipCache.get(key);
+    if (cached !== undefined && cached.expiresAt > now) {
+      return cached.role;
+    }
+
+    let role: string | null;
+    try {
+      const context = await contextOf(options.auth);
+      const member = await context.adapter.findOne({
+        model: 'member',
+        where: [
+          { field: 'organizationId', value: organizationId },
+          { field: 'userId', value: userId },
+        ],
+      });
+      role = member === null ? null : typeof member.role === 'string' ? member.role : 'member';
+    } catch {
+      return null;
+    }
+
+    membershipCache.set(key, { role, expiresAt: now + MEMBERSHIP_CACHE_TTL_MS });
+    return role;
+  }
+
+  async function readSession(headers: Headers): Promise<SessionResult> {
+    // design D3: the 12-hour idle timeout, layered on top of Better Auth's
+    // own 7-day `expiresIn`/1-day `updateAge`. `disableRefresh: true` reads
+    // `updatedAt` as actually persisted, immune to the refresh-on-read side
+    // effect a plain `getSession` call could otherwise trigger (see this
+    // module's own doc comment). Checked against last use (`updatedAt`),
+    // never against `createdAt`.
+    // The `/get-session` before hook (task 27.3) refuses an idle session
+    // with an `APIError`; that refusal is the same context rejection.
+    const idlePeek = await api
+      .getSession({ headers, query: { disableRefresh: true } })
+      .catch(() => rejectMissingContext());
+    if (idlePeek === null) {
+      rejectMissingContext();
+    }
+    if (isIdle(idlePeek.session.updatedAt)) {
+      rejectMissingContext();
+    }
+
+    // Not idle: resolve normally. Better Auth's own `expiresAt` check
+    // (returning `null` past the 7-day `expiresIn`) and its rolling refresh
+    // (`session.updateAge`, design D3's "kept") both apply as usual here.
+    const result = await api.getSession({ headers });
+    if (result === null) {
+      rejectMissingContext();
+    }
+
+    // Task 13.4, Q77: a disabled (`banned`) user is rejected whatever the
+    // `_user` status; the reason goes only to the log and the counter.
+    if (result.user.banned === true) {
+      const attributes = {
+        'tayzu.identity.rejection.reason': 'user_banned',
+        'tayzu.actor.type': 'user',
+      };
+      principalRejectionsCounter.add(1, attributes);
+      logger.emit({
+        eventName: 'catalog.security.principal_rejected',
+        severityNumber: SeverityNumber.WARN,
+        attributes,
+      });
+      rejectMissingContext();
+    }
+    return result;
+  }
+
+  // Task 13.5, Q36; task 16.11a, Q146; `044` D11: the temporary-password and
+  // re-enrolment markers, in the precedence of 003 D8. A lookup stops at the
+  // first marker held; a failed lookup rejects.
+  async function markerGate(userId: string): Promise<MarkerGate | null> {
+    const { adapter } = await contextOf(options.auth);
+    if (await hasExpiredTemporaryPasswordMarker(adapter, userId)) {
+      return 'password_expired';
+    }
+    if (await hasActiveTemporaryPasswordMarker(adapter, userId)) {
+      return 'password_change_required';
+    }
+    if (await findMfaReenrolMarker(adapter, userId)) {
+      return 'mfa_enrolment_required';
+    }
+    return null;
+  }
+
+  async function admitSession(result: SessionResult): Promise<AdmittedSession> {
+    const tenantId = result.session.activeOrganizationId;
+    if (tenantId === null || tenantId === undefined) {
+      rejectMissingContext();
+    }
+
+    // Task 3.6, design D19: independently re-verify the session's own
+    // `activeOrganizationId` against a membership-row lookup, rather than
+    // trusting the session row alone.
+    const memberRole = await memberRoleOf(result.user.id, tenantId);
+    if (memberRole === null) {
+      rejectMissingContext();
+    }
+
+    // The session-cookie branch resolves a `user` actor only.
+    const actorType = 'user';
+
+    // `045` D4: the session branch checks the active organization, once the
+    // membership is confirmed, so the reason is logged for its members only.
+    if (!(await tenantIsOpen(tenantId, actorType))) {
+      rejectMissingContext();
+    }
+
+    // Task 11.8, Q105: the `_user` of the active tenant must be `Active`.
+    // Without an email the row cannot be looked up, which fails closed.
+    const email = result.user.email;
+    if (typeof email !== 'string' || email.length === 0) {
+      rejectMissingContext();
+    }
+    const state = await humanState(options.revocationPool, tenantId, result.user.id, email);
+    if (state !== 'active') {
+      if (state !== null) {
+        const attributes = {
+          'tayzu.identity.rejection.reason':
+            state === 'disabled' ? 'user_disabled' : 'user_missing',
+          'tayzu.actor.type': actorType,
+        };
+        principalRejectionsCounter.add(1, attributes);
+        logger.emit({
+          eventName: 'catalog.security.principal_rejected',
+          severityNumber: SeverityNumber.WARN,
+          attributes,
+        });
+      }
+      rejectMissingContext();
+    }
+    return { tenantId, memberRole, email };
+  }
+
+  async function organizationName(organizationId: string): Promise<string> {
+    const organization = await contextOf(options.auth)
+      .then((context) =>
+        context.adapter.findOne({
+          model: 'organization',
+          where: [{ field: 'id', value: organizationId }],
+        }),
+      )
+      .catch(() => rejectMissingContext());
+    if (organization === null || typeof organization.name !== 'string') {
+      rejectMissingContext();
+    }
+    return organization.name;
+  }
+
+  return { readSession, markerGate, admitSession, tenantIsOpen, organizationName };
+}
+
+export function createContextResolver(options: ContextResolverOptions): ContextResolver {
+  const jwtApi = jwtApiOf(options.auth);
+  const checks = createSessionChecks(options);
+  const revocationCache = new Map<string, RevocationCacheEntry>();
+  const serviceAccountCache = new Map<string, ServiceAccountCacheEntry>();
 
   // Task 5.7, design D21: consults `machine_credential_revocation` through
   // an in-process cache keyed by `credential_id` (TTL 5 s). Read under the
@@ -543,64 +779,6 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
     }
   }
 
-  // Task 11.8, design D13, Q105: a human is admitted only with an `Active`
-  // `_user` in the active tenant. Status only, cached at most 5 s per
-  // (tenant, user); a lookup failure is never cached (`null`).
-  async function humanState(
-    pool: ReturnType<typeof createPool>,
-    tenantId: string,
-    userId: string,
-    email: string,
-  ): Promise<HumanStatusCacheEntry['state'] | null> {
-    const now = Date.now();
-    const cacheKey = JSON.stringify([tenantId, userId]);
-    const cached = humanStatusCache.get(cacheKey);
-    if (cached !== undefined && cached.expiresAt > now) {
-      return cached.state;
-    }
-    try {
-      const state = await readHumanState(pool, tenantId, email);
-      humanStatusCache.set(cacheKey, { state, expiresAt: now + REVOCATION_CACHE_TTL_MS });
-      return state;
-    } catch {
-      return null;
-    }
-  }
-
-  // Task 3.6, design D19: the independent membership re-check. A cache hit
-  // (younger than `MEMBERSHIP_CACHE_TTL_MS`) skips the lookup; a miss
-  // queries Better Auth's own `member` table directly. Any lookup failure
-  // (the table or the database is unreachable) resolves to `false` and is
-  // never cached, so it fails closed for exactly this one request rather
-  // than widening the fail-closed window past the failure itself.
-  // Resolves to the member's role, or `null` when not a member / on failure.
-  async function memberRoleOf(userId: string, organizationId: string): Promise<string | null> {
-    const key = membershipCacheKey(userId, organizationId);
-    const now = Date.now();
-    const cached = membershipCache.get(key);
-    if (cached !== undefined && cached.expiresAt > now) {
-      return cached.role;
-    }
-
-    let role: string | null;
-    try {
-      const context = await contextOf(options.auth);
-      const member = await context.adapter.findOne({
-        model: 'member',
-        where: [
-          { field: 'organizationId', value: organizationId },
-          { field: 'userId', value: userId },
-        ],
-      });
-      role = member === null ? null : typeof member.role === 'string' ? member.role : 'member';
-    } catch {
-      return null;
-    }
-
-    membershipCache.set(key, { role, expiresAt: now + MEMBERSHIP_CACHE_TTL_MS });
-    return role;
-  }
-
   return async (headers: Headers): Promise<ResolvedContext> => {
     // Task 5.4, design D5: a `Bearer` access token is resolved through its
     // own branch, never falling through to the session-cookie branch below
@@ -627,7 +805,7 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
         rejectMissingContext();
       }
       // `045` D4: the bearer branch checks the token's own tenant claim.
-      if (!(await tenantIsOpen(resolved.tenantId, resolved.actor.type))) {
+      if (!(await checks.tenantIsOpen(resolved.tenantId, resolved.actor.type))) {
         rejectMissingContext();
       }
       // Task 11.6: chosen by the credential branch (a bound machine token),
@@ -659,107 +837,21 @@ export function createContextResolver(options: ContextResolverOptions): ContextR
       return resolved;
     }
 
-    // design D3: the 12-hour idle timeout, layered on top of Better Auth's
-    // own 7-day `expiresIn`/1-day `updateAge`. `disableRefresh: true` reads
-    // `updatedAt` as actually persisted, immune to the refresh-on-read side
-    // effect a plain `getSession` call could otherwise trigger (see this
-    // module's own doc comment). Checked against last use (`updatedAt`),
-    // never against `createdAt`.
-    // The `/get-session` before hook (task 27.3) refuses an idle session
-    // with an `APIError`; that refusal is the same context rejection.
-    const idlePeek = await api
-      .getSession({ headers, query: { disableRefresh: true } })
-      .catch(() => rejectMissingContext());
-    if (idlePeek === null) {
-      rejectMissingContext();
-    }
-    if (isIdle(idlePeek.session.updatedAt)) {
-      rejectMissingContext();
-    }
+    const result = await checks.readSession(headers);
 
-    // Not idle: resolve normally. Better Auth's own `expiresAt` check
-    // (returning `null` past the 7-day `expiresIn`) and its rolling refresh
-    // (`session.updateAge`, design D3's "kept") both apply as usual here.
-    const result = await api.getSession({ headers });
-    if (result === null) {
-      rejectMissingContext();
-    }
-
-    // Task 13.4, Q77: a disabled (`banned`) user is rejected whatever the
-    // `_user` status; the reason goes only to the log and the counter.
-    if (result.user.banned === true) {
-      const attributes = {
-        'tayzu.identity.rejection.reason': 'user_banned',
-        'tayzu.actor.type': 'user',
-      };
-      principalRejectionsCounter.add(1, attributes);
-      logger.emit({
-        eventName: 'catalog.security.principal_rejected',
-        severityNumber: SeverityNumber.WARN,
-        attributes,
-      });
-      rejectMissingContext();
-    }
-
-    // Task 13.5, Q36: under a temporary-password marker nothing on `/v1` is reachable.
-    // A failed lookup rejects (fail closed).
-    const markerHeld = await contextOf(options.auth)
-      .then(
-        async (context) =>
-          (await hasMfaReenrolMarker(context.adapter, result.user.id)) ||
-          (await hasActiveTemporaryPasswordMarker(context.adapter, result.user.id)) ||
-          // Task 16.11a, Q146: an expired marker refuses the existing session too.
-          (await hasExpiredTemporaryPasswordMarker(context.adapter, result.user.id)),
-      )
-      .catch(() => true);
+    // Task 13.5, Q36: under a temporary-password marker (unexpired, or expired:
+    // task 16.11a, Q146) or the re-enrolment marker, nothing on `/v1` is
+    // reachable. A failed lookup rejects (fail closed).
+    const markerHeld = await checks.markerGate(result.user.id).then(
+      (gate) => gate !== null,
+      () => true,
+    );
     if (markerHeld) {
       rejectMissingContext();
     }
 
-    const tenantId = result.session.activeOrganizationId;
-    if (tenantId === null || tenantId === undefined) {
-      rejectMissingContext();
-    }
-
-    // Task 3.6, design D19: independently re-verify the session's own
-    // `activeOrganizationId` against a membership-row lookup, rather than
-    // trusting the session row alone.
-    const memberRole = await memberRoleOf(result.user.id, tenantId);
-    if (memberRole === null) {
-      rejectMissingContext();
-    }
-
+    const { tenantId, memberRole, email } = await checks.admitSession(result);
     const actor = { type: 'user', id: result.user.id } as const;
-
-    // `045` D4: the session branch checks the active organization, once the
-    // membership is confirmed, so the reason is logged for its members only.
-    if (!(await tenantIsOpen(tenantId, actor.type))) {
-      rejectMissingContext();
-    }
-
-    // Task 11.8, Q105: the `_user` of the active tenant must be `Active`.
-    // Without an email the row cannot be looked up, which fails closed.
-    const email = result.user.email;
-    if (typeof email !== 'string' || email.length === 0) {
-      rejectMissingContext();
-    }
-    const state = await humanState(options.revocationPool, tenantId, result.user.id, email);
-    if (state !== 'active') {
-      if (state !== null) {
-        const attributes = {
-          'tayzu.identity.rejection.reason':
-            state === 'disabled' ? 'user_disabled' : 'user_missing',
-          'tayzu.actor.type': actor.type,
-        };
-        principalRejectionsCounter.add(1, attributes);
-        logger.emit({
-          eventName: 'catalog.security.principal_rejected',
-          severityNumber: SeverityNumber.WARN,
-          attributes,
-        });
-      }
-      rejectMissingContext();
-    }
 
     // Task 23.1, Q34: teams and moderated blueprints come from the caller's
     // `_user` entity. If it cannot be read the principal is left absent, so

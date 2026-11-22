@@ -11,6 +11,14 @@
  * the PKCE S256 verifier. Tests choose the identity that the next
  * authorization signs in with through `setSubject`, and can mint arbitrary
  * signed tokens (for example back-channel `logout_token`s) with `signJwt`.
+ *
+ * By default it listens on a random port of 127.0.0.1 and is its own issuer
+ * (`http://127.0.0.1:<port>`). The e2e stack of `003` (design D16, Q38) puts it
+ * behind a test-only TLS reverse proxy instead: `issuer` sets the public https
+ * URL that the discovery document, every endpoint it advertises and the ID
+ * token's `iss` use, and `port` fixes the 127.0.0.1 port the proxy forwards
+ * to. An issuer with a path (`https://localhost:8443/oidc`) is served both with
+ * and without that path prefix, so the proxy may forward or strip it.
  */
 import {
   createHash,
@@ -34,11 +42,20 @@ export interface OidcStubSubject {
 export interface OidcStubOptions {
   clientId?: string;
   clientSecret?: string;
+  /**
+   * The public issuer URL (https, no query, fragment or credentials, no
+   * trailing slash needed). Omitted: `http://127.0.0.1:<port>`.
+   */
+  issuer?: string;
+  /** A fixed port on 127.0.0.1 (1 to 65535). Omitted: a random free port. */
+  port?: number;
 }
 
 export interface OidcStub {
   readonly issuer: string;
   readonly discoveryUrl: string;
+  /** Where the stub itself listens (`http://127.0.0.1:<port>`): the proxy's upstream. */
+  readonly localUrl: string;
   readonly clientId: string;
   readonly clientSecret: string;
   readonly kid: string;
@@ -54,6 +71,35 @@ export interface OidcStub {
 
 const b64url = (input: Buffer | string): string => Buffer.from(input).toString('base64url');
 
+/** Fails closed on anything but an https URL without query, fragment or credentials. */
+function parseIssuer(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('OIDC stub: issuer must be an absolute https URL.');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.search !== '' ||
+    url.hash !== '' ||
+    url.username !== '' ||
+    url.password !== ''
+  ) {
+    throw new Error(
+      'OIDC stub: issuer must be an https URL without query, fragment or credentials.',
+    );
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+function parsePort(port: number): number {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('OIDC stub: port must be an integer between 1 and 65535.');
+  }
+  return port;
+}
+
 interface IssuedCode {
   subject: OidcStubSubject;
   clientId: string;
@@ -63,6 +109,11 @@ interface IssuedCode {
 }
 
 export async function startOidcStub(options: OidcStubOptions = {}): Promise<OidcStub> {
+  const publicIssuer = options.issuer === undefined ? undefined : parseIssuer(options.issuer);
+  const listenPort = options.port === undefined ? 0 : parsePort(options.port);
+  /** The issuer's path (`/oidc`), stripped from a request that still carries it. */
+  const issuerPath =
+    publicIssuer === undefined ? '' : new URL(publicIssuer).pathname.replace(/\/+$/, '');
   const clientId = options.clientId ?? 'tayzu-test-client';
   const clientSecret = options.clientSecret ?? randomBytes(16).toString('hex');
   const kid = `stub-${randomBytes(4).toString('hex')}`;
@@ -209,7 +260,11 @@ export async function startOidcStub(options: OidcStubOptions = {}): Promise<Oidc
 
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', issuer || 'http://127.0.0.1');
-    const route = `${req.method ?? 'GET'} ${url.pathname}`;
+    const path =
+      issuerPath !== '' && url.pathname.startsWith(`${issuerPath}/`)
+        ? url.pathname.slice(issuerPath.length)
+        : url.pathname;
+    const route = `${req.method ?? 'GET'} ${path}`;
     void (async () => {
       switch (route) {
         case 'GET /.well-known/openid-configuration':
@@ -248,14 +303,20 @@ export async function startOidcStub(options: OidcStubOptions = {}): Promise<Oidc
     })();
   });
 
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(listenPort, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
   });
-  issuer = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  const localUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  issuer = publicIssuer ?? localUrl;
 
   return {
     issuer,
     discoveryUrl: `${issuer}/.well-known/openid-configuration`,
+    localUrl,
     clientId,
     clientSecret,
     kid,
