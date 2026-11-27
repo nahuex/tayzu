@@ -1,7 +1,8 @@
 # Proposal: 048-production-hardening
 
 **Status:** waiting for the human at Checkpoint 1. The scope questions were asked
-and answered in chat on 2026-11-27 (Resolved decisions Q1 to Q16 in `design.md`).
+and answered in chat on 2026-11-27 (Resolved decisions Q1 to Q16 and Q21 to Q28 in `design.md`; Q17 to Q20 and Q29 to
+Q31 are the orchestrator's choices, open to Checkpoint 1).
 
 ## Why
 
@@ -109,7 +110,8 @@ None. Every item hardens a surface that an existing capability already owns
 
 ### Modified Capabilities
 
-- `auth-and-rbac`: proxy trust (new requirement); the step-up binding; the shared
+- `auth-and-rbac`: proxy trust, the migration role and the public-origin check (new
+  requirements, Q30); the step-up binding; the shared
   token-exchange and back-channel limits; the atomic replay guard; the versioned
   secrets; the exported decision log; the rejected tenant switch.
 - `password-reset-and-account-recovery`: the platform password hash, its cost and
