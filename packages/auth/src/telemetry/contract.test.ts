@@ -216,7 +216,7 @@ describe('auth.security.step_up_succeeded is declared (task 27.5, design Q77)', 
 });
 
 /**
- * Task 3.11 of openspec/changes/003-catalog-ui-core (design D11 "Step-up telemetry for
+ * Task 3.11 of openspec/changes/archive/2026-11-27-003-catalog-ui-core (design D11 "Step-up telemetry for
  * Visma Connect", "Observability contract" -> Log events; Resolved decisions Q27 B2 and
  * Q29). The two rows of the design's Log events table, transcribed verbatim:
  *

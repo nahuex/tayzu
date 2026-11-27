@@ -42,7 +42,7 @@
  *
  * ## 003-catalog-ui-core task 3.3 (design D5, D6)
  *
- * `openspec/changes/003-catalog-ui-core/design.md`, quoted verbatim:
+ * `openspec/changes/archive/2026-11-27-003-catalog-ui-core/design.md`, quoted verbatim:
  *
  * D6, Input: "`sort`: `identifier` (default), `title` or `updatedAt`; `order`: `asc`
  * (default) or `desc`. Both are query-string enums in the contract and the committed

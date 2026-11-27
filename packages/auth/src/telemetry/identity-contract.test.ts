@@ -599,7 +599,7 @@ describe('the identity contract declares the 045 org-deletion telemetry (task 9.
 });
 
 /*
- * Task 3.9 of openspec/changes/003-catalog-ui-core (design D8 and "Observability contract",
+ * Task 3.9 of openspec/changes/archive/2026-11-27-003-catalog-ui-core (design D8 and "Observability contract",
  * Spans): "`identity.session.me` | route | `tayzu.identity.session.gate`
  * (`none`|`password_change_required`|`password_expired`|`mfa_enrolment_required`|`unauthenticated`)
  * | `tayzu.tenant.id` (when the session has an active organization)". The `me` names go to

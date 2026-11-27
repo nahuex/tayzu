@@ -624,7 +624,7 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
 - The route is in no public allowlist; `route-auth-allowlist.int.test.ts` keeps
   covering it.
 
-### D9. Same-origin hosting ([ADR-0025](../../../docs/adr/0025-same-origin-web-hosting.md), Q2)
+### D9. Same-origin hosting ([ADR-0025](../../../../docs/adr/0025-same-origin-web-hosting.md), Q2)
 
 - **Setting.** `WEB_DIST_DIR`, optional: the absolute path of the Vite build. Unset, no
   app route is registered and every route answers as today (the DAST of the API alone,
@@ -672,7 +672,7 @@ same error as no session, so an oRPC procedure could not answer the gated cases 
   _Rejected (Q2):_ a static host or CDN on a sibling subdomain with CORS, and a
   separate Container Apps app.
 
-### D10. Strict CSP and security headers ([ADR-0026](../../../docs/adr/0026-strict-content-security-policy.md), Q5)
+### D10. Strict CSP and security headers ([ADR-0026](../../../../docs/adr/0026-strict-content-security-policy.md), Q5)
 
 - **One policy on every response** (HTML, JSON, assets and 404s), whether or not
   `WEB_DIST_DIR` is set, through `@fastify/helmet` with

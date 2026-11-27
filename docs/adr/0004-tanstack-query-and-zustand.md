@@ -2,7 +2,7 @@
 
 - **Status**: Accepted (backfill)
 - **Date**: 2026-11-21 (written); decided 2026-09-27, in `openspec/project.md` §2
-- **Change**: [`003-catalog-ui-core`](../../openspec/changes/003-catalog-ui-core/design.md) (design D4, D12, D17; Resolved decision Q11)
+- **Change**: [`003-catalog-ui-core`](../../openspec/changes/archive/2026-11-27-003-catalog-ui-core/design.md) (design D4, D12, D17; Resolved decision Q11)
 
 This is a **backfill**. The decision has been part of the fixed stack in
 `openspec/project.md` §2 (the "Data fetching / state" row, line 39) since the

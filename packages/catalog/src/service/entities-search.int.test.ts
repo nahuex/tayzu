@@ -1,5 +1,5 @@
 /**
- * Integration tests for 003 task 3.6 (openspec/changes/003-catalog-ui-core,
+ * Integration tests for 003 task 3.6 (openspec/changes/archive/2026-11-27-003-catalog-ui-core,
  * design D5, Resolved decisions Q19 and Q52; catalog-core delta spec,
  * requirement "Cross-blueprint entity search").
  *

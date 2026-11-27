@@ -1,5 +1,5 @@
 /**
- * Unit test for task 2.7 of openspec/changes/003-catalog-ui-core (design D4,
+ * Unit test for task 2.7 of openspec/changes/archive/2026-11-27-003-catalog-ui-core (design D4,
  * "A browser-safe contract module"): `catalogContract` and its Zod schemas
  * live in `./contract-definition.ts`, which imports only `@orpc/contract` and
  * `zod`; `./contract.ts` re-exports it and keeps the document generation and
