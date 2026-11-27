@@ -66,7 +66,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 2. Migrations run as the migration role (B1)
 
-- [ ] 2.1 `resolveMigrationUrl(env)` reads only `MIGRATION_DATABASE_URL` (design D1). Verify:
+- [x] 2.1 `resolveMigrationUrl(env)` reads only `MIGRATION_DATABASE_URL` (design D1). Verify:
       `packages/db/src/run-migrations.test.ts` covers "The migration command needs its own
       variable": unset and blank fail with the fixed message naming only
       `MIGRATION_DATABASE_URL`, a set `DATABASE_URL` is never read, and a set value is
