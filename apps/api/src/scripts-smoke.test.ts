@@ -35,3 +35,14 @@ describe('@tayzu/api maintenance scripts smoke (045)', () => {
     expect(module).toBeTypeOf('object');
   });
 });
+
+describe('@tayzu/api maintenance scripts smoke (048)', () => {
+  it.each([['purge-warning-job', () => import('../scripts/purge-warning-job.js')]])(
+    'loads scripts/%s.ts',
+    async (_name, load) => {
+      const module = await load();
+
+      expect(module).toBeTypeOf('object');
+    },
+  );
+});

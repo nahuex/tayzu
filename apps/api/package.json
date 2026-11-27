@@ -19,6 +19,7 @@
     "bootstrap:admin": "tsx scripts/bootstrap-admin.ts",
     "recover:admin-mfa": "tsx scripts/recover-admin-mfa.ts",
     "identity:purge": "tsx scripts/purge-job.ts",
+    "identity:purge-warning": "tsx scripts/purge-warning-job.ts",
     "identity:cancel-org-deletion": "tsx scripts/cancel-org-deletion.ts",
     "contract:generate": "tsx scripts/generate-identity-contract.ts",
     "contract:check": "tsx scripts/check-identity-contract.ts"

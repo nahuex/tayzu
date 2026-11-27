@@ -59,7 +59,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       Verify: `pnpm install` succeeds with no ignored build script left unexplained,
       `pnpm audit --prod --audit-level=high` reports nothing, the SBOM of `scripts/ci/syft.sh`
       lists the new packages, and `pnpm lint` passes.
-- [ ] 1.3 _(setup)_ Scaffold the warning job: `apps/api/scripts/purge-warning-job.ts` (an
+- [x] 1.3 _(setup)_ Scaffold the warning job: `apps/api/scripts/purge-warning-job.ts` (an
       empty `main` through `run-script.ts`), the package script `identity:purge-warning`, and
       the module in `scripts-smoke.test.ts`. Verify: `pnpm --filter @tayzu/api test` runs the
       smoke test green, and `pnpm lint` and `pnpm typecheck` cover the module.
