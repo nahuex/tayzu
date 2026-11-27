@@ -2,7 +2,7 @@
 
 Tayzu's single-page web app: React 19, Vite 8, TanStack Router and Query,
 Zustand, react-i18next, Tailwind CSS 4 and shadcn/ui. Global rules are in the
-root `CLAUDE.md`. The design is `openspec/changes/003-catalog-ui-core/design.md`
+root `CLAUDE.md`. The design is `openspec/changes/archive/2026-11-27-003-catalog-ui-core/design.md`
 (D1 to D16); the behavior is `specs/catalog-ui-core/spec.md` in the same change.
 When code and design disagree, stop and ask.
 

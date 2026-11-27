@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-11-21
-- **Change**: [`003-catalog-ui-core`](../../openspec/changes/003-catalog-ui-core/design.md) (design D10; Resolved decisions Q5, Q15, Q22, Q25, Q30, Q45, Q46, Q60, Q61, Q91, Q94)
+- **Change**: [`003-catalog-ui-core`](../../openspec/changes/archive/2026-11-27-003-catalog-ui-core/design.md) (design D10; Resolved decisions Q5, Q15, Q22, Q25, Q30, Q45, Q46, Q60, Q61, Q91, Q94)
 
 ## Context
 

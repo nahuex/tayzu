@@ -1,5 +1,5 @@
 /**
- * Integration test for task 3.9 of `openspec/changes/003-catalog-ui-core` (design D8,
+ * Integration test for task 3.9 of `openspec/changes/archive/2026-11-27-003-catalog-ui-core` (design D8,
  * Resolved decision Q13; `specs/catalog-ui-core/spec.md`, requirement "The shell knows the
  * caller's session and enforces its gates").
  *

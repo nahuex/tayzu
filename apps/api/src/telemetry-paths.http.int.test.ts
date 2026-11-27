@@ -36,7 +36,7 @@
  *
  * ## 003 task 4.6: app paths
  *
- * Task 4.6 of openspec/changes/003-catalog-ui-core (Observability contract; Q27 B1, Q28,
+ * Task 4.6 of openspec/changes/archive/2026-11-27-003-catalog-ui-core (Observability contract; Q27 B1, Q28,
  * Q59): "the route-template matcher of `apps/api/src/telemetry.ts` exports every HTTP server
  * span whose path satisfies `isSpaPath` (task 4.3) as `/{spa}`, at any status and for any
  * method, with or without `WEB_DIST_DIR`, and keeps asset paths."

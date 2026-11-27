@@ -1,5 +1,5 @@
 /**
- * Integration tests for 003 task 3.4 (openspec/changes/003-catalog-ui-core,
+ * Integration tests for 003 task 3.4 (openspec/changes/archive/2026-11-27-003-catalog-ui-core,
  * design D6, Resolved decision Q37; catalog-core delta spec, requirement
  * "Entity read, list and delete").
  *

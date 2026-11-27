@@ -884,7 +884,7 @@ describe('otel-smoke-check, 002: every auth/authz operation is driven (task 13.2
 });
 
 /*
- * Task 3.11 of openspec/changes/003-catalog-ui-core (design D11 "Step-up telemetry for Visma
+ * Task 3.11 of openspec/changes/archive/2026-11-27-003-catalog-ui-core (design D11 "Step-up telemetry for Visma
  * Connect", "Observability contract" -> Log events; Resolved decisions Q27 B2 and Q29). Verify
  * clause: "the `apps/api` `otel-smoke-check.int.test.ts` covers "A Visma Connect step-up is
  * logged" against the OIDC stub (success with the bound tenant and actor, an unknown state and
@@ -4369,7 +4369,7 @@ describe('otel-smoke-check, 045: every org-deletion operation is driven (task 9.
 });
 
 /*
- * Task 3.9 of openspec/changes/003-catalog-ui-core (design D8 and "Observability contract",
+ * Task 3.9 of openspec/changes/archive/2026-11-27-003-catalog-ui-core (design D8 and "Observability contract",
  * Spans; spec requirement "The web app adds no browser telemetry and the server's new signals
  * carry no tenant free text"): "The server MUST declare in its telemetry contract the span of
  * `GET /v1/me` with its gate attribute ... An organization name, a user name or an email MUST

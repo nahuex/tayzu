@@ -1,7 +1,7 @@
 # Catalog UI
 
 The web app of OpenSpec change
-[`003-catalog-ui-core`](../../openspec/changes/003-catalog-ui-core/design.md):
+[`003-catalog-ui-core`](../../openspec/changes/archive/2026-11-27-003-catalog-ui-core/design.md):
 a single-page React app in `apps/web` (`@tayzu/web`), built by Vite and served
 by `apps/api` on the API's own origin
 ([ADR-0025](../adr/0025-same-origin-web-hosting.md)). It shows the catalog of

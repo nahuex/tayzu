@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-11-21
-- **Change**: [`003-catalog-ui-core`](../../openspec/changes/003-catalog-ui-core/design.md) (design D9; Resolved decisions Q2, Q21, Q28, Q39, Q58)
+- **Change**: [`003-catalog-ui-core`](../../openspec/changes/archive/2026-11-27-003-catalog-ui-core/design.md) (design D9; Resolved decisions Q2, Q21, Q28, Q39, Q58)
 
 ## Context
 

@@ -181,7 +181,7 @@ scripts with no Cerbos check.
 ### The web app's view of its session (change 003)
 
 Change
-[`003-catalog-ui-core`](../../openspec/changes/003-catalog-ui-core/design.md)
+[`003-catalog-ui-core`](../../openspec/changes/archive/2026-11-27-003-catalog-ui-core/design.md)
 adds a browser app, served by `apps/api` on its own origin (design D9). It is
 one more client of the routes above, with the same session cookie: it adds no
 second authentication path and no Cerbos rule. The pages are described in

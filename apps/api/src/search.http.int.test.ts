@@ -1,5 +1,5 @@
 /**
- * Task 3.8 of openspec/changes/003-catalog-ui-core (design D5 "Search API", D6 "Sorting
+ * Task 3.8 of openspec/changes/archive/2026-11-27-003-catalog-ui-core (design D5 "Search API", D6 "Sorting
  * `entities.list`"; catalog-core delta spec, requirements "Cross-blueprint entity search" and the
  * sorted `entities.list`).
  *
