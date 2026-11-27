@@ -49,7 +49,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       names only, with no scope change. Verify: the report is attached to the PR with zero
       open blocking gaps or an explicit deferral recorded, every question has a Resolved
       decision row, and a short note in the PR description states what was adjusted.
-- [ ] 1.2 _(setup)_ Add `@azure/identity` `4.14.1` to `apps/api/package.json` at the exact
+- [x] 1.2 _(setup)_ Add `@azure/identity` `4.14.1` to `apps/api/package.json` at the exact
       version (design D13), re-checking the 14-day rule on the day of the install. Review the
       lockfile diff: it adds only `@azure/identity` and its transitive packages, each with a
       row in `docs/security/dependencies.md` (license, publisher, install scripts); an

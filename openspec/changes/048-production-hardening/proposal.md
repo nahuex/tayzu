@@ -1,8 +1,9 @@
 # Proposal: 048-production-hardening
 
-**Status:** waiting for the human at Checkpoint 1. The scope questions were asked
-and answered in chat on 2026-11-27 (Resolved decisions Q1 to Q16 and Q21 to Q28 in `design.md`; Q17 to Q20 and Q29 to
-Q31 are the orchestrator's choices, open to Checkpoint 1).
+**Status:** approved by the human at Checkpoint 1 on 2026-11-27 ("apruebo dale", in chat),
+with the scope questions answered as Resolved decisions Q1 to Q16 and Q21 to Q28 and the
+orchestrator's choices Q17 to Q20 and Q29 to Q31 of `design.md`. Task 1.1's pre-assessment
+and drift-check run first; any conflict they find is asked in chat and recorded from Q32 on.
 
 ## Why
 
