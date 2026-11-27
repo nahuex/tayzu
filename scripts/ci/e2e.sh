@@ -159,7 +159,7 @@ postgres_accepts_tls() {
   # proves a verified TLS handshake from the host, as the API will make it.
   (cd "$REPO_ROOT/packages/db" && node --input-type=module -e "
     import pg from 'pg';
-    const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    const client = new pg.Client({ connectionString: process.env.MIGRATION_DATABASE_URL });
     await client.connect();
     await client.query('select 1');
     await client.end();
@@ -224,7 +224,8 @@ up() {
   # The owner (the image's superuser) only migrates; the API and the seed run
   # as the runtime roles, so RLS and the role split are exercised.
   database_url="postgres://tayzu:${password}@localhost:${PG_PORT}/tayzu_e2e?${tls}"
-  export DATABASE_URL="$database_url"
+  # 048 design D1: db:migrate reads only MIGRATION_DATABASE_URL, never DATABASE_URL.
+  export MIGRATION_DATABASE_URL="$database_url"
 
   log "waiting for PostgreSQL (verified TLS)"
   wait_for 60 postgres_accepts_tls || fail "PostgreSQL did not accept a verified TLS connection in time"

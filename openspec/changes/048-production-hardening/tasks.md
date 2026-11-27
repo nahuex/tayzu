@@ -83,7 +83,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       migration applied, and the owner connection migrating (a no-op on the migrated
       database); `RUNTIME_DATABASE_ROLES` is exported by `@tayzu/db` (task 12.2 adds the
       warning role).
-- [ ] 2.4 _(setup)_ Wire `MIGRATION_DATABASE_URL`: `turbo.json` `db:migrate.env` becomes
+- [x] 2.4 _(setup)_ Wire `MIGRATION_DATABASE_URL`: `turbo.json` `db:migrate.env` becomes
       `["MIGRATION_DATABASE_URL"]`; `scripts/ci/e2e.sh` and `scripts/ci/dast.sh` export the
       owner URL as `MIGRATION_DATABASE_URL` before `pnpm db:migrate` and no longer set
       `DATABASE_URL` to it; `.github/workflows/ci.yml` passes it wherever a job migrates.

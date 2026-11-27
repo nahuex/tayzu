@@ -75,11 +75,17 @@ variables of one row are both read, and a missing one takes the default.
 
 ### Migrations
 
-`db:migrate` (`packages/db/src/run-migrations.ts`) reads `DATABASE_URL`, the
-runtime `tayzu_app` URL, today. A separate `MIGRATION_DATABASE_URL` for the
-`tayzu_migrator` role is not wired: no code reads that variable. Wiring it,
-is a gate for the first deployment (Q58). Until then, do not assume the
-migrator role is separate in any deployed environment.
+`db:migrate` (`packages/db/src/run-migrations.ts`) reads only
+`MIGRATION_DATABASE_URL`, the connection string of the migration role
+(`048` design D1, Resolved decision Q5). It is always required and never falls
+back to `DATABASE_URL`: unset or blank, the command stops before connecting
+with a fixed message that names only the variable. The value is a
+pipeline-only secret: the deployment pipeline (`046`) holds it for the
+migration step, no runtime process reads it, and it is rotated with the
+migration role's password. In Azure the role is `tayzu_migrator`, provisioned
+with `CREATEROLE` and `CREATE` on the database by `046`'s IaC; CI and the e2e
+and DAST scripts point it at the throwaway database's owner. Turborepo hashes
+only this variable for `db:migrate` (`turbo.json`).
 
 The startup assertion that the runtime roles are not privileged is wired
 (task 25.3, Q62). Outside test, `createAppFromEnv` checks `current_user` of
