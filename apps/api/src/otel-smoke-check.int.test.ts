@@ -1164,10 +1164,9 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     const code = `ReauthMismatchCodeMarker-${randomUUID()}`;
     const answered = await callback({ code, state });
     expect(answered.statusCode, answered.body).toBe(400);
-    const stored = await authPool.query(
-      'select 1 from auth.verification where identifier = $1',
-      [`${RESULT_PREFIX}${sessionTokenOfCookie(user.cookie)}`],
-    );
+    const stored = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      `${RESULT_PREFIX}${sessionTokenOfCookie(user.cookie)}`,
+    ]);
     expect(stored.rowCount, 'a mismatched callback stores no result').toBe(0);
     return {
       tenantId: user.tenant.organizationId,
