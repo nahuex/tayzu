@@ -29,7 +29,6 @@ import {
   createStepUpGuard,
   createTenantDeletionLookup,
   emitInternalError,
-  emitRateLimited,
   exchangeMachineToken,
   AuthStepUpError,
   isAllowedAuthPath,
@@ -1052,25 +1051,31 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     message: 'Too many requests',
   });
 
-  // D20: token exchange has no tenant/actor yet, so it gets its own bucket
-  // (IP only, so varying `clientId` cannot mint a fresh bucket; Q56) and is exempt from the authenticated one below.
+  // D20: token exchange has no tenant/actor yet, so it gets its own bucket and is exempt
+  // from the authenticated one below. 048 D7: the bucket lives in the shared DB store, so
+  // every replica spends one budget; it is keyed by the address alone, so varying
+  // `clientId` cannot mint a fresh bucket (002 Q56). A refusal answers `AUTH_RATE_LIMITED`
+  // with `Retry-After` (the store emits the `token_exchange` rate-limit signal); a store
+  // failure answers the sanitized 500, both before any credential lookup.
   if (options.tokenExchangeRateLimit !== undefined) {
-    const check = app.createRateLimit({
-      max: options.tokenExchangeRateLimit.max,
-      timeWindow: options.tokenExchangeRateLimit.timeWindowMs,
-      // Internal bucket key only: never logged or returned.
-      keyGenerator: (request: FastifyRequest): string => `token:${request.ip}`,
+    const tokenExchangeLimit = createAcceptRateLimitPreHandler({
+      scope: 'token_exchange',
+      store: createRateLimitBucketStore({
+        adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+          .adapter,
+        rules: {
+          token_exchange: {
+            max: options.tokenExchangeRateLimit.max,
+            window: options.tokenExchangeRateLimit.timeWindowMs / 1000,
+          },
+        },
+      }),
     });
-    app.addHook('preHandler', async (request, reply) => {
+    app.addHook('preHandler', async function (request, reply) {
       if (!isTokenExchange(request)) {
-        return;
+        return undefined;
       }
-      const result = await check(request);
-      if (!result.isAllowed && result.isExceeded) {
-        emitRateLimited('token_exchange');
-        return reply.status(429).header('retry-after', result.ttlInSeconds).send(limited.toJSON());
-      }
-      return undefined;
+      return tokenExchangeLimit.call(this, request, reply);
     });
   }
 

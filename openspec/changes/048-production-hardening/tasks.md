@@ -260,7 +260,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 7. Shared limits and the atomic back-channel replay guard (D10, F6)
 
-- [ ] 7.1 Token exchange consumes the shared `token_exchange` address bucket (design D7).
+- [x] 7.1 Token exchange consumes the shared `token_exchange` address bucket (design D7).
       Verify: `apps/api/src/token-exchange-rate-limit.int.test.ts` covers "The token-exchange
       budget is shared across replicas" (two `createApp` instances over one database) and
       "Machine token exchange is rate-limited independently of the authenticated bucket", with
