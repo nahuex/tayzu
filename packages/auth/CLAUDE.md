@@ -56,7 +56,8 @@ changes `043` and `044`: the reset token (`reset-token.ts`,
   `/reset-password`) stay off the allowlist: the reset is Tayzu's, in
   `apps/api` (044 D1). The re-enrolment marker `mfa-reenrol:<userId>` confines
   a session to enrolment through `hooks.before` and `resolveContext` (044 D11).
-- Secrets (`BETTER_AUTH_SECRET`, the `jwt` signing key, DB role passwords)
+- Secrets (`BETTER_AUTH_SECRETS`, the versioned list `createAuth` passes to
+  Better Auth explicitly, the `jwt` signing key, DB role passwords)
   come from the environment only, Key-Vault-referenced in the Azure Container
   Apps deployment. Never log or print them.
 

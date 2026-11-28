@@ -161,7 +161,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `apps/api/src/script-config.test.ts` covers `bootstrap-admin` declaring and parsing
       `BETTER_AUTH_SECRETS`, every other script declaring neither name, a script refusing a set
       `BETTER_AUTH_SECRET`, and "The command holds no signing key" for `recover-admin-mfa`.
-- [ ] 4.5 _(setup)_ Docs: `docs/security/secrets.md` replaces the `BETTER_AUTH_SECRET` row
+- [x] 4.5 _(setup)_ Docs: `docs/security/secrets.md` replaces the `BETTER_AUTH_SECRET` row
       with `BETTER_AUTH_SECRETS` and its rotation runbook (prepend a version, keep the old one
       until no data needs it, the manual JWKS rotation steps checked against the installed
       `jwt` plugin, and the plain statement that a rotation signs every session out), and
