@@ -72,9 +72,10 @@ const MAX_NESTING_DEPTH = 32;
 
 /**
  * Copies a value into null-prototype objects, rejecting forbidden keys at every depth and
- * any container nested deeper than `MAX_NESTING_DEPTH`, before recursing into it.
+ * any container nested deeper than `MAX_NESTING_DEPTH`, before recursing into it. Exported
+ * for the other untrusted JSON bodies of the API (the CSP report route, 048 design D9).
  */
-function cloneScreened(value: unknown, depth = 0): unknown {
+export function cloneScreened(value: unknown, depth = 0): unknown {
   const isArray = Array.isArray(value);
   if (!isArray && !isPlainRecord(value)) return value;
   if (depth >= MAX_NESTING_DEPTH) throw new IdentityInputError();

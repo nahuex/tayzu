@@ -322,7 +322,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       "The app page carries the policy", "API responses carry the policy too" and "The policy
       reports violations to the app's own origin" with the new exact policy and the
       `Reporting-Endpoints` header on HTML, JSON, asset and `404` responses.
-- [ ] 8.3 A report is reduced to its directive (design D9). Verify:
+- [x] 8.3 A report is reduced to its directive (design D9). Verify:
       `apps/api/src/csp-report.test.ts` covers the parse and the mapping: `csp-report` with
       `effective-directive` and with only `violated-directive`, a `reports+json` array (only
       `csp-violation` entries, at most 20), the level-3 sub-directives, "An unknown directive is
