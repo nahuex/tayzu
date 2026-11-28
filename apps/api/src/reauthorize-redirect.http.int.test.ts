@@ -265,7 +265,8 @@ describe('The callback redirect is fixed (task 3.10, design D11, Q14): with a bu
     async (method) => {
       const { code, state, cookie } = await drive.approvedReauthorization();
 
-      const response = await drive.callback(method, { code, state });
+      // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
+      const response = await drive.callback(method, { code, state }, { headers: { cookie } });
 
       expectFixedRedirect(response, COMPLETE);
       await drive.expectStepUpSatisfied(cookie);
@@ -289,10 +290,15 @@ describe('The callback redirect is fixed (task 3.10, design D11, Q14): with a bu
   it.each(['GET', 'POST'] as const)(
     'a callback whose token exchange fails answers 303 to /step-up/complete?result=failed (%s)',
     async (method) => {
-      const { state } = await drive.approvedReauthorization();
+      const { state, cookie } = await drive.approvedReauthorization();
 
       // A real, unconsumed state, but a code the stub never issued: the exchange fails.
-      const response = await drive.callback(method, { code: `not-issued-${randomUUID()}`, state });
+      // 048 task 6.3 (design D6): the initiating cookie, so the failure is the exchange's.
+      const response = await drive.callback(
+        method,
+        { code: `not-issued-${randomUUID()}`, state },
+        { headers: { cookie } },
+      );
 
       expectFixedRedirect(response, FAILED);
     },
@@ -313,12 +319,13 @@ describe('The callback redirect is fixed (task 3.10, design D11, Q14): with a bu
   it.each(['GET', 'POST'] as const)(
     'a successful callback carrying redirect, returnTo and a Host value still answers the fixed path (%s)',
     async (method) => {
-      const { code, state } = await drive.approvedReauthorization();
+      const { code, state, cookie } = await drive.approvedReauthorization();
 
+      // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
       const response = await drive.callback(
         method,
         { code, state, ...ATTACKER_PARAMS },
-        { headers: ATTACKER_HEADERS },
+        { headers: { ...ATTACKER_HEADERS, cookie } },
       );
 
       expectFixedRedirect(response, COMPLETE);
@@ -369,7 +376,8 @@ describe('Without the web app the callback answers are unchanged (task 3.10, des
     async (method) => {
       const { code, state, cookie } = await drive.approvedReauthorization();
 
-      const response = await drive.callback(method, { code, state });
+      // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
+      const response = await drive.callback(method, { code, state }, { headers: { cookie } });
 
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toEqual({});
@@ -397,9 +405,14 @@ describe('Without the web app the callback answers are unchanged (task 3.10, des
   it.each(['GET', 'POST'] as const)(
     'a callback whose token exchange fails answers the 400 body with no Location (%s)',
     async (method) => {
-      const { state } = await drive.approvedReauthorization();
+      const { state, cookie } = await drive.approvedReauthorization();
 
-      const response = await drive.callback(method, { code: `not-issued-${randomUUID()}`, state });
+      // 048 task 6.3 (design D6): the initiating cookie, so the failure is the exchange's.
+      const response = await drive.callback(
+        method,
+        { code: `not-issued-${randomUUID()}`, state },
+        { headers: { cookie } },
+      );
 
       expect(response.statusCode, response.body).toBe(400);
       expect(response.json()).toEqual({ defined: false, code: 'BAD_REQUEST', status: 400 });

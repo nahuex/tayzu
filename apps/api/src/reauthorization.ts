@@ -8,15 +8,17 @@
  * (048 design D6: the stored binding also holds the nonce). `complete` exchanges the callback's code and stores
  * the returned ID token under the session; `lookup` hands it to the step-up
  * guard, which validates `auth_time`, `acr`, `amr` and `sid` server-side (D25).
- * The callback never needs the cookie: the single-use, unguessable `state` is
- * the binding. Nothing from the provider or the token reaches logs or errors.
+ * The callback is bound to the browser (048 design D6): after the single-use
+ * `state` is consumed, the request's session cookie must resolve to the bound
+ * session, or the callback fails as `session_mismatch`. Nothing from the
+ * provider or the token reaches logs or errors.
  *
  * 003 design D11 (Q27 B2, Q29): a completed callback emits
  * `auth.security.step_up_succeeded` (`visma_connect`) for the bound session's
  * tenant and actor; a failed one emits `auth.security.reauthorization_failed`
  * with only its reason.
  */
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { emitReauthorizationFailed, emitStepUpSucceeded, type AuthInstance } from '@tayzu/auth';
 import type { createPool } from '@tayzu/db';
@@ -77,8 +79,14 @@ export interface Reauthorization {
   start(headers: Headers): Promise<string | null>;
   /** The stored ID token for the caller's session, if a callback recorded one still in date. */
   lookup(headers: Headers): Promise<{ readonly idToken: string } | null>;
-  /** Handles the callback; resolves `true` when an ID token was stored for the bound session. */
-  complete(params: { readonly code?: unknown; readonly state?: unknown }): Promise<boolean>;
+  /**
+   * Handles the callback; resolves `true` when an ID token was stored for the bound session.
+   * `headers` are the callback request's: its session cookie must be the bound session's.
+   */
+  complete(
+    params: { readonly code?: unknown; readonly state?: unknown },
+    headers: Headers,
+  ): Promise<boolean>;
 }
 
 /** The stored value of a consumed state row; `null` when absent or not the shape `start` wrote. */
@@ -96,6 +104,12 @@ function parseBinding(raw: string | undefined): StateBinding | null {
   } catch {
     return null;
   }
+}
+
+/** Constant-time equality over SHA-256 digests, so unequal lengths leak nothing (048 design D6). */
+function sameToken(a: string, b: string): boolean {
+  const digest = (value: string): Buffer => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(a), digest(b));
 }
 
 async function fetchDiscovery(url: string): Promise<Discovery | null> {
@@ -236,7 +250,7 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       return idToken === undefined ? null : { idToken };
     },
 
-    async complete(params) {
+    async complete(params, headers) {
       if (typeof params.code !== 'string' || typeof params.state !== 'string') {
         emitReauthorizationFailed('invalid_state');
         return false;
@@ -249,8 +263,19 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
         [`${STATE_PREFIX}${params.state}`],
       );
       const binding = parseBinding(consumed.rows[0]?.value);
-      const session = binding === null ? null : await boundSession(binding.token);
-      if (binding === null || session === null) {
+      if (binding === null) {
+        emitReauthorizationFailed('invalid_state');
+        return false;
+      }
+      // 048 design D6: after the consume, so a callback replayed into another browser burns
+      // the state. No cookie, an invalid one or another session's is a mismatch.
+      const cookieToken = await ssoSession(headers);
+      if (cookieToken === null || !sameToken(cookieToken, binding.token)) {
+        emitReauthorizationFailed('session_mismatch');
+        return false;
+      }
+      const session = await boundSession(binding.token);
+      if (session === null) {
         emitReauthorizationFailed('invalid_state');
         return false;
       }

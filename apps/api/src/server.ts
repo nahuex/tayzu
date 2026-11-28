@@ -997,7 +997,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
 
   // Q36: the re-authorization callback (query redirect or `form_post`). The
-  // single-use `state` binds it to the session; it answers a bare 200 or 400, or, with
+  // single-use `state` and the session cookie (048 D6) bind it to the session; it answers a bare 200 or 400, or, with
   // the web app served (003 D11), a `303` to one of the fixed step-up locations.
   // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
   const redirectToWebApp = options.webDistDir !== undefined;
@@ -1034,9 +1034,13 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     );
     const handle = async (
       params: { code?: unknown; state?: unknown },
+      request: FastifyRequest,
       reply: FastifyReply,
     ): Promise<unknown> => {
-      const ok = reauthorization !== undefined && (await reauthorization.complete(params));
+      // 048 design D6: the callback's session cookie must be the bound session's.
+      const ok =
+        reauthorization !== undefined &&
+        (await reauthorization.complete(params, toWebHeaders(request)));
       if (redirectToWebApp) {
         return seeOther(reply, ok ? STEP_UP_COMPLETE_LOCATION : STEP_UP_FAILED_LOCATION);
       }
@@ -1046,11 +1050,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     };
     scope.get(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const query = request.query as Record<string, unknown>;
-      return handle({ code: query['code'], state: query['state'] }, reply);
+      return handle({ code: query['code'], state: query['state'] }, request, reply);
     });
     scope.post(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const body = request.body as Record<string, unknown> | undefined;
-      return handle({ code: body?.['code'], state: body?.['state'] }, reply);
+      return handle({ code: body?.['code'], state: body?.['state'] }, request, reply);
     });
     done();
   });

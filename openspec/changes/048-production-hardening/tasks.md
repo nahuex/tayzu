@@ -232,7 +232,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       is bound to the browser" (the URL's `nonce` is 43 base64url characters and differs per
       start, `response_mode=query` is present, the stored binding keeps the token as its first
       key so the pending-per-session bound still holds).
-- [ ] 6.3 The callback requires and matches the session cookie (design D6). Verify:
+- [x] 6.3 The callback requires and matches the session cookie (design D6). Verify:
       `apps/api/src/step-up-sso-http.int.test.ts` covers "A callback in another browser stores
       nothing" (no cookie and another session's cookie, each logging
       `auth.security.reauthorization_failed` with `session_mismatch`, the 303 to the failure

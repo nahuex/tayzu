@@ -2091,10 +2091,14 @@ describe('An admin invitation to an existing account needs step-up (task 8.5d, d
     if (location === null) throw new Error('the OIDC stub must redirect with the code');
     const callback = new URL(location, REDIRECT_URI);
     expect(
-      await reauthorization.complete({
-        code: callback.searchParams.get('code'),
-        state: callback.searchParams.get('state'),
-      }),
+      // 048 task 6.3 (design D6): the callback carries the initiating session's cookie.
+      await reauthorization.complete(
+        {
+          code: callback.searchParams.get('code'),
+          state: callback.searchParams.get('state'),
+        },
+        carol.headers,
+      ),
       'the callback stored the result',
     ).toBe(true);
 

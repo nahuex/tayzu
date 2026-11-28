@@ -54,7 +54,11 @@
  *   left open: the tests only observe the retried `DELETE`.
  * - No Cerbos policy change and no migration.
  */
+// Load-bearing import order (design D1): the telemetry harness registers before anything that
+// loads `@tayzu/auth` creates its logger (048 task 6.3 reads `auth.security.reauthorization_failed`).
+import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
 import { randomInt, randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -530,4 +534,354 @@ describe('SSO step-up callback URL base (task 25.5, design Q64 and Q36)', () => 
     expect(parsed.origin).toBe(ORIGIN);
     expect(parsed.pathname).toBe(CALLBACK_PATH);
   }, 60_000);
+});
+
+/**
+ * 048 task 6.3 (design D6, Resolved decision Q7; `specs/auth-and-rbac/spec.md` of the change,
+ * requirement "Step-up authentication for high-risk operations").
+ *
+ * Scenario "A callback in another browser stores nothing" (verbatim):
+ * - **GIVEN** a re-authorization started by session `A`
+ * - **WHEN** its callback arrives with no session cookie, or with the cookie of session `B`
+ * - **THEN** no result is stored for either session, the failure is logged with the reason
+ *   `session_mismatch`, and the answer is the same as for any failed callback
+ *
+ * D6, the order inside `complete`: (2) the single-use consume of the state row, then (3) the
+ * session token of the request's cookie compared with the bound token; no cookie or a different
+ * session is `session_mismatch` (WARN, the same 303 to `STEP_UP_FAILED_LOCATION`, or `400`
+ * without the web app). "Consuming the state before the cookie check is deliberate: ... a state
+ * is never usable twice", so a replay of the same callback with `A`'s cookie fails as
+ * `invalid_state`. Task 6.3 adds: the matching cookie still completes.
+ *
+ * ## Harness
+ *
+ * Two apps from `createAppFromEnv` over the harness pools and the local OIDC stub: one with
+ * `WEB_DIST_DIR` set to the committed fixture `__fixtures__/web-dist/` (read only), one without.
+ * Session `B` is a second org owner whose session was also established through Visma Connect, so
+ * its cookie is a valid SSO session cookie, only not the bound one. The stub's subject carries
+ * qualifying, fresh claims and `A`'s `sid`, so a result stored for `A` would satisfy the guard:
+ * "stores nothing" is observed both in `auth.verification` and through `A`'s next high-risk call.
+ * Log records come from the registered telemetry harness, counted before each callback (the
+ * tests of a file run in sequence).
+ *
+ * ## Production symbols expected (the red phase)
+ *
+ * - `complete` (`apps/api/src/reauthorization.ts`) receives the callback's headers and reads the
+ *   session cookie with `ssoSession(headers)`; the callback route in `server.ts` passes them.
+ * - `auth.security.reauthorization_failed` carries `tayzu.auth.reauthorization.reason`
+ *   `session_mismatch` (declared by task 6.1).
+ */
+describe('A callback in another browser stores nothing (048 task 6.3, design D6, Q7)', () => {
+  const CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
+  const COMPLETE = '/step-up/complete';
+  const FAILED = '/step-up/complete?result=failed';
+  const REAUTH_FAILED = 'auth.security.reauthorization_failed';
+  const REASON = 'tayzu.auth.reauthorization.reason';
+  const RESULT_PREFIX = 'sso-reauth-result:';
+  const SEVERITY_WARN = 13;
+  const FIXTURE_WEB_DIST = fileURLToPath(new URL('./__fixtures__/web-dist/', import.meta.url));
+
+  type Injected = Awaited<ReturnType<App['app']['inject']>>;
+  type Variant = 'web' | 'api';
+
+  const VARIANTS: readonly { readonly variant: Variant; readonly label: string }[] = [
+    { variant: 'web', label: 'with the web app (WEB_DIST_DIR set): 303 to the failure location' },
+    { variant: 'api', label: 'without the web app: 400' },
+  ];
+
+  let harness: TelemetryTestHarness;
+  let stub: OidcStub;
+  let authPool: Awaited<ReturnType<typeof harnessPools>>['authPool'];
+  const apps = new Map<Variant, App>();
+
+  beforeAll(async () => {
+    if ('error' in registration) {
+      throw new Error(
+        `the telemetry test harness failed to register: ${String(registration.error)}`,
+        { cause: registration.error },
+      );
+    }
+    harness = registration.harness;
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    state.pools.set('app', pools.appPool);
+    state.pools.set('auth', pools.authPool);
+    stub = await startOidcStub();
+    const env = {
+      DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
+      CERBOS_ADDRESS: 'localhost:3593',
+      ALLOWED_ORIGINS: ORIGIN,
+      VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,
+      VISMA_CONNECT_CLIENT_ID: stub.clientId,
+      VISMA_CONNECT_CLIENT_SECRET: stub.clientSecret,
+    };
+    apps.set('web', await createAppFromEnv({ ...env, WEB_DIST_DIR: FIXTURE_WEB_DIST }));
+    apps.set('api', await createAppFromEnv(env));
+  }, 60_000);
+
+  afterAll(async () => {
+    for (const app of apps.values()) {
+      await app.close();
+    }
+    apps.clear();
+    await stub.close();
+    state.pools.clear();
+  }, 60_000);
+
+  function appFor(variant: Variant): App {
+    const app = apps.get(variant);
+    if (app === undefined) {
+      throw new Error(`the ${variant} app was not built`);
+    }
+    return app;
+  }
+
+  interface SsoUser {
+    readonly cookie: string;
+    readonly sid: string;
+    readonly userId: string;
+  }
+
+  /** An org owner whose current session was established through Visma Connect (`sso_sid` set). */
+  async function ssoSessionUser(app: App): Promise<SsoUser> {
+    const tenant = await bootstrapTestTenant(app.auth, {
+      pool: testAppPool(),
+      name: 'Sso Callback Binding User',
+      email: `sso-callback-binding-${randomUUID()}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Sso Callback Binding Org',
+      organizationSlug: `sso-callback-binding-${randomUUID()}`,
+      ip: randomIp(),
+    });
+    const totpSecret = await enrollTotp(app, {
+      password: TEST_PASSWORD,
+      enrollmentCookie: tenant.cookie,
+    });
+    const cookie = await signInWithTotp(app, {
+      email: tenant.email,
+      password: TEST_PASSWORD,
+      secret: totpSecret,
+      origin: ORIGIN,
+    });
+    const sid = `sid-${randomUUID()}`;
+    await authPool.query('update auth.session set sso_sid = $1 where user_id = $2', [
+      sid,
+      tenant.userId,
+    ]);
+    return { cookie, sid, userId: tenant.userId };
+  }
+
+  /** Qualifying, fresh claims for `user`'s `sid`: a result stored for that session satisfies step-up. */
+  function qualifyingSubject(user: SsoUser): void {
+    stub.setSubject({
+      sub: `sso-callback-binding-sub-${randomUUID()}`,
+      sid: user.sid,
+      claims: { auth_time: Math.floor(Date.now() / 1000) - 10, acr: 3, amr: ['pwd', 'otp'] },
+    });
+  }
+
+  function highRiskCall(app: App, cookie: string, identifier: string): Promise<Injected> {
+    return app.app.inject({
+      method: 'DELETE',
+      url: `/v1/blueprints/${identifier}`,
+      headers: {
+        cookie,
+        origin: ORIGIN,
+        'x-forwarded-for': randomIp(),
+        ...csrfHeaders('DELETE'),
+      },
+    });
+  }
+
+  /** Session `A` starts a re-authorization; the step-up interceptor runs before the operation. */
+  async function start(app: App, cookie: string): Promise<URL> {
+    const refused = await highRiskCall(app, cookie, `no-such-${randomUUID().slice(0, 8)}`);
+    expect(refused.statusCode, refused.body).toBe(403);
+    const body = refused.json<{ code?: unknown; data?: { reauthorizationUrl?: unknown } }>();
+    expect(body.code).toBe('AUTH_STEP_UP_REQUIRED');
+    const raw = body.data?.reauthorizationUrl;
+    if (typeof raw !== 'string') {
+      throw new Error('the step-up refusal must carry data.reauthorizationUrl');
+    }
+    return new URL(raw);
+  }
+
+  /** The stub approves the request and redirects the browser to the callback (`response_mode=query`). */
+  async function approve(url: URL): Promise<string> {
+    const approval = await fetch(url, { redirect: 'manual' });
+    const location = approval.headers.get('location');
+    expect(approval.status, 'the stub answers response_mode=query with a redirect').toBe(302);
+    const target = new URL(location ?? '', ORIGIN);
+    expect(target.pathname).toBe(CALLBACK_PATH);
+    expect(target.searchParams.get('code'), 'the redirect carries a code').not.toBeNull();
+    expect(target.searchParams.get('state'), 'the redirect carries the state').toBe(
+      url.searchParams.get('state'),
+    );
+    return `${target.pathname}${target.search}`;
+  }
+
+  /** The browser lands on the callback, with `cookie` when it holds one. */
+  function callback(app: App, path: string, cookie: string | undefined): Promise<Injected> {
+    return app.app.inject({
+      method: 'GET',
+      url: path,
+      headers: {
+        'x-forwarded-for': randomIp(),
+        host: 'localhost:3000',
+        ...(cookie === undefined ? {} : { cookie }),
+      },
+    });
+  }
+
+  /** The answer of a failed callback: the 303 to the failure location, or the `400` without the web app. */
+  function expectFailedAnswer(variant: Variant, response: Injected): void {
+    if (variant === 'web') {
+      expect(response.statusCode, response.body).toBe(303);
+      expect(response.headers.location).toBe(FAILED);
+    } else {
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json()).toEqual({ defined: false, code: 'BAD_REQUEST', status: 400 });
+    }
+  }
+
+  async function failureRecordCount(): Promise<number> {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()].filter(
+      (record) => record.eventName === REAUTH_FAILED,
+    ).length;
+  }
+
+  async function failureRecordsSince(before: number) {
+    await harness.forceFlush();
+    return [...harness.logExporter.getFinishedLogRecords()]
+      .filter((record) => record.eventName === REAUTH_FAILED)
+      .slice(before);
+  }
+
+  /** Exactly one `reauthorization_failed` record since `before`, WARN, carrying only `reason`. */
+  async function expectOneFailure(before: number, reason: string): Promise<void> {
+    const records = await failureRecordsSince(before);
+    expect(
+      records.map((record) => record.attributes[REASON]),
+      `one "${REAUTH_FAILED}" record with reason ${reason}`,
+    ).toEqual([reason]);
+    for (const record of records) {
+      expect(record.instrumentationScope.name).toBe('@tayzu/auth');
+      expect(record.severityNumber, `${REAUTH_FAILED} is WARN`).toBe(SEVERITY_WARN);
+      expect(Object.keys(record.attributes), 'only the reason, no tenant').toEqual([REASON]);
+    }
+  }
+
+  /** `sso-reauth-result:` rows stored for any session of the given users. */
+  async function resultRows(userIds: readonly string[]): Promise<number> {
+    const found = await authPool.query<{ count: string }>(
+      `select count(*)::text as count from auth.verification v
+       join auth.session s on v.identifier = $1 || s.token
+       where s.user_id = any($2)`,
+      [RESULT_PREFIX, userIds],
+    );
+    return Number(found.rows[0]?.count);
+  }
+
+  /** The state row of the started re-authorization, still unconsumed. */
+  async function stateRows(url: URL): Promise<number> {
+    const found = await authPool.query<{ count: string }>(
+      `select count(*)::text as count from auth.verification
+       where identifier = $1 and expires_at > now()`,
+      [`sso-reauth-state:${url.searchParams.get('state') ?? ''}`],
+    );
+    return Number(found.rows[0]?.count);
+  }
+
+  /**
+   * The mismatched callback stores nothing, logs `session_mismatch`, answers like any failed
+   * callback and consumes the state: the replay with `A`'s own cookie fails as `invalid_state`.
+   */
+  async function expectMismatchStoresNothing(
+    variant: Variant,
+    sessionA: SsoUser,
+    callbackCookie: string | undefined,
+    otherUserIds: readonly string[],
+  ): Promise<void> {
+    const app = appFor(variant);
+    qualifyingSubject(sessionA);
+
+    // GIVEN a re-authorization started by session A
+    const started = await start(app, sessionA.cookie);
+    const path = await approve(started);
+    expect(await stateRows(started), 'precondition: the state is pending').toBe(1);
+
+    // WHEN its callback arrives with no session cookie, or with the cookie of session B
+    const before = await failureRecordCount();
+    const response = await callback(app, path, callbackCookie);
+
+    // THEN the answer is the same as for any failed callback
+    expectFailedAnswer(variant, response);
+    // AND the failure is logged with the reason session_mismatch
+    await expectOneFailure(before, 'session_mismatch');
+    // AND no result is stored for either session
+    expect(
+      await resultRows([sessionA.userId, ...otherUserIds]),
+      'no sso-reauth-result row for A or B',
+    ).toBe(0);
+    // AND the state is consumed (D6: the consume runs before the cookie check)
+    expect(await stateRows(started), 'the state row is consumed').toBe(0);
+
+    // AND a replay of the same callback with A's own cookie fails as invalid_state
+    const beforeReplay = await failureRecordCount();
+    const replay = await callback(app, path, sessionA.cookie);
+    expectFailedAnswer(variant, replay);
+    await expectOneFailure(beforeReplay, 'invalid_state');
+    expect(await resultRows([sessionA.userId, ...otherUserIds]), 'still nothing stored').toBe(0);
+
+    // AND A's next high-risk call still requires step-up
+    const next = await highRiskCall(app, sessionA.cookie, `no-such-${randomUUID().slice(0, 8)}`);
+    expect(next.statusCode, next.body).toBe(403);
+    expect(next.json<{ code?: unknown }>().code).toBe('AUTH_STEP_UP_REQUIRED');
+  }
+
+  for (const { variant, label } of VARIANTS) {
+    it(`A callback in another browser stores nothing: no session cookie, ${label}; the state is consumed`, async () => {
+      const app = appFor(variant);
+      const sessionA = await ssoSessionUser(app);
+
+      await expectMismatchStoresNothing(variant, sessionA, undefined, []);
+    }, 60_000);
+
+    it(`A callback in another browser stores nothing: the cookie of session B, ${label}; the state is consumed`, async () => {
+      const app = appFor(variant);
+      const sessionA = await ssoSessionUser(app);
+      const sessionB = await ssoSessionUser(app);
+
+      await expectMismatchStoresNothing(variant, sessionA, sessionB.cookie, [sessionB.userId]);
+    }, 60_000);
+
+    it(`A callback in another browser stores nothing: the matching cookie still completes, ${variant === 'web' ? 'with the web app (303 to the completion location)' : 'without the web app (200)'}`, async () => {
+      const app = appFor(variant);
+      const sessionA = await ssoSessionUser(app);
+      qualifyingSubject(sessionA);
+
+      const started = await start(app, sessionA.cookie);
+      const path = await approve(started);
+      const before = await failureRecordCount();
+      const response = await callback(app, path, sessionA.cookie);
+
+      if (variant === 'web') {
+        expect(response.statusCode, response.body).toBe(303);
+        expect(response.headers.location).toBe(COMPLETE);
+      } else {
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toEqual({});
+      }
+      expect(await failureRecordsSince(before), 'no reauthorization_failed record').toEqual([]);
+      expect(await resultRows([sessionA.userId]), 'the result is stored for session A').toBe(1);
+      expect(await stateRows(started), 'the state row is consumed').toBe(0);
+
+      // The next high-risk call is no longer refused for step-up (the blueprint does not exist).
+      const next = await highRiskCall(app, sessionA.cookie, `no-such-${randomUUID().slice(0, 8)}`);
+      expect(next.statusCode, next.body).toBe(404);
+    }, 60_000);
+  }
 });

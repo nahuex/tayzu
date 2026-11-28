@@ -13,8 +13,11 @@ import { logger } from './telemetry/instruments.js';
 /** The `tayzu.auth.method` value of a successful step-up. */
 export type StepUpMethod = 'local' | 'visma_connect';
 
-/** Why a re-authorization callback failed (`tayzu.auth.reauthorization.reason`). */
-export type ReauthorizationFailureReason = 'invalid_state' | 'exchange_failed';
+/**
+ * Why a re-authorization callback failed (`tayzu.auth.reauthorization.reason`);
+ * `session_mismatch` is a callback without the initiating session's cookie (048 design D6).
+ */
+export type ReauthorizationFailureReason = 'invalid_state' | 'exchange_failed' | 'session_mismatch';
 
 /** 002 design.md, Log events table (Q77): `auth.security.step_up_succeeded`. */
 export function emitStepUpSucceeded(params: {

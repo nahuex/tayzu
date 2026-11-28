@@ -1021,11 +1021,20 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     return new URL(raw);
   }
 
-  function callback(params: { readonly code: string; readonly state: string }) {
+  /**
+   * The browser lands on the callback; `cookie` is the initiating session's cookie, which the
+   * callback requires and matches against the bound session (048 task 6.3, design D6).
+   */
+  function callback(params: { readonly code: string; readonly state: string }, cookie?: string) {
     return app.app.inject({
       method: 'GET',
       url: `${CALLBACK_PATH}?${new URLSearchParams(params).toString()}`,
-      headers: { 'x-forwarded-for': randomIp(), host: 'localhost:3000', origin: ORIGIN },
+      headers: {
+        'x-forwarded-for': randomIp(),
+        host: 'localhost:3000',
+        origin: ORIGIN,
+        ...(cookie === undefined ? {} : { cookie }),
+      },
     });
   }
 
@@ -1085,7 +1094,7 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     expect(returned.pathname).toBe(CALLBACK_PATH);
     expect(returned.searchParams.get('state')).toBe(state);
     const code = returned.searchParams.get('code') ?? '';
-    const answered = await callback({ code, state });
+    const answered = await callback({ code, state }, user.cookie);
     expect(answered.statusCode, `the callback succeeds: ${answered.body}`).toBeLessThan(400);
     const stored = await authPool.query<{ value: string }>(
       'select value from auth.verification where identifier = $1',
@@ -1128,7 +1137,7 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     const state = url.searchParams.get('state') ?? '';
     expect(state, 'precondition: the authorization URL carries a state').not.toBe('');
     const code = `ReauthRejectedCodeMarker-${randomUUID()}`;
-    const answered = await callback({ code, state });
+    const answered = await callback({ code, state }, user.cookie);
     expect(answered.statusCode, answered.body).toBe(400);
     return {
       tenantId: user.tenant.organizationId,
