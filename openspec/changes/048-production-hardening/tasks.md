@@ -123,7 +123,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       origins is refused" (a different host, scheme or port refused, a path on an allowed
       origin accepted, the message naming both variables and no value); fixtures that set an
       unlisted origin are corrected by the test-writer.
-- [ ] 3.5 _(setup)_ Docs: `docs/security/secrets.md` lists `TRUST_PROXY_HOPS` and
+- [x] 3.5 _(setup)_ Docs: `docs/security/secrets.md` lists `TRUST_PROXY_HOPS` and
       `TRUST_PROXY_CIDRS` as non-secret configuration with the values `046` must set; the
       "Configurable `TRUST_PROXY` (Q58)" row (D3) of the Pending table of `attack-surfaces.md`
       is closed with a pointer to `046`'s verification, and the "Client address" row (`:97`)

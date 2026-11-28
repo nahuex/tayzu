@@ -73,6 +73,24 @@ variables of one row are both read, and a missing one takes the default.
 | `PASSWORD_RESET_MIN_RESPONSE_MS`                                     | 400               | Minimum response time of the reset request route (the confirm route is not padded), an integer from 1 to 5000. |
 | `BODY_LIMIT_BYTES`                                                   | 1,048,576         | Maximum request body.                                                                                          |
 
+### Proxy trust
+
+Settings, not secrets (`048` design D2, Resolved decision Q6). They decide
+which `X-Forwarded-For` values become the client address that keys every
+per-address limiter.
+
+| Variable            | Default (test only)                            | What it sets                                                                                                                                   |
+| ------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TRUST_PROXY_HOPS`  | the loopback, link-local and unique-local list | The number of proxy hops in front of the API, an integer from 1 to 5.                                                                          |
+| `TRUST_PROXY_CIDRS` | (as above)                                     | Comma-separated IPv4 or IPv6 blocks (or bare addresses) a trusted hop must come from. A hop outside them, or past the count, is never trusted. |
+
+Both are required outside `NODE_ENV=test`, and one without the other fails
+startup in every environment. `046` sets them for the deployed environment:
+the hop count of the Container Apps ingress (and of a WAF, if one is put in
+front of it) and the peer range of the environment's infrastructure subnet,
+verified in the sandbox. CI and the e2e and DAST stacks use one hop from
+loopback (`127.0.0.1/32,::1/128`).
+
 ### Migrations
 
 `db:migrate` (`packages/db/src/run-migrations.ts`) reads only

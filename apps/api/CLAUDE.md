@@ -105,6 +105,10 @@ orchestration described below. When code and design disagree, stop and ask.
   mutating route.
 - `@fastify/rate-limit` runs with `global: false`: a route opts in to its own
   bucket through `config.rateLimit`.
+- The client address (`request.ip`) is trusted only through `trustProxy`
+  built by `createTrustProxy` from `TRUST_PROXY_HOPS` and `TRUST_PROXY_CIDRS`
+  (`048` design D2): a hop counts only within the count and from a peer
+  inside the ranges. Never key a limiter on a raw `X-Forwarded-For` header.
 
 ## Tests
 
