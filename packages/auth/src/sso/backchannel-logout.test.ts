@@ -414,3 +414,139 @@ describe('back-channel logout key cache (048 task 7.6, design D8, Q25)', () => {
     expect(totalCalls(provider), 'no outbound call for a cheap failure').toBe(0);
   });
 });
+
+/**
+ * Task 7.7 of change `048-production-hardening` (design D8 "Lifetime bound", Resolved decision
+ * Q25: "`exp - iat` at most 300 seconds ... fixed in code"; `specs/auth-and-rbac/spec.md` of
+ * 048, requirement "Back-channel logout").
+ *
+ * Scenario covered verbatim:
+ *
+ * - "A long-lived logout token is rejected": WHEN a logout token whose `exp` is further from
+ *   its `iat` than the platform's bound is received, THEN it is rejected, its `jti` is not
+ *   recorded and no session is revoked.
+ *
+ * D8: "`exp - iat` greater than 300 seconds is rejected as `invalid`, before any fetch and
+ * before the `jti` is recorded". Here "rejected as `invalid`" is `verifyLogoutToken`
+ * resolving `null`; "before any fetch" is zero outbound calls with an empty cache, which
+ * stays empty (the next valid token still fetches discovery and the key set once each). The
+ * `jti`-not-recorded and no-revocation halves need the database and live in
+ * `apps/api/src/backchannel-logout.int.test.ts`. Exactly 300 seconds is the bound itself,
+ * not above it, so it is accepted.
+ *
+ * Every token here is validly signed by a published key and passes every other check at the
+ * current (fake) time, so the lifetime bound is the only reason to reject it.
+ */
+describe('back-channel logout token lifetime bound (048 task 7.7, design D8, Q25)', () => {
+  const MAX_LIFETIME_SECONDS = 300;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'], now: START_MS });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function nowSeconds(): number {
+    return Math.floor(Date.now() / 1000);
+  }
+
+  it('A long-lived logout token is rejected: exp - iat above 300 seconds resolves null before any discovery or JWKS fetch, and leaves the cache empty', async () => {
+    const now = nowSeconds();
+    // Each window contains the current time (iat <= now <= exp), so the iat/exp skew check
+    // alone would accept every one of them.
+    const longLived: Record<string, { iat: number; exp: number }> = {
+      'exp - iat = 301, issued now': { iat: now, exp: now + MAX_LIFETIME_SECONDS + 1 },
+      'exp - iat = 301, issued 200 s ago': { iat: now - 200, exp: now + 101 },
+      'exp - iat = 301, issued 300 s ago': { iat: now - 300, exp: now + 1 },
+      'exp - iat = 300.5': { iat: now, exp: now + MAX_LIFETIME_SECONDS + 0.5 },
+      'exp - iat = 600': { iat: now, exp: now + 600 },
+      'exp - iat = 3600': { iat: now - 60, exp: now + 3540 },
+      'exp - iat = one day': { iat: now, exp: now + 86_400 },
+      'exp - iat = one year': { iat: now, exp: now + 365 * 86_400 },
+    };
+
+    for (const [label, lifetime] of Object.entries(longLived)) {
+      // GIVEN no cached discovery document or key set, and a provider that is up and
+      // publishes the signing key ...
+      const provider = installProvider([keyA]);
+      const cache = createLogoutKeyCache({ ttlSeconds: TTL_SECONDS });
+
+      // WHEN a validly signed logout token whose lifetime exceeds the bound is received
+      const outcome = verifyLogoutToken(mintLogoutToken(keyA, lifetime), expected, cache);
+
+      // THEN it is rejected (the `invalid` outcome), without throwing ...
+      await expect(outcome, `${label}: rejected`).resolves.toBeNull();
+      // ... before any fetch ...
+      expect(provider.calls, `${label}: no discovery, JWKS or other outbound call`).toEqual({
+        discovery: 0,
+        jwks: 0,
+        other: 0,
+      });
+
+      // ... and the cache is still empty: the next token within the bound fetches discovery
+      // and the key set, once each, and is accepted.
+      expect(
+        await verifyLogoutToken(mintLogoutToken(keyA), expected, cache),
+        `${label}: a token within the bound is still accepted`,
+      ).not.toBeNull();
+      expect(provider.calls, `${label}: the cache was empty, one fetch of each`).toEqual({
+        discovery: 1,
+        jwks: 1,
+        other: 0,
+      });
+
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('A long-lived logout token is rejected even when the signing key is already cached', async () => {
+    const provider = installProvider([keyA]);
+    const cache = createLogoutKeyCache({ ttlSeconds: TTL_SECONDS });
+
+    // Warm the cache with a token within the bound.
+    expect(await verifyLogoutToken(mintLogoutToken(keyA), expected, cache)).not.toBeNull();
+    const callsBefore = totalCalls(provider);
+
+    const now = nowSeconds();
+    for (const lifetime of [MAX_LIFETIME_SECONDS + 1, 3600]) {
+      expect(
+        await verifyLogoutToken(
+          mintLogoutToken(keyA, { iat: now, exp: now + lifetime }),
+          expected,
+          cache,
+        ),
+        `exp - iat = ${String(lifetime)}: rejected with a known, cached key`,
+      ).toBeNull();
+    }
+    expect(totalCalls(provider) - callsBefore, 'no outbound call').toBe(0);
+  });
+
+  it('A logout token whose exp - iat is exactly 300 seconds is accepted (the bound itself)', async () => {
+    const now = nowSeconds();
+    const atTheBound: Record<string, { iat: number; exp: number }> = {
+      'issued now': { iat: now, exp: now + MAX_LIFETIME_SECONDS },
+      'issued 150 s ago': { iat: now - 150, exp: now + 150 },
+      'issued 299 s ago': { iat: now - 299, exp: now + 1 },
+    };
+
+    for (const [label, lifetime] of Object.entries(atTheBound)) {
+      const provider = installProvider([keyA]);
+      const cache = createLogoutKeyCache({ ttlSeconds: TTL_SECONDS });
+
+      const verified = await verifyLogoutToken(mintLogoutToken(keyA, lifetime), expected, cache);
+
+      expect(verified, `${label}: exp - iat = 300 is accepted`).not.toBeNull();
+      expect(verified?.exp, `${label}: the verified exp is the token's`).toBe(lifetime.exp);
+      expect(provider.calls, `${label}: the signature was checked against fetched keys`).toEqual({
+        discovery: 1,
+        jwks: 1,
+        other: 0,
+      });
+
+      vi.unstubAllGlobals();
+    }
+  });
+});

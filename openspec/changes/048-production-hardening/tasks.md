@@ -297,7 +297,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       D8, Q25). Verify: `packages/auth/src/sso/backchannel-logout.test.ts` covers one fetch for
       several tokens within the TTL, a refetch after it, at most one unknown-`kid` refresh per
       60 seconds, an expired copy never used, and "Unavailable signing keys fail closed".
-- [ ] 7.7 `exp - iat` above 300 seconds is rejected (design D8, Q25). Verify:
+- [x] 7.7 `exp - iat` above 300 seconds is rejected (design D8, Q25). Verify:
       `packages/auth/src/sso/backchannel-logout.test.ts` covers "A long-lived logout token is
       rejected" before any fetch, and `apps/api/src/backchannel-logout.int.test.ts` shows its
       `jti` unrecorded.

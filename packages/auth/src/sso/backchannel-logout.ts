@@ -3,11 +3,11 @@
  * logout endpoint (task 22.1, design D26).
  *
  * Checks run in order and fail closed at the first failing one: `typ`, `iss`,
- * `aud`, `iat`/`exp` (+-30s skew), `events`, no `nonce`, `sid` or `sub` present,
- * then the signature last (RS256, key named by `kid` in the discovered JWKS,
- * `node:crypto` only), so only a token passing every cheap check causes an
- * outbound discovery or JWKS fetch (task 13.11 of 043). Any
- * failure resolves `null`; nothing from the token or the provider reaches
+ * `aud`, `iat`/`exp` (+-30s skew, `exp - iat` at most 300 seconds), `events`,
+ * no `nonce`, `sid` or `sub` present, then the signature last (RS256, key named
+ * by `kid` in the discovered JWKS, `node:crypto` only), so only a token passing
+ * every cheap check causes an outbound discovery or JWKS fetch (task 13.11 of
+ * 043). Any failure resolves `null`; nothing from the token or the provider reaches
  * logs, spans or errors.
  *
  * The discovery document and the key set come from a `LogoutKeyCache` (048
@@ -20,6 +20,8 @@ import { createPublicKey, createVerify, type JsonWebKey } from 'node:crypto';
 const LOGOUT_TOKEN_TYP = 'logout+jwt';
 const LOGOUT_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
 const LOGOUT_SKEW_SECONDS = 30;
+/** Longest accepted `exp - iat`; a longer-lived token is rejected (048 design D8, Q25). */
+const MAX_LOGOUT_TOKEN_LIFETIME_SECONDS = 300;
 const DISCOVERY_TIMEOUT_MS = 5_000;
 /** At most one key-set refresh for an unknown `kid` per this window (Q25). */
 const UNKNOWN_KID_REFRESH_INTERVAL_MS = 60_000;
@@ -215,14 +217,15 @@ export async function verifyLogoutToken(
     if (claims['iss'] !== expected.issuer || !audienceMatches(claims['aud'], expected.clientId)) {
       return null;
     }
-    // 3. `iat` / `exp` with the skew allowance.
+    // 3. `iat` / `exp` with the skew allowance, and a bounded lifetime.
     const { iat, exp } = claims;
     const now = Math.floor(Date.now() / 1000);
     if (
       typeof iat !== 'number' ||
       typeof exp !== 'number' ||
       iat - LOGOUT_SKEW_SECONDS > now ||
-      exp + LOGOUT_SKEW_SECONDS < now
+      exp + LOGOUT_SKEW_SECONDS < now ||
+      exp - iat > MAX_LOGOUT_TOKEN_LIFETIME_SECONDS
     ) {
       return null;
     }

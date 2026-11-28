@@ -593,6 +593,101 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
   }, 60_000);
 
   /**
+   * Task 7.7 of 048 (design D8 "Lifetime bound", Resolved decision Q25;
+   * `specs/auth-and-rbac/spec.md` of 048, requirement "Back-channel logout"), scenario "A
+   * long-lived logout token is rejected": WHEN a logout token whose `exp` is further from its
+   * `iat` than the platform's bound is received, THEN it is rejected, its `jti` is not
+   * recorded and no session is revoked.
+   *
+   * Production symbols expected: `verifyLogoutToken` (`@tayzu/auth`,
+   * `sso/backchannel-logout.ts`) resolves `null` when `exp - iat` is greater than 300 seconds
+   * (D8: "rejected as `invalid`, before any fetch and before the `jti` is recorded"), so the
+   * route answers the same 200 as every other outcome, emits the `invalid` outcome, writes no
+   * `backchannel-logout:{aud}:{jti}` row and deletes no session. `logoutClaims` mints
+   * `exp - iat = 300`, the bound itself, which every other test here shows is accepted.
+   */
+  it('A long-lived logout token is rejected: its jti is not recorded, no session is revoked, and it answers the same 200 as every other outcome', async () => {
+    const harness = harnessOrThrow();
+    const sid = `sid-${randomUUID()}`;
+    const userId = await ssoSession(sid);
+    const before = await sessionCount(userId);
+    expect(before, 'the SSO session exists before the logout attempt').toBeGreaterThan(0);
+
+    // A control token within the bound, naming a session that does not exist (`no_match`).
+    const noMatch = await postLogout(
+      stub.signJwt(logoutClaims(`sid-missing-${randomUUID()}`), { typ: 'logout+jwt' }),
+    );
+    expect(noMatch.statusCode).toBe(200);
+
+    // Validly signed `logout+jwt`s naming the real session's sid, passing every other check
+    // (the current time is inside each window), whose lifetime exceeds 300 seconds.
+    const now = Math.floor(Date.now() / 1000);
+    const longLived: Record<string, { iat: number; exp: number }> = {
+      'exp - iat = 301': { iat: now, exp: now + 301 },
+      'exp - iat = 301, issued 200 s ago': { iat: now - 200, exp: now + 101 },
+      'exp - iat = one day': { iat: now, exp: now + 86_400 },
+    };
+
+    for (const [label, lifetime] of Object.entries(longLived)) {
+      const claims: Record<string, unknown> = { ...logoutClaims(sid), ...lifetime };
+      const identifier = `backchannel-logout:${stub.clientId}:${String(claims['jti'])}`;
+
+      await harness.reset();
+      const response = await postLogout(stub.signJwt(claims, { typ: 'logout+jwt' }));
+      await harness.forceFlush();
+
+      // It answers exactly like every other outcome ...
+      expect(response.statusCode, `${label}: answers 200`).toBe(200);
+      expect(response.body, `${label}: same body`).toBe(noMatch.body);
+      expect(response.headers['content-type'], `${label}: same content type`).toBe(
+        noMatch.headers['content-type'],
+      );
+
+      // ... its jti is not recorded ...
+      const recorded = await authPool.query(
+        'select 1 from auth.verification where identifier = $1',
+        [identifier],
+      );
+      expect(recorded.rows, `${label}: no replay record for its jti`).toHaveLength(0);
+
+      // ... no session is revoked ...
+      expect(await sessionCount(userId), `${label}: the session survives`).toBe(before);
+
+      // ... and it is rejected as `invalid`.
+      const outcomes = harness.spanExporter
+        .getFinishedSpans()
+        .filter((span) => span.name === SPAN_NAME)
+        .map((span) => span.attributes[OUTCOME_ATTRIBUTE]);
+      expect(outcomes, `${label}: rejected as invalid`).toEqual(['invalid']);
+    }
+
+    // The long-lived token consumed nothing: the same jti in a token within the bound is
+    // processed and revokes the session.
+    const lastClaims: Record<string, unknown> = { ...logoutClaims(sid), iat: now, exp: now + 3600 };
+    const jti = String(lastClaims['jti']);
+    const identifier = `backchannel-logout:${stub.clientId}:${jti}`;
+    const refused = await postLogout(stub.signJwt(lastClaims, { typ: 'logout+jwt' }));
+    expect(refused.body).toBe(noMatch.body);
+    expect(
+      (await authPool.query('select 1 from auth.verification where identifier = $1', [identifier]))
+        .rows,
+      'the long-lived token did not consume its jti',
+    ).toHaveLength(0);
+    expect(await sessionCount(userId)).toBe(before);
+
+    const withinBound = { ...lastClaims, iat: now, exp: now + 300 };
+    const accepted = await postLogout(stub.signJwt(withinBound, { typ: 'logout+jwt' }));
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.body).toBe(noMatch.body);
+    expect(await sessionCount(userId), 'the same jti within the bound revokes').toBe(0);
+    expect(
+      (await authPool.query('select 1 from auth.verification where identifier = $1', [identifier]))
+        .rows,
+      'the token within the bound consumed the jti',
+    ).toHaveLength(1);
+  }, 60_000);
+
+  /**
    * Task 13.11 of 043 (`002` VCDM M14; spec scenario "A malformed logout token is
    * cheap to refuse"): a token failing a cheap claim check (no `sid` and `sub`,
    * wrong `typ`, `iss`, `aud`, expired, no `events` member, a `nonce`) is refused
