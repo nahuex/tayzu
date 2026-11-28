@@ -87,6 +87,12 @@ with `CREATEROLE` and `CREATE` on the database by `046`'s IaC; CI and the e2e
 and DAST scripts point it at the throwaway database's owner. Turborepo hashes
 only this variable for `db:migrate` (`turbo.json`).
 
+Before applying anything, the command checks `current_user` and refuses, with
+a fixed message that names no role, user or host, to run as any runtime role
+(`RUNTIME_DATABASE_ROLES` of `@tayzu/db`: `tayzu_app`, `tayzu_auth`,
+`tayzu_purge`, `tayzu_deletion_admin`), so pasting a runtime URL into the
+pipeline cannot run DDL as that role.
+
 The startup assertion that the runtime roles are not privileged is wired
 (task 25.3, Q62). Outside test, `createAppFromEnv` checks `current_user` of
 the `DATABASE_URL` and `AUTH_DATABASE_URL` pools and aborts with a fixed

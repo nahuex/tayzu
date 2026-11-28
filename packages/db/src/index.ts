@@ -20,6 +20,19 @@ export {
   type WithTenantTransactionOptions,
 } from './tenant-tx.js';
 
+/**
+ * The runtime database roles: every login role the migrations create except
+ * the migration role, `tayzu_migrator` (048 design D1). `db:migrate` refuses
+ * to run as any of them. The list is hand-kept; a role added by a migration
+ * must be added here too.
+ */
+export const RUNTIME_DATABASE_ROLES: readonly string[] = Object.freeze([
+  'tayzu_app',
+  'tayzu_auth',
+  'tayzu_purge',
+  'tayzu_deletion_admin',
+]);
+
 const MIGRATIONS_FOLDER = fileURLToPath(new URL('../migrations', import.meta.url));
 
 /**

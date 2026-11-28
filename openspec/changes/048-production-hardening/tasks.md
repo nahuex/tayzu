@@ -76,7 +76,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       was given": `assertVerifiedTls` and `createPool` with `variable:
       'MIGRATION_DATABASE_URL'` name it, the default names `DATABASE_URL`, and no message holds
       the URL, the host or the user.
-- [ ] 2.3 The runner refuses a runtime role before migrating (design D1). Verify:
+- [x] 2.3 The runner refuses a runtime role before migrating (design D1). Verify:
       `packages/db/src/run-migrations.int.test.ts` covers "The migration command refuses a
       runtime role" for `tayzu_app`, `tayzu_auth`, `tayzu_purge` and `tayzu_deletion_admin`
       (the harness login roles), with the fixed message naming no role, user or host and no
