@@ -527,5 +527,7 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
   // `auth.security.step_up_succeeded`, recorded like the revocation reasons above.
   'tayzu.auth.method': ['visma_connect'],
   // 003 task 3.11 (Q29): the reason of 002's `auth.security.reauthorization_failed`.
-  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed'],
+  // 048 design D6 / Q7: `session_mismatch` (the callback arrives without the session that
+  // started the step-up). Kept equal to `./contract.js`'s `ATTRIBUTE_VALUES`.
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed', 'session_mismatch'],
 };

@@ -1151,9 +1151,39 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     };
   }
 
+  /**
+   * 048 task 6.3 / 6.6 (design D6, Q7), scenario "A callback in another browser stores nothing":
+   * a re-authorization started by a session, whose callback arrives with no session cookie. The
+   * state is consumed before the cookie check, so the code is never exchanged.
+   */
+  async function driveSessionMismatch(): Promise<Drive> {
+    const user = await ssoSession('Mismatch');
+    const url = await startReauthorization(user.cookie);
+    const state = url.searchParams.get('state') ?? '';
+    expect(state, 'precondition: the authorization URL carries a state').not.toBe('');
+    const code = `ReauthMismatchCodeMarker-${randomUUID()}`;
+    const answered = await callback({ code, state });
+    expect(answered.statusCode, answered.body).toBe(400);
+    const stored = await authPool.query(
+      'select 1 from auth.verification where identifier = $1',
+      [`${RESULT_PREFIX}${sessionTokenOfCookie(user.cookie)}`],
+    );
+    expect(stored.rowCount, 'a mismatched callback stores no result').toBe(0);
+    return {
+      tenantId: user.tenant.organizationId,
+      actorId: user.tenant.userId,
+      markers: {
+        'mismatch state': state,
+        'mismatch code': code,
+        'mismatch sid': user.sid,
+        'mismatch session token': sessionTokenOfCookie(user.cookie),
+      },
+    };
+  }
+
   function expectFailureRecords(
     records: ReturnType<typeof logRecords>,
-    reason: 'invalid_state' | 'exchange_failed',
+    reason: 'invalid_state' | 'exchange_failed' | 'session_mismatch',
   ): void {
     expect(records.length, `no "${REAUTH_FAILED}" record was captured`).toBeGreaterThan(0);
     expect(EXPECTED_ATTRIBUTE_VALUES[REASON], 'the reason is in the fixture set').toContain(reason);
@@ -1207,8 +1237,27 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     expect(visma, 'a failed callback records no Visma Connect step-up').toEqual([]);
   }, 60_000);
 
+  it('a callback with no session cookie emits reauthorization_failed with reason session_mismatch and no tenant, and no step_up_succeeded (048 task 6.6)', async () => {
+    const before = await flushedCount(REAUTH_FAILED);
+
+    const drive = await driveSessionMismatch();
+
+    expectFailureRecords(await recordsSince(REAUTH_FAILED, before), 'session_mismatch');
+    const visma = logRecords(harness, STEP_UP_SUCCEEDED).filter(
+      (record) =>
+        record.attributes[TENANT] === drive.tenantId &&
+        record.attributes[METHOD] === 'visma_connect',
+    );
+    expect(visma, 'a mismatched callback records no Visma Connect step-up').toEqual([]);
+  }, 60_000);
+
   it('no code, state, token or claim value of a Visma Connect step-up reaches any signal', async () => {
-    const drives = [await driveSuccess(), await driveUnknownState(), await driveFailedExchange()];
+    const drives = [
+      await driveSuccess(),
+      await driveUnknownState(),
+      await driveFailedExchange(),
+      await driveSessionMismatch(),
+    ];
 
     await harness.forceFlush();
     expect(
@@ -1221,8 +1270,8 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     ).toBe(true);
     expect(
       new Set(logRecords(harness, REAUTH_FAILED).map((record) => record.attributes[REASON])),
-      'precondition: both failure drives were logged',
-    ).toEqual(new Set(['invalid_state', 'exchange_failed']));
+      'precondition: every failure drive was logged',
+    ).toEqual(new Set(['invalid_state', 'exchange_failed', 'session_mismatch']));
     const corpus = exportedCorpus(harness);
     for (const drive of drives) {
       for (const [label, marker] of Object.entries(drive.markers)) {

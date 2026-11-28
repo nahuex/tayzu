@@ -598,5 +598,7 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
   'tayzu.auth.method': ['visma_connect'],
   // 003 task 3.11 (Q29): the reason of 002's contract's new `auth.security.reauthorization_failed`
   // (declared in `telemetry/contract.ts`, where every `auth.security.*` event lives).
-  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed'],
+  // 048 design D6 / Q7: `session_mismatch` (the callback arrives without the session that
+  // started the re-authorization), the same set as `contract.ts`'s `ATTRIBUTE_VALUES`.
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed', 'session_mismatch'],
 };

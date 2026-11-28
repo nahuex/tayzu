@@ -251,7 +251,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       answers like an unknown `/v1` route), and `route-auth-allowlist.int.test.ts` asserts the
       allowlist entry is `GET` with its new reason; the `form_post` cases of both files are
       replaced, not skipped.
-- [ ] 6.6 _(setup)_ Run the `observability-auditor` over group 6; update the doc comment of
+- [x] 6.6 _(setup)_ Run the `observability-auditor` over group 6; update the doc comment of
       `apps/api/src/reauthorization.ts`, the "SSO step-up callback bound to the browser (Q71)"
       row (F4) of the Pending table of `attack-surfaces.md` (closed, with `046`'s F2 check of
       `response_mode=query`), the `form_post` mention of its "Verification against Visma

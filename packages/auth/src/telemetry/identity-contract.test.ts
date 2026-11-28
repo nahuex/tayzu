@@ -653,3 +653,33 @@ describe('the identity contract declares the 003 span of GET /v1/me (task 3.9)',
     );
   });
 });
+
+/*
+ * Task 6.6 of openspec/changes/048-production-hardening (design D6, Resolved decision Q7):
+ * "`tayzu.auth.reauthorization.reason` gains `session_mismatch` in both auth contracts". The
+ * identity contract re-declares that attribute's value set (003 task 3.11, Q29), and
+ * `otel-smoke-check` compares emitted records against it, so it must stay the same set as
+ * `./contract.js`'s `ATTRIBUTE_VALUES`, where `auth.security.reauthorization_failed` lives.
+ *
+ * ## Why this fails right now
+ *
+ * `IDENTITY_ATTRIBUTE_VALUES['tayzu.auth.reauthorization.reason']` still lacks
+ * `session_mismatch` (assertion failure).
+ */
+describe('the identity contract mirrors the 048 re-authorization reasons (task 6.6)', () => {
+  const REAUTH_REASON = 'tayzu.auth.reauthorization.reason';
+  const contract = identityContract as unknown as {
+    IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>>;
+  };
+
+  it('declares the same tayzu.auth.reauthorization.reason value set as contract.ts, session_mismatch included', async () => {
+    const authContract = await import('./contract.js');
+    expect(authContract.ATTRIBUTE_VALUES[REAUTH_REASON]).toContain('session_mismatch');
+    expect(sorted(contract.IDENTITY_ATTRIBUTE_VALUES[REAUTH_REASON])).toEqual(
+      sorted(authContract.ATTRIBUTE_VALUES[REAUTH_REASON]),
+    );
+    expect(sorted(EXPECTED_ATTRIBUTE_VALUES[REAUTH_REASON])).toEqual(
+      sorted(authContract.ATTRIBUTE_VALUES[REAUTH_REASON]),
+    );
+  });
+});
