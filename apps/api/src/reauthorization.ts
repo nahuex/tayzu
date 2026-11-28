@@ -2,9 +2,10 @@
  * Visma Connect step-up re-authorization over HTTP (task 23.8, design Q36, D25).
  *
  * `start` builds the authorization URL (`max_age=300`, `prompt=login`,
- * `acr_values=urn:idp:vismaconnect:mfa`, PKCE S256) for a session that Visma
- * Connect established, and remembers the `state` in `auth.verification`, bound
- * to that session's token. `complete` exchanges the callback's code and stores
+ * `acr_values=urn:idp:vismaconnect:mfa`, PKCE S256, a 256-bit `nonce`,
+ * `response_mode=query`) for a session that Visma Connect established, and
+ * remembers the `state` in `auth.verification`, bound to that session's token
+ * (048 design D6: the stored binding also holds the nonce). `complete` exchanges the callback's code and stores
  * the returned ID token under the session; `lookup` hands it to the step-up
  * guard, which validates `auth_time`, `acr`, `amr` and `sid` server-side (D25).
  * The callback never needs the cookie: the single-use, unguessable `state` is
@@ -52,7 +53,10 @@ interface SessionSurface {
   } | null>;
 }
 
-/** What `start` binds to a state: the session's token and the PKCE verifier. */
+/**
+ * What `complete` reads back from a state row: the session's token and the PKCE verifier.
+ * `start` also stores the request's `nonce` (048 design D6); extra keys are ignored here.
+ */
 interface StateBinding {
   readonly token: string;
   readonly verifier: string;
@@ -174,6 +178,8 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       }
       const state = randomBytes(32).toString('base64url');
       const verifier = randomBytes(32).toString('base64url');
+      // 048 design D6: a fresh 256-bit nonce per start, bound with the state to this session.
+      const nonce = randomBytes(32).toString('base64url');
       // One statement: the insert happens only while the session is under its bound (VCDM M13).
       const inserted = await options.authPool.query(
         `insert into auth.verification (id, identifier, value, expires_at)
@@ -185,7 +191,8 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
         [
           randomUUID(),
           `${STATE_PREFIX}${state}`,
-          JSON.stringify({ token, verifier }),
+          // The token stays the first key: the pending bound below matches the value's prefix.
+          JSON.stringify({ token, verifier, nonce }),
           STATE_TTL_SECONDS,
           `${STATE_PREFIX}%`,
           `{"token":${JSON.stringify(token)},`,
@@ -201,6 +208,8 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       url.searchParams.set('redirect_uri', options.redirectUri);
       url.searchParams.set('scope', 'openid');
       url.searchParams.set('state', state);
+      url.searchParams.set('nonce', nonce);
+      url.searchParams.set('response_mode', 'query');
       url.searchParams.set(
         'code_challenge',
         createHash('sha256').update(verifier).digest('base64url'),

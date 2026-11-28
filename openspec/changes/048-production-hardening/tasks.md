@@ -224,7 +224,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `packages/authz/src/telemetry/contract.ts`, before any code emits it. Verify:
       `packages/auth/src/telemetry/contract.test.ts` asserts the value in both modules and that
       the `auth.*` subsets stay equal, and `pnpm otel-smoke-check` stays green.
-- [ ] 6.2 `start` draws a `nonce`, stores it in the binding and sends it with
+- [x] 6.2 `start` draws a `nonce`, stores it in the binding and sends it with
       `response_mode=query` (design D6). The test-writer extends the OIDC stub
       (`packages/auth/src/__fixtures__/oidc-stub.ts`, with `oidc-stub.test.ts`) to honour
       `response_mode=query` and echo the request's `nonce`, with a switch to echo another one.

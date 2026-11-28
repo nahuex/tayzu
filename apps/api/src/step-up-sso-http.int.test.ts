@@ -331,6 +331,80 @@ describe('SSO step-up satisfied over HTTP (task 23.8, design Q36 and D25)', () =
     expect(response.json<{ code?: unknown }>().code).toBe('AUTH_STEP_UP_REQUIRED');
     expect((await getBlueprint(user.cookie, identifier)).statusCode).toBe(200);
   }, 60_000);
+
+  /**
+   * 048 task 6.2 (design D6, Q7; `specs/auth-and-rbac/spec.md` of the change):
+   *
+   * Scenario "The re-authorization request is bound to the browser":
+   * - **WHEN** a Visma Connect session starts a re-authorization
+   * - **THEN** the authorization URL carries a single-use `state`, a `nonce` of at least 256 bits
+   *   that no other start returned, and `response_mode=query`
+   *
+   * D6: `start` draws `randomBytes(32).toString('base64url')` (43 base64url characters) and
+   * stores `{"token":...,"verifier":...,"nonce":...}` in the `sso-reauth-state:<state>` row, the
+   * token first, because the pending-per-session bound matches the row's prefix.
+   */
+  it('The re-authorization request is bound to the browser: a fresh 256-bit nonce per start, response_mode=query, and the nonce stored in the binding after the token', async () => {
+    const DEFAULT_MAX_PENDING = 5;
+    const user = await ssoSessionUser();
+    // The step-up interceptor runs before the operation, so the blueprint need not exist.
+    const identifier = `no-such-${randomUUID().slice(0, 8)}`;
+
+    const states: string[] = [];
+    const nonces: string[] = [];
+    const tokens = new Set<string>();
+    for (let i = 0; i < DEFAULT_MAX_PENDING; i += 1) {
+      // WHEN a Visma Connect session starts a re-authorization
+      const { url } = await startReauthorization(user.cookie, identifier);
+
+      // THEN the URL carries a state, a 256-bit nonce and response_mode=query
+      const urlState = url.searchParams.get('state');
+      const nonce = url.searchParams.get('nonce');
+      expect(urlState ?? '', 'the URL carries a state').toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(nonce ?? '', 'the URL carries a 256-bit base64url nonce').toMatch(
+        /^[A-Za-z0-9_-]{43}$/,
+      );
+      expect(url.searchParams.getAll('response_mode'), 'response_mode=query').toEqual(['query']);
+      expect(url.searchParams.get('response_type')).toBe('code');
+      expect(nonce, 'the nonce is not the state').not.toBe(urlState);
+
+      // AND the binding stored for the state keeps the token first and includes the nonce
+      const stored = await authPool.query<{ value: string }>(
+        'select value from auth.verification where identifier = $1 and expires_at > now()',
+        [`sso-reauth-state:${urlState ?? ''}`],
+      );
+      expect(stored.rows, 'one state row per start').toHaveLength(1);
+      const raw = stored.rows[0]?.value ?? '';
+      const binding = JSON.parse(raw) as Record<string, unknown>;
+      expect(Object.keys(binding)[0], 'the token stays the first key').toBe('token');
+      expect(typeof binding['token']).toBe('string');
+      expect(raw.startsWith(`{"token":${JSON.stringify(binding['token'])},`)).toBe(true);
+      expect(typeof binding['verifier']).toBe('string');
+      expect(binding['nonce'], 'the binding holds the nonce the URL sent').toBe(nonce);
+
+      states.push(urlState ?? '');
+      nonces.push(nonce ?? '');
+      tokens.add(binding['token'] as string);
+    }
+
+    // AND no other start returned the same nonce (nor the same state)
+    expect(new Set(nonces).size, 'a fresh nonce per start').toBe(DEFAULT_MAX_PENDING);
+    expect(new Set(states).size, 'a fresh state per start').toBe(DEFAULT_MAX_PENDING);
+    expect(tokens.size, 'every start is bound to the same session').toBe(1);
+
+    // AND the pending-per-session bound (043 task 13.9b) still holds with the nonce in the value
+    for (let i = 0; i < 2; i += 1) {
+      await deleteBlueprint(user.cookie, identifier);
+    }
+    const [token] = [...tokens];
+    const pending = await authPool.query<{ count: string }>(
+      `select count(*)::text as count from auth.verification
+       where identifier like 'sso-reauth-state:%' and expires_at > now()
+         and position($1 in value) = 1`,
+      [`{"token":${JSON.stringify(token)},`],
+    );
+    expect(Number(pending.rows[0]?.count), 'still bounded per session').toBe(DEFAULT_MAX_PENDING);
+  }, 60_000);
 });
 
 /**
