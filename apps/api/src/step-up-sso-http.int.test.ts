@@ -57,7 +57,7 @@
 // Load-bearing import order (design D1): the telemetry harness registers before anything that
 // loads `@tayzu/auth` creates its logger (048 task 6.3 reads `auth.security.reauthorization_failed`).
 import { registration, type TelemetryTestHarness } from './__fixtures__/link-telemetry.js';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -884,4 +884,63 @@ describe('A callback in another browser stores nothing (048 task 6.3, design D6,
       expect(next.statusCode, next.body).toBe(404);
     }, 60_000);
   }
+
+  /**
+   * 048 task 6.4 (design D6, Resolved decisions Q7 and Q22; `specs/auth-and-rbac/spec.md` of the
+   * change, requirement "Step-up authentication for high-risk operations").
+   *
+   * Scenario "A token with another nonce stores nothing" (verbatim):
+   * - **GIVEN** a re-authorization started by a session that holds its cookie at the callback
+   * - **WHEN** the returned ID token's `nonce` differs from the one the start sent
+   * - **THEN** no result is stored and the next high-risk call still fails with
+   *   `AUTH_STEP_UP_REQUIRED`
+   *
+   * D6, step (6) of `complete`: after the code exchange, `verifyReauthorizationIdToken(idToken,
+   * { discoveryUrl, clientId, nonce })` checks that the token's `nonce` equals the bound value; a
+   * failure is `exchange_failed` (Q22) and stores nothing. The stub's subject carries qualifying,
+   * fresh claims and the session's `sid`, so only the `nonce` is wrong: a stored result would
+   * satisfy the guard. The stub's `setNonceOverride` makes the authorization issue another
+   * `nonce`; it is reset after every test.
+   */
+  describe('A token with another nonce stores nothing (048 task 6.4, design D6, Q22)', () => {
+    for (const { variant, label } of VARIANTS) {
+      it(`A token with another nonce stores nothing: ${label}; exchange_failed is logged and the next blueprints.delete still fails with AUTH_STEP_UP_REQUIRED`, async () => {
+        const app = appFor(variant);
+        // GIVEN a re-authorization started by a session that holds its cookie at the callback
+        const session = await ssoSessionUser(app);
+        qualifyingSubject(session);
+        const started = await start(app, session.cookie);
+        const sentNonce = started.searchParams.get('nonce');
+        expect(sentNonce ?? '', 'precondition: the start sent a nonce').toMatch(
+          /^[A-Za-z0-9_-]{43}$/,
+        );
+
+        // WHEN the returned ID token's nonce differs from the one the start sent
+        const otherNonce = randomBytes(32).toString('base64url');
+        expect(otherNonce, 'precondition: another nonce').not.toBe(sentNonce);
+        stub.setNonceOverride(otherNonce);
+        let response: Injected;
+        let before: number;
+        try {
+          const path = await approve(started);
+          before = await failureRecordCount();
+          response = await callback(app, path, session.cookie);
+        } finally {
+          stub.setNonceOverride(null);
+        }
+
+        // THEN no result is stored
+        expect(await resultRows([session.userId]), 'no sso-reauth-result row').toBe(0);
+        // AND the failure is logged with the reason exchange_failed (Q22), answered like any
+        // failed callback
+        await expectOneFailure(before, 'exchange_failed');
+        expectFailedAnswer(variant, response);
+
+        // AND the next high-risk call still fails with AUTH_STEP_UP_REQUIRED
+        const next = await highRiskCall(app, session.cookie, `no-such-${randomUUID().slice(0, 8)}`);
+        expect(next.statusCode, next.body).toBe(403);
+        expect(next.json<{ code?: unknown }>().code).toBe('AUTH_STEP_UP_REQUIRED');
+      }, 60_000);
+    }
+  });
 });

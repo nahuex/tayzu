@@ -46,8 +46,25 @@
  *
  * Tests never call the real Visma Connect: the task-19.1 OIDC stub signs the
  * tokens.
+ *
+ * ## 048 task 6.4 (design D6, Resolved decisions Q7 and Q22)
+ *
+ * Scenario "A token with another nonce stores nothing" (`specs/auth-and-rbac/spec.md` of the
+ * change): GIVEN a re-authorization started by a session that holds its cookie at the callback,
+ * WHEN the returned ID token's `nonce` differs from the one the start sent, THEN no result is
+ * stored and the next high-risk call still fails with `AUTH_STEP_UP_REQUIRED`. The HTTP side is
+ * in `apps/api/src/step-up-sso-http.int.test.ts`; this file covers the verifier D6 names:
+ *
+ * - `verifyReauthorizationIdToken(idToken: string, expected: { discoveryUrl: string; clientId:
+ *   string; nonce: string }): Promise<boolean>`, a new export of `./sso/reauthorization.ts`
+ *   sharing the verifier of `isValidReauthorization`. It checks the signature against the
+ *   discovered JWKS, `iss`, `aud` and that `nonce` equals the bound value; it resolves `false`
+ *   on any failure. It does not apply D25's claim checks: those stay in the step-up guard, so an
+ *   insufficient token still reaches the guard and is reported as `step_up_insufficient`.
+ * - The guard's D25 checks (`sid`, `auth_time`, `acr`, `amr`) are unchanged and the guard does
+ *   not consult `nonce`.
  */
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 import { SeverityNumber } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
@@ -61,6 +78,7 @@ import { startOidcStub, type OidcStub } from './__fixtures__/oidc-stub.js';
 import { registration, type TelemetryTestHarness } from './__fixtures__/registered-harness.js';
 import { createAuth, type AuthInstance } from './auth.js';
 import * as authSchema from './persistence/schema.js';
+import { verifyReauthorizationIdToken } from './sso/reauthorization.js';
 import { createStepUpGuard } from './step-up.js';
 import type { AssertStepUpParams, StepUpGuard } from './step-up.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
@@ -273,6 +291,40 @@ describe('Step-up for a Visma-Connect-established session (task 21.3, design D25
     expect(insufficientEvents()).toHaveLength(1);
   });
 
+  it("does not satisfy step-up with another Visma Connect session's sid (D25, unchanged by 048 D6)", async () => {
+    const user = await ssoSessionUser();
+    await harness.reset();
+    const now = Math.floor(Date.now() / 1000);
+    const { handler, outcome } = await run(
+      user,
+      reauthIdToken(user, {
+        sid: `sid-${randomUUID()}`,
+        auth_time: now - 10,
+        acr: 3,
+        amr: ['otp'],
+      }),
+    );
+    await expect(outcome).rejects.toMatchObject({ code: 'AUTH_STEP_UP_REQUIRED' });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the nonce: a qualifying token carrying any nonce still satisfies step-up (048 D6 leaves the guard unchanged)', async () => {
+    const user = await ssoSessionUser();
+    await harness.reset();
+    const now = Math.floor(Date.now() / 1000);
+    const { handler, outcome } = await run(
+      user,
+      reauthIdToken(user, {
+        nonce: randomBytes(32).toString('base64url'),
+        auth_time: now - 10,
+        acr: 3,
+        amr: ['otp'],
+      }),
+    );
+    await outcome;
+    expect(handler, 'the deletion proceeds').toHaveBeenCalledTimes(1);
+  });
+
   it('does not trust an ID token that was not signed by the discovered Visma Connect keys', async () => {
     const user = await ssoSessionUser();
     await harness.reset();
@@ -295,6 +347,167 @@ describe('Step-up for a Visma-Connect-established session (task 21.3, design D25
       expect(handler).not.toHaveBeenCalled();
     } finally {
       await other.close();
+    }
+  });
+});
+
+/**
+ * 048 task 6.4 (design D6, Q7, Q22): `verifyReauthorizationIdToken` refuses a bad signature,
+ * issuer, audience or nonce. It needs no database: only the stub's discovery document and JWKS.
+ */
+describe('verifyReauthorizationIdToken (048 task 6.4, design D6): A token with another nonce stores nothing', () => {
+  let stub: OidcStub;
+
+  beforeAll(async () => {
+    stub = await startOidcStub();
+  }, 60_000);
+
+  afterAll(async () => {
+    await stub.close();
+  });
+
+  function boundNonce(): string {
+    return randomBytes(32).toString('base64url');
+  }
+
+  /** What `complete` passes: the configured discovery URL and client id, and the bound nonce. */
+  function expected(nonce: string): { discoveryUrl: string; clientId: string; nonce: string } {
+    return { discoveryUrl: stub.discoveryUrl, clientId: stub.clientId, nonce };
+  }
+
+  /** The claims of a re-authorization ID token for `nonce`, before any override. */
+  function claims(nonce: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      iss: stub.issuer,
+      aud: stub.clientId,
+      sub: `sub-${randomUUID()}`,
+      sid: `sid-${randomUUID()}`,
+      iat: now,
+      exp: now + 300,
+      auth_time: now - 10,
+      acr: 3,
+      amr: ['pwd', 'otp'],
+      nonce,
+      ...extra,
+    };
+  }
+
+  it('accepts a token signed by the discovered keys with the configured issuer, audience and the bound nonce', async () => {
+    const nonce = boundNonce();
+    await expect(
+      verifyReauthorizationIdToken(stub.signJwt(claims(nonce)), expected(nonce)),
+    ).resolves.toBe(true);
+  });
+
+  it('accepts an audience array that contains the client id', async () => {
+    const nonce = boundNonce();
+    await expect(
+      verifyReauthorizationIdToken(
+        stub.signJwt(claims(nonce, { aud: [stub.clientId, 'another-client'] })),
+        expected(nonce),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("leaves D25's claim checks to the step-up guard: an insufficient but well-bound token is accepted", async () => {
+    const nonce = boundNonce();
+    const now = Math.floor(Date.now() / 1000);
+    const insufficient = claims(nonce, { auth_time: now - 600, acr: 2, amr: ['pwd'] });
+    delete insufficient['sid'];
+    await expect(
+      verifyReauthorizationIdToken(stub.signJwt(insufficient), expected(nonce)),
+    ).resolves.toBe(true);
+  });
+
+  it('refuses a token with another nonce', async () => {
+    const nonce = boundNonce();
+    await expect(
+      verifyReauthorizationIdToken(stub.signJwt(claims(boundNonce())), expected(nonce)),
+    ).resolves.toBe(false);
+  });
+
+  it('refuses a token with no nonce', async () => {
+    const nonce = boundNonce();
+    const noNonce = claims(nonce);
+    delete noNonce['nonce'];
+    await expect(
+      verifyReauthorizationIdToken(stub.signJwt(noNonce), expected(nonce)),
+    ).resolves.toBe(false);
+  });
+
+  it('refuses a nonce that is not a string, or a prefix or extension of the bound one', async () => {
+    const nonce = boundNonce();
+    for (const other of [[nonce], { nonce }, 42, nonce.slice(0, -1), `${nonce}A`, '']) {
+      await expect(
+        verifyReauthorizationIdToken(
+          stub.signJwt(claims(nonce, { nonce: other })),
+          expected(nonce),
+        ),
+        `nonce ${JSON.stringify(other)}`,
+      ).resolves.toBe(false);
+    }
+  });
+
+  it('refuses a bad signature: a token signed by keys the discovery document does not publish', async () => {
+    const nonce = boundNonce();
+    const other = await startOidcStub();
+    try {
+      // Same kid as the discovered key, so only the signature is wrong.
+      const forged = other.signJwt(claims(nonce), { kid: stub.kid });
+      await expect(verifyReauthorizationIdToken(forged, expected(nonce))).resolves.toBe(false);
+    } finally {
+      await other.close();
+    }
+  });
+
+  it('refuses a bad signature: a validly signed token whose payload was altered', async () => {
+    const nonce = boundNonce();
+    const [head, , signature] = stub.signJwt(claims(boundNonce())).split('.');
+    const body = Buffer.from(JSON.stringify(claims(nonce))).toString('base64url');
+    await expect(
+      verifyReauthorizationIdToken(`${head ?? ''}.${body}.${signature ?? ''}`, expected(nonce)),
+    ).resolves.toBe(false);
+  });
+
+  it('refuses an unsigned token (alg none)', async () => {
+    const nonce = boundNonce();
+    const head = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT', kid: stub.kid })).toString(
+      'base64url',
+    );
+    const body = Buffer.from(JSON.stringify(claims(nonce))).toString('base64url');
+    await expect(verifyReauthorizationIdToken(`${head}.${body}.`, expected(nonce))).resolves.toBe(
+      false,
+    );
+  });
+
+  it('refuses a token from another issuer', async () => {
+    const nonce = boundNonce();
+    await expect(
+      verifyReauthorizationIdToken(
+        stub.signJwt(claims(nonce, { iss: 'https://attacker.example.test' })),
+        expected(nonce),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('refuses a token for another audience', async () => {
+    const nonce = boundNonce();
+    await expect(
+      verifyReauthorizationIdToken(
+        stub.signJwt(claims(nonce, { aud: 'another-client' })),
+        expected(nonce),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('refuses a malformed token without throwing', async () => {
+    const nonce = boundNonce();
+    for (const malformed of ['', 'not-a-jwt', 'a.b', 'a.b.c.d', '..']) {
+      await expect(
+        verifyReauthorizationIdToken(malformed, expected(nonce)),
+        `token ${JSON.stringify(malformed)}`,
+      ).resolves.toBe(false);
     }
   });
 });

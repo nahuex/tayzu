@@ -74,6 +74,10 @@ export {
 } from './step-up-telemetry.js';
 export { emitInternalError } from './internal-error-telemetry.js';
 export {
+  verifyReauthorizationIdToken,
+  type IdTokenNonceExpectation,
+} from './sso/reauthorization.js';
+export {
   verifyLogoutToken,
   type LogoutTokenExpectation,
   type VerifiedLogoutToken,

@@ -238,7 +238,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `auth.security.reauthorization_failed` with `session_mismatch`, the 303 to the failure
       location with the web app and the `400` without it, the state consumed), with the
       matching cookie still completing.
-- [ ] 6.4 The ID token's `nonce` is verified before the result is stored (design D6).
+- [x] 6.4 The ID token's `nonce` is verified before the result is stored (design D6).
       Verify: `apps/api/src/step-up-sso-http.int.test.ts` covers "A token with another nonce
       stores nothing" (the stub echoes another nonce: no `sso-reauth-result:` row, the reason
       `exchange_failed`, the next `blueprints.delete` failing with `AUTH_STEP_UP_REQUIRED`), and

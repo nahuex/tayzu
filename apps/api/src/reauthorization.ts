@@ -5,7 +5,8 @@
  * `acr_values=urn:idp:vismaconnect:mfa`, PKCE S256, a 256-bit `nonce`,
  * `response_mode=query`) for a session that Visma Connect established, and
  * remembers the `state` in `auth.verification`, bound to that session's token
- * (048 design D6: the stored binding also holds the nonce). `complete` exchanges the callback's code and stores
+ * (048 design D6: the stored binding also holds the nonce). `complete` exchanges the callback's
+ * code, verifies the ID token's signature, issuer, audience and bound `nonce` (D6), and stores
  * the returned ID token under the session; `lookup` hands it to the step-up
  * guard, which validates `auth_time`, `acr`, `amr` and `sid` server-side (D25).
  * The callback is bound to the browser (048 design D6): after the single-use
@@ -20,7 +21,12 @@
  */
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
-import { emitReauthorizationFailed, emitStepUpSucceeded, type AuthInstance } from '@tayzu/auth';
+import {
+  emitReauthorizationFailed,
+  emitStepUpSucceeded,
+  verifyReauthorizationIdToken,
+  type AuthInstance,
+} from '@tayzu/auth';
 import type { createPool } from '@tayzu/db';
 
 type Pool = ReturnType<typeof createPool>;
@@ -55,13 +61,12 @@ interface SessionSurface {
   } | null>;
 }
 
-/**
- * What `complete` reads back from a state row: the session's token and the PKCE verifier.
- * `start` also stores the request's `nonce` (048 design D6); extra keys are ignored here.
- */
+/** What `complete` reads back from a state row: the session's token, PKCE verifier and nonce. */
 interface StateBinding {
   readonly token: string;
   readonly verifier: string;
+  /** 048 design D6: the ID token must carry this value. */
+  readonly nonce: string;
 }
 
 interface BoundSession {
@@ -99,8 +104,13 @@ function parseBinding(raw: string | undefined): StateBinding | null {
     if (typeof parsed !== 'object' || parsed === null) {
       return null;
     }
-    const { token, verifier } = parsed as Record<string, unknown>;
-    return typeof token === 'string' && typeof verifier === 'string' ? { token, verifier } : null;
+    const { token, verifier, nonce } = parsed as Record<string, unknown>;
+    return typeof token === 'string' &&
+      typeof verifier === 'string' &&
+      typeof nonce === 'string' &&
+      nonce !== ''
+      ? { token, verifier, nonce }
+      : null;
   } catch {
     return null;
   }
@@ -281,11 +291,19 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       }
       try {
         const idToken = await exchangeCode(params.code, binding.verifier);
-        if (idToken === null) {
+        // 048 design D6 (Q22): a token without the bound nonce is another exchange failure.
+        if (
+          idToken === null ||
+          !(await verifyReauthorizationIdToken(idToken, {
+            discoveryUrl: options.discoveryUrl,
+            clientId: options.clientId,
+            nonce: binding.nonce,
+          }))
+        ) {
           emitReauthorizationFailed('exchange_failed');
           return false;
         }
-        // The guard verifies signature and claims (D25); this only records the result.
+        // The guard still checks the D25 step-up claims; this only records the result.
         await options.authPool.query('delete from auth.verification where identifier = $1', [
           `${RESULT_PREFIX}${binding.token}`,
         ]);
