@@ -135,7 +135,10 @@ export interface CreateAppOptions {
   readonly sso?: CreateAuthOptions['sso'];
   /** Better Auth's pre-auth limits (D20), forwarded to `createAuth`; omitted: none. */
   readonly preAuthRateLimit?: CreateAuthOptions['rateLimit'];
-  /** Back-channel logout budget per source IP per minute (D26, Q32); omitted: 600. */
+  /**
+   * Back-channel logout budget per caller address per minute (D26, Q32), on the shared DB
+   * store (048 D7); omitted: 600.
+   */
   readonly backchannelLogoutRateLimitPerMinute?: number;
   /**
    * Limit of the public re-authorization callback (043 task 13.9), per caller IP on the
@@ -971,6 +974,26 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     return revoked > 0 ? 'revoked' : 'no_match';
   }
   const sso = options.sso;
+  // Floor against abuse, keyed by the caller address only: the caller is Visma Connect's
+  // infrastructure, not a Tayzu principal (D26). 048 D7: the bucket lives in the shared DB
+  // store, so every replica spends one budget, and the pre-handler answers before any token
+  // verification, discovery or key fetch: `AUTH_RATE_LIMITED` with `Retry-After` over budget,
+  // the sanitized 500 when the store fails.
+  const backchannelLogoutLimit = createAcceptRateLimitPreHandler({
+    scope: 'backchannel_logout',
+    store: createRateLimitBucketStore({
+      adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+        .adapter,
+      rules: {
+        backchannel_logout: {
+          max:
+            options.backchannelLogoutRateLimitPerMinute ??
+            DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE,
+          window: 60,
+        },
+      },
+    }),
+  });
   // Without SSO configuration the route is disabled: it answers 404.
   await app.register((scope, _opts, done) => {
     if (sso === undefined || ssoIssuer === undefined) {
@@ -996,19 +1019,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     );
     scope.post(
       BACKCHANNEL_LOGOUT_PATH,
-      {
-        config: {
-          // Floor against abuse, keyed by source IP only: the caller is Visma
-          // Connect's infrastructure, not a Tayzu principal (D26).
-          rateLimit: {
-            max:
-              options.backchannelLogoutRateLimitPerMinute ??
-              DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE,
-            timeWindow: 60_000,
-            keyGenerator: (request: FastifyRequest): string => `backchannel-logout:${request.ip}`,
-          },
-        },
-      },
+      { preHandler: backchannelLogoutLimit },
       async (request, reply) => {
         const token = (request.body as Record<string, string> | undefined)?.['logout_token'];
         const malformed = typeof token !== 'string' || token === '';

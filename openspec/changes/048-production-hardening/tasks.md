@@ -272,7 +272,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       address bucket, an oversized or missing client id counting the address bucket only,
       `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_*` parsed in `config.test.ts`, and the client id in no
       exported signal; `RateLimitScope` gains the scope and `BucketKeyKind` gains `client`.
-- [ ] 7.3 Back-channel logout consumes the shared `backchannel_logout` bucket before any
+- [x] 7.3 Back-channel logout consumes the shared `backchannel_logout` bucket before any
       verification (design D7). Verify: `apps/api/src/backchannel-logout-http.int.test.ts`
       covers "The back-channel logout budget is shared across replicas" (no discovery or key
       fetch for a refused delivery) with the existing outcomes unchanged.

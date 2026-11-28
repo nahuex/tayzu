@@ -80,7 +80,9 @@ export type RateLimitScope =
   | 'account_created_notice_tenant'
   | 'account_created_notice_global'
   // Change 048 (task 7.2, design D7): token exchange's per-client-id bucket, beside `token_exchange`.
-  | 'token_exchange_client';
+  | 'token_exchange_client'
+  // Change 048 (task 7.3, design D7): the back-channel logout route's shared address bucket.
+  | 'backchannel_logout';
 
 /**
  * The kinds a bucket key can be namespaced by; `tenant` was added by change 043 (task 6.10),
