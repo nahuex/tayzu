@@ -45,8 +45,8 @@
  *   authorization URL, carrying `max_age=300`, `prompt=login` and
  *   `acr_values=urn:idp:vismaconnect:mfa` (D25), with a `redirect_uri` that
  *   points at the app's re-auth callback route.
- * - The callback route (any path the `redirect_uri` names; the test follows it,
- *   as a `GET` with the query or as a `form_post` `POST`) exchanges the code,
+ * - The callback route (any path the `redirect_uri` names; the test follows it
+ *   as a `GET` with the query; 048 task 6.5 removed the `form_post` `POST`) exchanges the code,
  *   validates the returned ID token's `auth_time`, `acr`, `amr` and `sid`
  *   server-side, and records the result so that the caller's next request with
  *   the same session cookie reaches the guard as `reauthorization`. A
@@ -249,7 +249,7 @@ describe('SSO step-up satisfied over HTTP (task 23.8, design Q36 and D25)', () =
 
   /**
    * The person completes the re-authorization at the identity provider, and the
-   * browser lands on the app's callback route (query redirect or `form_post`).
+   * browser lands on the app's callback route by a query redirect (048 D6).
    */
   async function completeReauthorization(
     started: { url: URL; extraCookie: string },
@@ -272,26 +272,8 @@ describe('SSO step-up satisfied over HTTP (task 23.8, design Q36 and D25)', () =
         headers: headers(),
       });
     }
-    const page = await approval.text();
-    const action = /<form method="post" action="([^"]+)"/.exec(page)?.[1];
-    if (action === undefined) {
-      throw new Error('the OIDC stub returned neither a redirect nor a form_post page');
-    }
-    const params = new URLSearchParams(
-      Object.fromEntries(
-        [...page.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [
-          m[1] ?? '',
-          m[2] ?? '',
-        ]),
-      ),
-    );
-    const target = new URL(action, ORIGIN);
-    return app.app.inject({
-      method: 'POST',
-      url: `${target.pathname}${target.search}`,
-      headers: { ...headers(), 'content-type': 'application/x-www-form-urlencoded' },
-      payload: params.toString(),
-    });
+    // 048 task 6.5 (design D6): `response_mode=query`; the `form_post` `POST` callback is gone.
+    throw new Error('the OIDC stub must redirect back by query (response_mode=query)');
   }
 
   it('A fresh Visma Connect re-authorization with an MFA method satisfies step-up: the deletion proceeds', async () => {

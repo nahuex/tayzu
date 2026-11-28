@@ -790,8 +790,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     if (pathname !== '/v1' && !pathname.startsWith('/v1/')) {
       return;
     }
-    // The IdP's form-encoded callbacks (D26, Q36) have their own scoped parsers.
-    if (pathname === BACKCHANNEL_LOGOUT_PATH || pathname === REAUTH_CALLBACK_PATH) {
+    // The IdP's form-encoded back-channel logout (D26) has its own scoped parser. The
+    // re-authorization callback is GET-only (048 D6), so it gets no exemption.
+    if (pathname === BACKCHANNEL_LOGOUT_PATH) {
       return;
     }
     const { headers } = request;
@@ -996,9 +997,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     done();
   });
 
-  // Q36: the re-authorization callback (query redirect or `form_post`). The
-  // single-use `state` and the session cookie (048 D6) bind it to the session; it answers a bare 200 or 400, or, with
-  // the web app served (003 D11), a `303` to one of the fixed step-up locations.
+  // Q36: the re-authorization callback, a `GET` query redirect only (048 D6: a `POST`
+  // reaches the `/v1/*` catch-all). The single-use `state`, the nonce and the session
+  // cookie bind it to the session; it answers a bare 200 or 400, or, with the web app
+  // served (003 D11), a `303` to one of the fixed step-up locations.
   // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
   const redirectToWebApp = options.webDistDir !== undefined;
   const seeOther = (reply: FastifyReply, location: string): FastifyReply =>
@@ -1019,19 +1021,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const callbackRoute = { preHandler: reauthorizationCallbackLimit };
   await app.register((scope, _opts, done) => {
-    scope.addContentTypeParser(
-      'application/x-www-form-urlencoded',
-      { parseAs: 'string' },
-      (_request, body, parsed) => {
-        const fields: Record<string, string> = Object.create(null) as Record<string, string>;
-        for (const [name, value] of new URLSearchParams(body as string)) {
-          if (name === 'code' || name === 'state') {
-            fields[name] = value;
-          }
-        }
-        parsed(null, fields);
-      },
-    );
     const handle = async (
       params: { code?: unknown; state?: unknown },
       request: FastifyRequest,
@@ -1051,10 +1040,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     scope.get(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const query = request.query as Record<string, unknown>;
       return handle({ code: query['code'], state: query['state'] }, request, reply);
-    });
-    scope.post(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
-      const body = request.body as Record<string, unknown> | undefined;
-      return handle({ code: body?.['code'], state: body?.['state'] }, request, reply);
     });
     done();
   });

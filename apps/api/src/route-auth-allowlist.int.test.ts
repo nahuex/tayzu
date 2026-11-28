@@ -63,6 +63,7 @@ import { ROOT_BUILD_FILES } from './web-static.js';
 
 const ORIGIN = 'https://app.tayzu.test';
 const ACCEPT_PATH = '/v1/auth/invitations/accept';
+const REAUTH_CALLBACK_PATH = '/v1/auth/visma-connect/reauthorize/callback';
 
 interface AllowlistEntry {
   readonly method: string;
@@ -275,6 +276,27 @@ describe('every Fastify route is public-allowlisted or behind resolveContext (ta
         `${entry.method} ${entry.path} is not a registered route`,
       ).toBe(true);
     }
+  });
+
+  /*
+   * 048 task 6.5 (design D6, Q7): "Only `GET REAUTH_CALLBACK_PATH` is registered; `scope.post`
+   * and its form parser are removed [...] `PUBLIC_ROUTE_ALLOWLIST`'s entry becomes `GET` with
+   * the reason "authenticated by the single-use state, the nonce and the session cookie"."
+   * Replaces the callback's former `'*'` entry, which covered the `form_post` `POST`.
+   */
+  it('the re-authorization callback is allowlisted for GET only, with the reason of 048 D6, and only GET is registered (048 task 6.5)', () => {
+    const entries = allowlist.filter((entry) => entry.path === REAUTH_CALLBACK_PATH);
+
+    expect(entries.map((entry) => entry.method)).toEqual(['GET']);
+    expect(entries[0]?.prefix).toBeUndefined();
+    expect(entries[0]?.reason).toContain(
+      'authenticated by the single-use state, the nonce and the session cookie',
+    );
+    expect(real.pairs).toContainEqual({ method: 'GET', path: REAUTH_CALLBACK_PATH });
+    expect(
+      real.pairs.filter((pair) => pair.path === REAUTH_CALLBACK_PATH).map((pair) => pair.method),
+      'no POST (form_post) callback route is registered',
+    ).not.toContain('POST');
   });
 
   it('a scratch route added to the server outside both fails the check', async () => {

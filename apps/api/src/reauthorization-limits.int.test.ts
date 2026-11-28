@@ -21,8 +21,8 @@
  *
  * - `CreateAppOptions` (`apps/api/src/server.ts`) gains the optional
  *   `reauthorizationCallbackRateLimit: { max: number; window: number }` (window in
- *   seconds, like `preAuthRateLimit`). When set, the callback route (GET and POST of
- *   `/v1/auth/visma-connect/reauthorize/callback`) consumes a bucket of the DB-backed
+ *   seconds, like `preAuthRateLimit`). When set, the callback route (`GET` of
+ *   `/v1/auth/visma-connect/reauthorize/callback`; 048 task 6.5 removed the `POST`) consumes a bucket of the DB-backed
  *   store (scope `reauthorization_callback`, kind `ip`) before `reauthorization.complete`.
  * - A refused request answers `429`, body code `AUTH_RATE_LIMITED`, with a `retry-after`
  *   header.
@@ -107,67 +107,53 @@ describe('The re-authorization callback is limited (task 13.9, VCDM M13)', () =>
     await stub.close();
   }, 60_000);
 
-  function callback(ip: string, method: 'GET' | 'POST') {
+  /** 048 task 6.5 (design D6): only `GET` reaches the callback; the `form_post` `POST` is gone. */
+  function callback(ip: string) {
     const state = `unknown-state-${randomInt(1, 1_000_000_000).toString(10)}`;
-    return method === 'GET'
-      ? app.app.inject({
-          method: 'GET',
-          url: `${CALLBACK_PATH}?code=c&state=${state}`,
-          headers: { 'x-forwarded-for': ip, origin: ORIGIN },
-        })
-      : app.app.inject({
-          method: 'POST',
-          url: CALLBACK_PATH,
-          headers: {
-            'x-forwarded-for': ip,
-            origin: ORIGIN,
-            'content-type': 'application/x-www-form-urlencoded',
-          },
-          payload: `code=c&state=${state}`,
-        });
+    return app.app.inject({
+      method: 'GET',
+      url: `${CALLBACK_PATH}?code=c&state=${state}`,
+      headers: { 'x-forwarded-for': ip, origin: ORIGIN },
+    });
   }
 
   function verificationQueries(): number {
     return queries.filter((text) => text.includes('auth.verification')).length;
   }
 
-  it.each(['GET', 'POST'] as const)(
-    'A caller exceeding the callback limit is refused before any database access (%s)',
-    async (method) => {
-      const ip = randomIp();
+  it('A caller exceeding the callback limit is refused before any database access (GET)', async () => {
+    const ip = randomIp();
 
-      // Within the limit the callback runs: it reaches the database (the single-use delete).
-      const before = verificationQueries();
-      for (let i = 0; i < MAX; i += 1) {
-        const response = await callback(ip, method);
-        expect(response.statusCode, response.body).toBe(400);
-      }
-      expect(
-        verificationQueries(),
-        'precondition: allowed hits do query auth.verification',
-      ).toBeGreaterThanOrEqual(before + MAX);
+    // Within the limit the callback runs: it reaches the database (the single-use delete).
+    const before = verificationQueries();
+    for (let i = 0; i < MAX; i += 1) {
+      const response = await callback(ip);
+      expect(response.statusCode, response.body).toBe(400);
+    }
+    expect(
+      verificationQueries(),
+      'precondition: allowed hits do query auth.verification',
+    ).toBeGreaterThanOrEqual(before + MAX);
 
-      // WHEN the caller exceeds the limit, THEN further requests are refused ...
-      const afterLimit = verificationQueries();
-      for (let i = 0; i < 3; i += 1) {
-        const refused = await callback(ip, method);
-        expect(refused.statusCode, refused.body).toBe(429);
-        expect(refused.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
-        expect(refused.headers['retry-after']).toMatch(/^\d+$/);
-      }
+    // WHEN the caller exceeds the limit, THEN further requests are refused ...
+    const afterLimit = verificationQueries();
+    for (let i = 0; i < 3; i += 1) {
+      const refused = await callback(ip);
+      expect(refused.statusCode, refused.body).toBe(429);
+      expect(refused.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+      expect(refused.headers['retry-after']).toMatch(/^\d+$/);
+    }
 
-      // ... before any database access to the verification table.
-      expect(verificationQueries()).toBe(afterLimit);
-    },
-    60_000,
-  );
+    // ... before any database access to the verification table.
+    expect(verificationQueries()).toBe(afterLimit);
+  }, 60_000);
 
   it('The limit is per caller: another IP is not refused', async () => {
     const exhausted = randomIp();
     for (let i = 0; i < MAX + 1; i += 1) {
-      await callback(exhausted, 'GET');
+      await callback(exhausted);
     }
-    const other = await callback(randomIp(), 'GET');
+    const other = await callback(randomIp());
     expect(other.statusCode, other.body).toBe(400);
   }, 60_000);
 });

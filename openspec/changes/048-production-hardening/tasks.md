@@ -245,7 +245,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `packages/auth/src/step-up-sso.int.test.ts` (extended) shows
       `verifyReauthorizationIdToken` refusing a bad signature, issuer, audience or nonce while
       the guard's D25 checks are unchanged.
-- [ ] 6.5 Only `GET` reaches the callback (design D6). Verify:
+- [x] 6.5 Only `GET` reaches the callback (design D6). Verify:
       `apps/api/src/reauthorize-redirect.http.int.test.ts` covers "A form-posted callback is
       not accepted" (a `POST` with a code and a state exchanges nothing, stores nothing and
       answers like an unknown `/v1` route), and `route-auth-allowlist.int.test.ts` asserts the

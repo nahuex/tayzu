@@ -21,15 +21,18 @@
  * its own random `x-forwarded-for`, so the buckets of the other cases are never touched. A successful callback is driven like
  * `step-up-sso-http.int.test.ts`: an SSO-session owner's high-risk call hands out the
  * re-authorization URL, the stub auto-approves it, and the code and state it returns reach
- * the callback as a `GET` query or as a `form_post` `POST`. A failed exchange presents a
- * real (single-use) state with a code the stub never issued.
+ * the callback as a `GET` query. A failed exchange presents a real (single-use) state with a
+ * code the stub never issued.
+ *
+ * 048 task 6.5 (design D6, Q7) replaced the `form_post` `POST` variants of every case: only
+ * `GET` reaches the callback, and "A form-posted callback is not accepted" covers the `POST`.
  *
  * ## Production symbols expected (the red phase)
  *
  * - `CreateAppOptions` (`apps/api/src/server.ts`) gains the optional
  *   `webDistDir?: string`, the absolute path of the web build (`WEB_DIST_DIR`, design D9,
  *   Q21; `createAppFromEnv` passes it from `Config` once task 4.1 adds the setting).
- * - With it set, `GET` and `POST /v1/auth/visma-connect/reauthorize/callback` answer `303`
+ * - With it set, `GET /v1/auth/visma-connect/reauthorize/callback` answers `303`
  *   with the constant `Location` `/step-up/complete` (success),
  *   `/step-up/complete?result=failed` (any failure) or
  *   `/step-up/complete?result=rate_limited` plus `Retry-After` (the callback limiter
@@ -74,7 +77,6 @@ const ATTACKER_HEADERS = {
   'x-forwarded-proto': 'http',
 } as const;
 
-type Method = 'GET' | 'POST';
 type Injected = Awaited<ReturnType<App['app']['inject']>>;
 
 function randomIp(): string {
@@ -188,9 +190,11 @@ function driver(getApp: () => App) {
     return { code, state, cookie: user.cookie };
   }
 
-  /** The callback, as the browser lands on it: a query `GET` or a `form_post` `POST`. */
+  /**
+   * The callback, as the browser lands on it: a query `GET` (`response_mode=query`; 048 D6
+   * removes the `form_post` `POST`).
+   */
   function callback(
-    method: Method,
     params: Readonly<Record<string, string>>,
     options: { readonly ip?: string; readonly headers?: Readonly<Record<string, string>> } = {},
   ): Promise<Injected> {
@@ -200,28 +204,33 @@ function driver(getApp: () => App) {
       origin: ORIGIN,
       ...options.headers,
     };
-    return method === 'GET'
-      ? getApp().app.inject({ method: 'GET', url: `${CALLBACK_PATH}?${encoded}`, headers })
-      : getApp().app.inject({
-          method: 'POST',
-          url: CALLBACK_PATH,
-          headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
-          payload: encoded,
-        });
+    return getApp().app.inject({ method: 'GET', url: `${CALLBACK_PATH}?${encoded}`, headers });
+  }
+
+  /** A `form_post`-style `POST` of `params` to `url`, as an IdP's auto-submitting page sends it. */
+  function formPost(
+    url: string,
+    params: Readonly<Record<string, string>>,
+    headers: Readonly<Record<string, string>>,
+  ): Promise<Injected> {
+    return getApp().app.inject({
+      method: 'POST',
+      url,
+      headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams(params).toString(),
+    });
   }
 
   /** Exhausts the callback bucket of one IP, then returns the first refused answer. */
   async function refusedByLimit(
-    method: Method,
     extra: Readonly<Record<string, string>> = {},
     headers: Readonly<Record<string, string>> = {},
   ): Promise<Injected> {
     const ip = randomIp();
     for (let i = 0; i < LIMIT; i += 1) {
-      await callback(method, { code: 'c', state: `unknown-${randomUUID()}` }, { ip });
+      await callback({ code: 'c', state: `unknown-${randomUUID()}` }, { ip });
     }
     return callback(
-      method,
       { code: 'c', state: `unknown-${randomUUID()}`, ...extra },
       {
         ip,
@@ -236,7 +245,99 @@ function driver(getApp: () => App) {
     expect(retried.statusCode, 'the re-authorization was recorded').not.toBe(403);
   }
 
-  return { approvedReauthorization, callback, refusedByLimit, expectStepUpSatisfied };
+  /** The high-risk call is still refused for step-up: no re-authorization result was stored. */
+  async function expectStepUpStillRequired(cookie: string): Promise<void> {
+    const retried = await highRiskCall(cookie);
+    expect(retried.statusCode, retried.body).toBe(403);
+    expect(retried.json<{ code?: unknown }>().code).toBe('AUTH_STEP_UP_REQUIRED');
+  }
+
+  return {
+    approvedReauthorization,
+    callback,
+    formPost,
+    refusedByLimit,
+    expectStepUpSatisfied,
+    expectStepUpStillRequired,
+  };
+}
+
+/** The unexpired `sso-reauth-state:<state>` rows: `1` while the state is unconsumed. */
+async function liveStateRows(state: string): Promise<number> {
+  const found = await pools.authPool.query<{ count: string }>(
+    `select count(*)::text as count from auth.verification
+     where identifier = $1 and expires_at > now()`,
+    [`sso-reauth-state:${state}`],
+  );
+  return Number(found.rows[0]?.count ?? '0');
+}
+
+/** The response headers that do not vary per response (a date, a per-response nonce). */
+function stableHeaderNames(response: Injected): string[] {
+  return Object.keys(response.headers)
+    .map((name) => name.toLowerCase())
+    .filter((name) => name !== 'date')
+    .sort();
+}
+
+/**
+ * 048 task 6.5 (design D6, Q7; `specs/auth-and-rbac/spec.md` of the change):
+ *
+ * Scenario "A form-posted callback is not accepted" (verbatim):
+ * - **WHEN** a `POST` with a code and a state arrives at the re-authorization callback path
+ * - **THEN** no code is exchanged and no result is stored
+ *
+ * Task 6.5 adds: it "answers like an unknown `/v1` route". D6: only `GET REAUTH_CALLBACK_PATH`
+ * is registered, "so a `POST` reaches the `/v1/*` catch-all like any unknown route, and the
+ * path leaves the `/v1` media-type exemption": a form-encoded body on a `/v1` path is refused
+ * `415 UNSUPPORTED_MEDIA_TYPE` before any body is read (Q66).
+ *
+ * The `POST` carries a real code and state from an approved re-authorization and the
+ * initiating session cookie, so nothing but the method can explain a refusal. Observed:
+ * - it answers exactly what the same `POST` to an unknown `/v1` path answers (status, body,
+ *   `content-type`, the same header names, no `Location`);
+ * - the `sso-reauth-state:<state>` row is still there (the single-use consume, which precedes
+ *   the exchange in D6, never ran);
+ * - the high-risk call is still refused `AUTH_STEP_UP_REQUIRED` (nothing stored);
+ * - the same code and state then complete over `GET`: the stub's codes are single use, so
+ *   the code was never exchanged.
+ */
+function formPostedCallbackIsNotAccepted(
+  drive: ReturnType<typeof driver>,
+  expectCompleted: (response: Injected) => void,
+): () => Promise<void> {
+  return async () => {
+    const { code, state, cookie } = await drive.approvedReauthorization();
+    const ip = randomIp();
+    const headers = { 'x-forwarded-for': ip, origin: ORIGIN, cookie };
+
+    // WHEN a POST with a code and a state arrives at the re-authorization callback path.
+    const posted = await drive.formPost(CALLBACK_PATH, { code, state }, headers);
+    const unknown = await drive.formPost(
+      `/v1/unknown-route-${randomUUID().slice(0, 8)}`,
+      { code, state },
+      headers,
+    );
+
+    // It answers like an unknown /v1 route.
+    expect(unknown.statusCode, 'precondition: an unknown /v1 route refuses a form body').toBe(415);
+    expect(posted.statusCode, posted.body).toBe(unknown.statusCode);
+    expect(posted.json<{ code?: unknown }>().code).toBe('UNSUPPORTED_MEDIA_TYPE');
+    expect(posted.json()).toEqual(unknown.json());
+    expect(posted.headers['content-type']).toBe(unknown.headers['content-type']);
+    expect(stableHeaderNames(posted)).toEqual(stableHeaderNames(unknown));
+    expect(posted.headers.location).toBeUndefined();
+
+    // THEN no code is exchanged: the single-use state was not consumed ...
+    expect(await liveStateRows(state), 'the state row is not consumed').toBe(1);
+    // ... and no result is stored.
+    await drive.expectStepUpStillRequired(cookie);
+
+    // The code is still unexchanged (the stub's codes are single use): GET completes with it.
+    const completed = await drive.callback({ code, state }, { headers: { cookie } });
+    expectCompleted(completed);
+    await drive.expectStepUpSatisfied(cookie);
+  };
 }
 
 function expectFixedRedirect(response: Injected, target: string): void {
@@ -260,101 +361,78 @@ describe('The callback redirect is fixed (task 3.10, design D11, Q14): with a bu
     await app.close();
   }, 60_000);
 
-  it.each(['GET', 'POST'] as const)(
-    'a successful callback answers 303 to /step-up/complete (%s)',
-    async (method) => {
-      const { code, state, cookie } = await drive.approvedReauthorization();
+  it('a successful callback answers 303 to /step-up/complete (GET)', async () => {
+    const { code, state, cookie } = await drive.approvedReauthorization();
 
-      // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
-      const response = await drive.callback(method, { code, state }, { headers: { cookie } });
+    // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
+    const response = await drive.callback({ code, state }, { headers: { cookie } });
 
+    expectFixedRedirect(response, COMPLETE);
+    await drive.expectStepUpSatisfied(cookie);
+  }, 60_000);
+
+  it('a callback with an unknown state answers 303 to /step-up/complete?result=failed (GET)', async () => {
+    const response = await drive.callback({
+      code: 'c',
+      state: `unknown-${randomUUID()}`,
+    });
+
+    expectFixedRedirect(response, FAILED);
+  }, 60_000);
+
+  it('a callback whose token exchange fails answers 303 to /step-up/complete?result=failed (GET)', async () => {
+    const { state, cookie } = await drive.approvedReauthorization();
+
+    // A real, unconsumed state, but a code the stub never issued: the exchange fails.
+    // 048 task 6.3 (design D6): the initiating cookie, so the failure is the exchange's.
+    const response = await drive.callback(
+      { code: `not-issued-${randomUUID()}`, state },
+      { headers: { cookie } },
+    );
+
+    expectFixedRedirect(response, FAILED);
+  }, 60_000);
+
+  it('a callback refused by its rate limit answers 303 to /step-up/complete?result=rate_limited with Retry-After (GET)', async () => {
+    const refused = await drive.refusedByLimit();
+
+    expectFixedRedirect(refused, RATE_LIMITED);
+    expect(refused.headers['retry-after']).toMatch(/^\d+$/);
+  }, 60_000);
+
+  it('a successful callback carrying redirect, returnTo and a Host value still answers the fixed path (GET)', async () => {
+    const { code, state, cookie } = await drive.approvedReauthorization();
+
+    // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
+    const response = await drive.callback(
+      { code, state, ...ATTACKER_PARAMS },
+      { headers: { ...ATTACKER_HEADERS, cookie } },
+    );
+
+    expectFixedRedirect(response, COMPLETE);
+  }, 60_000);
+
+  it('a failed callback carrying redirect, returnTo and a Host value still answers the fixed path (GET)', async () => {
+    const response = await drive.callback(
+      { code: 'c', state: `unknown-${randomUUID()}`, ...ATTACKER_PARAMS },
+      { headers: ATTACKER_HEADERS },
+    );
+
+    expectFixedRedirect(response, FAILED);
+  }, 60_000);
+
+  it('a rate-limited callback carrying redirect, returnTo and a Host value still answers the fixed path (GET)', async () => {
+    const refused = await drive.refusedByLimit(ATTACKER_PARAMS, ATTACKER_HEADERS);
+
+    expectFixedRedirect(refused, RATE_LIMITED);
+    expect(refused.headers['retry-after']).toMatch(/^\d+$/);
+  }, 60_000);
+
+  it(
+    'A form-posted callback is not accepted: a POST with a code and a state exchanges nothing, stores nothing and answers like an unknown /v1 route (048 task 6.5)',
+    formPostedCallbackIsNotAccepted(drive, (response) => {
       expectFixedRedirect(response, COMPLETE);
-      await drive.expectStepUpSatisfied(cookie);
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a callback with an unknown state answers 303 to /step-up/complete?result=failed (%s)',
-    async (method) => {
-      const response = await drive.callback(method, {
-        code: 'c',
-        state: `unknown-${randomUUID()}`,
-      });
-
-      expectFixedRedirect(response, FAILED);
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a callback whose token exchange fails answers 303 to /step-up/complete?result=failed (%s)',
-    async (method) => {
-      const { state, cookie } = await drive.approvedReauthorization();
-
-      // A real, unconsumed state, but a code the stub never issued: the exchange fails.
-      // 048 task 6.3 (design D6): the initiating cookie, so the failure is the exchange's.
-      const response = await drive.callback(
-        method,
-        { code: `not-issued-${randomUUID()}`, state },
-        { headers: { cookie } },
-      );
-
-      expectFixedRedirect(response, FAILED);
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a callback refused by its rate limit answers 303 to /step-up/complete?result=rate_limited with Retry-After (%s)',
-    async (method) => {
-      const refused = await drive.refusedByLimit(method);
-
-      expectFixedRedirect(refused, RATE_LIMITED);
-      expect(refused.headers['retry-after']).toMatch(/^\d+$/);
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a successful callback carrying redirect, returnTo and a Host value still answers the fixed path (%s)',
-    async (method) => {
-      const { code, state, cookie } = await drive.approvedReauthorization();
-
-      // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
-      const response = await drive.callback(
-        method,
-        { code, state, ...ATTACKER_PARAMS },
-        { headers: { ...ATTACKER_HEADERS, cookie } },
-      );
-
-      expectFixedRedirect(response, COMPLETE);
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a failed callback carrying redirect, returnTo and a Host value still answers the fixed path (%s)',
-    async (method) => {
-      const response = await drive.callback(
-        method,
-        { code: 'c', state: `unknown-${randomUUID()}`, ...ATTACKER_PARAMS },
-        { headers: ATTACKER_HEADERS },
-      );
-
-      expectFixedRedirect(response, FAILED);
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a rate-limited callback carrying redirect, returnTo and a Host value still answers the fixed path (%s)',
-    async (method) => {
-      const refused = await drive.refusedByLimit(method, ATTACKER_PARAMS, ATTACKER_HEADERS);
-
-      expectFixedRedirect(refused, RATE_LIMITED);
-      expect(refused.headers['retry-after']).toMatch(/^\d+$/);
-    },
+    }),
     60_000,
   );
 });
@@ -371,66 +449,58 @@ describe('Without the web app the callback answers are unchanged (task 3.10, des
     await app.close();
   }, 60_000);
 
-  it.each(['GET', 'POST'] as const)(
-    'a successful callback answers 200 {} with no Location (%s)',
-    async (method) => {
-      const { code, state, cookie } = await drive.approvedReauthorization();
+  it('a successful callback answers 200 {} with no Location (GET)', async () => {
+    const { code, state, cookie } = await drive.approvedReauthorization();
 
-      // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
-      const response = await drive.callback(method, { code, state }, { headers: { cookie } });
+    // 048 task 6.3 (design D6): the browser that started the re-authorization holds its cookie.
+    const response = await drive.callback({ code, state }, { headers: { cookie } });
 
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({});
+    expect(response.headers.location).toBeUndefined();
+    await drive.expectStepUpSatisfied(cookie);
+  }, 60_000);
+
+  it('a callback with an unknown state answers the 400 body with no Location (GET)', async () => {
+    const response = await drive.callback({
+      code: 'c',
+      state: `unknown-${randomUUID()}`,
+    });
+
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toEqual({ defined: false, code: 'BAD_REQUEST', status: 400 });
+    expect(response.headers.location).toBeUndefined();
+  }, 60_000);
+
+  it('a callback whose token exchange fails answers the 400 body with no Location (GET)', async () => {
+    const { state, cookie } = await drive.approvedReauthorization();
+
+    // 048 task 6.3 (design D6): the initiating cookie, so the failure is the exchange's.
+    const response = await drive.callback(
+      { code: `not-issued-${randomUUID()}`, state },
+      { headers: { cookie } },
+    );
+
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toEqual({ defined: false, code: 'BAD_REQUEST', status: 400 });
+    expect(response.headers.location).toBeUndefined();
+  }, 60_000);
+
+  it('a callback refused by its rate limit answers the JSON 429 with Retry-After and no Location (GET)', async () => {
+    const refused = await drive.refusedByLimit();
+
+    expect(refused.statusCode, refused.body).toBe(429);
+    expect(refused.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
+    expect(refused.headers['retry-after']).toMatch(/^\d+$/);
+    expect(refused.headers.location).toBeUndefined();
+  }, 60_000);
+
+  it(
+    'A form-posted callback is not accepted: a POST with a code and a state exchanges nothing, stores nothing and answers like an unknown /v1 route (048 task 6.5)',
+    formPostedCallbackIsNotAccepted(drive, (response) => {
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toEqual({});
-      expect(response.headers.location).toBeUndefined();
-      await drive.expectStepUpSatisfied(cookie);
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a callback with an unknown state answers the 400 body with no Location (%s)',
-    async (method) => {
-      const response = await drive.callback(method, {
-        code: 'c',
-        state: `unknown-${randomUUID()}`,
-      });
-
-      expect(response.statusCode, response.body).toBe(400);
-      expect(response.json()).toEqual({ defined: false, code: 'BAD_REQUEST', status: 400 });
-      expect(response.headers.location).toBeUndefined();
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a callback whose token exchange fails answers the 400 body with no Location (%s)',
-    async (method) => {
-      const { state, cookie } = await drive.approvedReauthorization();
-
-      // 048 task 6.3 (design D6): the initiating cookie, so the failure is the exchange's.
-      const response = await drive.callback(
-        method,
-        { code: `not-issued-${randomUUID()}`, state },
-        { headers: { cookie } },
-      );
-
-      expect(response.statusCode, response.body).toBe(400);
-      expect(response.json()).toEqual({ defined: false, code: 'BAD_REQUEST', status: 400 });
-      expect(response.headers.location).toBeUndefined();
-    },
-    60_000,
-  );
-
-  it.each(['GET', 'POST'] as const)(
-    'a callback refused by its rate limit answers the JSON 429 with Retry-After and no Location (%s)',
-    async (method) => {
-      const refused = await drive.refusedByLimit(method);
-
-      expect(refused.statusCode, refused.body).toBe(429);
-      expect(refused.json<{ code?: unknown }>().code).toBe('AUTH_RATE_LIMITED');
-      expect(refused.headers['retry-after']).toMatch(/^\d+$/);
-      expect(refused.headers.location).toBeUndefined();
-    },
+    }),
     60_000,
   );
 });
