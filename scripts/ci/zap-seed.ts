@@ -17,7 +17,8 @@ type Env = Readonly<Record<string, string | undefined>>;
 
 export interface ZapSeedConfig {
   databaseUrl: string;
-  betterAuthSecret: string;
+  /** `BETTER_AUTH_SECRETS` (048 D4), forwarded unparsed to `bootstrap-admin`. */
+  betterAuthSecrets: string;
   /** http(s) origin of the running API, without a trailing slash. */
   baseUrl: string;
   /** The browser origin the seed claims, one of ALLOWED_ORIGINS; defaults to the target's. */
@@ -82,7 +83,7 @@ export function parseZapSeedConfig(
     allowedOrigins: seed ? required(env, 'ALLOWED_ORIGINS') : '',
     operatorId,
     databaseUrl: required(env, 'DATABASE_URL'),
-    betterAuthSecret: required(env, 'BETTER_AUTH_SECRET'),
+    betterAuthSecrets: required(env, 'BETTER_AUTH_SECRETS'),
     baseUrl: parseTargetUrl(required(env, 'ZAP_TARGET_URL')),
     origin: new URL(withDefault(env, 'ZAP_SEED_ORIGIN', required(env, 'ZAP_TARGET_URL'))).origin,
     organizationName: withDefault(env, 'ZAP_SEED_ORGANIZATION_NAME', 'ZAP Scan Organization'),
@@ -180,7 +181,7 @@ function bootstrapFirstAdmin(config: ZapSeedConfig): string {
       CERBOS_ADDRESS: config.cerbosAddress,
       ALLOWED_ORIGINS: config.allowedOrigins,
       TAYZU_OPERATOR_ID: config.operatorId,
-      BETTER_AUTH_SECRET: config.betterAuthSecret,
+      BETTER_AUTH_SECRETS: config.betterAuthSecrets,
       BOOTSTRAP_ORGANIZATION_NAME: config.organizationName,
       BOOTSTRAP_ORGANIZATION_SLUG: config.organizationSlug,
       BOOTSTRAP_ADMIN_NAME: config.adminName,

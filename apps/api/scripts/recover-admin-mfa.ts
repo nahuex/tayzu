@@ -2,7 +2,7 @@
  * Break-glass reset of a member's second factor (`044` design D12, Resolved decisions Q14-Q16).
  * `recoverAdminMfa` resolves the organization and the user, then runs the shared service of
  * `src/identity/mfa-reset.ts` in operator form on the `tayzu_auth` pool. The CLI holds no
- * `BETTER_AUTH_SECRET`, no cap store and no mailer: its one notice goes through the sender.
+ * `BETTER_AUTH_SECRETS`, no cap store and no mailer: its one notice goes through the sender.
  * `recoverAdminMfa` prints nothing; `main` applies the telemetry guard (Q29, Q31) and prints the
  * completion line inside the `runScript` callback, before the final flush.
  */

@@ -141,7 +141,7 @@ describe('password reset wiring through createAppFromEnv (task 13.1)', () => {
     const built = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${RESET_LINK_ORIGIN}`,
       INVITATION_LINK_BASE_URL: ORIGIN,
@@ -354,7 +354,7 @@ describe('password reset controls through createAppFromEnv (task 13.2)', () => {
     const built = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${RESET_LINK_ORIGIN}`,
       INVITATION_LINK_BASE_URL: ORIGIN,
@@ -715,7 +715,7 @@ describe('mounting without the email path fails startup through createAppFromEnv
     const full: Record<string, string> = {
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${BASE_URL_MARKER}`,
       INVITATION_LINK_BASE_URL: ORIGIN,

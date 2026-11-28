@@ -3248,7 +3248,7 @@ describe('otel-smoke-check, 043: every identity operation is driven (task 15.2)'
           NODE_ENV: 'test',
           DATABASE_URL: ownerDatabaseUrl(),
           AUTH_DATABASE_URL: ownerDatabaseUrl(),
-          BETTER_AUTH_SECRET: TEST_SECRET,
+          BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
           CERBOS_ADDRESS: IDENTITY_CERBOS,
           ALLOWED_ORIGINS: AUTH_ORIGIN,
           BOOTSTRAP_ORGANIZATION_NAME: 'Identity Smoke Bootstrap',

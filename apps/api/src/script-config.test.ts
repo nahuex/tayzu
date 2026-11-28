@@ -15,7 +15,8 @@ const SECRET = 'script-config-s3cr3t-value-0123456789';
 const FULL_ENV = {
   DATABASE_URL: 'postgres://app@localhost:5432/db',
   AUTH_DATABASE_URL: 'postgres://auth@localhost:5432/db',
-  BETTER_AUTH_SECRET: SECRET,
+  // 048 D4: the versioned list replaces the retired single secret.
+  BETTER_AUTH_SECRETS: `1:${SECRET}`,
   CERBOS_ADDRESS: '127.0.0.1:3593',
   TAYZU_OPERATOR_ID: 'gh:12345',
 } as const;
@@ -70,11 +71,13 @@ describe('loadScriptConfig', () => {
     expect(() => loadScriptConfig('bootstrap-admin', env)).toThrow('TAYZU_OPERATOR_ID is required');
   });
 
-  it('neither the backfill nor the reconcile declares or reads BETTER_AUTH_SECRET', () => {
+  it('neither the backfill nor the reconcile declares or reads BETTER_AUTH_SECRETS', () => {
     for (const script of ['backfill-user-blueprint', 'reconcile-users'] as const) {
+      expect(SCRIPT_VARIABLES[script] as readonly string[]).not.toContain('BETTER_AUTH_SECRETS');
       expect(SCRIPT_VARIABLES[script] as readonly string[]).not.toContain('BETTER_AUTH_SECRET');
-      const { env, reads } = recordingEnv(without('BETTER_AUTH_SECRET'));
+      const { env, reads } = recordingEnv(without('BETTER_AUTH_SECRETS'));
       loadScriptConfig(script, env);
+      expect(reads.has('BETTER_AUTH_SECRETS')).toBe(false);
       expect(reads.has('BETTER_AUTH_SECRET')).toBe(false);
     }
   });
@@ -119,11 +122,11 @@ describe('loadScriptConfig', () => {
   it('the bootstrap CLI requires a long enough secret and never echoes it', () => {
     let message = '';
     try {
-      loadScriptConfig('bootstrap-admin', { ...FULL_ENV, BETTER_AUTH_SECRET: 'short-secret' });
+      loadScriptConfig('bootstrap-admin', { ...FULL_ENV, BETTER_AUTH_SECRETS: '1:short-secret' });
     } catch (error) {
       message = (error as Error).message;
     }
-    expect(message).toContain('BETTER_AUTH_SECRET is malformed');
+    expect(message).toContain('BETTER_AUTH_SECRETS is malformed');
     expect(message).not.toContain('short-secret');
   });
 
@@ -178,6 +181,7 @@ describe('recover-admin-mfa script configuration (044 task 11.1)', () => {
           'INVITATION_EMAIL_KILL_SWITCH',
         ].sort(),
       );
+      expect(declared).not.toContain('BETTER_AUTH_SECRETS');
       expect(declared).not.toContain('BETTER_AUTH_SECRET');
       expect(declared).not.toContain('DATABASE_URL');
       expect(declared).not.toContain('CERBOS_ADDRESS');
@@ -188,6 +192,7 @@ describe('recover-admin-mfa script configuration (044 task 11.1)', () => {
       loadScriptConfig('recover-admin-mfa', env);
       const declared = SCRIPT_VARIABLES['recover-admin-mfa'] as readonly string[];
       for (const name of reads) expect(declared).toContain(name);
+      expect(reads.has('BETTER_AUTH_SECRETS')).toBe(false);
       expect(reads.has('BETTER_AUTH_SECRET')).toBe(false);
       expect(reads.has('DATABASE_URL')).toBe(false);
       expect(reads.has('CERBOS_ADDRESS')).toBe(false);

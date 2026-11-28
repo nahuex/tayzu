@@ -16,7 +16,7 @@
 # The database keeps design D5's rule: every connection uses
 # `sslmode=verify-full`. Each run generates a throwaway CA and a `localhost`
 # server certificate, so nothing here relaxes TLS. The database password and
-# BETTER_AUTH_SECRET are random per run and never printed; the session
+# BETTER_AUTH_SECRETS are random per run and never printed; the session
 # cookie reaches ZAP only through ZAP_AUTH_HEADER_VALUE (masked in CI).
 #
 # Cerbos must already be running (CI starts the pinned image; locally,
@@ -171,7 +171,7 @@ up() {
 
   # 048 design D1: db:migrate reads only MIGRATION_DATABASE_URL, never DATABASE_URL.
   export MIGRATION_DATABASE_URL="$database_url"
-  export BETTER_AUTH_SECRET="$secret"
+  export BETTER_AUTH_SECRETS="1:$secret"
   # Q93: keys the per-recipient caps; random per run, never printed.
   export IDENTITY_TOKEN_HMAC_SECRET="$hmac_secret"
   # Q40: https outside test. The scan reaches the listener over plain HTTP on
@@ -311,7 +311,7 @@ api_scan() {
     export "${line%%=*}=${line#*=}"
   done <"$STATE_DIR/seed.env"
   (cd "$REPO_ROOT" && ZAP_TOTP_SECRET_FILE="$STATE_DIR/totp.secret" \
-    DATABASE_URL=unused BETTER_AUTH_SECRET=unused \
+    DATABASE_URL=unused BETTER_AUTH_SECRETS=1:unusedunusedunusedunusedunusedunused \
     pnpm exec tsx scripts/ci/zap-seed.ts --refresh)
   local csrf="-config replacer.full_list(0).description=csrf"
   csrf+=" -config replacer.full_list(0).enabled=true"

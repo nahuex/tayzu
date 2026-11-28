@@ -981,7 +981,7 @@ describe('Security-relevant events are logged (task 15.6)', () => {
           NODE_ENV: 'test',
           DATABASE_URL: ownerDatabaseUrl(),
           AUTH_DATABASE_URL: ownerDatabaseUrl(),
-          BETTER_AUTH_SECRET: TEST_SECRET,
+          BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
           CERBOS_ADDRESS: CERBOS,
           ALLOWED_ORIGINS: AUTH_ORIGIN,
           BOOTSTRAP_ORGANIZATION_NAME: 'Events Bootstrap',

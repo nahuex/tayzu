@@ -132,7 +132,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 4. Versioned authentication secrets (C2)
 
-- [ ] 4.1 `BETTER_AUTH_SECRETS` is parsed and `BETTER_AUTH_SECRET` is refused (design D4).
+- [x] 4.1 `BETTER_AUTH_SECRETS` is parsed and `BETTER_AUTH_SECRET` is refused (design D4).
       Verify: `apps/api/src/config.test.ts` covers "A malformed list is refused" and "The
       retired variable is refused" (duplicate, negative, signed, leading-zero and
       non-numeric versions, an empty value, a value under 32 characters, an empty list, the

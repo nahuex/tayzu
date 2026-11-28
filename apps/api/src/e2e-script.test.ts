@@ -420,6 +420,39 @@ describe('e2e.sh: the API trusts one proxy hop from loopback only (048 task 3.1,
   });
 });
 
+/**
+ * `048` task 4.1 (design D4, Resolved decision Q9): `BETTER_AUTH_SECRET` is retired and
+ * fails startup in every environment, so `up()` exports `BETTER_AUTH_SECRETS` as a
+ * one-entry list over the run's random secret, before `apps/api` starts.
+ */
+describe('e2e.sh: the versioned authentication secrets (048 task 4.1, design D4)', () => {
+  const RANDOM_LIST = /^(0|[1-9][0-9]*):\$\(openssl rand -(hex|base64) ([0-9]+)\)$/;
+
+  it('up() exports BETTER_AUTH_SECRETS once, a one-entry list over a random secret, before apps/api starts', () => {
+    const up = codeLines(shellFunction('up'));
+    const apiAt = lineIndex(up, API_START);
+    const exported = exportsOf(up, 'BETTER_AUTH_SECRETS');
+
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(exported, 'one `export BETTER_AUTH_SECRETS=` line in up()').toHaveLength(1);
+    const value = exported[0]?.value ?? '';
+    const match = RANDOM_LIST.exec(value);
+    expect(match, `the exported list ${value}`).not.toBeNull();
+    // At least 32 characters of random value: 16 bytes in hex, 24 in base64.
+    const bytes = Number(match?.[3] ?? 0);
+    expect(bytes).toBeGreaterThanOrEqual(match?.[2] === 'hex' ? 16 : 24);
+    expect(exported[0]?.at ?? Infinity).toBeLessThan(apiAt);
+    expect([...script().matchAll(/\bBETTER_AUTH_SECRETS=/g)]).toHaveLength(1);
+  });
+
+  it('the script never sets or reads the retired BETTER_AUTH_SECRET', () => {
+    for (const line of codeLines(script())) {
+      expect(line).not.toMatch(/\bBETTER_AUTH_SECRET=/);
+      expect(line).not.toMatch(/\$\{?BETTER_AUTH_SECRET\b/);
+    }
+  });
+});
+
 describe('e2e.sh: migrations run as the migration role (048 task 2.4, design D1)', () => {
   it('exports the owner URL as MIGRATION_DATABASE_URL before the pnpm db:migrate line', () => {
     const up = codeLines(shellFunction('up'));
@@ -493,7 +526,7 @@ describe('e2e.sh never echoes a secret, a credential or a link (task 10.1, D16)'
     'DATABASE_URL',
     'MIGRATION_DATABASE_URL',
     'AUTH_DATABASE_URL',
-    'BETTER_AUTH_SECRET',
+    'BETTER_AUTH_SECRETS',
     'IDENTITY_TOKEN_HMAC_SECRET',
     'VISMA_CONNECT_CLIENT_SECRET',
     'database_url',

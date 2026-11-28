@@ -125,7 +125,7 @@ function env(overrides: Record<string, string | undefined>): Record<string, stri
   return {
     DATABASE_URL: APP_URL,
     AUTH_DATABASE_URL: AUTH_URL,
-    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: ORIGIN,
     HOST: '127.0.0.1',

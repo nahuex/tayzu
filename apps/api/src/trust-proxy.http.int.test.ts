@@ -342,7 +342,7 @@ describe('createAppFromEnv uses TRUST_PROXY_HOPS and TRUST_PROXY_CIDRS (048 task
     app = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: ORIGIN,
       INVITATION_LINK_BASE_URL: ORIGIN,

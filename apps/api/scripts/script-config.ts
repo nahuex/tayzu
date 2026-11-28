@@ -2,10 +2,12 @@
  * Configuration loader of the maintenance scripts (`043` task 2.0b, design D9,
  * Resolved decisions Q114 and Q116). `loadConfig` (`../src/config.ts`) is the
  * app's loader and requires every variable of the running API; a script holds
- * one role, or no `BETTER_AUTH_SECRET`, so it reads only the variables it
+ * one role, or no `BETTER_AUTH_SECRETS`, so it reads only the variables it
  * declares here. A missing or malformed variable throws an error that names
  * the variable and never contains a value.
  */
+import { parseAuthSecrets } from '../src/auth-secrets.js';
+
 type Env = Readonly<Record<string, string | undefined>>;
 
 export type ScriptVariable =
@@ -13,7 +15,7 @@ export type ScriptVariable =
   | 'AUTH_DATABASE_URL'
   | 'PURGE_DATABASE_URL'
   | 'REVERSAL_DATABASE_URL'
-  | 'BETTER_AUTH_SECRET'
+  | 'BETTER_AUTH_SECRETS'
   | 'CERBOS_ADDRESS'
   | 'TAYZU_OPERATOR_ID'
   | 'EMAIL_PROVIDER'
@@ -25,7 +27,7 @@ export type ScriptVariable =
 
 /**
  * The variables each script declares. The backfill and the reconcile hold
- * `tayzu_app` and `tayzu_auth` and neither holds `BETTER_AUTH_SECRET` (Q114);
+ * `tayzu_app` and `tayzu_auth` and neither holds `BETTER_AUTH_SECRETS` (Q114);
  * both reach their own Cerbos sidecar. The reconcile and the bootstrap CLI
  * also take the operator's opaque id (Q116). The bootstrap CLI builds Better
  * Auth, so it alone declares the secret. The break-glass `recover-admin-mfa`
@@ -44,7 +46,7 @@ export const SCRIPT_VARIABLES = {
   'bootstrap-admin': [
     'DATABASE_URL',
     'AUTH_DATABASE_URL',
-    'BETTER_AUTH_SECRET',
+    'BETTER_AUTH_SECRETS',
     'CERBOS_ADDRESS',
     'TAYZU_OPERATOR_ID',
   ],
@@ -95,7 +97,6 @@ type ScriptConfig<S extends ScriptName> = Readonly<
     Partial<Record<OptionalOf<S>, string>>
 >;
 
-const MIN_SECRET_LENGTH = 32;
 /** The catalog's id pattern (design D9): never an email. */
 export const OPERATOR_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
@@ -117,10 +118,13 @@ function required(env: Env, name: ScriptVariable): string {
 
 function read(env: Env, name: ScriptVariable): string {
   const value = required(env, name);
-  if (name === 'BETTER_AUTH_SECRET' && value.length < MIN_SECRET_LENGTH) {
-    throw new FixedMessageError(
-      `BETTER_AUTH_SECRET is malformed (at least ${String(MIN_SECRET_LENGTH)} characters).`,
-    );
+  if (name === 'BETTER_AUTH_SECRETS') {
+    // The shared parser of 048 D4; its message names only the variable.
+    try {
+      parseAuthSecrets(value, name);
+    } catch (error) {
+      throw new FixedMessageError(error instanceof Error ? error.message : `${name} is malformed.`);
+    }
   }
   if (name === 'TAYZU_OPERATOR_ID' && !OPERATOR_ID_PATTERN.test(value)) {
     throw new FixedMessageError(

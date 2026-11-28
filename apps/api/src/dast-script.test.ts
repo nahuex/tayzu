@@ -212,6 +212,65 @@ describe('dast.sh: the API trusts one proxy hop from loopback only (048 task 3.1
   });
 });
 
+/**
+ * `048` task 4.1 (design D4, Resolved decision Q9): `BETTER_AUTH_SECRET` is retired and
+ * fails startup, so `up()` exports `BETTER_AUTH_SECRETS` as a one-entry list over the
+ * run's random secret, and the `zap-seed.ts --refresh` call of `api_scan` (`:309`) sets a
+ * well-formed unused `BETTER_AUTH_SECRETS` instead of `BETTER_AUTH_SECRET=unused`.
+ */
+describe('dast.sh: the versioned authentication secrets (048 task 4.1, design D4)', () => {
+  const RANDOM_LIST = /^(0|[1-9][0-9]*):\$\(openssl rand -(hex|base64) ([0-9]+)\)$/;
+  /** `BETTER_AUTH_SECRETS=<value>` inline on a line, quoted or bare. */
+  const inlineValue = (line: string): string | undefined => {
+    const match = /\bBETTER_AUTH_SECRETS=(?:"([^"\n]*)"|'([^'\n]*)'|(\S+))/.exec(line);
+    return match === null ? undefined : (match[1] ?? match[2] ?? match[3]);
+  };
+
+  it('up() exports BETTER_AUTH_SECRETS once, a one-entry list over a random secret, before apps/api starts', () => {
+    const up = shellCodeLines(upFunction());
+    const apiAt = up.findIndex((line) => /--filter[= ]@tayzu\/api\s+start\b/.test(line));
+    const exported = exportsOf(up, 'BETTER_AUTH_SECRETS');
+
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(exported, 'one `export BETTER_AUTH_SECRETS=` line in up()').toHaveLength(1);
+    const value = exported[0]?.value ?? '';
+    const match = RANDOM_LIST.exec(value);
+    expect(match, `the exported list ${value}`).not.toBeNull();
+    // At least 32 characters of random value: 16 bytes in hex, 24 in base64.
+    const bytes = Number(match?.[3] ?? 0);
+    expect(bytes).toBeGreaterThanOrEqual(match?.[2] === 'hex' ? 16 : 24);
+    expect(exported[0]?.at ?? Infinity).toBeLessThan(apiAt);
+  });
+
+  it('the --refresh call of zap-seed.ts sets a well-formed BETTER_AUTH_SECRETS, not BETTER_AUTH_SECRET=unused', async () => {
+    const { parseAuthSecrets } = await import('./auth-secrets.js');
+    const lines = shellCodeLines(shellFunctionBody('api_scan'));
+    const refresh = lines.find((line) => /scripts\/ci\/zap-seed\.ts --refresh\b/.test(line));
+
+    expect(refresh, 'the zap-seed.ts --refresh line of api_scan').toBeDefined();
+    expect(refresh).toMatch(/\bDATABASE_URL=unused\b/);
+    expect(refresh).not.toMatch(/\bBETTER_AUTH_SECRET=/);
+    const value = inlineValue(refresh ?? '');
+    expect(value, 'an inline BETTER_AUTH_SECRETS= on the --refresh line').toBeDefined();
+    expect(value).not.toMatch(/\$/);
+    expect(() => parseAuthSecrets(value ?? '', 'BETTER_AUTH_SECRETS')).not.toThrow();
+  });
+
+  it('the script never sets or reads the retired BETTER_AUTH_SECRET', () => {
+    for (const line of shellCodeLines(script)) {
+      expect(line).not.toMatch(/\bBETTER_AUTH_SECRET=/);
+      expect(line).not.toMatch(/\$\{?BETTER_AUTH_SECRET\b(?!S)/);
+    }
+  });
+
+  it('BETTER_AUTH_SECRETS is never printed', () => {
+    for (const line of shellCodeLines(script)) {
+      if (!/\b(echo|printf|log|fail)\b/.test(line)) continue;
+      expect(line).not.toMatch(/\$\{?BETTER_AUTH_SECRETS\b/);
+    }
+  });
+});
+
 describe('dast.sh: migrations run as the migration role (048 task 2.4, design D1)', () => {
   it('exports the owner URL as MIGRATION_DATABASE_URL before the pnpm db:migrate line', () => {
     const up = shellCodeLines(upFunction());

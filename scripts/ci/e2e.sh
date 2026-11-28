@@ -248,7 +248,7 @@ up() {
   # Node verifies the proxy's certificate (the API's discovery, JWKS and token
   # calls to the stub) against the run's CA.
   export NODE_EXTRA_CA_CERTS="$STATE_DIR/tls/node-ca.crt"
-  export BETTER_AUTH_SECRET="$secret"
+  export BETTER_AUTH_SECRETS="1:$secret"
   # Q93 of 043: keys the per-recipient caps; random per run, never printed.
   export IDENTITY_TOKEN_HMAC_SECRET="$hmac_secret"
   # Q38: the public origin is the proxy's, over https.

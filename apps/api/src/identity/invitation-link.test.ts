@@ -33,7 +33,7 @@ function configEnv(): Record<string, string | undefined> {
     NODE_ENV: 'production',
     DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
     AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-    BETTER_AUTH_SECRET: 'invitation-link-test-only-secret-0123456789-abcdef',
+    BETTER_AUTH_SECRETS: '1:invitation-link-test-only-secret-0123456789-abcdef',
     IDENTITY_TOKEN_HMAC_SECRET: 'invitation-hmac-test-only-secret-0123456789-abcd',
     CERBOS_ADDRESS: 'localhost:3593',
     // 048 D3: BETTER_AUTH_URL's origin is listed; it stays apart from the link origin.

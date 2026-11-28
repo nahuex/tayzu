@@ -61,7 +61,8 @@ function env(
   return {
     DATABASE_URL: APP_URL,
     AUTH_DATABASE_URL: AUTH_URL,
-    BETTER_AUTH_SECRET: SECRET,
+    // 048 D4: the versioned list replaces the retired single secret.
+    BETTER_AUTH_SECRETS: `1:${SECRET}`,
     // Legacy name kept so this fixture also works while bootstrap.ts still reads it.
     AUTH_SECRET: SECRET,
     CERBOS_ADDRESS: 'localhost:3593',
@@ -76,7 +77,7 @@ function env(
   };
 }
 
-const REQUIRED_SECRETS = ['DATABASE_URL', 'AUTH_DATABASE_URL', 'BETTER_AUTH_SECRET'] as const;
+const REQUIRED_SECRETS = ['DATABASE_URL', 'AUTH_DATABASE_URL', 'BETTER_AUTH_SECRETS'] as const;
 const SECRET_VALUES = ['app-pw-s3cret', 'auth-pw-s3cret', SECRET];
 
 function thrown(fn: () => unknown): Error {
@@ -98,7 +99,7 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     const config = loadConfig(env());
     expect(config.appDatabaseUrl).toBe(APP_URL);
     expect(config.authDatabaseUrl).toBe(AUTH_URL);
-    expect(config.betterAuthSecret).toBe(SECRET);
+    expect(config.betterAuthSecrets).toEqual([{ version: 1, value: SECRET }]);
   });
 
   it.each(REQUIRED_SECRETS)('refuses to start with %s missing, naming it', (name) => {
@@ -113,10 +114,10 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     }
   });
 
-  it('refuses a malformed BETTER_AUTH_SECRET (too short) without echoing it', () => {
+  it('refuses a malformed BETTER_AUTH_SECRETS (too short) without echoing it', () => {
     const short = 'too-short-s3cret';
-    const error = thrown(() => loadConfig(env({ BETTER_AUTH_SECRET: short })));
-    expect(error.message).toContain('BETTER_AUTH_SECRET');
+    const error = thrown(() => loadConfig(env({ BETTER_AUTH_SECRETS: `1:${short}` })));
+    expect(error.message).toContain('BETTER_AUTH_SECRETS');
     expect(error.message).not.toContain(short);
   });
 
@@ -129,15 +130,15 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     }
   });
 
-  it('createAppFromEnv refuses a missing BETTER_AUTH_SECRET before building any pool', async () => {
+  it('createAppFromEnv refuses a missing BETTER_AUTH_SECRETS before building any pool', async () => {
     const error: unknown = await createAppFromEnv(
-      env({ BETTER_AUTH_SECRET: undefined, AUTH_SECRET: undefined }),
+      env({ BETTER_AUTH_SECRETS: undefined, AUTH_SECRET: undefined }),
     ).then(
       () => undefined,
       (caught: unknown) => caught,
     );
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('BETTER_AUTH_SECRET');
+    expect((error as Error).message).toContain('BETTER_AUTH_SECRETS');
     expect(vi.mocked(createPool)).not.toHaveBeenCalled();
   });
 
@@ -1775,6 +1776,210 @@ describe('BETTER_AUTH_URL origin is one of ALLOWED_ORIGINS (048 task 3.4, design
       expect(error.message).not.toContain(MARKER_ORIGIN);
       expect(error.message).not.toContain('marker-allowed');
       expect(error.message).not.toContain('app.tayzu.test');
+    });
+  });
+});
+
+/**
+ * `048` task 4.1 (design D4, Resolved decision Q9): `BETTER_AUTH_SECRETS` is the versioned
+ * list `<version>:<value>[,<version>:<value>...]`, parsed by `parseAuthSecrets` of
+ * `./auth-secrets.ts` (its own unit test covers the parser in depth), and the retired
+ * `BETTER_AUTH_SECRET` is refused when set.
+ *
+ * ## Production symbols expected
+ *
+ * ```ts
+ * // apps/api/src/config.ts
+ * export interface Config {
+ *   // replaces `betterAuthSecret: string`
+ *   readonly betterAuthSecrets: readonly { version: number; value: string }[];
+ * }
+ * ```
+ *
+ * Spec (auth-and-rbac, "Authentication secrets are versioned and come only from the
+ * host"):
+ *
+ * - "The retired variable is refused": WHEN the platform starts with the retired
+ *   single-secret variable set, THEN startup fails, naming only that variable. D4 gives
+ *   the message: `'BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.'`, in
+ *   every environment, for a non-blank value.
+ * - "A malformed list is refused": WHEN the list has a duplicated version, a negative or
+ *   non-numeric version, an entry without a value, or a value under 32 characters, THEN
+ *   startup fails with a message that names only the variable and no value.
+ */
+describe('BETTER_AUTH_SECRETS is parsed and BETTER_AUTH_SECRET is refused (048 task 4.1, design D4, Q9)', () => {
+  const VARIABLE = 'BETTER_AUTH_SECRETS';
+  const RETIRED = 'BETTER_AUTH_SECRET';
+  const RETIRED_MESSAGE = 'BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.';
+  const EVERY_ENVIRONMENT = ['test', 'production', 'staging', 'development'] as const;
+  /** Value markers: at least 32 characters each, unique, with no English word inside. */
+  const VALUE_A = 'Rq5Vx8Kz2Lm9Wt4Np7Yb1Hc6Gf3Jd0SuE';
+  const VALUE_B = 'Tz6Mq1Xk8Pw3Lr5Vn9Hj2Bc7Fy4Dg0SaW';
+  const VALUE_C = 'Zm2Kx7Qv4Lt9Wp1Rn6Yb3Hj8Gc5Fd0SsK';
+  const RETIRED_VALUE = 'Yk4Rz9Mq2Wx7Lp5Tv1Nb8Hj3Gc6Fd0SeQ';
+
+  const production = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      ...overrides,
+    });
+  const secretsOf = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['betterAuthSecrets'];
+
+  /**
+   * The message names only `variable` (no other variable-like token) and no 6-character
+   * fragment of any value in `raw`.
+   */
+  function expectNamesOnly(message: string, variable: string, raw: string): void {
+    expect(message).toContain(variable);
+    const tokens = message.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) ?? [];
+    for (const token of tokens) expect(token, `token ${token} in the message`).toBe(variable);
+    for (const entry of raw.split(',')) {
+      const colon = entry.indexOf(':');
+      const value = (colon === -1 ? entry : entry.slice(colon + 1)).trim();
+      for (let start = 0; start + 6 <= value.length; start += 1) {
+        const fragment = value.slice(start, start + 6);
+        expect(message, `fragment ${fragment} of a value`).not.toContain(fragment);
+      }
+    }
+  }
+
+  describe('the list is parsed into Config.betterAuthSecrets', () => {
+    it.each(EVERY_ENVIRONMENT)('one entry is the current one (NODE_ENV=%s)', (nodeEnv) => {
+      const config = loadConfig(production(nodeEnv, { [VARIABLE]: `1:${VALUE_A}` }));
+      expect(secretsOf(config)).toEqual([{ version: 1, value: VALUE_A }]);
+    });
+
+    it('the first entry is current: the order is kept, not sorted by version', () => {
+      expect(secretsOf(loadConfig(env({ [VARIABLE]: `2:${VALUE_A},1:${VALUE_B}` })))).toEqual([
+        { version: 2, value: VALUE_A },
+        { version: 1, value: VALUE_B },
+      ]);
+      expect(
+        secretsOf(loadConfig(env({ [VARIABLE]: `1:${VALUE_A},3:${VALUE_B},2:${VALUE_C}` }))),
+      ).toEqual([
+        { version: 1, value: VALUE_A },
+        { version: 3, value: VALUE_B },
+        { version: 2, value: VALUE_C },
+      ]);
+    });
+
+    it('version 0 is accepted', () => {
+      expect(secretsOf(loadConfig(env({ [VARIABLE]: `0:${VALUE_A}` })))).toEqual([
+        { version: 0, value: VALUE_A },
+      ]);
+    });
+
+    it('a value containing a colon is kept whole', () => {
+      const withColons = `${VALUE_A}:${VALUE_B}:tail`;
+      expect(secretsOf(loadConfig(env({ [VARIABLE]: `5:${withColons}` })))).toEqual([
+        { version: 5, value: withColons },
+      ]);
+    });
+
+    it('the config has no betterAuthSecret field any more', () => {
+      const config = loadConfig(env({ [VARIABLE]: `1:${VALUE_A}` }));
+      expect(Object.keys(config)).not.toContain('betterAuthSecret');
+    });
+  });
+
+  describe('scenario: A malformed list is refused', () => {
+    const MALFORMED: readonly (readonly [string, string])[] = [
+      ['a duplicated version', `1:${VALUE_A},1:${VALUE_B}`],
+      ['a negative version', `-1:${VALUE_A}`],
+      ['a signed version (+1)', `+1:${VALUE_A}`],
+      ['a leading-zero version (01)', `01:${VALUE_A}`],
+      ['a non-numeric version (abc)', `abc:${VALUE_A}`],
+      ['a non-numeric version (1a)', `1a:${VALUE_A}`],
+      ['a version above 2^31-1', `2147483648:${VALUE_A}`],
+      ['an entry without a value', '1:'],
+      ['an empty value', `1:${VALUE_A},2:   `],
+      ['an entry without a colon', VALUE_A],
+      ['a value under 32 characters', `1:${'k'.repeat(31)}`],
+      ['a later value under 32 characters', `1:${VALUE_A},2:Wq7Xz3Kp9Lm`],
+      ['an empty list', ''],
+      ['a blank list', '   '],
+      ['a list of commas only', ' , '],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        MALFORMED.map(([label, raw]) => [label, nodeEnv, raw] as const),
+      ),
+    )(
+      'refuses %s (NODE_ENV=%s), naming only BETTER_AUTH_SECRETS and no value',
+      (_label, nodeEnv, raw) => {
+        const error = thrown(() => loadConfig(production(nodeEnv, { [VARIABLE]: raw })));
+        expectNamesOnly(error.message, VARIABLE, raw);
+        for (const value of SECRET_VALUES) expect(error.message).not.toContain(value);
+      },
+    );
+
+    it('createAppFromEnv refuses a malformed list before building any pool', async () => {
+      vi.mocked(createPool).mockClear();
+      const raw = `1:${VALUE_A},1:${VALUE_B}`;
+      const error: unknown = await createAppFromEnv(env({ [VARIABLE]: raw })).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expectNamesOnly((error as Error).message, VARIABLE, raw);
+      expect(vi.mocked(createPool)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scenario: The retired variable is refused', () => {
+    it.each(EVERY_ENVIRONMENT)(
+      'a set BETTER_AUTH_SECRET fails startup with the retirement message (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(production(nodeEnv, { [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: RETIRED_VALUE })),
+        );
+        expect(error.message).toBe(RETIRED_MESSAGE);
+      },
+    );
+
+    it.each(EVERY_ENVIRONMENT)(
+      'a set BETTER_AUTH_SECRET equal to the current value is still refused (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(production(nodeEnv, { [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: VALUE_A })),
+        );
+        expect(error.message).toBe(RETIRED_MESSAGE);
+      },
+    );
+
+    it('the retirement message carries no value', () => {
+      const error = thrown(() =>
+        loadConfig(env({ [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: RETIRED_VALUE })),
+      );
+      for (const value of [RETIRED_VALUE, VALUE_A, ...SECRET_VALUES]) {
+        expect(error.message).not.toContain(value);
+      }
+    });
+
+    it.each(['', '   '])('a blank BETTER_AUTH_SECRET (%j) is not set and is accepted', (blank) => {
+      const config = loadConfig(env({ [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: blank }));
+      expect(secretsOf(config)).toEqual([{ version: 1, value: VALUE_A }]);
+    });
+
+    it('createAppFromEnv refuses a set BETTER_AUTH_SECRET before building any pool', async () => {
+      vi.mocked(createPool).mockClear();
+      const error: unknown = await createAppFromEnv(
+        env({ [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: RETIRED_VALUE }),
+      ).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(RETIRED_MESSAGE);
+      expect(vi.mocked(createPool)).not.toHaveBeenCalled();
     });
   });
 });

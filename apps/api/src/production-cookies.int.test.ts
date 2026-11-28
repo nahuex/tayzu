@@ -80,7 +80,7 @@ const TEST_PASSWORD = 'correct horse battery staple';
 const ENV: Record<string, string> = {
   DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
   AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-  BETTER_AUTH_SECRET: TEST_SECRET,
+  BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
   CERBOS_ADDRESS: 'localhost:3593',
   // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
   ALLOWED_ORIGINS: `${ALLOWED_ORIGIN},${AUTH_URL}`,

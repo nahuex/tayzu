@@ -47,7 +47,7 @@
  *     exported `emitSessionRevoked`, actor id the user id, reason `sso_link_shed`)
  *     for each, then sweeps the sessions a second time after the commit. Its
  *     result is `{ removedLinks, revokedSessions }`. It builds no Better Auth
- *     instance and reads no `BETTER_AUTH_SECRET`.
+ *     instance and reads no `BETTER_AUTH_SECRETS` (nor the retired `BETTER_AUTH_SECRET`).
  *   - `port` is the `SsoLinkShedPort` (`packages/auth/src/identity/ports.ts`,
  *     `shed({ tenantId, userId }): Promise<void>`) for `createAuth`'s option
  *     `ssoLinkShed`: it reads `currentAcceptanceContext()` and returns without
@@ -943,15 +943,18 @@ describe('An SSO link its user did not make does not survive into a second tenan
 
   // ---- the core without Better Auth ----------------------------------------------------------------------
 
-  it("The shed's deletes run on the tayzu_auth pool with no Better Auth instance: a core built with only that pool and no BETTER_AUTH_SECRET sheds the link and revokes the sessions", async () => {
+  it("The shed's deletes run on the tayzu_auth pool with no Better Auth instance: a core built with only that pool and no BETTER_AUTH_SECRETS or BETTER_AUTH_SECRET sheds the link and revokes the sessions", async () => {
     const t1 = await freshTenant();
     const t2 = await freshTenant();
     const { person, ssoCookie } = await linkedMemberWithSsoSession(t1);
     const deviceCookie = await passwordSession(person);
     // The membership of t2 is seeded directly, so that no hook runs.
     await seedMember(t2.tenantId, person.userId);
+    // 048 D4: neither the versioned list nor the retired single secret is in the environment.
     const savedSecret = process.env['BETTER_AUTH_SECRET'];
+    const savedSecrets = process.env['BETTER_AUTH_SECRETS'];
     delete process.env['BETTER_AUTH_SECRET'];
+    delete process.env['BETTER_AUTH_SECRETS'];
     await harness.reset();
 
     try {
@@ -959,6 +962,7 @@ describe('An SSO link its user did not make does not survive into a second tenan
       await bare.shed({ tenantId: t2.tenantId, userId: person.userId, path: 'reconcile' });
     } finally {
       if (savedSecret !== undefined) process.env['BETTER_AUTH_SECRET'] = savedSecret;
+      if (savedSecrets !== undefined) process.env['BETTER_AUTH_SECRETS'] = savedSecrets;
     }
 
     expect(await accountsOf(person.userId), 'the link is shed').toHaveLength(0);

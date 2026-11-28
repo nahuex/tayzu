@@ -44,7 +44,7 @@ function env(overrides: Record<string, string | undefined>): Record<string, stri
   return {
     DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
     AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-    BETTER_AUTH_SECRET: 'email-sender-test-only-secret-0123456789-abcdef',
+    BETTER_AUTH_SECRETS: '1:email-sender-test-only-secret-0123456789-abcdef',
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',

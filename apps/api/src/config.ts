@@ -8,6 +8,7 @@ import { accessSync, constants, statSync } from 'node:fs';
 import { BlockList, isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 
+import { parseAuthSecrets, type AuthSecret } from './auth-secrets.js';
 import { TEST_TRUST_PROXY } from './trust-proxy.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -15,7 +16,8 @@ type Env = Readonly<Record<string, string | undefined>>;
 export interface Config {
   readonly appDatabaseUrl: string;
   readonly authDatabaseUrl: string;
-  readonly betterAuthSecret: string;
+  /** `BETTER_AUTH_SECRETS` (048 D4): every key version, the current one first. */
+  readonly betterAuthSecrets: readonly AuthSecret[];
   readonly cerbosAddress: string;
   readonly allowedOrigins: readonly string[];
   /** Public base URL of the API (Q40): `https` outside test; undefined only in test. */
@@ -151,8 +153,6 @@ const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
 /** The org-deletion window bounds (045 D1, Q21); the marker's CHECK enforces the same range. */
 const MIN_ORG_DELETION_WINDOW_DAYS = 7;
 const MAX_ORG_DELETION_WINDOW_DAYS = 14;
-
-const MIN_SECRET_LENGTH = 32;
 
 function required(env: Env, name: string): string {
   const value = env[name];
@@ -516,15 +516,25 @@ function loadTrustProxy(env: Env): TrustProxySetting {
   return { hops: parseTrustProxyHops(env), cidrs: parseTrustProxyCidrs(env) };
 }
 
+const BETTER_AUTH_SECRETS = 'BETTER_AUTH_SECRETS';
+const RETIRED_BETTER_AUTH_SECRET = 'BETTER_AUTH_SECRET';
+
+/**
+ * The versioned secrets (048 D4, Q9). The retired single-secret variable, when set
+ * (non-blank), fails startup in every environment, so no key can come from it.
+ */
+function loadBetterAuthSecrets(env: Env): readonly AuthSecret[] {
+  const retired = env[RETIRED_BETTER_AUTH_SECRET];
+  if (retired !== undefined && retired.trim() !== '') {
+    throw new Error('BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.');
+  }
+  return parseAuthSecrets(required(env, BETTER_AUTH_SECRETS), BETTER_AUTH_SECRETS);
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
-  const betterAuthSecret = required(env, 'BETTER_AUTH_SECRET');
-  if (betterAuthSecret.length < MIN_SECRET_LENGTH) {
-    throw new Error(
-      `BETTER_AUTH_SECRET is malformed (at least ${String(MIN_SECRET_LENGTH)} characters).`,
-    );
-  }
+  const betterAuthSecrets = loadBetterAuthSecrets(env);
   const cerbosAddress = required(env, 'CERBOS_ADDRESS');
   const allowedOrigins = required(env, 'ALLOWED_ORIGINS')
     .split(',')
@@ -623,7 +633,7 @@ export function loadConfig(env: Env): Config {
   return {
     appDatabaseUrl,
     authDatabaseUrl,
-    betterAuthSecret,
+    betterAuthSecrets,
     cerbosAddress,
     allowedOrigins,
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),

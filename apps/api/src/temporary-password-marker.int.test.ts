@@ -325,7 +325,7 @@ describe('the creation paths write the temporary-password marker (task 14.19, Q3
       NODE_ENV: 'test',
       DATABASE_URL: process.env.DATABASE_URL ?? '',
       AUTH_DATABASE_URL: process.env.DATABASE_URL ?? '',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS,
       ALLOWED_ORIGINS: 'http://localhost:3000',
       TAYZU_OPERATOR_ID: OPERATOR_ID,
