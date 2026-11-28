@@ -78,6 +78,7 @@ import { createReauthorization, type Reauthorization } from './reauthorization.j
 import { assertDiscoverable } from './sso-discovery.js';
 import { DEFAULT_SPA_FALLBACK_RATE_LIMIT, registerSpaFallback } from './spa-fallback.js';
 import { assignStyleNonce, styleNonceOf } from './style-nonce.js';
+import { TEST_TRUST_PROXY, type TrustProxy } from './trust-proxy.js';
 import { registerWebStatic } from './web-static.js';
 
 type Pool = ReturnType<typeof createPool>;
@@ -208,6 +209,13 @@ export interface CreateAppOptions {
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
    */
   readonly configureApp?: (app: FastifyInstance) => void | Promise<void>;
+  /**
+   * 048 D2 (Q6): which peers may set the client address through `X-Forwarded-For`. The
+   * production start passes `createTrustProxy({ hops, cidrs })` built from
+   * `TRUST_PROXY_HOPS` and `TRUST_PROXY_CIDRS`; omitted, the test list
+   * (`TEST_TRUST_PROXY`), which `loadConfig` keeps only under `NODE_ENV=test`.
+   */
+  readonly trustProxy?: TrustProxy;
 }
 
 export interface App {
@@ -662,10 +670,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ],
   });
 
-  // Only a proxy on a private or loopback address (the ACA ingress) may set
-  // the client address via `X-Forwarded-For`; a public peer's header is ignored.
+  // 048 D2: only a configured proxy hop may set the client address via
+  // `X-Forwarded-For`; an untrusted peer's header is never read, and at most the
+  // configured number of hops is skipped. `request.ip` is the resolved address.
+  const trustProxy = options.trustProxy ?? TEST_TRUST_PROXY;
   const app = Fastify({
-    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
+    trustProxy: typeof trustProxy === 'function' ? trustProxy : [...trustProxy],
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
   await options.configureApp?.(app);

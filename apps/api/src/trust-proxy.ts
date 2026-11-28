@@ -15,6 +15,15 @@ export interface TrustProxyOptions {
   readonly cidrs: readonly string[];
 }
 
+/**
+ * The list kept under `NODE_ENV=test` when neither variable is set (048 D2): the existing
+ * suites inject from the loopback peer with a random `X-Forwarded-For`.
+ */
+export const TEST_TRUST_PROXY = ['loopback', 'linklocal', 'uniquelocal'] as const;
+
+/** What `createApp` hands Fastify: the configured function, or the test list. */
+export type TrustProxy = ((address: string, hopIndex: number) => boolean) | typeof TEST_TRUST_PROXY;
+
 /** The dotted form of an IPv4-mapped IPv6 address, for example `::ffff:127.0.0.1`. */
 const IPV4_MAPPED = /^::ffff:(?<ipv4>\d{1,3}(?:\.\d{1,3}){3})$/i;
 

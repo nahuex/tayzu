@@ -112,7 +112,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       covers the spoofing matrix (a peer outside the range, a trusted peer, more forwarded
       values than hops, an IPv4-mapped IPv6 peer, an IPv6 range) by calling the function the
       way `proxy-addr` does.
-- [ ] 3.3 `createApp` and `createAppFromEnv` use the configured trust (design D2). Verify:
+- [x] 3.3 `createApp` and `createAppFromEnv` use the configured trust (design D2). Verify:
       `apps/api/src/trust-proxy.http.int.test.ts` covers "A spoofed forwarded address from an
       untrusted peer is ignored", "A forwarded address from the trusted ingress is used" and
       "Extra hops beyond the configured count are not trusted" through `inject` with

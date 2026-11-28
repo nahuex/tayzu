@@ -8,6 +8,8 @@ import { accessSync, constants, statSync } from 'node:fs';
 import { BlockList, isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 
+import { TEST_TRUST_PROXY } from './trust-proxy.js';
+
 type Env = Readonly<Record<string, string | undefined>>;
 
 export interface Config {
@@ -114,8 +116,6 @@ export interface Config {
 /** The input of `createTrustProxy` (048 D2), or the default list kept under test. */
 type TrustProxySetting =
   { readonly hops: number; readonly cidrs: readonly string[] } | typeof TEST_TRUST_PROXY;
-
-const TEST_TRUST_PROXY = ['loopback', 'linklocal', 'uniquelocal'] as const;
 
 interface RateLimit {
   readonly max: number;

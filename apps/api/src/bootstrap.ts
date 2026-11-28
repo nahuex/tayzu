@@ -10,6 +10,7 @@ import { createPool } from '@tayzu/db';
 import { loadConfig } from './config.js';
 import { createEmailSender } from './email-sender.js';
 import { createApp, type App } from './server.js';
+import { createTrustProxy } from './trust-proxy.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -78,6 +79,8 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       allowedOrigins,
       ...(config.betterAuthUrl === undefined ? {} : { baseUrl: config.betterAuthUrl }),
       backchannelLogoutRateLimitPerMinute: config.backchannelLogoutRateLimitPerMinute,
+      trustProxy:
+        'hops' in config.trustProxy ? createTrustProxy(config.trustProxy) : config.trustProxy,
       ...(config.sso === undefined ? {} : { sso: config.sso }),
       // One configured pre-auth budget covers sign-in and two-factor verification (D20);
       // password checks have their own budget (Q52).
