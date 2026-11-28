@@ -301,7 +301,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `packages/auth/src/sso/backchannel-logout.test.ts` covers "A long-lived logout token is
       rejected" before any fetch, and `apps/api/src/backchannel-logout.int.test.ts` shows its
       `jti` unrecorded.
-- [ ] 7.8 _(setup)_ Run the `observability-auditor` over group 7 (the two new scope values on
+- [x] 7.8 _(setup)_ Run the `observability-auditor` over group 7 (the two new scope values on
       `tayzu.auth.rate_limit.events` and `auth.security.rate_limited`); update
       `attack-surfaces.md`: the token-exchange and back-channel rows (shared, keyed by address
       and client id), the per-replica budgets of the `/v1` per-principal limiter and the SPA
