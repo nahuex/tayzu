@@ -2461,6 +2461,8 @@ const IDENTITY_METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.recovery_emails': '{event}',
   // 045 (design "Observability contract", Metrics: "Counter, `{deletion}`").
   'tayzu.identity.org_deletions': '{deletion}',
+  // 048 (design D9 and "Observability contract", Metrics: "Counter, `{report}`").
+  'tayzu.web.csp_violations': '{report}',
 };
 
 /** Span attributes the design lists as conditional (its Spans table). */
@@ -4588,6 +4590,57 @@ describe('otel-smoke-check, 003: GET /v1/me records identity.session.me with its
       expect(leaks(corpus, local), `the ${label} must never appear in part`).toEqual([]);
     }
   }, 120_000);
+});
+
+/**
+ * 048 task 8.4 (design D9, "Observability contract"): `POST /v1/csp-reports` counts a browser
+ * CSP violation report on `tayzu.web.csp_violations` (Counter, `{report}`) with the one
+ * attribute `tayzu.web.csp.directive`, recorded through `recordIdentityMetric`. This drive posts
+ * one `application/csp-report` whose `effective-directive` is `script-src-elem`, so that the 043
+ * check below ("is recorded with exactly its declared attribute keys and the unit of the
+ * design") gets a data point for it. It runs before that check.
+ *
+ * Production symbol expected: the `POST /v1/csp-reports` route of `createApp` (design D9).
+ */
+describe('otel-smoke-check, 048: POST /v1/csp-reports counts one report by its directive (task 8.4)', () => {
+  let app: App;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    app = await createApp({
+      ...(await harnessPools()),
+      authSecret: TEST_SECRET,
+      cerbosAddress: IDENTITY_CERBOS,
+      allowedOrigins: [IDENTITY_ORIGIN],
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('one csp-report answers 204 and records tayzu.web.csp_violations with the directive script-src', async () => {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/v1/csp-reports',
+      headers: { 'content-type': 'application/csp-report', 'x-forwarded-for': randomIp() },
+      payload: JSON.stringify({
+        'csp-report': {
+          'document-uri': 'https://app.tayzu.test/catalog',
+          'effective-directive': 'script-src-elem',
+          'violated-directive': 'script-src-elem',
+          'blocked-uri': 'inline',
+        },
+      }),
+    });
+    // The drive behaved as its class says (not a telemetry finding).
+    expect(response.statusCode, response.body).toBe(204);
+    await harness.forceFlush();
+    expect(metricValues(harness, 'tayzu.web.csp_violations', 'tayzu.web.csp.directive')).toContain(
+      'script-src',
+    );
+  });
 });
 
 interface SessionUser {

@@ -328,7 +328,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `csp-violation` entries, at most 20), the level-3 sub-directives, "An unknown directive is
       counted as other", forbidden keys at every depth, and that no field other than the
       directive is read (a getter-trapped fixture).
-- [ ] 8.4 `POST /v1/csp-reports` answers `204` and counts (design D9). Verify:
+- [x] 8.4 `POST /v1/csp-reports` answers `204` and counts (design D9). Verify:
       `apps/api/src/csp-reports.http.int.test.ts` covers "A report is counted by its directive
       only" (the marker in no signal and no log record), "A Reporting API batch is counted per
       violation", "A malformed, hostile or oversized report still answers 204" and "The report

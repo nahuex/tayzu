@@ -55,6 +55,12 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import type { AuthSecret } from './auth-secrets.js';
+import {
+  CSP_REPORT_MEDIA_TYPES,
+  CSP_REPORTS_PATH,
+  mediaTypeOf,
+  registerCspReportsRoute,
+} from './csp-reports-route.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
 import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
@@ -295,11 +301,10 @@ const STEP_UP_COMPLETE_LOCATION = '/step-up/complete';
 const STEP_UP_FAILED_LOCATION = '/step-up/complete?result=failed';
 const STEP_UP_RATE_LIMITED_LOCATION = '/step-up/complete?result=rate_limited';
 
-/** 048 D9: the same-origin CSP violation report path and its `report-to` endpoint name. */
-const CSP_REPORT_PATH = '/v1/csp-reports';
+/** 048 D9: the `report-to` endpoint name of the same-origin CSP report path. */
 const CSP_REPORT_ENDPOINT_NAME = 'csp-endpoint';
 /** 048 D9: maps the `report-to` name to the path, resolved against the response's origin. */
-const REPORTING_ENDPOINTS = `${CSP_REPORT_ENDPOINT_NAME}="${CSP_REPORT_PATH}"`;
+const REPORTING_ENDPOINTS = `${CSP_REPORT_ENDPOINT_NAME}="${CSP_REPORTS_PATH}"`;
 
 /**
  * 003 D10 (ADR-0026, Q5, Q25): the exact directive list, with no helmet defaults, so
@@ -327,7 +332,7 @@ const CSP_DIRECTIVES = {
   'frame-ancestors': ["'none'"],
   // 048 D9 (Q10): violations go to the app's own origin, `report-uri` for Firefox and
   // Safari, `report-to` (the `Reporting-Endpoints` name) for Chromium.
-  'report-uri': [CSP_REPORT_PATH],
+  'report-uri': [CSP_REPORTS_PATH],
   'report-to': [CSP_REPORT_ENDPOINT_NAME],
 };
 
@@ -848,7 +853,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     if (!hasBody) {
       return;
     }
-    const mediaType = (headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
+    const mediaType = mediaTypeOf(request);
+    // 048 D9: the CSP report route has its own scoped parser for its two media types only.
+    if (pathname === CSP_REPORTS_PATH && CSP_REPORT_MEDIA_TYPES.has(mediaType)) {
+      return;
+    }
     if (mediaType !== 'application/json') {
       return reply
         .status(415)
@@ -1062,6 +1071,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     );
     done();
   });
+
+  // 048 D9: browser CSP violation reports; public, no session, counted by directive only.
+  await registerCspReportsRoute(app);
 
   // Q36: the re-authorization callback, a `GET` query redirect only (048 D6: a `POST`
   // reaches the `/v1/*` catch-all). The single-use `state`, the nonce and the session

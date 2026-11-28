@@ -123,6 +123,8 @@ const METRIC_UNITS: Readonly<Record<string, string>> = {
   // 045: outcomes `requested` (the request), `completed` and `failed` (the purge job) and
   // `cancelled` (the reversal script).
   'tayzu.identity.org_deletions': '{deletion}',
+  // 048 D9: browser CSP violation reports, by mapped directive.
+  'tayzu.web.csp_violations': '{report}',
 };
 
 export function recordIdentityMetric(
