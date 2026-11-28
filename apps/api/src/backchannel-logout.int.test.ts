@@ -53,7 +53,7 @@ import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import { createAppFromEnv } from './bootstrap.js';
-import type { Pool } from 'pg';
+import pg, { type Pool } from 'pg';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 const poolState = vi.hoisted(() => ({ pools: new Map<string, unknown>() }));
@@ -661,6 +661,204 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  }, 60_000);
+
+  /**
+   * Task 7.5 of 048 (design D8 "An atomic back-channel replay guard", Resolved decision Q14;
+   * `specs/auth-and-rbac/spec.md` of 048, requirement "Back-channel logout"). Migration `0016`
+   * (task 7.4) adds the partial unique index `verification_backchannel_logout_uq` on
+   * `auth.verification(identifier) WHERE starts_with(identifier, 'backchannel-logout:')`.
+   *
+   * Production symbols expected: `handleLogoutToken` takes one client from `authPool`, runs
+   * `begin`, `insert ... on conflict (identifier) where starts_with(identifier,
+   * 'backchannel-logout:') do nothing`, answers `replay` (after `rollback`) when no row was
+   * inserted, then runs the existing `sid` or `sub` delete and `commit`s. A concurrent second
+   * delivery blocks on the index until the first commits, then conflicts and is a replay; a
+   * delete that fails rolls the record back. The outcomes (`revoked`, `no_match`, `replay`,
+   * `invalid`) and the uniform 200 are unchanged.
+   */
+  function backchannelOutcomes(harness: TelemetryTestHarness): unknown[] {
+    return harness.spanExporter
+      .getFinishedSpans()
+      .filter((span) => span.name === SPAN_NAME)
+      .map((span) => span.attributes[OUTCOME_ATTRIBUTE]);
+  }
+
+  /** Waits (polling the server, never a fixed sleep) until `count` backends wait on `pid`. */
+  async function waitUntilBlockedOn(pid: number, count: number): Promise<void> {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const blocked = await authPool.query<{ n: number }>(
+        'select count(*)::int as n from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))',
+        [pid],
+      );
+      const n = blocked.rows[0]?.n ?? 0;
+      if (n >= count) {
+        return;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`expected ${String(count)} backends blocked on the gate, saw ${String(n)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  /**
+   * Scenario "Concurrent deliveries of one token are processed once": GIVEN a valid logout
+   * token, WHEN it is delivered twice at the same time, THEN exactly one delivery records it
+   * and revokes the matching sessions, and the other is a replay.
+   *
+   * Determinism (design D15: two connections that start their statements together, no timing
+   * assumption): a gate transaction on its own connection holds an uncommitted row with the
+   * token's replay identifier. Both deliveries reach their replay-record insert and wait on
+   * the gate's transaction (observed through `pg_blocking_pids`, so both are in flight at
+   * once); the gate then rolls back, and the two deliveries race each other on the index.
+   */
+  it('Concurrent deliveries of one token are processed once: one delivery revokes and the other is a replay', async () => {
+    const harness = harnessOrThrow();
+    const sid = `sid-${randomUUID()}`;
+    const userId = await ssoSession(sid);
+    expect(
+      await sessionCount(userId),
+      'the SSO session exists before the deliveries',
+    ).toBeGreaterThan(0);
+    const claims = logoutClaims(sid);
+    const identifier = `backchannel-logout:${stub.clientId}:${String(claims['jti'])}`;
+    const token = stub.signJwt(claims, { typ: 'logout+jwt' });
+
+    const gate = await authPool.connect();
+    let gateOpen = true;
+    try {
+      await gate.query('begin');
+      await gate.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, 'gate', now() + interval '5 minutes')`,
+        [randomUUID(), identifier],
+      );
+      const gatePid = (await gate.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]
+        ?.pid;
+      expect(gatePid, 'the gate connection has a backend pid').toBeTypeOf('number');
+
+      await harness.reset();
+      const deliveries = Promise.all([postLogout(token), postLogout(token)]);
+      // Never an unhandled rejection while the gate is still held.
+      deliveries.catch(() => undefined);
+
+      // WHEN both deliveries are in flight at the same time, on two connections.
+      await waitUntilBlockedOn(gatePid ?? -1, 2);
+      await gate.query('rollback');
+      gateOpen = false;
+
+      const [first, second] = await deliveries;
+      expect(first.statusCode, 'each delivery answers like every other outcome').toBe(200);
+      expect(second.statusCode, 'each delivery answers like every other outcome').toBe(200);
+      expect(second.body).toBe(first.body);
+      expect(second.headers['content-type']).toBe(first.headers['content-type']);
+    } finally {
+      if (gateOpen) {
+        await gate.query('rollback');
+      }
+      gate.release();
+    }
+
+    // THEN exactly one delivery revokes and the other is a replay.
+    await harness.forceFlush();
+    expect(
+      backchannelOutcomes(harness).sort(),
+      'exactly one revoked and one replay outcome',
+    ).toEqual(['replay', 'revoked']);
+    expect(await sessionCount(userId), 'the matching session is revoked').toBe(0);
+
+    // AND exactly one delivery recorded the token.
+    const recorded = await authPool.query<{ value: string }>(
+      'select value from auth.verification where identifier = $1',
+      [identifier],
+    );
+    expect(recorded.rows, 'exactly one replay record for the token').toHaveLength(1);
+    expect(recorded.rows[0]?.value, 'the record is the delivery’s, not the gate’s').not.toBe(
+      'gate',
+    );
+  }, 60_000);
+
+  /**
+   * Scenario "A failed revocation does not consume the token": GIVEN a valid logout token
+   * whose session revocation fails after the replay record was written, WHEN the same token is
+   * delivered again, THEN the second delivery is not a replay and revokes the matching
+   * sessions.
+   *
+   * The failure is forced on the `auth.session` delete itself: a spy on `pg.Client.prototype`
+   * (the one path of both `pool.query` and a checked-out client) rejects that statement only,
+   * so the replay-record insert before it runs for real.
+   */
+  it('A failed revocation does not consume the token: the record is rolled back and the next delivery revokes', async () => {
+    const harness = harnessOrThrow();
+    const sid = `sid-${randomUUID()}`;
+    const userId = await ssoSession(sid);
+    const before = await sessionCount(userId);
+    expect(before, 'the SSO session exists before the deliveries').toBeGreaterThan(0);
+    const claims = logoutClaims(sid);
+    const identifier = `backchannel-logout:${stub.clientId}:${String(claims['jti'])}`;
+    const token = stub.signJwt(claims, { typ: 'logout+jwt' });
+
+    type QueryFunction = (this: pg.Client, ...args: unknown[]) => unknown;
+    const realQuery = Reflect.get(pg.Client.prototype, 'query') as QueryFunction;
+    const sessionDelete = /^\s*delete\s+from\s+auth\.session\b/i;
+    let forcedFailures = 0;
+    const querySpy = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ): unknown {
+      const statement: unknown = args[0];
+      const text =
+        typeof statement === 'string'
+          ? statement
+          : typeof statement === 'object' && statement !== null && 'text' in statement
+            ? String(statement.text)
+            : '';
+      if (sessionDelete.test(text)) {
+        forcedFailures += 1;
+        const failure = new Error('forced session revocation failure');
+        const callback = args.at(-1);
+        if (typeof callback === 'function') {
+          queueMicrotask(() => {
+            (callback as (error: Error) => void)(failure);
+          });
+          return undefined;
+        }
+        return Promise.reject(failure);
+      }
+      return realQuery.apply(this, args);
+    });
+
+    try {
+      // GIVEN the revocation fails after the replay record was written.
+      await postLogout(token);
+    } finally {
+      querySpy.mockRestore();
+    }
+    expect(forcedFailures, 'the session delete was attempted, and forced to fail').toBe(1);
+    expect(await sessionCount(userId), 'the failed revocation revoked nothing').toBe(before);
+    const afterFailure = await authPool.query(
+      'select 1 from auth.verification where identifier = $1',
+      [identifier],
+    );
+    expect(afterFailure.rows, 'the replay record was rolled back with the delete').toHaveLength(0);
+
+    // WHEN the same token is delivered again.
+    await harness.reset();
+    const retry = await postLogout(token);
+    expect(retry.statusCode).toBe(200);
+
+    // THEN it is not a replay, and it revokes the matching sessions.
+    await harness.forceFlush();
+    expect(backchannelOutcomes(harness), 'the retry is processed, not a replay').toEqual([
+      'revoked',
+    ]);
+    expect(await sessionCount(userId), 'the retry revokes the matching session').toBe(0);
+    const recorded = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      identifier,
+    ]);
+    expect(recorded.rows, 'the retry recorded the token once').toHaveLength(1);
   }, 60_000);
 });
 

@@ -287,7 +287,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       deleting nothing) over pre-existing duplicates, and the down script removing it;
       `schema.int.test.ts` passes with any index list it asserts updated. ⛔ **Checkpoint 3:
       present the SQL in chat and wait for the human's explicit approval before applying.**
-- [ ] 7.5 The replay record and the session delete commit together (design D8). Verify:
+- [x] 7.5 The replay record and the session delete commit together (design D8). Verify:
       `apps/api/src/backchannel-logout.int.test.ts` covers "Concurrent deliveries of one token
       are processed once" (two connections, one `revoked` and one `replay`) and "A failed
       revocation does not consume the token" (a delete forced to fail rolls the record back,

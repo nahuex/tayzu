@@ -931,47 +931,56 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     if (verified?.jti === undefined) {
       return 'invalid';
     }
-    // Replay state (D26): one `auth.verification` row per accepted token,
-    // recorded atomically; a second delivery inserts nothing and revokes nothing.
-    const recorded = await options.authPool.query(
-      `insert into auth.verification (id, identifier, value, expires_at)
-       select $1, $2, $3, to_timestamp($4)
-       where not exists (select 1 from auth.verification where identifier = $2)`,
-      [
-        randomUUID(),
-        `backchannel-logout:${config.clientId}:${verified.jti}`,
-        'processed',
-        verified.exp + LOGOUT_JTI_SKEW_SECONDS,
-      ],
-    );
-    if (recorded.rowCount !== 1) {
-      return 'replay';
+    // Replay state (D26, 048 D8): one `auth.verification` row per accepted token. The
+    // record and the revocation are one transaction: a concurrent second delivery blocks
+    // on the partial unique index until the first commits, then conflicts and is a replay;
+    // a failed delete rolls the record back, so a retry is processed.
+    const client = await options.authPool.connect();
+    try {
+      await client.query('begin');
+      const recorded = await client.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, 'processed', to_timestamp($3))
+         on conflict (identifier) where starts_with(identifier, 'backchannel-logout:') do nothing`,
+        [
+          randomUUID(),
+          `backchannel-logout:${config.clientId}:${verified.jti}`,
+          verified.exp + LOGOUT_JTI_SKEW_SECONDS,
+        ],
+      );
+      if (recorded.rowCount !== 1) {
+        await client.query('rollback');
+        return 'replay';
+      }
+      let revoked = 0;
+      if (verified.sid !== undefined) {
+        revoked =
+          (await client.query('delete from auth.session where sso_sid = $1', [verified.sid]))
+            .rowCount ?? 0;
+      } else if (verified.sub !== undefined) {
+        // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
+        // local sessions (`sso_sid` null) are never touched.
+        revoked =
+          (
+            await client.query(
+              `delete from auth.session
+               where sso_sid is not null
+                 and user_id in (
+                   select user_id from auth.account
+                   where provider_id = 'visma-connect' and account_id = $1
+                 )`,
+              [verified.sub],
+            )
+          ).rowCount ?? 0;
+      }
+      await client.query('commit');
+      return revoked > 0 ? 'revoked' : 'no_match';
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
     }
-    let revoked = 0;
-    if (verified.sid !== undefined) {
-      revoked =
-        (
-          await options.authPool.query('delete from auth.session where sso_sid = $1', [
-            verified.sid,
-          ])
-        ).rowCount ?? 0;
-    } else if (verified.sub !== undefined) {
-      // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
-      // local sessions (`sso_sid` null) are never touched.
-      revoked =
-        (
-          await options.authPool.query(
-            `delete from auth.session
-           where sso_sid is not null
-             and user_id in (
-               select user_id from auth.account
-               where provider_id = 'visma-connect' and account_id = $1
-             )`,
-            [verified.sub],
-          )
-        ).rowCount ?? 0;
-    }
-    return revoked > 0 ? 'revoked' : 'no_match';
   }
   const sso = options.sso;
   // Floor against abuse, keyed by the caller address only: the caller is Visma Connect's
