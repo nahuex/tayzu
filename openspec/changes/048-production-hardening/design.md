@@ -864,6 +864,7 @@ environment:
 
 | Ticket | Item |
 | ------ | ---- |
+| Better Auth adapter spans record error messages | Found by task 5.4: Better Auth's adapter wraps each call in a span that, on failure, records the exception and puts the error message in the span status, so a database error message can reach a span. The rehash write avoids the adapter for that reason. Every other failing adapter call can still leak it; `046`'s collector or exporter must drop span status messages and exception events (G1, G2), and a Tayzu span processor that strips them is the code fix. |
 | Prune `auth.rate_limit` (`044`) | More urgent: two new scopes write rows on public routes (D7). |
 | Cache the re-authorization verifier's keys | The step-up guard still fetches discovery and JWKS per check (D8). |
 | Identity internal errors for repository failures | The accept flow's repository errors still end in the uniform rejection with no internal-error event (D11). |

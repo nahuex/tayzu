@@ -112,6 +112,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { SeverityNumber, type AnyValueMap } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
+import { hashPassword as legacyHashPassword } from 'better-auth/crypto';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
@@ -535,5 +536,118 @@ describe('The sign-in fence does not reveal an account (task 8.13, D7, Q28)', ()
 
     expect(knownLookups, 'one credential-hash lookup for the known address').toBe(1);
     expect(unknownLookups, 'one credential-hash lookup for the unknown address').toBe(1);
+  }, 60_000);
+});
+
+/**
+ * Task 5.4 of `048-production-hardening` (design D5 "Rehash on sign-in": "A failed sign-in never
+ * reaches this branch, so the rehash changes nothing in its answer"; Q8: legacy hashes are
+ * rewritten "without changing the answer or timing of a failed sign-in"). Spec scenario "A failed
+ * sign-in does not touch the hash" (`specs/password-reset-and-account-recovery/spec.md`): "the
+ * answer is the uniform sign-in failure".
+ *
+ * GIVEN a user whose stored hash is a legacy Better Auth `salt:key` hash, a user whose stored
+ * hash is the platform's current one, and an address with no account, WHEN each signs in with a
+ * wrong password, THEN all three answer the same status, code and body, and the legacy hash is
+ * left as it was. The timing is task 5.4a's, not asserted here.
+ *
+ * ## Production symbols expected
+ *
+ * None new: the rehash branch of `hooks.after` on `/sign-in/email` in `auth.ts` (D5).
+ */
+describe('A failed sign-in against a legacy hash answers like any other failure (048 task 5.4, D5, Q8)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      rateLimit: {
+        signIn: { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: SIGN_IN_RATE_LIMIT_MAX },
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  async function credentialHash(userId: string): Promise<string> {
+    const rows = await db.execute<{ password: string }>(
+      sql`select password from auth.account where user_id = ${userId} and provider_id = 'credential'`,
+    );
+    const hash = rows.rows[0]?.password;
+    if (hash === undefined) throw new Error('no credential account');
+    return hash;
+  }
+
+  it('a wrong password against a legacy hash answers the same status, code and body as against a current hash and for an unknown address', async () => {
+    const handler = handlerOf(auth);
+    const legacyEmail = randomEmail();
+    const currentEmail = randomEmail();
+    const legacy = await createAdminUser(auth, {
+      name: 'Legacy Hash Enumeration User',
+      email: legacyEmail,
+      password: TEST_PASSWORD,
+    });
+    const current = await createAdminUser(auth, {
+      name: 'Current Hash Enumeration User',
+      email: currentEmail,
+      password: TEST_PASSWORD,
+    });
+    const legacyHash = await legacyHashPassword(TEST_PASSWORD);
+    await db.execute(
+      sql`update auth.account set password = ${legacyHash} where user_id = ${legacy.userId} and provider_id = 'credential'`,
+    );
+    expect(await credentialHash(legacy.userId), 'control: the legacy hash is stored').toBe(
+      legacyHash,
+    );
+    expect(legacyHash, 'control: a legacy salt:key hash').toMatch(/^[0-9a-f]{32}:[0-9a-f]{128}$/);
+    expect(
+      await credentialHash(current.userId),
+      'control: the other user has a current platform hash',
+    ).toMatch(/^\$scrypt\$ln=15,r=8,p=3\$/);
+
+    const legacyResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: legacyEmail,
+      password: WRONG_PASSWORD,
+    });
+    const currentResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: currentEmail,
+      password: WRONG_PASSWORD,
+    });
+    const unknownResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: randomEmail(),
+      password: WRONG_PASSWORD,
+    });
+
+    expect(currentResponse.status, 'control: a wrong password is a failure').toBeGreaterThanOrEqual(
+      400,
+    );
+    expect(legacyResponse.status, 'same status as a current hash').toBe(currentResponse.status);
+    expect(unknownResponse.status, 'same status as an unknown address').toBe(
+      currentResponse.status,
+    );
+    const currentBody = (await currentResponse.json()) as AuthErrorBody;
+    expect(typeof currentBody.code).toBe('string');
+    expect(await legacyResponse.json(), 'same code and body as a current hash').toEqual(
+      currentBody,
+    );
+    expect(await unknownResponse.json(), 'same code and body as an unknown address').toEqual(
+      currentBody,
+    );
+    expect(
+      legacyResponse.headers.getSetCookie().some((c) => c.includes('session_token')),
+      'no session cookie',
+    ).toBe(false);
+    expect(await credentialHash(legacy.userId), 'the failed sign-in left the legacy hash').toBe(
+      legacyHash,
+    );
   }, 60_000);
 });

@@ -190,7 +190,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       stored in the current format" for acceptance, user creation, the bootstrap,
       `/change-password` and the reset, and "The reset stores the platform's current hash
       format".
-- [ ] 5.4 A successful local sign-in rewrites a weaker hash (design D5). Verify:
+- [x] 5.4 A successful local sign-in rewrites a weaker hash (design D5). Verify:
       `packages/auth/src/password-rehash.int.test.ts` covers "A legacy hash still signs in and
       is upgraded" (with and without a pending second factor), "A failed sign-in does not
       touch the hash", "A rehash never overwrites a concurrent reset" (the compare-and-set

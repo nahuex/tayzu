@@ -72,6 +72,7 @@ import {
   organization,
   twoFactor,
 } from 'better-auth/plugins';
+import { sql, type SQL } from 'drizzle-orm';
 
 import {
   preAuthRateLimitPlugin,
@@ -99,7 +100,8 @@ import {
   hasMfaReenrolMarker,
 } from './identity/mfa-reenrol-marker.js';
 import { validatePassword } from './identity/password-policy.js';
-import { hashPassword, verifyPassword } from './password-hash.js';
+import { emitInternalError } from './internal-error-telemetry.js';
+import { hashPassword, needsRehash, verifyPassword } from './password-hash.js';
 import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 import { organizationAccess } from './org-access.js';
 import {
@@ -384,6 +386,29 @@ function wrongPasswordResponse(): Response {
     message: 'Invalid email or password',
   });
   return Response.json(error.body, { status: error.statusCode });
+}
+
+/** The slice of the Drizzle node-postgres handle the sign-in rehash uses. */
+interface RehashDb {
+  execute(query: SQL): Promise<{ readonly rowCount: number | null }>;
+}
+
+/**
+ * 048 design D5 "Rehash on sign-in": rewrites the credential hash at the current cost with a
+ * compare-and-set on the hash the sign-in verified. Answers `false` when no row matched, that
+ * is, a concurrent reset replaced the hash first and its hash is kept. It runs on the Drizzle
+ * handle the adapter wraps (the `tayzu_auth` pool) rather than through the adapter, whose
+ * span would record a failed write's message, bind values included.
+ */
+async function rewriteCredentialHash(
+  db: DB,
+  input: { readonly userId: string; readonly storedHash: string; readonly password: string },
+): Promise<boolean> {
+  const rehashed = await hashPassword(input.password);
+  const result = await (db as RehashDb).execute(
+    sql`update auth.account set password = ${rehashed} where user_id = ${input.userId} and provider_id = 'credential' and password = ${input.storedHash}`,
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** Task 13.4b: the internal record of a banned attempt, with its channel and the opaque user id. */
@@ -1517,12 +1542,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               { field: 'providerId', value: 'credential' },
             ],
           });
-          if ((hashNow?.password ?? null) !== (hashBefore ?? null)) {
+          const refuseOvertakenSignIn = async (): Promise<Response> => {
             await ctx.context.internalAdapter.deleteSession(response.token);
             ctx.context.setNewSession(null);
             ctx.context.responseHeaders?.delete('set-cookie');
             emitLoginFailed();
             return wrongPasswordResponse();
+          };
+          if ((hashNow?.password ?? null) !== (hashBefore ?? null)) {
+            return refuseOvertakenSignIn();
           }
           // Task 13.5d (Q36, Q97): an expired temporary password fails like a wrong one.
           // The sign-in already created its session, so delete it and drop its cookie.
@@ -1531,6 +1559,31 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             ctx.context.responseHeaders?.delete('set-cookie');
             emitLoginFailed();
             return wrongPasswordResponse();
+          }
+          // 048 design D5 "Rehash on sign-in" (Q8, Q27): the password verified and the reset-race
+          // check passed, so a weaker stored hash is rewritten at the current cost, whether or not
+          // a second factor follows. The compare-and-set on the old hash lets a concurrent reset
+          // always win; losing to one refuses the sign-in like the reset-race branch above.
+          const password = (ctx.body as { password?: unknown } | null | undefined)?.password;
+          if (
+            typeof hashBefore === 'string' &&
+            typeof password === 'string' &&
+            needsRehash(hashBefore)
+          ) {
+            let overtaken = false;
+            try {
+              overtaken = !(await rewriteCredentialHash(options.db, {
+                userId: response.user.id,
+                storedHash: hashBefore,
+                password,
+              }));
+            } catch (error) {
+              // A rehash error is swallowed after a sanitized event; the sign-in still succeeds.
+              emitInternalError(error);
+            }
+            if (overtaken) {
+              return refuseOvertakenSignIn();
+            }
           }
           if (response.user.twoFactorEnabled === true) {
             // Credentials accepted, second factor pending: the two-factor plugin's own
