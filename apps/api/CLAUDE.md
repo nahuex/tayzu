@@ -90,10 +90,12 @@ orchestration described below. When code and design disagree, stop and ask.
 - An `OpenAPIHandler`-level `clientInterceptors` entry converts a thrown
   `CatalogError`/`AuthError` into a real `ORPCError` carrying its
   `status`/`code`/`data` — no collapsing to a generic 500.
-- Rate limiting (`@fastify/rate-limit`) is keyed by
-  `${tenantId}:${actorType}:${actorId}` for authenticated traffic, and
-  separately by IP alone for `POST /v1/auth/token` (D20). Neither key
-  component is ever logged or exported as a telemetry attribute.
+- Rate limiting: `@fastify/rate-limit` (in memory, per replica) is keyed by
+  `${tenantId}:${actorType}:${actorId}` for authenticated traffic and covers
+  the SPA fallback. `POST /v1/auth/token` (by address, then by client id) and
+  the back-channel logout (by address) use the shared `auth.rate_limit` store
+  through `createAcceptRateLimitPreHandler` (`048` D7). No key component is
+  ever logged or exported as a telemetry attribute.
 - `@fastify/helmet` sets the strict self-only CSP of `003` D10 (ADR-0026) on
   every response, HTML, JSON, assets and `404`s alike, with
   `useDefaults: false` and a `style-src` nonce read from `style-nonce.ts`,
