@@ -107,7 +107,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       naming only the variable. The same commit sets `TRUST_PROXY_HOPS=1` and
       `TRUST_PROXY_CIDRS=127.0.0.1/32,::1/128` in `scripts/ci/e2e.sh` and
       `scripts/ci/dast.sh`, asserted by `e2e-script.test.ts` and `dast-script.test.ts`.
-- [ ] 3.2 `createTrustProxy({ hops, cidrs })` trusts hop `i` only when `i < hops` and the
+- [x] 3.2 `createTrustProxy({ hops, cidrs })` trusts hop `i` only when `i < hops` and the
       address is inside the CIDRs (design D2). Verify: `apps/api/src/trust-proxy.test.ts`
       covers the spoofing matrix (a peer outside the range, a trusted peer, more forwarded
       values than hops, an IPv4-mapped IPv6 peer, an IPv6 range) by calling the function the
