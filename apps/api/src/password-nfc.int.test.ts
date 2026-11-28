@@ -25,15 +25,36 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 
-import { authSchema, createAuth, type AuthInstance } from '@tayzu/auth';
+import { createRouterClient } from '@orpc/server';
+import { authSchema, createAuth, createRecordingEmailSender, type AuthInstance } from '@tayzu/auth';
+import { createCerbosClient } from '@tayzu/authz';
+import { createUserSync } from '@tayzu/catalog';
 import { runMigrations } from '@tayzu/db';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import type { Pool } from 'pg';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Pool as PgPool, type Pool } from 'pg';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { main as bootstrapMain } from '../scripts/bootstrap-admin.js';
 import { harnessPools } from './__fixtures__/pools.js';
-import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import { createAcceptFlow } from './identity/accept-flow.js';
+import { createAuthRepository } from './identity/auth-repository.js';
+import { runWithIdentityContext } from './identity/identity-context.js';
+import { createResetTokenStore } from './identity/reset-token-store.js';
+import { createUserSyncAdapter } from './identity/user-sync-adapter.js';
+import { createWithUserLock } from './identity/user-lock.js';
+import { createIdentityRouter } from './identity-router.js';
+import { createApp, type App } from './server.js';
+import {
+  bootstrapTestTenant,
+  testAppPool,
+} from '../../../packages/auth/src/__fixtures__/admin-user.js';
+import { TEST_PASSWORD, TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
+import {
+  digestInvitationToken,
+  generateInvitationToken,
+} from '../../../packages/auth/src/identity/invitation-token.js';
+import { needsRehash } from '../../../packages/auth/src/password-hash.js';
 
 const AUTH_BASE_URL = 'http://localhost:3000/api/auth';
 
@@ -337,4 +358,375 @@ describe('The password is NFC-normalized in two layers (task 8.1d, design Q22)',
     const body = (await session.json()) as { user: { name: string } };
     expect(body.user.name, 'a non-password field keeps its form').toBe(decomposedName);
   });
+});
+
+/**
+ * Task 5.3 of openspec/changes/048-production-hardening (design D5, Q8): every path that sets a
+ * password uses the platform hash. Scenarios of
+ * `specs/password-reset-and-account-recovery/spec.md`, quoted:
+ *
+ * - "A new password is stored in the current format": WHEN a password is set through acceptance,
+ *   user creation, the bootstrap, `/change-password` or a reset; THEN the stored hash names scrypt
+ *   with `N = 2^15`, `r = 8` and `p = 3` and verifies at sign-in.
+ * - "The reset stores the platform's current hash format": WHEN a reset completes with a compliant
+ *   password; THEN the stored hash of the `credential` account is in the platform's current
+ *   self-describing format with the current cost parameters.
+ *
+ * Design D5 "Format": `$scrypt$ln=<log2 N>,r=<r>,p=<p>$<salt>$<key>`, the salt (16 bytes) and the
+ * 64-byte key in standard base64 without padding, so the current format is
+ * `$scrypt$ln=15,r=8,p=3$<22 characters>$<86 characters>`.
+ *
+ * ## Production symbols expected
+ *
+ * - `packages/auth/src/auth.ts`: `emailAndPassword.password` is `{ hash: hashPassword, verify:
+ *   verifyPassword }` of `./password-hash.ts`, so acceptance, `identity.users.create`, the bootstrap
+ *   and `/change-password` (all of which reach Better Auth's configured `password.hash`) write it.
+ * - `hashPasswordNfc` (the reset's name, `apps/api/src/identity/password-reset-confirm.ts`) is an
+ *   alias of the new `hashPassword`.
+ *
+ * Every path reads the stored `auth.account.password` of the `credential` account.
+ *
+ * ## Why this is expected to fail for the right reason right now
+ *
+ * `emailAndPassword.password.hash` and the reset both still write Better Auth's legacy
+ * `salt:key` hex format: each format assertion is an assertion failure, while every set-up step
+ * (and each sign-in with the new password) already works.
+ */
+describe('Every path that sets a password uses the platform hash (048 task 5.3, design D5)', () => {
+  /** design D5 "Format", the current cost: N = 2^15, r = 8, p = 3. */
+  const CURRENT_PLATFORM_FORMAT = /^\$scrypt\$ln=15,r=8,p=3\$[A-Za-z0-9+/]{22}\$[A-Za-z0-9+/]{86}$/;
+  const CERBOS_ADDRESS = 'localhost:3593';
+  const OPERATOR_ID = 'gh:515151';
+  const ORIGIN = 'https://app.tayzu.test';
+  const LINK_BASE_URL = 'https://app.tayzu.test';
+  const CONFIRM_PATH = '/v1/auth/password-reset/confirm';
+  const HMAC_SECRET = 'password-format-test-only-secret-0123456789-abcdef';
+
+  let authPool: Pool;
+  let appPool: Pool;
+  let auth: AuthInstance;
+  let acceptAuth: AuthInstance;
+  let acceptFlow: ReturnType<typeof createAcceptFlow>;
+  let identity: ReturnType<
+    typeof createRouterClient<ReturnType<typeof createIdentityRouter>, Record<string, unknown>>
+  >;
+  let app: App;
+  let bootstrapAppPool: PgPool;
+  let bootstrapAuthPool: PgPool;
+
+  /** A pool whose every connection runs as `role` (a fixed literal, never input), as `bootstrap-admin.int.test.ts`. */
+  function poolAs(role: 'tayzu_app' | 'tayzu_auth'): PgPool {
+    const pool = new PgPool({ connectionString: process.env.DATABASE_URL });
+    const statement = role === 'tayzu_app' ? 'SET ROLE tayzu_app' : 'SET ROLE tayzu_auth';
+    pool.on('connect', (client) => {
+      void client.query(statement).catch(() => undefined);
+    });
+    pool.on('error', () => undefined);
+    return pool;
+  }
+
+  beforeAll(async () => {
+    const pools = await harnessPools();
+    authPool = pools.authPool;
+    appPool = pools.appPool;
+    await runMigrations(authPool);
+    const cerbos = createCerbosClient({ address: CERBOS_ADDRESS, tls: false });
+
+    auth = createAuth({ db: drizzle(authPool, { schema: authSchema }), secret: TEST_SECRET });
+    identity = createRouterClient(
+      createIdentityRouter({
+        auth,
+        authz: cerbos,
+        authRepository: createAuthRepository(authPool),
+        withUserLock: createWithUserLock(authPool),
+      }),
+      { context: (raw: Record<string, unknown>) => raw },
+    );
+
+    // The acceptance's membership hook writes the `_user` through the user-sync adapter.
+    const adapter = createUserSyncAdapter({
+      userSync: createUserSync({ pool: appPool, authz: cerbos }),
+    });
+    acceptAuth = createAuth({
+      db: drizzle(authPool, { schema: authSchema }),
+      secret: TEST_SECRET,
+      userSync: adapter,
+    });
+    acceptFlow = createAcceptFlow({
+      auth: acceptAuth,
+      authz: cerbos,
+      authRepository: createAuthRepository(authPool),
+      authPool,
+      userSync: adapter,
+    });
+
+    app = await createApp({
+      appPool,
+      authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: CERBOS_ADDRESS,
+      allowedOrigins: [ORIGIN],
+      mountIdentityRoutes: true,
+      identityTokenHmacSecret: HMAC_SECRET,
+      email: {
+        sender: createRecordingEmailSender(),
+        invitationLinkBaseUrl: LINK_BASE_URL,
+        passwordResetLinkBaseUrl: LINK_BASE_URL,
+        passwordResetMinResponseMs: 0,
+        disabledTenantIds: [] as string[],
+        killSwitch: false,
+        recipientKeySecret: HMAC_SECRET,
+        tenantCap: { max: 1000, windowSeconds: 3600 },
+        recipientCap: { max: 1000, windowSeconds: 86_400 },
+        passwordResetRecipientCap: { max: 1000, windowSeconds: 3600 },
+        passwordResetIpCap: { max: 1000, windowSeconds: 3600 },
+        passwordResetGlobalCap: { max: 100_000, windowSeconds: 3600 },
+        accountCreatedNoticeGlobalCap: { max: 100_000, windowSeconds: 86_400 },
+      },
+    });
+
+    bootstrapAppPool = poolAs('tayzu_app');
+    bootstrapAuthPool = poolAs('tayzu_auth');
+  }, 120_000);
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await bootstrapAppPool.end();
+    await bootstrapAuthPool.end();
+  }, 60_000);
+
+  async function storedHashByEmail(email: string): Promise<string> {
+    const result = await authPool.query<{ password: string | null }>(
+      `select a.password
+         from auth.account a
+         join auth."user" u on u.id = a.user_id
+        where u.email = $1 and a.provider_id = 'credential'`,
+      [email],
+    );
+    expect(result.rows, 'exactly one credential account').toHaveLength(1);
+    return result.rows[0]?.password ?? '';
+  }
+
+  async function signInStatus(instance: AuthInstance, email: string, password: string) {
+    const response = await (
+      instance as unknown as { handler: (r: Request) => Promise<Response> }
+    ).handler(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': randomIp(),
+          origin: 'http://localhost:3000',
+        },
+        body: JSON.stringify({ email, password }),
+      }),
+    );
+    return response.status;
+  }
+
+  /** A tenant with a signed-in admin, as `invitation-accept.int.test.ts` builds it. */
+  async function freshTenant(instance: AuthInstance) {
+    const id = randomUUID();
+    const tenant = await bootstrapTestTenant(instance, {
+      pool: testAppPool(),
+      name: 'Format Admin',
+      email: `format-admin-${id}@example.test`,
+      password: TEST_PASSWORD,
+      organizationName: 'Format Org',
+      organizationSlug: `format-${id}`,
+      ip: randomIp(),
+    });
+    return {
+      tenantId: tenant.organizationId,
+      adminId: tenant.userId,
+      cookie: tenant.cookie,
+      email: `format-admin-${id}@example.test`,
+    };
+  }
+
+  it('A new password is stored in the current format: acceptance', async () => {
+    const tenant = await freshTenant(acceptAuth);
+    const email = `format-accept-${randomUUID()}@example.test`;
+    const api = acceptAuth.api as {
+      createInvitation(args: {
+        body: { email: string; role: 'member'; organizationId: string };
+        headers: Headers;
+      }): Promise<{ id: string; expiresAt: Date | string }>;
+    };
+    const invitation = await runWithIdentityContext({ adminId: tenant.adminId }, () =>
+      api.createInvitation({
+        body: { email, role: 'member', organizationId: tenant.tenantId },
+        headers: new Headers({ cookie: tenant.cookie, 'x-forwarded-for': randomIp() }),
+      }),
+    );
+    const token = generateInvitationToken();
+    await authPool.query(
+      `insert into auth.verification (id, identifier, value, expires_at) values ($1, $2, $3, $4)`,
+      [
+        randomUUID(),
+        `invitation-accept:${invitation.id}`,
+        digestInvitationToken(token),
+        new Date(invitation.expiresAt),
+      ],
+    );
+
+    // WHEN a password is set through acceptance.
+    await acceptFlow.accept({ invitationId: invitation.id, token, password: PASSWORD_NFC });
+
+    // THEN the stored hash names scrypt with N = 2^15, r = 8 and p = 3 and verifies at sign-in.
+    expect(await storedHashByEmail(email)).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await signInStatus(acceptAuth, email, PASSWORD_NFC)).toBe(200);
+  }, 60_000);
+
+  it('A new password is stored in the current format: user creation', async () => {
+    const tenant = await freshTenant(auth);
+    const email = `format-created-${randomUUID()}@example.test`;
+
+    // WHEN a password is set through user creation (`identity.users.create`).
+    const created = await identity.identity.users.create(
+      { body: { email, name: 'Format Created', role: 'member' } },
+      {
+        context: {
+          tenantId: tenant.tenantId,
+          actor: { type: 'user', id: tenant.adminId },
+          principal: { roles: ['admin'] },
+        },
+      },
+    );
+
+    // THEN the stored hash names scrypt with N = 2^15, r = 8 and p = 3 and verifies at sign-in.
+    expect(await storedHashByEmail(email)).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await signInStatus(auth, email, created.temporaryPassword)).toBe(200);
+  }, 60_000);
+
+  it('A new password is stored in the current format: the bootstrap', async () => {
+    const slug = `format-bootstrap-${randomUUID()}`;
+    const email = `format-bootstrap-${randomUUID()}@example.test`;
+    const printed: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      printed.push(args.map(String).join(' '));
+    });
+
+    // WHEN a password is set through the bootstrap CLI.
+    await bootstrapMain({
+      env: {
+        NODE_ENV: 'test',
+        DATABASE_URL: process.env.DATABASE_URL ?? '',
+        AUTH_DATABASE_URL: process.env.DATABASE_URL ?? '',
+        BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
+        CERBOS_ADDRESS,
+        ALLOWED_ORIGINS: 'http://localhost:3000',
+        BOOTSTRAP_ORGANIZATION_NAME: 'Format Bootstrap Org',
+        BOOTSTRAP_ORGANIZATION_SLUG: slug,
+        BOOTSTRAP_ADMIN_NAME: 'Format Bootstrap Admin',
+        BOOTSTRAP_ADMIN_EMAIL: email,
+        TAYZU_OPERATOR_ID: OPERATOR_ID,
+      },
+      appPool: bootstrapAppPool,
+      authPool: bootstrapAuthPool,
+    });
+    vi.restoreAllMocks();
+    const marker = 'change it immediately: ';
+    const line = printed.find((entry) => entry.includes(marker)) ?? '';
+    const temporaryPassword = line.slice(line.indexOf(marker) + marker.length);
+    expect(temporaryPassword.length, 'the CLI printed the temporary password').toBeGreaterThan(0);
+
+    // THEN the stored hash names scrypt with N = 2^15, r = 8 and p = 3 and verifies at sign-in.
+    expect(await storedHashByEmail(email)).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await signInStatus(auth, email, temporaryPassword)).toBe(200);
+  }, 60_000);
+
+  it('A new password is stored in the current format: /change-password', async () => {
+    const email = `format-change-${randomUUID()}@example.test`;
+    await (auth.api as CreateUserSurface).createUser({
+      body: { name: 'Format Change', email, password: PASSWORD_NFC },
+    });
+    const handle = (auth as unknown as { handler: (r: Request) => Promise<Response> }).handler;
+    const headers = {
+      'content-type': 'application/json',
+      'x-forwarded-for': randomIp(),
+      origin: 'http://localhost:3000',
+    };
+    const signedIn = await handle(
+      new Request(`${AUTH_BASE_URL}/sign-in/email`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ email, password: PASSWORD_NFC }),
+      }),
+    );
+    expect(signedIn.status, 'the fixture user signs in').toBe(200);
+    const cookie = signedIn.headers
+      .getSetCookie()
+      .map((raw) => raw.split(';')[0])
+      .join('; ');
+
+    // WHEN a password is set through `/change-password`.
+    const response = await handle(
+      new Request(`${AUTH_BASE_URL}/change-password`, {
+        method: 'POST',
+        headers: { ...headers, cookie },
+        body: JSON.stringify({ currentPassword: PASSWORD_NFC, newPassword: COMPLIANT_NEW }),
+      }),
+    );
+    expect(response.status).toBe(200);
+
+    // THEN the stored hash names scrypt with N = 2^15, r = 8 and p = 3 and verifies at sign-in.
+    expect(await storedHashByEmail(email)).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await signInStatus(auth, email, COMPLIANT_NEW)).toBe(200);
+  }, 60_000);
+
+  /** A reset completed through the real confirm route; the breach service reports nothing. */
+  async function completeReset(newPassword: string): Promise<{ email: string; userId: string }> {
+    const tenant = await freshTenant(app.auth);
+    const issued = await createResetTokenStore({
+      authPool,
+      withUserLock: createWithUserLock(authPool),
+    }).issue(tenant.adminId);
+    stubRangeService([]);
+    const response = await app.app.inject({
+      method: 'POST',
+      url: CONFIRM_PATH,
+      headers: {
+        'content-type': 'application/json',
+        origin: ORIGIN,
+        'x-csrf-token': 'orpc',
+        'x-forwarded-for': randomIp(),
+      },
+      payload: JSON.stringify({ id: issued.id, token: issued.token, newPassword }),
+    });
+    vi.unstubAllGlobals();
+    expect(response.statusCode, 'the reset completes').toBe(200);
+    expect(response.json()).toEqual({ completed: true });
+    return { email: tenant.email, userId: tenant.adminId };
+  }
+
+  it('A new password is stored in the current format: a reset', async () => {
+    // WHEN a password is set through a reset.
+    const { email } = await completeReset(COMPLIANT_NEW);
+
+    // THEN the stored hash names scrypt with N = 2^15, r = 8 and p = 3 and verifies at sign-in.
+    expect(await storedHashByEmail(email)).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await signInStatus(app.auth, email, COMPLIANT_NEW)).toBe(200);
+  }, 60_000);
+
+  it("The reset stores the platform's current hash format", async () => {
+    // WHEN a reset completes with a compliant password.
+    const { userId } = await completeReset(COMPLIANT_NEW);
+
+    // THEN the stored hash of the `credential` account is in the platform's current
+    // self-describing format with the current cost parameters.
+    const result = await authPool.query<{ password: string | null }>(
+      `select password from auth.account where user_id = $1 and provider_id = 'credential'`,
+      [userId],
+    );
+    expect(result.rows).toHaveLength(1);
+    const stored = result.rows[0]?.password ?? '';
+    expect(stored).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(needsRehash(stored), 'the current cost parameters').toBe(false);
+  }, 60_000);
 });

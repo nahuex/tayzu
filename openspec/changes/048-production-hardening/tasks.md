@@ -184,7 +184,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       key, extra fields, padding), a legacy `salt:key` hash from `better-auth/crypto`
       verifying, a wrong password failing for both formats, the comparison going through
       `timingSafeEqual` (spied), and `needsRehash` true for legacy and lower-cost hashes only.
-- [ ] 5.3 Every path that sets a password uses the platform hash (design D5). Verify:
+- [x] 5.3 Every path that sets a password uses the platform hash (design D5). Verify:
       `packages/auth/src/auth-instance.test.ts` asserts `emailAndPassword.password` is the new
       pair, and `apps/api/src/password-nfc.int.test.ts` (extended) covers "A new password is
       stored in the current format" for acceptance, user creation, the bootstrap,

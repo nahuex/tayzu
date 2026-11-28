@@ -34,6 +34,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createAuth, hashPasswordNfc } from './auth.js';
+import { hashPassword, verifyPassword } from './password-hash.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 // A `@better-auth/drizzle-adapter` `DB` handle is typed as `{[key: string]: any}`
@@ -252,5 +253,78 @@ describe('createAuth authentication secrets (048 D4)', () => {
     expect([...secretConfig.keys.entries()]).toEqual([[1, TEST_SECRET]]);
     expect(secretConfig.currentVersion).toBe(1);
     expect(secretConfig.legacySecret).toBe(TEST_SECRET);
+  });
+});
+
+/**
+ * Task 5.3 (048 design D5, Q8; `specs/password-reset-and-account-recovery/
+ * spec.md`, "Passwords are stored with the platform's password hash"):
+ *
+ * D5: "`emailAndPassword.password` in `auth.ts` uses the new pair", that is
+ * `hashPassword` and `verifyPassword` of `./password-hash.ts`, and
+ * "`hashPasswordNfc` stays the exported name used by the reset path [...] and
+ * becomes an alias of the new `hashPassword`". The options are read off the
+ * `betterAuth(...)` return value the same way as the D22 test above
+ * (`Auth<Options>.options`, which keeps the configured function references).
+ *
+ * ## Why this is expected to fail for the right reason right now
+ *
+ * `./auth.ts` configures `hash: hashPasswordNfc` (NFC, then Better Auth's
+ * `hashPassword`, the legacy `salt:key` format) and a `verify` wrapper over
+ * Better Auth's `verifyPassword`: both identity checks and the format checks
+ * are assertion failures, not a missing module (`./password-hash.js` exists
+ * since tasks 5.1 and 5.2).
+ */
+describe('createAuth password hash (048 D5, task 5.3)', () => {
+  /** design D5 "Format": `$scrypt$ln=15,r=8,p=3$<22 base64 characters>$<86 base64 characters>`. */
+  const CURRENT_PLATFORM_FORMAT = /^\$scrypt\$ln=15,r=8,p=3\$[A-Za-z0-9+/]{22}\$[A-Za-z0-9+/]{86}$/;
+
+  interface PasswordOptions {
+    readonly hash?: unknown;
+    readonly verify?: unknown;
+  }
+
+  function passwordOptions(): PasswordOptions | undefined {
+    const auth = createAuth({ db: stubDb, secret: TEST_SECRET });
+    return (
+      auth as unknown as {
+        readonly options: { readonly emailAndPassword?: { readonly password?: PasswordOptions } };
+      }
+    ).options.emailAndPassword?.password;
+  }
+
+  it("emailAndPassword.password is the platform pair: hash is password-hash's hashPassword", () => {
+    expect(passwordOptions()?.hash).toBe(hashPassword);
+  });
+
+  it("emailAndPassword.password is the platform pair: verify is password-hash's verifyPassword", () => {
+    expect(passwordOptions()?.verify).toBe(verifyPassword);
+  });
+
+  it('A new password is stored in the current format: the configured password.hash writes the platform format and the configured password.verify accepts it', async () => {
+    // The configured functions themselves: `$context.password.hash` is wrapped by the
+    // `haveIBeenPwned` plugin, which needs an endpoint context this unit test has not.
+    const options = passwordOptions();
+    const hash = options?.hash as ((password: string) => Promise<string>) | undefined;
+    const verify = options?.verify as
+      ((data: { hash: string; password: string }) => Promise<boolean>) | undefined;
+    expect(hash).toBeTypeOf('function');
+    expect(verify).toBeTypeOf('function');
+    if (hash === undefined || verify === undefined) return;
+    const password = 'Platform-Format-Passphrase-2026!';
+
+    const stored = await hash(password);
+
+    expect(stored).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await verify({ hash: stored, password })).toBe(true);
+  });
+
+  it("The reset stores the platform's current hash format: hashPasswordNfc, the reset path's name, writes the current platform format", async () => {
+    const stored = await hashPasswordNfc('Reset-Path-Passphrase-2026!');
+
+    expect(stored).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await verifyPassword({ hash: stored, password: 'Reset-Path-Passphrase-2026!' })).toBe(
+      true,
+    );
   });
 });

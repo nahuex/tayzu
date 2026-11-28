@@ -63,7 +63,6 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
 import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
-import { hashPassword, verifyPassword } from 'better-auth/crypto';
 import { decryptOAuthToken, setTokenUtil } from 'better-auth/oauth2';
 import {
   admin,
@@ -100,6 +99,7 @@ import {
   hasMfaReenrolMarker,
 } from './identity/mfa-reenrol-marker.js';
 import { validatePassword } from './identity/password-policy.js';
+import { hashPassword, verifyPassword } from './password-hash.js';
 import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 import { organizationAccess } from './org-access.js';
 import {
@@ -214,13 +214,12 @@ const REVOCATION_REASON_ATTRIBUTE = 'tayzu.auth.revocation.reason';
 const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
 
 /**
- * The one password-hash function: NFC-normalize, then Better Auth's `hashPassword`.
- * `emailAndPassword.password.hash` uses it, and so does the reset completion
- * (044 design D7, Q13).
+ * The one password-hash function, the platform's `hashPassword` (048 design D5),
+ * which NFC-normalizes itself. `hashPasswordNfc` stays the name the reset
+ * completion uses (044 design D7, Q13), so the configuration and the reset
+ * cannot diverge.
  */
-export function hashPasswordNfc(password: string): Promise<string> {
-  return hashPassword(password.normalize('NFC'));
-}
+export const hashPasswordNfc: (password: string) => Promise<string> = hashPassword;
 
 /**
  * Mirrors `@better-auth/core/utils/url`'s `normalizePathname` (also mirrored
@@ -1030,13 +1029,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       disableSignUp: true,
       minPasswordLength: 20,
       maxPasswordLength: 256,
-      // Task 8.1d (design Q22, Q132), layer 1: both functions NFC-normalize first, so
-      // every verifying path is covered without a list of paths.
-      password: {
-        hash: hashPasswordNfc,
-        verify: ({ hash, password }) =>
-          verifyPassword({ hash, password: password.normalize('NFC') }),
-      },
+      // 048 design D5: the platform's password hash. Task 8.1d (design Q22, Q132),
+      // layer 1: both functions NFC-normalize first, so every verifying path is
+      // covered without a list of paths.
+      password: { hash: hashPassword, verify: verifyPassword },
     },
     // `enabled: false` (task 2.5, design D20): Better Auth's own built-in
     // database-backed rate limiter can only key by IP+path and its blocked
