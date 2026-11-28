@@ -23,6 +23,7 @@ import {
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  createLogoutKeyCache,
   createSessionStateResolver,
   createRateLimitBucketStore,
   createServiceAccountLookup,
@@ -913,6 +914,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     done();
   });
 
+  // 048 D8, Q25: one discovery and key-set cache per app, each copy kept at most 10 minutes.
+  const logoutKeyCache = createLogoutKeyCache({ ttlSeconds: 600 });
+
   // D26: public back-channel logout (Visma Connect's infrastructure is the
   // caller: no cookie, no CSRF header). Encapsulated so the form parser does
   // not change how any other route sees its body. Every well-formed request
@@ -923,11 +927,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     config: NonNullable<CreateAppOptions['sso']>,
     issuer: string,
   ): Promise<BackchannelLogoutOutcome> {
-    const verified = await verifyLogoutToken(token, {
-      issuer,
-      discoveryUrl: config.discoveryUrl,
-      clientId: config.clientId,
-    });
+    const verified = await verifyLogoutToken(
+      token,
+      { issuer, discoveryUrl: config.discoveryUrl, clientId: config.clientId },
+      logoutKeyCache,
+    );
     if (verified?.jti === undefined) {
       return 'invalid';
     }

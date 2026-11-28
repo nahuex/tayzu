@@ -604,8 +604,34 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
    * its first `fetch`, and verifies the signature last. The discovery and JWKS
    * fetchers are observed through `globalThis.fetch` (the verifier's only outbound
    * path), filtered to the stub's origin so unrelated calls are ignored.
+   *
+   * Cold cache (048 design D8): `createApp` holds a per-app discovery and JWKS cache that the
+   * describe's shared app has already warmed, so this test runs against its own fresh app.
    */
   it('A token failing a cheap claim check is refused with zero discovery and JWKS fetches, while a token passing them does fetch', async () => {
+    const pools = await harnessPools();
+    const coldApp = await createApp({
+      appPool: pools.appPool,
+      authPool: pools.authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: ['https://app.tayzu.test'],
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+    const postColdLogout = (logoutToken: string) =>
+      coldApp.app.inject({
+        method: 'POST',
+        url: ROUTE,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'x-forwarded-for': randomIp(),
+        },
+        payload: new URLSearchParams({ logout_token: logoutToken }).toString(),
+      });
     const sid = `sid-${randomUUID()}`;
     const stubOrigin = new URL(stub.discoveryUrl).origin;
     const now = Math.floor(Date.now() / 1000);
@@ -649,17 +675,18 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
 
       for (const [reason, token] of Object.entries(cheapFailures)) {
         const before = outboundCalls();
-        const response = await postLogout(token);
+        const response = await postColdLogout(token);
         expect(response.statusCode, `${reason}: answers like every other outcome`).toBe(200);
         expect(outboundCalls() - before, `${reason}: no discovery or JWKS fetch`).toBe(0);
       }
 
       // Control: a token that passes every cheap check does reach discovery and the JWKS.
       const before = outboundCalls();
-      await postLogout(stub.signJwt(logoutClaims(sid), { typ: 'logout+jwt' }));
+      await postColdLogout(stub.signJwt(logoutClaims(sid), { typ: 'logout+jwt' }));
       expect(outboundCalls() - before, 'the spy observes real fetches').toBeGreaterThanOrEqual(2);
     } finally {
       fetchSpy.mockRestore();
+      await coldApp.close();
     }
   }, 60_000);
 

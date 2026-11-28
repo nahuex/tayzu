@@ -293,7 +293,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       revocation does not consume the token" (a delete forced to fail rolls the record back,
       and the next delivery revokes), with "A replayed logout token is rejected without
       revoking anything twice" still green.
-- [ ] 7.6 Discovery and the key set are cached for a bounded time and fail closed (design
+- [x] 7.6 Discovery and the key set are cached for a bounded time and fail closed (design
       D8, Q25). Verify: `packages/auth/src/sso/backchannel-logout.test.ts` covers one fetch for
       several tokens within the TTL, a refetch after it, at most one unknown-`kid` refresh per
       60 seconds, an expired copy never used, and "Unavailable signing keys fail closed".

@@ -9,6 +9,11 @@
  * outbound discovery or JWKS fetch (task 13.11 of 043). Any
  * failure resolves `null`; nothing from the token or the provider reaches
  * logs, spans or errors.
+ *
+ * The discovery document and the key set come from a `LogoutKeyCache` (048
+ * design D8, Q25): each copy is used for at most `ttlSeconds`, an unknown `kid`
+ * refreshes the key set at most once per 60 seconds, a failed fetch is never
+ * cached, and with no unexpired copy the token is rejected.
  */
 import { createPublicKey, createVerify, type JsonWebKey } from 'node:crypto';
 
@@ -16,6 +21,8 @@ const LOGOUT_TOKEN_TYP = 'logout+jwt';
 const LOGOUT_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
 const LOGOUT_SKEW_SECONDS = 30;
 const DISCOVERY_TIMEOUT_MS = 5_000;
+/** At most one key-set refresh for an unknown `kid` per this window (Q25). */
+const UNKNOWN_KID_REFRESH_INTERVAL_MS = 60_000;
 
 export interface LogoutTokenExpectation {
   /** The issuer from the startup discovery, so `iss` is checked without a fetch. */
@@ -44,13 +51,135 @@ function decodePart(part: string | undefined): Record<string, unknown> | null {
   return isRecord(value) ? value : null;
 }
 
+/** Resolves the JSON object at `url`, or `null` on any network, status or parse failure. */
 async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) });
-  if (!response.ok) {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) });
+    if (!response.ok) {
+      return null;
+    }
+    const body: unknown = await response.json();
+    return isRecord(body) ? body : null;
+  } catch {
     return null;
   }
-  const body: unknown = await response.json();
-  return isRecord(body) ? body : null;
+}
+
+type RsaJwk = JsonWebKey & Record<string, unknown>;
+
+interface CachedDiscovery {
+  readonly discoveryUrl: string;
+  readonly jwksUri: string;
+  readonly fetchedAtMs: number;
+}
+
+interface CachedKeySet {
+  readonly jwksUri: string;
+  /** RSA keys by `kid`; a `Map`, so a provider-supplied `kid` never reaches a prototype. */
+  readonly keys: ReadonlyMap<string, RsaJwk>;
+  readonly fetchedAtMs: number;
+}
+
+/**
+ * The per-app cache of the provider's discovery document and key set (048 D8). Opaque to
+ * callers: create one with `createLogoutKeyCache` and pass it to every `verifyLogoutToken`.
+ */
+export interface LogoutKeyCache {
+  /** The RSA key named `kid`, or `null` when it cannot be found in an unexpired key set. */
+  readonly signingKey: (discoveryUrl: string, kid: string) => Promise<RsaJwk | null>;
+}
+
+/** The RSA keys of a JWKS body, or `null` when the body is not a key set. */
+function parseKeySet(
+  jwksUri: string,
+  body: Record<string, unknown> | null,
+  nowMs: number,
+): CachedKeySet | null {
+  const listed = body?.['keys'];
+  if (!Array.isArray(listed)) {
+    return null;
+  }
+  const keys = new Map<string, RsaJwk>();
+  for (const key of listed as unknown[]) {
+    if (isRecord(key) && typeof key['kid'] === 'string' && key['kty'] === 'RSA') {
+      keys.set(key['kid'], key);
+    }
+  }
+  return { jwksUri, keys, fetchedAtMs: nowMs };
+}
+
+/** Creates a cache whose copies are used for at most `ttlSeconds` (600 in production, Q25). */
+export function createLogoutKeyCache(options: { readonly ttlSeconds: number }): LogoutKeyCache {
+  if (!Number.isFinite(options.ttlSeconds) || options.ttlSeconds <= 0) {
+    throw new RangeError('ttlSeconds must be a positive number');
+  }
+  const ttlMs = options.ttlSeconds * 1000;
+  let discovery: CachedDiscovery | undefined;
+  let keySet: CachedKeySet | undefined;
+  let lastUnknownKidRefreshMs: number | undefined;
+
+  // A clock that moved backwards makes a copy expired too: fail closed.
+  const isFresh = (fetchedAtMs: number, nowMs: number): boolean =>
+    nowMs >= fetchedAtMs && nowMs - fetchedAtMs < ttlMs;
+
+  async function jwksUriFor(discoveryUrl: string, nowMs: number): Promise<string | null> {
+    if (
+      discovery !== undefined &&
+      discovery.discoveryUrl === discoveryUrl &&
+      isFresh(discovery.fetchedAtMs, nowMs)
+    ) {
+      return discovery.jwksUri;
+    }
+    discovery = undefined;
+    const jwksUri = (await fetchJson(discoveryUrl))?.['jwks_uri'];
+    if (typeof jwksUri !== 'string') {
+      return null;
+    }
+    discovery = { discoveryUrl, jwksUri, fetchedAtMs: nowMs };
+    return jwksUri;
+  }
+
+  async function refreshKeySet(jwksUri: string, nowMs: number): Promise<CachedKeySet | null> {
+    const fetched = parseKeySet(jwksUri, await fetchJson(jwksUri), nowMs);
+    if (fetched !== null) {
+      keySet = fetched;
+    }
+    return fetched;
+  }
+
+  return {
+    async signingKey(discoveryUrl, kid) {
+      const nowMs = Date.now();
+      const jwksUri = await jwksUriFor(discoveryUrl, nowMs);
+      if (jwksUri === null) {
+        return null;
+      }
+      const cached =
+        keySet !== undefined && keySet.jwksUri === jwksUri && isFresh(keySet.fetchedAtMs, nowMs)
+          ? keySet
+          : undefined;
+      if (cached === undefined) {
+        // No unexpired copy: an expired one is dropped, never used.
+        keySet = undefined;
+        return (await refreshKeySet(jwksUri, nowMs))?.keys.get(kid) ?? null;
+      }
+      const known = cached.keys.get(kid);
+      if (known !== undefined) {
+        return known;
+      }
+      // Unknown `kid` against an unexpired copy: at most one refresh per 60 seconds. The
+      // attempt is stamped before the fetch, so concurrent tokens do not refresh twice.
+      if (
+        lastUnknownKidRefreshMs !== undefined &&
+        nowMs >= lastUnknownKidRefreshMs &&
+        nowMs - lastUnknownKidRefreshMs < UNKNOWN_KID_REFRESH_INTERVAL_MS
+      ) {
+        return null;
+      }
+      lastUnknownKidRefreshMs = nowMs;
+      return (await refreshKeySet(jwksUri, nowMs))?.keys.get(kid) ?? null;
+    },
+  };
 }
 
 function audienceMatches(aud: unknown, clientId: string): boolean {
@@ -65,6 +194,7 @@ function optionalString(value: unknown): string | undefined {
 export async function verifyLogoutToken(
   logoutToken: string,
   expected: LogoutTokenExpectation,
+  keyCache: LogoutKeyCache,
 ): Promise<VerifiedLogoutToken | null> {
   try {
     const [headPart, bodyPart, signaturePart, ...rest] = logoutToken.split('.');
@@ -114,18 +244,12 @@ export async function verifyLogoutToken(
 
     // 7. Signature last, against the discovery document's JWKS: the only checks that
     // fetch, so a token failing any cheap check above triggers no outbound call.
-    const discovery = await fetchJson(expected.discoveryUrl);
-    const jwksUri = discovery?.['jwks_uri'];
-    if (typeof jwksUri !== 'string') {
+    const kid = header['kid'];
+    if (typeof kid !== 'string') {
       return null;
     }
-    const jwks = await fetchJson(jwksUri);
-    const keys = Array.isArray(jwks?.['keys']) ? (jwks['keys'] as unknown[]) : [];
-    const jwk = keys.find(
-      (key): key is JsonWebKey & Record<string, unknown> =>
-        isRecord(key) && key['kid'] === header['kid'] && key['kty'] === 'RSA',
-    );
-    if (jwk === undefined) {
+    const jwk = await keyCache.signingKey(expected.discoveryUrl, kid);
+    if (jwk === null) {
       return null;
     }
     const signatureValid = createVerify('RSA-SHA256')

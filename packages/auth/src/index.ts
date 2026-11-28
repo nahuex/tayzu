@@ -78,7 +78,9 @@ export {
   type IdTokenNonceExpectation,
 } from './sso/reauthorization.js';
 export {
+  createLogoutKeyCache,
   verifyLogoutToken,
+  type LogoutKeyCache,
   type LogoutTokenExpectation,
   type VerifiedLogoutToken,
 } from './sso/backchannel-logout.js';
