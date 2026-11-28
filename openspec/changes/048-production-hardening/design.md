@@ -937,6 +937,7 @@ con las opciones recomendadas"). Q2 to Q4 govern `046` and are recorded here for
 | Q33 | Timing of a failed sign-in against a weaker stored hash (SSA H2, SEC04) | When a legacy or lower-cost hash fails to verify, `verifyPassword` also runs one current-cost hash and discards it, so the failure costs the same as an unknown user's, now and at every later cost increase (D5, task 5.4a). Answered by the human in chat on 2026-11-28, recommended option. |
 | Q34 | Where the manual ACS smoke script lives (SSA H3, D13 drift) | `packages/auth/scripts/acs-email-smoke.ts` moves to `apps/api/scripts/`, where it builds an `AzureCliCredential` and the injected-credential adapter from `ACS_ENDPOINT`; `@tayzu/auth` gains no `@azure/identity` dependency (D13, task 11.2). Answered by the human in chat on 2026-11-28, recommended option. |
 | Q35 | Review of the previous year's open improvement items (SSA H4, SEC01, SEC03, SEC07, SEC13, SEC16 checklists) | Done with the human in `046`'s full SSA, the first deployed assessment; `048` only states which items it closes ("Gates for the first deployment"). Answered by the human in chat on 2026-11-28, recommended option. |
+| Q36 | ⛔ Checkpoint 3: migration `0016_backchannel_logout_replay_uq` (task 7.4, D8) | The partial unique index `verification_backchannel_logout_uq` on `auth.verification (identifier)` where `starts_with(identifier, 'backchannel-logout:')`, and its down script, as presented in chat. Approved by the human in chat on 2026-11-28 ("apruebo contina"). |
 
 ## Open Questions
 

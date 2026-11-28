@@ -113,6 +113,13 @@
       "when": 1795121857894,
       "tag": "0015_catalog_entity_search",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795865137005,
+      "tag": "0016_backchannel_logout_replay_uq",
+      "breakpoints": true
     }
   ]
 }

@@ -35,6 +35,7 @@
  * schema: Better Auth's own tables are never tenant-scoped rows, so RLS does
  * not apply to them (design D6).
  */
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   foreignKey,
@@ -44,6 +45,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 /** Every Better Auth table for this plugin set lives here, never in `public`. */
@@ -152,7 +154,16 @@ export const verification = authSchema.table(
       .defaultNow()
       .$onUpdate(() => new Date()),
   },
-  (t) => [index('verification_identifier_idx').on(t.identifier)],
+  (t) => [
+    index('verification_identifier_idx').on(t.identifier),
+    // One row per back-channel logout `jti`: the arbiter of the replay guard's
+    // `on conflict` (048 D8, Q14). Partial, because other identifier families
+    // of this table may repeat. The column is named with `sql.identifier`, not
+    // `t.identifier`, so drizzle-kit emits D8's unqualified predicate verbatim.
+    uniqueIndex('verification_backchannel_logout_uq')
+      .on(t.identifier)
+      .where(sql`starts_with(${sql.identifier('identifier')}, 'backchannel-logout:')`),
+  ],
 );
 
 /** `organization` plugin: one row per tenant (design D3, "tenantId = organization.id"). */
