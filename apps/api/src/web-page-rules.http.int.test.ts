@@ -31,7 +31,11 @@
  * style-src 'self' 'nonce-<n>'; img-src 'self'; font-src 'self'; connect-src 'self';
  * media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src
  * 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, and
- * "`Referrer-Policy: no-referrer` (helmet's default, now asserted)". Q60: helmet runs
+ * "`Referrer-Policy: no-referrer` (helmet's default, now asserted)". Change `048` design D9
+ * adds two report directives, `report-uri /v1/csp-reports` and `report-to csp-endpoint`
+ * (requirement "The policy MUST name the app's own same-origin violation report endpoint,
+ * through both `report-uri` and `report-to`"): the path is resolved against the response's
+ * own origin, so neither names another origin. Q60: helmet runs
  * before `002`'s Q74 request-target hook, so the 404 that hook answers carries the headers
  * too. `002` Q74: a target that is not origin-form, or whose path holds `%`, `//` or a
  * backslash, answers a bare 404 before the router.
@@ -40,9 +44,11 @@
  *
  * 1. Without a fragment: `200`, the app's `index.html` (`text/html; charset=utf-8`, equal
  *    to the build's file once the style nonce is put back to its placeholder), exactly one
- *    `Referrer-Policy: no-referrer`, and a CSP whose every source is `'self'`, `'none'` or a
- *    nonce: no scheme, host, wildcard, `data:` or `blob:` source, and every directive of
- *    D10 present, with `default-src 'self'`.
+ *    `Referrer-Policy: no-referrer`, and a CSP whose every fetch and navigation source is
+ *    `'self'`, `'none'` or a nonce: no scheme, host, wildcard, `data:` or `blob:` source,
+ *    and every directive of D10 present, with `default-src 'self'`. The two report
+ *    directives of `048` D9 are the only other directives, each with exactly its one value:
+ *    `report-uri /v1/csp-reports` and `report-to csp-endpoint`.
  * 2. With a fragment, through two real clients (`node:http` and `fetch`) given the emailed
  *    URL with `#reset=<id>&token=<t>` or `#invitation=<id>&token=<t>`: the request target
  *    the server received, recorded by an `onRequest` hook installed through
@@ -141,6 +147,16 @@ const D10_DIRECTIVES: readonly string[] = [
   'form-action',
   'frame-ancestors',
 ];
+
+/**
+ * `048` design D9's report directives, each with its one exact value: the same-origin path
+ * of `POST /v1/csp-reports` and the `Reporting-Endpoints` name that maps to it. These are
+ * the only directives whose values are not fetch or navigation sources.
+ */
+const D9_REPORT_DIRECTIVES: ReadonlyMap<string, readonly string[]> = new Map([
+  ['report-uri', ['/v1/csp-reports']],
+  ['report-to', ['csp-endpoint']],
+]);
 
 /** The only sources that allow no other origin: `'self'`, `'none'` and a nonce. */
 const SAME_ORIGIN_SOURCE = /^(?:'self'|'none'|'nonce-[A-Za-z0-9+/]+={0,2}')$/;
@@ -373,7 +389,10 @@ function expectNoReferrer(answer: Answer, label: string): void {
   expect(answer.referrerPolicy, label).toEqual(['no-referrer']);
 }
 
-/** Exactly one CSP, and it allows no other origin (D10, D11, task 6.10). */
+/**
+ * Exactly one CSP, and it allows no other origin (D10, D11, task 6.10), with `048` D9's two
+ * report directives at their exact values.
+ */
 function expectSelfOnlyCsp(answer: Answer, label: string): void {
   expect(answer.csp, label).toHaveLength(1);
   const header = answer.csp[0] ?? '';
@@ -383,7 +402,13 @@ function expectSelfOnlyCsp(answer: Answer, label: string): void {
     expect(directives.has(name), `${label}: ${name}`).toBe(true);
   }
   expect(directives.get('default-src'), label).toEqual(["'self'"]);
+  for (const [name, value] of D9_REPORT_DIRECTIVES) {
+    expect(directives.get(name), `${label}: ${name}`).toEqual(value);
+  }
   for (const [name, sources] of directives) {
+    if (D9_REPORT_DIRECTIVES.has(name)) {
+      continue;
+    }
     for (const source of sources) {
       expect(source, `${label}: ${name}`).toMatch(SAME_ORIGIN_SOURCE);
     }

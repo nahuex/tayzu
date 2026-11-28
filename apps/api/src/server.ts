@@ -295,6 +295,12 @@ const STEP_UP_COMPLETE_LOCATION = '/step-up/complete';
 const STEP_UP_FAILED_LOCATION = '/step-up/complete?result=failed';
 const STEP_UP_RATE_LIMITED_LOCATION = '/step-up/complete?result=rate_limited';
 
+/** 048 D9: the same-origin CSP violation report path and its `report-to` endpoint name. */
+const CSP_REPORT_PATH = '/v1/csp-reports';
+const CSP_REPORT_ENDPOINT_NAME = 'csp-endpoint';
+/** 048 D9: maps the `report-to` name to the path, resolved against the response's origin. */
+const REPORTING_ENDPOINTS = `${CSP_REPORT_ENDPOINT_NAME}="${CSP_REPORT_PATH}"`;
+
 /**
  * 003 D10 (ADR-0026, Q5, Q25): the exact directive list, with no helmet defaults, so
  * neither `upgrade-insecure-requests` nor `script-src-attr` is sent. `style-src` carries
@@ -319,6 +325,10 @@ const CSP_DIRECTIVES = {
   'base-uri': ["'none'"],
   'form-action': ["'self'"],
   'frame-ancestors': ["'none'"],
+  // 048 D9 (Q10): violations go to the app's own origin, `report-uri` for Firefox and
+  // Safari, `report-to` (the `Reporting-Endpoints` name) for Chromium.
+  'report-uri': [CSP_REPORT_PATH],
+  'report-to': [CSP_REPORT_ENDPOINT_NAME],
 };
 
 /**
@@ -734,9 +744,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     assignStyleNonce(reply.raw);
   });
   await app.register(fastifyHelmet, SECURITY_HEADERS);
-  // Helmet does not set `Permissions-Policy`; this hook runs right after helmet's own.
+  // Helmet does not set `Permissions-Policy` or `Reporting-Endpoints` (048 D9); this
+  // hook runs right after helmet's own.
   app.addHook('onRequest', async (_request, reply) => {
     reply.header('permissions-policy', PERMISSIONS_POLICY);
+    reply.header('reporting-endpoints', REPORTING_ENDPOINTS);
   });
   // Q74, D18: the first hook that reads the request. A target that is not
   // origin-form, or whose path (before the query) holds `%`, `//` or a

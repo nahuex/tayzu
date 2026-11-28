@@ -317,7 +317,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       the route exists. Verify: `packages/auth/src/telemetry/identity-contract.test.ts`
       snapshot-asserts them against `identity-contract-expected.ts` (extended), and
       `pnpm otel-smoke-check` stays green.
-- [ ] 8.2 The policy names the same-origin endpoint (design D9). Verify:
+- [x] 8.2 The policy names the same-origin endpoint (design D9). Verify:
       `apps/api/src/headers.int.test.ts` and `csp-nonce.http.int.test.ts` (extended) cover
       "The app page carries the policy", "API responses carry the policy too" and "The policy
       reports violations to the app's own origin" with the new exact policy and the

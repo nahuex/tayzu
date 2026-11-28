@@ -75,6 +75,39 @@
  * failures on every target of both apps. The other headers already pass; they are
  * guards the new configuration must keep green.
  *
+ * ## Extended by task 8.2 of `048-production-hardening` (design D9, Resolved decision Q10)
+ *
+ * Task 8.2: "The policy names the same-origin endpoint (design D9). Verify:
+ * `apps/api/src/headers.int.test.ts` and `csp-nonce.http.int.test.ts` (extended) cover
+ * "The app page carries the policy", "API responses carry the policy too" and "The policy
+ * reports violations to the app's own origin" with the new exact policy and the
+ * `Reporting-Endpoints` header on HTML, JSON, asset and `404` responses."
+ *
+ * Design D9 "Policy": "`CSP_DIRECTIVES` gains `'report-uri': ['/v1/csp-reports']` and
+ * `'report-to': ['csp-endpoint']`, and the `Permissions-Policy` hook also sets
+ * `Reporting-Endpoints: csp-endpoint="/v1/csp-reports"` on every response; the path is
+ * resolved against the response's own origin, so reports never leave it."
+ *
+ * The MODIFIED requirement (048 `specs/catalog-ui-core/spec.md`) adds: "The policy MUST
+ * name the app's own same-origin violation report endpoint, through both `report-uri` and
+ * `report-to`, and every response MUST carry a `Reporting-Endpoints` header that maps the
+ * `report-to` name to that same-origin path; no report MUST go to another origin."
+ *
+ * > #### Scenario: The policy reports violations to the app's own origin
+ * >
+ * > - **WHEN** a client requests `GET /` and `GET /v1/blueprints`
+ * > - **THEN** both policies carry `report-uri /v1/csp-reports` and `report-to` with the
+ * >   endpoint name of the `Reporting-Endpoints` header, which names the path
+ * >   `/v1/csp-reports` on the app's own origin
+ *
+ * So the expected directive list below is D10's plus D9's two report directives, and
+ * every target of both apps (HTML, `/v1` JSON, `/api/auth`, asset, root build file and
+ * `404`) must carry `Reporting-Endpoints: csp-endpoint="/v1/csp-reports"`.
+ *
+ * Why task 8.2 fails right now: `CSP_DIRECTIVES` has no `report-uri` or `report-to` and
+ * no hook sets `Reporting-Endpoints`, so the directive-list, report and
+ * `Reporting-Endpoints` assertions fail on every target.
+ *
  * Every request uses a fresh random IP so the rate limiters never interfere.
  */
 import { randomInt, randomUUID } from 'node:crypto';
@@ -99,8 +132,9 @@ function randomIp(): string {
 const FIXTURE_WEB_DIST = fileURLToPath(new URL('./__fixtures__/web-dist/', import.meta.url));
 
 /**
- * D10's directive list, every directive but `style-src`, which is checked on its own
- * (`'self'` plus at most the nonce of task 4.5). Each value is the exact source list.
+ * D10's directive list plus D9's `report-uri` and `report-to` (048 task 8.2), every
+ * directive but `style-src`, which is checked on its own (`'self'` plus at most the nonce
+ * of task 4.5). Each value is the exact source list.
  */
 const EXPECTED_CSP_DIRECTIVES: Readonly<Record<string, readonly string[]>> = {
   'default-src': ["'self'"],
@@ -116,9 +150,36 @@ const EXPECTED_CSP_DIRECTIVES: Readonly<Record<string, readonly string[]>> = {
   'base-uri': ["'none'"],
   'form-action': ["'self'"],
   'frame-ancestors': ["'none'"],
+  // 048 D9: the same-origin violation report endpoint, for Firefox and Safari
+  // (`report-uri`) and for Chromium (`report-to`, the `Reporting-Endpoints` name).
+  'report-uri': ['/v1/csp-reports'],
+  'report-to': ['csp-endpoint'],
 };
 
-/** Every directive name D10 lists, and no other (no `upgrade-insecure-requests`). */
+/** 048 D9: the exact `Reporting-Endpoints` value on every response. */
+const EXPECTED_REPORTING_ENDPOINTS = 'csp-endpoint="/v1/csp-reports"';
+/** 048 D9: the report path, resolved against the response's own origin. */
+const REPORT_PATH = '/v1/csp-reports';
+/** The `report-to` name D9 maps in `Reporting-Endpoints`. */
+const REPORT_ENDPOINT_NAME = 'csp-endpoint';
+
+/**
+ * Parses a `Reporting-Endpoints` structured-field dictionary (`name="url", name="url"`)
+ * into endpoint name to URL; a member that is not `token="string"` fails the test.
+ */
+function parseReportingEndpoints(header: string): ReadonlyMap<string, string> {
+  const endpoints = new Map<string, string>();
+  for (const member of header.split(',')) {
+    const match = /^\s*([a-z*][a-z0-9_\-.*]*)="([^"\\]*)"\s*$/.exec(member);
+    if (match?.[1] === undefined || match[2] === undefined) {
+      throw new Error(`malformed Reporting-Endpoints member: ${JSON.stringify(member)}`);
+    }
+    endpoints.set(match[1], match[2]);
+  }
+  return endpoints;
+}
+
+/** Every directive name D10 and 048 D9 list, and no other (no `upgrade-insecure-requests`). */
 const EXPECTED_CSP_DIRECTIVE_NAMES: readonly string[] = [
   ...Object.keys(EXPECTED_CSP_DIRECTIVES),
   'style-src',
@@ -194,6 +255,8 @@ const POLICY_HEADERS = [
   'cross-origin-embedder-policy',
   'permissions-policy',
   'strict-transport-security',
+  // 048 D9: set by the `Permissions-Policy` hook on every response.
+  'reporting-endpoints',
 ] as const;
 
 const NO_STORE = 'no-store';
@@ -369,6 +432,26 @@ describe('apps/api security headers (002 task 11.6, 003 task 4.4)', () => {
             }
           });
 
+          // 048 D9 (task 8.2): the policy names the same-origin report endpoint, and the
+          // response maps its `report-to` name to that path.
+          it(`sends reporting-endpoints: ${EXPECTED_REPORTING_ENDPOINTS} (048 D9)`, async () => {
+            const { headers } = await get(target.url);
+            expect(singleHeader(headers['reporting-endpoints'], 'reporting-endpoints')).toBe(
+              EXPECTED_REPORTING_ENDPOINTS,
+            );
+          });
+
+          it('has report-uri /v1/csp-reports and report-to csp-endpoint (048 D9)', async () => {
+            const csp = parseCsp(
+              singleHeader(
+                (await get(target.url)).headers['content-security-policy'],
+                'content-security-policy',
+              ),
+            );
+            expect(csp.directives.get('report-uri')).toEqual([REPORT_PATH]);
+            expect(csp.directives.get('report-to')).toEqual([REPORT_ENDPOINT_NAME]);
+          });
+
           it("has script-src 'self' only: no 'unsafe-inline', no 'unsafe-eval', no nonce or hash (003 D10)", async () => {
             const csp = parseCsp(
               singleHeader(
@@ -477,6 +560,12 @@ describe('apps/api security headers (002 task 11.6, 003 task 4.4)', () => {
       expect(response.headers['x-frame-options']).toBe('DENY');
       expect(response.headers['cross-origin-embedder-policy']).toBe('require-corp');
       expect(response.headers['referrer-policy']).toBe('no-referrer');
+      // 048 D9: the report directives and the `Reporting-Endpoints` header.
+      expect(csp.directives.get('report-uri')).toEqual([REPORT_PATH]);
+      expect(csp.directives.get('report-to')).toEqual([REPORT_ENDPOINT_NAME]);
+      expect(singleHeader(response.headers['reporting-endpoints'], 'reporting-endpoints')).toBe(
+        EXPECTED_REPORTING_ENDPOINTS,
+      );
     });
 
     // Scenario "API responses carry the policy too": the 401 of GET /v1/blueprints
@@ -503,6 +592,51 @@ describe('apps/api security headers (002 task 11.6, 003 task 4.4)', () => {
         for (const name of POLICY_HEADERS) {
           expect({ [name]: api.headers[name] }).toEqual({ [name]: page.headers[name] });
           expect(api.headers[name]).toBeDefined();
+        }
+      });
+    }
+
+    // 048 scenario "The policy reports violations to the app's own origin" (task 8.2).
+    for (const [label, appOf] of [
+      ['with webDistDir', () => webApp],
+      ['without webDistDir', () => bareApp],
+    ] as const) {
+      it(`The policy reports violations to the app's own origin (GET / and GET /v1/blueprints, ${label})`, async () => {
+        const page = await get(webApp, '/');
+        const api = await get(appOf(), '/v1/blueprints');
+        expect(page.statusCode).toBe(200);
+        expect(api.statusCode).toBe(401);
+        for (const [which, response] of [
+          ['GET /', page],
+          ['GET /v1/blueprints', api],
+        ] as const) {
+          const csp = parseCsp(
+            singleHeader(response.headers['content-security-policy'], 'content-security-policy'),
+          );
+          // `report-uri /v1/csp-reports`.
+          expect(csp.directives.get('report-uri'), which).toEqual([REPORT_PATH]);
+          // `report-to` holds the endpoint name of the `Reporting-Endpoints` header.
+          const reportTo = csp.directives.get('report-to');
+          expect(reportTo, which).toEqual([REPORT_ENDPOINT_NAME]);
+          const reportingEndpoints = singleHeader(
+            response.headers['reporting-endpoints'],
+            'reporting-endpoints',
+          );
+          expect(reportingEndpoints, which).toBe(EXPECTED_REPORTING_ENDPOINTS);
+          const endpoints = parseReportingEndpoints(reportingEndpoints);
+          const endpointUrl = endpoints.get(reportTo?.[0] ?? '');
+          // ...which names the path `/v1/csp-reports` on the app's own origin: a
+          // same-origin path, never an absolute or scheme-relative URL.
+          expect(endpointUrl, which).toBe(REPORT_PATH);
+          for (const reportTarget of [
+            endpointUrl ?? '',
+            ...(csp.directives.get('report-uri') ?? []),
+          ]) {
+            expect(reportTarget, which).toMatch(/^\/(?!\/)/);
+            const resolved = new URL(reportTarget, 'https://app.tayzu.test/catalog/service');
+            expect(resolved.origin, which).toBe('https://app.tayzu.test');
+            expect(resolved.pathname, which).toBe(REPORT_PATH);
+          }
         }
       });
     }

@@ -79,6 +79,28 @@
  * `style-src` is `'self'` only and the fallback serves the placeholder verbatim: every
  * nonce assertion fails on the missing `'nonce-…'` source or on the placeholder. The
  * `script-src` checks already pass: they are guards the nonce must keep green.
+ *
+ * ## Extended by task 8.2 of `048-production-hardening` (design D9, Resolved decision Q10)
+ *
+ * Task 8.2: "The policy names the same-origin endpoint (design D9). Verify:
+ * `apps/api/src/headers.int.test.ts` and `csp-nonce.http.int.test.ts` (extended) cover
+ * "The app page carries the policy", "API responses carry the policy too" and "The policy
+ * reports violations to the app's own origin" with the new exact policy and the
+ * `Reporting-Endpoints` header on HTML, JSON, asset and `404` responses."
+ *
+ * Design D9 "Policy": "`CSP_DIRECTIVES` gains `'report-uri': ['/v1/csp-reports']` and
+ * `'report-to': ['csp-endpoint']`, and the `Permissions-Policy` hook also sets
+ * `Reporting-Endpoints: csp-endpoint="/v1/csp-reports"` on every response."
+ *
+ * `EXPECTED_POLICY` below is the exact policy: D10's directive list, with the response's
+ * nonce in `style-src`, plus D9's two report directives. Every response of this app (the
+ * app pages, a `HEAD`, the `/v1` JSON `401`, an asset, a root build file, the `404`s and
+ * the Q74 `404`) must carry exactly that policy, its own nonce aside, and
+ * `Reporting-Endpoints: csp-endpoint="/v1/csp-reports"`.
+ *
+ * Why task 8.2 fails right now: the served policy has no `report-uri` or `report-to` and
+ * no `Reporting-Endpoints` header is set, so every exact-policy and `Reporting-Endpoints`
+ * assertion fails. The nonce assertions of task 4.5 already pass and stay green.
  */
 import { randomInt } from 'node:crypto';
 import { connect, type AddressInfo } from 'node:net';
@@ -105,6 +127,21 @@ const ANY_NONCE_SOURCE = /^'nonce-(.*)'$/;
 const STYLE_NONCE_META = /<meta name="tayzu-style-nonce" content="([^"]*)"\s*\/?>/g;
 
 const APP_PAGES: readonly string[] = ['/', '/catalog/service/payments'];
+
+/** Stands for the response's own style nonce in `EXPECTED_POLICY`. */
+const NONCE_SLOT = '<n>';
+/**
+ * The exact policy of `003` D10 plus `048` D9 (task 8.2): every directive with its exact
+ * source list, `<n>` being the response's own nonce.
+ */
+const EXPECTED_POLICY =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'nonce-<n>'; " +
+  "img-src 'self'; font-src 'self'; connect-src 'self'; media-src 'none'; " +
+  "object-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'self'; " +
+  "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; " +
+  'report-uri /v1/csp-reports; report-to csp-endpoint';
+/** 048 D9: the exact `Reporting-Endpoints` value on every response. */
+const EXPECTED_REPORTING_ENDPOINTS = 'csp-endpoint="/v1/csp-reports"';
 
 function randomIp(): string {
   const octet = (): string => randomInt(1, 255).toString(10);
@@ -162,6 +199,21 @@ function styleNonce(header: string, label: string): string {
   return value;
 }
 
+/**
+ * Asserts that a served policy is exactly `EXPECTED_POLICY` with its own nonce in the
+ * `<n>` slot: the same directives, each with the same source list, none repeated.
+ */
+function expectExactPolicy(header: string, label: string): void {
+  const nonce = styleNonce(header, label);
+  const names = header
+    .split(';')
+    .map((part) => part.trim().split(/\s+/)[0]?.toLowerCase() ?? '')
+    .filter((name) => name.length > 0);
+  expect(new Set(names).size, label).toBe(names.length);
+  const expected = Object.fromEntries(parseCsp(EXPECTED_POLICY.replace(NONCE_SLOT, nonce)));
+  expect(Object.fromEntries(parseCsp(header)), label).toEqual(expected);
+}
+
 /** Asserts the task 4.5 shape: 16 bytes in standard base64. */
 function expectNonceShape(value: string, label: string): void {
   expect(value, label).toMatch(NONCE_VALUE);
@@ -185,6 +237,8 @@ interface Observed {
   readonly body: string;
   readonly contentType: unknown;
   readonly csp: string;
+  /** 048 D9: the raw `Reporting-Endpoints` header, absent today. */
+  readonly reportingEndpoints: unknown;
 }
 
 let app: App;
@@ -201,6 +255,7 @@ async function call(method: 'GET' | 'HEAD', url: string): Promise<Observed> {
     body: response.body,
     contentType: response.headers['content-type'],
     csp: singleHeader(response.headers['content-security-policy'], 'content-security-policy'),
+    reportingEndpoints: response.headers['reporting-endpoints'],
   };
 }
 
@@ -298,6 +353,15 @@ describe('the per-response style nonce (003 task 4.5, design D10, Q15)', () => {
         expect(page.body, path).not.toMatch(/\snonce\s*=/i);
       });
 
+      // 048 task 8.2: "the exact policy and headers above", now with D9's report directives.
+      it(`GET ${path}: carries the exact policy with the report directives and Reporting-Endpoints (048 D9)`, async () => {
+        const page = await call('GET', path);
+        expect(page.statusCode, path).toBe(200);
+        expect(page.contentType, path).toMatch(HTML);
+        expectExactPolicy(page.csp, path);
+        expect(page.reportingEndpoints, path).toBe(EXPECTED_REPORTING_ENDPOINTS);
+      });
+
       it(`GET ${path}: script-src holds no nonce ('self' only)`, async () => {
         const page = await call('GET', path);
         const scriptSrc = parseCsp(page.csp).get('script-src');
@@ -364,6 +428,14 @@ describe('the per-response style nonce (003 task 4.5, design D10, Q15)', () => {
         expect(secondNonce, target.url).not.toBe(firstNonce);
         expect(parseCsp(first.csp).get('script-src'), target.url).toEqual(["'self'"]);
       });
+
+      // 048 task 8.2: the same exact policy and `Reporting-Endpoints` on JSON, asset and 404.
+      it(`${target.name}: carries the exact policy with the report directives and Reporting-Endpoints (048 D9)`, async () => {
+        const response = await call('GET', target.url);
+        expect(response.statusCode, target.url).toBe(target.status);
+        expectExactPolicy(response.csp, target.url);
+        expect(response.reportingEndpoints, target.url).toBe(EXPECTED_REPORTING_ENDPOINTS);
+      });
     }
 
     it('the Q74 404 of a % target carries the nonce too (Q60: the hooks run before Q74)', async () => {
@@ -375,6 +447,9 @@ describe('the per-response style nonce (003 task 4.5, design D10, Q15)', () => {
       const nonce = styleNonce(csp ?? '', 'Q74 404');
       expectNonceShape(nonce, 'Q74 404');
       expect(parseCsp(csp ?? '').get('script-src')).toEqual(["'self'"]);
+      // 048 task 8.2: the exact policy and `Reporting-Endpoints` reach the Q74 404 too.
+      expectExactPolicy(csp ?? '', 'Q74 404');
+      expect(response.headers.get('reporting-endpoints')).toBe(EXPECTED_REPORTING_ENDPOINTS);
     });
   });
 
@@ -391,6 +466,9 @@ describe('the per-response style nonce (003 task 4.5, design D10, Q15)', () => {
       expect(headNonce).not.toBe(styleNonce(get.csp, 'GET'));
       expect(cspWithoutNonces(head.csp)).toEqual(cspWithoutNonces(get.csp));
       expect(parseCsp(head.csp).get('script-src')).toEqual(["'self'"]);
+      // 048 task 8.2.
+      expectExactPolicy(head.csp, 'HEAD');
+      expect(head.reportingEndpoints).toBe(EXPECTED_REPORTING_ENDPOINTS);
     });
   });
 });
