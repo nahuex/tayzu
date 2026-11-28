@@ -3,7 +3,8 @@
  * kept apart from `./contract.ts`, whose test requires it to equal the authz
  * contract's `auth.*` subset exactly. 13.3 declared the four `002` Q42 names
  * here and 15.1 declares the rest, as design.md's Observability contract
- * states them; 044 (task 12.1), 045 (task 9.1) and 003 (task 3.9) append theirs.
+ * states them; 044 (task 12.1), 045 (task 9.1), 003 (task 3.9) and 048
+ * (task 8.1) append theirs.
  * `catalog.security.authz_denied` and `tayzu.authz.decisions` are reused from
  * 001 / 002 and are not declared here.
  */
@@ -57,6 +58,7 @@ const ORG_DELETION_STEP = 'tayzu.identity.org_deletion.step';
 const ORG_DELETION_ENTITIES_REMOVED = 'tayzu.identity.org_deletion.entities_removed';
 const ORG_DELETION_CANCEL_REFUSAL = 'tayzu.identity.org_deletion.cancel_refusal';
 const SESSION_GATE = 'tayzu.identity.session.gate';
+const CSP_DIRECTIVE = 'tayzu.web.csp.directive';
 
 const STATUS_TAIL = [
   STATUS_TO,
@@ -132,6 +134,9 @@ export const IDENTITY_METRICS: readonly IdentityMetricDeclaration[] = [
   },
   // 045 (design "Observability contract"): a counter, unit `{deletion}`.
   { name: 'tayzu.identity.org_deletions', attributes: ['tayzu.identity.org_deletion.outcome'] },
+  // 048 (design D9, "Observability contract"): a counter, unit `{report}`, of browser CSP
+  // violation reports by mapped directive. No tenant: the report route reads no session.
+  { name: 'tayzu.web.csp_violations', attributes: [CSP_DIRECTIVE] },
 ];
 
 export const IDENTITY_LOG_EVENTS: readonly IdentityLogEventDeclaration[] = [
@@ -530,4 +535,23 @@ export const IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
   // 048 design D6 / Q7: `session_mismatch` (the callback arrives without the session that
   // started the step-up). Kept equal to `./contract.js`'s `ATTRIBUTE_VALUES`.
   'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed', 'session_mismatch'],
+  // 048 design D9: the 14 directives of `CSP_DIRECTIVES` (the `-elem`/`-attr` variants map to
+  // their base directive), plus `other` for anything else.
+  [CSP_DIRECTIVE]: [
+    'default-src',
+    'script-src',
+    'style-src',
+    'img-src',
+    'font-src',
+    'connect-src',
+    'media-src',
+    'object-src',
+    'frame-src',
+    'worker-src',
+    'manifest-src',
+    'base-uri',
+    'form-action',
+    'frame-ancestors',
+    'other',
+  ],
 };

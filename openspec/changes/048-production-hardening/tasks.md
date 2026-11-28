@@ -312,7 +312,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 8. CSP violation reports (D8)
 
-- [ ] 8.1 Declare `tayzu.web.csp_violations` and the fifteen values of
+- [x] 8.1 Declare `tayzu.web.csp_violations` and the fifteen values of
       `tayzu.web.csp.directive` in `packages/auth/src/telemetry/identity-contract.ts`, before
       the route exists. Verify: `packages/auth/src/telemetry/identity-contract.test.ts`
       snapshot-asserts them against `identity-contract-expected.ts` (extended), and

@@ -683,3 +683,72 @@ describe('the identity contract mirrors the 048 re-authorization reasons (task 6
     );
   });
 });
+
+/*
+ * Task 8.1 of openspec/changes/048-production-hardening (design D9, Resolved decision Q10,
+ * "Observability contract" -> Metrics): "`tayzu.web.csp_violations` | Counter, `{report}` |
+ * `tayzu.web.csp.directive` (`default-src`|`script-src`|`style-src`|`img-src`|`font-src`|
+ * `connect-src`|`media-src`|`object-src`|`frame-src`|`worker-src`|`manifest-src`|`base-uri`|
+ * `form-action`|`frame-ancestors`|`other`)", declared in the identity contract module before
+ * `POST /v1/csp-reports` exists. Verify clause: "`identity-contract.test.ts` snapshot-asserts
+ * them against `identity-contract-expected.ts` (extended)".
+ *
+ * ## Production symbols expected (`./identity-contract.js`)
+ *
+ * - `IDENTITY_METRICS` gains `{ name: 'tayzu.web.csp_violations', attributes:
+ *   ['tayzu.web.csp.directive'] }`, exactly once. The declaration shape has no type or unit
+ *   field; the `{report}` counter is the instrument's concern.
+ * - `IDENTITY_ATTRIBUTE_VALUES` gains `tayzu.web.csp.directive` with the fifteen values.
+ *
+ * ## Why this fails right now
+ *
+ * Neither the metric nor the value set is declared (assertion failures). The 043 cases above
+ * compare the whole metric list and every value set with the extended fixture, so they fail
+ * for the same reason.
+ */
+const CSP_DIRECTIVE = 'tayzu.web.csp.directive';
+const CSP_DIRECTIVE_VALUES_048 = [
+  'default-src',
+  'script-src',
+  'style-src',
+  'img-src',
+  'font-src',
+  'connect-src',
+  'media-src',
+  'object-src',
+  'frame-src',
+  'worker-src',
+  'manifest-src',
+  'base-uri',
+  'form-action',
+  'frame-ancestors',
+  'other',
+];
+
+describe('the identity contract declares the 048 CSP violation counter (task 8.1)', () => {
+  const contract = identityContract as unknown as {
+    IDENTITY_METRICS: readonly Declared[];
+    IDENTITY_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>>;
+  };
+  const metrics = asDeclared(contract.IDENTITY_METRICS);
+
+  it('declares tayzu.web.csp_violations with only tayzu.web.csp.directive and its fifteen values', () => {
+    const expected = EXPECTED_METRICS.find((m) => m.name === 'tayzu.web.csp_violations');
+    expect(expected, 'fixture has tayzu.web.csp_violations').toBeDefined();
+    expect(expected?.attributes).toEqual([CSP_DIRECTIVE]);
+
+    expect(metrics.filter((m) => m.name === 'tayzu.web.csp_violations')).toHaveLength(1);
+    const declared = byName(metrics, 'tayzu.web.csp_violations');
+    expect(declared?.attributes).toEqual([CSP_DIRECTIVE]);
+    expect(declared?.attributes).not.toContain('tayzu.tenant.id');
+
+    expect(CSP_DIRECTIVE_VALUES_048).toHaveLength(15);
+    expect(sorted(EXPECTED_ATTRIBUTE_VALUES[CSP_DIRECTIVE])).toEqual(
+      sorted(CSP_DIRECTIVE_VALUES_048),
+    );
+    const values = contract.IDENTITY_ATTRIBUTE_VALUES[CSP_DIRECTIVE];
+    expect(values, `${CSP_DIRECTIVE} value set is declared`).toBeDefined();
+    expect(values).toHaveLength(15);
+    expect(sorted(values)).toEqual(sorted(CSP_DIRECTIVE_VALUES_048));
+  });
+});

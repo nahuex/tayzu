@@ -1,7 +1,7 @@
 /**
  * The identity change's telemetry contract as design.md's "Observability
  * contract" tables state it (043, task 15.1; extended by 044 task 12.1,
- * 045 task 9.1 and 003 tasks 3.9 and 3.11), written out once so that
+ * 045 task 9.1, 003 tasks 3.9 and 3.11 and 048 task 8.1), written out once so that
  * `telemetry/identity-contract.test.ts` and `apps/api`'s
  * `otel-smoke-check.int.test.ts` assert the same thing. It is the spec side of
  * the comparison: nothing here is derived from `identity-contract.ts`.
@@ -138,6 +138,13 @@ export const EXPECTED_METRICS: readonly ExpectedMetric[] = [
   {
     name: 'tayzu.identity.org_deletions',
     attributes: ['tayzu.identity.org_deletion.outcome'],
+  },
+  // 048 (design D9, Q10, "Observability contract", Metrics: "Counter, `{report}`"): browser CSP
+  // violation reports, counted by their mapped directive only. No tenant: the route reads no
+  // session.
+  {
+    name: 'tayzu.web.csp_violations',
+    attributes: ['tayzu.web.csp.directive'],
   },
 ];
 
@@ -601,4 +608,24 @@ export const EXPECTED_ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[
   // 048 design D6 / Q7: `session_mismatch` (the callback arrives without the session that
   // started the re-authorization), the same set as `contract.ts`'s `ATTRIBUTE_VALUES`.
   'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed', 'session_mismatch'],
+  // 048 design D9 (Q10) and "Observability contract", Metrics: the 14 directive names of
+  // `CSP_DIRECTIVES` (`script-src-elem`/`-attr` count as `script-src`, `style-src-elem`/`-attr`
+  // as `style-src`), plus `other` for anything else.
+  'tayzu.web.csp.directive': [
+    'default-src',
+    'script-src',
+    'style-src',
+    'img-src',
+    'font-src',
+    'connect-src',
+    'media-src',
+    'object-src',
+    'frame-src',
+    'worker-src',
+    'manifest-src',
+    'base-uri',
+    'form-action',
+    'frame-ancestors',
+    'other',
+  ],
 };
