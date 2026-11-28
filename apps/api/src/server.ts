@@ -54,6 +54,7 @@ import {
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
+import type { AuthSecret } from './auth-secrets.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
 import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
@@ -88,8 +89,16 @@ export interface CreateAppOptions {
   readonly appPool: Pool;
   /** Pool running as `tayzu_auth` (design D6), built by the host. Not ended by `close`. */
   readonly authPool: Pool;
-  /** Better Auth's secret, from the host's environment. */
-  readonly authSecret: string;
+  /**
+   * `BETTER_AUTH_SECRETS` (048 design D4), from the host's environment: every key version,
+   * the current one first, handed to `createAuth` as its explicit `secrets`.
+   */
+  readonly authSecrets?: readonly AuthSecret[];
+  /**
+   * A single secret, kept so earlier `createApp({ authSecret })` callers keep working: it
+   * becomes version 1. Ignored when `authSecrets` is given.
+   */
+  readonly authSecret?: string;
   /** `host:port` of the Cerbos gRPC endpoint. */
   readonly cerbosAddress: string;
   /** Explicit CORS origin allowlist: exact matches only, never `*` or a reflected origin. */
@@ -437,7 +446,8 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     userSync,
     accountNotices,
     ssoLinkShed: ssoLinkShed.port,
-    secret: options.authSecret,
+    ...(options.authSecrets === undefined ? {} : { secrets: options.authSecrets }),
+    ...(options.authSecret === undefined ? {} : { secret: options.authSecret }),
     ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
     trustedOrigins: options.allowedOrigins,
     ...(options.sso === undefined ? {} : { sso: options.sso }),

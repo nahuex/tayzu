@@ -143,7 +143,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `zap-seed.ts --refresh`), `scripts/ci/zap-seed.ts:85,183` (which reads the secret and
       forwards it to `bootstrap-admin`) and the test fixtures, asserted by the script tests
       (`dast-script.test.ts` and `zap-seed.test.ts`).
-- [ ] 4.2 The instance receives `secrets` and `secret` explicitly (design D4). Verify:
+- [x] 4.2 The instance receives `secrets` and `secret` explicitly (design D4). Verify:
       `packages/auth/src/auth-instance.test.ts` covers "An ambient variable cannot change the
       keys": with `BETTER_AUTH_SECRETS` and `BETTER_AUTH_SECRET` set in `process.env` to other
       values, `(await auth.$context).secretConfig` holds exactly the configured versions, the

@@ -57,12 +57,3 @@ export function parseAuthSecrets(value: string, variable: string): readonly Auth
   }
   return secrets;
 }
-
-/** The value of the current (first) entry; fails closed on an empty list. */
-export function currentAuthSecret(secrets: readonly AuthSecret[], variable: string): string {
-  const current = secrets[0];
-  if (current === undefined) {
-    throw new Error(`${variable} is required.`);
-  }
-  return current.value;
-}

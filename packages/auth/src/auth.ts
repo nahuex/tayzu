@@ -55,7 +55,7 @@
  * why this file, not Better Auth itself, owns writing it).
  *
  * Configuration comes only from `CreateAuthOptions`, supplied by the host
- * (`apps/api`): this library never reads `process.env` or logs `secret`.
+ * (`apps/api`): this library never reads `process.env` or logs `secrets`.
  */
 import { apiKey } from '@better-auth/api-key';
 import { drizzleAdapter, type DB } from '@better-auth/drizzle-adapter';
@@ -760,6 +760,34 @@ async function activateOnFirstSignIn(
   });
 }
 
+/** One versioned authentication secret (048 design D4). */
+export interface AuthSecret {
+  readonly version: number;
+  readonly value: string;
+}
+
+/**
+ * 048 design D4: the explicit `secrets` list Better Auth receives, from
+ * `options.secrets` or, failing that, `options.secret` as version 1. Fails
+ * closed with a fixed message (no secret text) when neither yields a key.
+ */
+function resolveAuthSecrets(options: CreateAuthOptions): {
+  readonly secrets: AuthSecret[];
+  readonly current: string;
+} {
+  const secrets =
+    options.secrets !== undefined
+      ? options.secrets.map(({ version, value }) => ({ version, value }))
+      : options.secret !== undefined && options.secret !== ''
+        ? [{ version: 1, value: options.secret }]
+        : [];
+  const first = secrets[0];
+  if (first === undefined || first.value === '') {
+    throw new Error('createAuth requires at least one authentication secret.');
+  }
+  return { secrets, current: first.value };
+}
+
 export interface CreateAuthOptions {
   /**
    * A `@better-auth/drizzle-adapter`-compatible DB handle. The adapter never
@@ -768,8 +796,18 @@ export interface CreateAuthOptions {
    * like a Drizzle database is enough here.
    */
   readonly db: DB;
-  /** Better Auth's own `secret` option (`BETTER_AUTH_SECRET`, host-resolved). */
-  readonly secret: string;
+  /**
+   * 048 design D4: the versioned authentication secrets (`BETTER_AUTH_SECRETS`,
+   * host-resolved), current first. Passed to Better Auth as `secrets`, and the
+   * first value as `secret` (the legacy key), so no ambient variable can add,
+   * replace or remove a key.
+   */
+  readonly secrets?: readonly AuthSecret[];
+  /**
+   * A single secret, kept so earlier `createAuth({ db, secret })` calls keep
+   * working: it becomes version 1. Ignored when `secrets` is given.
+   */
+  readonly secret?: string;
   /**
    * Task 23.12 (design Q40): the public base URL Better Auth builds cookies
    * and redirects on. Optional so the test harness can omit it.
@@ -926,8 +964,12 @@ interface AuthHandlerSurface {
 
 /** Builds the one `betterAuth` instance `@tayzu/auth` exposes. */
 export function createAuth(options: CreateAuthOptions): AuthInstance {
+  const authSecrets = resolveAuthSecrets(options);
   const auth = betterAuth({
-    secret: options.secret,
+    // 048 design D4: both passed, so neither `BETTER_AUTH_SECRETS` nor
+    // `BETTER_AUTH_SECRET` in `process.env` reaches the instance's keys.
+    secrets: authSecrets.secrets,
+    secret: authSecrets.current,
     // Task 26.4, design Q67: Better Auth's default logger writes the raw error
     // (message, stack, driver text) to the console. Nothing raw is written; the
     // package's declared telemetry carries the sanitized signals.

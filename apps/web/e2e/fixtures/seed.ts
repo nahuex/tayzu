@@ -27,7 +27,6 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { currentAuthSecret } from '../../../api/src/auth-secrets.js';
 import { loadConfig, type Config } from '../../../api/src/config.js';
 import { createApp, type App } from '../../../api/src/server.js';
 import {
@@ -585,7 +584,7 @@ async function buildApp(
     const app = await createApp({
       appPool,
       authPool,
-      authSecret: currentAuthSecret(config.betterAuthSecrets, 'BETTER_AUTH_SECRETS'),
+      authSecrets: config.betterAuthSecrets,
       cerbosAddress: config.cerbosAddress,
       allowedOrigins: config.allowedOrigins,
       baseUrl: appOrigin,

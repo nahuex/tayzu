@@ -7,7 +7,6 @@
  */
 import { createPool } from '@tayzu/db';
 
-import { currentAuthSecret } from './auth-secrets.js';
 import { loadConfig } from './config.js';
 import { createEmailSender } from './email-sender.js';
 import { createApp, type App } from './server.js';
@@ -60,7 +59,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
   }
   const appUrl = config.appDatabaseUrl;
   const authUrl = config.authDatabaseUrl;
-  const authSecret = currentAuthSecret(config.betterAuthSecrets, 'BETTER_AUTH_SECRETS');
+  const authSecrets = config.betterAuthSecrets;
   const { cerbosAddress, allowedOrigins } = config;
 
   const emailSender = createEmailSender(config);
@@ -75,7 +74,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
     const built = await createApp({
       appPool,
       authPool,
-      authSecret,
+      authSecrets,
       cerbosAddress,
       allowedOrigins,
       ...(config.betterAuthUrl === undefined ? {} : { baseUrl: config.betterAuthUrl }),

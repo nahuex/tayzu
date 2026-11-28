@@ -31,7 +31,7 @@
  * builds `auth.api` synchronously from the plugin list and never awaits a
  * database round trip, so no `DATABASE_URL` is needed here.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createAuth, hashPasswordNfc } from './auth.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
@@ -165,5 +165,92 @@ describe('createAuth', () => {
     expect(await context.password.verify({ hash: hashOfNfc, password: nfd })).toBe(true);
     expect(await context.password.verify({ hash: hashOfNfd, password: nfc })).toBe(true);
     expect(await context.password.verify({ hash: hashOfNfc, password: `${nfc}x` })).toBe(false);
+  });
+});
+
+/**
+ * Task 4.2 (048 design D4, Q9; `specs/auth-and-rbac/spec.md`, "An ambient
+ * variable cannot change the keys"):
+ *
+ * > GIVEN the platform's configured list holds version `1` only
+ * > WHEN the process environment also carries another versioned list or the
+ * > retired single secret
+ * > THEN the authentication instance uses exactly the configured keys
+ *
+ * D4: "`createAuth` takes `secrets` and passes both `secrets: [...secrets]`
+ * and `secret: secrets[0].value` to `betterAuth`." Better Auth `1.7.7`
+ * (`dist/context/create-context.mjs`) builds its keys from
+ * `options.secrets ?? parseSecretsEnv(env.BETTER_AUTH_SECRETS)` and its legacy
+ * key from `options.secret || env.BETTER_AUTH_SECRET || ...`, where `env` reads
+ * `process.env` lazily; `secretConfig` is then
+ * `{ keys: Map<number, string>; currentVersion: number; legacySecret?: string }`
+ * (`@better-auth/core` `dist/types/secret.d.mts`). So the configured list must
+ * be the whole key map, version `1` the current version, and the configured
+ * current value the legacy key, whatever the environment carries.
+ *
+ * ## Why this is expected to fail for the right reason right now
+ *
+ * `createAuth` reads only `options.secret` and passes no `secrets` to
+ * `betterAuth`, so the instance takes its keys and legacy key from the ambient
+ * variables set below: an assertion failure, not a missing module.
+ */
+describe('createAuth authentication secrets (048 D4)', () => {
+  const configuredSecrets = [{ version: 1, value: TEST_SECRET }] as const;
+  // Ambient values that differ from the configured one: a list with an extra
+  // version and a different value for version 1, and the retired single secret.
+  const ambientSecretsList =
+    '2:ambient-only-version-two-not-configured-0123456789,' +
+    '1:ambient-only-version-one-not-configured-0123456789';
+  const ambientSingleSecret = 'ambient-only-retired-single-secret-not-configured-0123456789';
+
+  const ambientNames = ['BETTER_AUTH_SECRETS', 'BETTER_AUTH_SECRET'] as const;
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const name of ambientNames) {
+      saved.set(name, process.env[name]);
+    }
+  });
+
+  afterEach(() => {
+    for (const name of ambientNames) {
+      const previous = saved.get(name);
+      if (previous === undefined) {
+        Reflect.deleteProperty(process.env, name);
+      } else {
+        process.env[name] = previous;
+      }
+    }
+    saved.clear();
+  });
+
+  it('An ambient variable cannot change the keys', async () => {
+    // GIVEN the platform's configured list holds version 1 only.
+    // WHEN the process environment also carries another versioned list and
+    // the retired single secret.
+    process.env['BETTER_AUTH_SECRETS'] = ambientSecretsList;
+    process.env['BETTER_AUTH_SECRET'] = ambientSingleSecret;
+
+    const auth = createAuth({ db: stubDb, secrets: configuredSecrets });
+    const context = (await (auth as unknown as { readonly $context: Promise<unknown> })
+      .$context) as {
+      readonly secretConfig:
+        | string
+        | {
+            readonly keys: Map<number, string>;
+            readonly currentVersion: number;
+            readonly legacySecret?: string;
+          };
+    };
+
+    // THEN the authentication instance uses exactly the configured keys.
+    const { secretConfig } = context;
+    expect(typeof secretConfig).toBe('object');
+    if (typeof secretConfig === 'string') {
+      return;
+    }
+    expect([...secretConfig.keys.entries()]).toEqual([[1, TEST_SECRET]]);
+    expect(secretConfig.currentVersion).toBe(1);
+    expect(secretConfig.legacySecret).toBe(TEST_SECRET);
   });
 });

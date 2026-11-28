@@ -18,7 +18,7 @@ import { createPool } from '@tayzu/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 
-import { currentAuthSecret, parseAuthSecrets } from '../src/auth-secrets.js';
+import { parseAuthSecrets } from '../src/auth-secrets.js';
 import { createSsoLinkShed } from '../src/identity/sso-link-shed.js';
 import { createUserSyncAdapter } from '../src/identity/user-sync-adapter.js';
 import { runScript } from './run-script.js';
@@ -83,10 +83,7 @@ export async function main(options: BootstrapAdminCliOptions = {}): Promise<void
         };
         const betterAuth = createAuth({
           db: drizzle(auth, { schema: authSchema }),
-          secret: currentAuthSecret(
-            parseAuthSecrets(config.BETTER_AUTH_SECRETS, 'BETTER_AUTH_SECRETS'),
-            'BETTER_AUTH_SECRETS',
-          ),
+          secrets: parseAuthSecrets(config.BETTER_AUTH_SECRETS, 'BETTER_AUTH_SECRETS'),
           trustedOrigins: allowedOrigins,
           userSync,
           ssoLinkShed: createSsoLinkShed({ authPool: auth }).port,
