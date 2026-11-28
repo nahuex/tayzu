@@ -32,12 +32,14 @@ Visma Connect is Tayzu's primary IdP, so its items apply as written.
 | Status | Count |
 | ------ | ----- |
 | COVERED | 45 |
-| GAP (blocking) | 1 |
+| GAP (blocking) | 1 (resolved by Q32, 2026-11-28) |
 | GAP (non-blocking) | 15 (one of them is the test half of the blocking gap) |
-| HUMAN | 4 questions (H1 to H4; H4 covers the SEC01 and SEC16 checklist rows) |
+| HUMAN | 4 questions (H1 to H4; H4 covers the SEC01 and SEC16 checklist rows), answered as Q32 to Q35 on 2026-11-28 |
 
 **Blocking gap.** It touches security logging and injection, and it must be resolved or
-explicitly deferred before task 9.3:
+explicitly deferred before task 9.3. **Resolved** by Resolved decision Q32 of `design.md`
+(H1, answered by the human in chat on 2026-11-28, option 1): design D10's identifier guard,
+task 9.2a and the extended task 9.3.
 
 1. **Unvalidated caller input reaches the Cerbos decision log that D10 exports to Azure
    Monitor.** The catalog pipeline authorizes before it validates the input. Only
@@ -109,7 +111,7 @@ and Azure Monitor.
 | SEC06 | APPLIES | Cost of the stronger scrypt on a public route | GAP (non-blocking, ticket) | `p=3` runs sequentially on the libuv thread pool (4 threads by default). The per-IP and per-email limits do not bound a distributed sign-in or unknown-user flood, which can now hold the pool about 3 times longer and starve other thread-pool work. Proposed ticket: a global concurrency cap on password hashing and an explicit `UV_THREADPOOL_SIZE`, with `046` load evidence. |
 | SEC06 | APPLIES | Client-id bucket lets anyone exhaust a known integration's budget | COVERED (accepted, Q21) | Stated in Risks. Not re-opened. |
 | SEC06 | APPLIES | Dynamic raw SQL (anti-pattern) | COVERED | Every new statement in D1, D5, D8 and D14 is parameterized. `sql.raw` stays banned. |
-| SEC06 | APPLIES | Log injection through authorization inputs | **GAP (BLOCKING)** | Blocking gap 1. |
+| SEC06 | APPLIES | Log injection through authorization inputs | **GAP (BLOCKING)**, resolved by Q32 | Blocking gap 1. |
 | SEC06 AI | PARTIAL | AI-specific misuse | COVERED (N/A in scope) | No AI component in this change. Actor parity is unchanged. |
 | SEC07 Dependencies | APPLIES | New dependency reviewed: license, age, install scripts, single `core-auth` copy, SBOM | COVERED | `f1d13c2`, `docs/security/dependencies.md` "Azure credentials for email delivery". Audit at high is clean (run here). |
 | SEC07 | APPLIES | Root `pnpm.overrides` for `@azure/msal-*` | GAP (non-blocking, mechanical) | `f1d13c2` adds three root overrides (`msal-browser 5.29.1`, `msal-common 16.16.2`, `msal-node 7.2.2`) to meet the 14-day rule (`003` Q43). Design D13 and the proposal still say "one dependency" and never mention overrides, and an override can hold back a security fix. Fix: name the overrides and their removal trigger in D13. |
@@ -170,7 +172,13 @@ and Azure Monitor.
 These are not answered here. The orchestrator asks each one in chat and records the
 answer as a Resolved decision from Q32 on.
 
+**Answered.** The human answered all four in chat on 2026-11-28 ("vamos con las opciones
+recomendadas"): the recommended option of each, recorded in `design.md` as Q32 (H1), Q33
+(H2), Q34 (H3) and Q35 (H4).
+
 **H1. (Blocking gap 1) How should caller input be kept out of the exported Cerbos decision log?**
+
+**Answered** on 2026-11-28: option 1 (recommended), Resolved decision Q32.
 
 1. In `authorize()` of `pipeline.ts`, and in the entity referrer check, replace with the
    fixed `_`, before the Cerbos call:
@@ -191,6 +199,8 @@ answer as a Resolved decision from Q32 on.
 
 **H2. (SEC04) A failed sign-in against a weaker stored hash is faster than an unknown user's.**
 
+**Answered** on 2026-11-28: option 1 (recommended), Resolved decision Q33.
+
 1. In `verifyPassword`, when a legacy or lower-cost hash fails to verify, also run one
    current-cost `hashPassword` and discard it. A failed sign-in then costs the same as an
    unknown user, now and at every later cost increase. Task 5.4's enumeration test
@@ -206,6 +216,8 @@ answer as a Resolved decision from Q32 on.
 from `ACS_CONNECTION_STRING`, but D13 says `@tayzu/auth` gains no `@azure/identity`
 dependency.**
 
+**Answered** on 2026-11-28: option 1 (recommended), Resolved decision Q34.
+
 1. Move the smoke script to `apps/api/scripts/`. There it builds an `AzureCliCredential`
    (the operator's own login, as `recover-admin-mfa` does) and uses the injected-credential
    adapter, and task 11.4 covers it. **(Recommended)**: it keeps `@tayzu/auth`
@@ -218,6 +230,8 @@ dependency.**
 any open improvement items from the previous year".** Only the human can confirm this. The
 carried tickets are the ones in the `002`, `043`, `044`, `045` and `003` designs and in
 this design's Tickets.
+
+**Answered** on 2026-11-28: option 1 (recommended), Resolved decision Q35.
 
 1. They are reviewed in `046`'s full SSA, the first deployed assessment. `048` only states
    which of them it closes (C1, C2, D3, B1, F4, F6, G3, G10, G12, G13). **(Recommended)**:

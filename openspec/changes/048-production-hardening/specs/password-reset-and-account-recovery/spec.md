@@ -12,6 +12,9 @@ library's own verification, and a successful local sign-in that verifies a hash 
 format, or in the platform's format with a lower cost than the current one, MUST rewrite it
 in the current format. The rewrite MUST NOT overwrite a hash that changed since the sign-in
 read it, and MUST NOT change the answer, the timing or the telemetry of a failed sign-in.
+A failed verification against a hash weaker than the current cost (the earlier format, or
+the platform's format with lower cost parameters) MUST also compute one hash at the current
+cost, so that a failed sign-in takes as long as a sign-in for an unknown email.
 A stored value in neither format MUST fail verification.
 
 #### Scenario: A new password is stored in the current format
@@ -30,6 +33,12 @@ A stored value in neither format MUST fail verification.
 - **GIVEN** a user whose stored hash is in the earlier format
 - **WHEN** they sign in with a wrong password
 - **THEN** the answer is the uniform sign-in failure, the stored hash is unchanged, and no rehash event or write happens
+
+#### Scenario: A failed sign-in against a weaker hash costs the same as an unknown user
+
+- **GIVEN** a user whose stored hash is in the earlier format, or in the platform's format with a lower cost than the current one
+- **WHEN** they sign in with a wrong password
+- **THEN** the verification also computes one hash at the current cost, and the failure is in the same timing class as a sign-in for an email that has no account
 
 #### Scenario: A rehash never overwrites a concurrent reset
 

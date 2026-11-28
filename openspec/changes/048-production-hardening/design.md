@@ -9,46 +9,53 @@
   `002 -> 043 -> 044 -> 045 -> 003 -> 048 -> 046`. Nothing here needs Azure access: every
   item is test-driven against the local stack (PostgreSQL 18, the pinned Cerbos image, the
   OIDC stub).
-- **Source of the items.** The gate inventory of 2026-11-27 (81 gates across `002:1334-1358`,
+- **Source of the items.** The gate inventory of 2026-11-27 (81 gates across `002:1334-1357`,
   `043:3632-3717`, `044:1417-1460`, `045:914-949` and `003:1167-1194`, where `002` is
   `openspec/changes/archive/2026-10-15-002-auth-and-rbac/design.md` and the others are the
   archived designs of the same id) found ten that need application code. Item ids below
   (B1, D3, D7, D8, D10, C1, C2, F4, F6, F8, G3, G10, G12, G13) are the inventory's.
 - **Decisions.** The human answered Q1 to Q16 in chat on 2026-11-27; Q17 to Q20 are the
   orchestrator's, open to Checkpoint 1 ("Resolved decisions"). The questions this design
-  raised were asked in chat on 2026-11-27 and are recorded as Q21 to Q31.
-- **Code state this design builds on** (repository at `ae89a3e`):
+  raised were asked in chat on 2026-11-27 and are recorded as Q21 to Q31. Task 1.1's SSA
+  pre-assessment (`ssa-pre-assessment.md`) raised four more (H1 to H4), answered by the
+  human in chat on 2026-11-28 and recorded as Q32 to Q35.
+- **Code state this design builds on** (code at `origin/master` `d9913b8`; tasks 1.2
+  (`f1d13c2`) and 1.3 (`61bc952`) landed before task 1.1, whose drift-check corrected the
+  line references below):
   - `db:migrate` (`packages/db/src/run-migrations.ts:9-22`) reads `DATABASE_URL`; the TLS
     error of `packages/db/src/connection-security.ts:52-53` names `DATABASE_URL` whatever
     variable held the URL; `turbo.json:43-46` passes only `DATABASE_URL`; `scripts/ci/e2e.sh:224-233`
     and `scripts/ci/dast.sh:168-204` export the image superuser URL as `DATABASE_URL` to
-    migrate. The inverse check for runtime pools is `apps/api/src/bootstrap.ts:25-33`.
+    migrate. The inverse check for runtime pools is `apps/api/src/bootstrap.ts:25-38`.
   - Fastify trusts every private range (`apps/api/src/server.ts:665-670`,
     `trustProxy: ['loopback', 'linklocal', 'uniquelocal']`); `request.ip` keys the
     back-channel, token-exchange, reset, `/v1` fallback, SPA fallback and accept limiters.
   - The step-up re-authorization (`apps/api/src/reauthorization.ts:1-11,168-271`) binds
     the callback to the session only through the single-use `state`; it sends no `nonce`
     and no `response_mode`, and the callback is mounted for `GET` and `POST`
-    (`server.ts:978-1033`) with a scoped form parser.
+    (`server.ts:979-1036`: the form parser at 1002-1014, `GET` at 1027, `POST` at 1031) with
+    a scoped form parser.
   - Passwords are hashed by `better-auth/crypto` (`packages/auth/src/auth.ts:216-223,986-997`),
     which fixes scrypt at `N=16384, r=16, p=1`, normalizes NFKC inside, stores
     `<salt hex>:<key hex>` and compares with `===` (installed `@better-auth/utils@0.4.2`).
     It takes no cost option, so the cost can only change through a Tayzu-owned function.
   - `BETTER_AUTH_SECRET` is one key (`apps/api/src/config.ts:443-446`, `server.ts:91,432`,
-    `apps/api/scripts/script-config.ts:16,47,120`). `better-auth@1.7.7` supports a versioned
-    `secrets` option (`@better-auth/core` `init-options.d.mts:517-532`), but when only
-    `secrets` is passed its context still takes the legacy decryption key from the ambient
-    `BETTER_AUTH_SECRET` (`better-auth` `dist/context/create-context.mjs:70-81`). Cookie
-    signing always uses the first entry (`dist/cookies/index.mjs:109,157,172`).
+    `apps/api/scripts/script-config.ts:16,47,120`; the DAST seed reads it and forwards it to
+    `bootstrap-admin`, `scripts/ci/zap-seed.ts:85,183`, and `scripts/ci/dast.sh:309` sets
+    `BETTER_AUTH_SECRET=unused` for `zap-seed.ts --refresh`). `better-auth@1.7.7` supports a
+    versioned `secrets` option (`@better-auth/core` `dist/types/init-options.d.mts:517-532`),
+    but when only `secrets` is passed its context still takes the legacy decryption key from
+    the ambient `BETTER_AUTH_SECRET` (`better-auth` `dist/context/create-context.mjs:70-81`).
+    Cookie signing always uses the first entry (`dist/cookies/index.mjs:109,157,168,172,177`).
   - No CSP report directive or endpoint exists (`server.ts:276-309`; ADR-0026 point 9).
-  - `config/cerbos.yaml:21-27` uses the `local` audit backend; it is the only Cerbos
+  - `config/cerbos.yaml:22-28` uses the `local` audit backend; it is the only Cerbos
     configuration.
   - Token exchange and back-channel logout use in-memory `@fastify/rate-limit` buckets keyed
-    by IP (`server.ts:946-958,1046-1063`); token exchange is keyed by IP only (`002` Q56),
+    by IP (`server.ts:946-958,1046-1066`); token exchange is keyed by IP only (`002` Q56),
     while `auth-and-rbac` "Pre-authentication rate limiting" requires the IP and the client
     id: a drift this change closes (Q11).
   - The back-channel replay guard is one `insert ... where not exists` over a non-unique
-    index (`server.ts:879-920`, `packages/db/migrations/0002_auth_schema.sql:150`), with the
+    index (`server.ts:880-921`, `packages/db/migrations/0002_auth_schema.sql:150`), with the
     session delete outside any transaction; discovery and JWKS are fetched per token, and
     `exp - iat` is unbounded (`packages/auth/src/sso/backchannel-logout.ts`; `002:1324`).
   - No pre-purge warning exists; the marker has no `warned_at`
@@ -56,14 +63,27 @@
     48 hours before it is due (`0013`).
   - ACS is reached with `ACS_CONNECTION_STRING`
     (`packages/auth/src/identity/email/azure-communication-email.ts:56-82,115-127`,
-    `config.ts:333-367`, `script-config.ts:22,57,76`). The installed `EmailClient`
+    `config.ts:333-367`, `script-config.ts:22,57,76,83,88`), and by the manual smoke script
+    `packages/auth/scripts/acs-email-smoke.ts`, which builds the real client from the
+    connection string; the web bundle check's fixture
+    `apps/web/src/build-check/__fixtures__/secrets.md` names it. The installed `EmailClient`
     already accepts `(endpoint, TokenCredential)`.
   - The identity wrapper and the accept flow turn a Cerbos error into `false`
-    (`apps/api/src/identity/define-operation.ts:145-170,186-191`,
-    `apps/api/src/identity/accept-flow.ts:281-294`), so an outage is counted as `deny`.
+    (`apps/api/src/identity/define-operation.ts:145-170,186-191` for the caller check and
+    `:200-244` for the target check, whose denial records a second `recordAuthzDecision` at
+    226-232; `apps/api/src/identity/accept-flow.ts:281-294`), so an outage is counted as `deny`.
   - A rejected `/organization/set-active` is restored silently (`auth.ts:1446-1459`).
   - `BETTER_AUTH_URL`'s origin is never checked against `ALLOWED_ORIGINS`
-    (`config.ts:242-258`).
+    (`config.ts:242-259`).
+  - The catalog pipeline authorizes before it validates the input: every declaration but
+    `entity.search`'s sends the raw input `identifier` as the resource id, the raw
+    `blueprint` as `blueprintId` and, on create and upsert, the raw
+    `spec.relations.ownerTeam` as `ownerTeam` (`packages/catalog/src/service/pipeline.ts:377-381`
+    `inputString`, `:526-551`; `blueprints.ts:525,614,678,809`; `entities.ts:1092-1099`,
+    `:1232-1272`, `:1539-1546`, `:1706-1713`, `:1829-1836`, `:2005-2012`;
+    `entity-authz-attributes.ts:132-157`). `inputString` only checks for a non-empty string.
+    The entity referrer check (`entities.ts:983-997`) makes its own `checkResources` call.
+    Under D10 these values would reach the exported decision log (Q32).
 - **Cross-cutting constraints.** `config.test.ts:225-232` requires every secret variable to
   have a row in `docs/security/secrets.md`; the web bundle check reads the Secret-class names
   from that table; `turbo.json` runs in strict env mode; a new public Fastify route is a
@@ -115,7 +135,10 @@
   (D14). The message is fixed, `'db:migrate refuses to run as a runtime database role.'`, and
   names no role, user or host. This is the inverse of `assertRuntimeRole`; it still lets CI
   migrate as the image superuser, and `046` provisions `tayzu_migrator` with `CREATEROLE`
-  and `CREATE` on the database (`0013` and `0017` create roles).
+  and `CREATE` on the database (`0013` and `0017` create roles). The list is hand-kept, so a
+  drift test (task 12.1a) asserts that every role the migrations under
+  `packages/db/migrations/` create with `LOGIN`, other than `tayzu_migrator`, is in it: a
+  future job role cannot migrate by being forgotten.
 - `assertVerifiedTls(url, variable)` and `createPool(url, { variable })` take the name of the
   variable that held the URL, defaulting to `DATABASE_URL`, and the TLS message names it.
   The migration command passes `MIGRATION_DATABASE_URL`; the other pools may pass theirs.
@@ -187,14 +210,19 @@ loosening the rule.
 - **What a rotation does.** Prepending version `n+1` keeps everything Better Auth encrypts
   with `symmetricEncrypt` readable (TOTP secrets, backup codes, OAuth tokens, the `jwt`
   private key), because the envelope names its key version. Cookie signing uses the current
-  entry, so a rotation still signs every session out; Tayzu's own consumers
+  entry, so a rotation still signs every session out; Tayzu's three own consumers
   (`packages/auth/src/rate-limit/pre-auth-rate-limit.ts:309`, which recomputes the cookie
-  signature with `ctx.secret`, and `packages/auth/src/identity/reset-factor.ts`, which already
-  uses `secretConfig`) follow the same rule. An integration test enrols TOTP under version 1
-  and verifies a code after restarting with `2:...,1:...`.
+  signature with `ctx.secret`; `packages/auth/src/auth.ts:1640-1643`, which reads the session
+  cookie with `getSignedCookie(..., ctx.context.secret)` to tell a step-up from a login; and
+  `packages/auth/src/identity/reset-factor.ts`, which already uses `secretConfig`) follow the
+  same rule. An integration test enrols TOTP under version 1 and verifies a code after
+  restarting with `2:...,1:...`.
 - **Scripts.** `bootstrap-admin` declares `BETTER_AUTH_SECRETS`; every other script still
   declares no secret, and `recover-admin-mfa`'s list excludes both names (spec, MODIFIED
-  "Operator recovery").
+  "Operator recovery"). The DAST seed follows: `scripts/ci/zap-seed.ts:85,183` reads
+  `BETTER_AUTH_SECRETS` and forwards it to `bootstrap-admin`, and `scripts/ci/dast.sh:309`
+  sets `BETTER_AUTH_SECRETS` (a well-formed unused value) instead of `BETTER_AUTH_SECRET=unused`
+  for `zap-seed.ts --refresh`, since the retired name now stops the bootstrap.
 - **JWKS.** Manual rotation with a runbook in `docs/security/secrets.md`: access tokens live
   one hour (`packages/auth/src/token-exchange.ts`), and an automatic `rotationInterval` adds
   a key lifecycle nothing tests yet (Q9). The runbook says plainly that a secret rotation
@@ -225,22 +253,37 @@ loosening the rule.
   `timingSafeEqual` on equal-length buffers. A string matching `^[0-9a-f]{32}:[0-9a-f]{128}$`
   is a legacy Better Auth hash and is verified through `better-auth/crypto`'s
   `verifyPassword` with the NFC-normalized password (its own NFKC step stays inside, as
-  today). Anything else fails, without throwing. **Normalization**: the new format applies
+  today). Anything else fails, without throwing.
+- **Equal failure cost (Q33).** Better Auth answers an unknown user by running the configured
+  `password.hash` (`better-auth/dist/api/routes/sign-in.mjs:321,328`), which after this
+  change is the current-cost hash, while a failed check of a weaker stored hash (a legacy
+  hash, cost ∝ `N·r·p` = 262k, or a platform hash whose parameters are below the current
+  ones) is cheaper than that (786k). So when such a hash fails to verify, `verifyPassword`
+  also runs one current-cost `hashPassword(password)` and discards it before answering
+  `false`. A failed sign-in then costs the same as an unknown user's, now and at every later
+  cost increase. A successful check, and a failed check of a current-cost hash, run no extra
+  hash; a malformed stored value fails at once, as today. The legacy comparison inside
+  `better-auth/crypto` stays a `===` over derived keys (`@better-auth/utils@0.4.2`), a
+  residual ADR-0028 states (no legacy hash exists in production, F8 gate).
+- **Normalization**: the new format applies
   NFC only (the `identity-lifecycle-and-org-admin` "Password policy" rule "inside the password
   hash and verify functions themselves" still holds).
 - **Rehash on sign-in.** In `hooks.after` of `/sign-in/email`, on the success path only, after
-  the `044` D7 reset-race comparison (`auth.ts:1470-1485`) has passed, when
+  the `044` D7 reset-race comparison (`auth.ts:1470-1488`) has passed, when
   `needsRehash(hashBefore)` is true (a legacy hash, or platform parameters below the current
   ones), the hook writes `hashPassword(body.password)` with a compare-and-set:
   `update auth.account set password = $new where user_id = $1 and provider_id = 'credential'
   and password = $old`, through the `tayzu_auth` adapter's pool. A concurrent reset therefore
   always wins. The rehash also runs when a second factor is still pending (the password itself
-  verified; see Resolved decision Q27). A failed sign-in never reaches this branch, so its answer,
-  its timing and its telemetry are unchanged; a rehash error is swallowed after a sanitized
+  verified; see Resolved decision Q27). A failed sign-in never reaches this branch, so the
+  rehash changes nothing in its answer, its timing or its telemetry (its cost is the equal
+  failure cost above); a rehash error is swallowed after a sanitized
   `auth.internal_error`, and the sign-in still succeeds. The plaintext comes from `ctx.body`,
   already NFC-normalized by the `hooks.before` normalization of `043` Q22.
 - _Alternatives_ (Q8): `N=2^17, r=8, p=1` (128 MiB per hash on a public route); Argon2id (a
   native dependency); refusing legacy hashes (the next upgrade would need this work anyway).
+  For the failure cost (Q33): recording the timing oracle as a residual in ADR-0028; dropping
+  legacy-format verification (reverses part of Q8).
 
 ### D6. The SSO step-up callback is bound to the browser (F4, Q7)
 
@@ -248,7 +291,7 @@ loosening the rule.
   the `state` and the PKCE verifier, and stores
   `{"token":...,"verifier":...,"nonce":...}` in the `sso-reauth-state:<state>` row. The token
   stays the first key, because the pending-per-session bound matches the row's prefix
-  (`reauthorization.ts:181-186`). The authorization URL gains `nonce` and
+  (`reauthorization.ts:177-194`, the prefix match at 183 and 191). The authorization URL gains `nonce` and
   `response_mode=query`.
 - **Callback.** Only `GET REAUTH_CALLBACK_PATH` is registered; `scope.post` and its form
   parser are removed, so a `POST` reaches the `/v1/*` catch-all like any unknown route, and
@@ -282,7 +325,7 @@ loosening the rule.
 
 ### D7. Shared rate limits on the public edge (D10, Q11)
 
-- **Token exchange.** The in-memory `app.createRateLimit` of `server.ts:1046-1063` is replaced
+- **Token exchange.** The in-memory `app.createRateLimit` of `server.ts:1046-1066` is replaced
   by a pre-handler over `createRateLimitBucketStore` (the `auth.rate_limit` table, hashed
   keys, no migration). It consumes two buckets in order: `token_exchange`, kind `ip`, value
   `clientIpKey(request.ip)` (the existing scope, now shared, still keyed by the address alone
@@ -348,9 +391,13 @@ loosening the rule.
   (like the Visma callbacks), on `PUBLIC_ROUTE_ALLOWLIST` with the reason "browser CSP
   violation reports: no session, counted by directive only (048 D9)". The `/v1` media-type
   hook exempts this path only for `application/csp-report` and `application/reports+json`;
-  any other body type still gets the `415`. The scope registers a string parser for those two
-  types with `bodyLimit: 8192`; its error handler maps the body-limit and parse errors to
-  `204`. The handler never reads a cookie or a header other than the media type.
+  any other body type still gets the `415`. Because the route scope would otherwise inherit
+  Fastify's JSON parser, and the hook accepts `application/json` on every `/v1` path
+  (`server.ts:767-790`), the scope refuses every media type except its two, `application/json`
+  included, with the hook's exact `415` body, before any parsing or counting (the scenario
+  "Other media types are refused like any `/v1` body"). The scope registers a string parser
+  for those two types with `bodyLimit: 8192`; its error handler maps the body-limit and parse
+  errors to `204`. The handler never reads a cookie or a header other than the media type.
 - **Parse.** The body is parsed into null-prototype objects by the shared strict parser of
   the identity procedures (refusing `__proto__`, `constructor` and `prototype` at every depth).
   For `application/csp-report`, the only field read is
@@ -364,7 +411,11 @@ loosening the rule.
   `CSP_DIRECTIVES` counts as itself; anything else as `other`. The closed value list is
   declared in the contract.
 - **Budget.** An in-process per-address bucket of 60 reports per 60 seconds
-  (`clientIpKey(request.ip)`, so it relies on D2), checked before parsing. A request over the
+  (`clientIpKey(request.ip)`, so it relies on D2), checked before parsing. Its memory is
+  bounded: like the SPA fallback, it uses `@fastify/rate-limit`'s in-memory store, an LRU
+  capped by the plugin's `cache` option (5000 keys by default), or another store with an
+  explicit cap, so a sender that rotates addresses (an IPv6 prefix) evicts old keys instead
+  of growing the map. A request over the
   budget is answered `204` and not counted, and emits no rate-limit event, because the
   endpoint is unauthenticated and spoofable and must not amplify a flood into the log (Q26).
 - **Signal.** `tayzu.web.csp_violations` (Counter, `{report}`), one attribute,
@@ -382,20 +433,66 @@ loosening the rule.
   `audit.backend: file` with `audit.file.path: stdout`, and no `audit.local` block.
   `decisionLogsEnabled: true`, `accessLogsEnabled: false`, strict evaluation and disk storage
   without watch stay. Local, CI, compose, the sandbox hook and the scratch copy keep `local`,
-  so test logs stay readable. `046` mounts the production file.
+  so test logs stay readable. `046` mounts the production file. Both files set the audit
+  block's metadata keys (`includeMetadataKeys`, `excludeMetadataKeys`) explicitly, so that no
+  request metadata key is written to the decision log and the equality rule below still
+  holds; the exact settings are checked against the pinned image's audit documentation.
 - `packages/authz/src/config.test.ts` parses both files with its reader and asserts deep
   equality after removing `audit.backend`, `audit.local` and `audit.file`, then the production
   backend values. An integration test starts the pinned image (the digest of
-  `authz-pipeline.int.test.ts`) with the production file and the real `policies/` tree, makes
-  one check and asserts that a decision record appears on the container's standard output.
-- **Closed attribute set.** `@tayzu/authz` exports `CERBOS_PRINCIPAL_ATTRIBUTE_KEYS`
-  (`tenantId`, `teams`, `moderatedBlueprints`) and `CERBOS_RESOURCE_ATTRIBUTE_KEYS` (the keys
-  the catalog pipeline's declarations and the identity wrapper send today, such as
-  `tenantId`, `blueprintId`, `accountKind` and the ownership attributes, enumerated by task
-  1.1's drift check). An `apps/api` integration test wraps the Cerbos client with a recorder,
-  drives the catalog operations and the identity operations, and asserts every key is in the
-  set and every value matches an identifier, role or flag shape, with a marker title,
-  description and property value absent. A new key is then a reviewed constant change.
+  `packages/catalog/src/service/authz-pipeline.int.test.ts`) with the production file and the
+  real `policies/` tree, makes one check and asserts that a decision record appears on the
+  container's standard output, with no metadata key.
+- **Closed attribute set.** `@tayzu/authz` exports `CERBOS_PRINCIPAL_ATTRIBUTE_KEYS` and
+  `CERBOS_RESOURCE_ATTRIBUTE_KEYS`, the keys of the inventory below (task 1.1). An `apps/api`
+  integration test wraps the Cerbos client with a recorder, drives the catalog operations and
+  the identity operations, and asserts every key is in the set and every value, every
+  resource id and every principal id matches an identifier, role or flag shape, with a marker
+  title, description and property value absent and hostile `identifier`, `blueprint` and
+  `ownerTeam` inputs never reaching the recorder (Q32). A new key is then a reviewed constant
+  change.
+- **Caller identifiers are shape-guarded before the check (Q32).** In `authorize()` of
+  `packages/catalog/src/service/pipeline.ts` and in the entity referrer check
+  (`entities.ts:983-997`), every resource id, `blueprintId` and `ownerTeam` value that does
+  not match its identifier pattern is replaced with the fixed `_` before the Cerbos call: a
+  `catalogBlueprint` id and a `blueprintId` against the blueprint identifier pattern, a
+  `catalogEntity` id and an `ownerTeam` against `ENTITY_IDENTIFIER_PATTERN`; the fixed ids
+  (`new`, `list`, `_`, the redaction positions) and the masked `_user` placeholder pass as
+  today. A `_` blueprint or team matches no grant, so the check fails closed; the handler's
+  own validation still rejects the input afterwards with today's answer. No answer, no error
+  ordering and no policy changes, and authorize-before-validate stays (it hides validation
+  detail from unauthorized callers). Entity identifiers allow `@` and `.`, so a non-`_user`
+  blueprint keyed by email can still put a valid email-shaped identifier in the decision log,
+  as the existing `catalog.audit.*` attributes already carry it: a residual, not a gap.
+- **Cerbos attribute key inventory** (task 1.1, six non-test callers: five `checkResources`
+  and one `planResources`; `buildAttributes` in `packages/authz/src/attributes.ts` always sets
+  `tenantId` first from the trusted context and drops a `tenantId` in `extra`):
+
+  | Side | Key | Value shape | Sent by |
+  | ---- | --- | ----------- | ------- |
+  | Principal | `tenantId` | organization id (opaque) | all six callers |
+  | Principal | `teams` | array of team identifiers | the catalog pipeline's `authorize()` (`pipeline.ts:404-411`), the entity list plan (`entities.ts:334-340`), the referrer check (`entities.ts:983-990`), redaction (`packages/authz/src/redaction.ts:44-51`) |
+  | Principal | `moderatedBlueprints` | array of blueprint identifiers | the same four callers |
+  | Resource | `tenantId` | organization id | every resource of every caller |
+  | Resource | `blueprintId` | blueprint identifier (guarded, Q32) | `catalogEntity` only: every entity declaration and the referrer check (stored value) |
+  | Resource | `createdBy` | actor id | `catalogEntity` (`entity-authz-attributes.ts:58-66`) |
+  | Resource | `locked` | boolean | `catalogEntity` |
+  | Resource | `ownerTeam` | team identifier (guarded on create and upsert, Q32; stored value otherwise) | `catalogEntity` |
+  | Resource | `accountKind` | `service`, `standard` or the stored `_user` value | identity `user`, `serviceAccount` and `organization` resources (`define-operation.ts:175-176,211`), never `credential` |
+  | Resource | `memberRole` | the target's tenant role string | identity `user` targets |
+  | Resource | `portRole` | role name | identity targets, when the resolver read one |
+  | Resource | `moderatedBlueprints` | array of blueprint identifiers | identity targets, when the resolver read one |
+
+  The identity wrapper (`define-operation.ts:153-158`) and the accept flow
+  (`accept-flow.ts:281-286`) send the principal attribute `tenantId` only; `catalogBlueprint`
+  resources and the accept flow's `user` resource carry `tenantId` only. Principal ids are
+  the actor id or, in the accept flow, the inviter's user id; principal roles are the closed
+  role names. Resource ids are the fixed `new`, `list` and `_`, the redaction positions, the
+  masked `_user` placeholder, the identity target's opaque user id, and the guarded input
+  `identifier` (Q32). So `CERBOS_PRINCIPAL_ATTRIBUTE_KEYS = ['tenantId', 'teams',
+  'moderatedBlueprints']` and `CERBOS_RESOURCE_ATTRIBUTE_KEYS = ['tenantId', 'blueprintId',
+  'createdBy', 'locked', 'ownerTeam', 'accountKind', 'memberRole', 'portRole',
+  'moderatedBlueprints']`.
 - Not a Checkpoint 3 item: it is engine configuration, not a policy (Q15).
 
 ### D11. An authorization-engine error is an internal error, not a denial (G12, Q16)
@@ -405,7 +502,9 @@ loosening the rule.
   procedure name, `error.type` = `authz_unavailable`), calls `recordAuthzError(kind, action)`
   and throws the same `IdentityForbiddenError` as today (fail closed, unchanged answer, Q28);
   it does **not** call `recordAuthzDecision`, so no `deny` and no
-  `catalog.security.authz_denied` is recorded.
+  `catalog.security.authz_denied` is recorded. This holds on both paths of the wrapper: the
+  caller check (`define-operation.ts:145-170,186-191`) and the target check (`:200-244`,
+  whose denial today records the second `recordAuthzDecision` at 226-232).
 - `recordAuthzError` is exported by `@tayzu/catalog` next to `recordAuthzDecision` (one meter,
   `@tayzu/catalog`), over a new counter `tayzu.authz.errors` declared in
   `packages/authz/src/telemetry/contract.ts` beside `tayzu.authz.decisions`.
@@ -417,7 +516,7 @@ loosening the rule.
 
 ### D12. A rejected tenant switch is logged (G13, Q17)
 
-The `hooks.before` snapshot of `/organization/set-active` (`auth.ts:1320-1330`) also keeps
+The `hooks.before` snapshot of `/organization/set-active` (`auth.ts:1314-1330`) also keeps
 the session's user id. When `hooks.after` restores it, it emits
 `auth.security.active_organization_rejected` (WARN, `tayzu.actor.id`,
 `tayzu.auth.set_active.outcome` = `not_member` when Better Auth's error is its membership
@@ -434,7 +533,13 @@ event and the value.
   `@azure/msal-browser`, `@azure/msal-node`, `open` and `tslib`. The setup task records each
   new package of the lockfile diff (license, install scripts) in
   `docs/security/dependencies.md`, and an install script is allowed only through an explicit
-  `allowBuilds` entry with its reason; none is expected.
+  `allowBuilds` entry with its reason; none is expected. Task 1.2 (`f1d13c2`) also added three
+  root `pnpm.overrides`, `@azure/msal-browser` `5.29.1`, `@azure/msal-common` `16.16.2` and
+  `@azure/msal-node` `7.2.2`, because the versions `@azure/identity`'s ranges resolved were
+  under 14 days old (`003` Q43). An override can hold back a security fix, so each is listed
+  in the "Overrides" section of `docs/security/dependencies.md` and removed when Dependabot
+  proposes a newer `@azure/identity` (the removal trigger recorded there), or earlier if an
+  advisory affects a pinned version.
 - **Adapter.** `AzureEmailConfig` becomes `{ endpoint, senderAddress }`; the adapter takes an
   injected credential typed from `EmailClient`'s own constructor
   (`ConstructorParameters<typeof EmailClient>[1]`), so `@tayzu/auth` gains no dependency and
@@ -445,6 +550,13 @@ event and the value.
   builds `new AzureCliCredential()`, so it uses the operator's `az login` session under
   just-in-time access through PIM. The credential is built in `apps/api/src/email-sender.ts`
   and in the scripts, never in `@tayzu/auth`.
+- **Manual smoke script (Q34).** `packages/auth/scripts/acs-email-smoke.ts` moves to
+  `apps/api/scripts/acs-email-smoke.ts`. It builds `new AzureCliCredential()` (the operator's
+  own `az login`, as `recover-admin-mfa` does) and the injected-credential adapter from
+  `ACS_ENDPOINT` and the sender address, sends the fixed admin-accepted notice to
+  `SMOKE_RECIPIENT` and prints only `ok` or `failed`; it refuses a set
+  `ACS_CONNECTION_STRING` like every script. It is never run in CI. `@tayzu/auth` keeps no
+  script that reads a connection string or needs `@azure/identity`.
 - **Configuration.** `ACS_ENDPOINT` (non-secret, an absolute `https` URL) replaces
   `ACS_CONNECTION_STRING` wherever `EMAIL_PROVIDER=acs`; `AZURE_CLIENT_ID` is optional.
   `ACS_CONNECTION_STRING` set fails startup of the API and of every script in every
@@ -452,7 +564,9 @@ event and the value.
   Azure role on the ACS resource is `046`'s IaC.
 - _Alternatives_ (Q13): a hand-written token credential over the Container Apps identity
   endpoint (custom token code, and the CLI keeps a connection string); keeping the connection
-  string as an accepted risk (reverses `043` Q28).
+  string as an accepted risk (reverses `043` Q28). For the smoke script (Q34): deleting it
+  (only `046`'s sandbox step would check a real token); an `@azure/identity`
+  `devDependency` of `@tayzu/auth` for the script only.
 
 ### D14. The pre-purge warning (G10, Q12) — migration `0017` (⛔ Checkpoint 3)
 
@@ -523,23 +637,36 @@ event and the value.
 - The migrations get their own integration tests in `packages/db` (index predicate,
   duplicates refused, role privileges, `SET ROLE` refused, down scripts).
 - `otel-smoke-check` (`apps/api/src/otel-smoke-check.int.test.ts`) drives each new signal once
-  and the marker-leak checks cover the CSP report fields, the engine error message and the
-  supplied organization id.
+  and the marker-leak checks cover the CSP report fields, the engine error message, the
+  supplied organization id and hostile identifiers sent towards the authorization engine
+  (Q32).
 
 ### D16. Docs-as-Code and ADRs
 
-- New ADR **0028**, the Tayzu-owned scrypt password hash (D5); ADR-0026 point 9 rewritten for
-  the report endpoint (D9).
-- `docs/security/attack-surfaces.md`: the Pending rows this change closes (B1, D3, F4, G3,
-  the replica half of the back-channel row, D10), the new route, the narrowed callback and the
+- New ADR **0028**, the Tayzu-owned scrypt password hash (D5), with the equal failure cost
+  (Q33) and the residual `===` legacy comparison; ADR-0026 point 9 rewritten for the report
+  endpoint (D9). ADR-0016:98 (`BETTER_AUTH_SECRET`), ADR-0023:58 ("Better Auth's exported
+  password hash function") and ADR-0023:103 (`BETTER_AUTH_SECRET`) gain a short "amended by
+  `048`" note pointing at D4 and ADR-0028.
+- `docs/security/attack-surfaces.md`: the Pending rows this change closes, labelled by
+  question number in the table (`attack-surfaces.md:684-690`): "`MIGRATION_DATABASE_URL`
+  wiring (Q58)" (B1), "Configurable `TRUST_PROXY` (Q58)" (D3, also the "Client address" row at
+  :97 and line 371), "SSO step-up callback bound to the browser (Q71)" (F4, and the
+  `form_post` mention of "Verification against Visma Connect's test environment (Q57)",
+  which F4 makes obsolete), "Back-channel logout and replicas (Q73)" (F6 and the replica half
+  of D10) and "Cerbos audit log (Q58)" (G3); the new route, the narrowed callback and the
   per-replica budgets; `secrets.md`: `MIGRATION_DATABASE_URL`, `BETTER_AUTH_SECRETS` with the
   rotation and JWKS runbook, `TRUST_PROXY_*`, `ACS_ENDPOINT`, `AZURE_CLIENT_ID`,
   `PURGE_WARNING_DATABASE_URL`, and the removal of `BETTER_AUTH_SECRET` and
   `ACS_CONNECTION_STRING`; `crypto-inventory.md`: the password hash and the ACS
   authentication; `data-retention.md`: the warning window, its cadence and the operator
   environment's credential; `dependencies.md`: `@azure/identity` and its packages;
-  `docs/architecture/system-diagram.md`: the warning job and its two database connections and
-  the ACS token flow; `docs/catalog/auth-and-rbac.md`: the new telemetry; `packages/auth/CLAUDE.md`
+  `docs/architecture/system-diagram.md`: the warning job and its two database connections, the
+  ACS token flow, the Entra ID token requests of the API and the jobs (managed-identity
+  endpoint) and of the operator CLI (`az login`), `POST /v1/csp-reports` (browser to API,
+  HTTPS), the re-authorization callback narrowed to `GET` and `query` (`:66`, `:155`), and the
+  Cerbos decision-log path (sidecar stdout, the Container Apps log sink, Azure Monitor), in
+  the full diagram and in each trust zone's block; `docs/catalog/auth-and-rbac.md`: the new telemetry; `packages/auth/CLAUDE.md`
   and `apps/api/CLAUDE.md`: the secrets variable, the hash and the callback.
 
 ## Observability contract
@@ -635,13 +762,13 @@ emits them, before the code, and `otel-smoke-check` enforces them.
 
 | Section | Applies | Posture |
 | ------- | ------- | ------- |
-| SEC01 Diagram | Yes | The warning job with its two database connections (`tayzu_purge_warning`, `tayzu_auth`) and its ACS connection, and the managed-identity token flow to ACS for the API, the jobs and the operator CLI, are added to `docs/architecture/system-diagram.md` (task 12.9). No new actor. |
+| SEC01 Diagram | Yes | The warning job with its two database connections (`tayzu_purge_warning`, `tayzu_auth`) and its ACS connection, the managed-identity token flow to ACS for the API, the jobs and the operator CLI (with their token requests to Entra ID), `POST /v1/csp-reports`, the `GET`-only re-authorization callback and the Cerbos decision-log path to Azure Monitor are added to `docs/architecture/system-diagram.md` (task 12.9). No new actor: Entra ID, already drawn for developers, now also issues workload tokens. |
 | SEC02 Attack surfaces | Yes | One new public route, `POST /v1/csp-reports` (no session, 8 KiB, per-address budget, always `204`); the re-authorization callback narrowed to `GET`; the back-channel and token-exchange limits shared. Rows in `docs/security/attack-surfaces.md`. |
 | SEC03 Access control | Yes | No policy change. The tenant switch rejection is now visible; an engine outage still fails closed. The warning role reads three columns of pending markers inside a 24-hour window and writes one. |
-| SEC04 Password storage | Yes | Tayzu-owned scrypt at `N=2^15, r=8, p=3`, 64-byte key, constant-time comparison, self-describing format, rehash on sign-in, ADR-0028 (D5). |
+| SEC04 Password storage | Yes | Tayzu-owned scrypt at `N=2^15, r=8, p=3`, 64-byte key, constant-time comparison, self-describing format, rehash on sign-in, a failed check of a weaker hash costing the same as an unknown user (Q33), ADR-0028 (D5). |
 | SEC05 Cryptography | Yes | Versioned authentication secrets (D4); a 256-bit `nonce` with constant-time comparison (D6); verified TLS for the migration and warning connections (D1, D14); no new primitive beyond the password hash. |
-| SEC06 Misuse | Yes | Spoofed forwarded addresses no longer mint buckets (D2); shared budgets on token exchange and back-channel logout (D7); a CSP report flood is dropped silently (D9); a double back-channel delivery revokes once (D8). |
-| SEC07 Dependencies | Yes | One runtime dependency, `@azure/identity` `4.14.1`, with its transitive packages reviewed, install scripts checked against `allowBuilds`, audited at high and above (task 1.2). |
+| SEC06 Misuse | Yes | Spoofed forwarded addresses no longer mint buckets (D2); shared budgets on token exchange and back-channel logout (D7); a CSP report flood is dropped silently by a memory-bounded bucket, and a non-report media type answers `415` (D9); a double back-channel delivery revokes once (D8); caller-supplied identifiers are shape-guarded before they reach the authorization engine and its log (D10, Q32). |
+| SEC07 Dependencies | Yes | One runtime dependency, `@azure/identity` `4.14.1`, with its transitive packages reviewed, install scripts checked against `allowBuilds`, audited at high and above (task 1.2), and three root `pnpm.overrides` for `@azure/msal-*` with their removal trigger (D13). |
 | SEC08 File upload | N/A | No upload. |
 | SEC09/SEC10 Secrets | Yes | `BETTER_AUTH_SECRETS` with a rotation runbook; `ACS_CONNECTION_STRING` removed and refused; `MIGRATION_DATABASE_URL` and `PURGE_WARNING_DATABASE_URL` documented with owner and rotation; ambient variables cannot change the auth keys. |
 | SEC11 Phishing | Partial | The ninth fixed template carries only the purge date, no link and no free text, under the notice controls and the 20-recipient limit (D14). |
@@ -649,7 +776,7 @@ emits them, before the code, and `otel-smoke-check` enforces them.
 | SEC13 Deployment | Partial | The production Cerbos file is reviewed and tested here and mounted by `046`; the warning job is a scheduled job provisioned by `046`; the operator CLI authenticates with the operator's own identity under PIM. |
 | SEC14 Infra permissions | Yes | Two migrations (Checkpoint 3): `0016` (an index) and `0017` (a column, a role with column-level grants and two policies); the purge role gains nothing; the migration command refuses every runtime role (D1). |
 | SEC15 Network and host | Partial | No new listener; proxy trust is bounded by hop count and peer range; the deployed values are `046`'s. |
-| SEC16 Logging | Yes | Four new events, three counters and new values, opaque ids and enums only; the engine's decision log reaches stdout with a closed attribute set (D10). |
+| SEC16 Logging | Yes | Four new events, three counters and new values, opaque ids and enums only; the engine's decision log reaches stdout with a closed attribute set, shape-guarded caller identifiers and no request metadata (D10, Q32). |
 
 ## Risks / Trade-offs
 
@@ -667,7 +794,13 @@ emits them, before the code, and `otel-smoke-check` enforces them.
   reset-race check (`044` D7) sees a changed hash and refuses it like a wrong password. It
   happens at most once per user, on the first sign-in after an upgrade; the user retries.
 - [scrypt at three times today's CPU on a public route] → The pre-authentication limits
-  bound it; the memory per hash is unchanged (32 MiB). The measured time is recorded.
+  bound it per address and per email; the memory per hash is unchanged (32 MiB). The measured
+  time is recorded. A distributed sign-in or unknown-user flood is not bounded by those
+  limits and holds the libuv thread pool about three times longer (`p=3` runs sequentially):
+  a global hashing concurrency cap is a ticket, with `046`'s load evidence.
+- [A failed check of a weaker hash also runs a current-cost hash (Q33)] → It runs only on
+  failures, which the pre-authentication limits already bound, and it is the cost an unknown
+  user already pays.
 - [A daily warning job that misses or delays a run can skip a marker] → Each marker is in the
   24-hour window for one run. `046` alerts when the job did not run in 26 hours; the purge job
   is not enabled before the warning job runs (`045` Q68).
@@ -715,10 +848,17 @@ environment:
   `tayzu_purge_warning` secret, enabled before the purge job; the orphan-marker alert and the
   missed-run alert exist.
 - **C1**: the ACS resource grants the API's and the jobs' managed identities, and the
-  operator's PIM group, the role that sends email, and a real token is obtained once in the
-  sandbox.
+  operator's PIM group, the narrowest role that allows sending email only (a custom role if
+  no built-in role is that narrow; never Owner or Contributor on the resource), recorded
+  with its assignments, and a real token is obtained once in the sandbox.
 - **G12, G13**: alerts on `identity.internal_error` / `tayzu.authz.errors` and on repeated
   `auth.security.active_organization_rejected`.
+- **Open improvement items of the previous year (Q35)**: the SSA checklists' "you have
+  verified and updated any open improvement items from the previous year" (SEC01, SEC03,
+  SEC07, SEC13, SEC16) is reviewed with the human in `046`'s full SSA, the first deployed
+  assessment, over the tickets carried in the `002`, `043`, `044`, `045` and `003` designs
+  and this design's Tickets. `048` only states which of them it closes (C1, C2, D3, B1, F4,
+  F6, G3, G10, G12, G13).
 
 ## Tickets (not built in this change)
 
@@ -728,6 +868,9 @@ environment:
 | Cache the re-authorization verifier's keys | The step-up guard still fetches discovery and JWKS per check (D8). |
 | Identity internal errors for repository failures | The accept flow's repository errors still end in the uniform rejection with no internal-error event (D11). |
 | A shared store for the `/v1` and SPA budgets | With `004`'s Redis, if `046`'s replica ceiling makes the per-replica budgets too loose (D7). |
+| A global concurrency cap on password hashing | A cap on concurrent scrypt calls and an explicit `UV_THREADPOOL_SIZE`, so a distributed sign-in or unknown-user flood cannot starve other thread-pool work; sized with `046`'s load evidence (D5, SSA SEC06). |
+| A narrow notice-recipient database role | So that the warning job and the request path no longer need all of `tayzu_auth` to read administrators' addresses and the notice buckets (Q23 residual, SSA SEC10). |
+| The egress allowlist | The existing egress-allowlist ticket gains the managed-identity endpoint and Entra ID (D13, SSA SEC15). |
 
 ## Migration Plan
 
@@ -746,13 +889,15 @@ environment:
    `POST` callback or the retired variables needs the old variables restored; no deployed
    environment exists yet, so the first deployment carries this change from the start.
 
-## Resolved decisions (asked and approved in chat, 2026-11-27)
+## Resolved decisions (asked and approved in chat, 2026-11-27 and 2026-11-28)
 
 Per `openspec/project.md` §20. Q1 to Q16 were answered by the human in chat on 2026-11-27;
 each row says whether the recommended option was taken. Q17 to Q20 are the orchestrator's
 choices, open to Checkpoint 1. Q21 to Q28 (the design's open questions Q21 to Q26, Q27 and Q28)
 were answered by the human in chat on 2026-11-27; Q29 to Q31 (Q29, Q30, Q31) are orchestrator
-choices, open to Checkpoint 1. Q2 to Q4 govern `046` and are recorded here for traceability.
+choices, open to Checkpoint 1. Q32 to Q35 are the HUMAN questions H1 to H4 of task 1.1's SSA
+pre-assessment (`ssa-pre-assessment.md`), answered by the human in chat on 2026-11-28 ("vamos
+con las opciones recomendadas"). Q2 to Q4 govern `046` and are recorded here for traceability.
 
 | # | Question | Decision |
 | - | -------- | -------- |
@@ -787,8 +932,13 @@ choices, open to Checkpoint 1. Q2 to Q4 govern `046` and are recorded here for t
 | Q29 | Is `POST /v1/csp-reports` in the scripted DAST probe (D9, was OQ7) | Yes: `044`'s probe of public routes without an OpenAPI document gains it. **Orchestrator choice, open to Checkpoint 1.** |
 | Q30 | Spec home of B1 and D7 (was OQ8) | ADDED requirements in `auth-and-rbac` ("Schema migrations run only as the migration role", "The public origin is checked at startup"); the proposal's capability list names them. **Orchestrator choice, open to Checkpoint 1.** |
 | Q31 | Names this design introduced (was OQ11) | The names listed in D9, D12, D14 and the Observability contract (`tayzu_purge_warning`, `PURGE_WARNING_DATABASE_URL`, `catalog.audit.org_deletion_marker_seen`, `catalog.security.org_deletion_warning_failed`, `tayzu.identity.org_deletion_warnings`, `identity.organization.purge_warning`, `org_deletion_warning`, `tayzu.web.csp.directive`, `tayzu.auth.set_active.outcome`, the scopes `token_exchange_client` and `backchannel_logout`, `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_*`). **Orchestrator choice, open to Checkpoint 1.** |
+| Q32 | How caller input is kept out of the exported Cerbos decision log (SSA H1, the blocking gap of SEC16 and SEC06) | In `authorize()` of the catalog pipeline (`pipeline.ts`) and in the entity referrer check, every resource id, `blueprintId` and `ownerTeam` value that does not match its identifier pattern is replaced with the fixed `_` before the Cerbos call; it fails closed (a `_` blueprint or team matches no grant), with no answer, error-ordering or policy change; task 9.3's test extends to hostile values and to resource and principal ids, and task 9.2a is the guard's own cycle (D10). Answered by the human in chat on 2026-11-28, recommended option. |
+| Q33 | Timing of a failed sign-in against a weaker stored hash (SSA H2, SEC04) | When a legacy or lower-cost hash fails to verify, `verifyPassword` also runs one current-cost hash and discards it, so the failure costs the same as an unknown user's, now and at every later cost increase (D5, task 5.4a). Answered by the human in chat on 2026-11-28, recommended option. |
+| Q34 | Where the manual ACS smoke script lives (SSA H3, D13 drift) | `packages/auth/scripts/acs-email-smoke.ts` moves to `apps/api/scripts/`, where it builds an `AzureCliCredential` and the injected-credential adapter from `ACS_ENDPOINT`; `@tayzu/auth` gains no `@azure/identity` dependency (D13, task 11.2). Answered by the human in chat on 2026-11-28, recommended option. |
+| Q35 | Review of the previous year's open improvement items (SSA H4, SEC01, SEC03, SEC07, SEC13, SEC16 checklists) | Done with the human in `046`'s full SSA, the first deployed assessment; `048` only states which items it closes ("Gates for the first deployment"). Answered by the human in chat on 2026-11-28, recommended option. |
 
 ## Open Questions
 
 None. Every question raised while writing this design was asked in chat on 2026-11-27 and is
-recorded above (Q21 to Q31).
+recorded above (Q21 to Q31); the questions of task 1.1's pre-assessment were asked in chat on
+2026-11-28 and are recorded as Q32 to Q35.

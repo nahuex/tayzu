@@ -19,14 +19,14 @@ This change has two migrations (tasks 7.4 and 12.1) and no Cerbos policy change
 (design D10, Q15); a policy change found necessary during implementation is asked in chat
 first and stops at Checkpoint 3 before any file under `policies/` is written.
 
-Tasks follow the Resolved decisions Q1 to Q31 of `design.md`. A later answer of the human
-becomes a row from Q32 on, and a task it changes is amended before it is started. After every group that adds
+Tasks follow the Resolved decisions Q1 to Q35 of `design.md` (Q32 to Q35 answer task 1.1's
+pre-assessment, `ssa-pre-assessment.md`). A later answer of the human becomes a row from Q36 on, and a task it changes is amended before it is started. After every group that adds
 telemetry, the `observability-auditor` subagent checks that the declared names really exist.
 Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 1. Pre-assessment and setup
 
-- [ ] 1.1 _(setup)_ First, at the start of implementation, run the `vcdm-ssa-validator` pre-assessment
+- [x] 1.1 _(setup)_ First, at the start of implementation, run the `vcdm-ssa-validator` pre-assessment
       (Mode A) of this change's proposal, specs, design and tasks against SEC01-SEC16, and a
       drift-check of the files the design names against `master`: `packages/db/src/`
       (`run-migrations.ts`, `connection-security.ts`, `index.ts`, `harness.ts`),
@@ -71,7 +71,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       variable": unset and blank fail with the fixed message naming only
       `MIGRATION_DATABASE_URL`, a set `DATABASE_URL` is never read, and a set value is
       returned unchanged.
-- [ ] 2.2 The TLS error names the variable it was given (design D1). Verify:
+- [x] 2.2 The TLS error names the variable it was given (design D1). Verify:
       `packages/db/src/connection-security.test.ts` covers "A TLS error names the variable it
       was given": `assertVerifiedTls` and `createPool` with `variable:
       'MIGRATION_DATABASE_URL'` name it, the default names `DATABASE_URL`, and no message holds
@@ -81,8 +81,8 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       runtime role" for `tayzu_app`, `tayzu_auth`, `tayzu_purge` and `tayzu_deletion_admin`
       (the harness login roles), with the fixed message naming no role, user or host and no
       migration applied, and the owner connection migrating (a no-op on the migrated
-      database); `RUNTIME_DATABASE_ROLES` is exported by `@tayzu/db` (task 12.2 adds the
-      warning role).
+      database); `RUNTIME_DATABASE_ROLES` is exported by `@tayzu/db` (task 12.1a adds the
+      warning role, task 12.2 its refusal case).
 - [x] 2.4 _(setup)_ Wire `MIGRATION_DATABASE_URL`: `turbo.json` `db:migrate.env` becomes
       `["MIGRATION_DATABASE_URL"]`; `scripts/ci/e2e.sh` and `scripts/ci/dast.sh` export the
       owner URL as `MIGRATION_DATABASE_URL` before `pnpm db:migrate` and no longer set
@@ -116,8 +116,8 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `apps/api/src/trust-proxy.http.int.test.ts` covers "A spoofed forwarded address from an
       untrusted peer is ignored", "A forwarded address from the trusted ingress is used" and
       "Extra hops beyond the configured count are not trusted" through `inject` with
-      `remoteAddress`, observed on the accept route's limiter; `pre-auth-rate-limit.int.test.ts`
-      and the suites that rely on the loopback default stay green.
+      `remoteAddress`, observed on the accept route's limiter;
+      `apps/api/src/pre-auth-rate-limit.int.test.ts` and the suites that rely on the loopback default stay green.
 - [ ] 3.4 `BETTER_AUTH_URL`'s origin must be one of `ALLOWED_ORIGINS` (design D3). Verify:
       `apps/api/src/config.test.ts` covers "An authentication base URL outside the allowed
       origins is refused" (a different host, scheme or port refused, a path on an allowed
@@ -125,8 +125,10 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       unlisted origin are corrected by the test-writer.
 - [ ] 3.5 _(setup)_ Docs: `docs/security/secrets.md` lists `TRUST_PROXY_HOPS` and
       `TRUST_PROXY_CIDRS` as non-secret configuration with the values `046` must set; the
-      D3 row of the Pending table of `attack-surfaces.md` is closed with a pointer to `046`'s
-      verification; `apps/api/CLAUDE.md` states the trust rule. Verify: `pnpm lint` passes.
+      "Configurable `TRUST_PROXY` (Q58)" row (D3) of the Pending table of `attack-surfaces.md`
+      is closed with a pointer to `046`'s verification, and the "Client address" row (`:97`)
+      and line 371, which also name `TRUST_PROXY`, follow; `apps/api/CLAUDE.md` states the
+      trust rule. Verify: `pnpm lint` passes.
 
 ## 4. Versioned authentication secrets (C2)
 
@@ -137,7 +139,10 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       first entry current, a value containing a colon kept whole), and
       `apps/api/src/auth-secrets.test.ts` covers the shared parser. The same commit replaces
       `BETTER_AUTH_SECRET` with `BETTER_AUTH_SECRETS` in `scripts/ci/e2e.sh`,
-      `scripts/ci/dast.sh` and the test fixtures, asserted by the script tests.
+      `scripts/ci/dast.sh` (including `:309`, the `BETTER_AUTH_SECRET=unused` of
+      `zap-seed.ts --refresh`), `scripts/ci/zap-seed.ts:85,183` (which reads the secret and
+      forwards it to `bootstrap-admin`) and the test fixtures, asserted by the script tests
+      (`dast-script.test.ts` and `zap-seed.test.ts`).
 - [ ] 4.2 The instance receives `secrets` and `secret` explicitly (design D4). Verify:
       `packages/auth/src/auth-instance.test.ts` covers "An ambient variable cannot change the
       keys": with `BETTER_AUTH_SECRETS` and `BETTER_AUTH_SECRET` set in `process.env` to other
@@ -146,8 +151,12 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 - [ ] 4.3 A rotation keeps encrypted data readable (design D4). Verify:
       `packages/auth/src/secret-rotation.int.test.ts` covers "Encrypted data survives a
       rotation": a TOTP factor enrolled under `1:...` verifies after a restart with
-      `2:...,1:...`, a backup code generated under version 1 still works, and a session cookie
-      signed under version 1 no longer resolves.
+      `2:...,1:...`, a backup code generated under version 1 still works, a session cookie
+      signed under version 1 no longer resolves, and every Tayzu consumer of the signing key
+      follows the current version (design D4): the pre-auth limiter's cookie signature
+      (`pre-auth-rate-limit.ts:309`), the step-up-versus-login check of
+      `packages/auth/src/auth.ts:1640-1643` (a re-sign-in with a current-version cookie is
+      still a step-up) and `identity/reset-factor.ts`.
 - [ ] 4.4 The scripts read `BETTER_AUTH_SECRETS` (design D4). Verify:
       `apps/api/src/script-config.test.ts` covers `bootstrap-admin` declaring and parsing
       `BETTER_AUTH_SECRETS`, every other script declaring neither name, a script refusing a set
@@ -158,7 +167,8 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `jwt` plugin, and the plain statement that a rotation signs every session out), and
       removes the residual-risk sentence it closes; `packages/auth/CLAUDE.md` names the new
       variable. Verify: `pnpm lint` passes, `config.test.ts`'s secrets-table assertion holds,
-      and `check-bundle.test.ts` reads the new name from the table fixture.
+      and `apps/web/src/build-check/check-bundle.test.ts` reads the new name from the table
+      fixture (`apps/web/src/build-check/__fixtures__/secrets.md`).
 
 ## 5. The platform's password hash (F8)
 
@@ -186,11 +196,23 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       touch the hash", "A rehash never overwrites a concurrent reset" (the compare-and-set
       keeps the reset's hash) and a rehash error that still completes the sign-in; and
       `packages/auth/src/enumeration-resistance.int.test.ts` (extended) shows a failed sign-in
-      against a legacy hash answers the same status, code, body and timing class as before.
+      against a legacy hash answers the same status, code and body as before (its timing is
+      task 5.4a's).
+- [ ] 5.4a A failed check of a weaker hash costs the same as an unknown user (design D5,
+      Q33). Verify: `packages/auth/src/password-hash.test.ts` covers "A failed sign-in against
+      a weaker hash costs the same as an unknown user" at the function level (a failed legacy
+      and a failed lower-cost platform hash each run exactly one current-cost `hashPassword`,
+      spied; a successful check, a failed current-cost check and a malformed stored value run
+      none; the answer stays `false`), and
+      `packages/auth/src/enumeration-resistance.int.test.ts` (extended) shows a failed sign-in
+      against a legacy hash in the same timing class as a sign-in for an unknown email.
 - [ ] 5.5 _(setup)_ Docs: write `docs/adr/0028-tayzu-owned-scrypt-password-hash.md`
       (Context, Decision with the parameters and the format, Alternatives: `N=2^17, r=8, p=1`,
       Argon2id, refusing legacy hashes; Consequences: the rehash, the reset-race interaction,
-      the measured hash time on the CI runner); update the scrypt row of
+      the equal failure cost of Q33, the residual `===` comparison of legacy hashes inside
+      `better-auth/crypto` (`@better-auth/utils@0.4.2`; no legacy hash exists in production),
+      the measured hash time on the CI runner); add the "amended by `048`" notes of design D16
+      to ADR-0016:98 and ADR-0023:58,103; update the scrypt row of
       `docs/security/crypto-inventory.md` and the hash sentence of `packages/auth/CLAUDE.md`;
       design D5's heading links the ADR. Verify: `pnpm lint` passes and the ADR states the
       measured time.
@@ -230,9 +252,10 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       allowlist entry is `GET` with its new reason; the `form_post` cases of both files are
       replaced, not skipped.
 - [ ] 6.6 _(setup)_ Run the `observability-auditor` over group 6; update the doc comment of
-      `apps/api/src/reauthorization.ts`, the F4 row of the Pending table of
-      `attack-surfaces.md` (closed, with `046`'s F2 check of `response_mode=query`) and the
-      callback row. Verify: the auditor reports no undeclared or missing name, and
+      `apps/api/src/reauthorization.ts`, the "SSO step-up callback bound to the browser (Q71)"
+      row (F4) of the Pending table of `attack-surfaces.md` (closed, with `046`'s F2 check of
+      `response_mode=query`), the `form_post` mention of its "Verification against Visma
+      Connect's test environment (Q57)" row, which F4 makes obsolete, and the callback row. Verify: the auditor reports no undeclared or missing name, and
       `pnpm lint` passes.
 
 ## 7. Shared limits and the atomic back-channel replay guard (D10, F6)
@@ -282,8 +305,9 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `tayzu.auth.rate_limit.events` and `auth.security.rate_limited`); update
       `attack-surfaces.md`: the token-exchange and back-channel rows (shared, keyed by address
       and client id), the per-replica budgets of the `/v1` per-principal limiter and the SPA
-      fallback with `046`'s replica ceiling, and the back-channel residual risks of `002:1324`
-      that this group closes. Verify: the auditor reports no undeclared or missing name, and
+      fallback with `046`'s replica ceiling, the "Back-channel logout and replicas (Q73)" row of
+      the Pending table (F6 and the replica half of D10), and the back-channel residual risks
+      of `002:1324` that this group closes. Verify: the auditor reports no undeclared or missing name, and
       `pnpm lint` passes.
 
 ## 8. CSP violation reports (D8)
@@ -311,8 +335,11 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       route is public and reads no session".
 - [ ] 8.5 The route's media types, size and budget (design D9, Q26). Verify:
       `apps/api/src/csp-reports.http.int.test.ts` covers "Other media types are refused like
-      any `/v1` body", "A flood from one address is dropped" (keyed on `request.ip` under the
-      configured trust), and the `/v1` media-type hook unchanged for every other path; and
+      any `/v1` body" (`application/json` and `text/plain` each answer the hook's exact `415`
+      body and count nothing), "A flood from one address is dropped" (keyed on `request.ip`
+      under the configured trust), the bucket's bounded memory (many distinct addresses keep
+      the store at its configured cap, design D9), and the `/v1` media-type hook unchanged for
+      every other path; and
       `route-auth-allowlist.int.test.ts` asserts the new allowlist entry with its reason.
 - [ ] 8.6 The scripted DAST probe covers the route (design D9, Q29). Verify:
       `apps/api/src/dast-probe.test.ts` (extended) asserts the probe sends malformed, oversized
@@ -330,19 +357,37 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       (design D10). Verify: `packages/authz/src/config.test.ts` covers "The production engine
       configuration exports the decision log" (deep equality after removing the audit backend
       keys, `backend: file`, `file.path: stdout`, decision logs on, access logs off, strict
-      evaluation, disk storage without watch).
+      evaluation, disk storage without watch, and the metadata keys set explicitly in both
+      files so that no request metadata key is logged).
 - [ ] 9.2 The pinned image accepts the production file and writes decisions to stdout
       (design D10). Verify: `packages/authz/src/cerbos-production-config.int.test.ts` starts the
-      pinned image by digest with the production file and `policies/`, makes one check and
-      finds its decision record on the container's standard output.
+      pinned image by digest (the digest of
+      `packages/catalog/src/service/authz-pipeline.int.test.ts`) with the production file and
+      `policies/`, makes one check (with request metadata set) and finds its decision record on
+      the container's standard output, with no metadata key in it.
+- [ ] 9.2a Caller-supplied identifiers are shape-guarded before the Cerbos call (design D10,
+      Q32). Verify: `packages/catalog/src/service/authz-identifier-guard.int.test.ts` covers "A
+      caller-supplied identifier that is not a valid identifier never reaches the decision
+      log": through a recording Cerbos client around the real catalog services, a hostile
+      `identifier` (a marker, a newline and an over-long string), `blueprint` and
+      `spec.relations.ownerTeam` reach Cerbos as `_` in `authorize()` and in the entity
+      referrer check, a valid identifier, the fixed ids and the masked `_user` placeholder
+      pass unchanged, a `_` blueprint or team is denied (fail closed), and each operation's
+      answer and error code are the same as without the guard
+      (`pipeline-sanitize.int.test.ts` and `authz-pipeline.int.test.ts` stay green).
 - [ ] 9.3 The attributes sent to Cerbos are a closed set (design D10). Verify:
       `apps/api/src/cerbos-attribute-keys.int.test.ts` covers "The decision log carries no
       tenant free text" over the catalog operations and the identity operations through a
       recording Cerbos client, with `CERBOS_PRINCIPAL_ATTRIBUTE_KEYS` and
-      `CERBOS_RESOURCE_ATTRIBUTE_KEYS` exported by `@tayzu/authz`.
-- [ ] 9.4 _(setup)_ Docs: the G3 row of the Pending table of `attack-surfaces.md` is closed
-      with `046`'s mount step; the header comment of `config/cerbos.yaml` points at the
-      production file; `docs/security/data-retention.md` names the decision log's stdout path
+      `CERBOS_RESOURCE_ATTRIBUTE_KEYS` exported by `@tayzu/authz` (the inventory of design
+      D10), and with hostile values (Q32): a marker in the `identifier`, `blueprint` and
+      `ownerTeam` inputs as well as in the title, description and properties, asserted absent
+      from every attribute value, every resource id and every principal id, each of which
+      matches an identifier, role or flag shape.
+- [ ] 9.4 _(setup)_ Docs: the "Cerbos audit log (Q58)" row (G3) of the Pending table of
+      `attack-surfaces.md` is closed with `046`'s mount step; the header comment of
+      `config/cerbos.yaml` (lines 6-8, which cite a stale "task 7.2") points at the production
+      file; `docs/security/data-retention.md` names the decision log's stdout path
       and the retention of Q4 that `046` sets. Verify: `pnpm lint` passes.
 
 ## 10. Telemetry for silent failures (G12, G13)
@@ -357,7 +402,8 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 - [ ] 10.2 The identity wrapper reports an engine error as an internal error (design D11,
       Q28). Verify: `apps/api/src/identity/define-identity-operation-failclosed.test.ts`
       covers "An engine outage on an identity operation is not counted as a denial" for the
-      caller check and the target check, "An explicit denial is still a denial" and "The
+      caller check and the target check (`define-operation.ts:200-244`, whose denial records
+      the second `recordAuthzDecision`), "An explicit denial is still a denial" and "The
       internal error carries no free text".
 - [ ] 10.3 The accept flow's inviter re-check reports an engine error the same way (design
       D11). Verify: `apps/api/src/identity/accept-flow.int.test.ts` covers "An engine outage
@@ -385,7 +431,13 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `packages/auth/src/identity/email/azure-communication-email.test.ts` and
       `azure-email-sender.test.ts` cover "The real sender uses a token credential" with a stub
       credential (the client built from the endpoint and that credential, no connection string
-      read, no network).
+      read, no network). The same commit moves the manual smoke script
+      `packages/auth/scripts/acs-email-smoke.ts`, which would no longer typecheck, to
+      `apps/api/scripts/acs-email-smoke.ts` (design D13, Q34): it builds an
+      `AzureCliCredential` and the injected-credential adapter from `ACS_ENDPOINT` and the
+      sender address, and refuses a set `ACS_CONNECTION_STRING`; `scripts-smoke.test.ts` loads
+      it, and no file under `packages/auth/` reads `ACS_CONNECTION_STRING` except the refusal
+      tests.
 - [ ] 11.3 The API builds a managed-identity credential (design D13). Verify:
       `apps/api/src/email-sender.test.ts` covers "A user-assigned identity is selected by its
       client id" (a `ManagedIdentityCredential` for the configured client id, the
@@ -398,9 +450,11 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 - [ ] 11.5 _(setup)_ Docs: `docs/security/secrets.md` removes the connection-string secret
       and its rotation section and adds `ACS_ENDPOINT`, `AZURE_CLIENT_ID` and the Azure role
       `046` assigns; `crypto-inventory.md` updates "Authentication to ACS";
-      `data-retention.md` updates the operator environment (the `az login` under PIM); the
-      bundle check's secret list follows the table. Verify: `pnpm lint` passes and
-      `check-bundle.test.ts` and `config.test.ts`'s secrets-table assertion hold.
+      `data-retention.md` updates the operator environment (the `az login` under PIM) and the
+      smoke script's new home; the bundle check's secret list follows the table, and its
+      fixture `apps/web/src/build-check/__fixtures__/secrets.md` drops the connection string.
+      Verify: `pnpm lint` passes and `apps/web/src/build-check/check-bundle.test.ts` and
+      `config.test.ts`'s secrets-table assertion hold.
 
 ## 12. The pre-purge warning (G10)
 
@@ -418,10 +472,14 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `SET ROLE tayzu_purge_warning`) and the down script; `tenant-deletion-grants.int.test.ts`
       and `schema.int.test.ts` stay green with their lists updated. ⛔ **Checkpoint 3: present
       the SQL in chat and wait for the human's explicit approval before applying.**
+- [ ] 12.1a `RUNTIME_DATABASE_ROLES` cannot drift from the roles the migrations create
+      (design D1). Verify: `packages/db/src/runtime-database-roles.test.ts` reads the
+      migrations under `packages/db/migrations/` and asserts that every role they create with
+      `LOGIN`, other than `tayzu_migrator`, is in `RUNTIME_DATABASE_ROLES`; it fails for
+      `tayzu_purge_warning` (created by `0017`) until the constant gains it.
 - [ ] 12.2 _(setup)_ The harness and the configuration of the new role:
       `packages/db/src/harness.ts` creates the `tayzu_purge_warning` login role and its pool for
-      tests; `RUNTIME_DATABASE_ROLES` gains it, and `run-migrations.int.test.ts` (task 2.3) adds
-      it to the refused roles; `script-config.ts` declares `PURGE_WARNING_DATABASE_URL`,
+      tests; `run-migrations.int.test.ts` (task 2.3) adds it to the refused roles; `script-config.ts` declares `PURGE_WARNING_DATABASE_URL`,
       `AUTH_DATABASE_URL`, `IDENTITY_TOKEN_HMAC_SECRET`, the email variables, the kill switch and
       the disabled tenants for `purge-warning-job`. Verify: `pnpm --filter @tayzu/db test` and
       `pnpm --filter @tayzu/api test` stay green, and `script-config.test.ts` covers the new
@@ -460,15 +518,19 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       their required attributes and no email, name or secret.
 - [ ] 12.9 _(setup)_ Run the `observability-auditor` over group 12; update
       `docs/architecture/system-diagram.md` (the warning job with its `tayzu_purge_warning` and
-      `tayzu_auth` connections and its ACS connection, and the managed-identity token flow of
-      group 11, in the full diagram and in each trust zone's block, every arrow with its
-      protocol), `docs/security/data-retention.md` (the 24-to-48-hour window, the daily
+      `tayzu_auth` connections and its ACS connection; the managed-identity token flow of
+      group 11, with the token requests of the API and the jobs (managed-identity endpoint)
+      and of the operator CLI (`az login`) to Entra ID; `POST /v1/csp-reports` from the
+      browser to the API (HTTPS, group 8); the `reauthApi` node and its arrow narrowed to
+      `GET` and `query` (`:66`, `:155`, group 6); and the Cerbos decision-log path (sidecar
+      stdout, the Container Apps log sink, Azure Monitor, group 9); in the full diagram and in
+      each trust zone's block, every arrow with its protocol), `docs/security/data-retention.md` (the 24-to-48-hour window, the daily
       cadence, the at-most-once delivery and the orphan-marker detection of `046`),
       `docs/security/secrets.md` (`PURGE_WARNING_DATABASE_URL`, its owner, rotation and its own
       job identity) and `docs/catalog/auth-and-rbac.md` (the warning names). Verify: the
       auditor reports no undeclared or missing name, every Mermaid block renders with
       `npx -y @mermaid-js/mermaid-cli`, `apps/api/src/system-diagram.test.ts` (extended)
-      asserts the new nodes and arrows, and `pnpm lint` passes.
+      asserts each of the new and narrowed nodes and arrows, and `pnpm lint` passes.
 
 ## 13. Integration checks (Checkpoint 2 readiness)
 

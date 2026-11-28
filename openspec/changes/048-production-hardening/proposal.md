@@ -140,7 +140,8 @@ None. Every item hardens a surface that an existing capability already owns
     narrow grant and RLS policy.
 - **Cerbos**: no policy change. `config/cerbos.production.yaml` is PDP
   configuration, not a policy (Q15).
-- **Dependencies**: one, `@azure/identity` `4.14.1` (MIT), named in `design.md`
+- **Dependencies**: one, `@azure/identity` `4.14.1` (MIT), with root overrides that keep
+  its three msal packages at releases at least 14 days old, named in `design.md`
   with its transitive packages and install-script review. This is the design
   amendment that `043` Q28 asked for.
 - **Configuration (BREAKING for deployments)**:

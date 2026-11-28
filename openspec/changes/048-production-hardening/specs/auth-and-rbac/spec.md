@@ -301,7 +301,12 @@ so that it is collected with the platform's other logs, from a production
 configuration that differs from the reviewed local configuration only in the
 audit backend. The principal and resource attributes the platform sends to
 the authorization engine MUST be a closed, declared set of keys whose values
-are identifiers, roles and enumerated flags, never tenant free text.
+are identifiers, roles and enumerated flags, never tenant free text. A
+caller-supplied resource identifier, blueprint or owner team that does not
+match its identifier pattern MUST be replaced with a fixed placeholder
+before the authorization engine is called, so that it never reaches the
+decision log; the placeholder matches no grant, and the operation's answer
+is unchanged.
 
 #### Scenario: A denied action is logged as a security event
 - **WHEN** an action is denied by Cerbos
@@ -318,4 +323,9 @@ are identifiers, roles and enumerated flags, never tenant free text.
 #### Scenario: The decision log carries no tenant free text
 - **GIVEN** an entity whose title, description and properties hold a marker string
 - **WHEN** it is created, read, updated and deleted through the catalog, and an identity operation targets a user
-- **THEN** every principal and resource attribute key sent to the authorization engine is in the declared set, and the marker appears in no attribute value
+- **THEN** every principal and resource attribute key sent to the authorization engine is in the declared set, and the marker appears in no attribute value, no resource id and no principal id
+
+#### Scenario: A caller-supplied identifier that is not a valid identifier never reaches the decision log
+- **GIVEN** a catalog request whose entity identifier, blueprint and owner team hold a marker string that is not a valid identifier
+- **WHEN** the request is authorized
+- **THEN** the authorization engine receives the fixed placeholder in their place, the marker appears in no resource id and no attribute sent to it, the check fails closed, and the answer is the same as without the placeholder
