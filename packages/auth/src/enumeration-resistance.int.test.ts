@@ -651,3 +651,151 @@ describe('A failed sign-in against a legacy hash answers like any other failure 
     );
   }, 60_000);
 });
+
+/**
+ * Task 5.4a of `048-production-hardening` (design D5 "Equal failure cost", Q33). Spec scenario "A
+ * failed sign-in against a weaker hash costs the same as an unknown user"
+ * (`specs/password-reset-and-account-recovery/spec.md`):
+ *
+ * - GIVEN a user whose stored hash is in the earlier format
+ * - WHEN they sign in with a wrong password
+ * - THEN the failure is in the same timing class as a sign-in for an email that has no account
+ *
+ * (The clause "the verification also computes one hash at the current cost" is asserted at the
+ * function level in `password-hash.test.ts`; the lower-cost platform variant is covered there too.)
+ *
+ * ## How "the same timing class" is measured
+ *
+ * No earlier block in this file asserts timing, so this one defines a relative measure that does
+ * not depend on the machine's absolute speed: the median wall-clock time of `ROUNDS` complete
+ * sign-ins (request to fully read body, through `auth.handler`) per kind, with the kinds
+ * interleaved inside every round in a rotating order so drift (other workers, thermal, GC) hits all
+ * kinds alike, after `WARMUP_ROUNDS` unmeasured rounds (JIT, pool connections). Two medians are in
+ * the same class when their ratio is within `[MIN_RATIO, MAX_RATIO]` = `[0.6, 2.0]`.
+ *
+ * Why those bounds: an unknown email costs one current-cost hash (N·r·p = 786k); a failed legacy
+ * check costs today one legacy derivation (N·r·p = 262k), about a third of that (measured on the
+ * sandbox: about 70 ms against 190 ms), so its ratio is about 0.4 and fails the lower bound. With
+ * the extra current-cost hash of D5 it costs about 1.3 times an unknown email, well inside the
+ * band. The band is generous on purpose so that scheduling noise never flips it; the exact count of
+ * extra hashes is pinned by the unit test, not here. A wrong password against a current-cost hash
+ * is measured too, as a control that the measure itself puts two same-cost failures in one class.
+ *
+ * ## Production symbols expected
+ *
+ * None new in `auth.ts`: `verifyPassword` in `password-hash.ts` running the extra current-cost hash
+ * (D5, Q33).
+ */
+describe('A failed sign-in against a weaker hash costs the same as an unknown user (048 task 5.4a, D5, Q33)', () => {
+  /** Unmeasured rounds before sampling. */
+  const WARMUP_ROUNDS = 2;
+  /** Measured rounds per kind; the median of these is compared. */
+  const ROUNDS = 15;
+  /** The timing-class band for a ratio of medians (module doc comment above). */
+  const MIN_RATIO = 0.6;
+  const MAX_RATIO = 2.0;
+
+  let db: TestDb;
+  let auth: AuthInstance;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      rateLimit: {
+        signIn: { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: SIGN_IN_RATE_LIMIT_MAX },
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  function median(samples: readonly number[]): number {
+    const sorted = [...samples].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    const upper = sorted[middle] ?? Number.NaN;
+    if (sorted.length % 2 === 1) return upper;
+    return ((sorted[middle - 1] ?? Number.NaN) + upper) / 2;
+  }
+
+  it('a wrong password against a legacy hash is in the same timing class as a sign-in for an unknown email', async () => {
+    const handler = handlerOf(auth);
+    const legacyEmail = randomEmail();
+    const currentEmail = randomEmail();
+    const unknownEmail = randomEmail();
+    const legacy = await createAdminUser(auth, {
+      name: 'Legacy Hash Timing User',
+      email: legacyEmail,
+      password: TEST_PASSWORD,
+    });
+    await createAdminUser(auth, {
+      name: 'Current Hash Timing User',
+      email: currentEmail,
+      password: TEST_PASSWORD,
+    });
+    // GIVEN a user whose stored hash is in the earlier format.
+    const legacyHash = await legacyHashPassword(TEST_PASSWORD);
+    expect(legacyHash, 'control: a legacy salt:key hash').toMatch(/^[0-9a-f]{32}:[0-9a-f]{128}$/);
+    await db.execute(
+      sql`update auth.account set password = ${legacyHash} where user_id = ${legacy.userId} and provider_id = 'credential'`,
+    );
+
+    const kinds = [
+      { name: 'legacy', email: legacyEmail },
+      { name: 'current', email: currentEmail },
+      { name: 'unknown', email: unknownEmail },
+    ] as const;
+    type Kind = (typeof kinds)[number]['name'];
+    const samples: Record<Kind, number[]> = { legacy: [], current: [], unknown: [] };
+    const statuses = new Set<number>();
+
+    // WHEN they sign in with a wrong password (and, for comparison, an unknown email does).
+    for (let round = 0; round < WARMUP_ROUNDS + ROUNDS; round += 1) {
+      for (let offset = 0; offset < kinds.length; offset += 1) {
+        const kind = kinds[(round + offset) % kinds.length];
+        if (kind === undefined) throw new Error('unreachable');
+        const started = performance.now();
+        const response = await postSignIn(handler, {
+          ip: randomIp(),
+          email: kind.email,
+          password: WRONG_PASSWORD,
+        });
+        await response.text();
+        const elapsed = performance.now() - started;
+        statuses.add(response.status);
+        if (round >= WARMUP_ROUNDS) samples[kind.name].push(elapsed);
+      }
+    }
+
+    expect([...statuses], 'control: every attempt is the same uniform failure').toHaveLength(1);
+    expect([...statuses][0] ?? 0, 'control: a failure, not a success').toBeGreaterThanOrEqual(400);
+
+    const legacyMedian = median(samples.legacy);
+    const currentMedian = median(samples.current);
+    const unknownMedian = median(samples.unknown);
+    const summary = `medians ms: legacy=${legacyMedian.toFixed(1)}, current=${currentMedian.toFixed(1)}, unknown=${unknownMedian.toFixed(1)}`;
+
+    // Control: two failures of the same cost fall in one class under this measure.
+    const currentRatio = currentMedian / unknownMedian;
+    expect(
+      currentRatio,
+      `control: a current-cost wrong password is in the unknown-email class (${summary})`,
+    ).toBeGreaterThanOrEqual(MIN_RATIO);
+    expect(currentRatio, `control: upper bound (${summary})`).toBeLessThanOrEqual(MAX_RATIO);
+
+    // THEN the failure is in the same timing class as a sign-in for an email with no account.
+    const legacyRatio = legacyMedian / unknownMedian;
+    expect(
+      legacyRatio,
+      `a failed legacy check is not measurably faster than an unknown email (${summary})`,
+    ).toBeGreaterThanOrEqual(MIN_RATIO);
+    expect(
+      legacyRatio,
+      `a failed legacy check is not measurably slower than an unknown email (${summary})`,
+    ).toBeLessThanOrEqual(MAX_RATIO);
+  }, 180_000);
+});

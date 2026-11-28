@@ -146,11 +146,33 @@ export async function hashPassword(password: string): Promise<string> {
   return `$scrypt$ln=${String(ln)},r=${String(r)},p=${String(p)}$${toUnpaddedBase64(salt)}$${toUnpaddedBase64(key)}`;
 }
 
+/** Whether a platform hash's parameters are below the current cost in any dimension. */
+function isBelowCurrentCost({ ln, r, p }: ScryptParams): boolean {
+  return ln < CURRENT_PARAMS.ln || r < CURRENT_PARAMS.r || p < CURRENT_PARAMS.p;
+}
+
+/**
+ * Runs one current-cost hash of the password and discards it, so that a failed
+ * check of a weaker stored hash costs the same as Better Auth's unknown-user
+ * path, which hashes at the current cost (design D5 "Equal failure cost",
+ * Q33). A failure here is swallowed: the caller answers `false` either way.
+ */
+async function equalizeFailureCost(password: string): Promise<void> {
+  try {
+    await hashPassword(password);
+  } catch {
+    // Discarded, like the hash itself.
+  }
+}
+
 /**
  * Verifies a password against a stored hash in the platform or the legacy
  * Better Auth format (design D5 "Verification"). The password is
- * NFC-normalized for both. A stored value in neither format, or any failure
- * while verifying, answers `false`: this never throws.
+ * NFC-normalized for both. A failed check of a weaker hash (legacy, or a
+ * platform hash below the current cost) also runs one discarded current-cost
+ * hash before answering (design D5 "Equal failure cost"). A stored value in
+ * neither format, or any failure while verifying, answers `false`: this never
+ * throws.
  */
 export async function verifyPassword(input: { hash: string; password: string }): Promise<boolean> {
   try {
@@ -158,10 +180,18 @@ export async function verifyPassword(input: { hash: string; password: string }):
     const platform = parsePlatformHash(input.hash);
     if (platform !== undefined) {
       const key = await deriveKey(password, platform.salt, platform.params);
-      return key.length === platform.key.length && timingSafeEqual(key, platform.key);
+      const valid = key.length === platform.key.length && timingSafeEqual(key, platform.key);
+      if (!valid && isBelowCurrentCost(platform.params)) {
+        await equalizeFailureCost(password);
+      }
+      return valid;
     }
     if (LEGACY_FORMAT.test(input.hash)) {
-      return await verifyLegacyPassword({ hash: input.hash, password });
+      const valid = await verifyLegacyPassword({ hash: input.hash, password });
+      if (!valid) {
+        await equalizeFailureCost(password);
+      }
+      return valid;
     }
     return false;
   } catch {
@@ -178,8 +208,7 @@ export async function verifyPassword(input: { hash: string; password: string }):
 export function needsRehash(hash: string): boolean {
   const platform = parsePlatformHash(hash);
   if (platform !== undefined) {
-    const { ln, r, p } = platform.params;
-    return ln < CURRENT_PARAMS.ln || r < CURRENT_PARAMS.r || p < CURRENT_PARAMS.p;
+    return isBelowCurrentCost(platform.params);
   }
   return LEGACY_FORMAT.test(hash);
 }

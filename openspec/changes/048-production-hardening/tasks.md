@@ -198,7 +198,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       `packages/auth/src/enumeration-resistance.int.test.ts` (extended) shows a failed sign-in
       against a legacy hash answers the same status, code and body as before (its timing is
       task 5.4a's).
-- [ ] 5.4a A failed check of a weaker hash costs the same as an unknown user (design D5,
+- [x] 5.4a A failed check of a weaker hash costs the same as an unknown user (design D5,
       Q33). Verify: `packages/auth/src/password-hash.test.ts` covers "A failed sign-in against
       a weaker hash costs the same as an unknown user" at the function level (a failed legacy
       and a failed lower-cost platform hash each run exactly one current-cost `hashPassword`,

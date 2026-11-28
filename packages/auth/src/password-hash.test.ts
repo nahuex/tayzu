@@ -14,6 +14,8 @@ const spy = vi.hoisted(() => ({
     salt: BinaryLike;
     keylen: number;
     options: ScryptOptions | undefined;
+    /** Set once the derivation has finished (the callback ran, or the sync call returned). */
+    completed: boolean;
   }[],
   draws: [] as { size: number; bytes: Buffer }[],
   timingSafeEqualCalls: [] as { a: Buffer; b: Buffer; result: boolean }[],
@@ -23,22 +25,35 @@ const spy = vi.hoisted(() => ({
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
   spy.actual = actual;
-  const record = (args: unknown[]): void => {
+  const record = (args: unknown[]): { completed: boolean } => {
     const [password, salt, keylen, maybeOptions] = args;
-    spy.scryptCalls.push({
+    const entry = {
       password: password as BinaryLike,
       salt: salt as BinaryLike,
       keylen: keylen as number,
       options: typeof maybeOptions === 'function' ? undefined : (maybeOptions as ScryptOptions),
-    });
+      completed: false,
+    };
+    spy.scryptCalls.push(entry);
+    return entry;
   };
   const scrypt = (...args: unknown[]): void => {
-    record(args);
+    const entry = record(args);
+    const last = args.length - 1;
+    const callback = args[last];
+    if (typeof callback === 'function') {
+      args[last] = (...result: unknown[]): void => {
+        entry.completed = true;
+        (callback as (...r: unknown[]) => void)(...result);
+      };
+    }
     (actual.scrypt as (...a: unknown[]) => void)(...args);
   };
   const scryptSync = (...args: unknown[]): Buffer => {
-    record(args);
-    return (actual.scryptSync as (...a: unknown[]) => Buffer)(...args);
+    const entry = record(args);
+    const result = (actual.scryptSync as (...a: unknown[]) => Buffer)(...args);
+    entry.completed = true;
+    return result;
   };
   const randomBytes = (...args: unknown[]): unknown => {
     const result = (actual.randomBytes as (...a: unknown[]) => unknown)(...args);
@@ -690,5 +705,190 @@ describe('platform password hash: needsRehash', () => {
     await expect(rehashNeeded(current.replace('$scrypt$', '$argon2id$'))).resolves.toBe(false);
     await expect(rehashNeeded('not a hash')).resolves.toBe(false);
     await expect(rehashNeeded('')).resolves.toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `048` task 5.4a (design D5 "Equal failure cost", Q33): spec scenario "A
+// failed sign-in against a weaker hash costs the same as an unknown user"
+// (password-reset-and-account-recovery), at the function level.
+//
+// GIVEN a stored hash in the earlier (legacy) format, or in the platform's
+// format with a lower cost than the current one, WHEN the check fails, THEN
+// the verification also computes one hash at the current cost (D5: "one
+// current-cost `hashPassword(password)`", discarded) and still answers
+// `false`. A successful check, a failed current-cost check and a malformed
+// stored value run no extra hash.
+//
+// ## Why the extra hash is counted on node:crypto, not by spying `hashPassword`
+//
+// `verifyPassword` reaches `hashPassword` through a call inside the same
+// module, which a spy on the module's export never sees (an ES module's
+// internal bindings are not the namespace object's). The observable,
+// implementation-independent trace of "one current-cost hash" is one
+// `node:crypto` scrypt derivation with the current parameters (N=2^15, r=8,
+// p=3, a 64-byte key), which is what `hashPassword` itself is pinned to by
+// task 5.1's block above. Legacy verification derives with N=2^14, r=16, p=1
+// and a lower-cost platform hash with its own parameters, so neither is
+// mistaken for the current-cost one. The derivation must also have finished
+// before `verifyPassword` resolves: a fire-and-forget hash would not make the
+// failure cost the same.
+// ---------------------------------------------------------------------------
+
+describe('A failed sign-in against a weaker hash costs the same as an unknown user', () => {
+  beforeEach(resetSpies);
+
+  /** The scrypt derivations at exactly the current cost (design D5). */
+  function currentCostCalls(): (typeof spy.scryptCalls)[number][] {
+    return spy.scryptCalls.filter((call) => {
+      const cost = costOf(call.options);
+      return (
+        call.keylen === KEY_BYTES &&
+        cost.N === CURRENT_N &&
+        cost.r === CURRENT_R &&
+        cost.p === CURRENT_P
+      );
+    });
+  }
+
+  it('a failed legacy check runs exactly one current-cost hash and answers false', async () => {
+    const legacy = await legacyHashPassword(PASSWORD);
+    resetSpies();
+
+    await expect(verifyPassword({ hash: legacy, password: WRONG_PASSWORD })).resolves.toBe(false);
+
+    // Control: the legacy hash was still checked through Better Auth's function.
+    expect(legacySpy.verifyCalls).toEqual([{ hash: legacy, password: WRONG_PASSWORD }]);
+    const extra = currentCostCalls();
+    expect(extra, 'exactly one current-cost hash after a failed legacy check').toHaveLength(1);
+    expect(extra[0]?.completed, 'the extra hash finished before the answer').toBe(true);
+    expect(
+      asBuffer(extra[0]?.password ?? '').equals(Buffer.from(WRONG_PASSWORD, 'utf8')),
+      'the extra hash is hashPassword(password) of the submitted password',
+    ).toBe(true);
+  });
+
+  it('a failed legacy check of an NFD password hashes its NFC form once at the current cost', async () => {
+    // "é" precomposed (U+00E9) and decomposed (U+0065 U+0301).
+    const nfc = 'caf\u00e9-Passw0rd';
+    const nfd = 'cafe\u0301-Passw0rd';
+    expect(nfd).not.toBe(nfc);
+    expect(nfd.normalize('NFC')).toBe(nfc);
+    const legacy = await legacyHashPassword(PASSWORD);
+    resetSpies();
+
+    await expect(verifyPassword({ hash: legacy, password: nfd })).resolves.toBe(false);
+
+    const extra = currentCostCalls();
+    expect(extra).toHaveLength(1);
+    expect(asBuffer(extra[0]?.password ?? '').equals(Buffer.from(nfc, 'utf8'))).toBe(true);
+  });
+
+  for (const params of [
+    { ln: 14, r: 8, p: 3 },
+    { ln: 15, r: 8, p: 1 },
+  ] as const) {
+    const label = `ln=${String(params.ln)},r=${String(params.r)},p=${String(params.p)}`;
+
+    it(`a failed lower-cost platform check (${label}) runs its own derivation and exactly one current-cost hash, and answers false`, async () => {
+      const { hash } = platformHash(params, PASSWORD);
+      resetSpies();
+
+      await expect(verifyPassword({ hash, password: WRONG_PASSWORD })).resolves.toBe(false);
+
+      const own = spy.scryptCalls.filter((call) => {
+        const cost = costOf(call.options);
+        return (
+          call.keylen === KEY_BYTES &&
+          cost.N === 2 ** params.ln &&
+          cost.r === params.r &&
+          cost.p === params.p
+        );
+      });
+      expect(own, 'control: the stored hash is recomputed with its own parameters').toHaveLength(1);
+      const extra = currentCostCalls();
+      expect(extra, 'exactly one current-cost hash after a failed lower-cost check').toHaveLength(
+        1,
+      );
+      expect(extra[0]?.completed, 'the extra hash finished before the answer').toBe(true);
+      expect(
+        asBuffer(extra[0]?.password ?? '').equals(Buffer.from(WRONG_PASSWORD, 'utf8')),
+        'the extra hash is hashPassword(password) of the submitted password',
+      ).toBe(true);
+      expect(spy.scryptCalls, 'no other derivation').toHaveLength(2);
+    });
+  }
+
+  it('a successful legacy check runs no current-cost hash', async () => {
+    const legacy = await legacyHashPassword(PASSWORD);
+    resetSpies();
+
+    await expect(verifyPassword({ hash: legacy, password: PASSWORD })).resolves.toBe(true);
+
+    expect(currentCostCalls()).toHaveLength(0);
+  });
+
+  it('a successful lower-cost platform check (ln=14) runs no current-cost hash', async () => {
+    const { hash } = platformHash({ ln: 14, r: 8, p: 3 }, PASSWORD);
+    resetSpies();
+
+    await expect(verifyPassword({ hash, password: PASSWORD })).resolves.toBe(true);
+
+    expect(currentCostCalls()).toHaveLength(0);
+    expect(spy.scryptCalls, 'only its own derivation').toHaveLength(1);
+  });
+
+  it('a successful current-cost check runs only its own derivation', async () => {
+    const hash = await hashPassword(PASSWORD);
+    resetSpies();
+
+    await expect(verifyPassword({ hash, password: PASSWORD })).resolves.toBe(true);
+
+    expect(currentCostCalls(), 'its own derivation, and no extra hash').toHaveLength(1);
+    expect(spy.scryptCalls).toHaveLength(1);
+  });
+
+  it('a failed current-cost check runs only its own derivation and answers false', async () => {
+    const hash = await hashPassword(PASSWORD);
+    resetSpies();
+
+    await expect(verifyPassword({ hash, password: WRONG_PASSWORD })).resolves.toBe(false);
+
+    expect(currentCostCalls(), 'its own derivation, and no extra hash').toHaveLength(1);
+    expect(spy.scryptCalls).toHaveLength(1);
+  });
+
+  it('a malformed stored value fails at once, with no hash, and answers false', async () => {
+    const current = await hashPassword(PASSWORD);
+    const legacy = await legacyHashPassword(PASSWORD);
+    const cases: { name: string; hash: string }[] = [
+      { name: 'unknown algorithm', hash: current.replace('$scrypt$', '$argon2id$') },
+      { name: 'malformed parameters', hash: current.replace('ln=15', 'ln=0xf') },
+      { name: 'truncated platform key', hash: current.slice(0, -1) },
+      { name: 'truncated legacy key', hash: legacy.slice(0, -2) },
+      { name: 'not a hash', hash: 'not a hash' },
+      { name: 'empty string', hash: '' },
+    ];
+    const outcomes: { name: string; outcome: unknown; derivations: number; legacy: number }[] = [];
+
+    for (const { name, hash } of cases) {
+      resetSpies();
+      let outcome: unknown;
+      try {
+        outcome = await verifyPassword({ hash, password: WRONG_PASSWORD });
+      } catch (error) {
+        outcome = { threw: error instanceof Error ? error.message : String(error) };
+      }
+      outcomes.push({
+        name,
+        outcome,
+        derivations: spy.scryptCalls.length,
+        legacy: legacySpy.verifyCalls.length,
+      });
+    }
+
+    expect(outcomes).toEqual(
+      cases.map(({ name }) => ({ name, outcome: false, derivations: 0, legacy: 0 })),
+    );
   });
 });
