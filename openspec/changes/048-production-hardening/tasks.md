@@ -148,7 +148,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       keys": with `BETTER_AUTH_SECRETS` and `BETTER_AUTH_SECRET` set in `process.env` to other
       values, `(await auth.$context).secretConfig` holds exactly the configured versions, the
       configured current version and the configured legacy key.
-- [ ] 4.3 A rotation keeps encrypted data readable (design D4). Verify:
+- [x] 4.3 A rotation keeps encrypted data readable (design D4). Verify:
       `packages/auth/src/secret-rotation.int.test.ts` covers "Encrypted data survives a
       rotation": a TOTP factor enrolled under `1:...` verifies after a restart with
       `2:...,1:...`, a backup code generated under version 1 still works, a session cookie
