@@ -1402,7 +1402,8 @@ describe('production app wiring: runtime database roles are checked at startup (
     AUTH_DATABASE_URL: `postgres://tayzu_auth:${AUTH_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
     NODE_ENV: 'production',
     EMAIL_PROVIDER: 'none',
-    BETTER_AUTH_URL: 'https://api.tayzu.test',
+    // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+    BETTER_AUTH_URL: ORIGIN,
     TAYZU_TELEMETRY_DISABLED: 'true',
     TRUST_PROXY_HOPS: '1',
     TRUST_PROXY_CIDRS: '10.0.0.0/16',
@@ -1622,7 +1623,8 @@ describe('production app wiring: a runtime role owning machine_credential_revoca
     AUTH_DATABASE_URL: `postgres://tayzu_auth:${AUTH_PASSWORD}@db.invalid:5432/tayzu?sslmode=verify-full`,
     NODE_ENV: 'production',
     EMAIL_PROVIDER: 'none',
-    BETTER_AUTH_URL: 'https://api.tayzu.test',
+    // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+    BETTER_AUTH_URL: ORIGIN,
     TAYZU_TELEMETRY_DISABLED: 'true',
     TRUST_PROXY_HOPS: '1',
     TRUST_PROXY_CIDRS: '10.0.0.0/16',

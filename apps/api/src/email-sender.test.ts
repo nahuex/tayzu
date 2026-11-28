@@ -49,7 +49,8 @@ function env(overrides: Record<string, string | undefined>): Record<string, stri
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
     PASSWORD_RESET_LINK_BASE_URL: 'https://app.tayzu.test',
-    BETTER_AUTH_URL: 'https://api.tayzu.test',
+    // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+    BETTER_AUTH_URL: 'https://app.tayzu.test',
     IDENTITY_TOKEN_HMAC_SECRET: 'sender-hmac-test-only-secret-0123456789-abcdef',
     // 048 D2: required outside test.
     TRUST_PROXY_HOPS: '1',

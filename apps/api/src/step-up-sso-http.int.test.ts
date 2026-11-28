@@ -432,7 +432,11 @@ describe('SSO step-up callback URL base (task 25.5, design Q64 and Q36)', () => 
   }
 
   it('the redirect_uri sent to Visma Connect is under BETTER_AUTH_URL when it differs from the allowed origin', async () => {
-    const app = await buildApp({ BETTER_AUTH_URL: API_URL });
+    // 048 D3: BETTER_AUTH_URL's origin is listed, after the first allowed origin it differs from.
+    const app = await buildApp({
+      BETTER_AUTH_URL: API_URL,
+      ALLOWED_ORIGINS: `${ORIGIN},${API_URL}`,
+    });
 
     const redirectUri = await redirectUriSentToVisma(app);
 

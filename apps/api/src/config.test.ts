@@ -263,7 +263,8 @@ describe('VISMA_CONNECT_DISCOVERY_URL must be https outside test (task 23.18, Q4
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       VISMA_CONNECT_DISCOVERY_URL: url,
       VISMA_CONNECT_CLIENT_ID: 'client-id',
       VISMA_CONNECT_CLIENT_SECRET: 'client-secret-value',
@@ -305,7 +306,8 @@ describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: BETTER_AUTH_URL's origin is one of the accepted ALLOWED_ORIGINS values below.
+      BETTER_AUTH_URL: nodeEnv === 'test' ? 'http://localhost' : 'https://app.tayzu.test',
       ALLOWED_ORIGINS: value,
     });
 
@@ -359,7 +361,8 @@ describe('INVITATION_LINK_BASE_URL (043 task 6.3, Q32)', () => {
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       ALLOWED_ORIGINS: 'https://app.tayzu.test',
       [NAME]: value,
     });
@@ -416,7 +419,8 @@ describe('PASSWORD_RESET_LINK_BASE_URL (044 task 4.1, D9)', () => {
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       ALLOWED_ORIGINS: 'https://app.tayzu.test',
       [NAME]: value,
     });
@@ -564,7 +568,8 @@ describe('email provider selection (043 task 6.5, Q28, Q67, Q96, Q99)', () => {
   ): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
       ...overrides,
     });
@@ -697,7 +702,8 @@ describe('EMAIL_DISABLED_TENANT_IDS (043 task 6.5c, Q80)', () => {
   ): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
       EMAIL_PROVIDER: 'none',
       ...overrides,
@@ -754,7 +760,8 @@ describe('IDENTITY_TOKEN_HMAC_SECRET (043 task 6.7b, Q93)', () => {
     env({
       NODE_ENV: 'production',
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       ...overrides,
     });
   const field = (config: Config, name: string): unknown =>
@@ -1593,6 +1600,181 @@ describe('TRUST_PROXY_HOPS and TRUST_PROXY_CIDRS (048 task 3.1, design D2, Q6)',
       expect(error.message).not.toContain(value);
       expect(error.message).not.toContain(MARKER_RANGE);
       expect(error.message).not.toContain('10.0.0.0');
+    });
+  });
+});
+
+/**
+ * `048` task 3.4 (design D3, Q18; auth-and-rbac scenario "An authentication base URL
+ * outside the allowed origins is refused"): `loadConfig` compares
+ * `new URL(BETTER_AUTH_URL).origin` with the parsed `ALLOWED_ORIGINS` whenever
+ * `BETTER_AUTH_URL` is set, in every environment, test included, and throws an `Error`
+ * naming both variables and no value (D3:
+ * `'BETTER_AUTH_URL is malformed (its origin must be one of ALLOWED_ORIGINS).'`).
+ *
+ * ## Production symbols expected
+ *
+ * No new export: the check lives in `loadConfig` (`apps/api/src/config.ts`), and
+ * `Config.betterAuthUrl` keeps the configured value.
+ *
+ * ## Why this fails right now
+ *
+ * `loadConfig` checks only the scheme of `BETTER_AUTH_URL`, so an unlisted origin starts
+ * (assertion failure: "expected the call to throw").
+ */
+describe('BETTER_AUTH_URL origin is one of ALLOWED_ORIGINS (048 task 3.4, design D3, Q18)', () => {
+  const NAME = 'BETTER_AUTH_URL';
+  const ORIGINS = 'ALLOWED_ORIGINS';
+  const LISTED = 'https://app.tayzu.test';
+  const EVERY_ENVIRONMENT = ['test', 'production'] as const;
+  const OUTSIDE_TEST = ['production', 'staging', 'development'] as const;
+
+  const publicOrigin = (
+    nodeEnv: string,
+    betterAuthUrl: string | undefined,
+    allowedOrigins: string = LISTED,
+  ): Record<string, string | undefined> => {
+    // The link base URLs stay on the first listed origin, so only BETTER_AUTH_URL is at fault.
+    const linkBase = allowedOrigins.split(',')[0]?.trim() ?? LISTED;
+    return env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: betterAuthUrl,
+      ALLOWED_ORIGINS: allowedOrigins,
+      INVITATION_LINK_BASE_URL: linkBase,
+      PASSWORD_RESET_LINK_BASE_URL: linkBase,
+    });
+  };
+
+  function expectRefused(env: Record<string, string | undefined>): Error {
+    const error = thrown(() => loadConfig(env));
+    expect(error.message).toContain(NAME);
+    expect(error.message).toContain(ORIGINS);
+    return error;
+  }
+
+  describe('scenario: An authentication base URL outside the allowed origins is refused', () => {
+    const otherHost: readonly (readonly [string, string, string])[] = [
+      ['another host', 'https://api.tayzu.test', LISTED],
+      ['a subdomain of a listed host', 'https://auth.app.tayzu.test', LISTED],
+      ['a listed host as a prefix of another host', 'https://app.tayzu.test.evil.invalid', LISTED],
+      [
+        'a host absent from a list of several',
+        'https://api.tayzu.test',
+        `${LISTED},https://admin.tayzu.test`,
+      ],
+    ];
+
+    describe('a different host is refused in every environment', () => {
+      it.each(
+        EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+          otherHost.map(([label, url, origins]) => [label, nodeEnv, url, origins] as const),
+        ),
+      )('%s (NODE_ENV=%s)', (_label, nodeEnv, url, origins) => {
+        expectRefused(publicOrigin(nodeEnv, url, origins));
+      });
+    });
+
+    const otherPort: readonly (readonly [string, string, string])[] = [
+      ['a port on a listed origin without one', 'https://app.tayzu.test:8443', LISTED],
+      ['no port on a listed origin with one', LISTED, `${LISTED}:8443,https://other.tayzu.test`],
+      [
+        'another port than the listed one',
+        'https://app.tayzu.test:9443',
+        `${LISTED}:8443,${LISTED}`,
+      ],
+    ];
+
+    describe('a different port is refused in every environment', () => {
+      it.each(
+        EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+          otherPort.map(([label, url, origins]) => [label, nodeEnv, url, origins] as const),
+        ),
+      )('%s (NODE_ENV=%s)', (_label, nodeEnv, url, origins) => {
+        expectRefused(publicOrigin(nodeEnv, url, origins));
+      });
+    });
+
+    describe('a different scheme is refused in every environment', () => {
+      // Under test both schemes are accepted on their own, so only the origin check refuses.
+      it('http BETTER_AUTH_URL with only the https origin listed (NODE_ENV=test)', () => {
+        expectRefused(publicOrigin('test', 'http://app.tayzu.test', LISTED));
+      });
+
+      it('https BETTER_AUTH_URL with only the http origin listed (NODE_ENV=test)', () => {
+        expectRefused(publicOrigin('test', LISTED, 'http://app.tayzu.test'));
+      });
+
+      // Outside test an http BETTER_AUTH_URL is already refused by the https rule (Q40).
+      it.each(OUTSIDE_TEST)(
+        'http BETTER_AUTH_URL with the https origin listed fails startup naming the variable (NODE_ENV=%s)',
+        (nodeEnv) => {
+          const error = thrown(() =>
+            loadConfig(publicOrigin(nodeEnv, 'http://app.tayzu.test', LISTED)),
+          );
+          expect(error.message).toContain(NAME);
+          expect(error.message).not.toContain('app.tayzu.test');
+        },
+      );
+    });
+
+    it.each(OUTSIDE_TEST)(
+      'an unlisted origin fails startup in every deployed environment (NODE_ENV=%s)',
+      (nodeEnv) => {
+        expectRefused(publicOrigin(nodeEnv, 'https://api.tayzu.test', LISTED));
+      },
+    );
+  });
+
+  describe('a URL on an allowed origin is accepted', () => {
+    const accepted: readonly (readonly [string, string, string])[] = [
+      ['the bare origin', LISTED, LISTED],
+      ['the origin with a trailing slash', `${LISTED}/`, LISTED],
+      ['a path on the origin', `${LISTED}/api/auth`, LISTED],
+      ['a nested path with a trailing slash', `${LISTED}/tayzu/api/`, LISTED],
+      ['the explicit default port', 'https://app.tayzu.test:443/api', LISTED],
+      ['a listed port', `${LISTED}:8443/api/auth`, `${LISTED}:8443`],
+      [
+        'the second listed origin',
+        'https://api.tayzu.test/api/auth',
+        `${LISTED}, https://api.tayzu.test`,
+      ],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        accepted.map(([label, url, origins]) => [label, nodeEnv, url, origins] as const),
+      ),
+    )('%s (NODE_ENV=%s)', (_label, nodeEnv, url, origins) => {
+      const config = loadConfig(publicOrigin(nodeEnv, url, origins));
+      expect(config.betterAuthUrl).toBe(url);
+    });
+
+    it('an http URL on an http origin is accepted under test', () => {
+      const url = 'http://localhost:3000/api/auth';
+      const config = loadConfig(publicOrigin('test', url, 'http://localhost:3000'));
+      expect(config.betterAuthUrl).toBe(url);
+    });
+
+    it('an unset BETTER_AUTH_URL under test is not checked', () => {
+      const config = loadConfig(publicOrigin('test', undefined, LISTED));
+      expect(config.betterAuthUrl).toBeUndefined();
+    });
+  });
+
+  describe('the error names both variables and no value', () => {
+    const MARKER_URL = 'https://marker-auth.tayzu.invalid:8443/marker-path';
+    const MARKER_ORIGIN = 'https://marker-allowed.tayzu.test';
+
+    it.each(EVERY_ENVIRONMENT)('NODE_ENV=%s', (nodeEnv) => {
+      const error = expectRefused(publicOrigin(nodeEnv, MARKER_URL, `${LISTED},${MARKER_ORIGIN}`));
+      expect(error.message).not.toContain(MARKER_URL);
+      expect(error.message).not.toContain('marker-auth');
+      expect(error.message).not.toContain('8443');
+      expect(error.message).not.toContain('marker-path');
+      expect(error.message).not.toContain(MARKER_ORIGIN);
+      expect(error.message).not.toContain('marker-allowed');
+      expect(error.message).not.toContain('app.tayzu.test');
     });
   });
 });

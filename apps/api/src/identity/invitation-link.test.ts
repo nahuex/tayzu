@@ -36,7 +36,8 @@ function configEnv(): Record<string, string | undefined> {
     BETTER_AUTH_SECRET: 'invitation-link-test-only-secret-0123456789-abcdef',
     IDENTITY_TOKEN_HMAC_SECRET: 'invitation-hmac-test-only-secret-0123456789-abcd',
     CERBOS_ADDRESS: 'localhost:3593',
-    ALLOWED_ORIGINS: 'https://app.tayzu.test',
+    // 048 D3: BETTER_AUTH_URL's origin is listed; it stays apart from the link origin.
+    ALLOWED_ORIGINS: 'https://app.tayzu.test,https://api.tayzu.test',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     INVITATION_LINK_BASE_URL: BASE_URL,
     PASSWORD_RESET_LINK_BASE_URL: BASE_URL,

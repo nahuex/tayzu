@@ -250,21 +250,28 @@ function loadSso(env: Env): Config['sso'] {
   };
 }
 
-/** `BETTER_AUTH_URL` (Q40): required outside test, and then it must be `https`. */
-function loadBetterAuthUrl(env: Env): string | undefined {
+/**
+ * `BETTER_AUTH_URL` (Q40): required outside test, and then it must be `https`.
+ * Whenever it is set, in every environment, its origin must be one of
+ * `ALLOWED_ORIGINS` (048 D3, Q18). An error never echoes either value.
+ */
+function loadBetterAuthUrl(env: Env, allowedOrigins: readonly string[]): string | undefined {
   const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
   if (isTest && env['BETTER_AUTH_URL'] === undefined) {
     return undefined;
   }
   const value = required(env, 'BETTER_AUTH_URL').trim();
-  let protocol: string;
+  let url: URL;
   try {
-    protocol = new URL(value).protocol;
+    url = new URL(value);
   } catch {
     throw new Error('BETTER_AUTH_URL is malformed (an absolute URL is required).');
   }
-  if (protocol !== 'https:' && !(isTest && protocol === 'http:')) {
+  if (url.protocol !== 'https:' && !(isTest && url.protocol === 'http:')) {
     throw new Error('BETTER_AUTH_URL is malformed (https is required).');
+  }
+  if (!allowedOrigins.includes(url.origin)) {
+    throw new Error('BETTER_AUTH_URL is malformed (its origin must be one of ALLOWED_ORIGINS).');
   }
   return value;
 }
@@ -524,7 +531,7 @@ export function loadConfig(env: Env): Config {
     .map((origin) => origin.trim())
     .filter((origin) => origin !== '');
   validateAllowedOrigins(env, allowedOrigins);
-  const betterAuthUrl = loadBetterAuthUrl(env);
+  const betterAuthUrl = loadBetterAuthUrl(env, allowedOrigins);
   const invitationLinkBaseUrl = loadLinkBaseUrl(env, 'INVITATION_LINK_BASE_URL', allowedOrigins);
   const passwordResetLinkBaseUrl = loadLinkBaseUrl(
     env,

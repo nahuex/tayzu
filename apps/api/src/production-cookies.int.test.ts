@@ -82,7 +82,8 @@ const ENV: Record<string, string> = {
   AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
   BETTER_AUTH_SECRET: TEST_SECRET,
   CERBOS_ADDRESS: 'localhost:3593',
-  ALLOWED_ORIGINS: ALLOWED_ORIGIN,
+  // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+  ALLOWED_ORIGINS: `${ALLOWED_ORIGIN},${AUTH_URL}`,
   BETTER_AUTH_URL: AUTH_URL,
   IDENTITY_TOKEN_HMAC_SECRET: 'cookies-hmac-test-only-secret-0123456789-abcde',
 };

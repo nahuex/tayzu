@@ -118,7 +118,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       "Extra hops beyond the configured count are not trusted" through `inject` with
       `remoteAddress`, observed on the accept route's limiter;
       `apps/api/src/pre-auth-rate-limit.int.test.ts` and the suites that rely on the loopback default stay green.
-- [ ] 3.4 `BETTER_AUTH_URL`'s origin must be one of `ALLOWED_ORIGINS` (design D3). Verify:
+- [x] 3.4 `BETTER_AUTH_URL`'s origin must be one of `ALLOWED_ORIGINS` (design D3). Verify:
       `apps/api/src/config.test.ts` covers "An authentication base URL outside the allowed
       origins is refused" (a different host, scheme or port refused, a path on an allowed
       origin accepted, the message naming both variables and no value); fixtures that set an
