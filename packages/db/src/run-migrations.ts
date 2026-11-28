@@ -38,7 +38,7 @@ function isEntryPoint(): boolean {
 }
 
 if (isEntryPoint()) {
-  const pool = createPool(resolveMigrationUrl(process.env));
+  const pool = createPool(resolveMigrationUrl(process.env), { variable: 'MIGRATION_DATABASE_URL' });
   try {
     await runMigrations(pool);
   } finally {

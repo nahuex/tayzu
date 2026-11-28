@@ -31,14 +31,22 @@ const MIGRATIONS_FOLDER = fileURLToPath(new URL('../migrations', import.meta.url
  */
 const MIGRATION_LOCK_KEY = 848_432_001;
 
+export interface CreatePoolOptions {
+  /**
+   * The environment variable that held `url`, named in the TLS error
+   * (048 design D1). Defaults to `DATABASE_URL`.
+   */
+  readonly variable?: string;
+}
+
 /**
  * Builds a pool for `url`. Outside the test harness (`getTestDatabase`),
  * `url` must set `sslmode=verify-full` (design D5); this is checked before
  * any connection is attempted, and no argument of this function can turn the
  * check off.
  */
-export function createPool(url: string): Pool {
-  assertVerifiedTls(url);
+export function createPool(url: string, options: CreatePoolOptions = {}): Pool {
+  assertVerifiedTls(url, options.variable);
   return new Pool({ connectionString: url });
 }
 
