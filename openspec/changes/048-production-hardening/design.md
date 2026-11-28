@@ -228,7 +228,7 @@ loosening the rule.
   a key lifecycle nothing tests yet (Q9). The runbook says plainly that a secret rotation
   signs every session out.
 
-### D5. The platform's password hash (F8, Q8) — ADR-0028 (written by task 5.5)
+### D5. The platform's password hash (F8, Q8) — [ADR-0028](../../../docs/adr/0028-tayzu-owned-scrypt-password-hash.md)
 
 - **Function.** `packages/auth/src/password-hash.ts` exports `hashPassword(password)`,
   `verifyPassword({ hash, password })` and `needsRehash(hash)`. `hashPasswordNfc` stays the

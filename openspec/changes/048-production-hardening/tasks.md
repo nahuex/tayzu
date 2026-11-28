@@ -206,7 +206,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       none; the answer stays `false`), and
       `packages/auth/src/enumeration-resistance.int.test.ts` (extended) shows a failed sign-in
       against a legacy hash in the same timing class as a sign-in for an unknown email.
-- [ ] 5.5 _(setup)_ Docs: write `docs/adr/0028-tayzu-owned-scrypt-password-hash.md`
+- [x] 5.5 _(setup)_ Docs: write `docs/adr/0028-tayzu-owned-scrypt-password-hash.md`
       (Context, Decision with the parameters and the format, Alternatives: `N=2^17, r=8, p=1`,
       Argon2id, refusing legacy hashes; Consequences: the rehash, the reset-race interaction,
       the equal failure cost of Q33, the residual `===` comparison of legacy hashes inside

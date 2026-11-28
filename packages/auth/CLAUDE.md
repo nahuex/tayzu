@@ -60,6 +60,10 @@ changes `043` and `044`: the reset token (`reset-token.ts`,
   Better Auth explicitly, the `jwt` signing key, DB role passwords)
   come from the environment only, Key-Vault-referenced in the Azure Container
   Apps deployment. Never log or print them.
+- Passwords are hashed only through `src/password-hash.ts` (scrypt
+  `N=2^15, r=8, p=3`, the `$scrypt$` format, `timingSafeEqual`; ADR-0028),
+  which `createAuth` passes to Better Auth as `emailAndPassword.password`.
+  Never call `better-auth/crypto`'s hash for a password.
 
 ## Tests
 
