@@ -172,7 +172,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 5. The platform's password hash (F8)
 
-- [ ] 5.1 `hashPassword` writes the self-describing scrypt format (design D5). Verify:
+- [x] 5.1 `hashPassword` writes the self-describing scrypt format (design D5). Verify:
       `packages/auth/src/password-hash.test.ts` covers the format
       (`$scrypt$ln=15,r=8,p=3$<salt>$<key>`, a 16-byte salt and a 64-byte key in unpadded
       base64, two hashes of one password differing), NFC normalization only (an NFD input and
