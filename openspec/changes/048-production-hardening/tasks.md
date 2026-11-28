@@ -266,7 +266,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       "Machine token exchange is rate-limited independently of the authenticated bucket", with
       the 429 body and `Retry-After` unchanged and a failing store answering the sanitized
       500.
-- [ ] 7.2 Token exchange also consumes a `token_exchange_client` bucket (design D7, Q21).
+- [x] 7.2 Token exchange also consumes a `token_exchange_client` bucket (design D7, Q21).
       Verify: `apps/api/src/token-exchange-rate-limit.int.test.ts` covers "One client id is
       limited across addresses", a varying client id from one address still limited by the
       address bucket, an oversized or missing client id counting the address bucket only,

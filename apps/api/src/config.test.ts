@@ -1983,3 +1983,87 @@ describe('BETTER_AUTH_SECRETS is parsed and BETTER_AUTH_SECRET is refused (048 t
     });
   });
 });
+
+/**
+ * `048` task 7.2 (design D7, Resolved decision Q21): the token-exchange client-id bucket is read
+ * "like every other limit": `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX` and
+ * `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_WINDOW_SECONDS`, 60 per 60 seconds by default, positive
+ * integers only (002 Q39: a limit cannot be disabled), and an error names the variable, never
+ * the value.
+ *
+ * Production symbol expected (ASSUMED name, mirroring `Config.tokenExchangeRateLimit`):
+ * `Config.tokenExchangeClientRateLimit: { max: number; timeWindowMs: number }`, which
+ * `createAppFromEnv` forwards to `createApp`'s `tokenExchangeClientRateLimit` option.
+ */
+describe('TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_* (048 task 7.2, design D7, Q21)', () => {
+  const MAX = 'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX';
+  const WINDOW = 'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_WINDOW_SECONDS';
+  const clientLimitOf = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['tokenExchangeClientRateLimit'];
+
+  it('defaults to 60 per 60 seconds (design D7)', () => {
+    expect(clientLimitOf(loadConfig(env()))).toEqual({ max: 60, timeWindowMs: 60_000 });
+  });
+
+  it('is tuned by its two variables', () => {
+    expect(clientLimitOf(loadConfig(env({ [MAX]: '7', [WINDOW]: '120' })))).toEqual({
+      max: 7,
+      timeWindowMs: 120_000,
+    });
+  });
+
+  it('tunes the maximum alone', () => {
+    expect(clientLimitOf(loadConfig(env({ [MAX]: '4' })))).toEqual({
+      max: 4,
+      timeWindowMs: 60_000,
+    });
+  });
+
+  it('tunes the window alone', () => {
+    expect(clientLimitOf(loadConfig(env({ [WINDOW]: '30' })))).toEqual({
+      max: 60,
+      timeWindowMs: 30_000,
+    });
+  });
+
+  it('is independent of the address bucket (TOKEN_EXCHANGE_RATE_LIMIT_*)', () => {
+    const config = loadConfig(
+      env({
+        TOKEN_EXCHANGE_RATE_LIMIT_MAX: '9',
+        TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS: '10',
+        [MAX]: '11',
+        [WINDOW]: '12',
+      }),
+    );
+    expect(config.tokenExchangeRateLimit).toEqual({ max: 9, timeWindowMs: 10_000 });
+    expect(clientLimitOf(config)).toEqual({ max: 11, timeWindowMs: 12_000 });
+    // The address bucket keeps its own defaults when only the client bucket is tuned.
+    expect(loadConfig(env({ [MAX]: '11' })).tokenExchangeRateLimit).toEqual({
+      max: 30,
+      timeWindowMs: 60_000,
+    });
+  });
+
+  it.each(
+    [MAX, WINDOW].flatMap((name) =>
+      ['0', '-1', '1.5', '1e3', 'abc', 'false', 'off', 'disabled', '', '   '].map(
+        (value) => [name, value] as const,
+      ),
+    ),
+  )(
+    '%s=%j (disabled, non-positive or non-integer) fails startup naming the variable',
+    (name, value) => {
+      const error = thrown(() => loadConfig(env({ [name]: value })));
+      expect(error.message).toContain(name);
+    },
+  );
+
+  it.each([MAX, WINDOW])('an error for %s names only that variable, never the value', (name) => {
+    const value = 'client-limit-value-marker-4e91';
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+    expect(error.message).not.toContain(value);
+    const other = name === MAX ? WINDOW : MAX;
+    expect(error.message).not.toContain(other);
+  });
+});

@@ -123,6 +123,14 @@ export interface CreateAppOptions {
    */
   readonly machineCredentialRateLimit?: CreateAuthOptions['machineCredentialRateLimit'];
   readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /**
+   * Budget for `POST /v1/auth/token` per submitted client id (048 D7, Q21), consumed after
+   * the per-IP `tokenExchangeRateLimit` bucket; omitted: no client-id limiter.
+   */
+  readonly tokenExchangeClientRateLimit?: {
+    readonly max: number;
+    readonly timeWindowMs: number;
+  };
   /** Visma Connect SSO (D23), forwarded to `createAuth`; omitted: SSO is not registered. */
   readonly sso?: CreateAuthOptions['sso'];
   /** Better Auth's pre-auth limits (D20), forwarded to `createAuth`; omitted: none. */
@@ -335,6 +343,29 @@ function ruleOf(cap: { readonly max: number; readonly windowSeconds: number }) {
 
 function pathnameOf(request: FastifyRequest): string {
   return request.url.split('?', 1)[0] ?? '';
+}
+
+/** The credential-id shape check of 048 D7: a client id is a string of 1 to 128 characters. */
+const MAX_CLIENT_ID_LENGTH = 128;
+
+/**
+ * The `token_exchange_client` bucket of a token exchange (048 D7): the body's own `clientId`
+ * when it passes the shape check, else none, so an oversized, missing or non-string id is
+ * counted by the address bucket only.
+ */
+function tokenExchangeClientBucketKey(
+  request: FastifyRequest,
+): { readonly kind: 'client'; readonly value: string } | undefined {
+  const body: unknown = request.body;
+  if (typeof body !== 'object' || body === null || !Object.hasOwn(body, 'clientId')) {
+    return undefined;
+  }
+  const clientId: unknown = (body as { clientId: unknown }).clientId;
+  return typeof clientId === 'string' &&
+    clientId.length > 0 &&
+    clientId.length <= MAX_CLIENT_ID_LENGTH
+    ? { kind: 'client', value: clientId }
+    : undefined;
 }
 
 function isTokenExchange(request: FastifyRequest): boolean {
@@ -1051,31 +1082,52 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     message: 'Too many requests',
   });
 
-  // D20: token exchange has no tenant/actor yet, so it gets its own bucket and is exempt
-  // from the authenticated one below. 048 D7: the bucket lives in the shared DB store, so
-  // every replica spends one budget; it is keyed by the address alone, so varying
-  // `clientId` cannot mint a fresh bucket (002 Q56). A refusal answers `AUTH_RATE_LIMITED`
-  // with `Retry-After` (the store emits the `token_exchange` rate-limit signal); a store
-  // failure answers the sanitized 500, both before any credential lookup.
-  if (options.tokenExchangeRateLimit !== undefined) {
-    const tokenExchangeLimit = createAcceptRateLimitPreHandler({
-      scope: 'token_exchange',
-      store: createRateLimitBucketStore({
-        adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
-          .adapter,
-        rules: {
-          token_exchange: {
-            max: options.tokenExchangeRateLimit.max,
-            window: options.tokenExchangeRateLimit.timeWindowMs / 1000,
-          },
-        },
-      }),
+  // D20: token exchange has no tenant/actor yet, so it gets its own buckets and is exempt
+  // from the authenticated one below. 048 D7: the buckets live in the shared DB store, so
+  // every replica spends one budget. The address bucket (`token_exchange`) is keyed by the
+  // address alone, so varying `clientId` cannot mint a fresh one (002 Q56); then the
+  // `token_exchange_client` bucket is keyed by a well-shaped submitted `clientId` (Q21),
+  // hashed by the store. A refusal answers `AUTH_RATE_LIMITED` with `Retry-After` (the store
+  // emits the scope's rate-limit signal, never the key); a store failure answers the
+  // sanitized 500, both before any credential lookup.
+  const tokenExchangeLimits = [
+    ...(options.tokenExchangeRateLimit === undefined
+      ? []
+      : [{ scope: 'token_exchange' as const, limit: options.tokenExchangeRateLimit }]),
+    ...(options.tokenExchangeClientRateLimit === undefined
+      ? []
+      : [{ scope: 'token_exchange_client' as const, limit: options.tokenExchangeClientRateLimit }]),
+  ];
+  if (tokenExchangeLimits.length > 0) {
+    const store = createRateLimitBucketStore({
+      adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+        .adapter,
+      rules: Object.fromEntries(
+        tokenExchangeLimits.map(({ scope, limit }) => [
+          scope,
+          { max: limit.max, window: limit.timeWindowMs / 1000 },
+        ]),
+      ),
     });
+    const preHandlers = tokenExchangeLimits.map(({ scope }) =>
+      createAcceptRateLimitPreHandler({
+        scope,
+        store,
+        ...(scope === 'token_exchange_client' ? { bucketKey: tokenExchangeClientBucketKey } : {}),
+      }),
+    );
     app.addHook('preHandler', async function (request, reply) {
       if (!isTokenExchange(request)) {
         return undefined;
       }
-      return tokenExchangeLimit.call(this, request, reply);
+      // In order: a refused address never spends the client bucket.
+      for (const preHandler of preHandlers) {
+        const answered = await preHandler.call(this, request, reply);
+        if (answered !== undefined) {
+          return answered;
+        }
+      }
+      return undefined;
     });
   }
 

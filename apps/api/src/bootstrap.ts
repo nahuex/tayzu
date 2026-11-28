@@ -93,6 +93,7 @@ export async function createAppFromEnv(env: Env): Promise<App> {
       },
       rateLimit: config.rateLimit,
       tokenExchangeRateLimit: config.tokenExchangeRateLimit,
+      tokenExchangeClientRateLimit: config.tokenExchangeClientRateLimit,
       machineCredentialRateLimit: {
         max: config.machineCredentialRateLimit.max,
         timeWindowMs: config.machineCredentialRateLimit.windowSeconds * 1000,

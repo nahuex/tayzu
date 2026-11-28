@@ -61,6 +61,7 @@ variables of one row are both read, and a missing one takes the default.
 | `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`       | 10 per 60 s       | Routes that check the current password, per IP and per user.                                                   |
 | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`                        | 600 per 60 s      | Per-principal budget on `/v1/*`.                                                                               |
 | `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`                | 30 per 60 s       | `POST /v1/auth/token`, per IP.                                                                                 |
+| `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`         | 60 per 60 s       | `POST /v1/auth/token`, per submitted client id, after the per-IP bucket.                                       |
 | `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`                           | 600               | Back-channel logout, per source IP.                                                                            |
 | `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset request route, per IP.                                                                                   |
 | `PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset confirm route, per IP.                                                                                   |

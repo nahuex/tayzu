@@ -86,7 +86,11 @@ export {
   withBackchannelLogoutTelemetry,
   type BackchannelLogoutOutcome,
 } from './backchannel-logout-telemetry.js';
-export { emitRateLimited, type RateLimitScope } from './rate-limit/pre-auth-rate-limit.js';
+export {
+  emitRateLimited,
+  type BucketKeyKind,
+  type RateLimitScope,
+} from './rate-limit/pre-auth-rate-limit.js';
 export {
   createRateLimitBucketStore,
   type RateLimitBucketStore,

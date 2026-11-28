@@ -51,6 +51,8 @@ export interface Config {
   readonly rateLimit: RateLimit;
   /** `POST /v1/auth/token` limit (D20). */
   readonly tokenExchangeRateLimit: RateLimit;
+  /** `POST /v1/auth/token` limit per submitted client id (048 D7, Q21), apart from the per-IP one. */
+  readonly tokenExchangeClientRateLimit: RateLimit;
   /** Invitation emails per tenant, shared by invite and resend (Q15); window in seconds. */
   readonly invitationTenantCap: { readonly max: number; readonly windowSeconds: number };
   /** Invitation emails per recipient (Q15); window in seconds. */
@@ -133,6 +135,7 @@ const DEFAULT_SIGN_IN_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PASSWORD_CHECK_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
 const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
+const DEFAULT_TOKEN_EXCHANGE_CLIENT_LIMIT = { max: 60, windowSeconds: 60 };
 const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
 const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
 const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
@@ -577,6 +580,12 @@ export function loadConfig(env: Env): Config {
     'TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_TOKEN_EXCHANGE_LIMIT,
   );
+  const exchangeClient = limitWithDefaults(
+    env,
+    'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX',
+    'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_TOKEN_EXCHANGE_CLIENT_LIMIT,
+  );
   const invitationTenantCap = limitWithDefaults(
     env,
     'INVITATION_TENANT_RATE_LIMIT_MAX',
@@ -648,6 +657,10 @@ export function loadConfig(env: Env): Config {
     preAuthPasswordCheckRateLimit: { max: passwordCheck.max, window: passwordCheck.windowSeconds },
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
+    tokenExchangeClientRateLimit: {
+      max: exchangeClient.max,
+      timeWindowMs: exchangeClient.windowSeconds * 1000,
+    },
     invitationTenantCap,
     invitationRecipientCap,
     noticeTenantCap,

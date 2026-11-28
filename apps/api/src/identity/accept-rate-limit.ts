@@ -3,14 +3,14 @@
  * A Fastify `preHandler` that consumes a bucket of the DB-backed store, so the
  * count is shared across replicas, and answers `AUTH_RATE_LIMITED` with
  * `Retry-After` before the handler (and any invitation lookup) runs. The
- * bucket key is `clientIpKey(request.ip)` (one /64 shares a bucket; `request.ip`
+ * bucket key is, by default, `clientIpKey(request.ip)` (one /64 shares a bucket; `request.ip`
  * as Fastify resolves it under the app's trust setting); the store hashes it, and it never
  * reaches a signal or a response. A failing store or key fails closed: the pre-handler
  * itself answers the sanitized `INTERNAL` 500 (`044` design D16).
  */
 import { ORPCError } from '@orpc/server';
-import type { RateLimitBucketStore, RateLimitScope } from '@tayzu/auth';
-import type { FastifyReply, preHandlerAsyncHookHandler } from 'fastify';
+import type { BucketKeyKind, RateLimitBucketStore, RateLimitScope } from '@tayzu/auth';
+import type { FastifyReply, FastifyRequest, preHandlerAsyncHookHandler } from 'fastify';
 
 import { clientIpKey } from './client-ip-key.js';
 
@@ -24,6 +24,18 @@ export interface AcceptRateLimitOptions {
    * uses it for the re-authorization callback's redirect).
    */
   readonly onLimited?: (reply: FastifyReply) => FastifyReply;
+  /**
+   * The bucket a request consumes, or `undefined` to consume none (the request passes).
+   * Omitted: kind `ip`, value `clientIpKey(request.ip)` (`048` task 7.2 keys token
+   * exchange's second bucket by the submitted client id).
+   */
+  readonly bucketKey?: (
+    request: FastifyRequest,
+  ) => { readonly kind: BucketKeyKind; readonly value: string } | undefined;
+}
+
+function addressBucketKey(request: FastifyRequest): { kind: BucketKeyKind; value: string } {
+  return { kind: 'ip', value: clientIpKey(request.ip) };
 }
 
 export function createAcceptRateLimitPreHandler(
@@ -40,10 +52,14 @@ export function createAcceptRateLimitPreHandler(
   return async (request, reply) => {
     let result;
     try {
+      const bucket = (options.bucketKey ?? addressBucketKey)(request);
+      if (bucket === undefined) {
+        return undefined;
+      }
       result = await options.store.consume({
         scope: options.scope ?? 'invitation_accept',
-        kind: 'ip',
-        value: clientIpKey(request.ip),
+        kind: bucket.kind,
+        value: bucket.value,
       });
     } catch {
       return reply.status(500).send(internal.toJSON());
