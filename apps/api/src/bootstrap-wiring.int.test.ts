@@ -1404,6 +1404,8 @@ describe('production app wiring: runtime database roles are checked at startup (
     EMAIL_PROVIDER: 'none',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     TAYZU_TELEMETRY_DISABLED: 'true',
+    TRUST_PROXY_HOPS: '1',
+    TRUST_PROXY_CIDRS: '10.0.0.0/16',
   };
 
   let appRole: import('pg').Pool;
@@ -1622,6 +1624,8 @@ describe('production app wiring: a runtime role owning machine_credential_revoca
     EMAIL_PROVIDER: 'none',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     TAYZU_TELEMETRY_DISABLED: 'true',
+    TRUST_PROXY_HOPS: '1',
+    TRUST_PROXY_CIDRS: '10.0.0.0/16',
   };
 
   const suffix = randomUUID().replaceAll('-', '');
