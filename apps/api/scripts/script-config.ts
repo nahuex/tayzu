@@ -116,16 +116,33 @@ function required(env: Env, name: ScriptVariable): string {
   return value;
 }
 
-function read(env: Env, name: ScriptVariable): string {
-  const value = required(env, name);
-  if (name === 'BETTER_AUTH_SECRETS') {
-    // The shared parser of 048 D4; its message names only the variable.
-    try {
-      parseAuthSecrets(value, name);
-    } catch (error) {
-      throw new FixedMessageError(error instanceof Error ? error.message : `${name} is malformed.`);
-    }
+const RETIRED_BETTER_AUTH_SECRET = 'BETTER_AUTH_SECRET';
+
+/**
+ * Reads the versioned list (048 D4). The retired single-secret variable, when
+ * set (non-blank), is refused first, so no key can come from it; only a script
+ * that declares `BETTER_AUTH_SECRETS` ever reads it.
+ */
+function readAuthSecrets(env: Env, name: 'BETTER_AUTH_SECRETS'): string {
+  const retired = env[RETIRED_BETTER_AUTH_SECRET];
+  if (retired !== undefined && retired.trim() !== '') {
+    throw new FixedMessageError('BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.');
   }
+  const value = required(env, name);
+  // The shared parser of 048 D4; its message names only the variable.
+  try {
+    parseAuthSecrets(value, name);
+  } catch (error) {
+    throw new FixedMessageError(error instanceof Error ? error.message : `${name} is malformed.`);
+  }
+  return value;
+}
+
+function read(env: Env, name: ScriptVariable): string {
+  if (name === 'BETTER_AUTH_SECRETS') {
+    return readAuthSecrets(env, name);
+  }
+  const value = required(env, name);
   if (name === 'TAYZU_OPERATOR_ID' && !OPERATOR_ID_PATTERN.test(value)) {
     throw new FixedMessageError(
       'TAYZU_OPERATOR_ID is malformed (1 to 128 of A-Z a-z 0-9 _ . : -).',

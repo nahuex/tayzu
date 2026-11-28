@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FixedMessageError,
   loadScriptConfig,
   OPERATOR_ID_PATTERN,
   SCRIPT_VARIABLES,
@@ -359,4 +360,160 @@ describe('purge and reversal script configuration (045 task 1.3)', () => {
       for (const value of Object.values(DELETION_ENV)) expect(message).not.toContain(value);
     },
   );
+});
+
+describe('the scripts read BETTER_AUTH_SECRETS (048 task 4.4, design D4)', () => {
+  const RETIRED_VALUE = 'retired-single-secret-value-0123456789';
+  const RETIREMENT_MESSAGE = 'BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.';
+  /** Every variable any script declares, plus both secret names. */
+  const EVERY_ENV = {
+    ...FULL_ENV,
+    BETTER_AUTH_SECRET: RETIRED_VALUE,
+    PURGE_DATABASE_URL: 'postgres://purge@localhost:5432/purge-db',
+    REVERSAL_DATABASE_URL: 'postgres://reversal@localhost:5432/reversal-db',
+    EMAIL_PROVIDER: 'none',
+  } as const;
+
+  const OTHER_SCRIPTS = (Object.keys(SCRIPT_VARIABLES) as (keyof typeof SCRIPT_VARIABLES)[]).filter(
+    (script) => script !== 'bootstrap-admin',
+  );
+
+  function errorOf(run: () => unknown): unknown {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  }
+
+  describe('bootstrap-admin declares and parses BETTER_AUTH_SECRETS', () => {
+    it('declares BETTER_AUTH_SECRETS and not the retired name', () => {
+      const declared = SCRIPT_VARIABLES['bootstrap-admin'] as readonly string[];
+      expect(declared).toContain('BETTER_AUTH_SECRETS');
+      expect(declared).not.toContain('BETTER_AUTH_SECRET');
+    });
+
+    it('loads a well-formed versioned list with several entries', () => {
+      const list = `2:${SECRET}-two,1:${SECRET}`;
+      const config = loadScriptConfig('bootstrap-admin', {
+        ...FULL_ENV,
+        BETTER_AUTH_SECRETS: list,
+      });
+      expect(config.BETTER_AUTH_SECRETS).toBe(list);
+    });
+
+    it.each([
+      ['a duplicate version', `1:${SECRET},1:${SECRET}-other`],
+      ['an entry with no version', SECRET],
+      ['a signed version', `+1:${SECRET}`],
+    ])('refuses %s without echoing a value', (_label, list) => {
+      const error = errorOf(() =>
+        loadScriptConfig('bootstrap-admin', { ...FULL_ENV, BETTER_AUTH_SECRETS: list }),
+      );
+      expect(error).toBeInstanceOf(FixedMessageError);
+      const message = (error as Error).message;
+      expect(message).toContain('BETTER_AUTH_SECRETS is malformed');
+      expect(message).not.toContain(SECRET);
+    });
+
+    it('requires BETTER_AUTH_SECRETS even when the retired name is not set', () => {
+      expect(() => loadScriptConfig('bootstrap-admin', without('BETTER_AUTH_SECRETS'))).toThrow(
+        'BETTER_AUTH_SECRETS is required',
+      );
+    });
+  });
+
+  describe('every other script declares neither name', () => {
+    it('enumerates at least the known non-bootstrap scripts', () => {
+      expect(OTHER_SCRIPTS).toEqual(
+        expect.arrayContaining([
+          'backfill-user-blueprint',
+          'reconcile-users',
+          'recover-admin-mfa',
+          'purge-job',
+          'cancel-org-deletion',
+        ]),
+      );
+    });
+
+    it.each(OTHER_SCRIPTS)('%s declares, reads and returns neither secret name', (script) => {
+      const declared = SCRIPT_VARIABLES[script] as readonly string[];
+      expect(declared).not.toContain('BETTER_AUTH_SECRETS');
+      expect(declared).not.toContain('BETTER_AUTH_SECRET');
+      const { env, reads } = recordingEnv({ ...EVERY_ENV });
+      const config: Record<string, string | undefined> = loadScriptConfig(script, env);
+      expect(reads.has('BETTER_AUTH_SECRETS')).toBe(false);
+      expect(reads.has('BETTER_AUTH_SECRET')).toBe(false);
+      expect(Object.keys(config)).not.toContain('BETTER_AUTH_SECRETS');
+      expect(Object.keys(config)).not.toContain('BETTER_AUTH_SECRET');
+      expect(Object.values(config)).not.toContain(FULL_ENV.BETTER_AUTH_SECRETS);
+      expect(Object.values(config)).not.toContain(RETIRED_VALUE);
+    });
+  });
+
+  describe('a script refuses a set BETTER_AUTH_SECRET', () => {
+    it('bootstrap-admin fails with the fixed retirement message even beside a valid list', () => {
+      const error = errorOf(() =>
+        loadScriptConfig('bootstrap-admin', { ...FULL_ENV, BETTER_AUTH_SECRET: RETIRED_VALUE }),
+      );
+      expect(error).toBeInstanceOf(FixedMessageError);
+      expect((error as Error).message).toBe(RETIREMENT_MESSAGE);
+    });
+
+    it('bootstrap-admin fails with the retirement message when only the retired name is set', () => {
+      const error = errorOf(() =>
+        loadScriptConfig('bootstrap-admin', {
+          ...without('BETTER_AUTH_SECRETS'),
+          BETTER_AUTH_SECRET: RETIRED_VALUE,
+        }),
+      );
+      expect(error).toBeInstanceOf(FixedMessageError);
+      expect((error as Error).message).toBe(RETIREMENT_MESSAGE);
+    });
+
+    it('the retirement message never contains either value', () => {
+      const message = (
+        errorOf(() =>
+          loadScriptConfig('bootstrap-admin', { ...FULL_ENV, BETTER_AUTH_SECRET: RETIRED_VALUE }),
+        ) as Error | undefined
+      )?.message;
+      expect(message).toBe(RETIREMENT_MESSAGE);
+      expect(message).not.toContain(RETIRED_VALUE);
+      expect(message).not.toContain(SECRET);
+    });
+
+    it('a blank BETTER_AUTH_SECRET counts as unset', () => {
+      expect(() =>
+        loadScriptConfig('bootstrap-admin', { ...FULL_ENV, BETTER_AUTH_SECRET: '   ' }),
+      ).not.toThrow();
+      expect(() =>
+        loadScriptConfig('bootstrap-admin', { ...FULL_ENV, BETTER_AUTH_SECRET: '' }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('The command holds no signing key', () => {
+    it('recover-admin-mfa declares neither secret name and its config holds no signing key', () => {
+      const declared = SCRIPT_VARIABLES['recover-admin-mfa'] as readonly string[];
+      expect(declared).toContain('AUTH_DATABASE_URL');
+      expect(declared).toContain('TAYZU_OPERATOR_ID');
+      expect(declared).toContain('EMAIL_PROVIDER');
+      expect(declared).not.toContain('BETTER_AUTH_SECRETS');
+      expect(declared).not.toContain('BETTER_AUTH_SECRET');
+      expect(declared).not.toContain('DATABASE_URL');
+      expect(declared).not.toContain('CERBOS_ADDRESS');
+
+      const { env, reads } = recordingEnv({ ...EVERY_ENV });
+      const config: Record<string, string | undefined> = loadScriptConfig('recover-admin-mfa', env);
+      expect(reads.has('BETTER_AUTH_SECRETS')).toBe(false);
+      expect(reads.has('BETTER_AUTH_SECRET')).toBe(false);
+      expect(config['BETTER_AUTH_SECRETS']).toBeUndefined();
+      expect(config['BETTER_AUTH_SECRET']).toBeUndefined();
+      for (const value of Object.values(config)) {
+        expect(value).not.toContain(SECRET);
+        expect(value).not.toContain(RETIRED_VALUE);
+      }
+    });
+  });
 });

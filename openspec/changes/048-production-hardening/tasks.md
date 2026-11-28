@@ -157,7 +157,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       (`pre-auth-rate-limit.ts:309`), the step-up-versus-login check of
       `packages/auth/src/auth.ts:1640-1643` (a re-sign-in with a current-version cookie is
       still a step-up) and `identity/reset-factor.ts`.
-- [ ] 4.4 The scripts read `BETTER_AUTH_SECRETS` (design D4). Verify:
+- [x] 4.4 The scripts read `BETTER_AUTH_SECRETS` (design D4). Verify:
       `apps/api/src/script-config.test.ts` covers `bootstrap-admin` declaring and parsing
       `BETTER_AUTH_SECRETS`, every other script declaring neither name, a script refusing a set
       `BETTER_AUTH_SECRET`, and "The command holds no signing key" for `recover-admin-mfa`.
