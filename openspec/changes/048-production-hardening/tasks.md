@@ -178,7 +178,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
       base64, two hashes of one password differing), NFC normalization only (an NFD input and
       its NFC form hash to verifying values; an NFKC-only equivalent does not) and the
       explicit `maxmem`.
-- [ ] 5.2 `verifyPassword` and `needsRehash` accept the platform and the legacy formats
+- [x] 5.2 `verifyPassword` and `needsRehash` accept the platform and the legacy formats
       (design D5). Verify: `packages/auth/src/password-hash.test.ts` covers "A malformed stored
       hash fails closed" (unknown algorithm, parameters out of range or out of order, a short
       key, extra fields, padding), a legacy `salt:key` hash from `better-auth/crypto`
