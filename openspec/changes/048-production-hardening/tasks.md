@@ -219,7 +219,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 6. The SSO step-up callback bound to the browser (F4)
 
-- [ ] 6.1 Declare `session_mismatch` in `ATTRIBUTE_VALUES['tayzu.auth.reauthorization.reason']`
+- [x] 6.1 Declare `session_mismatch` in `ATTRIBUTE_VALUES['tayzu.auth.reauthorization.reason']`
       of `packages/auth/src/telemetry/contract.ts` and its mirror in
       `packages/authz/src/telemetry/contract.ts`, before any code emits it. Verify:
       `packages/auth/src/telemetry/contract.test.ts` asserts the value in both modules and that

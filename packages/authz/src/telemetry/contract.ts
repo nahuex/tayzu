@@ -208,6 +208,15 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
 ];
 
 /**
+ * The closed value sets of the bounded `tayzu.auth.*` attributes, mirrored from
+ * `@tayzu/auth`'s contract (003 design D11, Q29; 048 design D6, Q7).
+ */
+export const ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>> = {
+  [METHOD]: ['local', 'visma_connect'],
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed', 'session_mismatch'],
+};
+
+/**
  * design.md, "Sampling exemption": every 002 log event is exempt from
  * sampling and from filter or drop rules in any downstream pipeline.
  */

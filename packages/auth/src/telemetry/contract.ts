@@ -218,11 +218,12 @@ export const LOG_EVENTS: readonly LogEventContract[] = [
 
 /**
  * The closed value sets of the bounded attributes the step-up events carry
- * (002 Q77; 003 design D11, Q27 B2 and Q29).
+ * (002 Q77; 003 design D11, Q27 B2 and Q29; 048 design D6, Q7 adds
+ * `session_mismatch`). Mirrored in `@tayzu/authz`'s contract.
  */
 export const ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>> = {
   'tayzu.auth.method': ['local', 'visma_connect'],
-  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed'],
+  'tayzu.auth.reauthorization.reason': ['invalid_state', 'exchange_failed', 'session_mismatch'],
 };
 
 /**
