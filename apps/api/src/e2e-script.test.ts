@@ -396,6 +396,30 @@ function exportsOf(lines: readonly string[], name: string): { at: number; value:
   });
 }
 
+/**
+ * `048` task 3.1 (design D2): the stack runs with `NODE_ENV=production`, so `up()` sets
+ * the proxy trust the API requires outside test: one hop, from the loopback addresses of
+ * the local TLS proxy only, exported before `apps/api` starts.
+ */
+describe('e2e.sh: the API trusts one proxy hop from loopback only (048 task 3.1, design D2)', () => {
+  it('exports TRUST_PROXY_HOPS=1 and TRUST_PROXY_CIDRS=127.0.0.1/32,::1/128 once, before apps/api starts', () => {
+    const up = codeLines(shellFunction('up'));
+    const apiAt = lineIndex(up, API_START);
+    const hopsAt = lineIndex(up, /^\s*export TRUST_PROXY_HOPS=/);
+    const cidrsAt = lineIndex(up, /^\s*export TRUST_PROXY_CIDRS=/);
+
+    expect(exportedValues('TRUST_PROXY_HOPS')).toEqual(['1']);
+    expect(exportedValues('TRUST_PROXY_CIDRS')).toEqual(['127.0.0.1/32,::1/128']);
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(hopsAt, 'an `export TRUST_PROXY_HOPS=` line in up()').toBeGreaterThan(-1);
+    expect(cidrsAt, 'an `export TRUST_PROXY_CIDRS=` line in up()').toBeGreaterThan(-1);
+    expect(hopsAt).toBeLessThan(apiAt);
+    expect(cidrsAt).toBeLessThan(apiAt);
+    expect([...script().matchAll(/\bTRUST_PROXY_HOPS=/g)]).toHaveLength(1);
+    expect([...script().matchAll(/\bTRUST_PROXY_CIDRS=/g)]).toHaveLength(1);
+  });
+});
+
 describe('e2e.sh: migrations run as the migration role (048 task 2.4, design D1)', () => {
   it('exports the owner URL as MIGRATION_DATABASE_URL before the pnpm db:migrate line', () => {
     const up = codeLines(shellFunction('up'));

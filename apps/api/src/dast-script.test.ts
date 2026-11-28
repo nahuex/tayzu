@@ -190,6 +190,28 @@ function exportsOf(lines: readonly string[], name: string): { at: number; value:
   });
 }
 
+/**
+ * `048` task 3.1 (design D2): the DAST stack runs outside `NODE_ENV=test`, so `up()` sets
+ * the proxy trust the API requires there: one hop, from the loopback addresses only,
+ * exported before `apps/api` starts.
+ */
+describe('dast.sh: the API trusts one proxy hop from loopback only (048 task 3.1, design D2)', () => {
+  it('exports TRUST_PROXY_HOPS=1 and TRUST_PROXY_CIDRS=127.0.0.1/32,::1/128 once, before apps/api starts', () => {
+    const up = shellCodeLines(upFunction());
+    const apiAt = up.findIndex((line) => /--filter[= ]@tayzu\/api\s+start\b/.test(line));
+    const hops = exportsOf(up, 'TRUST_PROXY_HOPS');
+    const cidrs = exportsOf(up, 'TRUST_PROXY_CIDRS');
+
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(hops.map(({ value }) => value)).toEqual(['1']);
+    expect(cidrs.map(({ value }) => value)).toEqual(['127.0.0.1/32,::1/128']);
+    expect(hops[0]?.at ?? Infinity).toBeLessThan(apiAt);
+    expect(cidrs[0]?.at ?? Infinity).toBeLessThan(apiAt);
+    expect([...script.matchAll(/\bTRUST_PROXY_HOPS=/g)]).toHaveLength(1);
+    expect([...script.matchAll(/\bTRUST_PROXY_CIDRS=/g)]).toHaveLength(1);
+  });
+});
+
 describe('dast.sh: migrations run as the migration role (048 task 2.4, design D1)', () => {
   it('exports the owner URL as MIGRATION_DATABASE_URL before the pnpm db:migrate line', () => {
     const up = shellCodeLines(upFunction());

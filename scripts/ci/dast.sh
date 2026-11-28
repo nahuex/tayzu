@@ -180,6 +180,10 @@ up() {
   # Q56: https origins only outside test. The seed sends this Origin, as a
   # browser on the https front end would.
   export ALLOWED_ORIGINS="https://localhost:${API_PORT}"
+  # 048 design D2: the only hop in front of the API is the local proxy (or the
+  # scanner) on loopback, so one trusted hop from loopback addresses only.
+  export TRUST_PROXY_HOPS=1
+  export TRUST_PROXY_CIDRS="127.0.0.1/32,::1/128"
   # 6.3: must be one of ALLOWED_ORIGINS, port included.
   export INVITATION_LINK_BASE_URL="https://localhost:${API_PORT}"
   export PASSWORD_RESET_LINK_BASE_URL="https://localhost:${API_PORT}"

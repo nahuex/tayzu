@@ -5,6 +5,7 @@
  * names the variable and never contains a value.
  */
 import { accessSync, constants, statSync } from 'node:fs';
+import { BlockList, isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -103,7 +104,18 @@ export interface Config {
   readonly mountIdentityRoutes: boolean;
   /** `WEB_DIST_DIR` (003 D9, Q21): absolute path of the web build; undefined when unset. */
   readonly webDistDir?: string;
+  /**
+   * Proxy trust (048 D2, Q6): `TRUST_PROXY_HOPS` and `TRUST_PROXY_CIDRS` when both are set;
+   * the loopback, link-local and unique-local list only under test when both are unset.
+   */
+  readonly trustProxy: TrustProxySetting;
 }
+
+/** The input of `createTrustProxy` (048 D2), or the default list kept under test. */
+type TrustProxySetting =
+  { readonly hops: number; readonly cidrs: readonly string[] } | typeof TEST_TRUST_PROXY;
+
+const TEST_TRUST_PROXY = ['loopback', 'linklocal', 'uniquelocal'] as const;
 
 interface RateLimit {
   readonly max: number;
@@ -437,6 +449,66 @@ function loadWebDistDir(env: Env): string | undefined {
   return value;
 }
 
+const TRUST_PROXY_HOPS = 'TRUST_PROXY_HOPS';
+const TRUST_PROXY_CIDRS = 'TRUST_PROXY_CIDRS';
+const MAX_TRUST_PROXY_HOPS = 5;
+
+/** `TRUST_PROXY_HOPS` (048 D2): an integer from 1 to 5; the value is never echoed. */
+function parseTrustProxyHops(env: Env): number {
+  const value = required(env, TRUST_PROXY_HOPS).trim();
+  if (!/^[1-9]$/.test(value) || Number(value) > MAX_TRUST_PROXY_HOPS) {
+    throw new Error(
+      `${TRUST_PROXY_HOPS} is malformed (an integer from 1 to ${String(MAX_TRUST_PROXY_HOPS)} is required).`,
+    );
+  }
+  return Number(value);
+}
+
+/**
+ * `TRUST_PROXY_CIDRS` (048 D2): comma-separated IPv4 or IPv6 blocks, each checked by
+ * `BlockList.addSubnet`; a bare address is stored as a `/32` or `/128`. The value is never
+ * echoed.
+ */
+function parseTrustProxyCidrs(env: Env): readonly string[] {
+  const malformed = new Error(
+    `${TRUST_PROXY_CIDRS} is malformed (comma-separated IPv4 or IPv6 CIDR blocks are required).`,
+  );
+  const entries = required(env, TRUST_PROXY_CIDRS)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+  if (entries.length === 0) {
+    throw malformed;
+  }
+  const blocks = new BlockList();
+  return entries.map((entry) => {
+    const [address = '', prefix, ...rest] = entry.split('/');
+    const version = isIP(address);
+    if (version === 0 || rest.length > 0 || (prefix !== undefined && !/^\d{1,3}$/.test(prefix))) {
+      throw malformed;
+    }
+    const bits = prefix === undefined ? (version === 4 ? 32 : 128) : Number(prefix);
+    try {
+      blocks.addSubnet(address, bits, version === 4 ? 'ipv4' : 'ipv6');
+    } catch {
+      throw malformed;
+    }
+    return `${address}/${String(bits)}`;
+  });
+}
+
+/**
+ * The proxy trust (048 D2, Q6). Both variables are required outside test; under test both
+ * unset keep the default list. One without the other fails in every environment.
+ */
+function loadTrustProxy(env: Env): TrustProxySetting {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest && env[TRUST_PROXY_HOPS] === undefined && env[TRUST_PROXY_CIDRS] === undefined) {
+    return TEST_TRUST_PROXY;
+  }
+  return { hops: parseTrustProxyHops(env), cidrs: parseTrustProxyCidrs(env) };
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
@@ -463,6 +535,7 @@ export function loadConfig(env: Env): Config {
   const email = loadEmail(env);
   const sso = loadSso(env);
   const webDistDir = loadWebDistDir(env);
+  const trustProxy = loadTrustProxy(env);
   const signIn = limitWithDefaults(
     env,
     'PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX',
@@ -599,5 +672,6 @@ export function loadConfig(env: Env): Config {
     telemetryDisabled: loadTelemetryDisabled(env),
     mountIdentityRoutes: loadMountIdentityRoutes(env),
     ...(webDistDir === undefined ? {} : { webDistDir }),
+    trustProxy,
   };
 }

@@ -98,7 +98,7 @@ Scenario names in quotes refer to `specs/<capability>/spec.md` of this change.
 
 ## 3. Startup configuration: proxy trust and one public origin (D3, D7)
 
-- [ ] 3.1 `TRUST_PROXY_HOPS` and `TRUST_PROXY_CIDRS` are parsed and required outside test
+- [x] 3.1 `TRUST_PROXY_HOPS` and `TRUST_PROXY_CIDRS` are parsed and required outside test
       (design D2). Verify: `apps/api/src/config.test.ts` covers "Startup fails without the
       proxy trust outside the test environment": hops from 1 to 5, IPv4 and IPv6 blocks and
       bare addresses accepted, zero, six, fractional, a malformed block and one variable

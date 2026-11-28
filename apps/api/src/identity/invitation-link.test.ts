@@ -41,6 +41,9 @@ function configEnv(): Record<string, string | undefined> {
     INVITATION_LINK_BASE_URL: BASE_URL,
     PASSWORD_RESET_LINK_BASE_URL: BASE_URL,
     EMAIL_PROVIDER: 'none',
+    // 048 D2: required outside test.
+    TRUST_PROXY_HOPS: '1',
+    TRUST_PROXY_CIDRS: '10.0.0.0/16',
   };
 }
 

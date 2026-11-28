@@ -242,6 +242,9 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
       ...withoutUrl,
       NODE_ENV: 'production',
       EMAIL_PROVIDER: 'none',
+      // 048 D2: required outside test, so only BETTER_AUTH_URL is at fault.
+      TRUST_PROXY_HOPS: '1',
+      TRUST_PROXY_CIDRS: '127.0.0.1/32,::1/128',
     });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');
@@ -256,6 +259,9 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
       BETTER_AUTH_URL: 'http://api.tayzu.test',
       NODE_ENV: 'production',
       EMAIL_PROVIDER: 'none',
+      // 048 D2: required outside test, so only BETTER_AUTH_URL is at fault.
+      TRUST_PROXY_HOPS: '1',
+      TRUST_PROXY_CIDRS: '127.0.0.1/32,::1/128',
     });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');

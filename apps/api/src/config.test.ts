@@ -32,6 +32,7 @@
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { isIPv6 } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,6 +69,9 @@ function env(
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
     PASSWORD_RESET_LINK_BASE_URL: 'https://app.tayzu.test',
     IDENTITY_TOKEN_HMAC_SECRET: HMAC_SECRET,
+    // 048 D2: the proxy trust is required outside test, so a valid production fixture sets it.
+    TRUST_PROXY_HOPS: '1',
+    TRUST_PROXY_CIDRS: '10.0.0.0/16',
     ...overrides,
   };
 }
@@ -1315,5 +1319,280 @@ describe('WEB_DIST_DIR (003 task 4.1, D9, Q21)', () => {
 
   it('a path to a file instead of a directory fails startup naming the variable, not the value', () => {
     expectRejected(plainFile);
+  });
+});
+
+/**
+ * `048` task 3.1 (design D2, Resolved decision Q6), scenario "Startup fails without the
+ * proxy trust outside the test environment":
+ *
+ * - **WHEN** the platform starts with `NODE_ENV` other than `test` and without the hop
+ *   count or the ranges, or with a malformed range
+ * - **THEN** startup fails with a message that names only the variable
+ *
+ * Design D2: `TRUST_PROXY_HOPS` is an integer from 1 to 5; `TRUST_PROXY_CIDRS` is a
+ * comma-separated list of IPv4 or IPv6 CIDR blocks, a bare address accepted as a `/32` or
+ * `/128`. Outside `NODE_ENV=test` both are required; under test, both unset keeps the list
+ * `['loopback', 'linklocal', 'uniquelocal']`, both set is honoured, and one set without the
+ * other fails in every environment.
+ *
+ * ## Production symbol expected
+ *
+ * ```ts
+ * // apps/api/src/config.ts
+ * interface Config {
+ *   // `{ hops, cidrs }` when both variables are set (the input of `createTrustProxy`,
+ *   // design D2); the default list only under test when both are unset.
+ *   readonly trustProxy:
+ *     | { readonly hops: number; readonly cidrs: readonly string[] }
+ *     | readonly ['loopback', 'linklocal', 'uniquelocal'];
+ * }
+ * ```
+ *
+ * A bare address may be kept as written or completed with `/32` or `/128`: the tests
+ * compare the blocks after completing a bare address the same way.
+ */
+describe('TRUST_PROXY_HOPS and TRUST_PROXY_CIDRS (048 task 3.1, design D2, Q6)', () => {
+  const HOPS = 'TRUST_PROXY_HOPS';
+  const CIDRS = 'TRUST_PROXY_CIDRS';
+  const EVERY_ENVIRONMENT = ['test', 'production'] as const;
+  const OUTSIDE_TEST = ['production', 'staging', 'development'] as const;
+
+  const proxy = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      ...overrides,
+    });
+  const trustOf = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['trustProxy'];
+  /** A block as `address/prefix`: a bare address completed as a `/32` or `/128`. */
+  const block = (entry: string): string =>
+    entry.includes('/') ? entry : `${entry}/${isIPv6(entry) ? '128' : '32'}`;
+  function expectTrust(config: Config, hops: number, cidrs: readonly string[]): void {
+    const trust = trustOf(config) as { hops?: unknown; cidrs?: unknown } | undefined;
+    expect(trust, 'config.trustProxy is { hops, cidrs }').toBeTypeOf('object');
+    expect(Object.keys(trust ?? {}).sort()).toEqual(['cidrs', 'hops']);
+    expect(trust?.hops).toBe(hops);
+    expect(Array.isArray(trust?.cidrs)).toBe(true);
+    expect((trust?.cidrs as string[]).map(block)).toEqual(cidrs.map(block));
+  }
+
+  describe('hops from 1 to 5 are accepted in every environment', () => {
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        ['1', '2', '3', '4', '5'].map((hops) => [hops, nodeEnv] as const),
+      ),
+    )('TRUST_PROXY_HOPS=%s (NODE_ENV=%s)', (hops, nodeEnv) => {
+      const config = loadConfig(proxy(nodeEnv, { [HOPS]: hops, [CIDRS]: '10.0.0.0/16' }));
+      expectTrust(config, Number(hops), ['10.0.0.0/16']);
+    });
+  });
+
+  describe('IPv4 and IPv6 blocks and bare addresses are accepted in every environment', () => {
+    const accepted: readonly (readonly [string, string, readonly string[]])[] = [
+      ['one IPv4 block', '10.0.0.0/16', ['10.0.0.0/16']],
+      [
+        'several IPv4 blocks',
+        '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16',
+        ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
+      ],
+      ['one IPv6 block', 'fd00::/8', ['fd00::/8']],
+      [
+        'IPv6 and IPv4 blocks together',
+        '2001:db8::/32,10.0.0.0/16',
+        ['2001:db8::/32', '10.0.0.0/16'],
+      ],
+      ['a bare IPv4 address', '10.0.4.2', ['10.0.4.2']],
+      ['a bare IPv6 address', '::1', ['::1']],
+      ['a bare address next to a block', '10.0.4.2,fd00::/8', ['10.0.4.2', 'fd00::/8']],
+      ['the CI loopback list', '127.0.0.1/32,::1/128', ['127.0.0.1/32', '::1/128']],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        accepted.map(([label, value, cidrs]) => [label, nodeEnv, value, cidrs] as const),
+      ),
+    )('%s (NODE_ENV=%s)', (_label, nodeEnv, value, cidrs) => {
+      const config = loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: value }));
+      expectTrust(config, 1, cidrs);
+    });
+  });
+
+  describe('zero, six, fractional and other malformed hops are refused in every environment', () => {
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        ['0', '6', '1.5', '2.5', '-1', '10', 'abc', 'one', '', '   '].map(
+          (hops) => [hops, nodeEnv] as const,
+        ),
+      ),
+    )('TRUST_PROXY_HOPS=%j fails startup naming the variable (NODE_ENV=%s)', (hops, nodeEnv) => {
+      const error = thrown(() =>
+        loadConfig(proxy(nodeEnv, { [HOPS]: hops, [CIDRS]: '10.0.0.0/16' })),
+      );
+      expect(error.message).toContain(HOPS);
+      expect(error.message).not.toContain(CIDRS);
+    });
+  });
+
+  describe('a malformed block is refused in every environment', () => {
+    const malformed: readonly (readonly [string, string])[] = [
+      ['an IPv4 prefix over 32', '10.0.0.0/33'],
+      ['an IPv6 prefix over 128', '::1/129'],
+      ['a negative prefix', '10.0.0.0/-1'],
+      ['a non-numeric prefix', 'fe80::/abc'],
+      ['an empty prefix', '10.0.0.0/'],
+      ['two prefixes', '10.0.0.0/8/8'],
+      ['an octet over 255', '10.0.0.256/8'],
+      ['a three-octet address', '10.0.0/8'],
+      ['a word', 'not-a-cidr'],
+      ['a host name', 'localhost'],
+      ['a malformed block after a valid one', '10.0.0.0/16,bogus'],
+      ['an empty value', ''],
+      ['a blank value', '   '],
+      ['only separators', ' , '],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        malformed.map(([label, value]) => [label, nodeEnv, value] as const),
+      ),
+    )('%s fails startup naming the variable (NODE_ENV=%s)', (_label, nodeEnv, value) => {
+      const error = thrown(() => loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: value })));
+      expect(error.message).toContain(CIDRS);
+      expect(error.message).not.toContain(HOPS);
+    });
+  });
+
+  describe('one variable without the other is refused in every environment', () => {
+    it.each(EVERY_ENVIRONMENT)(
+      'TRUST_PROXY_HOPS without TRUST_PROXY_CIDRS fails naming TRUST_PROXY_CIDRS (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() => loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: undefined })));
+        expect(error.message).toContain(CIDRS);
+      },
+    );
+
+    it.each(EVERY_ENVIRONMENT)(
+      'TRUST_PROXY_CIDRS without TRUST_PROXY_HOPS fails naming TRUST_PROXY_HOPS (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: undefined, [CIDRS]: '10.0.0.0/16' })),
+        );
+        expect(error.message).toContain(HOPS);
+      },
+    );
+  });
+
+  describe('scenario: Startup fails without the proxy trust outside the test environment', () => {
+    it.each(OUTSIDE_TEST)(
+      'both variables unset fail startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: undefined, [CIDRS]: undefined })),
+        );
+        expect(error.message).toMatch(/TRUST_PROXY_(HOPS|CIDRS)/);
+      },
+    );
+
+    it.each(OUTSIDE_TEST)(
+      'the hop count missing fails startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: undefined, [CIDRS]: '10.0.0.0/16' })),
+        );
+        expect(error.message).toContain(HOPS);
+      },
+    );
+
+    it.each(OUTSIDE_TEST)(
+      'the ranges missing fail startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() => loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: undefined })));
+        expect(error.message).toContain(CIDRS);
+      },
+    );
+
+    it.each(OUTSIDE_TEST)(
+      'a malformed range fails startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: '10.0.0.0/33' })),
+        );
+        expect(error.message).toContain(CIDRS);
+      },
+    );
+
+    it('a valid production configuration starts with the configured trust', () => {
+      const config = loadConfig(
+        proxy('production', { [HOPS]: '2', [CIDRS]: '10.0.0.0/16,fd00::/8' }),
+      );
+      expectTrust(config, 2, ['10.0.0.0/16', 'fd00::/8']);
+    });
+  });
+
+  describe('under NODE_ENV=test', () => {
+    it('both unset default to the loopback, link-local and unique-local list', () => {
+      const config = loadConfig(proxy('test', { [HOPS]: undefined, [CIDRS]: undefined }));
+      expect(trustOf(config)).toEqual(['loopback', 'linklocal', 'uniquelocal']);
+    });
+
+    it('both set are honoured', () => {
+      const config = loadConfig(
+        proxy('test', { [HOPS]: '3', [CIDRS]: '10.0.0.0/16,2001:db8::/32' }),
+      );
+      expectTrust(config, 3, ['10.0.0.0/16', '2001:db8::/32']);
+    });
+  });
+
+  describe('an error names only the variable, never a value', () => {
+    const MARKER_RANGE = '198.51.100.77';
+    const rejected: readonly (readonly [
+      string,
+      string,
+      Record<string, string | undefined>,
+      string,
+    ])[] = [
+      ['a fractional hop count', 'production', { [HOPS]: '4.75', [CIDRS]: '10.0.0.0/16' }, '4.75'],
+      ['a large hop count', 'production', { [HOPS]: '777', [CIDRS]: '10.0.0.0/16' }, '777'],
+      [
+        'a word as hop count',
+        'test',
+        { [HOPS]: 'markerhops', [CIDRS]: '10.0.0.0/16' },
+        'markerhops',
+      ],
+      [
+        'an out-of-range prefix',
+        'production',
+        { [HOPS]: '1', [CIDRS]: `${MARKER_RANGE}/33` },
+        MARKER_RANGE,
+      ],
+      ['a host name', 'test', { [HOPS]: '1', [CIDRS]: 'marker-host.invalid' }, 'marker-host'],
+      [
+        'a malformed block after a valid one',
+        'production',
+        { [HOPS]: '1', [CIDRS]: `${MARKER_RANGE}/24,marker-block` },
+        'marker-block',
+      ],
+      [
+        'the ranges alone',
+        'test',
+        { [HOPS]: undefined, [CIDRS]: `${MARKER_RANGE}/24` },
+        MARKER_RANGE,
+      ],
+    ];
+
+    it.each(rejected)('%s (NODE_ENV=%s)', (_label, nodeEnv, overrides, value) => {
+      const error = thrown(() => loadConfig(proxy(nodeEnv, overrides)));
+      expect(error.message).toMatch(/TRUST_PROXY_(HOPS|CIDRS)/);
+      expect(error.message).not.toContain(value);
+      expect(error.message).not.toContain(MARKER_RANGE);
+      expect(error.message).not.toContain('10.0.0.0');
+    });
   });
 });

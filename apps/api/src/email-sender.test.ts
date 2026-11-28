@@ -51,6 +51,9 @@ function env(overrides: Record<string, string | undefined>): Record<string, stri
     PASSWORD_RESET_LINK_BASE_URL: 'https://app.tayzu.test',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     IDENTITY_TOKEN_HMAC_SECRET: 'sender-hmac-test-only-secret-0123456789-abcdef',
+    // 048 D2: required outside test.
+    TRUST_PROXY_HOPS: '1',
+    TRUST_PROXY_CIDRS: '10.0.0.0/16',
     ...overrides,
   };
 }
