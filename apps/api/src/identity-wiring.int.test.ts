@@ -128,7 +128,7 @@ describe('identity email wiring through createAppFromEnv (task 14.11)', () => {
     app = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN}`,
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,
@@ -267,7 +267,7 @@ describe('identity email gate controls reach production (task 14.13)', () => {
     const built = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN}`,
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,
@@ -461,7 +461,7 @@ describe('the accept route runs the shed and sends the admin notice (task 14.15)
     app = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       BETTER_AUTH_URL: SSO_ORIGIN,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN},${SSO_ORIGIN}`,
@@ -666,7 +666,7 @@ describe('the configured caps reach the identity router (task 14.18)', () => {
     const built = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN}`,
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,
@@ -831,7 +831,7 @@ describe('the recovery notices reach production (task 13.4)', () => {
     const built = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: `${ORIGIN},${LINK_ORIGIN}`,
       INVITATION_LINK_BASE_URL: LINK_ORIGIN,

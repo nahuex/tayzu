@@ -159,7 +159,7 @@ postgres_accepts_tls() {
   # proves a verified TLS handshake from the host, as the API will make it.
   (cd "$REPO_ROOT/packages/db" && node --input-type=module -e "
     import pg from 'pg';
-    const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    const client = new pg.Client({ connectionString: process.env.MIGRATION_DATABASE_URL });
     await client.connect();
     await client.query('select 1');
     await client.end();
@@ -224,7 +224,8 @@ up() {
   # The owner (the image's superuser) only migrates; the API and the seed run
   # as the runtime roles, so RLS and the role split are exercised.
   database_url="postgres://tayzu:${password}@localhost:${PG_PORT}/tayzu_e2e?${tls}"
-  export DATABASE_URL="$database_url"
+  # 048 design D1: db:migrate reads only MIGRATION_DATABASE_URL, never DATABASE_URL.
+  export MIGRATION_DATABASE_URL="$database_url"
 
   log "waiting for PostgreSQL (verified TLS)"
   wait_for 60 postgres_accepts_tls || fail "PostgreSQL did not accept a verified TLS connection in time"
@@ -247,12 +248,16 @@ up() {
   # Node verifies the proxy's certificate (the API's discovery, JWKS and token
   # calls to the stub) against the run's CA.
   export NODE_EXTRA_CA_CERTS="$STATE_DIR/tls/node-ca.crt"
-  export BETTER_AUTH_SECRET="$secret"
+  export BETTER_AUTH_SECRETS="1:$secret"
   # Q93 of 043: keys the per-recipient caps; random per run, never printed.
   export IDENTITY_TOKEN_HMAC_SECRET="$hmac_secret"
   # Q38: the public origin is the proxy's, over https.
   export BETTER_AUTH_URL="https://localhost:${APP_PORT}"
   export ALLOWED_ORIGINS="https://localhost:${APP_PORT}"
+  # 048 design D2: the only hop in front of the API is the local proxy (or the
+  # scanner) on loopback, so one trusted hop from loopback addresses only.
+  export TRUST_PROXY_HOPS=1
+  export TRUST_PROXY_CIDRS="127.0.0.1/32,::1/128"
   # Must be one of ALLOWED_ORIGINS, port included.
   export INVITATION_LINK_BASE_URL="https://localhost:${APP_PORT}"
   export PASSWORD_RESET_LINK_BASE_URL="https://localhost:${APP_PORT}"

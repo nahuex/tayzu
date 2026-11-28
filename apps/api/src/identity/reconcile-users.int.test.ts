@@ -863,6 +863,7 @@ describe('reconcile-users (task 4.2b)', () => {
 
     const env0 = env(CERBOS_ADDRESS);
     expect(env0).not.toHaveProperty('BETTER_AUTH_SECRET');
+    expect(env0).not.toHaveProperty('BETTER_AUTH_SECRETS');
     vi.mocked(createAuth).mockClear();
 
     const { linkDeletions, sessionDeletions, outcome } = await tracedRun({

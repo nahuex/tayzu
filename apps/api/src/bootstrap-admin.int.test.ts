@@ -20,7 +20,7 @@
  * // apps/api/scripts/bootstrap-admin.ts (today a scaffold whose `main()` takes no options)
  * export interface BootstrapAdminCliOptions {
  *   // Defaults to process.env. Read through loadScriptConfig('bootstrap-admin', env)
- *   // (DATABASE_URL, AUTH_DATABASE_URL, BETTER_AUTH_SECRET, CERBOS_ADDRESS,
+ *   // (DATABASE_URL, AUTH_DATABASE_URL, BETTER_AUTH_SECRETS, CERBOS_ADDRESS,
  *   // TAYZU_OPERATOR_ID), plus ALLOWED_ORIGINS for the trusted origins and the
  *   // BOOTSTRAP_ORGANIZATION_NAME, BOOTSTRAP_ORGANIZATION_SLUG, BOOTSTRAP_ADMIN_NAME
  *   // and BOOTSTRAP_ADMIN_EMAIL of the organization, all from this same `env`.
@@ -120,7 +120,7 @@ describe('bootstrap-admin CLI (task 4.6b)', () => {
     NODE_ENV: 'test',
     DATABASE_URL: process.env.DATABASE_URL ?? '',
     AUTH_DATABASE_URL: process.env.DATABASE_URL ?? '',
-    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
     CERBOS_ADDRESS,
     ALLOWED_ORIGINS: 'http://localhost:3000',
     BOOTSTRAP_ORGANIZATION_NAME: 'Bootstrap CLI Org',

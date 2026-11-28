@@ -64,9 +64,15 @@ export const PUBLIC_ROUTE_ALLOWLIST: readonly PublicRoute[] = [
     reason: 'CORS preflight on the catch-all, answered by @fastify/cors before the handler.',
   },
   {
-    method: '*',
+    method: 'GET',
     path: '/v1/auth/visma-connect/reauthorize/callback',
-    reason: 'Visma Connect re-authorization callback: authenticated by the OIDC state.',
+    reason:
+      'Visma Connect re-authorization callback: authenticated by the single-use state, the nonce and the session cookie (048 D6).',
+  },
+  {
+    method: 'POST',
+    path: '/v1/csp-reports',
+    reason: 'browser CSP violation reports: no session, counted by directive only (048 D9)',
   },
   // 003 D9 (Q39): the web build's routes, registered only with `WEB_DIST_DIR`.
   {

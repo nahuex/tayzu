@@ -27,6 +27,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import * as authzContractModule from '../../../authz/src/telemetry/contract.js';
 import {
   LOG_EVENTS as AUTHZ_LOG_EVENTS,
   METRICS as AUTHZ_METRICS,
@@ -254,10 +255,15 @@ describe('Visma Connect step-up telemetry is declared (003 task 3.11, design D11
     expect(event?.attributes).not.toContain(ACTOR_ID);
   });
 
-  it('declares the reason value set of auth.security.reauthorization_failed: invalid_state and exchange_failed', () => {
+  // 048 design D6 adds `session_mismatch` to this closed set (see the 048 block below).
+  it('declares the reason value set of auth.security.reauthorization_failed: invalid_state, exchange_failed and (048 D6) session_mismatch', () => {
     const values = attributeValues();
     expect(values, 'ATTRIBUTE_VALUES is exported').toBeDefined();
-    expect(sorted(values?.[REAUTH_REASON])).toEqual(['exchange_failed', 'invalid_state']);
+    expect(sorted(values?.[REAUTH_REASON])).toEqual([
+      'exchange_failed',
+      'invalid_state',
+      'session_mismatch',
+    ]);
   });
 
   it('declares visma_connect in the tayzu.auth.method set of auth.security.step_up_succeeded, next to local', () => {
@@ -270,5 +276,60 @@ describe('Visma Connect step-up telemetry is declared (003 task 3.11, design D11
 
   it('exempts auth.security.reauthorization_failed from sampling', () => {
     expect(SAMPLING_EXEMPT_SIGNALS).toContain('auth.security.reauthorization_failed');
+  });
+});
+
+/**
+ * Task 6.1 of openspec/changes/048-production-hardening (design D6 "Telemetry", Resolved
+ * decision Q7, "Observability contract" -> Log events): "`auth.security.reauthorization_failed`:
+ * `tayzu.auth.reauthorization.reason` gains `session_mismatch` (D6)", declared in
+ * `packages/auth/src/telemetry/contract.ts` **and** its mirror
+ * `packages/authz/src/telemetry/contract.ts`. Q22 keeps `session_mismatch` the only new reason.
+ *
+ * ## Production symbols expected
+ *
+ * - `./contract.js`: `ATTRIBUTE_VALUES['tayzu.auth.reauthorization.reason']` is exactly
+ *   `invalid_state`, `exchange_failed`, `session_mismatch`.
+ * - `../../../authz/src/telemetry/contract.js`: a new export
+ *   `ATTRIBUTE_VALUES: Readonly<Record<string, readonly string[]>>` whose
+ *   `tayzu.auth.reauthorization.reason` entry is the same set.
+ *
+ * The agreement block at the top of this file still keeps the `auth.*` spans, the
+ * `tayzu.auth.*` metrics and the `auth.security.*` log events equal in both contracts.
+ */
+describe('session_mismatch is a declared re-authorization reason in both auth contracts (048 task 6.1, design D6, Q7)', () => {
+  const REAUTH_REASON = 'tayzu.auth.reauthorization.reason';
+  const EXPECTED_REASONS = ['exchange_failed', 'invalid_state', 'session_mismatch'];
+
+  const attributeValuesOf = (
+    module: Record<string, unknown>,
+  ): Readonly<Record<string, readonly string[]>> | undefined =>
+    module['ATTRIBUTE_VALUES'] as Readonly<Record<string, readonly string[]>> | undefined;
+
+  it('@tayzu/auth declares session_mismatch in ATTRIBUTE_VALUES[tayzu.auth.reauthorization.reason]', () => {
+    const values = attributeValuesOf(contractModule);
+    expect(values, "@tayzu/auth's ATTRIBUTE_VALUES is exported").toBeDefined();
+    expect(values?.[REAUTH_REASON]).toContain('session_mismatch');
+    expect(sorted(values?.[REAUTH_REASON])).toEqual(EXPECTED_REASONS);
+  });
+
+  it('@tayzu/authz mirrors session_mismatch in ATTRIBUTE_VALUES[tayzu.auth.reauthorization.reason]', () => {
+    const values = attributeValuesOf(authzContractModule);
+    expect(values, "@tayzu/authz's ATTRIBUTE_VALUES is exported").toBeDefined();
+    expect(values?.[REAUTH_REASON]).toContain('session_mismatch');
+    expect(sorted(values?.[REAUTH_REASON])).toEqual(EXPECTED_REASONS);
+  });
+
+  it('both contracts declare the same tayzu.auth.reauthorization.reason value set', () => {
+    const auth = attributeValuesOf(contractModule);
+    const authz = attributeValuesOf(authzContractModule);
+    expect(sorted(authz?.[REAUTH_REASON])).toEqual(sorted(auth?.[REAUTH_REASON]));
+  });
+
+  it('auth.security.reauthorization_failed still carries the reason in both contracts', () => {
+    for (const events of [LOG_EVENTS, AUTHZ_LOG_EVENTS]) {
+      const event = events.find((entry) => entry.name === 'auth.security.reauthorization_failed');
+      expect(event?.attributes).toEqual([REAUTH_REASON]);
+    }
   });
 });

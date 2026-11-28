@@ -20,6 +20,19 @@ export {
   type WithTenantTransactionOptions,
 } from './tenant-tx.js';
 
+/**
+ * The runtime database roles: every login role the migrations create except
+ * the migration role, `tayzu_migrator` (048 design D1). `db:migrate` refuses
+ * to run as any of them. The list is hand-kept; a role added by a migration
+ * must be added here too.
+ */
+export const RUNTIME_DATABASE_ROLES: readonly string[] = Object.freeze([
+  'tayzu_app',
+  'tayzu_auth',
+  'tayzu_purge',
+  'tayzu_deletion_admin',
+]);
+
 const MIGRATIONS_FOLDER = fileURLToPath(new URL('../migrations', import.meta.url));
 
 /**
@@ -31,14 +44,22 @@ const MIGRATIONS_FOLDER = fileURLToPath(new URL('../migrations', import.meta.url
  */
 const MIGRATION_LOCK_KEY = 848_432_001;
 
+export interface CreatePoolOptions {
+  /**
+   * The environment variable that held `url`, named in the TLS error
+   * (048 design D1). Defaults to `DATABASE_URL`.
+   */
+  readonly variable?: string;
+}
+
 /**
  * Builds a pool for `url`. Outside the test harness (`getTestDatabase`),
  * `url` must set `sslmode=verify-full` (design D5); this is checked before
  * any connection is attempted, and no argument of this function can turn the
  * check off.
  */
-export function createPool(url: string): Pool {
-  assertVerifiedTls(url);
+export function createPool(url: string, options: CreatePoolOptions = {}): Pool {
+  assertVerifiedTls(url, options.variable);
   return new Pool({ connectionString: url });
 }
 

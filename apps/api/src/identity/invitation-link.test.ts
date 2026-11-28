@@ -33,14 +33,18 @@ function configEnv(): Record<string, string | undefined> {
     NODE_ENV: 'production',
     DATABASE_URL: 'postgres://tayzu_app:pw@db.invalid:5432/tayzu?sslmode=verify-full',
     AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@db.invalid:5432/tayzu?sslmode=verify-full',
-    BETTER_AUTH_SECRET: 'invitation-link-test-only-secret-0123456789-abcdef',
+    BETTER_AUTH_SECRETS: '1:invitation-link-test-only-secret-0123456789-abcdef',
     IDENTITY_TOKEN_HMAC_SECRET: 'invitation-hmac-test-only-secret-0123456789-abcd',
     CERBOS_ADDRESS: 'localhost:3593',
-    ALLOWED_ORIGINS: 'https://app.tayzu.test',
+    // 048 D3: BETTER_AUTH_URL's origin is listed; it stays apart from the link origin.
+    ALLOWED_ORIGINS: 'https://app.tayzu.test,https://api.tayzu.test',
     BETTER_AUTH_URL: 'https://api.tayzu.test',
     INVITATION_LINK_BASE_URL: BASE_URL,
     PASSWORD_RESET_LINK_BASE_URL: BASE_URL,
     EMAIL_PROVIDER: 'none',
+    // 048 D2: required outside test.
+    TRUST_PROXY_HOPS: '1',
+    TRUST_PROXY_CIDRS: '10.0.0.0/16',
   };
 }
 

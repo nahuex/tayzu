@@ -129,6 +129,203 @@ describe('dast.sh follows the moved bootstrap CLI (task 4.6b)', () => {
   });
 });
 
+/**
+ * `048` task 2.4 (design D1, Resolved decision Q5): `db:migrate` reads only
+ * `MIGRATION_DATABASE_URL`, so `up()` exports the owner URL under that name
+ * before `pnpm db:migrate`, the TLS-readiness probe reads it, and the only
+ * `DATABASE_URL` the script exports is the `tayzu_app` runtime URL, after the
+ * migrate step. (The `--refresh` call's inline `DATABASE_URL=unused` is not an
+ * export and is covered above.)
+ */
+const MIGRATE_RUN = /\bpnpm db:migrate\b/;
+const OWNER_URL = /^postgres:\/\/tayzu:/;
+const APP_URL = /^postgres:\/\/tayzu_app:/;
+
+/** The lines the shell runs: comments and blank lines dropped, `\` continuations joined. */
+function shellCodeLines(text: string): string[] {
+  return text
+    .replace(/\\\n\s*/g, ' ')
+    .split('\n')
+    .filter((line) => line.trim() !== '' && !line.trim().startsWith('#'));
+}
+
+/** The body of a top-level shell function `name() { … }`, up to its closing `}`. */
+function shellFunctionBody(name: string): string {
+  const start = script.indexOf(`\n${name}() {`);
+  if (start === -1) throw new Error(`dast.sh has no ${name}() function`);
+  const end = script.indexOf('\n}\n', start);
+  if (end === -1) throw new Error(`dast.sh: ${name}() is not closed`);
+  return script.slice(start, end);
+}
+
+/**
+ * The value `raw` stands for at `lines[at]`: every `$name` or `${name}` in it, bare or
+ * embedded, is replaced by the last plain or exported assignment of `name` before that
+ * line, itself resolved the same way. A reference with no assignment is left as written.
+ */
+function resolveShellValue(lines: readonly string[], at: number, raw: string, depth = 0): string {
+  if (depth > 5) return raw;
+  return raw.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (reference: string, braced: string | undefined, bare: string | undefined) => {
+      const name = braced ?? bare ?? '';
+      const assignment = new RegExp(
+        `^\\s*(?:export\\s+|local\\s+)?${name}=["']?([^"'\\n]*)["']?\\s*$`,
+      );
+      for (let index = at - 1; index >= 0; index -= 1) {
+        const value = assignment.exec(lines[index] ?? '')?.[1];
+        if (value !== undefined) return resolveShellValue(lines, index, value, depth + 1);
+      }
+      return reference;
+    },
+  );
+}
+
+/** Every `export NAME=value` line among `lines`: its index and resolved value. */
+function exportsOf(lines: readonly string[], name: string): { at: number; value: string }[] {
+  const pattern = new RegExp(`^\\s*export ${name}=["']?([^"'\\n]*)["']?\\s*$`);
+  return lines.flatMap((line, at) => {
+    const raw = pattern.exec(line)?.[1];
+    return raw === undefined ? [] : [{ at, value: resolveShellValue(lines, at, raw) }];
+  });
+}
+
+/**
+ * `048` task 3.1 (design D2): the DAST stack runs outside `NODE_ENV=test`, so `up()` sets
+ * the proxy trust the API requires there: one hop, from the loopback addresses only,
+ * exported before `apps/api` starts.
+ */
+describe('dast.sh: the API trusts one proxy hop from loopback only (048 task 3.1, design D2)', () => {
+  it('exports TRUST_PROXY_HOPS=1 and TRUST_PROXY_CIDRS=127.0.0.1/32,::1/128 once, before apps/api starts', () => {
+    const up = shellCodeLines(upFunction());
+    const apiAt = up.findIndex((line) => /--filter[= ]@tayzu\/api\s+start\b/.test(line));
+    const hops = exportsOf(up, 'TRUST_PROXY_HOPS');
+    const cidrs = exportsOf(up, 'TRUST_PROXY_CIDRS');
+
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(hops.map(({ value }) => value)).toEqual(['1']);
+    expect(cidrs.map(({ value }) => value)).toEqual(['127.0.0.1/32,::1/128']);
+    expect(hops[0]?.at ?? Infinity).toBeLessThan(apiAt);
+    expect(cidrs[0]?.at ?? Infinity).toBeLessThan(apiAt);
+    expect([...script.matchAll(/\bTRUST_PROXY_HOPS=/g)]).toHaveLength(1);
+    expect([...script.matchAll(/\bTRUST_PROXY_CIDRS=/g)]).toHaveLength(1);
+  });
+});
+
+/**
+ * `048` task 4.1 (design D4, Resolved decision Q9): `BETTER_AUTH_SECRET` is retired and
+ * fails startup, so `up()` exports `BETTER_AUTH_SECRETS` as a one-entry list over the
+ * run's random secret, and the `zap-seed.ts --refresh` call of `api_scan` (`:309`) sets a
+ * well-formed unused `BETTER_AUTH_SECRETS` instead of `BETTER_AUTH_SECRET=unused`.
+ */
+describe('dast.sh: the versioned authentication secrets (048 task 4.1, design D4)', () => {
+  const RANDOM_LIST = /^(0|[1-9][0-9]*):\$\(openssl rand -(hex|base64) ([0-9]+)\)$/;
+  /** `BETTER_AUTH_SECRETS=<value>` inline on a line, quoted or bare. */
+  const inlineValue = (line: string): string | undefined => {
+    const match = /\bBETTER_AUTH_SECRETS=(?:"([^"\n]*)"|'([^'\n]*)'|(\S+))/.exec(line);
+    return match === null ? undefined : (match[1] ?? match[2] ?? match[3]);
+  };
+
+  it('up() exports BETTER_AUTH_SECRETS once, a one-entry list over a random secret, before apps/api starts', () => {
+    const up = shellCodeLines(upFunction());
+    const apiAt = up.findIndex((line) => /--filter[= ]@tayzu\/api\s+start\b/.test(line));
+    const exported = exportsOf(up, 'BETTER_AUTH_SECRETS');
+
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(exported, 'one `export BETTER_AUTH_SECRETS=` line in up()').toHaveLength(1);
+    const value = exported[0]?.value ?? '';
+    const match = RANDOM_LIST.exec(value);
+    expect(match, `the exported list ${value}`).not.toBeNull();
+    // At least 32 characters of random value: 16 bytes in hex, 24 in base64.
+    const bytes = Number(match?.[3] ?? 0);
+    expect(bytes).toBeGreaterThanOrEqual(match?.[2] === 'hex' ? 16 : 24);
+    expect(exported[0]?.at ?? Infinity).toBeLessThan(apiAt);
+  });
+
+  it('the --refresh call of zap-seed.ts sets a well-formed BETTER_AUTH_SECRETS, not BETTER_AUTH_SECRET=unused', async () => {
+    const { parseAuthSecrets } = await import('./auth-secrets.js');
+    const lines = shellCodeLines(shellFunctionBody('api_scan'));
+    const refresh = lines.find((line) => /scripts\/ci\/zap-seed\.ts --refresh\b/.test(line));
+
+    expect(refresh, 'the zap-seed.ts --refresh line of api_scan').toBeDefined();
+    expect(refresh).toMatch(/\bDATABASE_URL=unused\b/);
+    expect(refresh).not.toMatch(/\bBETTER_AUTH_SECRET=/);
+    const value = inlineValue(refresh ?? '');
+    expect(value, 'an inline BETTER_AUTH_SECRETS= on the --refresh line').toBeDefined();
+    expect(value).not.toMatch(/\$/);
+    expect(() => parseAuthSecrets(value ?? '', 'BETTER_AUTH_SECRETS')).not.toThrow();
+  });
+
+  it('the script never sets or reads the retired BETTER_AUTH_SECRET', () => {
+    for (const line of shellCodeLines(script)) {
+      expect(line).not.toMatch(/\bBETTER_AUTH_SECRET=/);
+      expect(line).not.toMatch(/\$\{?BETTER_AUTH_SECRET\b(?!S)/);
+    }
+  });
+
+  it('BETTER_AUTH_SECRETS is never printed', () => {
+    for (const line of shellCodeLines(script)) {
+      if (!/\b(echo|printf|log|fail)\b/.test(line)) continue;
+      expect(line).not.toMatch(/\$\{?BETTER_AUTH_SECRETS\b/);
+    }
+  });
+});
+
+describe('dast.sh: migrations run as the migration role (048 task 2.4, design D1)', () => {
+  it('exports the owner URL as MIGRATION_DATABASE_URL before the pnpm db:migrate line', () => {
+    const up = shellCodeLines(upFunction());
+    const migrateAt = up.findIndex((line) => MIGRATE_RUN.test(line));
+    const migrationExports = exportsOf(up, 'MIGRATION_DATABASE_URL');
+
+    expect(migrateAt, 'a `pnpm db:migrate` line in up()').toBeGreaterThan(-1);
+    expect(migrationExports.length, 'an `export MIGRATION_DATABASE_URL=` line in up()').toBe(1);
+    const [owner] = migrationExports;
+    expect(owner?.value).toMatch(OWNER_URL);
+    expect(owner?.value).toMatch(/sslmode=verify-full/);
+    expect(owner?.at ?? Infinity).toBeLessThan(migrateAt);
+    // The migrate step gets no inline DATABASE_URL either.
+    expect(up[migrateAt]).not.toMatch(/\bDATABASE_URL=/);
+  });
+
+  it('the owner URL is never exported as DATABASE_URL: the only DATABASE_URL is tayzu_app, after the migrate step', () => {
+    const lines = shellCodeLines(script);
+    const up = shellCodeLines(upFunction());
+    const migrateAt = up.findIndex((line) => MIGRATE_RUN.test(line));
+
+    const everywhere = exportsOf(lines, 'DATABASE_URL');
+    expect(everywhere.length, 'one `export DATABASE_URL=` line in the script').toBe(1);
+    for (const { value } of everywhere) {
+      expect(value).not.toMatch(OWNER_URL);
+      expect(value).not.toMatch(/MIGRATION_DATABASE_URL/);
+      expect(value).toMatch(APP_URL);
+    }
+
+    const inUp = exportsOf(up, 'DATABASE_URL');
+    expect(inUp).toHaveLength(1);
+    expect(inUp[0]?.at ?? -1).toBeGreaterThan(migrateAt);
+  });
+
+  it('the TLS-readiness probe reads MIGRATION_DATABASE_URL, exported before the probe runs', () => {
+    const probe = shellFunctionBody('postgres_accepts_tls');
+    const up = shellCodeLines(upFunction());
+    const probeAt = up.findIndex((line) => /\bwait_for\b[^\n]*\bpostgres_accepts_tls\b/.test(line));
+    const exportAt = exportsOf(up, 'MIGRATION_DATABASE_URL')[0]?.at ?? Infinity;
+
+    expect(probe).toMatch(/connectionString:\s*process\.env\.MIGRATION_DATABASE_URL\b/);
+    expect(probe).not.toMatch(/process\.env\.DATABASE_URL\b/);
+    expect(probeAt).toBeGreaterThan(-1);
+    expect(exportAt).toBeLessThan(probeAt);
+    expect(probeAt).toBeLessThan(up.findIndex((line) => MIGRATE_RUN.test(line)));
+  });
+
+  it('MIGRATION_DATABASE_URL is never printed', () => {
+    for (const line of shellCodeLines(script)) {
+      if (!/\b(echo|printf|log|fail)\b/.test(line)) continue;
+      expect(line).not.toMatch(/\$\{?MIGRATION_DATABASE_URL\b/);
+    }
+  });
+});
+
 /** The body of the `probe` shell function (044 task 14.2). */
 function probeFunction(): string {
   const start = script.indexOf('\nprobe() {');

@@ -31,9 +31,10 @@
  * builds `auth.api` synchronously from the plugin list and never awaits a
  * database round trip, so no `DATABASE_URL` is needed here.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createAuth, hashPasswordNfc } from './auth.js';
+import { hashPassword, verifyPassword } from './password-hash.js';
 import { TEST_SECRET } from './__fixtures__/test-secret.js';
 
 // A `@better-auth/drizzle-adapter` `DB` handle is typed as `{[key: string]: any}`
@@ -165,5 +166,165 @@ describe('createAuth', () => {
     expect(await context.password.verify({ hash: hashOfNfc, password: nfd })).toBe(true);
     expect(await context.password.verify({ hash: hashOfNfd, password: nfc })).toBe(true);
     expect(await context.password.verify({ hash: hashOfNfc, password: `${nfc}x` })).toBe(false);
+  });
+});
+
+/**
+ * Task 4.2 (048 design D4, Q9; `specs/auth-and-rbac/spec.md`, "An ambient
+ * variable cannot change the keys"):
+ *
+ * > GIVEN the platform's configured list holds version `1` only
+ * > WHEN the process environment also carries another versioned list or the
+ * > retired single secret
+ * > THEN the authentication instance uses exactly the configured keys
+ *
+ * D4: "`createAuth` takes `secrets` and passes both `secrets: [...secrets]`
+ * and `secret: secrets[0].value` to `betterAuth`." Better Auth `1.7.7`
+ * (`dist/context/create-context.mjs`) builds its keys from
+ * `options.secrets ?? parseSecretsEnv(env.BETTER_AUTH_SECRETS)` and its legacy
+ * key from `options.secret || env.BETTER_AUTH_SECRET || ...`, where `env` reads
+ * `process.env` lazily; `secretConfig` is then
+ * `{ keys: Map<number, string>; currentVersion: number; legacySecret?: string }`
+ * (`@better-auth/core` `dist/types/secret.d.mts`). So the configured list must
+ * be the whole key map, version `1` the current version, and the configured
+ * current value the legacy key, whatever the environment carries.
+ *
+ * ## Why this is expected to fail for the right reason right now
+ *
+ * `createAuth` reads only `options.secret` and passes no `secrets` to
+ * `betterAuth`, so the instance takes its keys and legacy key from the ambient
+ * variables set below: an assertion failure, not a missing module.
+ */
+describe('createAuth authentication secrets (048 D4)', () => {
+  const configuredSecrets = [{ version: 1, value: TEST_SECRET }] as const;
+  // Ambient values that differ from the configured one: a list with an extra
+  // version and a different value for version 1, and the retired single secret.
+  const ambientSecretsList =
+    '2:ambient-only-version-two-not-configured-0123456789,' +
+    '1:ambient-only-version-one-not-configured-0123456789';
+  const ambientSingleSecret = 'ambient-only-retired-single-secret-not-configured-0123456789';
+
+  const ambientNames = ['BETTER_AUTH_SECRETS', 'BETTER_AUTH_SECRET'] as const;
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const name of ambientNames) {
+      saved.set(name, process.env[name]);
+    }
+  });
+
+  afterEach(() => {
+    for (const name of ambientNames) {
+      const previous = saved.get(name);
+      if (previous === undefined) {
+        Reflect.deleteProperty(process.env, name);
+      } else {
+        process.env[name] = previous;
+      }
+    }
+    saved.clear();
+  });
+
+  it('An ambient variable cannot change the keys', async () => {
+    // GIVEN the platform's configured list holds version 1 only.
+    // WHEN the process environment also carries another versioned list and
+    // the retired single secret.
+    process.env['BETTER_AUTH_SECRETS'] = ambientSecretsList;
+    process.env['BETTER_AUTH_SECRET'] = ambientSingleSecret;
+
+    const auth = createAuth({ db: stubDb, secrets: configuredSecrets });
+    const context = (await (auth as unknown as { readonly $context: Promise<unknown> })
+      .$context) as {
+      readonly secretConfig:
+        | string
+        | {
+            readonly keys: Map<number, string>;
+            readonly currentVersion: number;
+            readonly legacySecret?: string;
+          };
+    };
+
+    // THEN the authentication instance uses exactly the configured keys.
+    const { secretConfig } = context;
+    expect(typeof secretConfig).toBe('object');
+    if (typeof secretConfig === 'string') {
+      return;
+    }
+    expect([...secretConfig.keys.entries()]).toEqual([[1, TEST_SECRET]]);
+    expect(secretConfig.currentVersion).toBe(1);
+    expect(secretConfig.legacySecret).toBe(TEST_SECRET);
+  });
+});
+
+/**
+ * Task 5.3 (048 design D5, Q8; `specs/password-reset-and-account-recovery/
+ * spec.md`, "Passwords are stored with the platform's password hash"):
+ *
+ * D5: "`emailAndPassword.password` in `auth.ts` uses the new pair", that is
+ * `hashPassword` and `verifyPassword` of `./password-hash.ts`, and
+ * "`hashPasswordNfc` stays the exported name used by the reset path [...] and
+ * becomes an alias of the new `hashPassword`". The options are read off the
+ * `betterAuth(...)` return value the same way as the D22 test above
+ * (`Auth<Options>.options`, which keeps the configured function references).
+ *
+ * ## Why this is expected to fail for the right reason right now
+ *
+ * `./auth.ts` configures `hash: hashPasswordNfc` (NFC, then Better Auth's
+ * `hashPassword`, the legacy `salt:key` format) and a `verify` wrapper over
+ * Better Auth's `verifyPassword`: both identity checks and the format checks
+ * are assertion failures, not a missing module (`./password-hash.js` exists
+ * since tasks 5.1 and 5.2).
+ */
+describe('createAuth password hash (048 D5, task 5.3)', () => {
+  /** design D5 "Format": `$scrypt$ln=15,r=8,p=3$<22 base64 characters>$<86 base64 characters>`. */
+  const CURRENT_PLATFORM_FORMAT = /^\$scrypt\$ln=15,r=8,p=3\$[A-Za-z0-9+/]{22}\$[A-Za-z0-9+/]{86}$/;
+
+  interface PasswordOptions {
+    readonly hash?: unknown;
+    readonly verify?: unknown;
+  }
+
+  function passwordOptions(): PasswordOptions | undefined {
+    const auth = createAuth({ db: stubDb, secret: TEST_SECRET });
+    return (
+      auth as unknown as {
+        readonly options: { readonly emailAndPassword?: { readonly password?: PasswordOptions } };
+      }
+    ).options.emailAndPassword?.password;
+  }
+
+  it("emailAndPassword.password is the platform pair: hash is password-hash's hashPassword", () => {
+    expect(passwordOptions()?.hash).toBe(hashPassword);
+  });
+
+  it("emailAndPassword.password is the platform pair: verify is password-hash's verifyPassword", () => {
+    expect(passwordOptions()?.verify).toBe(verifyPassword);
+  });
+
+  it('A new password is stored in the current format: the configured password.hash writes the platform format and the configured password.verify accepts it', async () => {
+    // The configured functions themselves: `$context.password.hash` is wrapped by the
+    // `haveIBeenPwned` plugin, which needs an endpoint context this unit test has not.
+    const options = passwordOptions();
+    const hash = options?.hash as ((password: string) => Promise<string>) | undefined;
+    const verify = options?.verify as
+      ((data: { hash: string; password: string }) => Promise<boolean>) | undefined;
+    expect(hash).toBeTypeOf('function');
+    expect(verify).toBeTypeOf('function');
+    if (hash === undefined || verify === undefined) return;
+    const password = 'Platform-Format-Passphrase-2026!';
+
+    const stored = await hash(password);
+
+    expect(stored).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await verify({ hash: stored, password })).toBe(true);
+  });
+
+  it("The reset stores the platform's current hash format: hashPasswordNfc, the reset path's name, writes the current platform format", async () => {
+    const stored = await hashPasswordNfc('Reset-Path-Passphrase-2026!');
+
+    expect(stored).toMatch(CURRENT_PLATFORM_FORMAT);
+    expect(await verifyPassword({ hash: stored, password: 'Reset-Path-Passphrase-2026!' })).toBe(
+      true,
+    );
   });
 });

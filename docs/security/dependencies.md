@@ -348,6 +348,74 @@ Reviewed on 2026-10-09:
   `http-proxy-agent` and `https-proxy-agent` come from. No deployed
   environment sets them.
 
+## Azure credentials for email delivery (`@azure/identity`)
+
+Adopted by `048-production-hardening` (task 1.2, design D13, Resolved decision
+Q13) as a direct dependency of `@tayzu/api`, pinned exactly to `4.14.1`
+(published 2026-10-29). Reason: the API and the jobs reach Azure
+Communication Services through a managed identity, and the operator CLI
+through the Azure CLI login, so `ACS_CONNECTION_STRING` no longer exists
+(`043` Q28). Reviewed on 2026-11-27:
+
+- **Age (`003` Q43)**: `@azure/identity` `^7.1.0`/`^5.5.0` ranges resolved
+  `@azure/msal-node` 7.2.3, `@azure/msal-browser` 5.30.0 and
+  `@azure/msal-common` 16.17.0, all published 2026-11-18, under 14 days old.
+  Root pnpm overrides pin them to `7.2.2`, `5.29.1` and `16.16.2` (published
+  2026-11-12), the latest releases at least 14 days old. Remove the overrides
+  when Dependabot proposes a newer `@azure/identity`.
+- **License**: MIT for `@azure/identity` and the 29 transitive packages it adds,
+  except `buffer-equal-constant-time` (BSD-3-Clause) and
+  `ecdsa-sig-formatter` (Apache-2.0), both on the allowlist:
+
+  | Package                      | Version | License      |
+  | ---------------------------- | ------- | ------------ |
+  | `@azure/core-process`        | 1.0.0   | MIT          |
+  | `@azure/msal-browser`        | 5.29.1  | MIT          |
+  | `@azure/msal-common`         | 16.16.2 | MIT          |
+  | `@azure/msal-node`           | 7.2.2   | MIT          |
+  | `buffer-equal-constant-time` | 1.0.1   | BSD-3-Clause |
+  | `bundle-name`                | 4.1.1   | MIT          |
+  | `default-browser`            | 5.5.1   | MIT          |
+  | `default-browser-id`         | 5.0.1   | MIT          |
+  | `define-lazy-prop`           | 3.0.0   | MIT          |
+  | `ecdsa-sig-formatter`        | 1.0.11  | Apache-2.0   |
+  | `is-docker`                  | 3.0.0   | MIT          |
+  | `is-in-ssh`                  | 1.0.0   | MIT          |
+  | `is-inside-container`        | 1.0.0   | MIT          |
+  | `is-wsl`                     | 3.1.1   | MIT          |
+  | `jsonwebtoken`               | 9.0.3   | MIT          |
+  | `jwa`                        | 2.0.1   | MIT          |
+  | `jws`                        | 4.0.1   | MIT          |
+  | `lodash.includes`            | 4.3.0   | MIT          |
+  | `lodash.isboolean`           | 3.0.3   | MIT          |
+  | `lodash.isinteger`           | 4.0.4   | MIT          |
+  | `lodash.isnumber`            | 3.0.3   | MIT          |
+  | `lodash.isplainobject`       | 4.0.6   | MIT          |
+  | `lodash.isstring`            | 4.0.1   | MIT          |
+  | `lodash.once`                | 4.1.1   | MIT          |
+  | `open`                       | 11.0.4  | MIT          |
+  | `powershell-utils`           | 0.2.1   | MIT          |
+  | `run-applescript`            | 7.1.0   | MIT          |
+  | `safe-buffer`                | 5.2.1   | MIT          |
+  | `wsl-utils`                  | 1.0.1   | MIT          |
+
+- **Single copy**: `@azure/core-auth` stays one copy (1.11.0), shared with
+  `@azure/communication-email`.
+- **Install scripts (`allowBuilds`)**: none of the 30 packages declares a
+  `preinstall`, `install` or `postinstall` script (read from the npm registry
+  metadata). `allowBuilds` in `pnpm-workspace.yaml` is unchanged.
+- **SBOM review**: the SPDX SBOM of `scripts/ci/syft.sh` lists the new
+  packages at the versions above.
+- **Advisories**: `pnpm audit --prod --audit-level=high` reports nothing. The
+  low and moderate advisories it lists are older ones, in `fastify`,
+  `fast-uri`, `ip-address` and `@vitest/mocker`, and none of them is in these
+  packages.
+- **Runtime notes**: Tayzu builds only `ManagedIdentityCredential` (API and
+  jobs) and `AzureCliCredential` (the operator CLI). `open` and the browser
+  packages serve the interactive browser credentials, which Tayzu never
+  constructs. `@azure/msal-node` brings `jsonwebtoken` for client-assertion
+  credentials, which Tayzu does not use either.
+
 ## TOTP check of the reset confirmation (`@better-auth/utils`)
 
 Adopted by `044-password-reset-and-account-recovery` (task 1.2, design D6,

@@ -53,7 +53,7 @@ import { enrollTotp, signInWithTotp } from './__fixtures__/fresh-mfa.js';
 import { harnessPools } from './__fixtures__/pools.js';
 import { createApp, type App } from './server.js';
 import { createAppFromEnv } from './bootstrap.js';
-import type { Pool } from 'pg';
+import pg, { type Pool } from 'pg';
 import { TEST_SECRET } from '../../../packages/auth/src/__fixtures__/test-secret.js';
 
 const poolState = vi.hoisted(() => ({ pools: new Map<string, unknown>() }));
@@ -593,6 +593,101 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
   }, 60_000);
 
   /**
+   * Task 7.7 of 048 (design D8 "Lifetime bound", Resolved decision Q25;
+   * `specs/auth-and-rbac/spec.md` of 048, requirement "Back-channel logout"), scenario "A
+   * long-lived logout token is rejected": WHEN a logout token whose `exp` is further from its
+   * `iat` than the platform's bound is received, THEN it is rejected, its `jti` is not
+   * recorded and no session is revoked.
+   *
+   * Production symbols expected: `verifyLogoutToken` (`@tayzu/auth`,
+   * `sso/backchannel-logout.ts`) resolves `null` when `exp - iat` is greater than 300 seconds
+   * (D8: "rejected as `invalid`, before any fetch and before the `jti` is recorded"), so the
+   * route answers the same 200 as every other outcome, emits the `invalid` outcome, writes no
+   * `backchannel-logout:{aud}:{jti}` row and deletes no session. `logoutClaims` mints
+   * `exp - iat = 300`, the bound itself, which every other test here shows is accepted.
+   */
+  it('A long-lived logout token is rejected: its jti is not recorded, no session is revoked, and it answers the same 200 as every other outcome', async () => {
+    const harness = harnessOrThrow();
+    const sid = `sid-${randomUUID()}`;
+    const userId = await ssoSession(sid);
+    const before = await sessionCount(userId);
+    expect(before, 'the SSO session exists before the logout attempt').toBeGreaterThan(0);
+
+    // A control token within the bound, naming a session that does not exist (`no_match`).
+    const noMatch = await postLogout(
+      stub.signJwt(logoutClaims(`sid-missing-${randomUUID()}`), { typ: 'logout+jwt' }),
+    );
+    expect(noMatch.statusCode).toBe(200);
+
+    // Validly signed `logout+jwt`s naming the real session's sid, passing every other check
+    // (the current time is inside each window), whose lifetime exceeds 300 seconds.
+    const now = Math.floor(Date.now() / 1000);
+    const longLived: Record<string, { iat: number; exp: number }> = {
+      'exp - iat = 301': { iat: now, exp: now + 301 },
+      'exp - iat = 301, issued 200 s ago': { iat: now - 200, exp: now + 101 },
+      'exp - iat = one day': { iat: now, exp: now + 86_400 },
+    };
+
+    for (const [label, lifetime] of Object.entries(longLived)) {
+      const claims: Record<string, unknown> = { ...logoutClaims(sid), ...lifetime };
+      const identifier = `backchannel-logout:${stub.clientId}:${String(claims['jti'])}`;
+
+      await harness.reset();
+      const response = await postLogout(stub.signJwt(claims, { typ: 'logout+jwt' }));
+      await harness.forceFlush();
+
+      // It answers exactly like every other outcome ...
+      expect(response.statusCode, `${label}: answers 200`).toBe(200);
+      expect(response.body, `${label}: same body`).toBe(noMatch.body);
+      expect(response.headers['content-type'], `${label}: same content type`).toBe(
+        noMatch.headers['content-type'],
+      );
+
+      // ... its jti is not recorded ...
+      const recorded = await authPool.query(
+        'select 1 from auth.verification where identifier = $1',
+        [identifier],
+      );
+      expect(recorded.rows, `${label}: no replay record for its jti`).toHaveLength(0);
+
+      // ... no session is revoked ...
+      expect(await sessionCount(userId), `${label}: the session survives`).toBe(before);
+
+      // ... and it is rejected as `invalid`.
+      const outcomes = harness.spanExporter
+        .getFinishedSpans()
+        .filter((span) => span.name === SPAN_NAME)
+        .map((span) => span.attributes[OUTCOME_ATTRIBUTE]);
+      expect(outcomes, `${label}: rejected as invalid`).toEqual(['invalid']);
+    }
+
+    // The long-lived token consumed nothing: the same jti in a token within the bound is
+    // processed and revokes the session.
+    const lastClaims: Record<string, unknown> = { ...logoutClaims(sid), iat: now, exp: now + 3600 };
+    const jti = String(lastClaims['jti']);
+    const identifier = `backchannel-logout:${stub.clientId}:${jti}`;
+    const refused = await postLogout(stub.signJwt(lastClaims, { typ: 'logout+jwt' }));
+    expect(refused.body).toBe(noMatch.body);
+    expect(
+      (await authPool.query('select 1 from auth.verification where identifier = $1', [identifier]))
+        .rows,
+      'the long-lived token did not consume its jti',
+    ).toHaveLength(0);
+    expect(await sessionCount(userId)).toBe(before);
+
+    const withinBound = { ...lastClaims, iat: now, exp: now + 300 };
+    const accepted = await postLogout(stub.signJwt(withinBound, { typ: 'logout+jwt' }));
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.body).toBe(noMatch.body);
+    expect(await sessionCount(userId), 'the same jti within the bound revokes').toBe(0);
+    expect(
+      (await authPool.query('select 1 from auth.verification where identifier = $1', [identifier]))
+        .rows,
+      'the token within the bound consumed the jti',
+    ).toHaveLength(1);
+  }, 60_000);
+
+  /**
    * Task 13.11 of 043 (`002` VCDM M14; spec scenario "A malformed logout token is
    * cheap to refuse"): a token failing a cheap claim check (no `sid` and `sub`,
    * wrong `typ`, `iss`, `aud`, expired, no `events` member, a `nonce`) is refused
@@ -604,8 +699,34 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
    * its first `fetch`, and verifies the signature last. The discovery and JWKS
    * fetchers are observed through `globalThis.fetch` (the verifier's only outbound
    * path), filtered to the stub's origin so unrelated calls are ignored.
+   *
+   * Cold cache (048 design D8): `createApp` holds a per-app discovery and JWKS cache that the
+   * describe's shared app has already warmed, so this test runs against its own fresh app.
    */
   it('A token failing a cheap claim check is refused with zero discovery and JWKS fetches, while a token passing them does fetch', async () => {
+    const pools = await harnessPools();
+    const coldApp = await createApp({
+      appPool: pools.appPool,
+      authPool: pools.authPool,
+      authSecret: TEST_SECRET,
+      cerbosAddress: 'localhost:3593',
+      allowedOrigins: ['https://app.tayzu.test'],
+      sso: {
+        discoveryUrl: stub.discoveryUrl,
+        clientId: stub.clientId,
+        clientSecret: stub.clientSecret,
+      },
+    });
+    const postColdLogout = (logoutToken: string) =>
+      coldApp.app.inject({
+        method: 'POST',
+        url: ROUTE,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          'x-forwarded-for': randomIp(),
+        },
+        payload: new URLSearchParams({ logout_token: logoutToken }).toString(),
+      });
     const sid = `sid-${randomUUID()}`;
     const stubOrigin = new URL(stub.discoveryUrl).origin;
     const now = Math.floor(Date.now() / 1000);
@@ -649,18 +770,217 @@ describe('apps/api back-channel logout (task 22.1, design D26)', () => {
 
       for (const [reason, token] of Object.entries(cheapFailures)) {
         const before = outboundCalls();
-        const response = await postLogout(token);
+        const response = await postColdLogout(token);
         expect(response.statusCode, `${reason}: answers like every other outcome`).toBe(200);
         expect(outboundCalls() - before, `${reason}: no discovery or JWKS fetch`).toBe(0);
       }
 
       // Control: a token that passes every cheap check does reach discovery and the JWKS.
       const before = outboundCalls();
-      await postLogout(stub.signJwt(logoutClaims(sid), { typ: 'logout+jwt' }));
+      await postColdLogout(stub.signJwt(logoutClaims(sid), { typ: 'logout+jwt' }));
       expect(outboundCalls() - before, 'the spy observes real fetches').toBeGreaterThanOrEqual(2);
     } finally {
       fetchSpy.mockRestore();
+      await coldApp.close();
     }
+  }, 60_000);
+
+  /**
+   * Task 7.5 of 048 (design D8 "An atomic back-channel replay guard", Resolved decision Q14;
+   * `specs/auth-and-rbac/spec.md` of 048, requirement "Back-channel logout"). Migration `0016`
+   * (task 7.4) adds the partial unique index `verification_backchannel_logout_uq` on
+   * `auth.verification(identifier) WHERE starts_with(identifier, 'backchannel-logout:')`.
+   *
+   * Production symbols expected: `handleLogoutToken` takes one client from `authPool`, runs
+   * `begin`, `insert ... on conflict (identifier) where starts_with(identifier,
+   * 'backchannel-logout:') do nothing`, answers `replay` (after `rollback`) when no row was
+   * inserted, then runs the existing `sid` or `sub` delete and `commit`s. A concurrent second
+   * delivery blocks on the index until the first commits, then conflicts and is a replay; a
+   * delete that fails rolls the record back. The outcomes (`revoked`, `no_match`, `replay`,
+   * `invalid`) and the uniform 200 are unchanged.
+   */
+  function backchannelOutcomes(harness: TelemetryTestHarness): unknown[] {
+    return harness.spanExporter
+      .getFinishedSpans()
+      .filter((span) => span.name === SPAN_NAME)
+      .map((span) => span.attributes[OUTCOME_ATTRIBUTE]);
+  }
+
+  /** Waits (polling the server, never a fixed sleep) until `count` backends wait on `pid`. */
+  async function waitUntilBlockedOn(pid: number, count: number): Promise<void> {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const blocked = await authPool.query<{ n: number }>(
+        'select count(*)::int as n from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))',
+        [pid],
+      );
+      const n = blocked.rows[0]?.n ?? 0;
+      if (n >= count) {
+        return;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`expected ${String(count)} backends blocked on the gate, saw ${String(n)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  /**
+   * Scenario "Concurrent deliveries of one token are processed once": GIVEN a valid logout
+   * token, WHEN it is delivered twice at the same time, THEN exactly one delivery records it
+   * and revokes the matching sessions, and the other is a replay.
+   *
+   * Determinism (design D15: two connections that start their statements together, no timing
+   * assumption): a gate transaction on its own connection holds an uncommitted row with the
+   * token's replay identifier. Both deliveries reach their replay-record insert and wait on
+   * the gate's transaction (observed through `pg_blocking_pids`, so both are in flight at
+   * once); the gate then rolls back, and the two deliveries race each other on the index.
+   */
+  it('Concurrent deliveries of one token are processed once: one delivery revokes and the other is a replay', async () => {
+    const harness = harnessOrThrow();
+    const sid = `sid-${randomUUID()}`;
+    const userId = await ssoSession(sid);
+    expect(
+      await sessionCount(userId),
+      'the SSO session exists before the deliveries',
+    ).toBeGreaterThan(0);
+    const claims = logoutClaims(sid);
+    const identifier = `backchannel-logout:${stub.clientId}:${String(claims['jti'])}`;
+    const token = stub.signJwt(claims, { typ: 'logout+jwt' });
+
+    const gate = await authPool.connect();
+    let gateOpen = true;
+    try {
+      await gate.query('begin');
+      await gate.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, 'gate', now() + interval '5 minutes')`,
+        [randomUUID(), identifier],
+      );
+      const gatePid = (await gate.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]
+        ?.pid;
+      expect(gatePid, 'the gate connection has a backend pid').toBeTypeOf('number');
+
+      await harness.reset();
+      const deliveries = Promise.all([postLogout(token), postLogout(token)]);
+      // Never an unhandled rejection while the gate is still held.
+      deliveries.catch(() => undefined);
+
+      // WHEN both deliveries are in flight at the same time, on two connections.
+      await waitUntilBlockedOn(gatePid ?? -1, 2);
+      await gate.query('rollback');
+      gateOpen = false;
+
+      const [first, second] = await deliveries;
+      expect(first.statusCode, 'each delivery answers like every other outcome').toBe(200);
+      expect(second.statusCode, 'each delivery answers like every other outcome').toBe(200);
+      expect(second.body).toBe(first.body);
+      expect(second.headers['content-type']).toBe(first.headers['content-type']);
+    } finally {
+      if (gateOpen) {
+        await gate.query('rollback');
+      }
+      gate.release();
+    }
+
+    // THEN exactly one delivery revokes and the other is a replay.
+    await harness.forceFlush();
+    expect(
+      backchannelOutcomes(harness).sort(),
+      'exactly one revoked and one replay outcome',
+    ).toEqual(['replay', 'revoked']);
+    expect(await sessionCount(userId), 'the matching session is revoked').toBe(0);
+
+    // AND exactly one delivery recorded the token.
+    const recorded = await authPool.query<{ value: string }>(
+      'select value from auth.verification where identifier = $1',
+      [identifier],
+    );
+    expect(recorded.rows, 'exactly one replay record for the token').toHaveLength(1);
+    expect(recorded.rows[0]?.value, 'the record is the delivery’s, not the gate’s').not.toBe(
+      'gate',
+    );
+  }, 60_000);
+
+  /**
+   * Scenario "A failed revocation does not consume the token": GIVEN a valid logout token
+   * whose session revocation fails after the replay record was written, WHEN the same token is
+   * delivered again, THEN the second delivery is not a replay and revokes the matching
+   * sessions.
+   *
+   * The failure is forced on the `auth.session` delete itself: a spy on `pg.Client.prototype`
+   * (the one path of both `pool.query` and a checked-out client) rejects that statement only,
+   * so the replay-record insert before it runs for real.
+   */
+  it('A failed revocation does not consume the token: the record is rolled back and the next delivery revokes', async () => {
+    const harness = harnessOrThrow();
+    const sid = `sid-${randomUUID()}`;
+    const userId = await ssoSession(sid);
+    const before = await sessionCount(userId);
+    expect(before, 'the SSO session exists before the deliveries').toBeGreaterThan(0);
+    const claims = logoutClaims(sid);
+    const identifier = `backchannel-logout:${stub.clientId}:${String(claims['jti'])}`;
+    const token = stub.signJwt(claims, { typ: 'logout+jwt' });
+
+    type QueryFunction = (this: pg.Client, ...args: unknown[]) => unknown;
+    const realQuery = Reflect.get(pg.Client.prototype, 'query') as QueryFunction;
+    const sessionDelete = /^\s*delete\s+from\s+auth\.session\b/i;
+    let forcedFailures = 0;
+    const querySpy = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ): unknown {
+      const statement: unknown = args[0];
+      const text =
+        typeof statement === 'string'
+          ? statement
+          : typeof statement === 'object' && statement !== null && 'text' in statement
+            ? String(statement.text)
+            : '';
+      if (sessionDelete.test(text)) {
+        forcedFailures += 1;
+        const failure = new Error('forced session revocation failure');
+        const callback = args.at(-1);
+        if (typeof callback === 'function') {
+          queueMicrotask(() => {
+            (callback as (error: Error) => void)(failure);
+          });
+          return undefined;
+        }
+        return Promise.reject(failure);
+      }
+      return realQuery.apply(this, args);
+    });
+
+    try {
+      // GIVEN the revocation fails after the replay record was written.
+      await postLogout(token);
+    } finally {
+      querySpy.mockRestore();
+    }
+    expect(forcedFailures, 'the session delete was attempted, and forced to fail').toBe(1);
+    expect(await sessionCount(userId), 'the failed revocation revoked nothing').toBe(before);
+    const afterFailure = await authPool.query(
+      'select 1 from auth.verification where identifier = $1',
+      [identifier],
+    );
+    expect(afterFailure.rows, 'the replay record was rolled back with the delete').toHaveLength(0);
+
+    // WHEN the same token is delivered again.
+    await harness.reset();
+    const retry = await postLogout(token);
+    expect(retry.statusCode).toBe(200);
+
+    // THEN it is not a replay, and it revokes the matching sessions.
+    await harness.forceFlush();
+    expect(backchannelOutcomes(harness), 'the retry is processed, not a replay').toEqual([
+      'revoked',
+    ]);
+    expect(await sessionCount(userId), 'the retry revokes the matching session').toBe(0);
+    const recorded = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      identifier,
+    ]);
+    expect(recorded.rows, 'the retry recorded the token once').toHaveLength(1);
   }, 60_000);
 });
 
@@ -687,7 +1007,7 @@ describe('apps/api back-channel logout rate limit from the environment (task 22.
     app = await createAppFromEnv({
       DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
       AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-      BETTER_AUTH_SECRET: TEST_SECRET,
+      BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
       CERBOS_ADDRESS: 'localhost:3593',
       ALLOWED_ORIGINS: 'https://app.tayzu.test',
       VISMA_CONNECT_DISCOVERY_URL: stub.discoveryUrl,

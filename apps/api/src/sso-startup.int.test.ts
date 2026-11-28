@@ -80,7 +80,7 @@ function baseEnv(): Record<string, string> {
   return {
     DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
     AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-    BETTER_AUTH_SECRET: TEST_SECRET,
+    BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: ORIGIN,
   };

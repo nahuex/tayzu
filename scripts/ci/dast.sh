@@ -16,7 +16,7 @@
 # The database keeps design D5's rule: every connection uses
 # `sslmode=verify-full`. Each run generates a throwaway CA and a `localhost`
 # server certificate, so nothing here relaxes TLS. The database password and
-# BETTER_AUTH_SECRET are random per run and never printed; the session
+# BETTER_AUTH_SECRETS are random per run and never printed; the session
 # cookie reaches ZAP only through ZAP_AUTH_HEADER_VALUE (masked in CI).
 #
 # Cerbos must already be running (CI starts the pinned image; locally,
@@ -123,7 +123,7 @@ postgres_accepts_tls() {
   # proves a verified TLS handshake from the host, as the API will make it.
   (cd "$REPO_ROOT/packages/db" && node --input-type=module -e "
     import pg from 'pg';
-    const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    const client = new pg.Client({ connectionString: process.env.MIGRATION_DATABASE_URL });
     await client.connect();
     await client.query('select 1');
     await client.end();
@@ -169,8 +169,9 @@ up() {
   # runtime roles, so RLS and the role split are exercised (task 24.9).
   database_url="postgres://tayzu:${password}@localhost:${PG_PORT}/tayzu_dast?${tls}"
 
-  export DATABASE_URL="$database_url"
-  export BETTER_AUTH_SECRET="$secret"
+  # 048 design D1: db:migrate reads only MIGRATION_DATABASE_URL, never DATABASE_URL.
+  export MIGRATION_DATABASE_URL="$database_url"
+  export BETTER_AUTH_SECRETS="1:$secret"
   # Q93: keys the per-recipient caps; random per run, never printed.
   export IDENTITY_TOKEN_HMAC_SECRET="$hmac_secret"
   # Q40: https outside test. The scan reaches the listener over plain HTTP on
@@ -179,6 +180,10 @@ up() {
   # Q56: https origins only outside test. The seed sends this Origin, as a
   # browser on the https front end would.
   export ALLOWED_ORIGINS="https://localhost:${API_PORT}"
+  # 048 design D2: the only hop in front of the API is the local proxy (or the
+  # scanner) on loopback, so one trusted hop from loopback addresses only.
+  export TRUST_PROXY_HOPS=1
+  export TRUST_PROXY_CIDRS="127.0.0.1/32,::1/128"
   # 6.3: must be one of ALLOWED_ORIGINS, port included.
   export INVITATION_LINK_BASE_URL="https://localhost:${API_PORT}"
   export PASSWORD_RESET_LINK_BASE_URL="https://localhost:${API_PORT}"
@@ -306,7 +311,7 @@ api_scan() {
     export "${line%%=*}=${line#*=}"
   done <"$STATE_DIR/seed.env"
   (cd "$REPO_ROOT" && ZAP_TOTP_SECRET_FILE="$STATE_DIR/totp.secret" \
-    DATABASE_URL=unused BETTER_AUTH_SECRET=unused \
+    DATABASE_URL=unused BETTER_AUTH_SECRETS=1:unusedunusedunusedunusedunusedunused \
     pnpm exec tsx scripts/ci/zap-seed.ts --refresh)
   local csrf="-config replacer.full_list(0).description=csrf"
   csrf+=" -config replacer.full_list(0).enabled=true"

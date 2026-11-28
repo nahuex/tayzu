@@ -12,7 +12,7 @@
  * ```
  *
  * Reads `DATABASE_URL` (runtime role `tayzu_app`), `AUTH_DATABASE_URL` (role
- * `tayzu_auth`), `BETTER_AUTH_SECRET`, `CERBOS_ADDRESS`, `ALLOWED_ORIGINS`
+ * `tayzu_auth`), `BETTER_AUTH_SECRETS` (048 D4), `CERBOS_ADDRESS`, `ALLOWED_ORIGINS`
  * (comma-separated). It is what the process entry point (`main`/`start`) calls.
  * It builds both pools with `createPool` and injects them into `createApp`;
  * the returned `App.close()` also ends the pools it built.
@@ -46,7 +46,7 @@ function env(
   return {
     DATABASE_URL: APP_URL,
     AUTH_DATABASE_URL: AUTH_URL,
-    BETTER_AUTH_SECRET: 'bootstrap-unit-test-only-secret-0123456789-abcdefghij',
+    BETTER_AUTH_SECRETS: '1:bootstrap-unit-test-only-secret-0123456789-abcdefghij',
     CERBOS_ADDRESS: 'localhost:3593',
     ALLOWED_ORIGINS: 'https://app.tayzu.test',
     ...overrides,
@@ -160,10 +160,10 @@ describe('NODE_ENV=test with a non-local database host (task 13.8, Q98)', () => 
     expect(vi.mocked(createPool)).not.toHaveBeenCalled();
   });
 
-  it('still reports a missing BETTER_AUTH_SECRET first, before the host refusal', async () => {
-    const error = await outcome({ DATABASE_URL: REMOTE_APP, BETTER_AUTH_SECRET: undefined });
+  it('still reports a missing BETTER_AUTH_SECRETS first, before the host refusal', async () => {
+    const error = await outcome({ DATABASE_URL: REMOTE_APP, BETTER_AUTH_SECRETS: undefined });
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('BETTER_AUTH_SECRET');
+    expect((error as Error).message).toContain('BETTER_AUTH_SECRETS');
     expect(vi.mocked(createPool)).not.toHaveBeenCalled();
   });
 

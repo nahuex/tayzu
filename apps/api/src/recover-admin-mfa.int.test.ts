@@ -38,7 +38,7 @@
  * ```ts
  * // apps/api/scripts/recover-admin-mfa.ts
  * export interface RecoverAdminMfaOptions {
- *   // Read through loadScriptConfig('recover-admin-mfa', env): no BETTER_AUTH_SECRET, no
+ *   // Read through loadScriptConfig('recover-admin-mfa', env): no BETTER_AUTH_SECRETS, no
  *   // DATABASE_URL, no CERBOS_ADDRESS. The tests never set those three.
  *   readonly env: Readonly<Record<string, string | undefined>>;
  *   // The command line after the script name: --organization-slug <slug> --email <address>

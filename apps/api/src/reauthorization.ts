@@ -2,22 +2,31 @@
  * Visma Connect step-up re-authorization over HTTP (task 23.8, design Q36, D25).
  *
  * `start` builds the authorization URL (`max_age=300`, `prompt=login`,
- * `acr_values=urn:idp:vismaconnect:mfa`, PKCE S256) for a session that Visma
- * Connect established, and remembers the `state` in `auth.verification`, bound
- * to that session's token. `complete` exchanges the callback's code and stores
+ * `acr_values=urn:idp:vismaconnect:mfa`, PKCE S256, a 256-bit `nonce`,
+ * `response_mode=query`) for a session that Visma Connect established, and
+ * remembers the `state` in `auth.verification`, bound to that session's token
+ * (048 design D6: the stored binding also holds the nonce). `complete` exchanges the callback's
+ * code, verifies the ID token's signature, issuer, audience and bound `nonce` (D6), and stores
  * the returned ID token under the session; `lookup` hands it to the step-up
  * guard, which validates `auth_time`, `acr`, `amr` and `sid` server-side (D25).
- * The callback never needs the cookie: the single-use, unguessable `state` is
- * the binding. Nothing from the provider or the token reaches logs or errors.
+ * The callback is bound to the browser (048 design D6): after the single-use
+ * `state` is consumed, the request's session cookie must resolve to the bound
+ * session, or the callback fails as `session_mismatch`. Nothing from the
+ * provider or the token reaches logs or errors.
  *
  * 003 design D11 (Q27 B2, Q29): a completed callback emits
  * `auth.security.step_up_succeeded` (`visma_connect`) for the bound session's
  * tenant and actor; a failed one emits `auth.security.reauthorization_failed`
  * with only its reason.
  */
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
-import { emitReauthorizationFailed, emitStepUpSucceeded, type AuthInstance } from '@tayzu/auth';
+import {
+  emitReauthorizationFailed,
+  emitStepUpSucceeded,
+  verifyReauthorizationIdToken,
+  type AuthInstance,
+} from '@tayzu/auth';
 import type { createPool } from '@tayzu/db';
 
 type Pool = ReturnType<typeof createPool>;
@@ -52,10 +61,12 @@ interface SessionSurface {
   } | null>;
 }
 
-/** What `start` binds to a state: the session's token and the PKCE verifier. */
+/** What `complete` reads back from a state row: the session's token, PKCE verifier and nonce. */
 interface StateBinding {
   readonly token: string;
   readonly verifier: string;
+  /** 048 design D6: the ID token must carry this value. */
+  readonly nonce: string;
 }
 
 interface BoundSession {
@@ -73,8 +84,14 @@ export interface Reauthorization {
   start(headers: Headers): Promise<string | null>;
   /** The stored ID token for the caller's session, if a callback recorded one still in date. */
   lookup(headers: Headers): Promise<{ readonly idToken: string } | null>;
-  /** Handles the callback; resolves `true` when an ID token was stored for the bound session. */
-  complete(params: { readonly code?: unknown; readonly state?: unknown }): Promise<boolean>;
+  /**
+   * Handles the callback; resolves `true` when an ID token was stored for the bound session.
+   * `headers` are the callback request's: its session cookie must be the bound session's.
+   */
+  complete(
+    params: { readonly code?: unknown; readonly state?: unknown },
+    headers: Headers,
+  ): Promise<boolean>;
 }
 
 /** The stored value of a consumed state row; `null` when absent or not the shape `start` wrote. */
@@ -87,11 +104,22 @@ function parseBinding(raw: string | undefined): StateBinding | null {
     if (typeof parsed !== 'object' || parsed === null) {
       return null;
     }
-    const { token, verifier } = parsed as Record<string, unknown>;
-    return typeof token === 'string' && typeof verifier === 'string' ? { token, verifier } : null;
+    const { token, verifier, nonce } = parsed as Record<string, unknown>;
+    return typeof token === 'string' &&
+      typeof verifier === 'string' &&
+      typeof nonce === 'string' &&
+      nonce !== ''
+      ? { token, verifier, nonce }
+      : null;
   } catch {
     return null;
   }
+}
+
+/** Constant-time equality over SHA-256 digests, so unequal lengths leak nothing (048 design D6). */
+function sameToken(a: string, b: string): boolean {
+  const digest = (value: string): Buffer => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(a), digest(b));
 }
 
 async function fetchDiscovery(url: string): Promise<Discovery | null> {
@@ -174,6 +202,8 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       }
       const state = randomBytes(32).toString('base64url');
       const verifier = randomBytes(32).toString('base64url');
+      // 048 design D6: a fresh 256-bit nonce per start, bound with the state to this session.
+      const nonce = randomBytes(32).toString('base64url');
       // One statement: the insert happens only while the session is under its bound (VCDM M13).
       const inserted = await options.authPool.query(
         `insert into auth.verification (id, identifier, value, expires_at)
@@ -185,7 +215,8 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
         [
           randomUUID(),
           `${STATE_PREFIX}${state}`,
-          JSON.stringify({ token, verifier }),
+          // The token stays the first key: the pending bound below matches the value's prefix.
+          JSON.stringify({ token, verifier, nonce }),
           STATE_TTL_SECONDS,
           `${STATE_PREFIX}%`,
           `{"token":${JSON.stringify(token)},`,
@@ -201,6 +232,8 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       url.searchParams.set('redirect_uri', options.redirectUri);
       url.searchParams.set('scope', 'openid');
       url.searchParams.set('state', state);
+      url.searchParams.set('nonce', nonce);
+      url.searchParams.set('response_mode', 'query');
       url.searchParams.set(
         'code_challenge',
         createHash('sha256').update(verifier).digest('base64url'),
@@ -227,7 +260,7 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
       return idToken === undefined ? null : { idToken };
     },
 
-    async complete(params) {
+    async complete(params, headers) {
       if (typeof params.code !== 'string' || typeof params.state !== 'string') {
         emitReauthorizationFailed('invalid_state');
         return false;
@@ -240,18 +273,37 @@ export function createReauthorization(options: ReauthorizationOptions): Reauthor
         [`${STATE_PREFIX}${params.state}`],
       );
       const binding = parseBinding(consumed.rows[0]?.value);
-      const session = binding === null ? null : await boundSession(binding.token);
-      if (binding === null || session === null) {
+      if (binding === null) {
+        emitReauthorizationFailed('invalid_state');
+        return false;
+      }
+      // 048 design D6: after the consume, so a callback replayed into another browser burns
+      // the state. No cookie, an invalid one or another session's is a mismatch.
+      const cookieToken = await ssoSession(headers);
+      if (cookieToken === null || !sameToken(cookieToken, binding.token)) {
+        emitReauthorizationFailed('session_mismatch');
+        return false;
+      }
+      const session = await boundSession(binding.token);
+      if (session === null) {
         emitReauthorizationFailed('invalid_state');
         return false;
       }
       try {
         const idToken = await exchangeCode(params.code, binding.verifier);
-        if (idToken === null) {
+        // 048 design D6 (Q22): a token without the bound nonce is another exchange failure.
+        if (
+          idToken === null ||
+          !(await verifyReauthorizationIdToken(idToken, {
+            discoveryUrl: options.discoveryUrl,
+            clientId: options.clientId,
+            nonce: binding.nonce,
+          }))
+        ) {
           emitReauthorizationFailed('exchange_failed');
           return false;
         }
-        // The guard verifies signature and claims (D25); this only records the result.
+        // The guard still checks the D25 step-up claims; this only records the result.
         await options.authPool.query('delete from auth.verification where identifier = $1', [
           `${RESULT_PREFIX}${binding.token}`,
         ]);

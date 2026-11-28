@@ -23,13 +23,13 @@ import {
   createAuth,
   createContextResolver,
   createEnrolledStepUpCheck,
+  createLogoutKeyCache,
   createSessionStateResolver,
   createRateLimitBucketStore,
   createServiceAccountLookup,
   createStepUpGuard,
   createTenantDeletionLookup,
   emitInternalError,
-  emitRateLimited,
   exchangeMachineToken,
   AuthStepUpError,
   isAllowedAuthPath,
@@ -54,6 +54,13 @@ import {
 import { drizzle } from 'drizzle-orm/node-postgres';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
+import type { AuthSecret } from './auth-secrets.js';
+import {
+  CSP_REPORT_MEDIA_TYPES,
+  CSP_REPORTS_PATH,
+  mediaTypeOf,
+  registerCspReportsRoute,
+} from './csp-reports-route.js';
 import { createIdentityRouter } from './identity-router.js';
 import { createAcceptFlow } from './identity/accept-flow.js';
 import { createAcceptRateLimitPreHandler } from './identity/accept-rate-limit.js';
@@ -78,6 +85,7 @@ import { createReauthorization, type Reauthorization } from './reauthorization.j
 import { assertDiscoverable } from './sso-discovery.js';
 import { DEFAULT_SPA_FALLBACK_RATE_LIMIT, registerSpaFallback } from './spa-fallback.js';
 import { assignStyleNonce, styleNonceOf } from './style-nonce.js';
+import { TEST_TRUST_PROXY, type TrustProxy } from './trust-proxy.js';
 import { registerWebStatic } from './web-static.js';
 
 type Pool = ReturnType<typeof createPool>;
@@ -87,8 +95,16 @@ export interface CreateAppOptions {
   readonly appPool: Pool;
   /** Pool running as `tayzu_auth` (design D6), built by the host. Not ended by `close`. */
   readonly authPool: Pool;
-  /** Better Auth's secret, from the host's environment. */
-  readonly authSecret: string;
+  /**
+   * `BETTER_AUTH_SECRETS` (048 design D4), from the host's environment: every key version,
+   * the current one first, handed to `createAuth` as its explicit `secrets`.
+   */
+  readonly authSecrets?: readonly AuthSecret[];
+  /**
+   * A single secret, kept so earlier `createApp({ authSecret })` callers keep working: it
+   * becomes version 1. Ignored when `authSecrets` is given.
+   */
+  readonly authSecret?: string;
   /** `host:port` of the Cerbos gRPC endpoint. */
   readonly cerbosAddress: string;
   /** Explicit CORS origin allowlist: exact matches only, never `*` or a reflected origin. */
@@ -114,11 +130,22 @@ export interface CreateAppOptions {
    */
   readonly machineCredentialRateLimit?: CreateAuthOptions['machineCredentialRateLimit'];
   readonly tokenExchangeRateLimit?: { readonly max: number; readonly timeWindowMs: number };
+  /**
+   * Budget for `POST /v1/auth/token` per submitted client id (048 D7, Q21), consumed after
+   * the per-IP `tokenExchangeRateLimit` bucket; omitted: no client-id limiter.
+   */
+  readonly tokenExchangeClientRateLimit?: {
+    readonly max: number;
+    readonly timeWindowMs: number;
+  };
   /** Visma Connect SSO (D23), forwarded to `createAuth`; omitted: SSO is not registered. */
   readonly sso?: CreateAuthOptions['sso'];
   /** Better Auth's pre-auth limits (D20), forwarded to `createAuth`; omitted: none. */
   readonly preAuthRateLimit?: CreateAuthOptions['rateLimit'];
-  /** Back-channel logout budget per source IP per minute (D26, Q32); omitted: 600. */
+  /**
+   * Back-channel logout budget per caller address per minute (D26, Q32), on the shared DB
+   * store (048 D7); omitted: 600.
+   */
   readonly backchannelLogoutRateLimitPerMinute?: number;
   /**
    * Limit of the public re-authorization callback (043 task 13.9), per caller IP on the
@@ -208,6 +235,13 @@ export interface CreateAppOptions {
    * registered. Lets a host or a test observe the route table (`onRoute`) or add a route.
    */
   readonly configureApp?: (app: FastifyInstance) => void | Promise<void>;
+  /**
+   * 048 D2 (Q6): which peers may set the client address through `X-Forwarded-For`. The
+   * production start passes `createTrustProxy({ hops, cidrs })` built from
+   * `TRUST_PROXY_HOPS` and `TRUST_PROXY_CIDRS`; omitted, the test list
+   * (`TEST_TRUST_PROXY`), which `loadConfig` keeps only under `NODE_ENV=test`.
+   */
+  readonly trustProxy?: TrustProxy;
 }
 
 export interface App {
@@ -267,6 +301,11 @@ const STEP_UP_COMPLETE_LOCATION = '/step-up/complete';
 const STEP_UP_FAILED_LOCATION = '/step-up/complete?result=failed';
 const STEP_UP_RATE_LIMITED_LOCATION = '/step-up/complete?result=rate_limited';
 
+/** 048 D9: the `report-to` endpoint name of the same-origin CSP report path. */
+const CSP_REPORT_ENDPOINT_NAME = 'csp-endpoint';
+/** 048 D9: maps the `report-to` name to the path, resolved against the response's origin. */
+const REPORTING_ENDPOINTS = `${CSP_REPORT_ENDPOINT_NAME}="${CSP_REPORTS_PATH}"`;
+
 /**
  * 003 D10 (ADR-0026, Q5, Q25): the exact directive list, with no helmet defaults, so
  * neither `upgrade-insecure-requests` nor `script-src-attr` is sent. `style-src` carries
@@ -291,6 +330,10 @@ const CSP_DIRECTIVES = {
   'base-uri': ["'none'"],
   'form-action': ["'self'"],
   'frame-ancestors': ["'none'"],
+  // 048 D9 (Q10): violations go to the app's own origin, `report-uri` for Firefox and
+  // Safari, `report-to` (the `Reporting-Endpoints` name) for Chromium.
+  'report-uri': [CSP_REPORTS_PATH],
+  'report-to': [CSP_REPORT_ENDPOINT_NAME],
 };
 
 /**
@@ -319,6 +362,29 @@ function ruleOf(cap: { readonly max: number; readonly windowSeconds: number }) {
 
 function pathnameOf(request: FastifyRequest): string {
   return request.url.split('?', 1)[0] ?? '';
+}
+
+/** The credential-id shape check of 048 D7: a client id is a string of 1 to 128 characters. */
+const MAX_CLIENT_ID_LENGTH = 128;
+
+/**
+ * The `token_exchange_client` bucket of a token exchange (048 D7): the body's own `clientId`
+ * when it passes the shape check, else none, so an oversized, missing or non-string id is
+ * counted by the address bucket only.
+ */
+function tokenExchangeClientBucketKey(
+  request: FastifyRequest,
+): { readonly kind: 'client'; readonly value: string } | undefined {
+  const body: unknown = request.body;
+  if (typeof body !== 'object' || body === null || !Object.hasOwn(body, 'clientId')) {
+    return undefined;
+  }
+  const clientId: unknown = (body as { clientId: unknown }).clientId;
+  return typeof clientId === 'string' &&
+    clientId.length > 0 &&
+    clientId.length <= MAX_CLIENT_ID_LENGTH
+    ? { kind: 'client', value: clientId }
+    : undefined;
 }
 
 function isTokenExchange(request: FastifyRequest): boolean {
@@ -429,7 +495,8 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     userSync,
     accountNotices,
     ssoLinkShed: ssoLinkShed.port,
-    secret: options.authSecret,
+    ...(options.authSecrets === undefined ? {} : { secrets: options.authSecrets }),
+    ...(options.authSecret === undefined ? {} : { secret: options.authSecret }),
     ...(options.baseUrl === undefined ? {} : { baseURL: options.baseUrl }),
     trustedOrigins: options.allowedOrigins,
     ...(options.sso === undefined ? {} : { sso: options.sso }),
@@ -662,10 +729,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     ],
   });
 
-  // Only a proxy on a private or loopback address (the ACA ingress) may set
-  // the client address via `X-Forwarded-For`; a public peer's header is ignored.
+  // 048 D2: only a configured proxy hop may set the client address via
+  // `X-Forwarded-For`; an untrusted peer's header is never read, and at most the
+  // configured number of hops is skipped. `request.ip` is the resolved address.
+  const trustProxy = options.trustProxy ?? TEST_TRUST_PROXY;
   const app = Fastify({
-    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
+    trustProxy: typeof trustProxy === 'function' ? trustProxy : [...trustProxy],
     ...(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit }),
   });
   await options.configureApp?.(app);
@@ -680,9 +749,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     assignStyleNonce(reply.raw);
   });
   await app.register(fastifyHelmet, SECURITY_HEADERS);
-  // Helmet does not set `Permissions-Policy`; this hook runs right after helmet's own.
+  // Helmet does not set `Permissions-Policy` or `Reporting-Endpoints` (048 D9); this
+  // hook runs right after helmet's own.
   app.addHook('onRequest', async (_request, reply) => {
     reply.header('permissions-policy', PERMISSIONS_POLICY);
+    reply.header('reporting-endpoints', REPORTING_ENDPOINTS);
   });
   // Q74, D18: the first hook that reads the request. A target that is not
   // origin-form, or whose path (before the query) holds `%`, `//` or a
@@ -770,8 +841,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     if (pathname !== '/v1' && !pathname.startsWith('/v1/')) {
       return;
     }
-    // The IdP's form-encoded callbacks (D26, Q36) have their own scoped parsers.
-    if (pathname === BACKCHANNEL_LOGOUT_PATH || pathname === REAUTH_CALLBACK_PATH) {
+    // The IdP's form-encoded back-channel logout (D26) has its own scoped parser. The
+    // re-authorization callback is GET-only (048 D6), so it gets no exemption.
+    if (pathname === BACKCHANNEL_LOGOUT_PATH) {
       return;
     }
     const { headers } = request;
@@ -781,7 +853,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     if (!hasBody) {
       return;
     }
-    const mediaType = (headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
+    const mediaType = mediaTypeOf(request);
+    // 048 D9: the CSP report route has its own scoped parser for its two media types only.
+    if (pathname === CSP_REPORTS_PATH && CSP_REPORT_MEDIA_TYPES.has(mediaType)) {
+      return;
+    }
     if (mediaType !== 'application/json') {
       return reply
         .status(415)
@@ -859,6 +935,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     done();
   });
 
+  // 048 D8, Q25: one discovery and key-set cache per app, each copy kept at most 10 minutes.
+  const logoutKeyCache = createLogoutKeyCache({ ttlSeconds: 600 });
+
   // D26: public back-channel logout (Visma Connect's infrastructure is the
   // caller: no cookie, no CSRF header). Encapsulated so the form parser does
   // not change how any other route sees its body. Every well-formed request
@@ -869,57 +948,86 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     config: NonNullable<CreateAppOptions['sso']>,
     issuer: string,
   ): Promise<BackchannelLogoutOutcome> {
-    const verified = await verifyLogoutToken(token, {
-      issuer,
-      discoveryUrl: config.discoveryUrl,
-      clientId: config.clientId,
-    });
+    const verified = await verifyLogoutToken(
+      token,
+      { issuer, discoveryUrl: config.discoveryUrl, clientId: config.clientId },
+      logoutKeyCache,
+    );
     if (verified?.jti === undefined) {
       return 'invalid';
     }
-    // Replay state (D26): one `auth.verification` row per accepted token,
-    // recorded atomically; a second delivery inserts nothing and revokes nothing.
-    const recorded = await options.authPool.query(
-      `insert into auth.verification (id, identifier, value, expires_at)
-       select $1, $2, $3, to_timestamp($4)
-       where not exists (select 1 from auth.verification where identifier = $2)`,
-      [
-        randomUUID(),
-        `backchannel-logout:${config.clientId}:${verified.jti}`,
-        'processed',
-        verified.exp + LOGOUT_JTI_SKEW_SECONDS,
-      ],
-    );
-    if (recorded.rowCount !== 1) {
-      return 'replay';
+    // Replay state (D26, 048 D8): one `auth.verification` row per accepted token. The
+    // record and the revocation are one transaction: a concurrent second delivery blocks
+    // on the partial unique index until the first commits, then conflicts and is a replay;
+    // a failed delete rolls the record back, so a retry is processed.
+    const client = await options.authPool.connect();
+    try {
+      await client.query('begin');
+      const recorded = await client.query(
+        `insert into auth.verification (id, identifier, value, expires_at)
+         values ($1, $2, 'processed', to_timestamp($3))
+         on conflict (identifier) where starts_with(identifier, 'backchannel-logout:') do nothing`,
+        [
+          randomUUID(),
+          `backchannel-logout:${config.clientId}:${verified.jti}`,
+          verified.exp + LOGOUT_JTI_SKEW_SECONDS,
+        ],
+      );
+      if (recorded.rowCount !== 1) {
+        await client.query('rollback');
+        return 'replay';
+      }
+      let revoked = 0;
+      if (verified.sid !== undefined) {
+        revoked =
+          (await client.query('delete from auth.session where sso_sid = $1', [verified.sid]))
+            .rowCount ?? 0;
+      } else if (verified.sub !== undefined) {
+        // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
+        // local sessions (`sso_sid` null) are never touched.
+        revoked =
+          (
+            await client.query(
+              `delete from auth.session
+               where sso_sid is not null
+                 and user_id in (
+                   select user_id from auth.account
+                   where provider_id = 'visma-connect' and account_id = $1
+                 )`,
+              [verified.sub],
+            )
+          ).rowCount ?? 0;
+      }
+      await client.query('commit');
+      return revoked > 0 ? 'revoked' : 'no_match';
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
     }
-    let revoked = 0;
-    if (verified.sid !== undefined) {
-      revoked =
-        (
-          await options.authPool.query('delete from auth.session where sso_sid = $1', [
-            verified.sid,
-          ])
-        ).rowCount ?? 0;
-    } else if (verified.sub !== undefined) {
-      // No `sid`: revoke only the linked user's Visma Connect sessions (D26);
-      // local sessions (`sso_sid` null) are never touched.
-      revoked =
-        (
-          await options.authPool.query(
-            `delete from auth.session
-           where sso_sid is not null
-             and user_id in (
-               select user_id from auth.account
-               where provider_id = 'visma-connect' and account_id = $1
-             )`,
-            [verified.sub],
-          )
-        ).rowCount ?? 0;
-    }
-    return revoked > 0 ? 'revoked' : 'no_match';
   }
   const sso = options.sso;
+  // Floor against abuse, keyed by the caller address only: the caller is Visma Connect's
+  // infrastructure, not a Tayzu principal (D26). 048 D7: the bucket lives in the shared DB
+  // store, so every replica spends one budget, and the pre-handler answers before any token
+  // verification, discovery or key fetch: `AUTH_RATE_LIMITED` with `Retry-After` over budget,
+  // the sanitized 500 when the store fails.
+  const backchannelLogoutLimit = createAcceptRateLimitPreHandler({
+    scope: 'backchannel_logout',
+    store: createRateLimitBucketStore({
+      adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+        .adapter,
+      rules: {
+        backchannel_logout: {
+          max:
+            options.backchannelLogoutRateLimitPerMinute ??
+            DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE,
+          window: 60,
+        },
+      },
+    }),
+  });
   // Without SSO configuration the route is disabled: it answers 404.
   await app.register((scope, _opts, done) => {
     if (sso === undefined || ssoIssuer === undefined) {
@@ -945,19 +1053,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     );
     scope.post(
       BACKCHANNEL_LOGOUT_PATH,
-      {
-        config: {
-          // Floor against abuse, keyed by source IP only: the caller is Visma
-          // Connect's infrastructure, not a Tayzu principal (D26).
-          rateLimit: {
-            max:
-              options.backchannelLogoutRateLimitPerMinute ??
-              DEFAULT_BACKCHANNEL_LOGOUT_MAX_PER_MINUTE,
-            timeWindow: 60_000,
-            keyGenerator: (request: FastifyRequest): string => `backchannel-logout:${request.ip}`,
-          },
-        },
-      },
+      { preHandler: backchannelLogoutLimit },
       async (request, reply) => {
         const token = (request.body as Record<string, string> | undefined)?.['logout_token'];
         const malformed = typeof token !== 'string' || token === '';
@@ -976,9 +1072,13 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     done();
   });
 
-  // Q36: the re-authorization callback (query redirect or `form_post`). The
-  // single-use `state` binds it to the session; it answers a bare 200 or 400, or, with
-  // the web app served (003 D11), a `303` to one of the fixed step-up locations.
+  // 048 D9: browser CSP violation reports; public, no session, counted by directive only.
+  await registerCspReportsRoute(app);
+
+  // Q36: the re-authorization callback, a `GET` query redirect only (048 D6: a `POST`
+  // reaches the `/v1/*` catch-all). The single-use `state`, the nonce and the session
+  // cookie bind it to the session; it answers a bare 200 or 400, or, with the web app
+  // served (003 D11), a `303` to one of the fixed step-up locations.
   // 043 task 13.9: the callback's own limiter runs before the single-use `delete`.
   const redirectToWebApp = options.webDistDir !== undefined;
   const seeOther = (reply: FastifyReply, location: string): FastifyReply =>
@@ -999,24 +1099,15 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   });
   const callbackRoute = { preHandler: reauthorizationCallbackLimit };
   await app.register((scope, _opts, done) => {
-    scope.addContentTypeParser(
-      'application/x-www-form-urlencoded',
-      { parseAs: 'string' },
-      (_request, body, parsed) => {
-        const fields: Record<string, string> = Object.create(null) as Record<string, string>;
-        for (const [name, value] of new URLSearchParams(body as string)) {
-          if (name === 'code' || name === 'state') {
-            fields[name] = value;
-          }
-        }
-        parsed(null, fields);
-      },
-    );
     const handle = async (
       params: { code?: unknown; state?: unknown },
+      request: FastifyRequest,
       reply: FastifyReply,
     ): Promise<unknown> => {
-      const ok = reauthorization !== undefined && (await reauthorization.complete(params));
+      // 048 design D6: the callback's session cookie must be the bound session's.
+      const ok =
+        reauthorization !== undefined &&
+        (await reauthorization.complete(params, toWebHeaders(request)));
       if (redirectToWebApp) {
         return seeOther(reply, ok ? STEP_UP_COMPLETE_LOCATION : STEP_UP_FAILED_LOCATION);
       }
@@ -1026,11 +1117,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     };
     scope.get(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
       const query = request.query as Record<string, unknown>;
-      return handle({ code: query['code'], state: query['state'] }, reply);
-    });
-    scope.post(REAUTH_CALLBACK_PATH, callbackRoute, (request, reply) => {
-      const body = request.body as Record<string, unknown> | undefined;
-      return handle({ code: body?.['code'], state: body?.['state'] }, reply);
+      return handle({ code: query['code'], state: query['state'] }, request, reply);
     });
     done();
   });
@@ -1043,23 +1130,50 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     message: 'Too many requests',
   });
 
-  // D20: token exchange has no tenant/actor yet, so it gets its own bucket
-  // (IP only, so varying `clientId` cannot mint a fresh bucket; Q56) and is exempt from the authenticated one below.
-  if (options.tokenExchangeRateLimit !== undefined) {
-    const check = app.createRateLimit({
-      max: options.tokenExchangeRateLimit.max,
-      timeWindow: options.tokenExchangeRateLimit.timeWindowMs,
-      // Internal bucket key only: never logged or returned.
-      keyGenerator: (request: FastifyRequest): string => `token:${request.ip}`,
+  // D20: token exchange has no tenant/actor yet, so it gets its own buckets and is exempt
+  // from the authenticated one below. 048 D7: the buckets live in the shared DB store, so
+  // every replica spends one budget. The address bucket (`token_exchange`) is keyed by the
+  // address alone, so varying `clientId` cannot mint a fresh one (002 Q56); then the
+  // `token_exchange_client` bucket is keyed by a well-shaped submitted `clientId` (Q21),
+  // hashed by the store. A refusal answers `AUTH_RATE_LIMITED` with `Retry-After` (the store
+  // emits the scope's rate-limit signal, never the key); a store failure answers the
+  // sanitized 500, both before any credential lookup.
+  const tokenExchangeLimits = [
+    ...(options.tokenExchangeRateLimit === undefined
+      ? []
+      : [{ scope: 'token_exchange' as const, limit: options.tokenExchangeRateLimit }]),
+    ...(options.tokenExchangeClientRateLimit === undefined
+      ? []
+      : [{ scope: 'token_exchange_client' as const, limit: options.tokenExchangeClientRateLimit }]),
+  ];
+  if (tokenExchangeLimits.length > 0) {
+    const store = createRateLimitBucketStore({
+      adapter: ((await auth.$context) as { adapter: RateLimitBucketStoreOptions['adapter'] })
+        .adapter,
+      rules: Object.fromEntries(
+        tokenExchangeLimits.map(({ scope, limit }) => [
+          scope,
+          { max: limit.max, window: limit.timeWindowMs / 1000 },
+        ]),
+      ),
     });
-    app.addHook('preHandler', async (request, reply) => {
+    const preHandlers = tokenExchangeLimits.map(({ scope }) =>
+      createAcceptRateLimitPreHandler({
+        scope,
+        store,
+        ...(scope === 'token_exchange_client' ? { bucketKey: tokenExchangeClientBucketKey } : {}),
+      }),
+    );
+    app.addHook('preHandler', async function (request, reply) {
       if (!isTokenExchange(request)) {
-        return;
+        return undefined;
       }
-      const result = await check(request);
-      if (!result.isAllowed && result.isExceeded) {
-        emitRateLimited('token_exchange');
-        return reply.status(429).header('retry-after', result.ttlInSeconds).send(limited.toJSON());
+      // In order: a refused address never spends the client bucket.
+      for (const preHandler of preHandlers) {
+        const answered = await preHandler.call(this, request, reply);
+        if (answered !== undefined) {
+          return answered;
+        }
       }
       return undefined;
     });

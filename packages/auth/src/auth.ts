@@ -55,7 +55,7 @@
  * why this file, not Better Auth itself, owns writing it).
  *
  * Configuration comes only from `CreateAuthOptions`, supplied by the host
- * (`apps/api`): this library never reads `process.env` or logs `secret`.
+ * (`apps/api`): this library never reads `process.env` or logs `secrets`.
  */
 import { apiKey } from '@better-auth/api-key';
 import { drizzleAdapter, type DB } from '@better-auth/drizzle-adapter';
@@ -63,7 +63,6 @@ import { SeverityNumber } from '@opentelemetry/api-logs';
 import { sharedAttributeKeys } from '@tayzu/observability/semconv';
 import { betterAuth } from 'better-auth';
 import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
-import { hashPassword, verifyPassword } from 'better-auth/crypto';
 import { decryptOAuthToken, setTokenUtil } from 'better-auth/oauth2';
 import {
   admin,
@@ -73,6 +72,7 @@ import {
   organization,
   twoFactor,
 } from 'better-auth/plugins';
+import { sql, type SQL } from 'drizzle-orm';
 
 import {
   preAuthRateLimitPlugin,
@@ -100,6 +100,8 @@ import {
   hasMfaReenrolMarker,
 } from './identity/mfa-reenrol-marker.js';
 import { validatePassword } from './identity/password-policy.js';
+import { emitInternalError } from './internal-error-telemetry.js';
+import { hashPassword, needsRehash, verifyPassword } from './password-hash.js';
 import { nextStatus, type StatusEvent, type UserStatus } from './identity/user-status.js';
 import { organizationAccess } from './org-access.js';
 import {
@@ -214,13 +216,12 @@ const REVOCATION_REASON_ATTRIBUTE = 'tayzu.auth.revocation.reason';
 const PASSWORD_CHANGE_REVOCATION_REASON = 'password_change';
 
 /**
- * The one password-hash function: NFC-normalize, then Better Auth's `hashPassword`.
- * `emailAndPassword.password.hash` uses it, and so does the reset completion
- * (044 design D7, Q13).
+ * The one password-hash function, the platform's `hashPassword` (048 design D5),
+ * which NFC-normalizes itself. `hashPasswordNfc` stays the name the reset
+ * completion uses (044 design D7, Q13), so the configuration and the reset
+ * cannot diverge.
  */
-export function hashPasswordNfc(password: string): Promise<string> {
-  return hashPassword(password.normalize('NFC'));
-}
+export const hashPasswordNfc: (password: string) => Promise<string> = hashPassword;
 
 /**
  * Mirrors `@better-auth/core/utils/url`'s `normalizePathname` (also mirrored
@@ -385,6 +386,29 @@ function wrongPasswordResponse(): Response {
     message: 'Invalid email or password',
   });
   return Response.json(error.body, { status: error.statusCode });
+}
+
+/** The slice of the Drizzle node-postgres handle the sign-in rehash uses. */
+interface RehashDb {
+  execute(query: SQL): Promise<{ readonly rowCount: number | null }>;
+}
+
+/**
+ * 048 design D5 "Rehash on sign-in": rewrites the credential hash at the current cost with a
+ * compare-and-set on the hash the sign-in verified. Answers `false` when no row matched, that
+ * is, a concurrent reset replaced the hash first and its hash is kept. It runs on the Drizzle
+ * handle the adapter wraps (the `tayzu_auth` pool) rather than through the adapter, whose
+ * span would record a failed write's message, bind values included.
+ */
+async function rewriteCredentialHash(
+  db: DB,
+  input: { readonly userId: string; readonly storedHash: string; readonly password: string },
+): Promise<boolean> {
+  const rehashed = await hashPassword(input.password);
+  const result = await (db as RehashDb).execute(
+    sql`update auth.account set password = ${rehashed} where user_id = ${input.userId} and provider_id = 'credential' and password = ${input.storedHash}`,
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** Task 13.4b: the internal record of a banned attempt, with its channel and the opaque user id. */
@@ -760,6 +784,34 @@ async function activateOnFirstSignIn(
   });
 }
 
+/** One versioned authentication secret (048 design D4). */
+export interface AuthSecret {
+  readonly version: number;
+  readonly value: string;
+}
+
+/**
+ * 048 design D4: the explicit `secrets` list Better Auth receives, from
+ * `options.secrets` or, failing that, `options.secret` as version 1. Fails
+ * closed with a fixed message (no secret text) when neither yields a key.
+ */
+function resolveAuthSecrets(options: CreateAuthOptions): {
+  readonly secrets: AuthSecret[];
+  readonly current: string;
+} {
+  const secrets =
+    options.secrets !== undefined
+      ? options.secrets.map(({ version, value }) => ({ version, value }))
+      : options.secret !== undefined && options.secret !== ''
+        ? [{ version: 1, value: options.secret }]
+        : [];
+  const first = secrets[0];
+  if (first === undefined || first.value === '') {
+    throw new Error('createAuth requires at least one authentication secret.');
+  }
+  return { secrets, current: first.value };
+}
+
 export interface CreateAuthOptions {
   /**
    * A `@better-auth/drizzle-adapter`-compatible DB handle. The adapter never
@@ -768,8 +820,18 @@ export interface CreateAuthOptions {
    * like a Drizzle database is enough here.
    */
   readonly db: DB;
-  /** Better Auth's own `secret` option (`BETTER_AUTH_SECRET`, host-resolved). */
-  readonly secret: string;
+  /**
+   * 048 design D4: the versioned authentication secrets (`BETTER_AUTH_SECRETS`,
+   * host-resolved), current first. Passed to Better Auth as `secrets`, and the
+   * first value as `secret` (the legacy key), so no ambient variable can add,
+   * replace or remove a key.
+   */
+  readonly secrets?: readonly AuthSecret[];
+  /**
+   * A single secret, kept so earlier `createAuth({ db, secret })` calls keep
+   * working: it becomes version 1. Ignored when `secrets` is given.
+   */
+  readonly secret?: string;
   /**
    * Task 23.12 (design Q40): the public base URL Better Auth builds cookies
    * and redirects on. Optional so the test harness can omit it.
@@ -926,8 +988,12 @@ interface AuthHandlerSurface {
 
 /** Builds the one `betterAuth` instance `@tayzu/auth` exposes. */
 export function createAuth(options: CreateAuthOptions): AuthInstance {
+  const authSecrets = resolveAuthSecrets(options);
   const auth = betterAuth({
-    secret: options.secret,
+    // 048 design D4: both passed, so neither `BETTER_AUTH_SECRETS` nor
+    // `BETTER_AUTH_SECRET` in `process.env` reaches the instance's keys.
+    secrets: authSecrets.secrets,
+    secret: authSecrets.current,
     // Task 26.4, design Q67: Better Auth's default logger writes the raw error
     // (message, stack, driver text) to the console. Nothing raw is written; the
     // package's declared telemetry carries the sanitized signals.
@@ -988,13 +1054,10 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
       disableSignUp: true,
       minPasswordLength: 20,
       maxPasswordLength: 256,
-      // Task 8.1d (design Q22, Q132), layer 1: both functions NFC-normalize first, so
-      // every verifying path is covered without a list of paths.
-      password: {
-        hash: hashPasswordNfc,
-        verify: ({ hash, password }) =>
-          verifyPassword({ hash, password: password.normalize('NFC') }),
-      },
+      // 048 design D5: the platform's password hash. Task 8.1d (design Q22, Q132),
+      // layer 1: both functions NFC-normalize first, so every verifying path is
+      // covered without a list of paths.
+      password: { hash: hashPassword, verify: verifyPassword },
     },
     // `enabled: false` (task 2.5, design D20): Better Auth's own built-in
     // database-backed rate limiter can only key by IP+path and its blocked
@@ -1479,12 +1542,15 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
               { field: 'providerId', value: 'credential' },
             ],
           });
-          if ((hashNow?.password ?? null) !== (hashBefore ?? null)) {
+          const refuseOvertakenSignIn = async (): Promise<Response> => {
             await ctx.context.internalAdapter.deleteSession(response.token);
             ctx.context.setNewSession(null);
             ctx.context.responseHeaders?.delete('set-cookie');
             emitLoginFailed();
             return wrongPasswordResponse();
+          };
+          if ((hashNow?.password ?? null) !== (hashBefore ?? null)) {
+            return refuseOvertakenSignIn();
           }
           // Task 13.5d (Q36, Q97): an expired temporary password fails like a wrong one.
           // The sign-in already created its session, so delete it and drop its cookie.
@@ -1493,6 +1559,31 @@ export function createAuth(options: CreateAuthOptions): AuthInstance {
             ctx.context.responseHeaders?.delete('set-cookie');
             emitLoginFailed();
             return wrongPasswordResponse();
+          }
+          // 048 design D5 "Rehash on sign-in" (Q8, Q27): the password verified and the reset-race
+          // check passed, so a weaker stored hash is rewritten at the current cost, whether or not
+          // a second factor follows. The compare-and-set on the old hash lets a concurrent reset
+          // always win; losing to one refuses the sign-in like the reset-race branch above.
+          const password = (ctx.body as { password?: unknown } | null | undefined)?.password;
+          if (
+            typeof hashBefore === 'string' &&
+            typeof password === 'string' &&
+            needsRehash(hashBefore)
+          ) {
+            let overtaken = false;
+            try {
+              overtaken = !(await rewriteCredentialHash(options.db, {
+                userId: response.user.id,
+                storedHash: hashBefore,
+                password,
+              }));
+            } catch (error) {
+              // A rehash error is swallowed after a sanitized event; the sign-in still succeeds.
+              emitInternalError(error);
+            }
+            if (overtaken) {
+              return refuseOvertakenSignIn();
+            }
           }
           if (response.user.twoFactorEnabled === true) {
             // Credentials accepted, second factor pending: the two-factor plugin's own

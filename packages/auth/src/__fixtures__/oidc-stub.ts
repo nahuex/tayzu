@@ -12,6 +12,12 @@
  * authorization signs in with through `setSubject`, and can mint arbitrary
  * signed tokens (for example back-channel `logout_token`s) with `signJwt`.
  *
+ * The ID token echoes the authorization request's `nonce` (none in the request,
+ * no `nonce` claim). `048` design D6: `setNonceOverride(value)` makes the
+ * authorizations received while it is set issue `value` as the `nonce` instead,
+ * so a test can return a token bound to another request; `null` restores the
+ * echo.
+ *
  * By default it listens on a random port of 127.0.0.1 and is its own issuer
  * (`http://127.0.0.1:<port>`). The e2e stack of `003` (design D16, Q38) puts it
  * behind a test-only TLS reverse proxy instead: `issuer` sets the public https
@@ -62,6 +68,12 @@ export interface OidcStub {
   readonly publicKey: KeyObject;
   /** Sets the identity the next authorization requests sign in as. */
   setSubject: (subject: OidcStubSubject) => void;
+  /**
+   * `048` design D6: while set to a string, the authorizations received issue
+   * that `nonce` in their ID token instead of the request's; `null` restores
+   * the echo of the request's `nonce`.
+   */
+  setNonceOverride: (nonce: string | null) => void;
   /** Signs any payload with the stub's key (RS256, `kid` header). */
   signJwt: (payload: Record<string, unknown>, header?: Record<string, unknown>) => string;
   /** Authorization requests received, oldest first. */
@@ -123,6 +135,7 @@ export async function startOidcStub(options: OidcStubOptions = {}): Promise<Oidc
   const jwk = { ...publicKey.export({ format: 'jwk' }), kid, use: 'sig', alg: 'RS256' };
 
   let subject: OidcStubSubject = { sub: `stub-sub-${randomBytes(4).toString('hex')}` };
+  let nonceOverride: string | null = null;
   const codes = new Map<string, IssuedCode>();
   const accessTokens = new Map<string, OidcStubSubject>();
   const authorizationRequests: Record<string, string>[] = [];
@@ -162,7 +175,7 @@ export async function startOidcStub(options: OidcStubOptions = {}): Promise<Oidc
       subject,
       clientId,
       redirectUri,
-      nonce: params['nonce'],
+      nonce: nonceOverride ?? params['nonce'],
       codeChallenge: params['code_challenge'],
     });
     const result: Record<string, string> = { code, iss: issuer };
@@ -323,6 +336,9 @@ export async function startOidcStub(options: OidcStubOptions = {}): Promise<Oidc
     publicKey,
     setSubject: (next) => {
       subject = next;
+    },
+    setNonceOverride: (next) => {
+      nonceOverride = next;
     },
     signJwt,
     authorizationRequests,

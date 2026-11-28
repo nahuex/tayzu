@@ -5,14 +5,19 @@
  * names the variable and never contains a value.
  */
 import { accessSync, constants, statSync } from 'node:fs';
+import { BlockList, isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
+
+import { parseAuthSecrets, type AuthSecret } from './auth-secrets.js';
+import { TEST_TRUST_PROXY } from './trust-proxy.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
 export interface Config {
   readonly appDatabaseUrl: string;
   readonly authDatabaseUrl: string;
-  readonly betterAuthSecret: string;
+  /** `BETTER_AUTH_SECRETS` (048 D4): every key version, the current one first. */
+  readonly betterAuthSecrets: readonly AuthSecret[];
   readonly cerbosAddress: string;
   readonly allowedOrigins: readonly string[];
   /** Public base URL of the API (Q40): `https` outside test; undefined only in test. */
@@ -46,6 +51,8 @@ export interface Config {
   readonly rateLimit: RateLimit;
   /** `POST /v1/auth/token` limit (D20). */
   readonly tokenExchangeRateLimit: RateLimit;
+  /** `POST /v1/auth/token` limit per submitted client id (048 D7, Q21), apart from the per-IP one. */
+  readonly tokenExchangeClientRateLimit: RateLimit;
   /** Invitation emails per tenant, shared by invite and resend (Q15); window in seconds. */
   readonly invitationTenantCap: { readonly max: number; readonly windowSeconds: number };
   /** Invitation emails per recipient (Q15); window in seconds. */
@@ -103,7 +110,16 @@ export interface Config {
   readonly mountIdentityRoutes: boolean;
   /** `WEB_DIST_DIR` (003 D9, Q21): absolute path of the web build; undefined when unset. */
   readonly webDistDir?: string;
+  /**
+   * Proxy trust (048 D2, Q6): `TRUST_PROXY_HOPS` and `TRUST_PROXY_CIDRS` when both are set;
+   * the loopback, link-local and unique-local list only under test when both are unset.
+   */
+  readonly trustProxy: TrustProxySetting;
 }
+
+/** The input of `createTrustProxy` (048 D2), or the default list kept under test. */
+type TrustProxySetting =
+  { readonly hops: number; readonly cidrs: readonly string[] } | typeof TEST_TRUST_PROXY;
 
 interface RateLimit {
   readonly max: number;
@@ -119,6 +135,7 @@ const DEFAULT_SIGN_IN_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PASSWORD_CHECK_LIMIT = { max: 10, windowSeconds: 60 };
 const DEFAULT_PER_PRINCIPAL_LIMIT = { max: 600, windowSeconds: 60 };
 const DEFAULT_TOKEN_EXCHANGE_LIMIT = { max: 30, windowSeconds: 60 };
+const DEFAULT_TOKEN_EXCHANGE_CLIENT_LIMIT = { max: 60, windowSeconds: 60 };
 const DEFAULT_INVITATION_TENANT_LIMIT = { max: 30, windowSeconds: 3600 };
 const DEFAULT_INVITATION_RECIPIENT_LIMIT = { max: 3, windowSeconds: 86_400 };
 const DEFAULT_NOTICE_TENANT_LIMIT = { max: 60, windowSeconds: 3600 };
@@ -139,8 +156,6 @@ const DEFAULT_SERVICE_ACCOUNT_CAP = 50;
 /** The org-deletion window bounds (045 D1, Q21); the marker's CHECK enforces the same range. */
 const MIN_ORG_DELETION_WINDOW_DAYS = 7;
 const MAX_ORG_DELETION_WINDOW_DAYS = 14;
-
-const MIN_SECRET_LENGTH = 32;
 
 function required(env: Env, name: string): string {
   const value = env[name];
@@ -238,21 +253,28 @@ function loadSso(env: Env): Config['sso'] {
   };
 }
 
-/** `BETTER_AUTH_URL` (Q40): required outside test, and then it must be `https`. */
-function loadBetterAuthUrl(env: Env): string | undefined {
+/**
+ * `BETTER_AUTH_URL` (Q40): required outside test, and then it must be `https`.
+ * Whenever it is set, in every environment, its origin must be one of
+ * `ALLOWED_ORIGINS` (048 D3, Q18). An error never echoes either value.
+ */
+function loadBetterAuthUrl(env: Env, allowedOrigins: readonly string[]): string | undefined {
   const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
   if (isTest && env['BETTER_AUTH_URL'] === undefined) {
     return undefined;
   }
   const value = required(env, 'BETTER_AUTH_URL').trim();
-  let protocol: string;
+  let url: URL;
   try {
-    protocol = new URL(value).protocol;
+    url = new URL(value);
   } catch {
     throw new Error('BETTER_AUTH_URL is malformed (an absolute URL is required).');
   }
-  if (protocol !== 'https:' && !(isTest && protocol === 'http:')) {
+  if (url.protocol !== 'https:' && !(isTest && url.protocol === 'http:')) {
     throw new Error('BETTER_AUTH_URL is malformed (https is required).');
+  }
+  if (!allowedOrigins.includes(url.origin)) {
+    throw new Error('BETTER_AUTH_URL is malformed (its origin must be one of ALLOWED_ORIGINS).');
   }
   return value;
 }
@@ -437,22 +459,92 @@ function loadWebDistDir(env: Env): string | undefined {
   return value;
 }
 
+const TRUST_PROXY_HOPS = 'TRUST_PROXY_HOPS';
+const TRUST_PROXY_CIDRS = 'TRUST_PROXY_CIDRS';
+const MAX_TRUST_PROXY_HOPS = 5;
+
+/** `TRUST_PROXY_HOPS` (048 D2): an integer from 1 to 5; the value is never echoed. */
+function parseTrustProxyHops(env: Env): number {
+  const value = required(env, TRUST_PROXY_HOPS).trim();
+  if (!/^[1-9]$/.test(value) || Number(value) > MAX_TRUST_PROXY_HOPS) {
+    throw new Error(
+      `${TRUST_PROXY_HOPS} is malformed (an integer from 1 to ${String(MAX_TRUST_PROXY_HOPS)} is required).`,
+    );
+  }
+  return Number(value);
+}
+
+/**
+ * `TRUST_PROXY_CIDRS` (048 D2): comma-separated IPv4 or IPv6 blocks, each checked by
+ * `BlockList.addSubnet`; a bare address is stored as a `/32` or `/128`. The value is never
+ * echoed.
+ */
+function parseTrustProxyCidrs(env: Env): readonly string[] {
+  const malformed = new Error(
+    `${TRUST_PROXY_CIDRS} is malformed (comma-separated IPv4 or IPv6 CIDR blocks are required).`,
+  );
+  const entries = required(env, TRUST_PROXY_CIDRS)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+  if (entries.length === 0) {
+    throw malformed;
+  }
+  const blocks = new BlockList();
+  return entries.map((entry) => {
+    const [address = '', prefix, ...rest] = entry.split('/');
+    const version = isIP(address);
+    if (version === 0 || rest.length > 0 || (prefix !== undefined && !/^\d{1,3}$/.test(prefix))) {
+      throw malformed;
+    }
+    const bits = prefix === undefined ? (version === 4 ? 32 : 128) : Number(prefix);
+    try {
+      blocks.addSubnet(address, bits, version === 4 ? 'ipv4' : 'ipv6');
+    } catch {
+      throw malformed;
+    }
+    return `${address}/${String(bits)}`;
+  });
+}
+
+/**
+ * The proxy trust (048 D2, Q6). Both variables are required outside test; under test both
+ * unset keep the default list. One without the other fails in every environment.
+ */
+function loadTrustProxy(env: Env): TrustProxySetting {
+  const isTest = (env['NODE_ENV'] ?? process.env['NODE_ENV']) === 'test';
+  if (isTest && env[TRUST_PROXY_HOPS] === undefined && env[TRUST_PROXY_CIDRS] === undefined) {
+    return TEST_TRUST_PROXY;
+  }
+  return { hops: parseTrustProxyHops(env), cidrs: parseTrustProxyCidrs(env) };
+}
+
+const BETTER_AUTH_SECRETS = 'BETTER_AUTH_SECRETS';
+const RETIRED_BETTER_AUTH_SECRET = 'BETTER_AUTH_SECRET';
+
+/**
+ * The versioned secrets (048 D4, Q9). The retired single-secret variable, when set
+ * (non-blank), fails startup in every environment, so no key can come from it.
+ */
+function loadBetterAuthSecrets(env: Env): readonly AuthSecret[] {
+  const retired = env[RETIRED_BETTER_AUTH_SECRET];
+  if (retired !== undefined && retired.trim() !== '') {
+    throw new Error('BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.');
+  }
+  return parseAuthSecrets(required(env, BETTER_AUTH_SECRETS), BETTER_AUTH_SECRETS);
+}
+
 export function loadConfig(env: Env): Config {
   const appDatabaseUrl = required(env, 'DATABASE_URL');
   const authDatabaseUrl = required(env, 'AUTH_DATABASE_URL');
-  const betterAuthSecret = required(env, 'BETTER_AUTH_SECRET');
-  if (betterAuthSecret.length < MIN_SECRET_LENGTH) {
-    throw new Error(
-      `BETTER_AUTH_SECRET is malformed (at least ${String(MIN_SECRET_LENGTH)} characters).`,
-    );
-  }
+  const betterAuthSecrets = loadBetterAuthSecrets(env);
   const cerbosAddress = required(env, 'CERBOS_ADDRESS');
   const allowedOrigins = required(env, 'ALLOWED_ORIGINS')
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin !== '');
   validateAllowedOrigins(env, allowedOrigins);
-  const betterAuthUrl = loadBetterAuthUrl(env);
+  const betterAuthUrl = loadBetterAuthUrl(env, allowedOrigins);
   const invitationLinkBaseUrl = loadLinkBaseUrl(env, 'INVITATION_LINK_BASE_URL', allowedOrigins);
   const passwordResetLinkBaseUrl = loadLinkBaseUrl(
     env,
@@ -463,6 +555,7 @@ export function loadConfig(env: Env): Config {
   const email = loadEmail(env);
   const sso = loadSso(env);
   const webDistDir = loadWebDistDir(env);
+  const trustProxy = loadTrustProxy(env);
   const signIn = limitWithDefaults(
     env,
     'PRE_AUTH_SIGN_IN_RATE_LIMIT_MAX',
@@ -486,6 +579,12 @@ export function loadConfig(env: Env): Config {
     'TOKEN_EXCHANGE_RATE_LIMIT_MAX',
     'TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS',
     DEFAULT_TOKEN_EXCHANGE_LIMIT,
+  );
+  const exchangeClient = limitWithDefaults(
+    env,
+    'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX',
+    'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_WINDOW_SECONDS',
+    DEFAULT_TOKEN_EXCHANGE_CLIENT_LIMIT,
   );
   const invitationTenantCap = limitWithDefaults(
     env,
@@ -543,7 +642,7 @@ export function loadConfig(env: Env): Config {
   return {
     appDatabaseUrl,
     authDatabaseUrl,
-    betterAuthSecret,
+    betterAuthSecrets,
     cerbosAddress,
     allowedOrigins,
     ...(betterAuthUrl === undefined ? {} : { betterAuthUrl }),
@@ -558,6 +657,10 @@ export function loadConfig(env: Env): Config {
     preAuthPasswordCheckRateLimit: { max: passwordCheck.max, window: passwordCheck.windowSeconds },
     rateLimit: { max: perPrincipal.max, timeWindowMs: perPrincipal.windowSeconds * 1000 },
     tokenExchangeRateLimit: { max: exchange.max, timeWindowMs: exchange.windowSeconds * 1000 },
+    tokenExchangeClientRateLimit: {
+      max: exchangeClient.max,
+      timeWindowMs: exchangeClient.windowSeconds * 1000,
+    },
     invitationTenantCap,
     invitationRecipientCap,
     noticeTenantCap,
@@ -599,5 +702,6 @@ export function loadConfig(env: Env): Config {
     telemetryDisabled: loadTelemetryDisabled(env),
     mountIdentityRoutes: loadMountIdentityRoutes(env),
     ...(webDistDir === undefined ? {} : { webDistDir }),
+    trustProxy,
   };
 }

@@ -30,3 +30,16 @@ regexes = [
 paths = [
   '''^apps/web/src/auth/(accept-invitation|accept-invitation-step-up|reset-password|mfa-enrol)\.test\.tsx$''',
 ]
+
+# Scoped allowlist for the made-up database password that the 048 TLS-error
+# tests (task 2.2) use to prove no connection detail reaches an error message.
+# It reaches no server; it is matched exactly, only in this file.
+[[allowlists]]
+description = "048 db test fixture: made-up database password"
+condition = "AND"
+regexes = [
+  '''tls\-variable\-s3cr3t\-pw''',
+]
+paths = [
+  '''^packages/db/src/connection-security\.test\.ts$''',
+]

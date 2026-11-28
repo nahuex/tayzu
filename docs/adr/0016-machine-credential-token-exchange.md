@@ -97,7 +97,10 @@ credential does not stop a token that was already issued.
 - The signing key is the `jwt` plugin's own, published by the plugin for
   `026-mcp-server` to reuse. It is protected by `BETTER_AUTH_SECRET`, so
   rotating that secret is a scheduled event
-  ([`docs/security/secrets.md`](../security/secrets.md)).
+  ([`docs/security/secrets.md`](../security/secrets.md)). _Amended by `048`
+  (design D4):_ the secret is now the versioned `BETTER_AUTH_SECRETS`, and the
+  signing key pair is rotated on its own, through the JWKS runbook of the same
+  page.
 - **Implementation state at the time of writing.** The exchange logic
   (`exchangeMachineToken` in `@tayzu/auth`), the token branch of
   `resolveContext`, the revocation list and the exchange rate-limit hook all

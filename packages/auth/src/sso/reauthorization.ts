@@ -8,8 +8,18 @@
  * step-up claims `auth_time` (300s, +-30s skew), `acr` (>= 3) and `amr`
  * (an accepted MFA method). Any failure returns `false`; nothing from the
  * token or the provider reaches logs, spans or errors.
+ *
+ * 048 design D6: `verifyReauthorizationIdToken` shares the same verifier and
+ * checks only the signature, `iss`, `aud` and the bound `nonce`, before the
+ * callback stores the token; the D25 claim checks stay in the step-up guard.
  */
-import { createPublicKey, createVerify, type JsonWebKey } from 'node:crypto';
+import {
+  createHash,
+  createPublicKey,
+  createVerify,
+  timingSafeEqual,
+  type JsonWebKey,
+} from 'node:crypto';
 
 /** design D25: the step-up freshness window, and the skew tolerance shared with D26. */
 export const REAUTH_MAX_AGE_SECONDS = 300;
@@ -113,43 +123,102 @@ function claimsSatisfyStepUp(
   return Array.isArray(amr) && amr.some(isAcceptedAmr);
 }
 
+interface VerifiedIdToken {
+  readonly claims: Record<string, unknown>;
+  /** The issuer of the discovery document the signing key was found through. */
+  readonly issuer: string;
+}
+
+/**
+ * The claims of an RS256 ID token whose signature verifies against the discovered JWKS;
+ * `null` for a malformed, unsigned or wrongly signed token. Throws on transport errors.
+ */
+async function verifySignature(
+  idToken: string,
+  discoveryUrl: string,
+): Promise<VerifiedIdToken | null> {
+  const [headPart, bodyPart, signaturePart, ...rest] = idToken.split('.');
+  if (signaturePart === undefined || rest.length > 0) {
+    return null;
+  }
+  const header = decodePart(headPart);
+  const claims = decodePart(bodyPart);
+  if (header === null || claims === null || header['alg'] !== 'RS256') {
+    return null;
+  }
+  const discovery = await fetchJson(discoveryUrl);
+  const issuer = discovery?.['issuer'];
+  const jwksUri = discovery?.['jwks_uri'];
+  if (typeof issuer !== 'string' || typeof jwksUri !== 'string') {
+    return null;
+  }
+  const jwks = await fetchJson(jwksUri);
+  const keys = Array.isArray(jwks?.['keys']) ? (jwks['keys'] as unknown[]) : [];
+  const jwk = keys.find(
+    (key): key is JsonWebKey & Record<string, unknown> =>
+      isRecord(key) && key['kid'] === header['kid'] && key['kty'] === 'RSA',
+  );
+  if (jwk === undefined) {
+    return null;
+  }
+  const verified = createVerify('RSA-SHA256')
+    .update(`${headPart ?? ''}.${bodyPart ?? ''}`)
+    .verify(createPublicKey({ key: jwk, format: 'jwk' }), Buffer.from(signaturePart, 'base64url'));
+  return verified ? { claims, issuer } : null;
+}
+
 /** Resolves `true` only when the ID token verifies and satisfies every D25 check. */
 export async function isValidReauthorization(
   idToken: string,
   expected: ReauthorizationExpectation,
 ): Promise<boolean> {
   try {
-    const [headPart, bodyPart, signaturePart, ...rest] = idToken.split('.');
-    if (signaturePart === undefined || rest.length > 0) {
-      return false;
-    }
-    const header = decodePart(headPart);
-    const claims = decodePart(bodyPart);
-    if (header === null || claims === null || header['alg'] !== 'RS256') {
-      return false;
-    }
-    const discovery = await fetchJson(expected.discoveryUrl);
-    const issuer = discovery?.['issuer'];
-    const jwksUri = discovery?.['jwks_uri'];
-    if (typeof issuer !== 'string' || typeof jwksUri !== 'string') {
-      return false;
-    }
-    const jwks = await fetchJson(jwksUri);
-    const keys = Array.isArray(jwks?.['keys']) ? (jwks['keys'] as unknown[]) : [];
-    const jwk = keys.find(
-      (key): key is JsonWebKey & Record<string, unknown> =>
-        isRecord(key) && key['kid'] === header['kid'] && key['kty'] === 'RSA',
+    const verified = await verifySignature(idToken, expected.discoveryUrl);
+    return (
+      verified !== null &&
+      claimsSatisfyStepUp(verified.claims, verified.issuer, expected, Math.floor(Date.now() / 1000))
     );
-    if (jwk === undefined) {
+  } catch {
+    return false;
+  }
+}
+
+export interface IdTokenNonceExpectation {
+  readonly discoveryUrl: string;
+  readonly clientId: string;
+  /** The nonce `start` drew and bound to the state (048 design D6). */
+  readonly nonce: string;
+}
+
+/** Constant-time equality over SHA-256 digests, so unequal lengths leak nothing. */
+function sameValue(a: string, b: string): boolean {
+  const digest = (value: string): Buffer => createHash('sha256').update(value).digest();
+  return timingSafeEqual(digest(a), digest(b));
+}
+
+/**
+ * 048 design D6: resolves `true` only when the callback's ID token is signed by the discovered
+ * keys, comes from the discovered issuer, names the client in `aud` and carries the bound
+ * `nonce`. Never throws; the D25 step-up claims are left to the guard.
+ */
+export async function verifyReauthorizationIdToken(
+  idToken: string,
+  expected: IdTokenNonceExpectation,
+): Promise<boolean> {
+  try {
+    const verified = await verifySignature(idToken, expected.discoveryUrl);
+    if (verified === null) {
       return false;
     }
-    const verified = createVerify('RSA-SHA256')
-      .update(`${headPart ?? ''}.${bodyPart ?? ''}`)
-      .verify(
-        createPublicKey({ key: jwk, format: 'jwk' }),
-        Buffer.from(signaturePart, 'base64url'),
-      );
-    return verified && claimsSatisfyStepUp(claims, issuer, expected, Math.floor(Date.now() / 1000));
+    const { claims, issuer } = verified;
+    const nonce = claims['nonce'];
+    return (
+      claims['iss'] === issuer &&
+      audienceMatches(claims['aud'], expected.clientId) &&
+      typeof nonce === 'string' &&
+      expected.nonce !== '' &&
+      sameValue(nonce, expected.nonce)
+    );
   } catch {
     return false;
   }

@@ -584,7 +584,7 @@ async function buildApp(
     const app = await createApp({
       appPool,
       authPool,
-      authSecret: config.betterAuthSecret,
+      authSecrets: config.betterAuthSecrets,
       cerbosAddress: config.cerbosAddress,
       allowedOrigins: config.allowedOrigins,
       baseUrl: appOrigin,

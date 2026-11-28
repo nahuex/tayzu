@@ -286,3 +286,119 @@ describe('OIDC stub fixture behind a TLS proxy (issuer and port options)', () =>
     }
   });
 });
+
+/**
+ * `048` task 6.2 (design D6, Q7): the stub honours `response_mode=query` and
+ * echoes the authorization request's `nonce` into the ID token, with a switch
+ * (`setNonceOverride`) that makes it issue another one (used by task 6.4).
+ */
+describe('OIDC stub fixture: response_mode=query and the nonce (048 task 6.2, design D6)', () => {
+  const REDIRECT_URI = 'http://localhost/reauth/cb';
+
+  /** Authorizes with `extra` and returns the redirect and the ID token's claims. */
+  async function authorizeAndExchange(
+    stub: Awaited<ReturnType<typeof startOidcStub>>,
+    extra: Record<string, string>,
+  ): Promise<{ status: number; back: URL; claims: Record<string, unknown> }> {
+    const verifier = randomBytes(32).toString('base64url');
+    const authorize = new URL(`${stub.issuer}/authorize`);
+    authorize.search = new URLSearchParams({
+      response_type: 'code',
+      client_id: stub.clientId,
+      redirect_uri: REDIRECT_URI,
+      scope: 'openid',
+      state: randomBytes(16).toString('base64url'),
+      code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+      code_challenge_method: 'S256',
+      ...extra,
+    }).toString();
+    const redirect = await fetch(authorize, { redirect: 'manual' });
+    const back = new URL(redirect.headers.get('location') ?? 'http://invalid/');
+    const token = await fetch(`${stub.issuer}/token`, {
+      method: 'POST',
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: back.searchParams.get('code') ?? '',
+        redirect_uri: REDIRECT_URI,
+        client_id: stub.clientId,
+        client_secret: stub.clientSecret,
+        code_verifier: verifier,
+      }),
+    });
+    expect(token.status).toBe(200);
+    const { id_token: idToken } = (await token.json()) as { id_token: string };
+    return { status: redirect.status, back, claims: decode(idToken.split('.')[1] ?? '') };
+  }
+
+  it('answers response_mode=query with a 302 to the redirect URI carrying code, state and iss in the query', async () => {
+    const stub = await startOidcStub();
+    try {
+      const url = new URL(`${stub.issuer}/authorize`);
+      url.search = new URLSearchParams({
+        response_type: 'code',
+        client_id: stub.clientId,
+        redirect_uri: REDIRECT_URI,
+        state: 'st-q',
+        nonce: 'n-q',
+        response_mode: 'query',
+      }).toString();
+      const res = await fetch(url, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      const back = new URL(res.headers.get('location') ?? 'http://invalid/');
+      expect(`${back.origin}${back.pathname}`).toBe(REDIRECT_URI);
+      expect(back.hash).toBe('');
+      expect(back.searchParams.get('state')).toBe('st-q');
+      expect(back.searchParams.get('iss')).toBe(stub.issuer);
+      expect(back.searchParams.get('code')).toMatch(/^[0-9a-f]{32}$/);
+      expect(stub.authorizationRequests.at(-1)).toMatchObject({
+        response_mode: 'query',
+        nonce: 'n-q',
+      });
+    } finally {
+      await stub.close();
+    }
+  });
+
+  it("echoes the authorization request's nonce into the ID token, and issues no nonce claim when the request has none", async () => {
+    const stub = await startOidcStub();
+    try {
+      const nonce = randomBytes(32).toString('base64url');
+      const withNonce = await authorizeAndExchange(stub, { nonce, response_mode: 'query' });
+      expect(withNonce.status).toBe(302);
+      expect(withNonce.claims['nonce']).toBe(nonce);
+
+      const without = await authorizeAndExchange(stub, { response_mode: 'query' });
+      expect(without.claims).not.toHaveProperty('nonce');
+    } finally {
+      await stub.close();
+    }
+  });
+
+  it('setNonceOverride makes the next authorizations issue another nonce, and null restores the echo', async () => {
+    const stub = await startOidcStub();
+    try {
+      const requested = randomBytes(32).toString('base64url');
+      const other = randomBytes(32).toString('base64url');
+
+      stub.setNonceOverride(other);
+      const overridden = await authorizeAndExchange(stub, {
+        nonce: requested,
+        response_mode: 'query',
+      });
+      expect(overridden.claims['nonce']).toBe(other);
+      expect(overridden.claims['nonce']).not.toBe(requested);
+      // The redirect itself is unchanged by the override.
+      expect(overridden.status).toBe(302);
+      expect(overridden.back.searchParams.get('code')).not.toBeNull();
+
+      stub.setNonceOverride(null);
+      const echoed = await authorizeAndExchange(stub, {
+        nonce: requested,
+        response_mode: 'query',
+      });
+      expect(echoed.claims['nonce']).toBe(requested);
+    } finally {
+      await stub.close();
+    }
+  });
+});

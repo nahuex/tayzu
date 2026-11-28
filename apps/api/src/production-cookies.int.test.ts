@@ -80,9 +80,10 @@ const TEST_PASSWORD = 'correct horse battery staple';
 const ENV: Record<string, string> = {
   DATABASE_URL: 'postgres://tayzu_app:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
   AUTH_DATABASE_URL: 'postgres://tayzu_auth:pw@127.0.0.1:1/tayzu?sslmode=verify-full',
-  BETTER_AUTH_SECRET: TEST_SECRET,
+  BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
   CERBOS_ADDRESS: 'localhost:3593',
-  ALLOWED_ORIGINS: ALLOWED_ORIGIN,
+  // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+  ALLOWED_ORIGINS: `${ALLOWED_ORIGIN},${AUTH_URL}`,
   BETTER_AUTH_URL: AUTH_URL,
   IDENTITY_TOKEN_HMAC_SECRET: 'cookies-hmac-test-only-secret-0123456789-abcde',
 };
@@ -242,6 +243,9 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
       ...withoutUrl,
       NODE_ENV: 'production',
       EMAIL_PROVIDER: 'none',
+      // 048 D2: required outside test, so only BETTER_AUTH_URL is at fault.
+      TRUST_PROXY_HOPS: '1',
+      TRUST_PROXY_CIDRS: '127.0.0.1/32,::1/128',
     });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');
@@ -256,6 +260,9 @@ describe('production cookies: BETTER_AUTH_URL validation at startup (task 23.12,
       BETTER_AUTH_URL: 'http://api.tayzu.test',
       NODE_ENV: 'production',
       EMAIL_PROVIDER: 'none',
+      // 048 D2: required outside test, so only BETTER_AUTH_URL is at fault.
+      TRUST_PROXY_HOPS: '1',
+      TRUST_PROXY_CIDRS: '127.0.0.1/32,::1/128',
     });
 
     expect(outcome, 'startup fails instead of starting').not.toBe('started');

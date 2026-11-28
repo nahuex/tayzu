@@ -23,7 +23,7 @@ topology or trust configuration, so it is still never logged or echoed.
 | ------------------------------------------------------------------------------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                                                                                   | Secret    | Runtime pool as `tayzu_app` (password inside). Also what `db:migrate` reads today. Outside test, startup refuses a role that is a superuser, has `BYPASSRLS` or owns a `catalog_*` table.                                                                                                                                                                                                                                                       | Required, non-blank. `sslmode=verify-full` outside the test harness (`createPool`).                                                                                                                                                                                                                 |
 | `AUTH_DATABASE_URL`                                                                              | Secret    | Better Auth pool as `tayzu_auth`. Never falls back to `DATABASE_URL`. Same startup role assertion as `DATABASE_URL`.                                                                                                                                                                                                                                                                                                                            | Required, non-blank. `sslmode=verify-full` outside the test harness.                                                                                                                                                                                                                                |
-| `BETTER_AUTH_SECRET`                                                                             | Secret    | Better Auth's one secret: cookie signing and the encryption key for the data below.                                                                                                                                                                                                                                                                                                                                                             | Required, at least 32 characters.                                                                                                                                                                                                                                                                   |
+| `BETTER_AUTH_SECRETS`                                                                            | Secret    | Better Auth's versioned secrets (`<version>:<value>,...`, the first current; `048` D4): the current one signs cookies, every listed one decrypts the data below.                                                                                                                                                                                                                                                                                | Required, each value at least 32 characters. `BETTER_AUTH_SECRET` is retired and refused.                                                                                                                                                                                                           |
 | `VISMA_CONNECT_CLIENT_SECRET`                                                                    | Secret    | OAuth client secret for Visma Connect.                                                                                                                                                                                                                                                                                                                                                                                                          | All three `VISMA_CONNECT_*` variables or none. When any is set, each is required and non-blank.                                                                                                                                                                                                     |
 | `ACS_CONNECTION_STRING`                                                                          | Secret    | Azure Communication Services connection string of the dedicated send-only resource for invitation and notice email (`043` design D5 and Q28). Read by `apps/api/src/config.ts` from `043` task 6.5.                                                                                                                                                                                                                                             | Required when `EMAIL_PROVIDER` is `acs` (`043` task 6.5).                                                                                                                                                                                                                                           |
 | `IDENTITY_TOKEN_HMAC_SECRET`                                                                     | Secret    | Key of the HMAC-SHA256 that turns a recipient email into the cap key stored in `auth.rate_limit` (`043` Q93, `apps/api/src/identity/recipient-key.ts`). Read by `apps/api/src/config.ts`.                                                                                                                                                                                                                                                       | Required outside `NODE_ENV=test`: a deployed environment without it fails startup. At least 32 bytes. Never printed.                                                                                                                                                                                |
@@ -61,6 +61,7 @@ variables of one row are both read, and a missing one takes the default.
 | `PRE_AUTH_PASSWORD_CHECK_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`       | 10 per 60 s       | Routes that check the current password, per IP and per user.                                                   |
 | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_SECONDS`                        | 600 per 60 s      | Per-principal budget on `/v1/*`.                                                                               |
 | `TOKEN_EXCHANGE_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`                | 30 per 60 s       | `POST /v1/auth/token`, per IP.                                                                                 |
+| `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`         | 60 per 60 s       | `POST /v1/auth/token`, per submitted client id, after the per-IP bucket.                                       |
 | `BACKCHANNEL_LOGOUT_RATE_LIMIT_PER_MINUTE`                           | 600               | Back-channel logout, per source IP.                                                                            |
 | `PASSWORD_RESET_REQUEST_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset request route, per IP.                                                                                   |
 | `PASSWORD_RESET_CONFIRM_RATE_LIMIT_MAX`, `..._WINDOW_SECONDS`        | 10 per 60 s       | Reset confirm route, per IP.                                                                                   |
@@ -73,13 +74,43 @@ variables of one row are both read, and a missing one takes the default.
 | `PASSWORD_RESET_MIN_RESPONSE_MS`                                     | 400               | Minimum response time of the reset request route (the confirm route is not padded), an integer from 1 to 5000. |
 | `BODY_LIMIT_BYTES`                                                   | 1,048,576         | Maximum request body.                                                                                          |
 
+### Proxy trust
+
+Settings, not secrets (`048` design D2, Resolved decision Q6). They decide
+which `X-Forwarded-For` values become the client address that keys every
+per-address limiter.
+
+| Variable            | Default (test only)                            | What it sets                                                                                                                                   |
+| ------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TRUST_PROXY_HOPS`  | the loopback, link-local and unique-local list | The number of proxy hops in front of the API, an integer from 1 to 5.                                                                          |
+| `TRUST_PROXY_CIDRS` | (as above)                                     | Comma-separated IPv4 or IPv6 blocks (or bare addresses) a trusted hop must come from. A hop outside them, or past the count, is never trusted. |
+
+Both are required outside `NODE_ENV=test`, and one without the other fails
+startup in every environment. `046` sets them for the deployed environment:
+the hop count of the Container Apps ingress (and of a WAF, if one is put in
+front of it) and the peer range of the environment's infrastructure subnet,
+verified in the sandbox. CI and the e2e and DAST stacks use one hop from
+loopback (`127.0.0.1/32,::1/128`).
+
 ### Migrations
 
-`db:migrate` (`packages/db/src/run-migrations.ts`) reads `DATABASE_URL`, the
-runtime `tayzu_app` URL, today. A separate `MIGRATION_DATABASE_URL` for the
-`tayzu_migrator` role is not wired: no code reads that variable. Wiring it,
-is a gate for the first deployment (Q58). Until then, do not assume the
-migrator role is separate in any deployed environment.
+`db:migrate` (`packages/db/src/run-migrations.ts`) reads only
+`MIGRATION_DATABASE_URL`, the connection string of the migration role
+(`048` design D1, Resolved decision Q5). It is always required and never falls
+back to `DATABASE_URL`: unset or blank, the command stops before connecting
+with a fixed message that names only the variable. The value is a
+pipeline-only secret: the deployment pipeline (`046`) holds it for the
+migration step, no runtime process reads it, and it is rotated with the
+migration role's password. In Azure the role is `tayzu_migrator`, provisioned
+with `CREATEROLE` and `CREATE` on the database by `046`'s IaC; CI and the e2e
+and DAST scripts point it at the throwaway database's owner. Turborepo hashes
+only this variable for `db:migrate` (`turbo.json`).
+
+Before applying anything, the command checks `current_user` and refuses, with
+a fixed message that names no role, user or host, to run as any runtime role
+(`RUNTIME_DATABASE_ROLES` of `@tayzu/db`: `tayzu_app`, `tayzu_auth`,
+`tayzu_purge`, `tayzu_deletion_admin`), so pasting a runtime URL into the
+pipeline cannot run DDL as that role.
 
 The startup assertion that the runtime roles are not privileged is wired
 (task 25.3, Q62). Outside test, `createAppFromEnv` checks `current_user` of
@@ -89,10 +120,9 @@ message, naming no role, host or password, when the role is a superuser, has
 pointing either URL at the migrator or the bootstrap role fails startup.
 
 The `jwt` plugin's signing key pair is generated by Better Auth and stored in
-the database, with its private key encrypted with a key derived from
-`BETTER_AUTH_SECRET`. Rotating that secret is therefore also how the signing
-key's protection, and every other value encrypted under it, is rotated (see
-below).
+the database, with its private key encrypted under the current version of
+`BETTER_AUTH_SECRETS`. The signing key pair itself is rotated separately (see
+"Rotating the JWKS signing key" under the change procedure).
 
 ## Owner and rotation of the identity secrets
 
@@ -210,7 +240,7 @@ error that names the variable and never a value.
 | `AUTH_DATABASE_URL`                                             | Yes      | Yes       | Yes           | Yes                     | Secret    | Platform                        |
 | `CERBOS_ADDRESS`                                                | Yes      | Yes       | Yes           | **No**                  | Sensitive | Platform                        |
 | `TAYZU_OPERATOR_ID`                                             | No       | Yes       | Yes           | Yes                     | Sensitive | The operator who starts the run |
-| `BETTER_AUTH_SECRET`                                            | **No**   | **No**    | Yes           | **No**                  | Secret    | Platform                        |
+| `BETTER_AUTH_SECRETS`                                           | **No**   | **No**    | Yes           | **No**                  | Secret    | Platform                        |
 | `IDENTITY_TOKEN_HMAC_SECRET`                                    | No       | No        | No            | **No**                  | Secret    | Platform                        |
 | `EMAIL_PROVIDER`, `EMAIL_SENDER_ADDRESS`                        | No       | No        | No            | Yes                     | Sensitive | Platform                        |
 | `ACS_CONNECTION_STRING`                                         | No       | No        | No            | Yes, when `acs`         | Secret    | Platform                        |
@@ -220,7 +250,7 @@ error that names the variable and never a value.
 | `TAYZU_TELEMETRY_DISABLED`                                      | Yes      | Yes       | Yes           | Refused when true       | Setting   | Platform                        |
 
 The `recover:admin-mfa` CLI also takes the argument `--approver <opaque id>`
-(not an environment variable). It has no `BETTER_AUTH_SECRET` (it cannot sign a
+(not an environment variable). It has no `BETTER_AUTH_SECRETS` (it cannot sign a
 cookie or decrypt a factor secret), no `DATABASE_URL`, no `CERBOS_ADDRESS` and
 no recipient key secret: it has no cap store, so its single notice is outside
 the recipient caps. A test asserts its variable list.
@@ -237,7 +267,7 @@ the recipient caps. A test asserts its variable list.
   policy bundle and configuration as the `apps/api` revision's (design D9).
   Whether a job execution completes while its sidecar keeps running is verified
   with `010` before the first deployment.
-- **Neither job holds `BETTER_AUTH_SECRET`.** The reconcile's shed is
+- **Neither job holds `BETTER_AUTH_SECRETS`.** The reconcile's shed is
   parameterized SQL on its `tayzu_auth` pool and builds no Better Auth instance
   (Resolved decision Q114), so it cannot sign a session cookie or decrypt the
   `jwt` key. Only the app and the out-of-band bootstrap CLI hold it.
@@ -336,15 +366,15 @@ either role. Like every database URL here, neither is ever printed, and
 harness. The two roles are created by migration `0013` with no password: the
 password is set out of band, never in a migration.
 
-| Variable                                                                                         | Purge job | Reversal | Class               | Owner                                                          |
-| ------------------------------------------------------------------------------------------------ | --------- | -------- | ------------------- | -------------------------------------------------------------- |
-| `PURGE_DATABASE_URL`                                                                             | Yes       | **No**   | Secret              | Platform                                                       |
-| `REVERSAL_DATABASE_URL`                                                                          | **No**    | Yes      | Secret              | Platform                                                       |
-| `TAYZU_OPERATOR_ID`                                                                              | **No**    | Yes      | Sensitive           | The maintenance workflow, from its authenticated actor         |
-| `TAYZU_TENANT_ID`                                                                                | **No**    | Yes      | Sensitive           | The maintenance workflow, from its validated `tenant_id` input |
-| `DATABASE_URL`, `AUTH_DATABASE_URL`, `BETTER_AUTH_SECRET`, `CERBOS_ADDRESS`, the email variables | **No**    | **No**   | Secret or Sensitive | Platform                                                       |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` (and per-signal variants), `OTEL_EXPORTER_OTLP_*_HEADERS`          | Yes       | Yes      | Sensitive           | Platform                                                       |
-| `TAYZU_TELEMETRY_DISABLED`                                                                       | Yes       | Yes      | Setting             | Platform                                                       |
+| Variable                                                                                          | Purge job | Reversal | Class               | Owner                                                          |
+| ------------------------------------------------------------------------------------------------- | --------- | -------- | ------------------- | -------------------------------------------------------------- |
+| `PURGE_DATABASE_URL`                                                                              | Yes       | **No**   | Secret              | Platform                                                       |
+| `REVERSAL_DATABASE_URL`                                                                           | **No**    | Yes      | Secret              | Platform                                                       |
+| `TAYZU_OPERATOR_ID`                                                                               | **No**    | Yes      | Sensitive           | The maintenance workflow, from its authenticated actor         |
+| `TAYZU_TENANT_ID`                                                                                 | **No**    | Yes      | Sensitive           | The maintenance workflow, from its validated `tenant_id` input |
+| `DATABASE_URL`, `AUTH_DATABASE_URL`, `BETTER_AUTH_SECRETS`, `CERBOS_ADDRESS`, the email variables | **No**    | **No**   | Secret or Sensitive | Platform                                                       |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (and per-signal variants), `OTEL_EXPORTER_OTLP_*_HEADERS`           | Yes       | Yes      | Sensitive           | Platform                                                       |
+| `TAYZU_TELEMETRY_DISABLED`                                                                        | Yes       | Yes      | Setting             | Platform                                                       |
 
 `TAYZU_TENANT_ID` is the reversal's input, not its configuration (Resolved
 decision Q172): `cancel-org-deletion.ts` reads it directly and
@@ -437,12 +467,9 @@ Rotation procedure, the same for every secret:
    (using an administrative role), then update the Key Vault secret and the
    URL that embeds it (`DATABASE_URL`, `AUTH_DATABASE_URL`,
    `PURGE_DATABASE_URL` or `REVERSAL_DATABASE_URL`).
-3. For `BETTER_AUTH_SECRET`, generate at least 32 random characters
-   (`openssl rand -base64 48`). Rotating it invalidates existing sessions and
-   makes the encrypted TOTP secrets, backup codes, OAuth tokens and `jwt`
-   private keys unreadable, so they must be re-encrypted or regenerated first.
-   Schedule it and announce it. Adopting Better Auth's versioned `secrets`
-   array is a recorded residual risk.
+3. For `BETTER_AUTH_SECRETS` (`048` design D4), follow
+   [Rotating the authentication secrets](#rotating-the-authentication-secrets)
+   below instead of replacing the value.
 4. For `VISMA_CONNECT_CLIENT_SECRET`, rotate it at Visma Connect first, then
    in Key Vault.
 5. Restart the Container App revision so the new value is resolved. If the
@@ -451,3 +478,45 @@ Rotation procedure, the same for every secret:
 6. Revoke the old secret version once the new revision is healthy.
 
 Never paste a secret into chat, an issue, a log or a commit.
+
+### Rotating the authentication secrets
+
+`BETTER_AUTH_SECRETS` is a list, `<version>:<value>,...`, whose first entry is
+the current one. Better Auth encrypts TOTP secrets, backup codes, OAuth tokens
+and the `jwt` private key in an envelope that names the version it used, and
+decrypts with whichever listed version the envelope names. Cookies are signed
+with the current version only.
+
+1. Generate a new value of at least 32 random characters
+   (`openssl rand -base64 48`) and pick the next version number (greater than
+   every version in the list).
+2. Prepend it: `2:<new>,1:<old>`. Store the new list as a new Key Vault
+   version and restart the revision (steps 1, 5 and 6 above).
+3. **Every session is signed out.** Cookies signed with the old version no
+   longer resolve, so schedule the rotation and announce it. Data encrypted
+   under the old version stays readable, and new writes use the new one.
+4. Keep the old entry for as long as any stored value may still be encrypted
+   under it. Remove it only after every such value has been re-encrypted or
+   has expired: a factor secret or backup code is re-encrypted when it is next
+   rewritten (for example a re-enrolment or a spent backup code), not on its
+   own.
+5. `BETTER_AUTH_SECRET` (the old single value) is retired: the API and the
+   bootstrap CLI refuse to start when it is set.
+
+### Rotating the JWKS signing key
+
+The `jwt` plugin signs the token-exchange JWTs with the newest key in
+`auth.jwks` that has no `expires_at` in the past, and creates a new key pair
+when none is live. It publishes every key whose `expires_at` is unset or less
+than its grace period (30 days by default) in the past. Tayzu sets no
+automatic rotation interval (Resolved decision Q9), so a rotation is manual:
+
+1. Under just-in-time access, as the migration role, set
+   `expires_at = now()` on the current row of `auth.jwks`. Change no other
+   column and delete no row.
+2. The next token the API signs creates a new key pair, encrypted under the
+   current version of `BETTER_AUTH_SECRETS`.
+3. The old public key stays in the published key set for the grace period, so
+   tokens it signed keep verifying until they expire (they live one hour).
+4. After the grace period the old row is no longer published. It can be
+   deleted.

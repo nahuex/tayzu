@@ -1021,11 +1021,20 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     return new URL(raw);
   }
 
-  function callback(params: { readonly code: string; readonly state: string }) {
+  /**
+   * The browser lands on the callback; `cookie` is the initiating session's cookie, which the
+   * callback requires and matches against the bound session (048 task 6.3, design D6).
+   */
+  function callback(params: { readonly code: string; readonly state: string }, cookie?: string) {
     return app.app.inject({
       method: 'GET',
       url: `${CALLBACK_PATH}?${new URLSearchParams(params).toString()}`,
-      headers: { 'x-forwarded-for': randomIp(), host: 'localhost:3000', origin: ORIGIN },
+      headers: {
+        'x-forwarded-for': randomIp(),
+        host: 'localhost:3000',
+        origin: ORIGIN,
+        ...(cookie === undefined ? {} : { cookie }),
+      },
     });
   }
 
@@ -1085,7 +1094,7 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     expect(returned.pathname).toBe(CALLBACK_PATH);
     expect(returned.searchParams.get('state')).toBe(state);
     const code = returned.searchParams.get('code') ?? '';
-    const answered = await callback({ code, state });
+    const answered = await callback({ code, state }, user.cookie);
     expect(answered.statusCode, `the callback succeeds: ${answered.body}`).toBeLessThan(400);
     const stored = await authPool.query<{ value: string }>(
       'select value from auth.verification where identifier = $1',
@@ -1128,7 +1137,7 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     const state = url.searchParams.get('state') ?? '';
     expect(state, 'precondition: the authorization URL carries a state').not.toBe('');
     const code = `ReauthRejectedCodeMarker-${randomUUID()}`;
-    const answered = await callback({ code, state });
+    const answered = await callback({ code, state }, user.cookie);
     expect(answered.statusCode, answered.body).toBe(400);
     return {
       tenantId: user.tenant.organizationId,
@@ -1142,9 +1151,38 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     };
   }
 
+  /**
+   * 048 task 6.3 / 6.6 (design D6, Q7), scenario "A callback in another browser stores nothing":
+   * a re-authorization started by a session, whose callback arrives with no session cookie. The
+   * state is consumed before the cookie check, so the code is never exchanged.
+   */
+  async function driveSessionMismatch(): Promise<Drive> {
+    const user = await ssoSession('Mismatch');
+    const url = await startReauthorization(user.cookie);
+    const state = url.searchParams.get('state') ?? '';
+    expect(state, 'precondition: the authorization URL carries a state').not.toBe('');
+    const code = `ReauthMismatchCodeMarker-${randomUUID()}`;
+    const answered = await callback({ code, state });
+    expect(answered.statusCode, answered.body).toBe(400);
+    const stored = await authPool.query('select 1 from auth.verification where identifier = $1', [
+      `${RESULT_PREFIX}${sessionTokenOfCookie(user.cookie)}`,
+    ]);
+    expect(stored.rowCount, 'a mismatched callback stores no result').toBe(0);
+    return {
+      tenantId: user.tenant.organizationId,
+      actorId: user.tenant.userId,
+      markers: {
+        'mismatch state': state,
+        'mismatch code': code,
+        'mismatch sid': user.sid,
+        'mismatch session token': sessionTokenOfCookie(user.cookie),
+      },
+    };
+  }
+
   function expectFailureRecords(
     records: ReturnType<typeof logRecords>,
-    reason: 'invalid_state' | 'exchange_failed',
+    reason: 'invalid_state' | 'exchange_failed' | 'session_mismatch',
   ): void {
     expect(records.length, `no "${REAUTH_FAILED}" record was captured`).toBeGreaterThan(0);
     expect(EXPECTED_ATTRIBUTE_VALUES[REASON], 'the reason is in the fixture set').toContain(reason);
@@ -1198,8 +1236,27 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     expect(visma, 'a failed callback records no Visma Connect step-up').toEqual([]);
   }, 60_000);
 
+  it('a callback with no session cookie emits reauthorization_failed with reason session_mismatch and no tenant, and no step_up_succeeded (048 task 6.6)', async () => {
+    const before = await flushedCount(REAUTH_FAILED);
+
+    const drive = await driveSessionMismatch();
+
+    expectFailureRecords(await recordsSince(REAUTH_FAILED, before), 'session_mismatch');
+    const visma = logRecords(harness, STEP_UP_SUCCEEDED).filter(
+      (record) =>
+        record.attributes[TENANT] === drive.tenantId &&
+        record.attributes[METHOD] === 'visma_connect',
+    );
+    expect(visma, 'a mismatched callback records no Visma Connect step-up').toEqual([]);
+  }, 60_000);
+
   it('no code, state, token or claim value of a Visma Connect step-up reaches any signal', async () => {
-    const drives = [await driveSuccess(), await driveUnknownState(), await driveFailedExchange()];
+    const drives = [
+      await driveSuccess(),
+      await driveUnknownState(),
+      await driveFailedExchange(),
+      await driveSessionMismatch(),
+    ];
 
     await harness.forceFlush();
     expect(
@@ -1212,8 +1269,8 @@ describe('otel-smoke-check, 003: A Visma Connect step-up is logged (task 3.11)',
     ).toBe(true);
     expect(
       new Set(logRecords(harness, REAUTH_FAILED).map((record) => record.attributes[REASON])),
-      'precondition: both failure drives were logged',
-    ).toEqual(new Set(['invalid_state', 'exchange_failed']));
+      'precondition: every failure drive was logged',
+    ).toEqual(new Set(['invalid_state', 'exchange_failed', 'session_mismatch']));
     const corpus = exportedCorpus(harness);
     for (const drive of drives) {
       for (const [label, marker] of Object.entries(drive.markers)) {
@@ -2404,6 +2461,8 @@ const IDENTITY_METRIC_UNITS: Readonly<Record<string, string>> = {
   'tayzu.identity.recovery_emails': '{event}',
   // 045 (design "Observability contract", Metrics: "Counter, `{deletion}`").
   'tayzu.identity.org_deletions': '{deletion}',
+  // 048 (design D9 and "Observability contract", Metrics: "Counter, `{report}`").
+  'tayzu.web.csp_violations': '{report}',
 };
 
 /** Span attributes the design lists as conditional (its Spans table). */
@@ -3248,7 +3307,7 @@ describe('otel-smoke-check, 043: every identity operation is driven (task 15.2)'
           NODE_ENV: 'test',
           DATABASE_URL: ownerDatabaseUrl(),
           AUTH_DATABASE_URL: ownerDatabaseUrl(),
-          BETTER_AUTH_SECRET: TEST_SECRET,
+          BETTER_AUTH_SECRETS: `1:${TEST_SECRET}`,
           CERBOS_ADDRESS: IDENTITY_CERBOS,
           ALLOWED_ORIGINS: AUTH_ORIGIN,
           BOOTSTRAP_ORGANIZATION_NAME: 'Identity Smoke Bootstrap',
@@ -4531,6 +4590,57 @@ describe('otel-smoke-check, 003: GET /v1/me records identity.session.me with its
       expect(leaks(corpus, local), `the ${label} must never appear in part`).toEqual([]);
     }
   }, 120_000);
+});
+
+/**
+ * 048 task 8.4 (design D9, "Observability contract"): `POST /v1/csp-reports` counts a browser
+ * CSP violation report on `tayzu.web.csp_violations` (Counter, `{report}`) with the one
+ * attribute `tayzu.web.csp.directive`, recorded through `recordIdentityMetric`. This drive posts
+ * one `application/csp-report` whose `effective-directive` is `script-src-elem`, so that the 043
+ * check below ("is recorded with exactly its declared attribute keys and the unit of the
+ * design") gets a data point for it. It runs before that check.
+ *
+ * Production symbol expected: the `POST /v1/csp-reports` route of `createApp` (design D9).
+ */
+describe('otel-smoke-check, 048: POST /v1/csp-reports counts one report by its directive (task 8.4)', () => {
+  let app: App;
+  let harness: TelemetryTestHarness;
+
+  beforeAll(async () => {
+    harness = registeredHarness();
+    app = await createApp({
+      ...(await harnessPools()),
+      authSecret: TEST_SECRET,
+      cerbosAddress: IDENTITY_CERBOS,
+      allowedOrigins: [IDENTITY_ORIGIN],
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('one csp-report answers 204 and records tayzu.web.csp_violations with the directive script-src', async () => {
+    const response = await app.app.inject({
+      method: 'POST',
+      url: '/v1/csp-reports',
+      headers: { 'content-type': 'application/csp-report', 'x-forwarded-for': randomIp() },
+      payload: JSON.stringify({
+        'csp-report': {
+          'document-uri': 'https://app.tayzu.test/catalog',
+          'effective-directive': 'script-src-elem',
+          'violated-directive': 'script-src-elem',
+          'blocked-uri': 'inline',
+        },
+      }),
+    });
+    // The drive behaved as its class says (not a telemetry finding).
+    expect(response.statusCode, response.body).toBe(204);
+    await harness.forceFlush();
+    expect(metricValues(harness, 'tayzu.web.csp_violations', 'tayzu.web.csp.directive')).toContain(
+      'script-src',
+    );
+  });
 });
 
 interface SessionUser {

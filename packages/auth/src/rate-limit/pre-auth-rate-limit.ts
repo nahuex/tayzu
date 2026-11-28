@@ -78,10 +78,18 @@ export type RateLimitScope =
   | 'reset_email_global'
   | 'recovery_notice_recipient'
   | 'account_created_notice_tenant'
-  | 'account_created_notice_global';
+  | 'account_created_notice_global'
+  // Change 048 (task 7.2, design D7): token exchange's per-client-id bucket, beside `token_exchange`.
+  | 'token_exchange_client'
+  // Change 048 (task 7.3, design D7): the back-channel logout route's shared address bucket.
+  | 'backchannel_logout';
 
-/** The kinds a bucket key can be namespaced by; `tenant` was added by change 043 (task 6.10), `global` by change 044 (task 1.3). */
-export type BucketKeyKind = 'ip' | 'email' | 'user' | 'tenant' | 'global';
+/**
+ * The kinds a bucket key can be namespaced by; `tenant` was added by change 043 (task 6.10),
+ * `global` by change 044 (task 1.3), `client` (a submitted machine-credential client id) by
+ * change 048 (task 7.2).
+ */
+export type BucketKeyKind = 'ip' | 'email' | 'user' | 'tenant' | 'global' | 'client';
 
 /** design.md, Log events table: `auth.security.rate_limited`'s only attribute (design D20). */
 const RATE_LIMIT_SCOPE_ATTRIBUTE = 'tayzu.auth.rate_limit.scope';

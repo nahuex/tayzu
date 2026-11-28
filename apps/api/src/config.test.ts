@@ -32,6 +32,7 @@
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { isIPv6 } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,7 +61,8 @@ function env(
   return {
     DATABASE_URL: APP_URL,
     AUTH_DATABASE_URL: AUTH_URL,
-    BETTER_AUTH_SECRET: SECRET,
+    // 048 D4: the versioned list replaces the retired single secret.
+    BETTER_AUTH_SECRETS: `1:${SECRET}`,
     // Legacy name kept so this fixture also works while bootstrap.ts still reads it.
     AUTH_SECRET: SECRET,
     CERBOS_ADDRESS: 'localhost:3593',
@@ -68,11 +70,14 @@ function env(
     INVITATION_LINK_BASE_URL: 'https://app.tayzu.test',
     PASSWORD_RESET_LINK_BASE_URL: 'https://app.tayzu.test',
     IDENTITY_TOKEN_HMAC_SECRET: HMAC_SECRET,
+    // 048 D2: the proxy trust is required outside test, so a valid production fixture sets it.
+    TRUST_PROXY_HOPS: '1',
+    TRUST_PROXY_CIDRS: '10.0.0.0/16',
     ...overrides,
   };
 }
 
-const REQUIRED_SECRETS = ['DATABASE_URL', 'AUTH_DATABASE_URL', 'BETTER_AUTH_SECRET'] as const;
+const REQUIRED_SECRETS = ['DATABASE_URL', 'AUTH_DATABASE_URL', 'BETTER_AUTH_SECRETS'] as const;
 const SECRET_VALUES = ['app-pw-s3cret', 'auth-pw-s3cret', SECRET];
 
 function thrown(fn: () => unknown): Error {
@@ -94,7 +99,7 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     const config = loadConfig(env());
     expect(config.appDatabaseUrl).toBe(APP_URL);
     expect(config.authDatabaseUrl).toBe(AUTH_URL);
-    expect(config.betterAuthSecret).toBe(SECRET);
+    expect(config.betterAuthSecrets).toEqual([{ version: 1, value: SECRET }]);
   });
 
   it.each(REQUIRED_SECRETS)('refuses to start with %s missing, naming it', (name) => {
@@ -109,10 +114,10 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     }
   });
 
-  it('refuses a malformed BETTER_AUTH_SECRET (too short) without echoing it', () => {
+  it('refuses a malformed BETTER_AUTH_SECRETS (too short) without echoing it', () => {
     const short = 'too-short-s3cret';
-    const error = thrown(() => loadConfig(env({ BETTER_AUTH_SECRET: short })));
-    expect(error.message).toContain('BETTER_AUTH_SECRET');
+    const error = thrown(() => loadConfig(env({ BETTER_AUTH_SECRETS: `1:${short}` })));
+    expect(error.message).toContain('BETTER_AUTH_SECRETS');
     expect(error.message).not.toContain(short);
   });
 
@@ -125,15 +130,15 @@ describe('secrets come only from the environment and fail fast (task 14.1, D15)'
     }
   });
 
-  it('createAppFromEnv refuses a missing BETTER_AUTH_SECRET before building any pool', async () => {
+  it('createAppFromEnv refuses a missing BETTER_AUTH_SECRETS before building any pool', async () => {
     const error: unknown = await createAppFromEnv(
-      env({ BETTER_AUTH_SECRET: undefined, AUTH_SECRET: undefined }),
+      env({ BETTER_AUTH_SECRETS: undefined, AUTH_SECRET: undefined }),
     ).then(
       () => undefined,
       (caught: unknown) => caught,
     );
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('BETTER_AUTH_SECRET');
+    expect((error as Error).message).toContain('BETTER_AUTH_SECRETS');
     expect(vi.mocked(createPool)).not.toHaveBeenCalled();
   });
 
@@ -259,7 +264,8 @@ describe('VISMA_CONNECT_DISCOVERY_URL must be https outside test (task 23.18, Q4
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       VISMA_CONNECT_DISCOVERY_URL: url,
       VISMA_CONNECT_CLIENT_ID: 'client-id',
       VISMA_CONNECT_CLIENT_SECRET: 'client-secret-value',
@@ -301,7 +307,8 @@ describe('ALLOWED_ORIGINS must be https and wildcard-free outside test (task 24.
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: BETTER_AUTH_URL's origin is one of the accepted ALLOWED_ORIGINS values below.
+      BETTER_AUTH_URL: nodeEnv === 'test' ? 'http://localhost' : 'https://app.tayzu.test',
       ALLOWED_ORIGINS: value,
     });
 
@@ -355,7 +362,8 @@ describe('INVITATION_LINK_BASE_URL (043 task 6.3, Q32)', () => {
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       ALLOWED_ORIGINS: 'https://app.tayzu.test',
       [NAME]: value,
     });
@@ -412,7 +420,8 @@ describe('PASSWORD_RESET_LINK_BASE_URL (044 task 4.1, D9)', () => {
     env({
       NODE_ENV: nodeEnv,
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       ALLOWED_ORIGINS: 'https://app.tayzu.test',
       [NAME]: value,
     });
@@ -560,7 +569,8 @@ describe('email provider selection (043 task 6.5, Q28, Q67, Q96, Q99)', () => {
   ): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
       ...overrides,
     });
@@ -693,7 +703,8 @@ describe('EMAIL_DISABLED_TENANT_IDS (043 task 6.5c, Q80)', () => {
   ): Record<string, string | undefined> =>
     env({
       NODE_ENV: nodeEnv,
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       EMAIL_SENDER_ADDRESS: 'DoNotReply@mail.tayzu.example',
       EMAIL_PROVIDER: 'none',
       ...overrides,
@@ -750,7 +761,8 @@ describe('IDENTITY_TOKEN_HMAC_SECRET (043 task 6.7b, Q93)', () => {
     env({
       NODE_ENV: 'production',
       EMAIL_PROVIDER: 'none',
-      BETTER_AUTH_URL: 'https://api.tayzu.test',
+      // 048 D3: the origin of BETTER_AUTH_URL is one of ALLOWED_ORIGINS.
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
       ...overrides,
     });
   const field = (config: Config, name: string): unknown =>
@@ -1315,5 +1327,743 @@ describe('WEB_DIST_DIR (003 task 4.1, D9, Q21)', () => {
 
   it('a path to a file instead of a directory fails startup naming the variable, not the value', () => {
     expectRejected(plainFile);
+  });
+});
+
+/**
+ * `048` task 3.1 (design D2, Resolved decision Q6), scenario "Startup fails without the
+ * proxy trust outside the test environment":
+ *
+ * - **WHEN** the platform starts with `NODE_ENV` other than `test` and without the hop
+ *   count or the ranges, or with a malformed range
+ * - **THEN** startup fails with a message that names only the variable
+ *
+ * Design D2: `TRUST_PROXY_HOPS` is an integer from 1 to 5; `TRUST_PROXY_CIDRS` is a
+ * comma-separated list of IPv4 or IPv6 CIDR blocks, a bare address accepted as a `/32` or
+ * `/128`. Outside `NODE_ENV=test` both are required; under test, both unset keeps the list
+ * `['loopback', 'linklocal', 'uniquelocal']`, both set is honoured, and one set without the
+ * other fails in every environment.
+ *
+ * ## Production symbol expected
+ *
+ * ```ts
+ * // apps/api/src/config.ts
+ * interface Config {
+ *   // `{ hops, cidrs }` when both variables are set (the input of `createTrustProxy`,
+ *   // design D2); the default list only under test when both are unset.
+ *   readonly trustProxy:
+ *     | { readonly hops: number; readonly cidrs: readonly string[] }
+ *     | readonly ['loopback', 'linklocal', 'uniquelocal'];
+ * }
+ * ```
+ *
+ * A bare address may be kept as written or completed with `/32` or `/128`: the tests
+ * compare the blocks after completing a bare address the same way.
+ */
+describe('TRUST_PROXY_HOPS and TRUST_PROXY_CIDRS (048 task 3.1, design D2, Q6)', () => {
+  const HOPS = 'TRUST_PROXY_HOPS';
+  const CIDRS = 'TRUST_PROXY_CIDRS';
+  const EVERY_ENVIRONMENT = ['test', 'production'] as const;
+  const OUTSIDE_TEST = ['production', 'staging', 'development'] as const;
+
+  const proxy = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      ...overrides,
+    });
+  const trustOf = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['trustProxy'];
+  /** A block as `address/prefix`: a bare address completed as a `/32` or `/128`. */
+  const block = (entry: string): string =>
+    entry.includes('/') ? entry : `${entry}/${isIPv6(entry) ? '128' : '32'}`;
+  function expectTrust(config: Config, hops: number, cidrs: readonly string[]): void {
+    const trust = trustOf(config) as { hops?: unknown; cidrs?: unknown } | undefined;
+    expect(trust, 'config.trustProxy is { hops, cidrs }').toBeTypeOf('object');
+    expect(Object.keys(trust ?? {}).sort()).toEqual(['cidrs', 'hops']);
+    expect(trust?.hops).toBe(hops);
+    expect(Array.isArray(trust?.cidrs)).toBe(true);
+    expect((trust?.cidrs as string[]).map(block)).toEqual(cidrs.map(block));
+  }
+
+  describe('hops from 1 to 5 are accepted in every environment', () => {
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        ['1', '2', '3', '4', '5'].map((hops) => [hops, nodeEnv] as const),
+      ),
+    )('TRUST_PROXY_HOPS=%s (NODE_ENV=%s)', (hops, nodeEnv) => {
+      const config = loadConfig(proxy(nodeEnv, { [HOPS]: hops, [CIDRS]: '10.0.0.0/16' }));
+      expectTrust(config, Number(hops), ['10.0.0.0/16']);
+    });
+  });
+
+  describe('IPv4 and IPv6 blocks and bare addresses are accepted in every environment', () => {
+    const accepted: readonly (readonly [string, string, readonly string[]])[] = [
+      ['one IPv4 block', '10.0.0.0/16', ['10.0.0.0/16']],
+      [
+        'several IPv4 blocks',
+        '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16',
+        ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
+      ],
+      ['one IPv6 block', 'fd00::/8', ['fd00::/8']],
+      [
+        'IPv6 and IPv4 blocks together',
+        '2001:db8::/32,10.0.0.0/16',
+        ['2001:db8::/32', '10.0.0.0/16'],
+      ],
+      ['a bare IPv4 address', '10.0.4.2', ['10.0.4.2']],
+      ['a bare IPv6 address', '::1', ['::1']],
+      ['a bare address next to a block', '10.0.4.2,fd00::/8', ['10.0.4.2', 'fd00::/8']],
+      ['the CI loopback list', '127.0.0.1/32,::1/128', ['127.0.0.1/32', '::1/128']],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        accepted.map(([label, value, cidrs]) => [label, nodeEnv, value, cidrs] as const),
+      ),
+    )('%s (NODE_ENV=%s)', (_label, nodeEnv, value, cidrs) => {
+      const config = loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: value }));
+      expectTrust(config, 1, cidrs);
+    });
+  });
+
+  describe('zero, six, fractional and other malformed hops are refused in every environment', () => {
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        ['0', '6', '1.5', '2.5', '-1', '10', 'abc', 'one', '', '   '].map(
+          (hops) => [hops, nodeEnv] as const,
+        ),
+      ),
+    )('TRUST_PROXY_HOPS=%j fails startup naming the variable (NODE_ENV=%s)', (hops, nodeEnv) => {
+      const error = thrown(() =>
+        loadConfig(proxy(nodeEnv, { [HOPS]: hops, [CIDRS]: '10.0.0.0/16' })),
+      );
+      expect(error.message).toContain(HOPS);
+      expect(error.message).not.toContain(CIDRS);
+    });
+  });
+
+  describe('a malformed block is refused in every environment', () => {
+    const malformed: readonly (readonly [string, string])[] = [
+      ['an IPv4 prefix over 32', '10.0.0.0/33'],
+      ['an IPv6 prefix over 128', '::1/129'],
+      ['a negative prefix', '10.0.0.0/-1'],
+      ['a non-numeric prefix', 'fe80::/abc'],
+      ['an empty prefix', '10.0.0.0/'],
+      ['two prefixes', '10.0.0.0/8/8'],
+      ['an octet over 255', '10.0.0.256/8'],
+      ['a three-octet address', '10.0.0/8'],
+      ['a word', 'not-a-cidr'],
+      ['a host name', 'localhost'],
+      ['a malformed block after a valid one', '10.0.0.0/16,bogus'],
+      ['an empty value', ''],
+      ['a blank value', '   '],
+      ['only separators', ' , '],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        malformed.map(([label, value]) => [label, nodeEnv, value] as const),
+      ),
+    )('%s fails startup naming the variable (NODE_ENV=%s)', (_label, nodeEnv, value) => {
+      const error = thrown(() => loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: value })));
+      expect(error.message).toContain(CIDRS);
+      expect(error.message).not.toContain(HOPS);
+    });
+  });
+
+  describe('one variable without the other is refused in every environment', () => {
+    it.each(EVERY_ENVIRONMENT)(
+      'TRUST_PROXY_HOPS without TRUST_PROXY_CIDRS fails naming TRUST_PROXY_CIDRS (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() => loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: undefined })));
+        expect(error.message).toContain(CIDRS);
+      },
+    );
+
+    it.each(EVERY_ENVIRONMENT)(
+      'TRUST_PROXY_CIDRS without TRUST_PROXY_HOPS fails naming TRUST_PROXY_HOPS (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: undefined, [CIDRS]: '10.0.0.0/16' })),
+        );
+        expect(error.message).toContain(HOPS);
+      },
+    );
+  });
+
+  describe('scenario: Startup fails without the proxy trust outside the test environment', () => {
+    it.each(OUTSIDE_TEST)(
+      'both variables unset fail startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: undefined, [CIDRS]: undefined })),
+        );
+        expect(error.message).toMatch(/TRUST_PROXY_(HOPS|CIDRS)/);
+      },
+    );
+
+    it.each(OUTSIDE_TEST)(
+      'the hop count missing fails startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: undefined, [CIDRS]: '10.0.0.0/16' })),
+        );
+        expect(error.message).toContain(HOPS);
+      },
+    );
+
+    it.each(OUTSIDE_TEST)(
+      'the ranges missing fail startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() => loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: undefined })));
+        expect(error.message).toContain(CIDRS);
+      },
+    );
+
+    it.each(OUTSIDE_TEST)(
+      'a malformed range fails startup naming the variable (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(proxy(nodeEnv, { [HOPS]: '1', [CIDRS]: '10.0.0.0/33' })),
+        );
+        expect(error.message).toContain(CIDRS);
+      },
+    );
+
+    it('a valid production configuration starts with the configured trust', () => {
+      const config = loadConfig(
+        proxy('production', { [HOPS]: '2', [CIDRS]: '10.0.0.0/16,fd00::/8' }),
+      );
+      expectTrust(config, 2, ['10.0.0.0/16', 'fd00::/8']);
+    });
+  });
+
+  describe('under NODE_ENV=test', () => {
+    it('both unset default to the loopback, link-local and unique-local list', () => {
+      const config = loadConfig(proxy('test', { [HOPS]: undefined, [CIDRS]: undefined }));
+      expect(trustOf(config)).toEqual(['loopback', 'linklocal', 'uniquelocal']);
+    });
+
+    it('both set are honoured', () => {
+      const config = loadConfig(
+        proxy('test', { [HOPS]: '3', [CIDRS]: '10.0.0.0/16,2001:db8::/32' }),
+      );
+      expectTrust(config, 3, ['10.0.0.0/16', '2001:db8::/32']);
+    });
+  });
+
+  describe('an error names only the variable, never a value', () => {
+    const MARKER_RANGE = '198.51.100.77';
+    const rejected: readonly (readonly [
+      string,
+      string,
+      Record<string, string | undefined>,
+      string,
+    ])[] = [
+      ['a fractional hop count', 'production', { [HOPS]: '4.75', [CIDRS]: '10.0.0.0/16' }, '4.75'],
+      ['a large hop count', 'production', { [HOPS]: '777', [CIDRS]: '10.0.0.0/16' }, '777'],
+      [
+        'a word as hop count',
+        'test',
+        { [HOPS]: 'markerhops', [CIDRS]: '10.0.0.0/16' },
+        'markerhops',
+      ],
+      [
+        'an out-of-range prefix',
+        'production',
+        { [HOPS]: '1', [CIDRS]: `${MARKER_RANGE}/33` },
+        MARKER_RANGE,
+      ],
+      ['a host name', 'test', { [HOPS]: '1', [CIDRS]: 'marker-host.invalid' }, 'marker-host'],
+      [
+        'a malformed block after a valid one',
+        'production',
+        { [HOPS]: '1', [CIDRS]: `${MARKER_RANGE}/24,marker-block` },
+        'marker-block',
+      ],
+      [
+        'the ranges alone',
+        'test',
+        { [HOPS]: undefined, [CIDRS]: `${MARKER_RANGE}/24` },
+        MARKER_RANGE,
+      ],
+    ];
+
+    it.each(rejected)('%s (NODE_ENV=%s)', (_label, nodeEnv, overrides, value) => {
+      const error = thrown(() => loadConfig(proxy(nodeEnv, overrides)));
+      expect(error.message).toMatch(/TRUST_PROXY_(HOPS|CIDRS)/);
+      expect(error.message).not.toContain(value);
+      expect(error.message).not.toContain(MARKER_RANGE);
+      expect(error.message).not.toContain('10.0.0.0');
+    });
+  });
+});
+
+/**
+ * `048` task 3.4 (design D3, Q18; auth-and-rbac scenario "An authentication base URL
+ * outside the allowed origins is refused"): `loadConfig` compares
+ * `new URL(BETTER_AUTH_URL).origin` with the parsed `ALLOWED_ORIGINS` whenever
+ * `BETTER_AUTH_URL` is set, in every environment, test included, and throws an `Error`
+ * naming both variables and no value (D3:
+ * `'BETTER_AUTH_URL is malformed (its origin must be one of ALLOWED_ORIGINS).'`).
+ *
+ * ## Production symbols expected
+ *
+ * No new export: the check lives in `loadConfig` (`apps/api/src/config.ts`), and
+ * `Config.betterAuthUrl` keeps the configured value.
+ *
+ * ## Why this fails right now
+ *
+ * `loadConfig` checks only the scheme of `BETTER_AUTH_URL`, so an unlisted origin starts
+ * (assertion failure: "expected the call to throw").
+ */
+describe('BETTER_AUTH_URL origin is one of ALLOWED_ORIGINS (048 task 3.4, design D3, Q18)', () => {
+  const NAME = 'BETTER_AUTH_URL';
+  const ORIGINS = 'ALLOWED_ORIGINS';
+  const LISTED = 'https://app.tayzu.test';
+  const EVERY_ENVIRONMENT = ['test', 'production'] as const;
+  const OUTSIDE_TEST = ['production', 'staging', 'development'] as const;
+
+  const publicOrigin = (
+    nodeEnv: string,
+    betterAuthUrl: string | undefined,
+    allowedOrigins: string = LISTED,
+  ): Record<string, string | undefined> => {
+    // The link base URLs stay on the first listed origin, so only BETTER_AUTH_URL is at fault.
+    const linkBase = allowedOrigins.split(',')[0]?.trim() ?? LISTED;
+    return env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: betterAuthUrl,
+      ALLOWED_ORIGINS: allowedOrigins,
+      INVITATION_LINK_BASE_URL: linkBase,
+      PASSWORD_RESET_LINK_BASE_URL: linkBase,
+    });
+  };
+
+  function expectRefused(env: Record<string, string | undefined>): Error {
+    const error = thrown(() => loadConfig(env));
+    expect(error.message).toContain(NAME);
+    expect(error.message).toContain(ORIGINS);
+    return error;
+  }
+
+  describe('scenario: An authentication base URL outside the allowed origins is refused', () => {
+    const otherHost: readonly (readonly [string, string, string])[] = [
+      ['another host', 'https://api.tayzu.test', LISTED],
+      ['a subdomain of a listed host', 'https://auth.app.tayzu.test', LISTED],
+      ['a listed host as a prefix of another host', 'https://app.tayzu.test.evil.invalid', LISTED],
+      [
+        'a host absent from a list of several',
+        'https://api.tayzu.test',
+        `${LISTED},https://admin.tayzu.test`,
+      ],
+    ];
+
+    describe('a different host is refused in every environment', () => {
+      it.each(
+        EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+          otherHost.map(([label, url, origins]) => [label, nodeEnv, url, origins] as const),
+        ),
+      )('%s (NODE_ENV=%s)', (_label, nodeEnv, url, origins) => {
+        expectRefused(publicOrigin(nodeEnv, url, origins));
+      });
+    });
+
+    const otherPort: readonly (readonly [string, string, string])[] = [
+      ['a port on a listed origin without one', 'https://app.tayzu.test:8443', LISTED],
+      ['no port on a listed origin with one', LISTED, `${LISTED}:8443,https://other.tayzu.test`],
+      [
+        'another port than the listed one',
+        'https://app.tayzu.test:9443',
+        `${LISTED}:8443,${LISTED}`,
+      ],
+    ];
+
+    describe('a different port is refused in every environment', () => {
+      it.each(
+        EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+          otherPort.map(([label, url, origins]) => [label, nodeEnv, url, origins] as const),
+        ),
+      )('%s (NODE_ENV=%s)', (_label, nodeEnv, url, origins) => {
+        expectRefused(publicOrigin(nodeEnv, url, origins));
+      });
+    });
+
+    describe('a different scheme is refused in every environment', () => {
+      // Under test both schemes are accepted on their own, so only the origin check refuses.
+      it('http BETTER_AUTH_URL with only the https origin listed (NODE_ENV=test)', () => {
+        expectRefused(publicOrigin('test', 'http://app.tayzu.test', LISTED));
+      });
+
+      it('https BETTER_AUTH_URL with only the http origin listed (NODE_ENV=test)', () => {
+        expectRefused(publicOrigin('test', LISTED, 'http://app.tayzu.test'));
+      });
+
+      // Outside test an http BETTER_AUTH_URL is already refused by the https rule (Q40).
+      it.each(OUTSIDE_TEST)(
+        'http BETTER_AUTH_URL with the https origin listed fails startup naming the variable (NODE_ENV=%s)',
+        (nodeEnv) => {
+          const error = thrown(() =>
+            loadConfig(publicOrigin(nodeEnv, 'http://app.tayzu.test', LISTED)),
+          );
+          expect(error.message).toContain(NAME);
+          expect(error.message).not.toContain('app.tayzu.test');
+        },
+      );
+    });
+
+    it.each(OUTSIDE_TEST)(
+      'an unlisted origin fails startup in every deployed environment (NODE_ENV=%s)',
+      (nodeEnv) => {
+        expectRefused(publicOrigin(nodeEnv, 'https://api.tayzu.test', LISTED));
+      },
+    );
+  });
+
+  describe('a URL on an allowed origin is accepted', () => {
+    const accepted: readonly (readonly [string, string, string])[] = [
+      ['the bare origin', LISTED, LISTED],
+      ['the origin with a trailing slash', `${LISTED}/`, LISTED],
+      ['a path on the origin', `${LISTED}/api/auth`, LISTED],
+      ['a nested path with a trailing slash', `${LISTED}/tayzu/api/`, LISTED],
+      ['the explicit default port', 'https://app.tayzu.test:443/api', LISTED],
+      ['a listed port', `${LISTED}:8443/api/auth`, `${LISTED}:8443`],
+      [
+        'the second listed origin',
+        'https://api.tayzu.test/api/auth',
+        `${LISTED}, https://api.tayzu.test`,
+      ],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        accepted.map(([label, url, origins]) => [label, nodeEnv, url, origins] as const),
+      ),
+    )('%s (NODE_ENV=%s)', (_label, nodeEnv, url, origins) => {
+      const config = loadConfig(publicOrigin(nodeEnv, url, origins));
+      expect(config.betterAuthUrl).toBe(url);
+    });
+
+    it('an http URL on an http origin is accepted under test', () => {
+      const url = 'http://localhost:3000/api/auth';
+      const config = loadConfig(publicOrigin('test', url, 'http://localhost:3000'));
+      expect(config.betterAuthUrl).toBe(url);
+    });
+
+    it('an unset BETTER_AUTH_URL under test is not checked', () => {
+      const config = loadConfig(publicOrigin('test', undefined, LISTED));
+      expect(config.betterAuthUrl).toBeUndefined();
+    });
+  });
+
+  describe('the error names both variables and no value', () => {
+    const MARKER_URL = 'https://marker-auth.tayzu.invalid:8443/marker-path';
+    const MARKER_ORIGIN = 'https://marker-allowed.tayzu.test';
+
+    it.each(EVERY_ENVIRONMENT)('NODE_ENV=%s', (nodeEnv) => {
+      const error = expectRefused(publicOrigin(nodeEnv, MARKER_URL, `${LISTED},${MARKER_ORIGIN}`));
+      expect(error.message).not.toContain(MARKER_URL);
+      expect(error.message).not.toContain('marker-auth');
+      expect(error.message).not.toContain('8443');
+      expect(error.message).not.toContain('marker-path');
+      expect(error.message).not.toContain(MARKER_ORIGIN);
+      expect(error.message).not.toContain('marker-allowed');
+      expect(error.message).not.toContain('app.tayzu.test');
+    });
+  });
+});
+
+/**
+ * `048` task 4.1 (design D4, Resolved decision Q9): `BETTER_AUTH_SECRETS` is the versioned
+ * list `<version>:<value>[,<version>:<value>...]`, parsed by `parseAuthSecrets` of
+ * `./auth-secrets.ts` (its own unit test covers the parser in depth), and the retired
+ * `BETTER_AUTH_SECRET` is refused when set.
+ *
+ * ## Production symbols expected
+ *
+ * ```ts
+ * // apps/api/src/config.ts
+ * export interface Config {
+ *   // replaces `betterAuthSecret: string`
+ *   readonly betterAuthSecrets: readonly { version: number; value: string }[];
+ * }
+ * ```
+ *
+ * Spec (auth-and-rbac, "Authentication secrets are versioned and come only from the
+ * host"):
+ *
+ * - "The retired variable is refused": WHEN the platform starts with the retired
+ *   single-secret variable set, THEN startup fails, naming only that variable. D4 gives
+ *   the message: `'BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.'`, in
+ *   every environment, for a non-blank value.
+ * - "A malformed list is refused": WHEN the list has a duplicated version, a negative or
+ *   non-numeric version, an entry without a value, or a value under 32 characters, THEN
+ *   startup fails with a message that names only the variable and no value.
+ */
+describe('BETTER_AUTH_SECRETS is parsed and BETTER_AUTH_SECRET is refused (048 task 4.1, design D4, Q9)', () => {
+  const VARIABLE = 'BETTER_AUTH_SECRETS';
+  const RETIRED = 'BETTER_AUTH_SECRET';
+  const RETIRED_MESSAGE = 'BETTER_AUTH_SECRET is retired: set BETTER_AUTH_SECRETS instead.';
+  const EVERY_ENVIRONMENT = ['test', 'production', 'staging', 'development'] as const;
+  /** Value markers: at least 32 characters each, unique, with no English word inside. */
+  const VALUE_A = 'Rq5Vx8Kz2Lm9Wt4Np7Yb1Hc6Gf3Jd0SuE';
+  const VALUE_B = 'Tz6Mq1Xk8Pw3Lr5Vn9Hj2Bc7Fy4Dg0SaW';
+  const VALUE_C = 'Zm2Kx7Qv4Lt9Wp1Rn6Yb3Hj8Gc5Fd0SsK';
+  const RETIRED_VALUE = 'Yk4Rz9Mq2Wx7Lp5Tv1Nb8Hj3Gc6Fd0SeQ';
+
+  const production = (
+    nodeEnv: string,
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> =>
+    env({
+      NODE_ENV: nodeEnv,
+      EMAIL_PROVIDER: 'none',
+      BETTER_AUTH_URL: 'https://app.tayzu.test',
+      ALLOWED_ORIGINS: 'https://app.tayzu.test',
+      ...overrides,
+    });
+  const secretsOf = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['betterAuthSecrets'];
+
+  /**
+   * The message names only `variable` (no other variable-like token) and no 6-character
+   * fragment of any value in `raw`.
+   */
+  function expectNamesOnly(message: string, variable: string, raw: string): void {
+    expect(message).toContain(variable);
+    const tokens = message.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) ?? [];
+    for (const token of tokens) expect(token, `token ${token} in the message`).toBe(variable);
+    for (const entry of raw.split(',')) {
+      const colon = entry.indexOf(':');
+      const value = (colon === -1 ? entry : entry.slice(colon + 1)).trim();
+      for (let start = 0; start + 6 <= value.length; start += 1) {
+        const fragment = value.slice(start, start + 6);
+        expect(message, `fragment ${fragment} of a value`).not.toContain(fragment);
+      }
+    }
+  }
+
+  describe('the list is parsed into Config.betterAuthSecrets', () => {
+    it.each(EVERY_ENVIRONMENT)('one entry is the current one (NODE_ENV=%s)', (nodeEnv) => {
+      const config = loadConfig(production(nodeEnv, { [VARIABLE]: `1:${VALUE_A}` }));
+      expect(secretsOf(config)).toEqual([{ version: 1, value: VALUE_A }]);
+    });
+
+    it('the first entry is current: the order is kept, not sorted by version', () => {
+      expect(secretsOf(loadConfig(env({ [VARIABLE]: `2:${VALUE_A},1:${VALUE_B}` })))).toEqual([
+        { version: 2, value: VALUE_A },
+        { version: 1, value: VALUE_B },
+      ]);
+      expect(
+        secretsOf(loadConfig(env({ [VARIABLE]: `1:${VALUE_A},3:${VALUE_B},2:${VALUE_C}` }))),
+      ).toEqual([
+        { version: 1, value: VALUE_A },
+        { version: 3, value: VALUE_B },
+        { version: 2, value: VALUE_C },
+      ]);
+    });
+
+    it('version 0 is accepted', () => {
+      expect(secretsOf(loadConfig(env({ [VARIABLE]: `0:${VALUE_A}` })))).toEqual([
+        { version: 0, value: VALUE_A },
+      ]);
+    });
+
+    it('a value containing a colon is kept whole', () => {
+      const withColons = `${VALUE_A}:${VALUE_B}:tail`;
+      expect(secretsOf(loadConfig(env({ [VARIABLE]: `5:${withColons}` })))).toEqual([
+        { version: 5, value: withColons },
+      ]);
+    });
+
+    it('the config has no betterAuthSecret field any more', () => {
+      const config = loadConfig(env({ [VARIABLE]: `1:${VALUE_A}` }));
+      expect(Object.keys(config)).not.toContain('betterAuthSecret');
+    });
+  });
+
+  describe('scenario: A malformed list is refused', () => {
+    const MALFORMED: readonly (readonly [string, string])[] = [
+      ['a duplicated version', `1:${VALUE_A},1:${VALUE_B}`],
+      ['a negative version', `-1:${VALUE_A}`],
+      ['a signed version (+1)', `+1:${VALUE_A}`],
+      ['a leading-zero version (01)', `01:${VALUE_A}`],
+      ['a non-numeric version (abc)', `abc:${VALUE_A}`],
+      ['a non-numeric version (1a)', `1a:${VALUE_A}`],
+      ['a version above 2^31-1', `2147483648:${VALUE_A}`],
+      ['an entry without a value', '1:'],
+      ['an empty value', `1:${VALUE_A},2:   `],
+      ['an entry without a colon', VALUE_A],
+      ['a value under 32 characters', `1:${'k'.repeat(31)}`],
+      ['a later value under 32 characters', `1:${VALUE_A},2:Wq7Xz3Kp9Lm`],
+      ['an empty list', ''],
+      ['a blank list', '   '],
+      ['a list of commas only', ' , '],
+    ];
+
+    it.each(
+      EVERY_ENVIRONMENT.flatMap((nodeEnv) =>
+        MALFORMED.map(([label, raw]) => [label, nodeEnv, raw] as const),
+      ),
+    )(
+      'refuses %s (NODE_ENV=%s), naming only BETTER_AUTH_SECRETS and no value',
+      (_label, nodeEnv, raw) => {
+        const error = thrown(() => loadConfig(production(nodeEnv, { [VARIABLE]: raw })));
+        expectNamesOnly(error.message, VARIABLE, raw);
+        for (const value of SECRET_VALUES) expect(error.message).not.toContain(value);
+      },
+    );
+
+    it('createAppFromEnv refuses a malformed list before building any pool', async () => {
+      vi.mocked(createPool).mockClear();
+      const raw = `1:${VALUE_A},1:${VALUE_B}`;
+      const error: unknown = await createAppFromEnv(env({ [VARIABLE]: raw })).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expectNamesOnly((error as Error).message, VARIABLE, raw);
+      expect(vi.mocked(createPool)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scenario: The retired variable is refused', () => {
+    it.each(EVERY_ENVIRONMENT)(
+      'a set BETTER_AUTH_SECRET fails startup with the retirement message (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(production(nodeEnv, { [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: RETIRED_VALUE })),
+        );
+        expect(error.message).toBe(RETIRED_MESSAGE);
+      },
+    );
+
+    it.each(EVERY_ENVIRONMENT)(
+      'a set BETTER_AUTH_SECRET equal to the current value is still refused (NODE_ENV=%s)',
+      (nodeEnv) => {
+        const error = thrown(() =>
+          loadConfig(production(nodeEnv, { [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: VALUE_A })),
+        );
+        expect(error.message).toBe(RETIRED_MESSAGE);
+      },
+    );
+
+    it('the retirement message carries no value', () => {
+      const error = thrown(() =>
+        loadConfig(env({ [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: RETIRED_VALUE })),
+      );
+      for (const value of [RETIRED_VALUE, VALUE_A, ...SECRET_VALUES]) {
+        expect(error.message).not.toContain(value);
+      }
+    });
+
+    it.each(['', '   '])('a blank BETTER_AUTH_SECRET (%j) is not set and is accepted', (blank) => {
+      const config = loadConfig(env({ [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: blank }));
+      expect(secretsOf(config)).toEqual([{ version: 1, value: VALUE_A }]);
+    });
+
+    it('createAppFromEnv refuses a set BETTER_AUTH_SECRET before building any pool', async () => {
+      vi.mocked(createPool).mockClear();
+      const error: unknown = await createAppFromEnv(
+        env({ [VARIABLE]: `1:${VALUE_A}`, [RETIRED]: RETIRED_VALUE }),
+      ).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(RETIRED_MESSAGE);
+      expect(vi.mocked(createPool)).not.toHaveBeenCalled();
+    });
+  });
+});
+
+/**
+ * `048` task 7.2 (design D7, Resolved decision Q21): the token-exchange client-id bucket is read
+ * "like every other limit": `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX` and
+ * `TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_WINDOW_SECONDS`, 60 per 60 seconds by default, positive
+ * integers only (002 Q39: a limit cannot be disabled), and an error names the variable, never
+ * the value.
+ *
+ * Production symbol expected (ASSUMED name, mirroring `Config.tokenExchangeRateLimit`):
+ * `Config.tokenExchangeClientRateLimit: { max: number; timeWindowMs: number }`, which
+ * `createAppFromEnv` forwards to `createApp`'s `tokenExchangeClientRateLimit` option.
+ */
+describe('TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_* (048 task 7.2, design D7, Q21)', () => {
+  const MAX = 'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_MAX';
+  const WINDOW = 'TOKEN_EXCHANGE_CLIENT_RATE_LIMIT_WINDOW_SECONDS';
+  const clientLimitOf = (config: Config): unknown =>
+    (config as unknown as Record<string, unknown>)['tokenExchangeClientRateLimit'];
+
+  it('defaults to 60 per 60 seconds (design D7)', () => {
+    expect(clientLimitOf(loadConfig(env()))).toEqual({ max: 60, timeWindowMs: 60_000 });
+  });
+
+  it('is tuned by its two variables', () => {
+    expect(clientLimitOf(loadConfig(env({ [MAX]: '7', [WINDOW]: '120' })))).toEqual({
+      max: 7,
+      timeWindowMs: 120_000,
+    });
+  });
+
+  it('tunes the maximum alone', () => {
+    expect(clientLimitOf(loadConfig(env({ [MAX]: '4' })))).toEqual({
+      max: 4,
+      timeWindowMs: 60_000,
+    });
+  });
+
+  it('tunes the window alone', () => {
+    expect(clientLimitOf(loadConfig(env({ [WINDOW]: '30' })))).toEqual({
+      max: 60,
+      timeWindowMs: 30_000,
+    });
+  });
+
+  it('is independent of the address bucket (TOKEN_EXCHANGE_RATE_LIMIT_*)', () => {
+    const config = loadConfig(
+      env({
+        TOKEN_EXCHANGE_RATE_LIMIT_MAX: '9',
+        TOKEN_EXCHANGE_RATE_LIMIT_WINDOW_SECONDS: '10',
+        [MAX]: '11',
+        [WINDOW]: '12',
+      }),
+    );
+    expect(config.tokenExchangeRateLimit).toEqual({ max: 9, timeWindowMs: 10_000 });
+    expect(clientLimitOf(config)).toEqual({ max: 11, timeWindowMs: 12_000 });
+    // The address bucket keeps its own defaults when only the client bucket is tuned.
+    expect(loadConfig(env({ [MAX]: '11' })).tokenExchangeRateLimit).toEqual({
+      max: 30,
+      timeWindowMs: 60_000,
+    });
+  });
+
+  it.each(
+    [MAX, WINDOW].flatMap((name) =>
+      ['0', '-1', '1.5', '1e3', 'abc', 'false', 'off', 'disabled', '', '   '].map(
+        (value) => [name, value] as const,
+      ),
+    ),
+  )(
+    '%s=%j (disabled, non-positive or non-integer) fails startup naming the variable',
+    (name, value) => {
+      const error = thrown(() => loadConfig(env({ [name]: value })));
+      expect(error.message).toContain(name);
+    },
+  );
+
+  it.each([MAX, WINDOW])('an error for %s names only that variable, never the value', (name) => {
+    const value = 'client-limit-value-marker-4e91';
+    const error = thrown(() => loadConfig(env({ [name]: value })));
+    expect(error.message).toContain(name);
+    expect(error.message).not.toContain(value);
+    const other = name === MAX ? WINDOW : MAX;
+    expect(error.message).not.toContain(other);
   });
 });

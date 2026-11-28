@@ -112,6 +112,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 
 import { SeverityNumber, type AnyValueMap } from '@opentelemetry/api-logs';
 import { runMigrations } from '@tayzu/db';
+import { hashPassword as legacyHashPassword } from 'better-auth/crypto';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
@@ -536,4 +537,265 @@ describe('The sign-in fence does not reveal an account (task 8.13, D7, Q28)', ()
     expect(knownLookups, 'one credential-hash lookup for the known address').toBe(1);
     expect(unknownLookups, 'one credential-hash lookup for the unknown address').toBe(1);
   }, 60_000);
+});
+
+/**
+ * Task 5.4 of `048-production-hardening` (design D5 "Rehash on sign-in": "A failed sign-in never
+ * reaches this branch, so the rehash changes nothing in its answer"; Q8: legacy hashes are
+ * rewritten "without changing the answer or timing of a failed sign-in"). Spec scenario "A failed
+ * sign-in does not touch the hash" (`specs/password-reset-and-account-recovery/spec.md`): "the
+ * answer is the uniform sign-in failure".
+ *
+ * GIVEN a user whose stored hash is a legacy Better Auth `salt:key` hash, a user whose stored
+ * hash is the platform's current one, and an address with no account, WHEN each signs in with a
+ * wrong password, THEN all three answer the same status, code and body, and the legacy hash is
+ * left as it was. The timing is task 5.4a's, not asserted here.
+ *
+ * ## Production symbols expected
+ *
+ * None new: the rehash branch of `hooks.after` on `/sign-in/email` in `auth.ts` (D5).
+ */
+describe('A failed sign-in against a legacy hash answers like any other failure (048 task 5.4, D5, Q8)', () => {
+  let db: TestDb;
+  let auth: AuthInstance;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      rateLimit: {
+        signIn: { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: SIGN_IN_RATE_LIMIT_MAX },
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  async function credentialHash(userId: string): Promise<string> {
+    const rows = await db.execute<{ password: string }>(
+      sql`select password from auth.account where user_id = ${userId} and provider_id = 'credential'`,
+    );
+    const hash = rows.rows[0]?.password;
+    if (hash === undefined) throw new Error('no credential account');
+    return hash;
+  }
+
+  it('a wrong password against a legacy hash answers the same status, code and body as against a current hash and for an unknown address', async () => {
+    const handler = handlerOf(auth);
+    const legacyEmail = randomEmail();
+    const currentEmail = randomEmail();
+    const legacy = await createAdminUser(auth, {
+      name: 'Legacy Hash Enumeration User',
+      email: legacyEmail,
+      password: TEST_PASSWORD,
+    });
+    const current = await createAdminUser(auth, {
+      name: 'Current Hash Enumeration User',
+      email: currentEmail,
+      password: TEST_PASSWORD,
+    });
+    const legacyHash = await legacyHashPassword(TEST_PASSWORD);
+    await db.execute(
+      sql`update auth.account set password = ${legacyHash} where user_id = ${legacy.userId} and provider_id = 'credential'`,
+    );
+    expect(await credentialHash(legacy.userId), 'control: the legacy hash is stored').toBe(
+      legacyHash,
+    );
+    expect(legacyHash, 'control: a legacy salt:key hash').toMatch(/^[0-9a-f]{32}:[0-9a-f]{128}$/);
+    expect(
+      await credentialHash(current.userId),
+      'control: the other user has a current platform hash',
+    ).toMatch(/^\$scrypt\$ln=15,r=8,p=3\$/);
+
+    const legacyResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: legacyEmail,
+      password: WRONG_PASSWORD,
+    });
+    const currentResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: currentEmail,
+      password: WRONG_PASSWORD,
+    });
+    const unknownResponse = await postSignIn(handler, {
+      ip: randomIp(),
+      email: randomEmail(),
+      password: WRONG_PASSWORD,
+    });
+
+    expect(currentResponse.status, 'control: a wrong password is a failure').toBeGreaterThanOrEqual(
+      400,
+    );
+    expect(legacyResponse.status, 'same status as a current hash').toBe(currentResponse.status);
+    expect(unknownResponse.status, 'same status as an unknown address').toBe(
+      currentResponse.status,
+    );
+    const currentBody = (await currentResponse.json()) as AuthErrorBody;
+    expect(typeof currentBody.code).toBe('string');
+    expect(await legacyResponse.json(), 'same code and body as a current hash').toEqual(
+      currentBody,
+    );
+    expect(await unknownResponse.json(), 'same code and body as an unknown address').toEqual(
+      currentBody,
+    );
+    expect(
+      legacyResponse.headers.getSetCookie().some((c) => c.includes('session_token')),
+      'no session cookie',
+    ).toBe(false);
+    expect(await credentialHash(legacy.userId), 'the failed sign-in left the legacy hash').toBe(
+      legacyHash,
+    );
+  }, 60_000);
+});
+
+/**
+ * Task 5.4a of `048-production-hardening` (design D5 "Equal failure cost", Q33). Spec scenario "A
+ * failed sign-in against a weaker hash costs the same as an unknown user"
+ * (`specs/password-reset-and-account-recovery/spec.md`):
+ *
+ * - GIVEN a user whose stored hash is in the earlier format
+ * - WHEN they sign in with a wrong password
+ * - THEN the failure is in the same timing class as a sign-in for an email that has no account
+ *
+ * (The clause "the verification also computes one hash at the current cost" is asserted at the
+ * function level in `password-hash.test.ts`; the lower-cost platform variant is covered there too.)
+ *
+ * ## How "the same timing class" is measured
+ *
+ * No earlier block in this file asserts timing, so this one defines a relative measure that does
+ * not depend on the machine's absolute speed: the median wall-clock time of `ROUNDS` complete
+ * sign-ins (request to fully read body, through `auth.handler`) per kind, with the kinds
+ * interleaved inside every round in a rotating order so drift (other workers, thermal, GC) hits all
+ * kinds alike, after `WARMUP_ROUNDS` unmeasured rounds (JIT, pool connections). Two medians are in
+ * the same class when their ratio is within `[MIN_RATIO, MAX_RATIO]` = `[0.6, 2.0]`.
+ *
+ * Why those bounds: an unknown email costs one current-cost hash (N·r·p = 786k); a failed legacy
+ * check costs today one legacy derivation (N·r·p = 262k), about a third of that (measured on the
+ * sandbox: about 70 ms against 190 ms), so its ratio is about 0.4 and fails the lower bound. With
+ * the extra current-cost hash of D5 it costs about 1.3 times an unknown email, well inside the
+ * band. The band is generous on purpose so that scheduling noise never flips it; the exact count of
+ * extra hashes is pinned by the unit test, not here. A wrong password against a current-cost hash
+ * is measured too, as a control that the measure itself puts two same-cost failures in one class.
+ *
+ * ## Production symbols expected
+ *
+ * None new in `auth.ts`: `verifyPassword` in `password-hash.ts` running the extra current-cost hash
+ * (D5, Q33).
+ */
+describe('A failed sign-in against a weaker hash costs the same as an unknown user (048 task 5.4a, D5, Q33)', () => {
+  /** Unmeasured rounds before sampling. */
+  const WARMUP_ROUNDS = 2;
+  /** Measured rounds per kind; the median of these is compared. */
+  const ROUNDS = 15;
+  /** The timing-class band for a ratio of medians (module doc comment above). */
+  const MIN_RATIO = 0.6;
+  const MAX_RATIO = 2.0;
+
+  let db: TestDb;
+  let auth: AuthInstance;
+
+  beforeAll(async () => {
+    db = connect(databaseUrl());
+    await runMigrations(db.$client);
+    auth = createAuth({
+      db,
+      secret: TEST_SECRET,
+      rateLimit: {
+        signIn: { window: SIGN_IN_RATE_LIMIT_WINDOW_SECONDS, max: SIGN_IN_RATE_LIMIT_MAX },
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await endQuietly(db.$client);
+  });
+
+  function median(samples: readonly number[]): number {
+    const sorted = [...samples].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    const upper = sorted[middle] ?? Number.NaN;
+    if (sorted.length % 2 === 1) return upper;
+    return ((sorted[middle - 1] ?? Number.NaN) + upper) / 2;
+  }
+
+  it('a wrong password against a legacy hash is in the same timing class as a sign-in for an unknown email', async () => {
+    const handler = handlerOf(auth);
+    const legacyEmail = randomEmail();
+    const currentEmail = randomEmail();
+    const unknownEmail = randomEmail();
+    const legacy = await createAdminUser(auth, {
+      name: 'Legacy Hash Timing User',
+      email: legacyEmail,
+      password: TEST_PASSWORD,
+    });
+    await createAdminUser(auth, {
+      name: 'Current Hash Timing User',
+      email: currentEmail,
+      password: TEST_PASSWORD,
+    });
+    // GIVEN a user whose stored hash is in the earlier format.
+    const legacyHash = await legacyHashPassword(TEST_PASSWORD);
+    expect(legacyHash, 'control: a legacy salt:key hash').toMatch(/^[0-9a-f]{32}:[0-9a-f]{128}$/);
+    await db.execute(
+      sql`update auth.account set password = ${legacyHash} where user_id = ${legacy.userId} and provider_id = 'credential'`,
+    );
+
+    const kinds = [
+      { name: 'legacy', email: legacyEmail },
+      { name: 'current', email: currentEmail },
+      { name: 'unknown', email: unknownEmail },
+    ] as const;
+    type Kind = (typeof kinds)[number]['name'];
+    const samples: Record<Kind, number[]> = { legacy: [], current: [], unknown: [] };
+    const statuses = new Set<number>();
+
+    // WHEN they sign in with a wrong password (and, for comparison, an unknown email does).
+    for (let round = 0; round < WARMUP_ROUNDS + ROUNDS; round += 1) {
+      for (let offset = 0; offset < kinds.length; offset += 1) {
+        const kind = kinds[(round + offset) % kinds.length];
+        if (kind === undefined) throw new Error('unreachable');
+        const started = performance.now();
+        const response = await postSignIn(handler, {
+          ip: randomIp(),
+          email: kind.email,
+          password: WRONG_PASSWORD,
+        });
+        await response.text();
+        const elapsed = performance.now() - started;
+        statuses.add(response.status);
+        if (round >= WARMUP_ROUNDS) samples[kind.name].push(elapsed);
+      }
+    }
+
+    expect([...statuses], 'control: every attempt is the same uniform failure').toHaveLength(1);
+    expect([...statuses][0] ?? 0, 'control: a failure, not a success').toBeGreaterThanOrEqual(400);
+
+    const legacyMedian = median(samples.legacy);
+    const currentMedian = median(samples.current);
+    const unknownMedian = median(samples.unknown);
+    const summary = `medians ms: legacy=${legacyMedian.toFixed(1)}, current=${currentMedian.toFixed(1)}, unknown=${unknownMedian.toFixed(1)}`;
+
+    // Control: two failures of the same cost fall in one class under this measure.
+    const currentRatio = currentMedian / unknownMedian;
+    expect(
+      currentRatio,
+      `control: a current-cost wrong password is in the unknown-email class (${summary})`,
+    ).toBeGreaterThanOrEqual(MIN_RATIO);
+    expect(currentRatio, `control: upper bound (${summary})`).toBeLessThanOrEqual(MAX_RATIO);
+
+    // THEN the failure is in the same timing class as a sign-in for an email with no account.
+    const legacyRatio = legacyMedian / unknownMedian;
+    expect(
+      legacyRatio,
+      `a failed legacy check is not measurably faster than an unknown email (${summary})`,
+    ).toBeGreaterThanOrEqual(MIN_RATIO);
+    expect(
+      legacyRatio,
+      `a failed legacy check is not measurably slower than an unknown email (${summary})`,
+    ).toBeLessThanOrEqual(MAX_RATIO);
+  }, 180_000);
 });

@@ -19,11 +19,13 @@
     "bootstrap:admin": "tsx scripts/bootstrap-admin.ts",
     "recover:admin-mfa": "tsx scripts/recover-admin-mfa.ts",
     "identity:purge": "tsx scripts/purge-job.ts",
+    "identity:purge-warning": "tsx scripts/purge-warning-job.ts",
     "identity:cancel-org-deletion": "tsx scripts/cancel-org-deletion.ts",
     "contract:generate": "tsx scripts/generate-identity-contract.ts",
     "contract:check": "tsx scripts/check-identity-contract.ts"
   },
   "dependencies": {
+    "@azure/identity": "4.14.1",
     "@fastify/cors": "^11.3.0",
     "@fastify/helmet": "^13.1.1",
     "@fastify/rate-limit": "^11.2.0",

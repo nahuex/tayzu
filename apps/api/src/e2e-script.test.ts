@@ -353,6 +353,167 @@ describe('e2e.sh: the API runs with its production configuration (task 10.1, D16
   });
 });
 
+/**
+ * `048` task 2.4 (design D1, Resolved decision Q5): `db:migrate` reads only
+ * `MIGRATION_DATABASE_URL`, so the script exports the owner URL under that name
+ * before `pnpm db:migrate`, the TLS-readiness probe reads it, and the only
+ * `DATABASE_URL` the script exports is the `tayzu_app` runtime URL, after the
+ * migrate step.
+ */
+const MIGRATE_RUN = /\bpnpm db:migrate\b/;
+const OWNER_URL = /^postgres:\/\/tayzu:/;
+const APP_URL = /^postgres:\/\/tayzu_app:/;
+
+/**
+ * The value `raw` stands for at `lines[at]`: every `$name` or `${name}` in it, bare or
+ * embedded, is replaced by the last plain or exported assignment of `name` before that
+ * line, itself resolved the same way. A reference with no assignment is left as written.
+ */
+function resolveShellValue(lines: readonly string[], at: number, raw: string, depth = 0): string {
+  if (depth > 5) return raw;
+  return raw.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (reference: string, braced: string | undefined, bare: string | undefined) => {
+      const name = braced ?? bare ?? '';
+      const assignment = new RegExp(
+        `^\\s*(?:export\\s+|local\\s+)?${name}=["']?([^"'\\n]*)["']?\\s*$`,
+      );
+      for (let index = at - 1; index >= 0; index -= 1) {
+        const value = assignment.exec(lines[index] ?? '')?.[1];
+        if (value !== undefined) return resolveShellValue(lines, index, value, depth + 1);
+      }
+      return reference;
+    },
+  );
+}
+
+/** Every `export NAME=value` line among `lines`: its index and resolved value. */
+function exportsOf(lines: readonly string[], name: string): { at: number; value: string }[] {
+  const pattern = new RegExp(`^\\s*export ${name}=["']?([^"'\\n]*)["']?\\s*$`);
+  return lines.flatMap((line, at) => {
+    const raw = pattern.exec(line)?.[1];
+    return raw === undefined ? [] : [{ at, value: resolveShellValue(lines, at, raw) }];
+  });
+}
+
+/**
+ * `048` task 3.1 (design D2): the stack runs with `NODE_ENV=production`, so `up()` sets
+ * the proxy trust the API requires outside test: one hop, from the loopback addresses of
+ * the local TLS proxy only, exported before `apps/api` starts.
+ */
+describe('e2e.sh: the API trusts one proxy hop from loopback only (048 task 3.1, design D2)', () => {
+  it('exports TRUST_PROXY_HOPS=1 and TRUST_PROXY_CIDRS=127.0.0.1/32,::1/128 once, before apps/api starts', () => {
+    const up = codeLines(shellFunction('up'));
+    const apiAt = lineIndex(up, API_START);
+    const hopsAt = lineIndex(up, /^\s*export TRUST_PROXY_HOPS=/);
+    const cidrsAt = lineIndex(up, /^\s*export TRUST_PROXY_CIDRS=/);
+
+    expect(exportedValues('TRUST_PROXY_HOPS')).toEqual(['1']);
+    expect(exportedValues('TRUST_PROXY_CIDRS')).toEqual(['127.0.0.1/32,::1/128']);
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(hopsAt, 'an `export TRUST_PROXY_HOPS=` line in up()').toBeGreaterThan(-1);
+    expect(cidrsAt, 'an `export TRUST_PROXY_CIDRS=` line in up()').toBeGreaterThan(-1);
+    expect(hopsAt).toBeLessThan(apiAt);
+    expect(cidrsAt).toBeLessThan(apiAt);
+    expect([...script().matchAll(/\bTRUST_PROXY_HOPS=/g)]).toHaveLength(1);
+    expect([...script().matchAll(/\bTRUST_PROXY_CIDRS=/g)]).toHaveLength(1);
+  });
+});
+
+/**
+ * `048` task 4.1 (design D4, Resolved decision Q9): `BETTER_AUTH_SECRET` is retired and
+ * fails startup in every environment, so `up()` exports `BETTER_AUTH_SECRETS` as a
+ * one-entry list over the run's random secret, before `apps/api` starts.
+ */
+describe('e2e.sh: the versioned authentication secrets (048 task 4.1, design D4)', () => {
+  const RANDOM_LIST = /^(0|[1-9][0-9]*):\$\(openssl rand -(hex|base64) ([0-9]+)\)$/;
+
+  it('up() exports BETTER_AUTH_SECRETS once, a one-entry list over a random secret, before apps/api starts', () => {
+    const up = codeLines(shellFunction('up'));
+    const apiAt = lineIndex(up, API_START);
+    const exported = exportsOf(up, 'BETTER_AUTH_SECRETS');
+
+    expect(apiAt, 'a line that starts @tayzu/api in up()').toBeGreaterThan(-1);
+    expect(exported, 'one `export BETTER_AUTH_SECRETS=` line in up()').toHaveLength(1);
+    const value = exported[0]?.value ?? '';
+    const match = RANDOM_LIST.exec(value);
+    expect(match, `the exported list ${value}`).not.toBeNull();
+    // At least 32 characters of random value: 16 bytes in hex, 24 in base64.
+    const bytes = Number(match?.[3] ?? 0);
+    expect(bytes).toBeGreaterThanOrEqual(match?.[2] === 'hex' ? 16 : 24);
+    expect(exported[0]?.at ?? Infinity).toBeLessThan(apiAt);
+    expect([...script().matchAll(/\bBETTER_AUTH_SECRETS=/g)]).toHaveLength(1);
+  });
+
+  it('the script never sets or reads the retired BETTER_AUTH_SECRET', () => {
+    for (const line of codeLines(script())) {
+      expect(line).not.toMatch(/\bBETTER_AUTH_SECRET=/);
+      expect(line).not.toMatch(/\$\{?BETTER_AUTH_SECRET\b/);
+    }
+  });
+});
+
+describe('e2e.sh: migrations run as the migration role (048 task 2.4, design D1)', () => {
+  it('exports the owner URL as MIGRATION_DATABASE_URL before the pnpm db:migrate line', () => {
+    const up = codeLines(shellFunction('up'));
+    const migrateAt = lineIndex(up, MIGRATE_RUN);
+    const migrationExports = exportsOf(up, 'MIGRATION_DATABASE_URL');
+
+    expect(migrateAt, 'a `pnpm db:migrate` line in up()').toBeGreaterThan(-1);
+    expect(migrationExports.length, 'an `export MIGRATION_DATABASE_URL=` line in up()').toBe(1);
+    const [owner] = migrationExports;
+    expect(owner?.value).toMatch(OWNER_URL);
+    expect(owner?.value).toMatch(/sslmode=verify-full/);
+    expect(owner?.at ?? Infinity).toBeLessThan(migrateAt);
+    // The migrate step gets no inline DATABASE_URL either.
+    expect(up[migrateAt]).not.toMatch(/\bDATABASE_URL=/);
+  });
+
+  it('the owner URL is never exported as DATABASE_URL: the only DATABASE_URL is tayzu_app, after the migrate step', () => {
+    const lines = codeLines(script());
+    const up = codeLines(shellFunction('up'));
+    const migrateAt = lineIndex(up, MIGRATE_RUN);
+
+    const everywhere = exportsOf(lines, 'DATABASE_URL');
+    expect(everywhere.length, 'one `export DATABASE_URL=` line in the script').toBe(1);
+    for (const { value } of everywhere) {
+      expect(value).not.toMatch(OWNER_URL);
+      expect(value).not.toMatch(/MIGRATION_DATABASE_URL/);
+      expect(value).toMatch(APP_URL);
+    }
+
+    const inUp = exportsOf(up, 'DATABASE_URL');
+    expect(inUp).toHaveLength(1);
+    expect(inUp[0]?.at ?? -1).toBeGreaterThan(migrateAt);
+  });
+
+  it('the TLS-readiness probe reads MIGRATION_DATABASE_URL, exported before the probe runs', () => {
+    const probe = shellFunction('postgres_accepts_tls');
+    const up = codeLines(shellFunction('up'));
+    const probeAt = lineIndex(up, /\bwait_for\b[^\n]*\bpostgres_accepts_tls\b/);
+    const exportAt = exportsOf(up, 'MIGRATION_DATABASE_URL')[0]?.at ?? Infinity;
+
+    expect(probe).toMatch(/connectionString:\s*process\.env\.MIGRATION_DATABASE_URL\b/);
+    expect(probe).not.toMatch(/process\.env\.DATABASE_URL\b/);
+    expect(probeAt).toBeGreaterThan(-1);
+    expect(exportAt).toBeLessThan(probeAt);
+    expect(probeAt).toBeLessThan(lineIndex(up, MIGRATE_RUN));
+  });
+});
+
+describe('turbo.json: db:migrate hashes only the migration variable (048 task 2.4, design D1)', () => {
+  it('db:migrate.env is exactly ["MIGRATION_DATABASE_URL"]', () => {
+    const turbo = JSON.parse(read(join(repoRoot, 'turbo.json'))) as {
+      tasks?: Record<string, { env?: unknown; cache?: unknown }>;
+    };
+    const migrate = turbo.tasks?.['db:migrate'];
+
+    expect(migrate, 'a db:migrate task in turbo.json').toBeDefined();
+    expect(migrate?.env).toEqual(['MIGRATION_DATABASE_URL']);
+    expect(migrate?.cache).toBe(false);
+  });
+});
+
 describe('e2e.sh never echoes a secret, a credential or a link (task 10.1, D16)', () => {
   /** Variables assigned from `$(openssl rand …)` anywhere in the script. */
   function generatedSecrets(): string[] {
@@ -363,8 +524,9 @@ describe('e2e.sh never echoes a secret, a credential or a link (task 10.1, D16)'
 
   const ALWAYS_SECRET = [
     'DATABASE_URL',
+    'MIGRATION_DATABASE_URL',
     'AUTH_DATABASE_URL',
-    'BETTER_AUTH_SECRET',
+    'BETTER_AUTH_SECRETS',
     'IDENTITY_TOKEN_HMAC_SECRET',
     'VISMA_CONNECT_CLIENT_SECRET',
     'database_url',

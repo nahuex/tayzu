@@ -56,7 +56,9 @@ mailbox would defeat MFA.
    account. A suppressed request issues no token, so it cannot evict the link
    the user already holds. The final password write
    uses Better Auth's exported password hash function, so NFC normalization,
-   the password policy and the breached-password check apply.
+   the password policy and the breached-password check apply. _Amended by
+   `048` (design D5, ADR-0028):_ it is now the platform's own password hash
+   function, the one sign-in uses.
 
 2. **A mailbox never changes an MFA-enrolled user's password and never removes
    a factor (D6, D10, Q1, Q6).**
@@ -100,7 +102,7 @@ mailbox would defeat MFA.
    runs out of band, only from the production-network operator environment
    under Azure PIM. It shares the MFA-reset service with the admin form, which
    takes a repository port and no Better Auth instance, so the command never
-   loads `BETTER_AUTH_SECRET`. It requires `--approver`, an opaque id that
+   loads `BETTER_AUTH_SECRET` (_amended by `048`:_ now `BETTER_AUTH_SECRETS`). It requires `--approver`, an opaque id that
    differs from the operator id, and accepts any member as a target. Because
    the audit event is the only durable record of who approved removing a
    factor, the command is stricter than the shared script rule: its `main()`

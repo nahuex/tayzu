@@ -411,15 +411,16 @@ Aprobado por el humano el 2026-09-28. Surge de un relevamiento de toda la docume
 | `043-identity-lifecycle-and-org-admin` | Identity lifecycle and org admin: 4-state user status lifecycle + invitations, service accounts, org API-credentials viewer & rotation (decision D9; data retention & org deletion moved to `045`, decision D12) | 002 |
 | `044-password-reset-and-account-recovery` | Password reset and account recovery: forgot-password email link, single-use short-lived reset tokens, enumeration-resistant responses, session revocation on reset, MFA recovery (decision D10) | 002, 043 |
 | `045-org-deletion-and-data-retention` | Org deletion and data retention: two-phase org deletion (access revoked at once, purge after a 7-to-14-day window), the deletion marker with the `tayzu_purge` and `tayzu_deletion_admin` roles, the audited operator reversal and its reviewed maintenance workflow, and the retention policy (decision D12) | 002, 043 |
-| `046-azure-deployment-and-first-release` | Azure deployment and first release: the IaC for Container Apps, PostgreSQL Flexible Server, Key Vault and Azure Monitor, the sandbox rehearsal, and every first-deployment gate that `002` to `045` attribute to `010`, plus the gates `003` names (decision D13) | 002, 043, 044, 045, 003 |
+| `046-azure-deployment-and-first-release` | Azure deployment and first release: the IaC for Container Apps, PostgreSQL Flexible Server, Key Vault and Azure Monitor, the sandbox rehearsal, and every first-deployment gate that `002` to `045` attribute to `010`, plus the gates `003` names (decision D13); the code gates moved to `048` (decision D14) | 002, 043, 044, 045, 003, 048 |
 | `047-catalog-ui-customization` | Catalog UI customization: blueprint page layouts, saved views, organization branding and announcement banner, the icon library and enum colors, with their storage (decision D13); also the authored column order, since the `jsonb` schema does not keep property order (`003` Q82) | 003 |
+| `048-production-hardening` | Production hardening: the code gates that `002` to `045` and `003` require before the first deployment (migration role wiring, configurable proxy trust, SSO step-up binding, password-hash cost, versioned auth secrets, CSP violation reports, the Cerbos audit backend, rate limits shared across replicas, the atomic back-channel replay guard, the pre-purge warning and related telemetry), split from `046` (decision D14) | 002, 043, 044, 045, 003 |
 
-**Execution order note (2026-09-28, amended 2026-11-18):** `002-auth-and-rbac` runs before
+**Execution order note (2026-09-28, amended 2026-11-18 and 2026-11-27):** `002-auth-and-rbac` runs before
 `043-identity-lifecycle-and-org-admin`, which runs before
-`003-catalog-ui-core`, which runs before `046-azure-deployment-and-first-release`
-(`002 -> 043 -> 044 -> 045 -> 003 -> 046`; `044` was added on the
+`003-catalog-ui-core`, which runs before `048-production-hardening` and then
+`046-azure-deployment-and-first-release` (`002 -> 043 -> 044 -> 045 -> 003 -> 048 -> 046`; `044` was added on the
 same day, see D10, `045` on 2026-10-07, see D12, and `046` and `047` on 2026-11-18,
-see D13). `047-catalog-ui-customization` runs later, after `003`. The numeric IDs in this table are
+see D13, and `048` on 2026-11-27, see D14). `047-catalog-ui-customization` runs later, after `003`. The numeric IDs in this table are
 labels, not a sequencing rule — `043` was deliberately given a new id instead
 of renumbering the rest of the roadmap, and its real execution order is this
 dependency chain, not its position in the table.
@@ -501,3 +502,16 @@ dependency chain, not its position in the table.
   ticket of `003`, not part of this decision. The changes that depend on `003` keep
   that dependency; one that needs page layouts or saved views (for example `014`'s page
   ACLs or `020`'s dashboard pages) adds `047` when it is proposed.
+- **D14. `046`/`048` split, OpenTofu and the deployment path: approved (2026-11-27).**
+  An inventory of the first-deployment gates that `002` to `045` and `003` hand to
+  `046` (decision D13) found 81 of them, ten of which need new application code, which
+  together do not fit the ~30-80 TDD-task budget. The code gates move to a new change,
+  `048-production-hardening` (a new id, not a renumbering), which depends on `002`,
+  `043`, `044`, `045` and `003` and runs before `046`, since it is test-driven and needs
+  no Azure access. `046` keeps the IaC, the deployment pipeline, the sandbox rehearsal,
+  the alerts, the log retention and the release checklist, and adds `048` to its
+  dependencies. The human also chose **OpenTofu** for the IaC (ADR-0027; Bicep was the
+  recommended option), **GitHub Actions with OIDC federated credentials** against a
+  sandbox subscription for the rehearsal and the deployments, each `apply` approved by a
+  human in a GitHub environment, and a security and audit log retention of **12 months
+  interactive plus archive to 24 months** (`001` R8), which `046` sets as IaC.

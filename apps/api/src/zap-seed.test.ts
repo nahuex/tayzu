@@ -6,7 +6,7 @@
  * Q30: the script reuses `packages/auth/scripts/bootstrap-admin.ts` to create
  * one organization and its first admin, starts nothing itself (the workflow
  * starts `apps/api` with `main.ts`), signs in over HTTP and hands the session
- * cookie to ZAP through `ZAP_AUTH_HEADER`. `BETTER_AUTH_SECRET` is random per
+ * cookie to ZAP through `ZAP_AUTH_HEADER`. `BETTER_AUTH_SECRETS` (048 D4) is random per
  * run and zaproxy/action-baseline is pinned by commit SHA.
  *
  * This file lives in `apps/api/src` only because the Vitest projects glob
@@ -18,7 +18,7 @@
  * // scripts/ci/zap-seed.ts (does not exist yet)
  * export interface ZapSeedConfig {
  *   databaseUrl: string;        // DATABASE_URL (required)
- *   betterAuthSecret: string;   // BETTER_AUTH_SECRET (required)
+ *   betterAuthSecrets: string;  // BETTER_AUTH_SECRETS (required; 048 D4 renamed it)
  *   baseUrl: string;            // ZAP_TARGET_URL (required), http(s), no trailing slash
  *   organizationName: string;   // ZAP_SEED_ORGANIZATION_NAME, defaulted
  *   organizationSlug: string;   // ZAP_SEED_ORGANIZATION_SLUG, defaulted
@@ -65,7 +65,7 @@ const DB_MARKER = 'seed-db-pw-MARKER-77';
 
 const completeEnv = {
   DATABASE_URL: `postgres://tayzu_auth:${DB_MARKER}@localhost:5432/tayzu_ci`,
-  BETTER_AUTH_SECRET: SECRET_MARKER,
+  BETTER_AUTH_SECRETS: `1:${SECRET_MARKER}`,
   ZAP_TARGET_URL: 'http://127.0.0.1:3000',
 } as const;
 
@@ -73,7 +73,7 @@ describe('ZAP seed script: environment handling', () => {
   it('reads the required variables and defaults the organization and admin', () => {
     const config = parseZapSeedConfig(completeEnv);
     expect(config.databaseUrl).toBe(completeEnv.DATABASE_URL);
-    expect(config.betterAuthSecret).toBe(SECRET_MARKER);
+    expect(config.betterAuthSecrets).toBe(completeEnv.BETTER_AUTH_SECRETS);
     expect(config.baseUrl).toBe('http://127.0.0.1:3000');
     for (const value of [
       config.organizationName,
@@ -106,7 +106,7 @@ describe('ZAP seed script: environment handling', () => {
     ).toBe('http://127.0.0.1:3000');
   });
 
-  it.each(['DATABASE_URL', 'BETTER_AUTH_SECRET', 'ZAP_TARGET_URL'] as const)(
+  it.each(['DATABASE_URL', 'BETTER_AUTH_SECRETS', 'ZAP_TARGET_URL'] as const)(
     'fails fast naming %s when it is missing or blank, without echoing any value',
     (name) => {
       for (const bad of [undefined, '', '   ']) {
@@ -347,7 +347,8 @@ describe('ZAP seed script: the moved bootstrap CLI (task 4.6b)', () => {
   it('--refresh still parses with DATABASE_URL=unused and none of the new variables', () => {
     const refreshEnv = {
       DATABASE_URL: 'unused',
-      BETTER_AUTH_SECRET: 'unused',
+      // 048 D4: a well-formed unused list replaces `BETTER_AUTH_SECRET=unused`.
+      BETTER_AUTH_SECRETS: `1:${'unused'.repeat(6)}`,
       ZAP_TARGET_URL: 'http://localhost:3000',
       ZAP_SEED_ORIGIN: 'https://localhost:3000',
     };
@@ -448,5 +449,45 @@ describe('ZAP seed script: honors the forced password change (task 13.5b)', () =
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * `048` task 4.1 (design D4, Resolved decision Q9): `BETTER_AUTH_SECRET` is retired and
+ * `bootstrap-admin` refuses it, so `scripts/ci/zap-seed.ts:85,183` reads
+ * `BETTER_AUTH_SECRETS` into `ZapSeedConfig.betterAuthSecrets` and forwards it to
+ * `bootstrap-admin` under that name.
+ */
+describe('ZAP seed script: the versioned secrets (048 task 4.1, design D4)', () => {
+  const source = (): string =>
+    readFileSync(
+      fileURLToPath(new URL('../../../scripts/ci/zap-seed.ts', import.meta.url)),
+      'utf8',
+    );
+
+  it('reads BETTER_AUTH_SECRETS, and the retired BETTER_AUTH_SECRET alone does not satisfy it', () => {
+    expect(parseZapSeedConfig(completeEnv).betterAuthSecrets).toBe(completeEnv.BETTER_AUTH_SECRETS);
+
+    let message = '';
+    try {
+      parseZapSeedConfig({
+        DATABASE_URL: completeEnv.DATABASE_URL,
+        ZAP_TARGET_URL: completeEnv.ZAP_TARGET_URL,
+        BETTER_AUTH_SECRET: SECRET_MARKER,
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('BETTER_AUTH_SECRETS');
+    expect(message).not.toContain(SECRET_MARKER);
+  });
+
+  it('forwards BETTER_AUTH_SECRETS to bootstrap-admin and never names BETTER_AUTH_SECRET', () => {
+    const text = source();
+
+    expect(text).toMatch(/\bBETTER_AUTH_SECRETS:\s*config\.betterAuthSecrets\b/);
+    expect(text).not.toMatch(/['"]BETTER_AUTH_SECRET['"]/);
+    expect(text).not.toMatch(/\bBETTER_AUTH_SECRET\s*:/);
+    expect(text).not.toMatch(/\bbetterAuthSecret\b/);
   });
 });

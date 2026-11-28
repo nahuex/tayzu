@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "verification_backchannel_logout_uq" ON "auth"."verification" USING btree ("identifier") WHERE starts_with("identifier", 'backchannel-logout:');

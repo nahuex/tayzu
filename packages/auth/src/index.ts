@@ -74,7 +74,13 @@ export {
 } from './step-up-telemetry.js';
 export { emitInternalError } from './internal-error-telemetry.js';
 export {
+  verifyReauthorizationIdToken,
+  type IdTokenNonceExpectation,
+} from './sso/reauthorization.js';
+export {
+  createLogoutKeyCache,
   verifyLogoutToken,
+  type LogoutKeyCache,
   type LogoutTokenExpectation,
   type VerifiedLogoutToken,
 } from './sso/backchannel-logout.js';
@@ -82,7 +88,11 @@ export {
   withBackchannelLogoutTelemetry,
   type BackchannelLogoutOutcome,
 } from './backchannel-logout-telemetry.js';
-export { emitRateLimited, type RateLimitScope } from './rate-limit/pre-auth-rate-limit.js';
+export {
+  emitRateLimited,
+  type BucketKeyKind,
+  type RateLimitScope,
+} from './rate-limit/pre-auth-rate-limit.js';
 export {
   createRateLimitBucketStore,
   type RateLimitBucketStore,
